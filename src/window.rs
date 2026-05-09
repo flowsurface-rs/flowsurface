@@ -23,6 +23,8 @@ pub fn default_size() -> Size {
 
 #[derive(Debug, Clone, Copy)]
 pub enum Event {
+    Opened(window::Id),
+    Rescaled(window::Id, f32),
     CloseRequested(window::Id),
 }
 
@@ -36,11 +38,23 @@ fn filtered_events(
     window: window::Id,
 ) -> Option<Event> {
     match &event {
+        iced::Event::Window(iced::window::Event::Opened { .. }) => Some(Event::Opened(window)),
+        iced::Event::Window(iced::window::Event::Rescaled(scale_factor)) => {
+            Some(Event::Rescaled(window, *scale_factor))
+        }
         iced::Event::Window(iced::window::Event::CloseRequested) => {
             Some(Event::CloseRequested(window))
         }
         _ => None,
     }
+}
+
+pub fn scale_factor<M, F>(window_id: window::Id, message: F) -> Task<M>
+where
+    F: Fn(window::Id, f32) -> M + Send + 'static,
+    M: Send + 'static,
+{
+    iced::window::scale_factor(window_id).map(move |value| message(window_id, value))
 }
 
 pub fn collect_window_specs<M, F>(window_ids: Vec<window::Id>, message: F) -> Task<M>

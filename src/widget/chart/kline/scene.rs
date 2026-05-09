@@ -219,47 +219,6 @@ impl Scene {
         YUnit(value)
     }
 
-    pub(super) fn map_primary_plot_unit(&self, y_unit: YUnit) -> f32 {
-        let panel = self.primary_plot();
-        self.map_primary_plot_unit_unclamped(y_unit)
-            .clamp(panel.y, panel.y + panel.height)
-    }
-
-    pub(super) fn map_primary_plot_unit_unclamped(&self, y_unit: YUnit) -> f32 {
-        let min = self.min_primary_unit.0;
-        let max = self.max_primary_unit.0;
-        let range = max.saturating_sub(min).unsigned_abs().max(1);
-        let delta = y_unit.0.saturating_sub(min);
-        let ratio = delta as f32 / range as f32;
-        let panel = self.primary_plot();
-        panel.y + (1.0 - ratio) * panel.height
-    }
-
-    pub(super) fn map_indicator_plot_unit(
-        &self,
-        panel_index: usize,
-        indicator_unit: YUnit,
-    ) -> Option<f32> {
-        let panel = self.indicator_plot(panel_index)?;
-        self.map_indicator_plot_unit_unclamped(panel_index, indicator_unit)
-            .map(|y| y.clamp(panel.y, panel.y + panel.height))
-    }
-
-    pub(super) fn map_indicator_plot_unit_unclamped(
-        &self,
-        panel_index: usize,
-        indicator_unit: YUnit,
-    ) -> Option<f32> {
-        let panel = self.indicator_plot(panel_index)?;
-        let indicator = self.indicator_panel_config(panel_index)?;
-        let min = indicator.min_unit.0;
-        let max = indicator.max_unit.0;
-        let range = max.saturating_sub(min).unsigned_abs().max(1);
-        let delta = indicator_unit.0.saturating_sub(min);
-        let ratio = delta as f32 / range as f32;
-        Some(panel.y + (1.0 - ratio) * panel.height)
-    }
-
     pub(super) fn plot_rect(&self) -> Rectangle {
         self.layout.regions.plot
     }
@@ -521,10 +480,47 @@ impl Scene {
         }
     }
 
-    pub(super) fn map_primary_plot_with_anchor(&self, value: f32, anchor: Option<f32>) -> f32 {
+    fn map_primary_plot_unit(&self, y_unit: YUnit) -> f32 {
+        let min = self.min_primary_unit.0;
+        let max = self.max_primary_unit.0;
+        let range = max.saturating_sub(min).unsigned_abs().max(1);
+        let delta = y_unit.0.saturating_sub(min);
+        let ratio = delta as f32 / range as f32;
+        let panel = self.primary_plot();
+        panel.y + (1.0 - ratio) * panel.height
+    }
+
+    fn map_indicator_plot_unit(&self, panel_index: usize, indicator_unit: YUnit) -> Option<f32> {
+        let panel = self.indicator_plot(panel_index)?;
+        let indicator = self.indicator_panel_config(panel_index)?;
+        let min = indicator.min_unit.0;
+        let max = indicator.max_unit.0;
+        let range = max.saturating_sub(min).unsigned_abs().max(1);
+        let delta = indicator_unit.0.saturating_sub(min);
+        let ratio = delta as f32 / range as f32;
+        Some(panel.y + (1.0 - ratio) * panel.height)
+    }
+
+    fn map_primary_plot_with_anchor(&self, value: f32, anchor: Option<f32>) -> f32 {
         let panel = self.primary_plot();
         self.map_primary_plot_with_anchor_unclamped(value, anchor)
             .clamp(panel.y, panel.y + panel.height)
+    }
+
+    pub(super) fn map_primary_plot_unit_clamped(&self, y_unit: YUnit) -> f32 {
+        let panel = self.primary_plot();
+        self.map_primary_plot_unit(y_unit)
+            .clamp(panel.y, panel.y + panel.height)
+    }
+
+    pub(super) fn map_indicator_plot_unit_clamped(
+        &self,
+        panel_index: usize,
+        indicator_unit: YUnit,
+    ) -> Option<f32> {
+        let panel = self.indicator_plot(panel_index)?;
+        self.map_indicator_plot_unit(panel_index, indicator_unit)
+            .map(|y| y.clamp(panel.y, panel.y + panel.height))
     }
 
     pub(super) fn map_primary_plot_with_anchor_unclamped(
@@ -538,7 +534,7 @@ impl Scene {
                     && matches!(self.primary_scale_mode, PanelScaleMode::Logarithmic));
 
         if !uses_display_transform {
-            return self.map_primary_plot_unit_unclamped(self.primary_value_to_unit(value));
+            return self.map_primary_plot_unit(self.primary_value_to_unit(value));
         }
 
         let (min_display, max_display) = self.primary_domain_display_values();
@@ -553,23 +549,13 @@ impl Scene {
         panel.y + (1.0 - ratio) * panel.height
     }
 
-    pub(super) fn map_indicator_plot(
-        &self,
-        panel_index: usize,
-        indicator_value: f32,
-    ) -> Option<f32> {
-        let panel = self.indicator_plot(panel_index)?;
-        self.map_indicator_plot_unclamped(panel_index, indicator_value)
-            .map(|y| y.clamp(panel.y, panel.y + panel.height))
-    }
-
     pub(super) fn map_indicator_plot_unclamped(
         &self,
         panel_index: usize,
         indicator_value: f32,
     ) -> Option<f32> {
         let y_unit = self.indicator_value_to_unit(panel_index, indicator_value)?;
-        self.map_indicator_plot_unit_unclamped(panel_index, y_unit)
+        self.map_indicator_plot_unit(panel_index, y_unit)
     }
 }
 
@@ -1332,12 +1318,10 @@ where
                                 );
                                 let y_primary_value =
                                     self.panel_unit_to_value(panel_value_precision, y_primary_unit);
-                                let y_plot = scene
-                                    .map_primary_plot_with_anchor(
-                                        y_primary_value,
-                                        scene.primary_scale_anchor,
-                                    )
-                                    .clamp(panel.plot.y, panel.plot.y + panel.plot.height);
+                                let y_plot = scene.map_primary_plot_with_anchor(
+                                    y_primary_value,
+                                    scene.primary_scale_anchor,
+                                );
 
                                 (y_primary_unit, y_plot)
                             } else {
@@ -1346,9 +1330,7 @@ where
                                     scene.max_primary_unit,
                                     value_ratio,
                                 );
-                                let y_plot = scene
-                                    .map_primary_plot_unit(y_primary_unit)
-                                    .clamp(panel.plot.y, panel.plot.y + panel.plot.height);
+                                let y_plot = scene.map_primary_plot_unit_clamped(y_primary_unit);
 
                                 (y_primary_unit, y_plot)
                             };
@@ -1370,9 +1352,8 @@ where
                                     Scene::lerp_unit(YUnit(0), YUnit(1), indicator_ratio)
                                 });
                             let snapped_y_plot = scene
-                                .map_indicator_plot_unit(panel_index, y_indicator_unit)
-                                .unwrap_or(panel.plot.y + y_in_panel)
-                                .clamp(panel.plot.y, panel.plot.y + panel.plot.height);
+                                .map_indicator_plot_unit_clamped(panel_index, y_indicator_unit)
+                                .unwrap_or(panel.plot.y + y_in_panel);
 
                             (None, Some(y_indicator_unit), snapped_y_plot)
                         }

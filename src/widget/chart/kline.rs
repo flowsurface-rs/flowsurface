@@ -392,6 +392,7 @@ pub struct KlineWidget<'a, S> {
     basis: Basis,
     horizontal_scale: HorizontalScale,
     horizontal_offset: f32,
+    horizontal_pixel_ratio: f32,
     primary_autoscale: bool,
     panel_y_viewports: &'a [(PanelId, PanelYViewport)],
     timezone: UserTimezone,
@@ -410,6 +411,7 @@ where
             basis: Basis::Time(timeframe),
             horizontal_scale: HorizontalScale::pixels_per_bar(DEFAULT_BAR_SPACING_PX),
             horizontal_offset: 0.0,
+            horizontal_pixel_ratio: 1.0,
             primary_autoscale: false,
             panel_y_viewports: &[],
             timezone: UserTimezone::Utc,
@@ -424,6 +426,15 @@ where
 
     pub fn with_horizontal_offset(mut self, offset: f32) -> Self {
         self.horizontal_offset = offset;
+        self
+    }
+
+    pub fn with_horizontal_pixel_ratio(mut self, ratio: f32) -> Self {
+        self.horizontal_pixel_ratio = if ratio.is_finite() && ratio > 0.0 {
+            ratio
+        } else {
+            1.0
+        };
         self
     }
 
@@ -680,7 +691,10 @@ where
         let panel_precision = self.panel_value_precision(panel_index);
         let value = self.panel_unit_to_value(panel_precision, anchor.y_unit);
         let x_unit = self.x_unit_for_anchor_time(scene, anchor.time)?;
-        let x_plot = scene.map_x_plot(x_unit);
+        let x_plot = Self::snap_plot_x_to_cell(
+            scene.map_x_plot(x_unit),
+            self.resolved_horizontal_pixel_ratio(),
+        );
         let y_plot = match panel.kind {
             KlinePanelKind::PrimaryChart => {
                 scene.map_primary_plot_with_anchor_unclamped(value, scene.primary_scale_anchor)
@@ -786,7 +800,11 @@ where
     ) -> Option<(Rectangle, f32)> {
         let x_unit = self.x_unit_for_anchor_time(scene, time)?;
         let clip_bounds = self.plot_bounds_in_overlay(scene);
-        let x = scene.layout.regions.plot.x + scene.map_x_plot(x_unit);
+        let x = scene.layout.regions.plot.x
+            + Self::snap_plot_x_to_cell(
+                scene.map_x_plot(x_unit),
+                self.resolved_horizontal_pixel_ratio(),
+            );
 
         if x < clip_bounds.x || x > (clip_bounds.x + clip_bounds.width) {
             return None;
@@ -802,14 +820,19 @@ where
         object: &DrawingObject,
         style: DrawingStyle,
         selected: bool,
+        overlay_origin_in_window: Point,
+        horizontal_pixel_ratio: f32,
     ) {
+        let raw_stroke_width = if selected {
+            (style.stroke_width + 0.6).max(1.0)
+        } else {
+            style.stroke_width.max(1.0)
+        };
+        let (stroke_width, stroke_width_phys) =
+            Self::quantized_stroke_width(raw_stroke_width, horizontal_pixel_ratio);
         let stroke = canvas::Stroke::default()
             .with_color(style.stroke_color)
-            .with_width(if selected {
-                (style.stroke_width + 0.6).max(1.0)
-            } else {
-                style.stroke_width.max(1.0)
-            });
+            .with_width(stroke_width);
 
         match object {
             DrawingObject::Trendline { start, end } => {
@@ -818,6 +841,18 @@ where
                 else {
                     return;
                 };
+                let start = Self::snap_point_for_stroke_with_origin(
+                    start,
+                    horizontal_pixel_ratio,
+                    overlay_origin_in_window,
+                    stroke_width_phys,
+                );
+                let end = Self::snap_point_for_stroke_with_origin(
+                    end,
+                    horizontal_pixel_ratio,
+                    overlay_origin_in_window,
+                    stroke_width_phys,
+                );
 
                 frame.with_clip(bounds, |frame| {
                     frame.stroke(&canvas::Path::line(start, end), stroke);
@@ -830,12 +865,86 @@ where
                     return;
                 };
 
+                let left = origin.x;
+                let right = origin.x + size.width;
+                let top = origin.y;
+                let bottom = origin.y + size.height;
+
+                let (fill_left, fill_width) = Self::snapped_span_with_origin(
+                    left,
+                    right,
+                    horizontal_pixel_ratio,
+                    overlay_origin_in_window.x,
+                );
+                let (fill_top, fill_height) = Self::snapped_span_with_origin(
+                    top,
+                    bottom,
+                    horizontal_pixel_ratio,
+                    overlay_origin_in_window.y,
+                );
+
+                let left_stroke = Self::snap_stroke_center_with_origin(
+                    left,
+                    horizontal_pixel_ratio,
+                    overlay_origin_in_window.x,
+                    stroke_width_phys,
+                );
+                let right_stroke = Self::snap_stroke_center_with_origin(
+                    right,
+                    horizontal_pixel_ratio,
+                    overlay_origin_in_window.x,
+                    stroke_width_phys,
+                );
+                let top_stroke = Self::snap_stroke_center_with_origin(
+                    top,
+                    horizontal_pixel_ratio,
+                    overlay_origin_in_window.y,
+                    stroke_width_phys,
+                );
+                let bottom_stroke = Self::snap_stroke_center_with_origin(
+                    bottom,
+                    horizontal_pixel_ratio,
+                    overlay_origin_in_window.y,
+                    stroke_width_phys,
+                );
+
                 frame.with_clip(bounds, |frame| {
                     if let Some(fill) = style.fill_color {
-                        frame.fill_rectangle(origin, size, fill);
+                        frame.fill_rectangle(
+                            Point::new(fill_left, fill_top),
+                            Size::new(fill_width, fill_height),
+                            fill,
+                        );
                     }
 
-                    frame.stroke_rectangle(origin, size, stroke);
+                    frame.stroke(
+                        &canvas::Path::line(
+                            Point::new(left_stroke, top_stroke),
+                            Point::new(right_stroke, top_stroke),
+                        ),
+                        stroke,
+                    );
+                    frame.stroke(
+                        &canvas::Path::line(
+                            Point::new(right_stroke, top_stroke),
+                            Point::new(right_stroke, bottom_stroke),
+                        ),
+                        stroke,
+                    );
+                    frame.stroke(
+                        &canvas::Path::line(
+                            Point::new(right_stroke, bottom_stroke),
+                            Point::new(left_stroke, bottom_stroke),
+                        ),
+                        stroke,
+                    );
+                    frame.stroke(
+                        &canvas::Path::line(
+                            Point::new(left_stroke, bottom_stroke),
+                            Point::new(left_stroke, top_stroke),
+                        ),
+                        stroke,
+                    );
                 });
             }
             DrawingObject::HorizontalLine { panel_id, y_unit } => {
@@ -844,6 +953,13 @@ where
                 else {
                     return;
                 };
+
+                let y = Self::snap_stroke_center_with_origin(
+                    y,
+                    horizontal_pixel_ratio,
+                    overlay_origin_in_window.y,
+                    stroke_width_phys,
+                );
 
                 frame.with_clip(bounds, |frame| {
                     frame.stroke(
@@ -859,6 +975,13 @@ where
                 let Some((plot, x)) = self.drawing_vertical_line_geometry(scene, *time) else {
                     return;
                 };
+
+                let x = Self::snap_stroke_center_with_origin(
+                    x,
+                    horizontal_pixel_ratio,
+                    overlay_origin_in_window.x,
+                    stroke_width_phys,
+                );
 
                 frame.with_clip(plot, |frame| {
                     frame.stroke(
@@ -936,6 +1059,7 @@ where
         frame: &mut canvas::Frame,
         scene: &Scene,
         palette: &Extended,
+        horizontal_pixel_ratio: f32,
         drawing: &DrawingEntity,
     ) {
         let handles = self.drawing_handle_points(scene, &drawing.object);
@@ -949,6 +1073,7 @@ where
 
         let fill_color = palette.background.strongest.color;
         let stroke_color = palette.primary.base.color.scale_alpha(0.92);
+        let (handle_stroke_width, _) = Self::quantized_stroke_width(1.2, horizontal_pixel_ratio);
 
         frame.with_clip(clip_bounds, |frame| {
             for (_, point) in handles {
@@ -959,7 +1084,7 @@ where
                     &circle,
                     canvas::Stroke::default()
                         .with_color(stroke_color)
-                        .with_width(1.2),
+                        .with_width(handle_stroke_width),
                 );
             }
         });
@@ -998,7 +1123,14 @@ where
         best.map(|(_, kind)| (drawing.id, kind))
     }
 
-    fn fill_drawings(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
+    fn fill_drawings(
+        &self,
+        frame: &mut canvas::Frame,
+        scene: &Scene,
+        palette: &Extended,
+        overlay_origin_in_window: Point,
+        horizontal_pixel_ratio: f32,
+    ) {
         let drawing_state = &self.drawings;
 
         for drawing in drawing_state
@@ -1007,11 +1139,25 @@ where
             .filter(|drawing| drawing.visible)
         {
             let selected = drawing_state.selected_drawing == Some(drawing.id);
-            self.draw_drawing_object(frame, scene, &drawing.object, drawing.style, selected);
+            self.draw_drawing_object(
+                frame,
+                scene,
+                &drawing.object,
+                drawing.style,
+                selected,
+                overlay_origin_in_window,
+                horizontal_pixel_ratio,
+            );
         }
 
         if let Some(selected_drawing) = drawing_state.selected_visible_drawing() {
-            self.draw_selected_drawing_handles(frame, scene, palette, selected_drawing);
+            self.draw_selected_drawing_handles(
+                frame,
+                scene,
+                palette,
+                horizontal_pixel_ratio,
+                selected_drawing,
+            );
         }
 
         if let Some(draft) = drawing_state.drawing_draft {
@@ -1021,7 +1167,15 @@ where
                 style.fill_color = Some(fill.scale_alpha(0.5));
             }
 
-            self.draw_drawing_object(frame, scene, &draft.preview_object(), style, false);
+            self.draw_drawing_object(
+                frame,
+                scene,
+                &draft.preview_object(),
+                style,
+                false,
+                overlay_origin_in_window,
+                horizontal_pixel_ratio,
+            );
         }
     }
 
@@ -1899,16 +2053,239 @@ where
         self.format_panel_value_by_mode(panel_index, value_precision, value, 0.01, mode)
     }
 
-    fn fill_main_geometry(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
+    fn optimal_candlestick_width(bar_spacing: f32, pixel_ratio: f32) -> i32 {
+        let from = 2.5_f32;
+        let to = 4.0_f32;
+        let coeff_special = 3.0_f32;
+
+        if bar_spacing >= from && bar_spacing <= to {
+            return (coeff_special * pixel_ratio).floor() as i32;
+        }
+
+        let reducing_coeff = 0.2_f32;
+        let coeff = 1.0
+            - (reducing_coeff * (bar_spacing.max(to) - to).atan()) / (std::f32::consts::PI * 0.5);
+
+        let res = (bar_spacing * coeff * pixel_ratio).floor() as i32;
+        let scaled_bar_spacing = (bar_spacing * pixel_ratio).floor() as i32;
+        let optimal = res.min(scaled_bar_spacing);
+
+        optimal.max(pixel_ratio.floor() as i32)
+    }
+
+    fn candlestick_width(bar_spacing: f32, horizontal_pixel_ratio: f32) -> i32 {
+        let mut width = Self::optimal_candlestick_width(bar_spacing, horizontal_pixel_ratio);
+        if width >= 2 {
+            let wick_width = horizontal_pixel_ratio.floor() as i32;
+            if (wick_width & 1) != (width & 1) {
+                width -= 1;
+            }
+        }
+        width
+    }
+
+    fn resolved_horizontal_pixel_ratio(&self) -> f32 {
+        if self.horizontal_pixel_ratio.is_finite() && self.horizontal_pixel_ratio > 0.0 {
+            self.horizontal_pixel_ratio
+        } else {
+            1.0
+        }
+    }
+
+    fn physical_px_to_logical(px: i32, horizontal_pixel_ratio: f32) -> f32 {
+        px as f32 / horizontal_pixel_ratio
+    }
+
+    fn physical_px_to_logical_with_origin(
+        px: i32,
+        horizontal_pixel_ratio: f32,
+        origin_global: f32,
+    ) -> f32 {
+        Self::physical_px_to_logical(px, horizontal_pixel_ratio) - origin_global
+    }
+
+    fn snap_axis_to_physical_with_origin(
+        value_local: f32,
+        horizontal_pixel_ratio: f32,
+        origin_global: f32,
+    ) -> i32 {
+        ((value_local + origin_global) * horizontal_pixel_ratio).round() as i32
+    }
+
+    fn snap_plot_x_to_cell_with_origin(
+        x_plot: f32,
+        horizontal_pixel_ratio: f32,
+        origin_x_global: f32,
+    ) -> f32 {
+        let x_phys = Self::snap_axis_to_physical_with_origin(
+            x_plot,
+            horizontal_pixel_ratio,
+            origin_x_global,
+        );
+        Self::physical_px_to_logical_with_origin(x_phys, horizontal_pixel_ratio, origin_x_global)
+    }
+
+    fn centered_left_for_width_with_origin(
+        x_plot: f32,
+        width_phys: i32,
+        horizontal_pixel_ratio: f32,
+        origin_x_global: f32,
+    ) -> f32 {
+        let center_phys = Self::snap_axis_to_physical_with_origin(
+            x_plot,
+            horizontal_pixel_ratio,
+            origin_x_global,
+        );
+        let left_phys = center_phys - (width_phys / 2);
+        Self::physical_px_to_logical_with_origin(left_phys, horizontal_pixel_ratio, origin_x_global)
+    }
+
+    fn snapped_span_with_origin(
+        start_local: f32,
+        end_local: f32,
+        horizontal_pixel_ratio: f32,
+        origin_y_global: f32,
+    ) -> (f32, f32) {
+        let top = start_local.min(end_local);
+        let bottom = start_local.max(end_local);
+
+        let top_phys =
+            Self::snap_axis_to_physical_with_origin(top, horizontal_pixel_ratio, origin_y_global);
+        let mut bottom_phys = Self::snap_axis_to_physical_with_origin(
+            bottom,
+            horizontal_pixel_ratio,
+            origin_y_global,
+        );
+
+        if bottom_phys <= top_phys {
+            bottom_phys = top_phys + 1;
+        }
+
+        let top_snapped = Self::physical_px_to_logical_with_origin(
+            top_phys,
+            horizontal_pixel_ratio,
+            origin_y_global,
+        );
+        let height_snapped = (bottom_phys - top_phys) as f32 / horizontal_pixel_ratio;
+
+        (top_snapped, height_snapped)
+    }
+
+    fn quantized_stroke_width(width_logical: f32, horizontal_pixel_ratio: f32) -> (f32, i32) {
+        let stroke_width_phys = (width_logical.max(0.0) * horizontal_pixel_ratio).round() as i32;
+        let stroke_width_phys = stroke_width_phys.max(1);
+        (
+            Self::logical_width_from_physical(stroke_width_phys, horizontal_pixel_ratio),
+            stroke_width_phys,
+        )
+    }
+
+    fn snap_stroke_center_with_origin(
+        value_local: f32,
+        horizontal_pixel_ratio: f32,
+        origin_global: f32,
+        stroke_width_phys: i32,
+    ) -> f32 {
+        let axis_phys = (value_local + origin_global) * horizontal_pixel_ratio;
+        let snapped_phys = if (stroke_width_phys & 1) == 0 {
+            axis_phys.round()
+        } else {
+            (axis_phys - 0.5).round() + 0.5
+        };
+
+        (snapped_phys / horizontal_pixel_ratio) - origin_global
+    }
+
+    fn snap_plot_x_for_stroke_with_origin(
+        x_plot: f32,
+        horizontal_pixel_ratio: f32,
+        origin_x_global: f32,
+        stroke_width_phys: i32,
+    ) -> f32 {
+        let x_cell =
+            Self::snap_plot_x_to_cell_with_origin(x_plot, horizontal_pixel_ratio, origin_x_global);
+
+        Self::snap_stroke_center_with_origin(
+            x_cell,
+            horizontal_pixel_ratio,
+            origin_x_global,
+            stroke_width_phys,
+        )
+    }
+
+    fn snap_point_for_stroke_with_origin(
+        point: Point,
+        horizontal_pixel_ratio: f32,
+        origin_global: Point,
+        stroke_width_phys: i32,
+    ) -> Point {
+        Point::new(
+            Self::snap_stroke_center_with_origin(
+                point.x,
+                horizontal_pixel_ratio,
+                origin_global.x,
+                stroke_width_phys,
+            ),
+            Self::snap_stroke_center_with_origin(
+                point.y,
+                horizontal_pixel_ratio,
+                origin_global.y,
+                stroke_width_phys,
+            ),
+        )
+    }
+
+    fn snap_plot_x_to_cell(x_plot: f32, horizontal_pixel_ratio: f32) -> f32 {
+        let x_phys = (x_plot * horizontal_pixel_ratio).round() as i32;
+        Self::physical_px_to_logical(x_phys, horizontal_pixel_ratio)
+    }
+
+    fn logical_width_from_physical(width_phys: i32, horizontal_pixel_ratio: f32) -> f32 {
+        Self::physical_px_to_logical(width_phys.max(1), horizontal_pixel_ratio)
+    }
+
+    fn primitive_width_for_spacing(
+        bar_spacing: f32,
+        width_factor: f32,
+        horizontal_pixel_ratio: f32,
+    ) -> i32 {
+        let scaled_spacing = (bar_spacing * width_factor).max(1e-6);
+        Self::optimal_candlestick_width(scaled_spacing, horizontal_pixel_ratio)
+    }
+
+    fn fill_main_geometry(
+        &self,
+        frame: &mut canvas::Frame,
+        scene: &Scene,
+        palette: &Extended,
+        plot_origin_in_window: Point,
+    ) {
+        let horizontal_pixel_ratio = self.resolved_horizontal_pixel_ratio();
+        let plot_origin_x_global = plot_origin_in_window.x;
+        let plot_origin_y_global = plot_origin_in_window.y;
+
         let spacing = scene.bar_spacing_px();
         let px_per_unit = spacing.as_f32();
-        let max_width = spacing.as_i32().max(1);
-        let candle_width = ((px_per_unit * 0.7).round() as i32)
-            .clamp(1, 22)
-            .min(max_width);
-        let indicator_width = ((px_per_unit * 0.8).round() as i32)
-            .clamp(1, 24)
-            .min(max_width);
+        let max_width_phys = ((px_per_unit * horizontal_pixel_ratio).floor() as i32).max(1);
+
+        let mut candle_body_width_phys =
+            Self::candlestick_width(px_per_unit, horizontal_pixel_ratio).clamp(1, max_width_phys);
+        let wick_width_phys = (horizontal_pixel_ratio.floor() as i32)
+            .max(1)
+            .min(candle_body_width_phys);
+
+        if candle_body_width_phys >= 2 && ((wick_width_phys ^ candle_body_width_phys) & 1) != 0 {
+            candle_body_width_phys -= 1;
+        }
+
+        let indicator_width_phys =
+            Self::primitive_width_for_spacing(px_per_unit, 0.8, horizontal_pixel_ratio)
+                .clamp(1, max_width_phys);
+        let indicator_width =
+            Self::logical_width_from_physical(indicator_width_phys, horizontal_pixel_ratio);
+        let candle_body_width =
+            Self::logical_width_from_physical(candle_body_width_phys, horizontal_pixel_ratio);
+        let wick_width = Self::logical_width_from_physical(wick_width_phys, horizontal_pixel_ratio);
         let in_visible_range =
             |x_unit: i64| x_unit >= scene.min_x_unit && x_unit <= scene.max_x_unit;
 
@@ -1917,86 +2294,101 @@ where
                 continue;
             }
 
+            let Some(panel_plot) = scene
+                .layout
+                .panel(indicator_panel.panel_index)
+                .map(|panel| panel.plot)
+            else {
+                continue;
+            };
+
             let Some(y_indicator_baseline) = scene
-                .map_indicator_plot(indicator_panel.panel_index, 0.0)
+                .map_indicator_plot_unclamped(indicator_panel.panel_index, 0.0)
                 .or_else(|| scene.indicator_panel_bottom(indicator_panel.panel_index))
             else {
                 continue;
             };
 
-            self.for_each_bar_unit_index(scene.x_axis, |series_index, series, x_unit, bar| {
-                if series_index != 0 || !in_visible_range(x_unit) {
-                    return;
-                }
+            frame.with_clip(panel_plot, |frame| {
+                self.for_each_bar_unit_index(scene.x_axis, |series_index, series, x_unit, bar| {
+                    if series_index != 0 || !in_visible_range(x_unit) {
+                        return;
+                    }
 
-                let Some(indicator_data) =
-                    series.indicator_data_for_panel_value_opt(indicator_panel.value_id, bar)
-                else {
-                    return;
-                };
+                    let Some(indicator_data) =
+                        series.indicator_data_for_panel_value_opt(indicator_panel.value_id, bar)
+                    else {
+                        return;
+                    };
 
-                let indicator_value = indicator_data.value();
-                let Some(y_indicator_value) =
-                    scene.map_indicator_plot(indicator_panel.panel_index, indicator_value)
-                else {
-                    return;
-                };
+                    let indicator_value = indicator_data.value();
+                    let Some(y_indicator_value) = scene
+                        .map_indicator_plot_unclamped(indicator_panel.panel_index, indicator_value)
+                    else {
+                        return;
+                    };
 
-                let x_px = scene.map_x_plot(x_unit).round() as i32;
-                let indicator_left = x_px - (indicator_width / 2);
-                let indicator_top = y_indicator_value.min(y_indicator_baseline);
-                let indicator_height = (y_indicator_baseline - y_indicator_value).abs().max(1.0);
+                    let x_plot = scene.map_x_plot(x_unit);
+                    let indicator_left = Self::centered_left_for_width_with_origin(
+                        x_plot,
+                        indicator_width_phys,
+                        horizontal_pixel_ratio,
+                        plot_origin_x_global,
+                    );
+                    let indicator_top = y_indicator_value.min(y_indicator_baseline);
+                    let indicator_height =
+                        (y_indicator_baseline - y_indicator_value).abs().max(1.0);
 
-                if matches!(indicator_panel.data_kind, LayerDataKind::Histogram)
-                    && matches!(
-                        indicator_panel.mark,
-                        MarkKind::Bar(BarMode::Histogram(HistogramMode::SignedOverlay))
-                    )
-                {
-                    if let Some(overlay) = indicator_data.signed_overlay() {
-                        let base_color = if overlay >= 0.0 {
-                            palette.success.base.color
-                        } else {
-                            palette.danger.base.color
-                        };
+                    if matches!(indicator_panel.data_kind, LayerDataKind::Histogram)
+                        && matches!(
+                            indicator_panel.mark,
+                            MarkKind::Bar(BarMode::Histogram(HistogramMode::SignedOverlay))
+                        )
+                    {
+                        if let Some(overlay) = indicator_data.signed_overlay() {
+                            let base_color = if overlay >= 0.0 {
+                                palette.success.base.color
+                            } else {
+                                palette.danger.base.color
+                            };
 
-                        frame.fill_rectangle(
-                            Point::new(indicator_left as f32, indicator_top),
-                            Size::new(indicator_width as f32, indicator_height),
-                            base_color.scale_alpha(0.3),
-                        );
-
-                        let overlay_abs = overlay.abs();
-                        if overlay_abs > 0.0
-                            && let Some(y_overlay) =
-                                scene.map_indicator_plot(indicator_panel.panel_index, overlay_abs)
-                        {
                             frame.fill_rectangle(
-                                Point::new(
-                                    indicator_left as f32,
-                                    y_overlay.min(y_indicator_baseline),
-                                ),
-                                Size::new(
-                                    indicator_width as f32,
-                                    (y_indicator_baseline - y_overlay).abs().max(1.0),
-                                ),
-                                base_color,
+                                Point::new(indicator_left, indicator_top),
+                                Size::new(indicator_width, indicator_height),
+                                base_color.scale_alpha(0.3),
+                            );
+
+                            let overlay_abs = overlay.abs();
+                            if overlay_abs > 0.0
+                                && let Some(y_overlay) = scene.map_indicator_plot_unclamped(
+                                    indicator_panel.panel_index,
+                                    overlay_abs,
+                                )
+                            {
+                                frame.fill_rectangle(
+                                    Point::new(indicator_left, y_overlay.min(y_indicator_baseline)),
+                                    Size::new(
+                                        indicator_width,
+                                        (y_indicator_baseline - y_overlay).abs().max(1.0),
+                                    ),
+                                    base_color,
+                                );
+                            }
+                        } else {
+                            frame.fill_rectangle(
+                                Point::new(indicator_left, indicator_top),
+                                Size::new(indicator_width, indicator_height),
+                                palette.secondary.strong.color,
                             );
                         }
                     } else {
                         frame.fill_rectangle(
-                            Point::new(indicator_left as f32, indicator_top),
-                            Size::new(indicator_width as f32, indicator_height),
-                            palette.secondary.strong.color,
+                            Point::new(indicator_left, indicator_top),
+                            Size::new(indicator_width, indicator_height),
+                            palette.secondary.strong.color.scale_alpha(0.5),
                         );
                     }
-                } else {
-                    frame.fill_rectangle(
-                        Point::new(indicator_left as f32, indicator_top),
-                        Size::new(indicator_width as f32, indicator_height),
-                        palette.secondary.strong.color.scale_alpha(0.5),
-                    );
-                }
+                });
             });
         }
 
@@ -2004,18 +2396,250 @@ where
             && let Some(primary_panel) = self.composition.panel(primary_panel_id)
         {
             let base_series_anchor = scene.series_percent_anchors.first().copied().flatten();
+            let primary_plot = *scene.primary_plot();
 
-            for layer in &primary_panel.layers {
-                let Some(value_id) = layer.source.indicator_value_id() else {
+            frame.with_clip(primary_plot, |frame| {
+                for layer in &primary_panel.layers {
+                    let Some(value_id) = layer.source.indicator_value_id() else {
+                        continue;
+                    };
+
+                    for channel in self
+                        .overlay_channels_for_panel_value(Some(value_id))
+                        .iter()
+                        .copied()
+                    {
+                        let (channel_line_width, channel_line_width_phys) =
+                            Self::quantized_stroke_width(
+                                channel.line_width,
+                                horizontal_pixel_ratio,
+                            );
+                        let mut point_count = 0usize;
+                        let path = canvas::Path::new(|builder| {
+                            self.for_each_bar_unit_index(
+                                scene.x_axis,
+                                |series_index, series, x_unit, bar| {
+                                    if series_index != 0 || !in_visible_range(x_unit) {
+                                        return;
+                                    }
+
+                                    let Some(data) = series
+                                        .indicator_data_for_panel_value_opt(Some(value_id), bar)
+                                    else {
+                                        return;
+                                    };
+
+                                    let Some(value) = Self::overlay_channel_value(data, channel)
+                                    else {
+                                        return;
+                                    };
+
+                                    let point = Point::new(
+                                        Self::snap_plot_x_for_stroke_with_origin(
+                                            scene.map_x_plot(x_unit),
+                                            horizontal_pixel_ratio,
+                                            plot_origin_x_global,
+                                            channel_line_width_phys,
+                                        ),
+                                        Self::snap_stroke_center_with_origin(
+                                            scene.map_primary_plot_with_anchor_unclamped(
+                                                value,
+                                                base_series_anchor,
+                                            ),
+                                            horizontal_pixel_ratio,
+                                            plot_origin_y_global,
+                                            channel_line_width_phys,
+                                        ),
+                                    );
+
+                                    if point_count == 0 {
+                                        builder.move_to(point);
+                                    } else {
+                                        builder.line_to(point);
+                                    }
+                                    point_count += 1;
+                                },
+                            );
+                        });
+
+                        if point_count < 2 {
+                            continue;
+                        }
+
+                        frame.stroke(
+                            &path,
+                            canvas::Stroke::default()
+                                .with_width(channel_line_width)
+                                .with_color(Self::overlay_channel_color(channel, palette)),
+                        );
+                    }
+                }
+            });
+        }
+
+        if matches!(scene.primary_mark, MarkKind::Candle | MarkKind::Bar(_)) {
+            let primary_plot = *scene.primary_plot();
+            frame.with_clip(primary_plot, |frame| {
+                self.for_each_bar_unit_index(scene.x_axis, |series_index, _series, x_unit, bar| {
+                    if series_index != 0 || !in_visible_range(x_unit) {
+                        return;
+                    }
+
+                    let series_anchor = scene.series_percent_anchors.first().copied().flatten();
+                    let y_open = scene
+                        .map_primary_plot_with_anchor_unclamped(bar.open.to_f32(), series_anchor);
+                    let y_high = scene
+                        .map_primary_plot_with_anchor_unclamped(bar.high.to_f32(), series_anchor);
+                    let y_low = scene
+                        .map_primary_plot_with_anchor_unclamped(bar.low.to_f32(), series_anchor);
+                    let y_close = scene
+                        .map_primary_plot_with_anchor_unclamped(bar.close.to_f32(), series_anchor);
+
+                    let color = if bar.close >= bar.open {
+                        palette.success.base.color
+                    } else {
+                        palette.danger.base.color
+                    };
+
+                    let (body_top, body_h) = Self::snapped_span_with_origin(
+                        y_open,
+                        y_close,
+                        horizontal_pixel_ratio,
+                        plot_origin_y_global,
+                    );
+                    let (wick_top, wick_h) = Self::snapped_span_with_origin(
+                        y_high,
+                        y_low,
+                        horizontal_pixel_ratio,
+                        plot_origin_y_global,
+                    );
+
+                    let x_plot = scene.map_x_plot(x_unit);
+                    let candle_left = Self::centered_left_for_width_with_origin(
+                        x_plot,
+                        candle_body_width_phys,
+                        horizontal_pixel_ratio,
+                        plot_origin_x_global,
+                    );
+                    let wick_left = Self::centered_left_for_width_with_origin(
+                        x_plot,
+                        wick_width_phys,
+                        horizontal_pixel_ratio,
+                        plot_origin_x_global,
+                    );
+
+                    frame.fill_rectangle(
+                        Point::new(candle_left, body_top),
+                        Size::new(candle_body_width, body_h),
+                        color,
+                    );
+                    frame.fill_rectangle(
+                        Point::new(wick_left, wick_top),
+                        Size::new(wick_width, wick_h),
+                        color.scale_alpha(0.85),
+                    );
+                });
+            });
+        }
+
+        let primary_plot = *scene.primary_plot();
+        frame.with_clip(primary_plot, |frame| {
+            for series_index in 0..self.series.len() {
+                let is_base_series = series_index == 0;
+                let requested_line_width = if is_base_series { 1.5 } else { 1.3 };
+                let (line_width, line_width_phys) =
+                    Self::quantized_stroke_width(requested_line_width, horizontal_pixel_ratio);
+                let mut point_count = 0usize;
+
+                let path = canvas::Path::new(|builder| {
+                    self.for_each_bar_unit_index(
+                        scene.x_axis,
+                        |iter_series_index, _series, x_unit, bar| {
+                            if iter_series_index != series_index || !in_visible_range(x_unit) {
+                                return;
+                            }
+
+                            let is_base_series = iter_series_index == 0;
+                            if is_base_series && !matches!(scene.primary_mark, MarkKind::Line) {
+                                return;
+                            }
+
+                            let series_anchor = scene
+                                .series_percent_anchors
+                                .get(iter_series_index)
+                                .copied()
+                                .flatten();
+                            let point = Point::new(
+                                Self::snap_plot_x_for_stroke_with_origin(
+                                    scene.map_x_plot(x_unit),
+                                    horizontal_pixel_ratio,
+                                    plot_origin_x_global,
+                                    line_width_phys,
+                                ),
+                                Self::snap_stroke_center_with_origin(
+                                    scene.map_primary_plot_with_anchor_unclamped(
+                                        bar.close.to_f32(),
+                                        series_anchor,
+                                    ),
+                                    horizontal_pixel_ratio,
+                                    plot_origin_y_global,
+                                    line_width_phys,
+                                ),
+                            );
+
+                            if point_count == 0 {
+                                builder.move_to(point);
+                            } else {
+                                builder.line_to(point);
+                            }
+                            point_count += 1;
+                        },
+                    );
+                });
+
+                if point_count < 2 {
                     continue;
+                }
+
+                let line_color = if is_base_series {
+                    palette.background.base.text.scale_alpha(0.85)
+                } else {
+                    let ticker = self.series[series_index].ticker_info();
+                    Self::comparison_line_color(ticker).scale_alpha(0.96)
                 };
 
+                frame.stroke(
+                    &path,
+                    canvas::Stroke::default()
+                        .with_width(line_width)
+                        .with_color(line_color),
+                );
+            }
+        });
+
+        for indicator_panel in &scene.indicator_panels {
+            if !matches!(indicator_panel.mark, MarkKind::Line) {
+                continue;
+            }
+
+            let Some(panel_plot) = scene
+                .layout
+                .panel(indicator_panel.panel_index)
+                .map(|panel| panel.plot)
+            else {
+                continue;
+            };
+
+            frame.with_clip(panel_plot, |frame| {
                 for channel in self
-                    .overlay_channels_for_panel_value(Some(value_id))
+                    .overlay_channels_for_panel_value(indicator_panel.value_id)
                     .iter()
                     .copied()
                 {
+                    let (channel_line_width, channel_line_width_phys) =
+                        Self::quantized_stroke_width(channel.line_width, horizontal_pixel_ratio);
                     let mut point_count = 0usize;
+
                     let path = canvas::Path::new(|builder| {
                         self.for_each_bar_unit_index(
                             scene.x_axis,
@@ -2024,21 +2648,42 @@ where
                                     return;
                                 }
 
-                                let Some(data) =
-                                    series.indicator_data_for_panel_value_opt(Some(value_id), bar)
+                                let Some(indicator_data) = series
+                                    .indicator_data_for_panel_value_opt(
+                                        indicator_panel.value_id,
+                                        bar,
+                                    )
                                 else {
                                     return;
                                 };
 
-                                let Some(value) = Self::overlay_channel_value(data, channel) else {
+                                let Some(channel_value) =
+                                    Self::overlay_channel_value(indicator_data, channel)
+                                else {
+                                    return;
+                                };
+
+                                let Some(y_channel_value) = scene.map_indicator_plot_unclamped(
+                                    indicator_panel.panel_index,
+                                    channel_value,
+                                ) else {
                                     return;
                                 };
 
                                 let point = Point::new(
-                                    scene.map_x_plot(x_unit),
-                                    scene.map_primary_plot_with_anchor(value, base_series_anchor),
+                                    Self::snap_plot_x_for_stroke_with_origin(
+                                        scene.map_x_plot(x_unit),
+                                        horizontal_pixel_ratio,
+                                        plot_origin_x_global,
+                                        channel_line_width_phys,
+                                    ),
+                                    Self::snap_stroke_center_with_origin(
+                                        y_channel_value,
+                                        horizontal_pixel_ratio,
+                                        plot_origin_y_global,
+                                        channel_line_width_phys,
+                                    ),
                                 );
-
                                 if point_count == 0 {
                                     builder.move_to(point);
                                 } else {
@@ -2056,170 +2701,11 @@ where
                     frame.stroke(
                         &path,
                         canvas::Stroke::default()
-                            .with_width(channel.line_width)
+                            .with_width(channel_line_width)
                             .with_color(Self::overlay_channel_color(channel, palette)),
                     );
                 }
-            }
-        }
-
-        if matches!(scene.primary_mark, MarkKind::Candle | MarkKind::Bar(_)) {
-            self.for_each_bar_unit_index(scene.x_axis, |series_index, _series, x_unit, bar| {
-                if series_index != 0 || !in_visible_range(x_unit) {
-                    return;
-                }
-
-                let series_anchor = scene.series_percent_anchors.first().copied().flatten();
-                let y_open = scene.map_primary_plot_with_anchor(bar.open.to_f32(), series_anchor);
-                let y_high = scene.map_primary_plot_with_anchor(bar.high.to_f32(), series_anchor);
-                let y_low = scene.map_primary_plot_with_anchor(bar.low.to_f32(), series_anchor);
-                let y_close = scene.map_primary_plot_with_anchor(bar.close.to_f32(), series_anchor);
-
-                let color = if bar.close >= bar.open {
-                    palette.success.base.color
-                } else {
-                    palette.danger.base.color
-                };
-
-                let x_px = scene.map_x_plot(x_unit).round() as i32;
-                let body_top = y_open.min(y_close);
-                let body_h = (y_open - y_close).abs().max(1.0);
-                let candle_width_px = candle_width as f32;
-                let candle_left = (x_px as f32) - (candle_width_px * 0.5);
-                let wick_w = ((candle_width_px * 0.16).round() as i32).clamp(1, 2);
-                let wick_width_px = wick_w as f32;
-                let wick_left = candle_left + ((candle_width_px - wick_width_px) * 0.5);
-
-                frame.fill_rectangle(
-                    Point::new(candle_left, body_top),
-                    Size::new(candle_width_px, body_h),
-                    color,
-                );
-                frame.fill_rectangle(
-                    Point::new(wick_left, y_high.min(y_low)),
-                    Size::new(wick_width_px, (y_high - y_low).abs().max(1.0)),
-                    color.scale_alpha(0.85),
-                );
             });
-        }
-
-        for series_index in 0..self.series.len() {
-            let mut point_count = 0usize;
-
-            let path = canvas::Path::new(|builder| {
-                self.for_each_bar_unit_index(
-                    scene.x_axis,
-                    |iter_series_index, _series, x_unit, bar| {
-                        if iter_series_index != series_index || !in_visible_range(x_unit) {
-                            return;
-                        }
-
-                        let is_base_series = iter_series_index == 0;
-                        if is_base_series && !matches!(scene.primary_mark, MarkKind::Line) {
-                            return;
-                        }
-
-                        let series_anchor = scene
-                            .series_percent_anchors
-                            .get(iter_series_index)
-                            .copied()
-                            .flatten();
-                        let point = Point::new(
-                            scene.map_x_plot(x_unit),
-                            scene.map_primary_plot_with_anchor(bar.close.to_f32(), series_anchor),
-                        );
-
-                        if point_count == 0 {
-                            builder.move_to(point);
-                        } else {
-                            builder.line_to(point);
-                        }
-                        point_count += 1;
-                    },
-                );
-            });
-
-            if point_count < 2 {
-                continue;
-            }
-
-            let is_base_series = series_index == 0;
-            let line_color = if is_base_series {
-                palette.background.base.text.scale_alpha(0.85)
-            } else {
-                let ticker = self.series[series_index].ticker_info();
-                Self::comparison_line_color(ticker).scale_alpha(0.96)
-            };
-
-            let line_width = if is_base_series { 1.5 } else { 1.3 };
-            frame.stroke(
-                &path,
-                canvas::Stroke::default()
-                    .with_width(line_width)
-                    .with_color(line_color),
-            );
-        }
-
-        for indicator_panel in &scene.indicator_panels {
-            if !matches!(indicator_panel.mark, MarkKind::Line) {
-                continue;
-            }
-
-            for channel in self
-                .overlay_channels_for_panel_value(indicator_panel.value_id)
-                .iter()
-                .copied()
-            {
-                let mut point_count = 0usize;
-
-                let path = canvas::Path::new(|builder| {
-                    self.for_each_bar_unit_index(
-                        scene.x_axis,
-                        |series_index, series, x_unit, bar| {
-                            if series_index != 0 || !in_visible_range(x_unit) {
-                                return;
-                            }
-
-                            let Some(indicator_data) = series
-                                .indicator_data_for_panel_value_opt(indicator_panel.value_id, bar)
-                            else {
-                                return;
-                            };
-
-                            let Some(channel_value) =
-                                Self::overlay_channel_value(indicator_data, channel)
-                            else {
-                                return;
-                            };
-
-                            let Some(y_channel_value) = scene
-                                .map_indicator_plot(indicator_panel.panel_index, channel_value)
-                            else {
-                                return;
-                            };
-
-                            let point = Point::new(scene.map_x_plot(x_unit), y_channel_value);
-                            if point_count == 0 {
-                                builder.move_to(point);
-                            } else {
-                                builder.line_to(point);
-                            }
-                            point_count += 1;
-                        },
-                    );
-                });
-
-                if point_count < 2 {
-                    continue;
-                }
-
-                frame.stroke(
-                    &path,
-                    canvas::Stroke::default()
-                        .with_width(channel.line_width)
-                        .with_color(Self::overlay_channel_color(channel, palette)),
-                );
-            }
         }
 
         self.fill_panel_titles(frame, scene, palette);
@@ -2272,7 +2758,7 @@ where
             for tick in ticks {
                 let tick_unit = YUnit(tick);
                 let value = self.panel_unit_to_value(primary_precision, tick_unit);
-                let y = scene.map_primary_plot_unit(tick_unit);
+                let y = scene.map_primary_plot_unit_clamped(tick_unit);
                 let text = scene.format_primary_axis_label(value, step_value);
 
                 frame.fill_text(canvas::Text {
@@ -2336,7 +2822,7 @@ where
 
             for tick in ticks {
                 let tick_unit = YUnit(tick);
-                let Some(y) = scene.map_indicator_plot_unit(panel_index, tick_unit) else {
+                let Some(y) = scene.map_indicator_plot_unit_clamped(panel_index, tick_unit) else {
                     continue;
                 };
 
@@ -2359,6 +2845,7 @@ where
     }
 
     fn fill_x_axis_labels(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
+        let horizontal_pixel_ratio = self.resolved_horizontal_pixel_ratio();
         let plot_width = scene.x_axis_plot_width();
         let (ticks, step_units) = super::unit_ticks(
             scene.min_x_unit,
@@ -2388,7 +2875,7 @@ where
 
         frame.with_clip(clip_region, |frame| {
             for tick in ticks_with_bounds {
-                let x = scene.map_x_plot(tick);
+                let x = Self::snap_plot_x_to_cell(scene.map_x_plot(tick), horizontal_pixel_ratio);
                 let label = self.format_x_label(scene.x_axis, tick, step_units);
 
                 frame.fill_text(canvas::Text {
@@ -2405,7 +2892,14 @@ where
         });
     }
 
-    fn fill_overlay(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
+    fn fill_overlay(
+        &self,
+        frame: &mut canvas::Frame,
+        scene: &Scene,
+        palette: &Extended,
+        overlay_origin_in_window: Point,
+    ) {
+        let horizontal_pixel_ratio = self.resolved_horizontal_pixel_ratio();
         self.fill_corner_controls(frame, scene, palette);
         self.fill_panel_controls(frame, scene, palette);
         self.fill_primary_ticker_legend(frame, scene, palette);
@@ -2416,7 +2910,13 @@ where
         }
 
         if self.drawings.has_state() {
-            self.fill_drawings(frame, scene, palette);
+            self.fill_drawings(
+                frame,
+                scene,
+                palette,
+                overlay_origin_in_window,
+                horizontal_pixel_ratio,
+            );
         }
 
         if scene.hovered_control.is_some()
@@ -2431,8 +2931,17 @@ where
         };
 
         let line_color = palette.background.base.text.scale_alpha(0.35);
+        let (crosshair_width, crosshair_width_phys) =
+            Self::quantized_stroke_width(1.0, horizontal_pixel_ratio);
 
-        let gx = scene.layout.regions.plot.x + cursor.x_plot;
+        let plot_origin_x_global = overlay_origin_in_window.x + scene.layout.regions.plot.x;
+        let gx = scene.layout.regions.plot.x
+            + Self::snap_plot_x_for_stroke_with_origin(
+                cursor.x_plot,
+                horizontal_pixel_ratio,
+                plot_origin_x_global,
+                crosshair_width_phys,
+            );
         let panel_plot = scene
             .layout
             .panel(cursor.panel_index)
@@ -2442,12 +2951,17 @@ where
             scene.layout.regions.plot.y + panel_plot.y,
             scene.layout.regions.plot.y + panel_plot.y + panel_plot.height,
         );
-        let gy =
-            (scene.layout.regions.plot.y + cursor.y_plot).clamp(panel_bounds.0, panel_bounds.1);
+        let gy = Self::snap_stroke_center_with_origin(
+            scene.layout.regions.plot.y + cursor.y_plot,
+            horizontal_pixel_ratio,
+            overlay_origin_in_window.y,
+            crosshair_width_phys,
+        )
+        .clamp(panel_bounds.0, panel_bounds.1);
 
         let stroke = canvas::Stroke::default()
             .with_color(line_color)
-            .with_width(1.0);
+            .with_width(crosshair_width);
 
         frame.stroke(
             &canvas::Path::line(
@@ -2520,11 +3034,13 @@ where
         }
 
         let x_text = self.format_x_label(scene.x_axis, cursor.x_unit, 1);
+        let horizontal_pixel_ratio = self.resolved_horizontal_pixel_ratio();
         self.draw_x_axis_badge(
             frame,
             scene,
             palette,
-            scene.layout.regions.plot.x + cursor.x_plot,
+            scene.layout.regions.plot.x
+                + Self::snap_plot_x_to_cell(cursor.x_plot, horizontal_pixel_ratio),
             &x_text,
         );
     }
@@ -3205,9 +3721,11 @@ where
 
         renderer.with_translation(Vector::new(bounds.x, bounds.y), |r| {
             let plot_rect = scene.plot_rect();
+            let plot_origin_in_window = Point::new(bounds.x + plot_rect.x, bounds.y + plot_rect.y);
+            let overlay_origin_in_window = Point::new(bounds.x, bounds.y);
 
             let plot_geom = state.plot_cache.draw(r, plot_rect.size(), |frame| {
-                self.fill_main_geometry(frame, &scene, palette);
+                self.fill_main_geometry(frame, &scene, palette, plot_origin_in_window);
             });
 
             let splitter_color = palette.background.strong.color.scale_alpha(0.25);
@@ -3267,7 +3785,7 @@ where
             });
 
             let overlay_geom = state.overlay_cache.draw(r, bounds.size(), |frame| {
-                self.fill_overlay(frame, &scene, palette);
+                self.fill_overlay(frame, &scene, palette, overlay_origin_in_window);
             });
 
             let interaction_text_geom =

@@ -587,6 +587,7 @@ impl State {
         window: window::Id,
         main_window: &'a Window,
         timezone: UserTimezone,
+        horizontal_pixel_ratio: f32,
         tickers_table: &'a TickersTable,
     ) -> pane_grid::Content<'a, Message, Theme, Renderer> {
         let mut top_left_buttons = if Content::Starter == self.content {
@@ -1061,9 +1062,11 @@ impl State {
 
                     top_left_buttons = top_left_buttons.push(modifiers);
 
-                    let base = chart.view(timezone).map(move |message| {
-                        Message::PaneEvent(id, Event::KlineV2Interaction(message))
-                    });
+                    let base = chart
+                        .view(timezone, horizontal_pixel_ratio)
+                        .map(move |message| {
+                            Message::PaneEvent(id, Event::KlineV2Interaction(message))
+                        });
 
                     self.compose_stack_view(
                         base,

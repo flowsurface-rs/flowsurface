@@ -617,6 +617,7 @@ impl Dashboard {
         main_window: &'a Window,
         tickers_table: &'a TickersTable,
         timezone: UserTimezone,
+        horizontal_pixel_ratio: f32,
     ) -> Element<'a, Message> {
         let pane_grid: Element<_> = PaneGrid::new(&self.panes, |id, pane, maximized| {
             let is_focused = self.focus == Some((main_window.id, id));
@@ -628,6 +629,7 @@ impl Dashboard {
                 main_window.id,
                 main_window,
                 timezone,
+                horizontal_pixel_ratio,
                 tickers_table,
             )
         })
@@ -648,6 +650,7 @@ impl Dashboard {
         main_window: &'a Window,
         tickers_table: &'a TickersTable,
         timezone: UserTimezone,
+        horizontal_pixel_ratio: f32,
     ) -> Element<'a, Message> {
         if let Some((state, _)) = self.popout.get(&window) {
             let content = container(
@@ -661,6 +664,7 @@ impl Dashboard {
                         window,
                         main_window,
                         timezone,
+                        horizontal_pixel_ratio,
                         tickers_table,
                     )
                 })

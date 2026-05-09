@@ -458,7 +458,11 @@ impl KlineChartV2 {
         None
     }
 
-    pub fn view(&self, timezone: data::UserTimezone) -> iced::Element<'_, Message> {
+    pub fn view(
+        &self,
+        timezone: data::UserTimezone,
+        horizontal_pixel_ratio: f32,
+    ) -> iced::Element<'_, Message> {
         if self.series.iter().all(|series| series.bars.is_empty()) {
             return iced::widget::center(iced::widget::text("Waiting for data...").size(16)).into();
         }
@@ -469,6 +473,7 @@ impl KlineChartV2 {
                 .with_basis(self.basis)
                 .with_horizontal_scale(self.horizontal_scale)
                 .with_horizontal_offset(self.horizontal_offset)
+                .with_horizontal_pixel_ratio(horizontal_pixel_ratio)
                 .with_primary_autoscale(self.primary_autoscale)
                 .with_panel_y_viewports(&self.panel_y_viewports)
                 .with_drawing_snapshot(self.drawing.snapshot())

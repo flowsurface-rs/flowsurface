@@ -63,6 +63,7 @@ fn main() {
 
 struct Flowsurface {
     main_window: window::Window,
+    window_scale_factors: HashMap<window::Id, f32>,
     sidebar: dashboard::Sidebar,
     handles: exchange::adapter::AdapterHandles,
     layout_manager: LayoutManager,
@@ -88,6 +89,10 @@ enum Message {
     },
     Tick(std::time::Instant),
     WindowEvent(window::Event),
+    WindowScaleFactorUpdated {
+        window: window::Id,
+        scale_factor: f32,
+    },
     ExitRequested(HashMap<window::Id, WindowSpec>),
     RestartRequested(Option<HashMap<window::Id, WindowSpec>>),
     SaveStateRequested(HashMap<window::Id, WindowSpec>),
@@ -133,6 +138,7 @@ impl Flowsurface {
 
         let mut state = Self {
             main_window: window::Window::new(main_window_id),
+            window_scale_factors: HashMap::from([(main_window_id, 1.0)]),
             layout_manager: saved_state.layout_manager,
             theme_editor: ThemeEditor::new(saved_state.custom_theme),
             audio_stream,
@@ -163,10 +169,18 @@ impl Flowsurface {
         );
         let load_layout = state.load_layout(active_layout_id.unique, main_window_id);
 
+        let open_main_window = open_main_window.then(|window_id| {
+            window::scale_factor(window_id, |window, scale_factor| {
+                Message::WindowScaleFactorUpdated {
+                    window,
+                    scale_factor,
+                }
+            })
+        });
+
         (
             state,
             open_main_window
-                .discard()
                 .chain(load_layout)
                 .chain(launch_sidebar.map(Message::Sidebar)),
         )
@@ -230,14 +244,30 @@ impl Flowsurface {
                     });
             }
             Message::WindowEvent(event) => match event {
+                window::Event::Opened(window) => {
+                    return window::scale_factor(window, |window, scale_factor| {
+                        Message::WindowScaleFactorUpdated {
+                            window,
+                            scale_factor,
+                        }
+                    });
+                }
+                window::Event::Rescaled(window, scale_factor) => {
+                    self.window_scale_factors
+                        .insert(window, Self::sanitize_positive_scale(scale_factor));
+                }
                 window::Event::CloseRequested(window) => {
                     let main_window = self.main_window.id;
-                    let dashboard = self.active_dashboard_mut();
 
                     if window != main_window {
+                        self.window_scale_factors.remove(&window);
+
+                        let dashboard = self.active_dashboard_mut();
                         dashboard.popout.remove(&window);
                         return window::close(window);
                     }
+
+                    let dashboard = self.active_dashboard_mut();
 
                     let mut active_windows = dashboard
                         .popout
@@ -249,6 +279,13 @@ impl Flowsurface {
                     return window::collect_window_specs(active_windows, Message::ExitRequested);
                 }
             },
+            Message::WindowScaleFactorUpdated {
+                window,
+                scale_factor,
+            } => {
+                self.window_scale_factors
+                    .insert(window, Self::sanitize_positive_scale(scale_factor));
+            }
             Message::ExitRequested(windows) => {
                 self.save_state_to_disk(&windows);
                 return iced::exit();
@@ -639,6 +676,7 @@ impl Flowsurface {
     fn view(&self, id: window::Id) -> Element<'_, Message> {
         let dashboard = self.active_dashboard();
         let sidebar_pos = self.sidebar.position();
+        let horizontal_pixel_ratio = self.horizontal_pixel_ratio_for_window(id);
 
         let tickers_table = &self.sidebar.tickers_table;
 
@@ -649,7 +687,12 @@ impl Flowsurface {
                 .map(Message::Sidebar);
 
             let dashboard_view = dashboard
-                .view(&self.main_window, tickers_table, self.timezone)
+                .view(
+                    &self.main_window,
+                    tickers_table,
+                    self.timezone,
+                    horizontal_pixel_ratio,
+                )
                 .map(move |msg| Message::Dashboard {
                     layout_id: None,
                     event: msg,
@@ -695,7 +738,13 @@ impl Flowsurface {
         } else {
             container(
                 dashboard
-                    .view_window(id, &self.main_window, tickers_table, self.timezone)
+                    .view_window(
+                        id,
+                        &self.main_window,
+                        tickers_table,
+                        self.timezone,
+                        horizontal_pixel_ratio,
+                    )
                     .map(move |msg| Message::Dashboard {
                         layout_id: None,
                         event: msg,
@@ -731,6 +780,26 @@ impl Flowsurface {
 
     fn scale_factor(&self, _window: window::Id) -> f32 {
         self.ui_scale_factor.into()
+    }
+
+    fn sanitize_positive_scale(value: f32) -> f32 {
+        if value.is_finite() && value > 0.0 {
+            value
+        } else {
+            1.0
+        }
+    }
+
+    fn horizontal_pixel_ratio_for_window(&self, window_id: window::Id) -> f32 {
+        let ui_scale: f32 = Self::sanitize_positive_scale(self.ui_scale_factor.into());
+        let os_scale = self
+            .window_scale_factors
+            .get(&window_id)
+            .copied()
+            .map(Self::sanitize_positive_scale)
+            .unwrap_or(1.0);
+
+        Self::sanitize_positive_scale(ui_scale * os_scale)
     }
 
     fn subscription(&self) -> Subscription<Message> {
