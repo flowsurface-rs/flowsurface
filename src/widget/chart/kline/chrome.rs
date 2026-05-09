@@ -7,6 +7,7 @@ use super::{
     TICKER_LEGEND_PADDING, TICKER_LEGEND_ROW_H, TICKER_LEGEND_TOP_OFFSET,
 };
 use crate::style;
+use crate::widget::chart::kline::PanelInteraction;
 use crate::widget::chart::kline::composition::{MarkKind, PanelScaleMode};
 
 use exchange::TickerInfo;
@@ -31,11 +32,11 @@ impl PanelControlKind {
         }
     }
 
-    pub(super) fn into_event(self, index: usize) -> KlineWidgetEvent {
+    pub(super) fn into_interaction_kind(self, index: usize) -> PanelInteraction {
         match self {
-            Self::MoveUp => KlineWidgetEvent::PanelMoveUp { index },
-            Self::MoveDown => KlineWidgetEvent::PanelMoveDown { index },
-            Self::Close => KlineWidgetEvent::PanelClose { index },
+            Self::MoveUp => PanelInteraction::MoveUp { index },
+            Self::MoveDown => PanelInteraction::MoveDown { index },
+            Self::Close => PanelInteraction::Close { index },
         }
     }
 }

@@ -4,8 +4,8 @@ use super::chrome::{
 use super::coord::{ChartCoord, ChartStepMs, RoundedOffsetUnits};
 use super::layout::{LayoutHitZone, PanelLayoutTree};
 use super::{
-    BarSpacingPx, HorizontalScale, KlinePanelKind, KlineSeriesLike, KlineWidget,
-    MAX_BAR_SPACING_PX, MIN_BAR_SPACING_PX, PanelYViewport, YUnit,
+    BarSpacingPx, HorizontalScale, KlinePanelKind, KlineSeriesLike, KlineWidget, PanelYViewport,
+    YUnit,
 };
 use crate::widget::chart::kline::composition::{
     BarMode, HistogramMode, LayerDataKind, MarkKind, PanelScaleMode, PanelValueId,
@@ -997,9 +997,7 @@ where
 
     pub(super) fn normalize_horizontal_scale(&self, scale: HorizontalScale) -> HorizontalScale {
         HorizontalScale::pixels_per_bar(
-            scale
-                .as_pixels_per_bar()
-                .clamp(MIN_BAR_SPACING_PX, MAX_BAR_SPACING_PX),
+            BarSpacingPx::from_logical(scale.as_pixels_per_bar()).as_f32(),
         )
     }
 
@@ -1021,23 +1019,13 @@ where
     pub(super) fn step_horizontal_scale_percent(
         &self,
         current: HorizontalScale,
-        zoom_in: bool,
+        zoom_scale: f32,
     ) -> HorizontalScale {
-        let current_px = BarSpacingPx::from_logical(
-            self.normalize_horizontal_scale(current).as_pixels_per_bar(),
-        )
-        .as_i32();
+        let current_spacing = self.normalize_horizontal_scale(current).as_pixels_per_bar();
+        let zoom_scale = zoom_scale.clamp(-1.0, 1.0);
+        let next_spacing = current_spacing + zoom_scale * (current_spacing / 10.0);
 
-        let min_px = MIN_BAR_SPACING_PX.ceil() as i32;
-        let max_px = MAX_BAR_SPACING_PX.floor() as i32;
-
-        let next_px = if zoom_in {
-            current_px.saturating_add(1).min(max_px)
-        } else {
-            current_px.saturating_sub(1).max(min_px)
-        };
-
-        HorizontalScale::pixels_per_bar(next_px as f32)
+        self.normalize_horizontal_scale(HorizontalScale::pixels_per_bar(next_spacing))
     }
 
     pub(super) fn for_each_bar_unit_index(

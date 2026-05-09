@@ -1,4 +1,5 @@
 use crate::connector::fetcher::{FetchRange, FetchSpec, RequestHandler};
+use crate::widget::chart::kline::PanelInteraction;
 use crate::widget::chart::kline::composition::{
     BarMode, ChartComposition, DEFAULT_MIN_PANEL_RATIO, DataSourceId, HistogramMode, LayerDataKind,
     LayerId, LayerSource, MarkKind, PanelId, PanelRole, PanelScaleMode, PanelValueId,
@@ -289,13 +290,97 @@ impl KlineChartV2 {
                 self.apply_drawing_update(update);
             }
             Message::Chart(event) => {
-                if let KlineWidgetEvent::Drawing(drawing_event) = &event {
-                    let update = self.drawing.handle_widget_drawing_event(*drawing_event);
-                    self.apply_drawing_update(update);
-                    return None;
-                }
-
                 match event {
+                    KlineWidgetEvent::Drawing(event) => {
+                        let update = self.drawing.handle_widget_drawing_event(event);
+                        self.apply_drawing_update(update);
+                    }
+                    KlineWidgetEvent::PanelInteraction(interaction) => {
+                        match interaction {
+                            PanelInteraction::YViewportChanged { panel_id, viewport } => {
+                                if let Some(primary_id) = self.composition.primary_panel_id()
+                                    && primary_id == panel_id
+                                {
+                                    if matches!(
+                                        self.composition.panel_effective_scale_mode(primary_id),
+                                        Some(PanelScaleMode::PercentFromBase)
+                                    ) {
+                                        return None;
+                                    }
+
+                                    if self.primary_autoscale {
+                                        self.primary_autoscale = false;
+                                    }
+                                }
+
+                                if self.set_panel_y_viewport(panel_id, viewport) {
+                                    self.bump_rev();
+                                }
+                            }
+                            PanelInteraction::YViewportReset { panel_id } => {
+                                if let Some(primary_id) = self.composition.primary_panel_id()
+                                    && primary_id == panel_id
+                                {
+                                    if matches!(
+                                        self.composition.panel_effective_scale_mode(primary_id),
+                                        Some(PanelScaleMode::PercentFromBase)
+                                    ) {
+                                        return None;
+                                    }
+
+                                    if !self.primary_autoscale {
+                                        self.primary_autoscale = true;
+                                    }
+                                }
+
+                                if self.reset_panel_y_viewport(panel_id) {
+                                    self.bump_rev();
+                                }
+                            }
+                            PanelInteraction::SplitChanged { index, split } => {
+                                if self
+                                    .composition
+                                    .set_split(index, split, DEFAULT_MIN_PANEL_RATIO)
+                                {
+                                    self.bump_rev();
+                                }
+                            }
+                            PanelInteraction::MoveUp { index } => {
+                                if index > 0 && self.composition.move_panel(index, index - 1) {
+                                    self.bump_rev();
+                                }
+                            }
+                            PanelInteraction::MoveDown { index } => {
+                                let target = index.saturating_add(1);
+                                if target < self.composition.panels.len()
+                                    && self.composition.move_panel(index, target)
+                                {
+                                    self.bump_rev();
+                                }
+                            }
+                            PanelInteraction::Settings { .. } => {
+                                // TODO: Hook for upcoming panel settings modal/workflow.
+                            }
+                            PanelInteraction::Close { index } => {
+                                if let Some((panel_id, panel_role)) = self
+                                    .composition
+                                    .panels
+                                    .get(index)
+                                    .map(|panel| (panel.id, panel.role))
+                                    && !matches!(panel_role, PanelRole::Primary)
+                                {
+                                    // Remove panel-local drawings while panel coordinates are still valid.
+                                    let _ = self.drawing.prune_panel_drawings(panel_id);
+
+                                    if self.composition.remove_panel(panel_id) {
+                                        let _ = self.reset_panel_y_viewport(panel_id);
+                                        self.prune_stale_indicator_panel_bindings();
+                                        self.bump_rev();
+                                    }
+                                }
+                            }
+                        }
+                    }
                     KlineWidgetEvent::HorizontalScaleChanged(scale) => {
                         self.horizontal_scale = scale;
                         self.bump_rev();
@@ -358,100 +443,19 @@ impl KlineChartV2 {
                             self.bump_rev();
                         }
                     }
-                    KlineWidgetEvent::PanelYViewportChanged { panel_id, viewport } => {
-                        if let Some(primary_id) = self.composition.primary_panel_id()
-                            && primary_id == panel_id
-                        {
-                            if matches!(
-                                self.composition.panel_effective_scale_mode(primary_id),
-                                Some(PanelScaleMode::PercentFromBase)
-                            ) {
-                                return None;
-                            }
-
-                            if self.primary_autoscale {
-                                self.primary_autoscale = false;
-                            }
-                        }
-
-                        if self.set_panel_y_viewport(panel_id, viewport) {
-                            self.bump_rev();
-                        }
-                    }
-                    KlineWidgetEvent::PanelYViewportReset { panel_id } => {
-                        if let Some(primary_id) = self.composition.primary_panel_id()
-                            && primary_id == panel_id
-                        {
-                            if matches!(
-                                self.composition.panel_effective_scale_mode(primary_id),
-                                Some(PanelScaleMode::PercentFromBase)
-                            ) {
-                                return None;
-                            }
-
-                            if !self.primary_autoscale {
-                                self.primary_autoscale = true;
-                            }
-                        }
-
-                        if self.reset_panel_y_viewport(panel_id) {
-                            self.bump_rev();
-                        }
-                    }
-                    KlineWidgetEvent::PanelSplitChanged { index, split }
-                        if self
-                            .composition
-                            .set_split(index, split, DEFAULT_MIN_PANEL_RATIO) =>
-                    {
-                        self.bump_rev();
-                    }
-                    KlineWidgetEvent::PanelMoveUp { index }
-                        if index > 0 && self.composition.move_panel(index, index - 1) =>
-                    {
-                        self.bump_rev();
-                    }
-                    KlineWidgetEvent::PanelMoveDown { index } => {
-                        let target = index.saturating_add(1);
-                        if target < self.composition.panels.len()
-                            && self.composition.move_panel(index, target)
-                        {
-                            self.bump_rev();
-                        }
-                    }
-                    KlineWidgetEvent::PanelSettings { .. } => {
-                        // TODO: Hook for upcoming panel settings modal/workflow.
-                    }
-                    KlineWidgetEvent::PanelClose { index } => {
-                        if let Some((panel_id, panel_role)) = self
-                            .composition
-                            .panels
-                            .get(index)
-                            .map(|panel| (panel.id, panel.role))
-                            && !matches!(panel_role, PanelRole::Primary)
-                        {
-                            // Remove panel-local drawings while panel coordinates are still valid.
-                            let _ = self.drawing.prune_panel_drawings(panel_id);
-
-                            if self.composition.remove_panel(panel_id) {
-                                let _ = self.reset_panel_y_viewport(panel_id);
-                                self.prune_stale_indicator_panel_bindings();
-                                self.bump_rev();
-                            }
-                        }
-                    }
                     KlineWidgetEvent::TickerSettings(_ticker) => {
                         // Hook for ticker-specific settings editor.
                     }
                     KlineWidgetEvent::TickerRemove(ticker) if ticker != self.base_ticker => {
                         return Some(Action::RemoveSeries(ticker));
                     }
+                    KlineWidgetEvent::TickerRemove(_ticker) => {}
                     KlineWidgetEvent::XAxisDoubleClick => {
                         self.horizontal_scale =
                             HorizontalScale::pixels_per_bar(DEFAULT_BAR_SPACING_PX);
                         self.horizontal_offset = DEFAULT_HORIZONTAL_OFFSET_UNITS;
                         self.bump_rev();
                     }
-                    _ => {}
                 }
             }
         }

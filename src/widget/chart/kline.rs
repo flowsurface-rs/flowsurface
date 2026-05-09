@@ -59,6 +59,13 @@ const DRAWING_HANDLE_HIT_RADIUS_PX: f32 = 8.0;
 pub const DEFAULT_BAR_SPACING_PX: f32 = 5.0;
 pub const MIN_BAR_SPACING_PX: f32 = 2.0;
 pub const MAX_BAR_SPACING_PX: f32 = 48.0;
+const BAR_SPACING_SUBPIXEL_UNITS_PER_PX: i32 = 128;
+const BAR_SPACING_QUANTUM_PX: f32 = 1.0 / BAR_SPACING_SUBPIXEL_UNITS_PER_PX as f32;
+const HORIZONTAL_ZOOM_LINE_DELTA_MODE_ADJUSTMENT: f32 = 32.0;
+const HORIZONTAL_ZOOM_PIXEL_DELTA_MODE_ADJUSTMENT: f32 = 1.0;
+const HORIZONTAL_ZOOM_DELTA_NORMALIZATION: f32 = 100.0;
+const HORIZONTAL_ZOOM_MAX_ACCUMULATED_CHUNKS_PER_EVENT: usize = 8;
+const HORIZONTAL_ZOOM_MAX_ACCUMULATED_DELTA: f32 = 8.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HorizontalScale(pub f32);
@@ -150,21 +157,28 @@ pub struct YUnit(pub i64);
 struct BarSpacingPx(i32);
 
 impl BarSpacingPx {
-    fn from_logical(px: f32) -> Self {
-        let snapped = px
-            .clamp(MIN_BAR_SPACING_PX, MAX_BAR_SPACING_PX)
-            .round()
-            .max(1.0) as i32;
-
-        Self(snapped.max(1))
+    fn min_units() -> i32 {
+        ((MIN_BAR_SPACING_PX / BAR_SPACING_QUANTUM_PX).ceil() as i32).max(1)
     }
 
-    fn as_i32(self) -> i32 {
-        self.0
+    fn max_units() -> i32 {
+        ((MAX_BAR_SPACING_PX / BAR_SPACING_QUANTUM_PX).floor() as i32).max(Self::min_units())
+    }
+
+    fn from_units(units: i32) -> Self {
+        Self(units.clamp(Self::min_units(), Self::max_units()))
+    }
+
+    fn from_logical(px: f32) -> Self {
+        let quantized_units = (px.clamp(MIN_BAR_SPACING_PX, MAX_BAR_SPACING_PX)
+            / BAR_SPACING_QUANTUM_PX)
+            .round() as i32;
+
+        Self::from_units(quantized_units)
     }
 
     fn as_f32(self) -> f32 {
-        self.0 as f32
+        self.0 as f32 * BAR_SPACING_QUANTUM_PX
     }
 }
 
@@ -322,9 +336,36 @@ pub trait KlineSeriesLike {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KlinePanelKind {
+enum KlinePanelKind {
     PrimaryChart,
     Indicator,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PanelInteraction {
+    YViewportChanged {
+        panel_id: PanelId,
+        viewport: PanelYViewport,
+    },
+    YViewportReset {
+        panel_id: PanelId,
+    },
+    SplitChanged {
+        index: usize,
+        split: f32,
+    },
+    MoveUp {
+        index: usize,
+    },
+    MoveDown {
+        index: usize,
+    },
+    Settings {
+        index: usize,
+    },
+    Close {
+        index: usize,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -333,29 +374,7 @@ pub enum KlineWidgetEvent {
     HorizontalOffsetChanged(f32),
     PrimaryAutoscaleToggled,
     PrimaryScaleModeCycleRequested,
-    PanelYViewportChanged {
-        panel_id: PanelId,
-        viewport: PanelYViewport,
-    },
-    PanelYViewportReset {
-        panel_id: PanelId,
-    },
-    PanelSplitChanged {
-        index: usize,
-        split: f32,
-    },
-    PanelMoveUp {
-        index: usize,
-    },
-    PanelMoveDown {
-        index: usize,
-    },
-    PanelSettings {
-        index: usize,
-    },
-    PanelClose {
-        index: usize,
-    },
+    PanelInteraction(PanelInteraction),
     TickerSettings(TickerInfo),
     TickerRemove(TickerInfo),
     XAxisDoubleClick,
@@ -386,6 +405,7 @@ struct State {
     x_axis_cache: canvas::Cache,
     overlay_cache: canvas::Cache,
     interaction_text_cache: canvas::Cache,
+    horizontal_zoom_scroll_accum: f32,
     drag_mode: DragMode,
     last_cursor: Option<Point>,
     last_cache_rev: u64,
@@ -400,6 +420,7 @@ impl Default for State {
             x_axis_cache: canvas::Cache::new(),
             overlay_cache: canvas::Cache::new(),
             interaction_text_cache: canvas::Cache::new(),
+            horizontal_zoom_scroll_accum: 0.0,
             drag_mode: DragMode::None,
             last_cursor: None,
             last_cache_rev: 0,
@@ -1497,6 +1518,10 @@ where
                             return;
                         }
 
+                        if !matches!(zone, LayoutHitZone::PanelPlot(_)) {
+                            state.horizontal_zoom_scroll_accum = 0.0;
+                        }
+
                         match zone {
                             LayoutHitZone::PanelPlot(_) => {
                                 if Self::hit_panel_control(
@@ -1506,32 +1531,114 @@ where
                                 )
                                 .is_some()
                                 {
+                                    state.horizontal_zoom_scroll_accum = 0.0;
                                     return;
                                 }
 
                                 if Self::hit_corner_control(&corner_controls, cursor_pos).is_some()
                                 {
+                                    state.horizontal_zoom_scroll_accum = 0.0;
                                     return;
                                 }
 
                                 if ticker_legend_hit.is_some() {
+                                    state.horizontal_zoom_scroll_accum = 0.0;
                                     return;
                                 }
 
-                                let zoom_in = scroll_y > 0.0;
-                                let new_scale = self
-                                    .step_horizontal_scale_percent(self.horizontal_scale, zoom_in);
+                                let adjustment = match delta {
+                                    mouse::ScrollDelta::Lines { .. } => {
+                                        HORIZONTAL_ZOOM_LINE_DELTA_MODE_ADJUSTMENT
+                                    }
+                                    mouse::ScrollDelta::Pixels { .. } => {
+                                        #[cfg(target_os = "windows")]
+                                        {
+                                            HORIZONTAL_ZOOM_PIXEL_DELTA_MODE_ADJUSTMENT
+                                                / self.resolved_horizontal_pixel_ratio().max(1.0)
+                                        }
+
+                                        #[cfg(not(target_os = "windows"))]
+                                        {
+                                            HORIZONTAL_ZOOM_PIXEL_DELTA_MODE_ADJUSTMENT
+                                        }
+                                    }
+                                };
+
+                                let normalized_zoom_delta =
+                                    (scroll_y * adjustment) / HORIZONTAL_ZOOM_DELTA_NORMALIZATION;
+
+                                if normalized_zoom_delta.abs() <= f32::EPSILON {
+                                    return;
+                                }
+
+                                let is_pixel_delta =
+                                    matches!(delta, mouse::ScrollDelta::Pixels { .. });
+
+                                if !is_pixel_delta {
+                                    state.horizontal_zoom_scroll_accum = 0.0;
+                                }
+
+                                let mut remaining_zoom_delta = if is_pixel_delta {
+                                    state.horizontal_zoom_scroll_accum + normalized_zoom_delta
+                                } else {
+                                    normalized_zoom_delta
+                                };
+
+                                let current_scale =
+                                    self.normalize_horizontal_scale(self.horizontal_scale);
+                                let mut new_scale = current_scale;
+                                let mut applied_chunks = 0usize;
+
+                                while remaining_zoom_delta.abs() > f32::EPSILON
+                                    && applied_chunks
+                                        < HORIZONTAL_ZOOM_MAX_ACCUMULATED_CHUNKS_PER_EVENT
+                                {
+                                    let zoom_scale = remaining_zoom_delta.clamp(-1.0, 1.0);
+                                    let stepped =
+                                        self.step_horizontal_scale_percent(new_scale, zoom_scale);
+
+                                    if (stepped.as_pixels_per_bar() - new_scale.as_pixels_per_bar())
+                                        .abs()
+                                        <= f32::EPSILON
+                                    {
+                                        remaining_zoom_delta = 0.0;
+                                        break;
+                                    }
+
+                                    new_scale = stepped;
+                                    applied_chunks = applied_chunks.saturating_add(1);
+
+                                    if is_pixel_delta {
+                                        remaining_zoom_delta -= zoom_scale;
+
+                                        // Keep partial pixel delta for the next wheel event.
+                                        if remaining_zoom_delta.abs() < 1.0 {
+                                            break;
+                                        }
+                                    } else {
+                                        remaining_zoom_delta = 0.0;
+                                    }
+                                }
+
+                                if is_pixel_delta {
+                                    state.horizontal_zoom_scroll_accum = remaining_zoom_delta
+                                        .clamp(
+                                            -HORIZONTAL_ZOOM_MAX_ACCUMULATED_DELTA,
+                                            HORIZONTAL_ZOOM_MAX_ACCUMULATED_DELTA,
+                                        );
+                                } else {
+                                    state.horizontal_zoom_scroll_accum = 0.0;
+                                }
 
                                 if (new_scale.as_pixels_per_bar()
-                                    - self.horizontal_scale.as_pixels_per_bar())
+                                    - current_scale.as_pixels_per_bar())
                                 .abs()
                                     > f32::EPSILON
                                 {
                                     shell.publish(M::from(
-                                        KlineWidgetEvent::HorizontalScaleChanged(
-                                            self.normalize_horizontal_scale(new_scale),
-                                        ),
+                                        KlineWidgetEvent::HorizontalScaleChanged(new_scale),
                                     ));
+
                                     state.clear_all_caches();
                                     shell.capture_event();
                                 }
@@ -1554,10 +1661,12 @@ where
                                     return;
                                 };
 
-                                shell.publish(M::from(KlineWidgetEvent::PanelYViewportChanged {
-                                    panel_id,
-                                    viewport,
-                                }));
+                                let interaction =
+                                    PanelInteraction::YViewportChanged { panel_id, viewport };
+
+                                shell.publish(M::from(KlineWidgetEvent::PanelInteraction(
+                                    interaction,
+                                )));
                                 state.clear_all_caches();
                                 shell.capture_event();
                             }
@@ -1576,9 +1685,11 @@ where
                                 && new_click.kind() == iced_core::mouse::click::Kind::Double
                                 && let Some(panel_id) = self.panel_id(panel_index)
                             {
-                                shell.publish(M::from(KlineWidgetEvent::PanelYViewportReset {
-                                    panel_id,
-                                }));
+                                let interaction = PanelInteraction::YViewportReset { panel_id };
+
+                                shell.publish(M::from(KlineWidgetEvent::PanelInteraction(
+                                    interaction,
+                                )));
                                 state.clear_all_caches();
                                 state.previous_click = Some(new_click);
                                 return;
@@ -1633,7 +1744,10 @@ where
                             && let Some(control) =
                                 Self::hit_panel_control(&layout_tree, &panel_controls, cursor_pos)
                         {
-                            shell.publish(M::from(control.kind.into_event(control.panel_index)));
+                            let interaction =
+                                control.kind.into_interaction_kind(control.panel_index);
+
+                            shell.publish(M::from(KlineWidgetEvent::PanelInteraction(interaction)));
                             state.drag_mode = DragMode::None;
                             state.last_cursor = None;
                             state.clear_all_caches();
@@ -1818,10 +1932,14 @@ where
                                 &layout_tree,
                                 split_index,
                             ) {
-                                shell.publish(M::from(KlineWidgetEvent::PanelSplitChanged {
+                                let interaction = PanelInteraction::SplitChanged {
                                     index: split_index,
                                     split,
-                                }));
+                                };
+
+                                shell.publish(M::from(KlineWidgetEvent::PanelInteraction(
+                                    interaction,
+                                )));
                                 state.last_cursor = Some(cursor_pos);
                                 state.clear_all_caches();
                                 shell.capture_event();
@@ -1845,10 +1963,12 @@ where
                                     scale_delta,
                                 )
                             {
-                                shell.publish(M::from(KlineWidgetEvent::PanelYViewportChanged {
-                                    panel_id,
-                                    viewport,
-                                }));
+                                let interaction =
+                                    PanelInteraction::YViewportChanged { panel_id, viewport };
+
+                                shell.publish(M::from(KlineWidgetEvent::PanelInteraction(
+                                    interaction,
+                                )));
                                 state.clear_all_caches();
                                 shell.capture_event();
                             }
@@ -1927,10 +2047,12 @@ where
                                     dy_px,
                                 )
                             {
-                                shell.publish(M::from(KlineWidgetEvent::PanelYViewportChanged {
-                                    panel_id,
-                                    viewport,
-                                }));
+                                let interaction =
+                                    PanelInteraction::YViewportChanged { panel_id, viewport };
+
+                                shell.publish(M::from(KlineWidgetEvent::PanelInteraction(
+                                    interaction,
+                                )));
                                 state.clear_all_caches();
                             }
 
