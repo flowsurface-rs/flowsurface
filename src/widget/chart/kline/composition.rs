@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 
-use exchange::unit::Power10;
+use super::YUnit;
+use exchange::TickerInfo;
+use exchange::unit::{Power10, Price, Qty};
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 
@@ -123,6 +125,174 @@ pub enum PanelScaleMode {
     PercentFromBase,
 }
 
+impl PanelScaleMode {
+    pub(super) fn uses_percent_base(self) -> bool {
+        matches!(self, Self::PercentFromBase)
+    }
+
+    pub(super) fn uses_series_percent_anchors(self, series_count: usize) -> bool {
+        self.uses_percent_base() && series_count > 1
+    }
+
+    pub(super) fn primary_autoscale_enabled(self, user_autoscale_enabled: bool) -> bool {
+        user_autoscale_enabled || matches!(self, Self::PercentFromBase)
+    }
+
+    pub(super) fn allows_primary_manual_pan(self, user_autoscale_enabled: bool) -> bool {
+        !self.primary_autoscale_enabled(user_autoscale_enabled)
+    }
+
+    pub(super) fn allows_primary_manual_zoom(self) -> bool {
+        !matches!(self, Self::PercentFromBase)
+    }
+
+    pub(super) fn display_anchor(
+        self,
+        explicit_anchor: Option<f32>,
+        default_anchor: Option<f32>,
+    ) -> Option<f32> {
+        if self.uses_percent_base() {
+            explicit_anchor
+        } else {
+            default_anchor
+        }
+    }
+
+    pub(super) fn format_percent_label(
+        self,
+        display_value: f32,
+        display_step: f32,
+    ) -> Option<String> {
+        if !self.uses_percent_base() {
+            return None;
+        }
+
+        let precision = Self::percent_label_precision(display_step);
+        Some(format!("{display_value:.precision$}%"))
+    }
+
+    pub(super) fn percent_display_step(
+        self,
+        value_step: Option<f32>,
+        anchor: Option<f32>,
+        fallback: f32,
+    ) -> Option<f32> {
+        if !self.uses_percent_base() {
+            return None;
+        }
+
+        Some(
+            value_step
+                .and_then(|step| {
+                    anchor
+                        .filter(|anchor| anchor.abs() > f32::EPSILON)
+                        .map(|anchor| (step / anchor.abs()) * 100.0)
+                })
+                .unwrap_or(fallback)
+                .abs()
+                .max(1e-6),
+        )
+    }
+
+    pub(super) fn log_axis_value_and_step(
+        self,
+        display_value: f32,
+        display_step: f32,
+        anchor: Option<f32>,
+        log_scale_enabled: bool,
+    ) -> Option<(f32, f32)> {
+        if !matches!(self, Self::Logarithmic) || !log_scale_enabled {
+            return None;
+        }
+
+        let value = self.display_to_value(display_value, anchor, true);
+        let next_value =
+            self.display_to_value(display_value + display_step.abs().max(1e-3), anchor, true);
+        let value_step = (next_value - value).abs().max(1e-6);
+
+        Some((value, value_step))
+    }
+
+    pub(super) fn uses_display_transform(self, log_scale_enabled: bool) -> bool {
+        matches!(self, Self::PercentFromBase)
+            || (log_scale_enabled && matches!(self, Self::Logarithmic))
+    }
+
+    pub(super) fn value_to_display(
+        self,
+        value: f32,
+        anchor: Option<f32>,
+        log_scale_enabled: bool,
+    ) -> f32 {
+        if log_scale_enabled && matches!(self, Self::Logarithmic) {
+            value.max(f32::MIN_POSITIVE).log10()
+        } else {
+            match (self, anchor) {
+                (Self::PercentFromBase, Some(base)) if base.abs() > f32::EPSILON => {
+                    ((value / base) - 1.0) * 100.0
+                }
+                _ => value,
+            }
+        }
+    }
+
+    pub(super) fn display_to_value(
+        self,
+        display_value: f32,
+        anchor: Option<f32>,
+        log_scale_enabled: bool,
+    ) -> f32 {
+        if log_scale_enabled && matches!(self, Self::Logarithmic) {
+            10_f32.powf(display_value).max(f32::MIN_POSITIVE)
+        } else {
+            match (self, anchor) {
+                (Self::PercentFromBase, Some(base)) if base.abs() > f32::EPSILON => {
+                    base * (1.0 + display_value / 100.0)
+                }
+                _ => display_value,
+            }
+        }
+    }
+
+    pub(super) fn percent_label_precision(display_step: f32) -> usize {
+        let step = display_step.abs().max(1e-6);
+        if step >= 1.0 {
+            1
+        } else if step >= 0.1 {
+            2
+        } else if step >= 0.01 {
+            3
+        } else {
+            4
+        }
+    }
+
+    fn fit_visible_bounds(min_unit: i64, max_unit: i64) -> (YUnit, YUnit) {
+        let span = max_unit.abs_diff(min_unit);
+        let pad = if span == 0 {
+            max_unit.unsigned_abs().max(1).saturating_add(49) / 50
+        } else {
+            span.saturating_mul(5).saturating_add(99) / 100
+        }
+        .max(1);
+        let pad = i64::try_from(pad).unwrap_or(i64::MAX);
+
+        let padded_min = min_unit.saturating_sub(pad);
+        let padded_max = max_unit.saturating_add(pad);
+        (YUnit(padded_min), YUnit(padded_max))
+    }
+
+    pub(super) fn indicator_domain_units(self, min_unit: i64, max_unit: i64) -> (YUnit, YUnit) {
+        match self {
+            Self::FitVisible => Self::fit_visible_bounds(min_unit, max_unit),
+            Self::FitVisibleIncludeZero => {
+                Self::fit_visible_bounds(min_unit.min(0), max_unit.max(0))
+            }
+            _ => (YUnit(0), YUnit(max_unit.max(1))),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanelValueId {
     Volume,
@@ -140,11 +310,225 @@ pub enum PanelValuePrecision {
     FixedStep(f32),
 }
 
+impl PanelValuePrecision {
+    const MIN_STEP: f32 = 1e-8;
+    const DEFAULT_FALLBACK_STEP: f32 = 1e-4;
+
+    pub(super) fn quantization_step(self, base_ticker: Option<TickerInfo>) -> Option<f32> {
+        let step = match self {
+            Self::BaseTickerMinTick => base_ticker.map(|ticker| ticker.min_ticksize.as_f32()),
+            Self::BaseTickerMinQty => base_ticker.map(|ticker| ticker.min_qty.as_f32()),
+            Self::FixedPower10(step) => Some(step.as_f32()),
+            Self::FixedStep(step) => Some(step),
+        }?;
+
+        Some(step.abs().max(Self::MIN_STEP))
+    }
+
+    fn decimals_from_power10(power: i8) -> usize {
+        if power < 0 { (-power) as usize } else { 0 }
+    }
+
+    pub(super) fn decimals_for_step(step: f32) -> usize {
+        let step = step.abs();
+        if !step.is_finite() || step <= 0.0 {
+            return 4;
+        }
+
+        for decimals in 0..=8 {
+            let scaled = (step as f64) * 10_f64.powi(decimals as i32);
+            let nearest = scaled.round();
+            let tolerance = (scaled.abs() * 1e-9).max(1e-12);
+
+            if (scaled - nearest).abs() <= tolerance {
+                return decimals;
+            }
+        }
+
+        8
+    }
+
+    pub(super) fn decimals(self, base_ticker: Option<TickerInfo>) -> Option<usize> {
+        match self {
+            Self::BaseTickerMinTick => {
+                base_ticker.map(|ticker| Self::decimals_from_power10(ticker.min_ticksize.power))
+            }
+            Self::BaseTickerMinQty => {
+                base_ticker.map(|ticker| Self::decimals_from_power10(ticker.min_qty.power))
+            }
+            Self::FixedPower10(step) => Some(Self::decimals_from_power10(step.power)),
+            Self::FixedStep(step) => Some(Self::decimals_for_step(step)),
+        }
+    }
+
+    fn pow10_i64(exp: i32) -> Option<i64> {
+        if exp < 0 {
+            return None;
+        }
+
+        10_i64.checked_pow(exp as u32)
+    }
+
+    fn round_to_i64_saturating(value: f32) -> i64 {
+        if !value.is_finite() {
+            return 0;
+        }
+
+        let rounded = value.round();
+        if rounded > i64::MAX as f32 {
+            i64::MAX
+        } else if rounded < i64::MIN as f32 {
+            i64::MIN
+        } else {
+            rounded as i64
+        }
+    }
+
+    pub(super) fn value_to_unit(
+        self,
+        value: f32,
+        base_ticker: Option<TickerInfo>,
+        fallback_step: f32,
+    ) -> YUnit {
+        if !value.is_finite() {
+            return YUnit(0);
+        }
+
+        match self {
+            Self::BaseTickerMinTick => {
+                if let Some(ticker) = base_ticker {
+                    let min_tick = ticker.min_ticksize;
+                    let exp = 8 + i32::from(min_tick.power);
+
+                    if let Some(unit_size) = Self::pow10_i64(exp) {
+                        let price_units = Price::from_f32(value).round_to_min_tick(min_tick).units;
+                        return YUnit(price_units.div_euclid(unit_size));
+                    }
+                }
+            }
+            Self::BaseTickerMinQty => {
+                if let Some(ticker) = base_ticker {
+                    let min_qty = ticker.min_qty;
+                    let exp = Qty::QTY_SCALE + i32::from(min_qty.power);
+
+                    if let Some(unit_size) = Self::pow10_i64(exp) {
+                        let qty_units = Qty::from_f32(value).round_to_min_qty(min_qty).units;
+                        return YUnit(qty_units.div_euclid(unit_size));
+                    }
+                }
+            }
+            Self::FixedPower10(step) => {
+                let step = step.as_f32().abs().max(Self::MIN_STEP);
+                return YUnit(Self::round_to_i64_saturating(value / step));
+            }
+            Self::FixedStep(step) => {
+                let step = step.abs().max(Self::MIN_STEP);
+                return YUnit(Self::round_to_i64_saturating(value / step));
+            }
+        }
+
+        let step = self
+            .quantization_step(base_ticker)
+            .unwrap_or(fallback_step.abs().max(Self::MIN_STEP));
+        YUnit(Self::round_to_i64_saturating(value / step))
+    }
+
+    pub(super) fn unit_to_value(
+        self,
+        y_unit: YUnit,
+        base_ticker: Option<TickerInfo>,
+        fallback_step: f32,
+    ) -> f32 {
+        match self {
+            Self::BaseTickerMinTick => {
+                if let Some(ticker) = base_ticker {
+                    let min_tick = ticker.min_ticksize;
+                    let exp = 8 + i32::from(min_tick.power);
+
+                    if let Some(unit_size) = Self::pow10_i64(exp) {
+                        let units = y_unit.0.saturating_mul(unit_size);
+                        return Price::from_units(units).to_f32();
+                    }
+                }
+            }
+            Self::BaseTickerMinQty => {
+                if let Some(ticker) = base_ticker {
+                    let min_qty = ticker.min_qty;
+                    let exp = Qty::QTY_SCALE + i32::from(min_qty.power);
+
+                    if let Some(unit_size) = Self::pow10_i64(exp) {
+                        let units = y_unit.0.saturating_mul(unit_size);
+                        return f32::from(Qty::from_units(units));
+                    }
+                }
+            }
+            Self::FixedPower10(step) => {
+                return (y_unit.0 as f32) * step.as_f32().abs().max(Self::MIN_STEP);
+            }
+            Self::FixedStep(step) => {
+                return (y_unit.0 as f32) * step.abs().max(Self::MIN_STEP);
+            }
+        }
+
+        let step = self
+            .quantization_step(base_ticker)
+            .unwrap_or(fallback_step.abs().max(Self::MIN_STEP));
+        (y_unit.0 as f32) * step
+    }
+
+    pub(super) fn quantize_value(
+        self,
+        value: f32,
+        base_ticker: Option<TickerInfo>,
+        fallback_step: f32,
+    ) -> f32 {
+        let y_unit = self.value_to_unit(value, base_ticker, fallback_step);
+        self.unit_to_value(y_unit, base_ticker, fallback_step)
+    }
+
+    pub(super) fn format_compact(
+        self,
+        value: f32,
+        fallback_step: f32,
+        max_decimals: Option<u8>,
+        base_ticker: Option<TickerInfo>,
+    ) -> String {
+        let quantized = self.quantize_value(value, base_ticker, Self::DEFAULT_FALLBACK_STEP);
+        let fallback = fallback_step.abs().max(1e-6);
+        let step = self
+            .quantization_step(base_ticker)
+            .map(|panel_step| panel_step.max(fallback))
+            .unwrap_or(fallback);
+
+        let decimals = self
+            .decimals(base_ticker)
+            .unwrap_or_else(|| Self::decimals_for_step(step));
+        let decimals = max_decimals
+            .map(|max| decimals.min(max as usize))
+            .unwrap_or(decimals);
+        format!("{quantized:.decimals$}")
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanelValueLabelMode {
     Compact,
     Commas,
     Abbreviated,
+}
+
+impl PanelValueLabelMode {
+    pub(super) fn format_value<FQ, FC>(self, quantized_value: FQ, compact_value: FC) -> String
+    where
+        FQ: FnOnce() -> f32,
+        FC: FnOnce() -> String,
+    {
+        match self {
+            Self::Compact => compact_value(),
+            Self::Commas => data::util::format_with_commas(quantized_value()),
+            Self::Abbreviated => data::util::abbr_large_numbers(quantized_value()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,6 +545,29 @@ impl Default for PanelValueLabelPolicy {
             header_mode: PanelValueLabelMode::Commas,
             max_decimals: None,
         }
+    }
+}
+
+impl PanelValueLabelPolicy {
+    pub(super) fn format_axis_value<FQ, FC>(self, quantized_value: FQ, compact_value: FC) -> String
+    where
+        FQ: FnOnce() -> f32,
+        FC: FnOnce() -> String,
+    {
+        self.axis_mode.format_value(quantized_value, compact_value)
+    }
+
+    pub(super) fn format_header_value<FQ, FC>(
+        self,
+        quantized_value: FQ,
+        compact_value: FC,
+    ) -> String
+    where
+        FQ: FnOnce() -> f32,
+        FC: FnOnce() -> String,
+    {
+        self.header_mode
+            .format_value(quantized_value, compact_value)
     }
 }
 
