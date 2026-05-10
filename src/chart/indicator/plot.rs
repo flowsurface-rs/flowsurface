@@ -21,6 +21,10 @@ pub trait Series {
     where
         Self: 'a;
 
+    fn first_in<'a>(&'a self, range: RangeInclusive<u64>) -> Option<(u64, &'a Self::Y)>
+    where
+        Self: 'a;
+
     fn last_in<'a>(&'a self, range: RangeInclusive<u64>) -> Option<(u64, &'a Self::Y)>
     where
         Self: 'a;
@@ -44,6 +48,13 @@ impl<Y> Series for &BTreeMap<u64, Y> {
         Self: 'a,
     {
         (**self).range((x + 1)..).next().map(|(k, v)| (*k, v))
+    }
+
+    fn first_in<'a>(&'a self, range: RangeInclusive<u64>) -> Option<(u64, &'a Self::Y)>
+    where
+        Self: 'a,
+    {
+        (**self).range(range).next().map(|(k, v)| (*k, v))
     }
 
     fn last_in<'a>(&'a self, range: RangeInclusive<u64>) -> Option<(u64, &'a Self::Y)>
@@ -92,6 +103,18 @@ impl<'m, Y> Series for ReversedBTreeSeries<'m, Y> {
             .range(..k)
             .next_back()
             .map(|(kk, v)| (self.offset - *kk, v))
+    }
+
+    fn first_in<'a>(&'a self, range: RangeInclusive<u64>) -> Option<(u64, &'a Self::Y)>
+    where
+        Self: 'a,
+    {
+        let earliest = self.offset.saturating_sub(*range.end());
+        let latest = self.offset.saturating_sub(*range.start());
+        self.inner
+            .range(earliest..=latest)
+            .next_back()
+            .map(|(k, v)| (self.offset - *k, v))
     }
 
     fn last_in<'a>(&'a self, range: RangeInclusive<u64>) -> Option<(u64, &'a Self::Y)>
@@ -149,6 +172,16 @@ impl<'a, Y> Series for AnySeries<'a, Y> {
         match self {
             AnySeries::Forward(map) => (**map).range((x + 1)..).next().map(|(k, v)| (*k, v)),
             AnySeries::Reversed(rv) => rv.next_after(x),
+        }
+    }
+
+    fn first_in<'b>(&'b self, range: RangeInclusive<u64>) -> Option<(u64, &'b Self::Y)>
+    where
+        Self: 'b,
+    {
+        match self {
+            AnySeries::Forward(map) => (**map).range(range).next().map(|(k, v)| (*k, v)),
+            AnySeries::Reversed(rv) => rv.first_in(range),
         }
     }
 
@@ -343,16 +376,33 @@ where
                 );
 
                 // tooltip text
-                let hovered = self
-                    .series
-                    .at(rounded_x)
-                    .map(|y| (rounded_x, y))
+                let visible = rounded_x >= earliest && rounded_x <= latest;
+                let hovered = visible
+                    .then(|| {
+                        self.series
+                            .at(rounded_x)
+                            .map(|y| (rounded_x, y))
+                            .or_else(|| {
+                                if rounded_x >= earliest {
+                                    self.series.last_in(earliest..=rounded_x)
+                                } else {
+                                    None
+                                }
+                            })
+                    })
+                    .flatten()
                     .or_else(|| {
-                        if rounded_x >= earliest {
-                            self.series.last_in(earliest..=rounded_x)
-                        } else {
-                            None
-                        }
+                        let right_of_latest = match ctx.basis {
+                            Basis::Time(_) => rounded_x > latest,
+                            Basis::Tick(_) => rounded_x < earliest,
+                        };
+
+                        right_of_latest
+                            .then(|| match ctx.basis {
+                                Basis::Time(_) => self.series.last_in(earliest..=latest),
+                                Basis::Tick(_) => self.series.first_in(earliest..=latest),
+                            })
+                            .flatten()
                     });
 
                 if let Some((x, y)) = hovered {
