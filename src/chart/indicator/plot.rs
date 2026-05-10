@@ -1,5 +1,6 @@
 use crate::chart::{Basis, Interaction, Message, ViewState};
 use crate::style::{self, dashed_line};
+use data::util::{guesstimate_ticks, round_to_tick};
 use iced::widget::canvas::{self, Cache, Geometry, Path};
 use iced::{Alignment, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
 
@@ -342,13 +343,43 @@ where
                 );
 
                 // tooltip text
-                if let Some(y) = self.series.at(rounded_x) {
-                    let next = self.series.next_after(rounded_x).map(|(_, v)| v);
+                let hovered = self
+                    .series
+                    .at(rounded_x)
+                    .map(|y| (rounded_x, y))
+                    .or_else(|| {
+                        if rounded_x >= earliest {
+                            self.series.last_in(earliest..=rounded_x)
+                        } else {
+                            None
+                        }
+                    });
+
+                if let Some((x, y)) = hovered {
+                    let next = self.series.next_after(x).map(|(_, v)| v);
 
                     if let Some(tooltip) = self.plot.tooltip(y, next, theme) {
                         tooltip.draw(frame, theme, bounds, cursor_position.x);
                     }
                 }
+            } else if let Some(cursor_position) = cursor.position_in(bounds) {
+                // horizontal snap uses label extents
+                let highest = self.max_for_labels;
+                let lowest = self.min_for_labels;
+                let tick = guesstimate_ticks(highest - lowest);
+
+                let ratio = cursor_position.y / bounds.height;
+                let value = highest + ratio * (lowest - highest);
+                let rounded = round_to_tick(value, tick);
+                let snap_ratio = (rounded - highest) / (lowest - highest);
+
+                frame.stroke(
+                    &Path::line(
+                        Point::new(0.0, snap_ratio * bounds.height),
+                        Point::new(bounds.width, snap_ratio * bounds.height),
+                    ),
+                    dashed,
+                );
             } else if self.data_labels_always_visible
                 && let Some((x, y)) = self.series.last_in(earliest..=latest)
             {
