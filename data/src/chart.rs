@@ -47,11 +47,9 @@ impl<D: DataPoint> PlotData<D> {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
-#[serde(default)]
 pub struct ViewConfig {
     pub splits: Vec<f32>,
     pub autoscale: Option<Autoscale>,
-    pub indicator_labels_always_visible: bool,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, Default, PartialEq)]

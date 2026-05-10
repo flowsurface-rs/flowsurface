@@ -185,7 +185,6 @@ impl HeatmapChart {
             ViewConfig {
                 splits: layout.splits.clone(),
                 autoscale: Some(Autoscale::CenterLatest),
-                indicator_labels_always_visible: layout.indicator_labels_always_visible,
             },
             DEFAULT_CELL_WIDTH,
             4.0,

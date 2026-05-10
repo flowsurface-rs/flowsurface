@@ -68,6 +68,8 @@ pub trait KlineIndicatorImpl {
     fn element<'a>(
         &'a self,
         chart: &'a ViewState,
+        // Whether to show last value labels on top right/left when not hovering
+        data_labels_always_visible: bool,
         visible_range: std::ops::RangeInclusive<u64>,
     ) -> iced::Element<'a, Message>;
 

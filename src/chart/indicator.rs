@@ -24,6 +24,7 @@ use std::{collections::BTreeMap, ops::RangeInclusive};
 pub fn indicator_row<'a, P, Y>(
     main_chart: &'a ViewState,
     cache: &'a Caches,
+    data_labels_always_visible: bool,
     plot: P,
     datapoints: &'a BTreeMap<u64, Y>,
     visible_range: RangeInclusive<u64>,
@@ -42,6 +43,7 @@ where
         indicator_cache: &cache.main,
         crosshair_cache: &cache.crosshair,
         ctx: main_chart,
+        data_labels_always_visible,
         plot,
         series,
         max_for_labels: max,

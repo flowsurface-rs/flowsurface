@@ -9,7 +9,8 @@ use data::aggr::ticks::TickAggr;
 use data::aggr::time::TimeSeries;
 use data::chart::indicator::{Indicator, KlineIndicator};
 use data::chart::kline::{
-    ClusterKind, ClusterScaling, FootprintStudy, KlineDataPoint, KlineTrades, NPoc, PointOfControl,
+    ClusterKind, ClusterScaling, Config, FootprintStudy, KlineDataPoint, KlineTrades, NPoc,
+    PointOfControl,
 };
 use data::chart::{Autoscale, KlineChartKind, ViewConfig};
 
@@ -56,6 +57,8 @@ impl Chart for KlineChart {
             return vec![];
         }
 
+        let data_labels_always_visible = self.visual_config.data_labels_always_visible;
+
         let market = chart_state.ticker_info.market_type();
         let mut elements = vec![];
 
@@ -64,7 +67,11 @@ impl Chart for KlineChart {
                 continue;
             }
             if let Some(indi) = self.indicators[*selected_indicator].as_ref() {
-                elements.push(indi.element(chart_state, earliest..=latest));
+                elements.push(indi.element(
+                    chart_state,
+                    data_labels_always_visible,
+                    earliest..=latest,
+                ));
             }
         }
         elements
@@ -160,6 +167,7 @@ pub struct KlineChart {
     request_handler: RequestHandler,
     study_configurator: study::Configurator<FootprintStudy>,
     last_tick: Instant,
+    visual_config: Config,
 }
 
 impl KlineChart {
@@ -172,7 +180,10 @@ impl KlineChart {
         enabled_indicators: &[KlineIndicator],
         ticker_info: TickerInfo,
         kind: &KlineChartKind,
+        visual_config: Option<Config>,
     ) -> Self {
+        let visual_config = visual_config.unwrap_or_default();
+
         match basis {
             Basis::Time(interval) => {
                 let timeseries = TimeSeries::<KlineDataPoint>::new(interval, step, klines_raw)
@@ -212,7 +223,6 @@ impl KlineChart {
                     ViewConfig {
                         splits: layout.splits.clone(),
                         autoscale: Some(Autoscale::FitToVisible),
-                        indicator_labels_always_visible: layout.indicator_labels_always_visible,
                     },
                     cell_width,
                     cell_height,
@@ -243,6 +253,7 @@ impl KlineChart {
 
                 KlineChart {
                     chart,
+                    visual_config,
                     data_source,
                     raw_trades,
                     indicators,
@@ -271,7 +282,6 @@ impl KlineChart {
                     ViewConfig {
                         splits: layout.splits.clone(),
                         autoscale: Some(Autoscale::FitToVisible),
-                        indicator_labels_always_visible: layout.indicator_labels_always_visible,
                     },
                     cell_width,
                     cell_height,
@@ -300,6 +310,7 @@ impl KlineChart {
 
                 KlineChart {
                     chart,
+                    visual_config,
                     data_source,
                     raw_trades,
                     indicators,
@@ -486,9 +497,17 @@ impl KlineChart {
         self.chart.layout()
     }
 
-    pub fn set_indicator_labels_always_visible(&mut self, value: bool) {
-        self.chart.layout.indicator_labels_always_visible = value;
+    pub fn visual_config(&self) -> Config {
+        self.visual_config
+    }
+
+    pub fn set_visual_config(&mut self, visual_config: Config) {
+        self.visual_config = visual_config;
         self.chart.cache.clear_all();
+        self.indicators
+            .values_mut()
+            .filter_map(Option::as_mut)
+            .for_each(|indi| indi.clear_all_caches());
     }
 
     pub fn set_cluster_kind(&mut self, new_kind: ClusterKind) {

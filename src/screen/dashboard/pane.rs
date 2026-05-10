@@ -448,6 +448,7 @@ impl State {
                 } else {
                     let (raw_trades, tick_size) = (chart.raw_trades(), chart.tick_size());
                     let layout = chart.chart_layout();
+                    let visual_config = chart.visual_config();
 
                     *chart = KlineChart::new(
                         layout,
@@ -458,6 +459,7 @@ impl State {
                         indicators,
                         ticker_info,
                         chart.kind(),
+                        Some(visual_config),
                     );
                 }
             }
@@ -924,11 +926,7 @@ impl State {
                     let settings_modal = || {
                         kline_cfg_view(
                             chart.study_configurator(),
-                            self.settings
-                                .visual_config
-                                .as_ref()
-                                .and_then(|cfg| cfg.kline())
-                                .unwrap_or_default(),
+                            chart.visual_config(),
                             chart_kind,
                             id,
                             chart.basis(),
@@ -1905,7 +1903,6 @@ impl Content {
                 ViewConfig {
                     splits: vec![],
                     autoscale: Some(data::chart::Autoscale::CenterLatest),
-                    indicator_labels_always_visible: false,
                 },
                 vec![],
             )
@@ -2009,16 +2006,13 @@ impl Content {
             splits_vec
         };
 
-        let mut layout = prev_layout
+        let layout = prev_layout
             .filter(|l| l.splits.len() == splits.len())
             .unwrap_or(ViewConfig {
                 splits,
                 autoscale: Some(data::chart::Autoscale::FitToVisible),
-                indicator_labels_always_visible: false,
             });
-        if let Some(cfg) = settings.visual_config.as_ref().and_then(|cfg| cfg.kline()) {
-            layout.indicator_labels_always_visible = cfg.indicator_labels_always_visible;
-        }
+        let visual_config = settings.visual_config.as_ref().and_then(|cfg| cfg.kline());
 
         let chart = KlineChart::new(
             layout.clone(),
@@ -2029,6 +2023,7 @@ impl Content {
             &enabled_indicators,
             ticker_info,
             &determined_chart_kind,
+            visual_config,
         );
 
         Content::Kline {
@@ -2049,7 +2044,6 @@ impl Content {
                 layout: ViewConfig {
                     splits: vec![],
                     autoscale: Some(data::chart::Autoscale::FitToVisible),
-                    indicator_labels_always_visible: false,
                 },
             },
             ContentKind::FootprintChart => Content::Kline {
@@ -2063,7 +2057,6 @@ impl Content {
                 layout: ViewConfig {
                     splits: vec![],
                     autoscale: Some(data::chart::Autoscale::FitToVisible),
-                    indicator_labels_always_visible: false,
                 },
             },
             ContentKind::ShaderHeatmap => Content::ShaderHeatmap {
@@ -2080,7 +2073,6 @@ impl Content {
                 layout: ViewConfig {
                     splits: vec![],
                     autoscale: Some(data::chart::Autoscale::CenterLatest),
-                    indicator_labels_always_visible: false,
                 },
             },
             ContentKind::ComparisonChart => Content::Comparison(None),
@@ -2181,26 +2173,23 @@ impl Content {
 
     pub fn change_visual_config(&mut self, config: VisualConfig) {
         match (self, config) {
+            (Content::Kline { chart: Some(c), .. }, VisualConfig::Kline(cfg)) => {
+                c.set_visual_config(cfg);
+            }
             (Content::Heatmap { chart: Some(c), .. }, VisualConfig::Heatmap(cfg)) => {
                 c.set_visual_config(cfg);
             }
             (Content::ShaderHeatmap { chart: Some(c), .. }, VisualConfig::Heatmap(cfg)) => {
                 c.set_visual_config(cfg);
             }
+            (Content::Comparison(Some(chart)), VisualConfig::Comparison(cfg)) => {
+                chart.config = cfg;
+            }
             (Content::TimeAndSales(Some(panel)), VisualConfig::TimeAndSales(cfg)) => {
                 panel.config = cfg;
             }
             (Content::Ladder(Some(panel)), VisualConfig::Ladder(cfg)) => {
                 panel.config = cfg;
-            }
-            (Content::Kline { chart, layout, .. }, VisualConfig::Kline(cfg)) => {
-                layout.indicator_labels_always_visible = cfg.indicator_labels_always_visible;
-                if let Some(chart) = chart {
-                    chart.set_indicator_labels_always_visible(cfg.indicator_labels_always_visible);
-                }
-            }
-            (Content::Comparison(Some(chart)), VisualConfig::Comparison(cfg)) => {
-                chart.config = cfg;
             }
             _ => {}
         }

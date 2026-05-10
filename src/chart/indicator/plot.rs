@@ -210,6 +210,7 @@ where
     pub indicator_cache: &'a Cache,
     pub crosshair_cache: &'a Cache,
     pub ctx: &'a ViewState,
+    pub data_labels_always_visible: bool,
     pub plot: P,
     pub series: S,
     pub max_for_labels: f32,
@@ -348,7 +349,7 @@ where
                         tooltip.draw(frame, theme, bounds, cursor_position.x);
                     }
                 }
-            } else if ctx.layout.indicator_labels_always_visible
+            } else if self.data_labels_always_visible
                 && let Some((x, y)) = self.series.last_in(earliest..=latest)
             {
                 let next = self.series.next_after(x).map(|(_, v)| v);
