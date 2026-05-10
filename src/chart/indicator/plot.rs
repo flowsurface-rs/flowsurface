@@ -382,12 +382,11 @@ where
                         self.series
                             .at(rounded_x)
                             .map(|y| (rounded_x, y))
-                            .or_else(|| {
-                                if rounded_x >= earliest {
+                            .or_else(|| match ctx.basis {
+                                Basis::Time(_) if rounded_x >= earliest => {
                                     self.series.last_in(earliest..=rounded_x)
-                                } else {
-                                    None
                                 }
+                                Basis::Time(_) | Basis::Tick(_) => None,
                             })
                     })
                     .flatten()
@@ -431,7 +430,10 @@ where
                     dashed,
                 );
             } else if self.data_labels_always_visible
-                && let Some((x, y)) = self.series.last_in(earliest..=latest)
+                && let Some((x, y)) = match ctx.basis {
+                    Basis::Time(_) => self.series.last_in(earliest..=latest),
+                    Basis::Tick(_) => self.series.first_in(earliest..=latest),
+                }
             {
                 let next = self.series.next_after(x).map(|(_, v)| v);
 
