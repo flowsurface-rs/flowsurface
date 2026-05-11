@@ -15,7 +15,7 @@ use data::chart::{
     kline::{KlineDataPoint, KlineTrades},
 };
 use data::util::format_with_commas;
-use exchange::{Kline, Trade, Volume};
+use exchange::{Kline, Trade, Volume, unit::Qty};
 
 use iced::widget::{center, text};
 
@@ -25,16 +25,16 @@ use std::ops::RangeInclusive;
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CumulativeDeltaPoint {
     /// Buy volume - sell volume for this candle / tick bucket.
-    pub delta: f32,
+    pub delta: Qty,
     /// Running sum of delta from the oldest loaded datapoint to this datapoint.
-    pub cumulative: f32,
+    pub cumulative: Qty,
 }
 
 pub struct CumulativeDeltaIndicator {
     cache: Caches,
     /// Per-bucket delta. Stored separately so inserting/replacing older klines can
     /// rebuild the cumulative line without needing the full chart source.
-    delta: BasisSeries<f32>,
+    delta: BasisSeries<Qty>,
     data: BasisSeries<CumulativeDeltaPoint>,
     availability: IndicatorAvailability,
 }
@@ -59,13 +59,19 @@ impl CumulativeDeltaIndicator {
         }
 
         let tooltip = |point: &CumulativeDeltaPoint, _next: Option<&CumulativeDeltaPoint>| {
-            let cvd = format!("CVD: {}", format_with_commas(point.cumulative));
-            let sign = if point.delta >= 0.0 { "+" } else { "" };
-            let delta = format!("Delta: {sign}{}", format_with_commas(point.delta));
+            let cvd = format!(
+                "CVD: {}",
+                format_with_commas(point.cumulative.to_f32_lossy())
+            );
+            let sign = if point.delta >= Qty::ZERO { "+" } else { "" };
+            let delta = format!(
+                "Delta: {sign}{}",
+                format_with_commas(point.delta.to_f32_lossy())
+            );
             PlotTooltip::new(format!("{cvd}\n{delta}"))
         };
 
-        let value_fn = |point: &CumulativeDeltaPoint| point.cumulative;
+        let value_fn = |point: &CumulativeDeltaPoint| point.cumulative.to_f32_lossy();
 
         let plot = LinePlot::new(value_fn)
             .stroke_width(1.0)
@@ -83,34 +89,25 @@ impl CumulativeDeltaIndicator {
         )
     }
 
-    fn kline_delta(kline: &Kline) -> f32 {
-        Self::volume_delta(kline.volume)
-    }
-
     fn has_directional_volume(volume: Volume) -> bool {
         volume.buy_sell().is_some()
     }
 
-    fn volume_delta(volume: Volume) -> f32 {
+    fn volume_delta(volume: Volume) -> Qty {
         volume
             .buy_sell()
-            .map(|(buy, sell)| f32::from(buy) - f32::from(sell))
-            .unwrap_or(0.0)
+            .map(|(buy, sell)| buy - sell)
+            .unwrap_or(Qty::ZERO)
     }
 
-    fn footprint_delta(footprint: &KlineTrades) -> f32 {
-        footprint
-            .trades
-            .values()
-            .map(|group| f32::from(group.delta_qty()))
-            .sum()
-    }
-
-    fn delta_from_parts(footprint: &KlineTrades, volume: Volume) -> f32 {
+    fn delta_from_parts(footprint: &KlineTrades, volume: Volume) -> Qty {
         if footprint.trades.is_empty() {
             Self::volume_delta(volume)
         } else {
-            Self::footprint_delta(footprint)
+            footprint
+                .trades
+                .values()
+                .fold(Qty::ZERO, |acc, group| acc + group.delta_qty())
         }
     }
 
@@ -118,7 +115,7 @@ impl CumulativeDeltaIndicator {
         !footprint.trades.is_empty() || Self::has_directional_volume(volume)
     }
 
-    fn datapoint_delta(dp: &KlineDataPoint) -> f32 {
+    fn datapoint_delta(dp: &KlineDataPoint) -> Qty {
         Self::delta_from_parts(&dp.footprint, dp.kline.volume)
     }
 
@@ -137,7 +134,7 @@ impl CumulativeDeltaIndicator {
     }
 
     fn rebuild_cumulative(&mut self) {
-        let mut cumulative = 0.0;
+        let mut cumulative = Qty::ZERO;
         self.data = self.delta.map(|delta| {
             cumulative += *delta;
             CumulativeDeltaPoint {
@@ -149,7 +146,7 @@ impl CumulativeDeltaIndicator {
         self.clear_all_caches();
     }
 
-    fn rebuild_from_deltas(&mut self, deltas: BasisSeries<f32>) {
+    fn rebuild_from_deltas(&mut self, deltas: BasisSeries<Qty>) {
         self.delta = deltas;
         self.rebuild_cumulative();
     }
@@ -247,7 +244,7 @@ impl KlineIndicatorImpl for CumulativeDeltaIndicator {
                     )
                 } else {
                     (
-                        Self::kline_delta(kline),
+                        Self::volume_delta(kline.volume),
                         Self::has_directional_volume(kline.volume),
                     )
                 };
