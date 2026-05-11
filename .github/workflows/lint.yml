@@ -24,7 +24,7 @@ jobs:
             - name: Read rust toolchain from rust-toolchain.toml
               id: rust_toolchain
               run: |
-                  channel="$(sed -nE 's/^channel\s*=\s*"(.*)"/\1/p' rust-toolchain.toml)"
+                  channel="$(sed -nE 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"([^"]+)"[[:space:]]*$/\1/p' rust-toolchain.toml)"
                   if [ -z "$channel" ]; then
                       echo "Failed to read toolchain channel from rust-toolchain.toml" >&2
                       exit 1

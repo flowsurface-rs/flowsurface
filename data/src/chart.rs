@@ -3,10 +3,11 @@ pub mod heatmap;
 pub mod indicator;
 pub mod kline;
 
-use exchange::Timeframe;
 use exchange::UnixMs;
+use exchange::{Timeframe, unit::Price};
 use serde::{Deserialize, Serialize};
 
+use self::kline::KlineDataPoint;
 use super::aggr::{
     self,
     ticks::TickAggr,
@@ -42,6 +43,21 @@ impl<D: DataPoint> PlotData<D> {
             PlotData::TickBased(tick_aggr) => {
                 tick_aggr.min_max_price_in_range(start_interval as usize, end_interval as usize)
             }
+        }
+    }
+}
+
+impl PlotData<KlineDataPoint> {
+    pub fn visible_footprint_price_range(
+        &self,
+        start_interval: u64,
+        end_interval: u64,
+    ) -> Option<(Price, Price)> {
+        match self {
+            PlotData::TickBased(tick_aggr) => tick_aggr
+                .min_max_footprint_price_in_range(start_interval as usize, end_interval as usize),
+            PlotData::TimeBased(timeseries) => timeseries
+                .min_max_footprint_price_in_range(UnixMs(start_interval), UnixMs(end_interval)),
         }
     }
 }
