@@ -209,11 +209,11 @@ impl KlineTrades {
             return;
         }
 
-        let mut max_volume = 0.0;
+        let mut max_volume = Qty::zero();
         let mut poc_price = Price::from_f32(0.0);
 
         for (price, group) in &self.trades {
-            let total_volume = f32::from(group.total_qty());
+            let total_volume = group.total_qty();
             if total_volume > max_volume {
                 max_volume = total_volume;
                 poc_price = *price;
@@ -415,7 +415,7 @@ impl std::fmt::Display for FootprintStudy {
 #[derive(Debug, Clone, Copy)]
 pub struct PointOfControl {
     pub price: Price,
-    pub volume: f32,
+    pub volume: Qty,
     pub status: NPoc,
 }
 
@@ -423,7 +423,7 @@ impl Default for PointOfControl {
     fn default() -> Self {
         Self {
             price: Price::from_f32(0.0),
-            volume: 0.0,
+            volume: Qty::zero(),
             status: NPoc::default(),
         }
     }
