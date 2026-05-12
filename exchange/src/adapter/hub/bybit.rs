@@ -1,5 +1,5 @@
 use crate::{
-    Event, Kline, OpenInterest, PushFrequency, TickerInfo, Timeframe,
+    Event, Kline, OpenInterest, PushFrequency, TickerInfo, Timeframe, UnixMs,
     adapter::limiter::FixedWindowRateLimiterConfig,
     adapter::{AdapterNetworkConfig, Exchange, MarketKind},
     unit::qty::RawQtyUnit,
@@ -110,7 +110,7 @@ impl BybitHandle {
         &self,
         ticker: TickerInfo,
         timeframe: Timeframe,
-        range: Option<(u64, u64)>,
+        range: Option<(UnixMs, UnixMs)>,
     ) -> Result<Vec<Kline>, AdapterError> {
         self.request_port
             .request(move |reply| BybitCommand::Klines {
@@ -126,7 +126,7 @@ impl BybitHandle {
         &self,
         ticker: TickerInfo,
         timeframe: Timeframe,
-        range: Option<(u64, u64)>,
+        range: Option<(UnixMs, UnixMs)>,
     ) -> Result<Vec<OpenInterest>, AdapterError> {
         self.request_port
             .request(move |reply| BybitCommand::OpenInterest {
@@ -197,7 +197,7 @@ impl super::FetchCommandHandler<MarketKind> for Worker {
         &mut self,
         ticker_info: TickerInfo,
         timeframe: Timeframe,
-        range: Option<(u64, u64)>,
+        range: Option<(UnixMs, UnixMs)>,
     ) -> futures::future::BoxFuture<'_, Result<Vec<Kline>, AdapterError>> {
         Box::pin(
             async move { fetch::fetch_klines(&mut self.hub, ticker_info, timeframe, range).await },
@@ -208,7 +208,7 @@ impl super::FetchCommandHandler<MarketKind> for Worker {
         &mut self,
         ticker_info: TickerInfo,
         timeframe: Timeframe,
-        range: Option<(u64, u64)>,
+        range: Option<(UnixMs, UnixMs)>,
     ) -> futures::future::BoxFuture<'_, Result<Vec<OpenInterest>, AdapterError>> {
         Box::pin(async move {
             fetch::fetch_historical_oi(&mut self.hub, ticker_info, range, timeframe).await

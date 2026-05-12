@@ -389,7 +389,7 @@ impl From<&SonicDepth> for DepthPayload {
 
         DepthPayload {
             last_update_id: final_id,
-            time,
+            time: time.into(),
             bids: bids
                 .iter()
                 .map(|x| DeOrder {
@@ -769,7 +769,7 @@ pub fn connect_trade_stream(
                                             .round_to_min_tick(ticker_info.min_ticksize);
 
                                         let trade = Trade {
-                                            time: de_trade.time,
+                                            time: de_trade.time.into(),
                                             is_sell: de_trade.is_sell,
                                             price,
                                             qty: qty_norm
@@ -900,7 +900,7 @@ pub fn connect_depth_stream(
                         let synced_book = sync_machine.current.depth.clone();
 
                         let _ = output
-                            .send(Event::DepthReceived(stream_kind, time, synced_book))
+                            .send(Event::DepthReceived(stream_kind, time.into(), synced_book))
                             .await;
                     }
                     Ok(None) => {}

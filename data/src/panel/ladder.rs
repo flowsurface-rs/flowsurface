@@ -1,7 +1,7 @@
 use crate::chart::kline::KlineTrades;
 use crate::util::ok_or_default;
 use exchange::{
-    Trade,
+    Trade, UnixMs,
     unit::price::{Price, PriceStep},
     unit::qty::Qty,
 };
@@ -148,7 +148,7 @@ impl TradeStore {
     }
 
     /// Returns true if it removed trades and regrouped.
-    pub fn maybe_cleanup(&mut self, now_ms: u64, retention: Duration, step: PriceStep) -> bool {
+    pub fn maybe_cleanup(&mut self, now_ms: UnixMs, retention: Duration, step: PriceStep) -> bool {
         let Some(oldest) = self.raw.front() else {
             return false;
         };
@@ -161,7 +161,7 @@ impl TradeStore {
         // ~1/10th of retention, min 5s
         let cleanup_step_ms = (retention_ms / 10).max(5_000);
         let threshold_ms = retention_ms + cleanup_step_ms;
-        if now_ms.saturating_sub(oldest.time) < threshold_ms {
+        if now_ms.saturating_diff(oldest.time) < threshold_ms {
             return false;
         }
 
@@ -211,7 +211,7 @@ pub struct ChaseTracker {
     /// Last known best price (raw ungrouped)
     last_best: Option<Price>,
     state: ChaseProgress,
-    last_update_ms: Option<u64>,
+    last_update_ms: Option<UnixMs>,
 }
 
 impl ChaseTracker {
@@ -219,13 +219,13 @@ impl ChaseTracker {
         &mut self,
         current_best: Option<Price>,
         is_bid: bool,
-        now_ms: u64,
+        now_ms: UnixMs,
         max_interval: Duration,
     ) {
         let max_ms = max_interval.as_millis() as u64;
         if let Some(prev) = self.last_update_ms
             && max_ms > 0
-            && now_ms.saturating_sub(prev) > max_ms
+            && now_ms.saturating_diff(prev) > max_ms
         {
             self.reset();
         }

@@ -1,5 +1,5 @@
 use exchange::adapter::{AdapterError, AdapterHandles, Exchange, StreamKind};
-use exchange::{Kline, OpenInterest, TickerInfo, Trade};
+use exchange::{Kline, OpenInterest, TickerInfo, Trade, UnixMs};
 use iced::{
     Task,
     task::{Handle, Straw, sipper},
@@ -23,7 +23,7 @@ pub fn is_trade_fetch_enabled() -> bool {
 pub enum FetchedData {
     Trades {
         batch: Vec<Trade>,
-        until_time: u64,
+        until_time: UnixMs,
     },
     Klines {
         data: Vec<Kline>,
@@ -106,9 +106,9 @@ impl RequestHandler {
 
 #[derive(PartialEq, Debug, Clone, Copy)]
 pub enum FetchRange {
-    Kline(u64, u64),
-    OpenInterest(u64, u64),
-    Trades(u64, u64),
+    Kline(UnixMs, UnixMs),
+    OpenInterest(UnixMs, UnixMs),
+    Trades(UnixMs, UnixMs),
 }
 
 #[derive(PartialEq, Debug)]
@@ -360,7 +360,7 @@ pub fn oi_fetch_task(
     pane_id: Uuid,
     stream: StreamKind,
     req_id: Option<Uuid>,
-    range: Option<(u64, u64)>,
+    range: Option<(UnixMs, UnixMs)>,
 ) -> Task<FetchUpdate> {
     let update_status = Task::done(FetchUpdate::Status {
         pane_id,
@@ -412,7 +412,7 @@ pub fn kline_fetch_task(
     pane_id: Uuid,
     stream: StreamKind,
     req_id: Option<Uuid>,
-    range: Option<(u64, u64)>,
+    range: Option<(UnixMs, UnixMs)>,
 ) -> Task<FetchUpdate> {
     let update_status = Task::done(FetchUpdate::Status {
         pane_id,
@@ -460,8 +460,8 @@ pub fn kline_fetch_task(
 pub fn fetch_trades_batched(
     handles: AdapterHandles,
     ticker_info: TickerInfo,
-    from_time: u64,
-    to_time: u64,
+    from_time: UnixMs,
+    to_time: UnixMs,
     data_path: PathBuf,
 ) -> impl Straw<(), Vec<Trade>, AdapterError> {
     sipper(async move |mut progress| {

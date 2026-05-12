@@ -7,7 +7,7 @@ pub mod okex;
 use crate::adapter::AdapterError;
 use crate::adapter::limiter::RateLimiter;
 use crate::depth::DepthPayload;
-use crate::{Kline, OpenInterest, Ticker, TickerInfo, TickerStats, Timeframe, Trade};
+use crate::{Kline, OpenInterest, Ticker, TickerInfo, TickerStats, Timeframe, Trade, UnixMs};
 
 use futures::future::BoxFuture;
 use reqwest::{Client, Method, Response, header};
@@ -36,13 +36,13 @@ enum FetchCommand<M> {
     Klines {
         ticker: TickerInfo,
         timeframe: Timeframe,
-        range: Option<(u64, u64)>,
+        range: Option<(UnixMs, UnixMs)>,
         reply: ResponseTx<Vec<Kline>>,
     },
     OpenInterest {
         ticker: TickerInfo,
         timeframe: Timeframe,
-        range: Option<(u64, u64)>,
+        range: Option<(UnixMs, UnixMs)>,
         reply: ResponseTx<Vec<OpenInterest>>,
     },
     DepthSnapshot {
@@ -51,7 +51,7 @@ enum FetchCommand<M> {
     },
     Trades {
         ticker: TickerInfo,
-        from_time: u64,
+        from_time: UnixMs,
         data_path: Option<PathBuf>,
         reply: ResponseTx<Vec<Trade>>,
     },
@@ -287,7 +287,7 @@ pub trait FetchCommandHandler<M> {
         &mut self,
         ticker_info: TickerInfo,
         timeframe: Timeframe,
-        range: Option<(u64, u64)>,
+        range: Option<(UnixMs, UnixMs)>,
     ) -> BoxFuture<'_, Result<Vec<Kline>, AdapterError>> {
         let _ = (ticker_info, timeframe, range);
         Box::pin(async { Err(unsupported_fetch("Kline fetch")) })
@@ -297,7 +297,7 @@ pub trait FetchCommandHandler<M> {
         &mut self,
         ticker_info: TickerInfo,
         timeframe: Timeframe,
-        range: Option<(u64, u64)>,
+        range: Option<(UnixMs, UnixMs)>,
     ) -> BoxFuture<'_, Result<Vec<OpenInterest>, AdapterError>> {
         let _ = (ticker_info, timeframe, range);
         Box::pin(async { Err(unsupported_fetch("Open interest fetch")) })
@@ -314,7 +314,7 @@ pub trait FetchCommandHandler<M> {
     fn fetch_trades(
         &mut self,
         ticker_info: TickerInfo,
-        from_time: u64,
+        from_time: UnixMs,
         data_path: Option<PathBuf>,
     ) -> BoxFuture<'_, Result<Vec<Trade>, AdapterError>> {
         let _ = (ticker_info, from_time, data_path);

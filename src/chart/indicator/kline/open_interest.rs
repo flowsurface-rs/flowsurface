@@ -3,7 +3,7 @@ use crate::chart::{
     indicator::{
         indicator_row,
         kline::{AvailabilityCause, FetchCtx, IndicatorAvailability, KlineIndicatorImpl},
-        plot::{PlotTooltip, line::LinePlot},
+        plot::{AnySeries, PlotTooltip, line::LinePlot},
     },
 };
 use crate::connector::fetcher::FetchRange;
@@ -11,14 +11,14 @@ use crate::connector::fetcher::FetchRange;
 use data::chart::{PlotData, kline::KlineDataPoint};
 use data::util::format_with_commas;
 use exchange::adapter::Exchange;
-use exchange::{Kline, Timeframe, Trade};
+use exchange::{Kline, Timeframe, Trade, UnixMs};
 
 use iced::widget::{center, row, text};
 use std::{collections::BTreeMap, ops::RangeInclusive};
 
 pub struct OpenInterestIndicator {
     cache: Caches,
-    pub data: BTreeMap<u64, f32>,
+    pub data: BTreeMap<UnixMs, f32>,
 }
 
 impl OpenInterestIndicator {
@@ -73,15 +73,15 @@ impl OpenInterestIndicator {
             &self.cache,
             data_labels_always_visible,
             plot,
-            &self.data,
+            AnySeries::forward_unix_ms(&self.data),
             visible_range,
         )
     }
 
     // helper to compute (earliest, latest) present OI keys
-    fn oi_timerange(&self, latest_kline: u64) -> (u64, u64) {
+    fn oi_timerange(&self, latest_kline: UnixMs) -> (UnixMs, UnixMs) {
         let mut from_time = latest_kline;
-        let mut to_time = u64::MIN;
+        let mut to_time = UnixMs::ZERO;
 
         self.data.iter().for_each(|(time, _)| {
             from_time = from_time.min(*time);

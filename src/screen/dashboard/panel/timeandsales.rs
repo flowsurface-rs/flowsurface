@@ -4,7 +4,7 @@ use data::config::theme::{darken, lighten};
 pub use data::panel::timeandsales::Config;
 use data::panel::timeandsales::{HistAgg, HistAggValues, StackedBar, TradeDisplay, TradeEntry};
 use exchange::unit::Qty;
-use exchange::{SizeUnit, TickerInfo, Trade, unit::qty::volume_size_unit};
+use exchange::{SizeUnit, TickerInfo, Trade, UnixMs, unit::qty::volume_size_unit};
 
 use iced::widget::canvas::{self, Text};
 use iced::{Alignment, Event, Point, Rectangle, Renderer, Size, Theme, mouse};
@@ -112,14 +112,10 @@ impl TimeAndSales {
         let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
 
         for trade in trades_buffer {
-            let trade_time_ms = trade.time;
-
-            if let Some(trade_time) = chrono::DateTime::from_timestamp(
-                trade_time_ms as i64 / 1000,
-                (trade_time_ms % 1000) as u32 * 1_000_000,
-            ) {
+            let trade_time = trade.time;
+            if let Some(time_str) = trade_time.format_utc("%M:%S.%3f") {
                 let trade_display = TradeDisplay {
-                    time_str: trade_time.format("%M:%S.%3f").to_string(),
+                    time_str,
                     price: trade.price,
                     qty: trade.qty,
                     is_sell: trade.is_sell,
@@ -136,7 +132,7 @@ impl TimeAndSales {
                 }
 
                 target_trades.push_back(TradeEntry {
-                    ts_ms: trade_time_ms,
+                    ts_ms: trade_time,
                     display: trade_display,
                 });
 
@@ -183,15 +179,12 @@ impl TimeAndSales {
         self.stacked_bar_height().max(METRICS_HEIGHT_COMPACT) + TRADE_ROW_HEIGHT
     }
 
-    fn prune_by_time(&mut self, now_epoch_ms: Option<u64>) {
+    fn prune_by_time(&mut self, now_epoch_ms: Option<UnixMs>) {
         if self.recent_trades.is_empty() {
             return;
         }
 
-        let now_ms = now_epoch_ms.unwrap_or_else(|| {
-            let ts = chrono::Utc::now().timestamp_millis();
-            if ts < 0 { 0 } else { ts as u64 }
-        });
+        let now_ms = now_epoch_ms.unwrap_or_else(UnixMs::now);
 
         let trade_retention_ms = self.config.trade_retention.as_millis() as u64;
         let prune_slack_ms = trade_retention_ms / 10;
@@ -245,7 +238,7 @@ impl TimeAndSales {
         }
     }
 
-    fn prune_paused_by_time(&mut self, now_epoch_ms: Option<u64>) {
+    fn prune_paused_by_time(&mut self, now_epoch_ms: Option<UnixMs>) {
         if self.paused_trades_buffer.is_empty() {
             return;
         }
@@ -253,10 +246,7 @@ impl TimeAndSales {
         let trade_retention_ms = self.config.trade_retention.as_millis() as u64;
         let prune_slack_ms = trade_retention_ms / 10;
 
-        let now_ms = now_epoch_ms.unwrap_or_else(|| {
-            let ts = chrono::Utc::now().timestamp_millis();
-            if ts < 0 { 0 } else { ts as u64 }
-        });
+        let now_ms = now_epoch_ms.unwrap_or_else(UnixMs::now);
 
         let low_cutoff = now_ms.saturating_sub(trade_retention_ms);
         let high_cutoff = now_ms.saturating_sub(trade_retention_ms.saturating_add(prune_slack_ms));

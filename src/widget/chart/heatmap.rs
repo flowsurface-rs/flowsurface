@@ -28,7 +28,7 @@ use data::chart::{
 };
 use exchange::depth::Depth;
 use exchange::unit::{Price, PriceStep};
-use exchange::{TickerInfo, Trade};
+use exchange::{TickerInfo, Trade, UnixMs};
 
 use std::time::{Duration, Instant};
 
@@ -311,7 +311,7 @@ impl HeatmapShader {
         let scroll_ref_bucket = self.anchor.scroll_ref_bucket();
         let is_paused = self.anchor.is_paused();
 
-        let aggr_time = self.depth_history.aggr_time.max(1);
+        let aggr_time = self.depth_history.aggr_time_ms();
         let latest_bucket = (render_latest_time / aggr_time) as i64;
         let render_base_price = self.anchor.effective_base_price(self.base_price);
 
@@ -398,7 +398,7 @@ impl HeatmapShader {
         let viewport_size = self.viewport_size_px()?;
 
         if let Some(exchange_now_ms) = self.clock.estimate_now_ms(now_i) {
-            let aggr_time = self.depth_history.aggr_time.max(1);
+            let aggr_time = self.depth_history.aggr_time_ms();
             let x0_visible = self.scene.profile_start_visible_x0(viewport_size);
 
             let state_change = self.anchor.tick_live_and_auto_follow(
@@ -424,15 +424,18 @@ impl HeatmapShader {
         None
     }
 
-    pub fn insert_depth(&mut self, depth: &Depth, update_t: u64) {
+    pub fn insert_depth(&mut self, depth: &Depth, update_t: UnixMs) {
         self.mark_needs_full_upload_if_stalled();
         let prev_effective_base = self.anchor.effective_base_price(self.base_price);
 
         let paused = self.anchor.is_paused();
         let is_interacting = matches!(self.rebuild_policy, view::RebuildPolicy::Debounced { .. });
 
-        let aggr_time = self.depth_history.aggr_time.max(1);
-        let rounded_t = view::round_time_to_bucket(update_t, aggr_time);
+        let aggr_interval = self.depth_history.aggr_time;
+        let aggr_time = aggr_interval.to_milliseconds();
+        let update_t_ms = update_t.as_u64();
+        let rounded_t = update_t.floor_to(aggr_interval);
+        let rounded_t_ms = rounded_t.as_u64();
 
         if let Some(mid) = depth.mid_price() {
             let mid_rounded = mid.round_to_step(self.step);
@@ -440,18 +443,18 @@ impl HeatmapShader {
                 .apply_mid_price(mid_rounded, &mut self.base_price);
         }
 
-        self.latest_time = Some(rounded_t);
+        self.latest_time = Some(rounded_t_ms);
 
-        self.clock = self.clock.anchor_with_update(update_t);
+        self.clock = self.clock.anchor_with_update(update_t_ms);
 
         self.anchor
-            .set_scroll_ref_bucket_if_zero((rounded_t / aggr_time) as i64);
+            .set_scroll_ref_bucket_if_zero((rounded_t_ms / aggr_time) as i64);
 
         self.depth_grid.ensure_layout(aggr_time);
         self.depth_history.insert_latest_depth(depth, rounded_t);
 
         if !paused {
-            self.update_live_ring_and_scene(depth, rounded_t, is_interacting);
+            self.update_live_ring_and_scene(depth, rounded_t_ms, is_interacting);
         }
 
         self.data_gen = self.data_gen.wrapping_add(1);
@@ -470,13 +473,13 @@ impl HeatmapShader {
         }
     }
 
-    pub fn insert_trades(&mut self, buffer: &[Trade], update_t: u64) {
+    pub fn insert_trades(&mut self, buffer: &[Trade], update_t: UnixMs) {
         if buffer.is_empty() {
             return;
         }
 
-        let aggr_time = self.depth_history.aggr_time.max(1);
-        let rounded_t = view::round_time_to_bucket(update_t, aggr_time);
+        let aggr_interval = self.depth_history.aggr_time;
+        let rounded_t = update_t.floor_to(aggr_interval);
 
         self.trades
             .ingest_trades_bucket(rounded_t, buffer, self.step);
@@ -585,7 +588,10 @@ impl HeatmapShader {
         let cutoff_rounded = (cutoff / aggr_time) * aggr_time;
 
         // Prune trades (TimeSeries datapoints are bucket timestamps)
-        let keep = self.trades.datapoints.split_off(&cutoff_rounded);
+        let keep = self
+            .trades
+            .datapoints
+            .split_off(&UnixMs::new(cutoff_rounded));
         self.trades.datapoints = keep;
 
         // Prune HistoricalDepth to match the oldest remaining trade bucket (if any),
@@ -593,7 +599,8 @@ impl HeatmapShader {
         if let Some(oldest_time) = self.trades.datapoints.keys().next().copied() {
             self.depth_history.cleanup_old_price_levels(oldest_time);
         } else {
-            self.depth_history.cleanup_old_price_levels(cutoff_rounded);
+            self.depth_history
+                .cleanup_old_price_levels(UnixMs::new(cutoff_rounded));
         }
     }
 
@@ -616,7 +623,7 @@ impl HeatmapShader {
         };
 
         let input = ViewInputs {
-            aggr_time: self.depth_history.aggr_time.max(1),
+            aggr_time: self.depth_history.aggr_time_ms(),
             latest_time_data: latest_data_for_view,
             latest_time_render: latest_render,
             base_price,
@@ -671,7 +678,7 @@ impl HeatmapShader {
             .latest_order_runs(
                 effective_window.highest,
                 effective_window.lowest,
-                latest_time,
+                UnixMs::new(latest_time),
             )
             .map(|(price, run)| (*price, run.qty, run.is_bid));
 
@@ -730,7 +737,7 @@ impl HeatmapShader {
             None => return,
         };
 
-        let aggr_time: u64 = self.depth_history.aggr_time.max(1);
+        let aggr_time: u64 = self.depth_history.aggr_time_ms();
         let market_type = self.ticker_info.market_type();
         let size_in_quote_ccy =
             exchange::unit::qty::volume_size_unit() == exchange::SizeUnit::Quote;

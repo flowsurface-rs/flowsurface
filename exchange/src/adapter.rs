@@ -7,7 +7,7 @@ pub mod proxy;
 pub use super::error::AdapterError;
 use super::{Ticker, Timeframe};
 use crate::{
-    Kline, Price, PushFrequency, TickMultiplier, TickerInfo, Trade, depth::Depth, unit::Qty,
+    Kline, Price, PushFrequency, TickMultiplier, TickerInfo, Trade, UnixMs, depth::Depth, unit::Qty,
 };
 
 use enum_map::{Enum, EnumMap};
@@ -43,9 +43,9 @@ async fn flush_trade_buffers<V>(
 
         let bucket_update_t = trades_buffer
             .iter()
-            .map(|t| t.time)
+            .map(|t| t.time.as_u64())
             .max()
-            .map(|t| (t / interval_ms) * interval_ms);
+            .map(|t| UnixMs::new((t / interval_ms) * interval_ms));
 
         if let Some((ticker_info, _)) = ticker_info_map.get(ticker)
             && let Some(update_t) = bucket_update_t
@@ -536,8 +536,8 @@ impl Exchange {
 pub enum Event {
     Connected(Exchange),
     Disconnected(Exchange, String),
-    DepthReceived(StreamKind, u64, Arc<Depth>),
-    TradesReceived(StreamKind, u64, Box<[Trade]>),
+    DepthReceived(StreamKind, UnixMs, Arc<Depth>),
+    TradesReceived(StreamKind, UnixMs, Box<[Trade]>),
     KlineReceived(StreamKind, Kline),
 }
 

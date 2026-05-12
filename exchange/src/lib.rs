@@ -11,6 +11,7 @@ use unit::price::de_price_from_number;
 use unit::price::{Price, PriceStep};
 pub use unit::qty::SizeUnit;
 use unit::qty::de_qty_from_number;
+pub use unit::time::{UnixMs, UnixMsRangeError};
 use unit::{ContractSize, MinQtySize, MinTicksize, Qty};
 
 use serde::{Deserialize, Serialize};
@@ -147,6 +148,31 @@ impl From<Timeframe> for f32 {
 impl From<Timeframe> for u64 {
     fn from(timeframe: Timeframe) -> u64 {
         timeframe.to_milliseconds()
+    }
+}
+
+impl TryFrom<u64> for Timeframe {
+    type Error = InvalidTimeframe;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        match value {
+            100 => Ok(Timeframe::MS100),
+            200 => Ok(Timeframe::MS200),
+            300 => Ok(Timeframe::MS300),
+            500 => Ok(Timeframe::MS500),
+            1_000 => Ok(Timeframe::MS1000),
+            60_000 => Ok(Timeframe::M1),
+            180_000 => Ok(Timeframe::M3),
+            300_000 => Ok(Timeframe::M5),
+            900_000 => Ok(Timeframe::M15),
+            1_800_000 => Ok(Timeframe::M30),
+            3_600_000 => Ok(Timeframe::H1),
+            7_200_000 => Ok(Timeframe::H2),
+            14_400_000 => Ok(Timeframe::H4),
+            43_200_000 => Ok(Timeframe::H12),
+            86_400_000 => Ok(Timeframe::D1),
+            _ => Err(InvalidTimeframe(value)),
+        }
     }
 }
 
@@ -535,7 +561,7 @@ impl TickerInfo {
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 pub struct Trade {
-    pub time: u64,
+    pub time: UnixMs,
     pub is_sell: bool,
     pub price: Price,
     pub qty: Qty,
@@ -543,7 +569,7 @@ pub struct Trade {
 
 #[derive(Debug, Clone, Copy)]
 pub struct Kline {
-    pub time: u64,
+    pub time: UnixMs,
     pub open: Price,
     pub high: Price,
     pub low: Price,
@@ -553,7 +579,7 @@ pub struct Kline {
 
 impl Kline {
     pub fn new(
-        time: u64,
+        time: impl Into<UnixMs>,
         open: f32,
         high: f32,
         low: f32,
@@ -561,6 +587,8 @@ impl Kline {
         volume: Volume,
         min_ticksize: MinTicksize,
     ) -> Self {
+        let time = time.into();
+
         Self {
             time,
             open: Price::from_f32(open).round_to_min_tick(min_ticksize),
@@ -650,7 +678,7 @@ pub struct TickerStats {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OpenInterest {
-    pub time: u64,
+    pub time: UnixMs,
     pub value: f32,
 }
 

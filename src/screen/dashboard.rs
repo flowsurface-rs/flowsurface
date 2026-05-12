@@ -23,7 +23,7 @@ use data::{
     stream::PersistStreamKind,
 };
 use exchange::{
-    Kline, PushFrequency, StreamPairKind, TickerInfo, Trade,
+    Kline, PushFrequency, StreamPairKind, TickerInfo, Trade, UnixMs,
     adapter::{
         AdapterHandles, MAX_KLINE_STREAMS_PER_STREAM, MAX_TRADE_TICKERS_PER_STREAM, StreamConfig,
         StreamKind, StreamTicksize, UniqueStreams,
@@ -880,7 +880,7 @@ impl Dashboard {
     ) -> Task<Message> {
         match data {
             FetchedData::Trades { batch, until_time } => {
-                let last_trade_time = batch.last().map_or(0, |trade| trade.time);
+                let last_trade_time = batch.last().map_or(UnixMs::ZERO, |trade| trade.time);
 
                 if last_trade_time < until_time {
                     if let Err(reason) =
@@ -1009,7 +1009,7 @@ impl Dashboard {
     pub fn ingest_depth(
         &mut self,
         stream: &StreamKind,
-        depth_update_t: u64,
+        update_t: UnixMs,
         depth: &Depth,
         main_window: window::Id,
     ) -> Task<Message> {
@@ -1021,17 +1021,17 @@ impl Dashboard {
                     match &mut pane_state.content {
                         pane::Content::Heatmap { chart, .. } => {
                             if let Some(c) = chart {
-                                c.insert_depth(depth, depth_update_t);
+                                c.insert_depth(depth, update_t);
                             }
                         }
                         pane::Content::ShaderHeatmap { chart, .. } => {
                             if let Some(c) = chart {
-                                c.insert_depth(depth, depth_update_t);
+                                c.insert_depth(depth, update_t);
                             }
                         }
                         pane::Content::Ladder(panel) => {
                             if let Some(panel) = panel {
-                                panel.insert_depth(depth, depth_update_t);
+                                panel.insert_depth(depth, update_t);
                             }
                         }
                         _ => {
@@ -1053,7 +1053,7 @@ impl Dashboard {
         &mut self,
         stream: &StreamKind,
         buffer: &[Trade],
-        update_t: u64,
+        update_t: UnixMs,
         main_window: window::Id,
     ) -> Task<Message> {
         let mut found_match = false;

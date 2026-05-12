@@ -1,5 +1,5 @@
 use crate::{
-    Event, Kline, OpenInterest, PushFrequency, Ticker, TickerInfo, Timeframe, Trade,
+    Event, Kline, OpenInterest, PushFrequency, Ticker, TickerInfo, Timeframe, Trade, UnixMs,
     adapter::limiter::DynamicRateLimiterConfig,
     adapter::{AdapterNetworkConfig, Exchange, MarketKind},
     depth::DepthPayload,
@@ -147,7 +147,7 @@ impl BinanceHandle {
         &self,
         ticker: TickerInfo,
         timeframe: Timeframe,
-        range: Option<(u64, u64)>,
+        range: Option<(UnixMs, UnixMs)>,
     ) -> Result<Vec<Kline>, AdapterError> {
         self.request_port
             .request(move |reply| BinanceCommand::Klines {
@@ -163,7 +163,7 @@ impl BinanceHandle {
         &self,
         ticker: TickerInfo,
         timeframe: Timeframe,
-        range: Option<(u64, u64)>,
+        range: Option<(UnixMs, UnixMs)>,
     ) -> Result<Vec<OpenInterest>, AdapterError> {
         self.request_port
             .request(move |reply| BinanceCommand::OpenInterest {
@@ -178,7 +178,7 @@ impl BinanceHandle {
     pub async fn fetch_trades(
         &self,
         ticker: TickerInfo,
-        from_time: u64,
+        from_time: UnixMs,
         data_path: Option<PathBuf>,
     ) -> Result<Vec<Trade>, AdapterError> {
         self.request_port
@@ -292,7 +292,7 @@ impl super::FetchCommandHandler<BinanceMarketScope> for Worker {
         &mut self,
         ticker_info: TickerInfo,
         timeframe: Timeframe,
-        range: Option<(u64, u64)>,
+        range: Option<(UnixMs, UnixMs)>,
     ) -> futures::future::BoxFuture<'_, Result<Vec<Kline>, AdapterError>> {
         let market = ticker_info.market_type();
         Box::pin(async move {
@@ -304,7 +304,7 @@ impl super::FetchCommandHandler<BinanceMarketScope> for Worker {
         &mut self,
         ticker_info: TickerInfo,
         timeframe: Timeframe,
-        range: Option<(u64, u64)>,
+        range: Option<(UnixMs, UnixMs)>,
     ) -> futures::future::BoxFuture<'_, Result<Vec<OpenInterest>, AdapterError>> {
         let market = ticker_info.market_type();
         Box::pin(async move {
@@ -326,7 +326,7 @@ impl super::FetchCommandHandler<BinanceMarketScope> for Worker {
     fn fetch_trades(
         &mut self,
         ticker_info: TickerInfo,
-        from_time: u64,
+        from_time: UnixMs,
         data_path: Option<PathBuf>,
     ) -> futures::future::BoxFuture<'_, Result<Vec<Trade>, AdapterError>> {
         let market = ticker_info.market_type();

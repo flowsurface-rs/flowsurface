@@ -1,5 +1,5 @@
 use crate::{
-    Kline, Price, Qty, Ticker, TickerInfo, TickerStats, Timeframe, Volume,
+    Kline, Price, Qty, Ticker, TickerInfo, TickerStats, Timeframe, UnixMs, Volume,
     adapter::MarketKind,
     depth::{DeOrder, DepthPayload},
     serde_util::{self, de_string_to_number},
@@ -53,21 +53,13 @@ struct DepthSnapshotResponse {
 #[derive(Deserialize)]
 struct DepthData {
     #[serde(rename = "asks")]
-    asks: Vec<FuturesDepthItem>,
+    asks: Vec<DeOrder>,
     #[serde(rename = "bids")]
-    bids: Vec<FuturesDepthItem>,
+    bids: Vec<DeOrder>,
     #[serde(rename = "version")]
     version: u64,
     #[serde(rename = "timestamp")]
     timestamp: u64,
-}
-
-#[derive(Deserialize)]
-struct FuturesDepthItem {
-    #[serde()]
-    pub price: f32,
-    #[serde()]
-    pub qty: f32,
 }
 
 pub(super) async fn fetch_depth_snapshot(
@@ -86,20 +78,11 @@ pub(super) async fn fetch_depth_snapshot(
     let snapshot: DepthSnapshotResponse =
         sonic_rs::from_str(&response_text).map_err(|e| AdapterError::ParseError(e.to_string()))?;
 
-    let parse_orders = |arr: &Vec<FuturesDepthItem>| -> Vec<DeOrder> {
-        arr.iter()
-            .map(|x| DeOrder {
-                price: x.price,
-                qty: x.qty,
-            })
-            .collect()
-    };
-
     Ok(DepthPayload {
         last_update_id: snapshot.data.version,
-        time: snapshot.data.timestamp,
-        bids: parse_orders(&snapshot.data.bids),
-        asks: parse_orders(&snapshot.data.asks),
+        time: UnixMs(snapshot.data.timestamp),
+        bids: snapshot.data.bids,
+        asks: snapshot.data.asks,
     })
 }
 
@@ -387,7 +370,7 @@ pub(super) async fn fetch_klines(
     hub: &mut HttpHub<MexcLimiter>,
     ticker_info: TickerInfo,
     timeframe: Timeframe,
-    range: Option<(u64, u64)>,
+    range: Option<(UnixMs, UnixMs)>,
 ) -> Result<Vec<Kline>, AdapterError> {
     let ticker = ticker_info.ticker;
 
@@ -419,6 +402,8 @@ pub(super) async fn fetch_klines(
     };
 
     if let Some((start_ms, end_ms)) = range {
+        let start_ms = start_ms.as_u64();
+        let end_ms = end_ms.as_u64();
         match market_type {
             MarketKind::Spot => {
                 url.push_str(&format!("&startTime={}&endTime={}", start_ms, end_ms));

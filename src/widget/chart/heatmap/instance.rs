@@ -7,6 +7,7 @@ use crate::widget::chart::heatmap::view::ViewWindow;
 use data::aggr::time::TimeSeries;
 use data::chart::heatmap::{Config, HeatmapDataPoint, ProfileKind};
 use exchange::SizeUnit;
+use exchange::UnixMs;
 use exchange::adapter::MarketKind;
 use exchange::unit::{Price, PriceStep, Qty};
 
@@ -213,7 +214,7 @@ impl InstanceBuilder {
 
         for (_time, dp) in trades
             .datapoints
-            .range(earliest_profile_time..=latest_profile_time)
+            .range(UnixMs::new(earliest_profile_time)..=UnixMs::new(latest_profile_time))
         {
             for t in dp.grouped_trades.iter() {
                 let rel_y_bin = w.y_bin_for_price(t.price, base_price, step);
@@ -306,8 +307,11 @@ impl InstanceBuilder {
         let trade_size_filter = config.trade_size_filter.max(0.0);
         let fallback_radius_px = (0.5 * w.row_h * w.cam_scale).max(CircleInstance::R_MIN_PX);
 
-        for (bucket_time, dp) in trades.datapoints.range(w.earliest..=w.latest_vis) {
-            let bucket = (*bucket_time / w.aggr_time) as i64;
+        for (bucket_time, dp) in trades
+            .datapoints
+            .range(UnixMs::new(w.earliest)..=UnixMs::new(w.latest_vis))
+        {
+            let bucket = (bucket_time.as_u64() / w.aggr_time) as i64;
 
             for trade in dp.grouped_trades.iter() {
                 if trade.price < w.lowest || trade.price > w.highest {
@@ -463,8 +467,11 @@ impl InstanceBuilder {
             .for_each(|e| *e = (Qty::ZERO, Qty::ZERO));
         self.volume_touched.clear();
 
-        for (time, dp) in trades.datapoints.range(w.earliest..=w.latest_vis) {
-            let bucket = (*time / w.aggr_time) as i64;
+        for (time, dp) in trades
+            .datapoints
+            .range(UnixMs::new(w.earliest)..=UnixMs::new(w.latest_vis))
+        {
+            let bucket = (time.as_u64() / w.aggr_time) as i64;
             let x_bin = bucket.div_euclid(cols_per_x_bin);
             let idx = (x_bin - min_x_bin) as usize;
 

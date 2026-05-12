@@ -1,4 +1,5 @@
 use data::chart::heatmap::HistoricalDepth;
+use exchange::UnixMs;
 use exchange::adapter::MarketKind;
 use exchange::depth::Depth;
 use exchange::unit::{Price, PriceStep, Qty};
@@ -146,6 +147,8 @@ impl GridRing {
         let aggr = self.aggr_time_ms.max(1);
         let oldest_time = (oldest_time / aggr) * aggr;
         let latest_time = (latest_time / aggr) * aggr;
+        let oldest_time_unix = UnixMs::new(oldest_time);
+        let latest_time_unix = UnixMs::new(latest_time);
 
         let oldest_bucket: i64 = (oldest_time / aggr) as i64;
         let latest_bucket: i64 = (latest_time / aggr) as i64;
@@ -156,9 +159,12 @@ impl GridRing {
 
         let w = self.tex_w as i64;
 
-        for (price, runs) in
-            hist.iter_time_filtered(oldest_time, latest_time + aggr, highest, lowest)
-        {
+        for (price, runs) in hist.iter_time_filtered(
+            oldest_time_unix,
+            latest_time_unix.saturating_add(aggr),
+            highest,
+            lowest,
+        ) {
             // Map price -> y bin (view-relative around base_price).
             let dy_steps: i64 = (price.units - base_price.units).div_euclid(step_units);
             let dy_bins: i64 = dy_steps.div_euclid(self.steps_per_y_bin);
@@ -171,8 +177,11 @@ impl GridRing {
 
             for run in runs.iter() {
                 // Overlap run with [oldest_time, latest_time+aggr)
-                let run_start = run.start_time.max(oldest_time);
-                let run_end_excl = run.until_time.min(latest_time.saturating_add(aggr));
+                let run_start = run.start_time.max(oldest_time_unix).as_u64();
+                let run_end_excl = run
+                    .until_time
+                    .min(latest_time_unix.saturating_add(aggr))
+                    .as_u64();
                 if run_end_excl <= run_start {
                     continue;
                 }

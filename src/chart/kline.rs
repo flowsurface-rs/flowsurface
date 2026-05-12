@@ -16,7 +16,7 @@ use data::chart::{Autoscale, KlineChartKind, ViewConfig};
 
 use data::util::abbr_large_numbers;
 use exchange::unit::{Price, PriceStep, Qty};
-use exchange::{Kline, OpenInterest as OIData, TickerInfo, Trade};
+use exchange::{Kline, OpenInterest as OIData, TickerInfo, Trade, UnixMs};
 
 use iced::task::Handle;
 use iced::theme::palette::Extended;
@@ -95,7 +95,7 @@ impl Chart for KlineChart {
                 tick_aggr
                     .datapoints
                     .iter()
-                    .map(|dp| dp.kline.time)
+                    .map(|dp| dp.kline.time.as_u64())
                     .collect(),
             ),
         }
@@ -190,7 +190,9 @@ impl KlineChart {
                     .with_trades(&raw_trades);
 
                 let base_price_y = timeseries.base_price();
-                let latest_x = timeseries.latest_timestamp().unwrap_or(0);
+                let latest_x = timeseries
+                    .latest_timestamp()
+                    .map_or(0, |timestamp| timestamp.as_u64());
                 let (scale_high, scale_low) = timeseries.price_scale({
                     match kind {
                         KlineChartKind::Footprint { .. } => 12,
@@ -336,8 +338,8 @@ impl KlineChart {
 
                 let chart = self.mut_state();
 
-                if (kline.time) > chart.latest_x {
-                    chart.latest_x = kline.time;
+                if kline.time.as_u64() > chart.latest_x {
+                    chart.latest_x = kline.time.as_u64();
                 }
 
                 chart.last_price = Some(PriceInfoLabel::new(kline.close, kline.open));
@@ -359,7 +361,7 @@ impl KlineChart {
                     let latest = chrono::Utc::now().timestamp_millis() as u64;
                     let earliest = latest.saturating_sub(450 * timeframe_ms);
 
-                    let range = FetchRange::Kline(earliest, latest);
+                    let range = FetchRange::Kline(UnixMs::new(earliest), UnixMs::new(latest));
                     if let Some(action) = request_fetch(&mut self.request_handler, range) {
                         return Some(action);
                     }
@@ -367,12 +369,14 @@ impl KlineChart {
 
                 let (visible_earliest, visible_latest) = self.visible_timerange()?;
                 let (kline_earliest, kline_latest) = timeseries.timerange();
+                let visible_earliest_ms = UnixMs::new(visible_earliest);
+                let visible_latest_ms = UnixMs::new(visible_latest);
                 let visible_span = visible_latest.saturating_sub(visible_earliest);
                 let prefetch_earliest = visible_earliest.saturating_sub(visible_span);
 
                 // priority 1, initial klines for visible range
-                if visible_earliest < kline_earliest {
-                    let range = FetchRange::Kline(prefetch_earliest, kline_earliest);
+                if visible_earliest_ms < kline_earliest {
+                    let range = FetchRange::Kline(UnixMs::new(prefetch_earliest), kline_earliest);
 
                     if let Some(action) = request_fetch(&mut self.request_handler, range) {
                         return Some(action);
@@ -384,7 +388,7 @@ impl KlineChart {
                     && !self.fetching_trades.0
                     && is_trade_fetch_enabled()
                     && let Some((fetch_from, fetch_to)) =
-                        timeseries.suggest_trade_fetch_range(visible_earliest, visible_latest)
+                        timeseries.suggest_trade_fetch_range(visible_earliest_ms, visible_latest_ms)
                 {
                     let range = FetchRange::Trades(fetch_from, fetch_to);
                     if let Some(action) = request_fetch(&mut self.request_handler, range) {
@@ -398,9 +402,9 @@ impl KlineChart {
                 let ctx = indicator::kline::FetchCtx {
                     main_chart: &self.chart,
                     timeframe: timeseries.interval,
-                    visible_earliest,
+                    visible_earliest: visible_earliest_ms,
                     kline_latest,
-                    prefetch_earliest,
+                    prefetch_earliest: UnixMs::new(prefetch_earliest),
                 };
                 for indi in self.indicators.values_mut().filter_map(Option::as_mut) {
                     if let Some(range) = indi.fetch_range(&ctx)
@@ -411,8 +415,8 @@ impl KlineChart {
                 }
 
                 // priority 4, missing klines & integrity check
-                let check_earliest = prefetch_earliest.max(kline_earliest);
-                let check_latest = visible_latest.saturating_add(timeframe_ms);
+                let check_earliest = UnixMs::new(prefetch_earliest).max(kline_earliest);
+                let check_latest = visible_latest_ms.saturating_add(timeframe_ms);
 
                 if let Some(missing_keys) =
                     timeseries.check_kline_integrity(check_earliest, check_latest)
@@ -420,12 +424,12 @@ impl KlineChart {
                     let latest = missing_keys
                         .iter()
                         .max()
-                        .unwrap_or(&visible_latest)
+                        .unwrap_or(&visible_latest_ms)
                         .saturating_add(timeframe_ms);
                     let earliest = missing_keys
                         .iter()
                         .min()
-                        .unwrap_or(&visible_earliest)
+                        .unwrap_or(&visible_earliest_ms)
                         .saturating_sub(timeframe_ms);
 
                     let range = FetchRange::Kline(earliest, latest);
@@ -716,8 +720,8 @@ impl KlineChart {
             PlotData::TimeBased(timeseries) => timeseries
                 .max_qty_ts_range(
                     cluster_kind,
-                    earliest,
-                    latest,
+                    UnixMs::new(earliest),
+                    UnixMs::new(latest),
                     rounded_highest,
                     rounded_lowest,
                 )
@@ -797,17 +801,62 @@ impl KlineChart {
                         .data_source
                         .visible_price_range(start_interval, end_interval)
                     {
-                        let padding = (highest - lowest) * 0.05;
-                        let price_span = (highest - lowest) + (2.0 * padding);
+                        let chart_height = chart.bounds.height;
+                        let tick_size = chart.tick_size.to_f32_lossy();
 
-                        if price_span > 0.0 && chart.bounds.height > f32::EPSILON {
-                            let padded_highest = highest + padding;
-                            let chart_height = chart.bounds.height;
-                            let tick_size = chart.tick_size.to_f32_lossy();
+                        if chart_height > f32::EPSILON && tick_size > 0.0 {
+                            let (fit_lowest, fit_highest) =
+                                if let KlineChartKind::Footprint { .. } = self.kind {
+                                    if let Some((footprint_low, footprint_high)) = self
+                                        .data_source
+                                        .visible_footprint_price_range(start_interval, end_interval)
+                                    {
+                                        let half_tick = tick_size * 0.5;
+                                        (
+                                            footprint_low.to_f32_lossy() - half_tick,
+                                            footprint_high.to_f32_lossy() + half_tick,
+                                        )
+                                    } else {
+                                        (lowest, highest)
+                                    }
+                                } else {
+                                    (lowest, highest)
+                                };
 
-                            if tick_size > 0.0 {
-                                chart.cell_height = (chart_height * tick_size) / price_span;
-                                chart.base_price_y = Price::from_f32(padded_highest);
+                            let visible_span = (fit_highest - fit_lowest).max(tick_size);
+                            let base_padding = visible_span * 0.05; // 5% padding on top and bottom
+
+                            let mut top_padding = base_padding;
+                            let mut bottom_padding = base_padding;
+
+                            if let KlineChartKind::Footprint { clusters, .. } = self.kind {
+                                let provisional_span = visible_span + top_padding + bottom_padding;
+                                if provisional_span > 0.0 {
+                                    let provisional_cell_height =
+                                        (chart_height * tick_size) / provisional_span;
+
+                                    let outer_padding = price_padding_from_pixels(
+                                        provisional_cell_height,
+                                        tick_size,
+                                    );
+
+                                    top_padding += outer_padding;
+                                    bottom_padding += outer_padding;
+
+                                    bottom_padding = bottom_padding.max(footprint_summary_padding(
+                                        provisional_cell_height,
+                                        chart.scaling,
+                                        chart.cell_width,
+                                        tick_size,
+                                        clusters,
+                                    ));
+                                }
+                            }
+
+                            let padded_span = visible_span + top_padding + bottom_padding;
+                            if padded_span > 0.0 {
+                                chart.cell_height = (chart_height * tick_size) / padded_span;
+                                chart.base_price_y = Price::from_f32(fit_highest + top_padding);
                                 chart.translation.y = -chart_height / 2.0;
                             }
                         }
@@ -914,13 +963,8 @@ impl canvas::Program<Message> for KlineChart {
                     let cell_height_unscaled = chart.cell_height * chart.scaling;
                     let cell_width_unscaled = chart.cell_width * chart.scaling;
 
-                    let text_size = {
-                        let text_size_from_height = cell_height_unscaled.round().min(16.0) - 3.0;
-                        let text_size_from_width =
-                            (cell_width_unscaled * 0.1).round().min(16.0) - 3.0;
-
-                        text_size_from_height.min(text_size_from_width)
-                    };
+                    let text_size =
+                        footprint_cluster_text_size(cell_height_unscaled, cell_width_unscaled);
 
                     let candle_width = 0.1 * chart.cell_width;
                     let content_spacing = ContentGaps::from_view(candle_width, chart.scaling);
@@ -938,13 +982,11 @@ impl canvas::Program<Message> for KlineChart {
                         }
                     });
 
-                    let show_text = {
-                        let min_w = match clusters {
-                            ClusterKind::VolumeProfile | ClusterKind::DeltaProfile => 80.0,
-                            ClusterKind::BidAsk => 120.0,
-                        };
-                        should_show_text(cell_height_unscaled, cell_width_unscaled, min_w)
-                    };
+                    let show_text = should_show_text(
+                        cell_height_unscaled,
+                        cell_width_unscaled,
+                        footprint_cluster_min_width(*clusters),
+                    );
 
                     draw_all_npocs(
                         &self.data_source,
@@ -1188,9 +1230,9 @@ fn render_data_source<F>(
 
             timeseries
                 .datapoints
-                .range(earliest..=latest)
+                .range(UnixMs::new(earliest)..=UnixMs::new(latest))
                 .for_each(|(timestamp, dp)| {
-                    let x_position = interval_to_x(*timestamp);
+                    let x_position = interval_to_x(timestamp.as_u64());
 
                     draw_fn(frame, x_position, &dp.kline, &dp.footprint);
                 });
@@ -1341,7 +1383,10 @@ fn draw_all_npocs(
                 .rev()
                 .take(lookback)
                 .filter_map(|(timestamp, dp)| {
-                    dp.footprint.poc.as_ref().map(|poc| (*timestamp, poc))
+                    dp.footprint
+                        .poc
+                        .as_ref()
+                        .map(|poc| (timestamp.as_u64(), poc))
                 })
                 .for_each(|(interval, poc)| draw_the_line(interval, poc));
         }
@@ -1641,6 +1686,49 @@ fn draw_clusters(
             );
         }
     }
+
+    if show_text {
+        let mut total_buy = Qty::zero();
+        let mut total_sell = Qty::zero();
+        let mut total_delta = Qty::zero();
+
+        for group in footprint.trades.values() {
+            total_buy += group.buy_qty;
+            total_sell += group.sell_qty;
+            total_delta += group.delta_qty();
+        }
+
+        let summary_y = price_to_y(kline.low) + cell_height * 1.5;
+        let line_spacing = text_size * 1.2;
+
+        let total_vol = total_buy + total_sell;
+
+        draw_cluster_text(
+            frame,
+            &format!("V: {}", abbr_large_numbers(total_vol.to_f32_lossy())),
+            Point::new(x_position, summary_y),
+            text_size * 0.9,
+            palette.background.weakest.text,
+            Alignment::Center,
+            Alignment::Start,
+        );
+
+        let delta_color = if total_delta >= Qty::zero() {
+            palette.success.base.color
+        } else {
+            palette.danger.base.color
+        };
+
+        draw_cluster_text(
+            frame,
+            &format!("Δ: {}", abbr_large_numbers(total_delta.to_f32_lossy())),
+            Point::new(x_position, summary_y + line_spacing),
+            text_size * 0.9,
+            delta_color,
+            Alignment::Center,
+            Alignment::Start,
+        );
+    }
 }
 
 fn draw_imbalance_markers(
@@ -1771,14 +1859,14 @@ fn draw_crosshair_tooltip(
 
             timeseries
                 .datapoints
-                .get(&at_interval)
+                .get(&UnixMs::new(at_interval))
                 .map(|dp| &dp.kline)
                 .or_else(|| {
                     if in_visible {
                         let search_end = at_interval.min(visible_latest);
                         timeseries
                             .datapoints
-                            .range(visible_earliest..=search_end)
+                            .range(UnixMs::new(visible_earliest)..=UnixMs::new(search_end))
                             .next_back()
                             .map(|(_, dp)| &dp.kline)
                     } else {
@@ -1794,12 +1882,16 @@ fn draw_crosshair_tooltip(
                     if right_of_latest {
                         timeseries
                             .datapoints
-                            .range(visible_earliest..=visible_latest)
+                            .range(UnixMs::new(visible_earliest)..=UnixMs::new(visible_latest))
                             .next_back()
                             .map(|(_, dp)| &dp.kline)
                     } else {
                         None
                     }
+                })
+                .or_else(|| {
+                    let (last_time, dp) = timeseries.datapoints.last_key_value()?;
+                    (at_interval > last_time.as_u64()).then_some(&dp.kline)
                 })
         }
         (PlotData::TickBased(tick_aggr), Some(at_interval)) => {
@@ -1962,6 +2054,71 @@ impl BidAskArea {
             imb_marker_width: candle_width,
         }
     }
+}
+
+#[inline]
+fn footprint_cluster_min_width(cluster_kind: ClusterKind) -> f32 {
+    match cluster_kind {
+        ClusterKind::VolumeProfile | ClusterKind::DeltaProfile => 80.0,
+        ClusterKind::BidAsk => 120.0,
+    }
+}
+
+#[inline]
+fn footprint_cluster_text_size(cell_height_unscaled: f32, cell_width_unscaled: f32) -> f32 {
+    let text_size_from_height = cell_height_unscaled.round().min(16.0) - 3.0;
+    let text_size_from_width = (cell_width_unscaled * 0.1).round().min(16.0) - 3.0;
+
+    text_size_from_height.min(text_size_from_width)
+}
+
+#[inline]
+fn price_padding_from_pixels(cell_height: f32, tick_size: f32) -> f32 {
+    const OUTER_BOUND_PADDING_PX: f32 = 4.0;
+
+    if cell_height <= f32::EPSILON {
+        return 0.0;
+    }
+
+    (OUTER_BOUND_PADDING_PX / cell_height) * tick_size
+}
+
+fn footprint_summary_padding(
+    cell_height: f32,
+    scaling: f32,
+    cell_width: f32,
+    tick_size: f32,
+    cluster_kind: ClusterKind,
+) -> f32 {
+    if cell_height <= f32::EPSILON {
+        return 0.0;
+    }
+
+    let cell_height_unscaled = cell_height * scaling;
+    let cell_width_unscaled = cell_width * scaling;
+
+    if !should_show_text(
+        cell_height_unscaled,
+        cell_width_unscaled,
+        footprint_cluster_min_width(cluster_kind),
+    ) {
+        return 0.0;
+    }
+
+    let text_size = footprint_cluster_text_size(cell_height_unscaled, cell_width_unscaled);
+    let line_spacing = text_size * 1.2;
+
+    let summary_text_height_px = text_size * 0.9;
+    let summary_y_start_px = cell_height * 1.5;
+
+    let second_line_y_start_px = summary_y_start_px + line_spacing;
+    let summary_y_end_px = second_line_y_start_px + summary_text_height_px;
+
+    let extra_bottom_padding_px = summary_text_height_px;
+    let summary_y_end_with_padding_px = summary_y_end_px + extra_bottom_padding_px;
+    let summary_ticks = summary_y_end_with_padding_px / cell_height;
+
+    summary_ticks * tick_size
 }
 
 #[inline]

@@ -3,6 +3,7 @@ use crate::widget::chart::heatmap::scene::{
     cell::{Cell, MIN_ROW_PX},
 };
 use data::chart::heatmap::HistoricalDepth;
+use exchange::UnixMs;
 use exchange::adapter::MarketKind;
 use exchange::unit::{Price, PriceStep};
 
@@ -827,15 +828,20 @@ impl DepthNormCache {
 
         let max_qty = if order_size_filter > 0.0 {
             hist.max_depth_qty_in_range(
-                w.earliest,
-                latest_incl,
+                UnixMs::new(w.earliest),
+                UnixMs::new(latest_incl),
                 w.highest,
                 w.lowest,
                 *market_type,
                 order_size_filter,
             )
         } else {
-            hist.max_qty_in_range_raw(w.earliest, latest_incl, w.highest, w.lowest)
+            hist.max_qty_in_range_raw(
+                UnixMs::new(w.earliest),
+                UnixMs::new(latest_incl),
+                w.highest,
+                w.lowest,
+            )
         };
 
         let max_qty = max_qty.to_scale_or_one();

@@ -1,15 +1,31 @@
 use crate::chart::{Basis, Message, ViewState};
 use crate::connector::fetcher::FetchRange;
 
-use data::chart::PlotData;
 use data::chart::indicator::KlineIndicator;
 use data::chart::kline::KlineDataPoint;
+use data::chart::{BasisSeries, PlotData};
 use exchange::adapter::Exchange;
-use exchange::{Kline, Timeframe, Trade};
+use exchange::{Kline, Timeframe, Trade, UnixMs};
+
+use super::plot::AnySeries;
 
 pub mod cumulative_delta;
 pub mod open_interest;
 pub mod volume;
+
+/// UI adapter methods for converting domain `BasisSeries` into plot-ready series.
+trait BasisSeriesExt<T> {
+    fn as_plot_series(&self) -> AnySeries<'_, T>;
+}
+
+impl<T> BasisSeriesExt<T> for BasisSeries<T> {
+    fn as_plot_series(&self) -> AnySeries<'_, T> {
+        match self {
+            BasisSeries::Time(data) => AnySeries::forward_unix_ms(data),
+            BasisSeries::Tick(data) => AnySeries::reversed_u64(data),
+        }
+    }
+}
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -110,9 +126,9 @@ pub trait KlineIndicatorImpl {
 pub struct FetchCtx<'a> {
     pub main_chart: &'a ViewState,
     pub timeframe: Timeframe,
-    pub visible_earliest: u64,
-    pub kline_latest: u64,
-    pub prefetch_earliest: u64,
+    pub visible_earliest: UnixMs,
+    pub kline_latest: UnixMs,
+    pub prefetch_earliest: UnixMs,
 }
 
 pub fn make_empty(which: KlineIndicator) -> Box<dyn KlineIndicatorImpl> {

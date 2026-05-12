@@ -225,6 +225,51 @@ impl TickAggr {
             .map(|(min_p, max_p)| (min_p.to_f32(), max_p.to_f32()))
     }
 
+    pub fn min_max_footprint_price_in_range(
+        &self,
+        earliest: usize,
+        latest: usize,
+    ) -> Option<(Price, Price)> {
+        if earliest > latest {
+            return None;
+        }
+
+        let mut min_p: Option<Price> = None;
+        let mut max_p: Option<Price> = None;
+
+        self.datapoints
+            .iter()
+            .rev()
+            .enumerate()
+            .filter(|(idx, _)| *idx >= earliest && *idx <= latest)
+            .for_each(|(_, dp)| {
+                min_p = Some(match min_p {
+                    Some(value) => value.min(dp.kline.low),
+                    None => dp.kline.low,
+                });
+                max_p = Some(match max_p {
+                    Some(value) => value.max(dp.kline.high),
+                    None => dp.kline.high,
+                });
+
+                for price in dp.footprint.trades.keys() {
+                    min_p = Some(match min_p {
+                        Some(value) => value.min(*price),
+                        None => *price,
+                    });
+                    max_p = Some(match max_p {
+                        Some(value) => value.max(*price),
+                        None => *price,
+                    });
+                }
+            });
+
+        match (min_p, max_p) {
+            (Some(low), Some(high)) => Some((low, high)),
+            _ => None,
+        }
+    }
+
     pub fn max_qty_idx_range(
         &self,
         cluster_kind: ClusterKind,

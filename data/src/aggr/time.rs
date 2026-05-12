@@ -5,16 +5,16 @@ use crate::chart::heatmap::HeatmapDataPoint;
 use crate::chart::kline::{ClusterKind, KlineDataPoint, KlineTrades, NPoc};
 
 use exchange::unit::{Price, PriceStep, Qty};
-use exchange::{Kline, Timeframe, Trade, Volume};
+use exchange::{Kline, Timeframe, Trade, UnixMs, Volume};
 
 pub trait DataPoint {
     fn add_trade(&mut self, trade: &Trade, step: PriceStep);
 
     fn clear_trades(&mut self);
 
-    fn last_trade_time(&self) -> Option<u64>;
+    fn last_trade_time(&self) -> Option<UnixMs>;
 
-    fn first_trade_time(&self) -> Option<u64>;
+    fn first_trade_time(&self) -> Option<UnixMs>;
 
     fn last_price(&self) -> Price;
 
@@ -26,7 +26,7 @@ pub trait DataPoint {
 }
 
 pub struct TimeSeries<D: DataPoint> {
-    pub datapoints: BTreeMap<u64, D>,
+    pub datapoints: BTreeMap<UnixMs, D>,
     pub interval: Timeframe,
     pub tick_size: PriceStep,
 }
@@ -39,7 +39,7 @@ impl<D: DataPoint> TimeSeries<D> {
             .map_or(Price::from_f32(0.0), DataPoint::last_price)
     }
 
-    pub fn latest_timestamp(&self) -> Option<u64> {
+    pub fn latest_timestamp(&self) -> Option<UnixMs> {
         self.datapoints.keys().last().copied()
     }
 
@@ -71,24 +71,34 @@ impl<D: DataPoint> TimeSeries<D> {
         }
     }
 
-    pub fn volume_data<'a>(&'a self) -> BTreeMap<u64, exchange::Volume>
+    pub fn volume_data<'a>(&'a self) -> BTreeMap<UnixMs, exchange::Volume>
     where
-        BTreeMap<u64, exchange::Volume>: From<&'a TimeSeries<D>>,
+        BTreeMap<UnixMs, exchange::Volume>: From<&'a TimeSeries<D>>,
     {
         self.into()
     }
 
-    pub fn timerange(&self) -> (u64, u64) {
-        let earliest = self.datapoints.keys().next().copied().unwrap_or(0);
-        let latest = self.datapoints.keys().last().copied().unwrap_or(0);
+    pub fn timerange(&self) -> (UnixMs, UnixMs) {
+        let earliest = self
+            .datapoints
+            .keys()
+            .next()
+            .copied()
+            .unwrap_or(UnixMs::ZERO);
+        let latest = self
+            .datapoints
+            .keys()
+            .last()
+            .copied()
+            .unwrap_or(UnixMs::ZERO);
 
         (earliest, latest)
     }
 
     pub fn min_max_price_in_range_prices(
         &self,
-        earliest: u64,
-        latest: u64,
+        earliest: UnixMs,
+        latest: UnixMs,
     ) -> Option<(Price, Price)> {
         let mut it = self.datapoints.range(earliest..=latest);
 
@@ -110,13 +120,13 @@ impl<D: DataPoint> TimeSeries<D> {
         Some((min_price, max_price))
     }
 
-    pub fn min_max_price_in_range(&self, earliest: u64, latest: u64) -> Option<(f32, f32)> {
+    pub fn min_max_price_in_range(&self, earliest: UnixMs, latest: UnixMs) -> Option<(f32, f32)> {
         self.min_max_price_in_range_prices(earliest, latest)
             .map(|(min_p, max_p)| (min_p.to_f32(), max_p.to_f32()))
     }
 
     /// Ensures a datapoint bucket exists at `rounded_t` and ingests all trades into it.
-    pub fn ingest_trades_bucket(&mut self, rounded_t: u64, trades: &[Trade], step: PriceStep)
+    pub fn ingest_trades_bucket(&mut self, rounded_t: UnixMs, trades: &[Trade], step: PriceStep)
     where
         D: Default,
     {
@@ -133,9 +143,11 @@ impl<D: DataPoint> TimeSeries<D> {
         }
     }
 
-    fn align_down_to_phase(time: u64, phase: u64, interval: u64) -> u64 {
+    fn align_down_to_phase(time: UnixMs, phase: UnixMs, interval: u64) -> UnixMs {
         if time >= phase {
-            time.saturating_sub((time - phase) % interval)
+            let t = time.as_u64();
+            let p = phase.as_u64();
+            UnixMs::new(t.saturating_sub((t - p) % interval))
         } else {
             phase
         }
@@ -143,10 +155,10 @@ impl<D: DataPoint> TimeSeries<D> {
 
     fn check_kline_integrity_range(
         &self,
-        earliest: u64,
-        latest: u64,
+        earliest: UnixMs,
+        latest: UnixMs,
         interval: u64,
-    ) -> Option<Vec<u64>> {
+    ) -> Option<Vec<UnixMs>> {
         let mut time = earliest;
         let mut missing_count = 0;
 
@@ -155,18 +167,19 @@ impl<D: DataPoint> TimeSeries<D> {
                 missing_count += 1;
                 break;
             }
-            time += interval;
+            time = time.saturating_add(interval);
         }
 
         if missing_count > 0 {
-            let mut missing_keys = Vec::with_capacity(((latest - earliest) / interval) as usize);
+            let mut missing_keys =
+                Vec::with_capacity(((latest.as_u64() - earliest.as_u64()) / interval) as usize);
             let mut time = earliest;
 
             while time < latest {
                 if !self.datapoints.contains_key(&time) {
                     missing_keys.push(time);
                 }
-                time += interval;
+                time = time.saturating_add(interval);
             }
 
             log::debug!(
@@ -179,7 +192,7 @@ impl<D: DataPoint> TimeSeries<D> {
         None
     }
 
-    pub fn check_kline_integrity(&self, earliest: u64, latest: u64) -> Option<Vec<u64>> {
+    pub fn check_kline_integrity(&self, earliest: UnixMs, latest: UnixMs) -> Option<Vec<UnixMs>> {
         if self.datapoints.is_empty() {
             return None;
         }
@@ -190,7 +203,7 @@ impl<D: DataPoint> TimeSeries<D> {
         }
 
         let (series_earliest, series_latest) = self.timerange();
-        let phase = series_earliest % interval;
+        let phase = UnixMs::new(series_earliest.as_u64() % interval);
 
         let check_earliest =
             Self::align_down_to_phase(earliest.max(series_earliest), phase, interval)
@@ -249,11 +262,10 @@ impl TimeSeries<KlineDataPoint> {
         if buffer.is_empty() {
             return;
         }
-        let aggr_time = self.interval.to_milliseconds();
         let mut updated_times = Vec::new();
 
         buffer.iter().for_each(|trade| {
-            let rounded_time = (trade.time / aggr_time) * aggr_time;
+            let rounded_time = trade.time.floor_to(self.interval);
 
             if !updated_times.contains(&rounded_time) {
                 updated_times.push(rounded_time);
@@ -288,11 +300,10 @@ impl TimeSeries<KlineDataPoint> {
         if buffer.is_empty() {
             return;
         }
-        let aggr_time = self.interval.to_milliseconds();
-        let mut updated_times: Vec<u64> = Vec::new();
+        let mut updated_times: Vec<UnixMs> = Vec::new();
 
         for trade in buffer {
-            let rounded_time = (trade.time / aggr_time) * aggr_time;
+            let rounded_time = trade.time.floor_to(self.interval);
 
             if let Some(entry) = self.datapoints.get_mut(&rounded_time) {
                 if !updated_times.contains(&rounded_time) {
@@ -329,12 +340,12 @@ impl TimeSeries<KlineDataPoint> {
         for (current_time, poc_price) in updates {
             let mut npoc = NPoc::default();
 
-            for (&next_time, next_dp) in self.datapoints.range((current_time + 1)..) {
+            for (&next_time, next_dp) in self.datapoints.range(current_time.saturating_add(1)..) {
                 let next_dp_low = next_dp.kline.low.round_to_side_step(true, self.tick_size);
                 let next_dp_high = next_dp.kline.high.round_to_side_step(false, self.tick_size);
 
                 if next_dp_low <= poc_price && next_dp_high >= poc_price {
-                    npoc.filled(next_time);
+                    npoc.filled(next_time.as_u64());
                     break;
                 } else {
                     npoc.unfilled();
@@ -347,11 +358,51 @@ impl TimeSeries<KlineDataPoint> {
         }
     }
 
+    pub fn min_max_footprint_price_in_range(
+        &self,
+        earliest: UnixMs,
+        latest: UnixMs,
+    ) -> Option<(Price, Price)> {
+        if latest < earliest {
+            return None;
+        }
+
+        let mut min_price: Option<Price> = None;
+        let mut max_price: Option<Price> = None;
+
+        let mut track_price = |price: Price| {
+            min_price = Some(match min_price {
+                Some(current) => current.min(price),
+                None => price,
+            });
+            max_price = Some(match max_price {
+                Some(current) => current.max(price),
+                None => price,
+            });
+        };
+
+        self.datapoints
+            .range(earliest..=latest)
+            .for_each(|(_, dp)| {
+                track_price(dp.kline.low);
+                track_price(dp.kline.high);
+
+                for price in dp.footprint.trades.keys() {
+                    track_price(*price);
+                }
+            });
+
+        match (min_price, max_price) {
+            (Some(low), Some(high)) => Some((low, high)),
+            _ => None,
+        }
+    }
+
     pub fn suggest_trade_fetch_range(
         &self,
-        visible_earliest: u64,
-        visible_latest: u64,
-    ) -> Option<(u64, u64)> {
+        visible_earliest: UnixMs,
+        visible_latest: UnixMs,
+    ) -> Option<(UnixMs, UnixMs)> {
         if self.datapoints.is_empty() {
             return None;
         }
@@ -378,7 +429,7 @@ impl TimeSeries<KlineDataPoint> {
             })
     }
 
-    fn find_trade_gap(&self) -> Option<(Option<u64>, Option<u64>)> {
+    fn find_trade_gap(&self) -> Option<(Option<UnixMs>, Option<UnixMs>)> {
         let empty_kline_time = self
             .datapoints
             .iter()
@@ -395,7 +446,7 @@ impl TimeSeries<KlineDataPoint> {
 
             let first_t_after_gap = self
                 .datapoints
-                .range(target_time + 1..)
+                .range(target_time.saturating_add(1)..)
                 .find_map(|(_, dp)| dp.first_trade_time());
 
             Some((last_t_before_gap, first_t_after_gap))
@@ -407,8 +458,8 @@ impl TimeSeries<KlineDataPoint> {
     pub fn max_qty_ts_range(
         &self,
         cluster_kind: ClusterKind,
-        earliest: u64,
-        latest: u64,
+        earliest: UnixMs,
+        latest: UnixMs,
         highest: Price,
         lowest: Price,
     ) -> Qty {
@@ -439,7 +490,7 @@ impl TimeSeries<HeatmapDataPoint> {
         }
     }
 
-    pub fn max_trade_qty_and_aggr_volume(&self, earliest: u64, latest: u64) -> (Qty, Qty) {
+    pub fn max_trade_qty_and_aggr_volume(&self, earliest: UnixMs, latest: UnixMs) -> (Qty, Qty) {
         let mut max_trade_qty = Qty::ZERO;
         let mut max_aggr_volume = Qty::ZERO;
 
@@ -467,8 +518,8 @@ impl TimeSeries<HeatmapDataPoint> {
 
     pub fn max_trade_qty_in_range(
         &self,
-        earliest: u64,
-        latest: u64,
+        earliest: UnixMs,
+        latest: UnixMs,
         highest: Price,
         lowest: Price,
     ) -> Qty {
@@ -488,7 +539,7 @@ impl TimeSeries<HeatmapDataPoint> {
     }
 }
 
-impl From<&TimeSeries<KlineDataPoint>> for BTreeMap<u64, exchange::Volume> {
+impl From<&TimeSeries<KlineDataPoint>> for BTreeMap<UnixMs, exchange::Volume> {
     /// Converts datapoints into a map of timestamps and volume data
     fn from(timeseries: &TimeSeries<KlineDataPoint>) -> Self {
         timeseries

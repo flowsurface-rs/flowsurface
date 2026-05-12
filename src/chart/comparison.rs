@@ -5,7 +5,7 @@ use crate::widget::chart::{Series, Zoom, domain};
 use data::chart::Basis;
 use data::chart::comparison::Config;
 use exchange::adapter::StreamKind;
-use exchange::{Kline, SerTicker, TickerInfo, Timeframe};
+use exchange::{Kline, SerTicker, TickerInfo, Timeframe, UnixMs};
 
 use rustc_hash::FxHashMap;
 use std::time::Instant;
@@ -138,16 +138,14 @@ impl ComparisonChart {
         ticker_info: TickerInfo,
         klines: &[Kline],
     ) {
-        let idx = self.get_or_create_series_idx(&ticker_info);
-        let dst = &mut self.series[idx].points;
-
-        let dt = self.timeframe.to_milliseconds().max(1);
-        let align = |t: u64| (t / dt) * dt;
-
+        let timeframe = self.timeframe;
         let mut incoming: Vec<(u64, f32)> = klines
             .iter()
-            .map(|k| (align(k.time), k.close.to_f32()))
+            .map(|k| (k.time.floor_to(timeframe).as_u64(), k.close.to_f32()))
             .collect();
+
+        let idx = self.get_or_create_series_idx(&ticker_info);
+        let dst = &mut self.series[idx].points;
 
         incoming.sort_by_key(|(x, _)| *x);
         incoming.dedup_by_key(|(x, _)| *x);
@@ -205,12 +203,12 @@ impl ComparisonChart {
     }
 
     pub fn update_latest_kline(&mut self, ticker_info: &TickerInfo, kline: &Kline) {
+        let t = kline.time.floor_to(self.timeframe).as_u64();
+
         let idx = self.get_or_create_series_idx(ticker_info);
         let series = &mut self.series[idx];
 
         // Align to timeframe grid
-        let dt = self.timeframe.to_milliseconds().max(1);
-        let t = (kline.time / dt) * dt;
         let new_point = (t, kline.close.to_f32());
 
         if let Some((last_x, last_y)) = series.points.last_mut() {
@@ -483,36 +481,26 @@ impl ComparisonChart {
         }
     }
 
-    fn now_ms() -> u64 {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64
-    }
-
     fn dt_ms_est(&self) -> u64 {
         self.timeframe.to_milliseconds().max(1)
     }
 
-    fn align_floor(ts: u64, dt: u64) -> u64 {
-        if dt == 0 {
-            return ts;
-        }
-        (ts / dt) * dt
+    fn align_floor(&self, ts: UnixMs) -> UnixMs {
+        ts.floor_to(self.timeframe)
     }
 
-    fn compute_visible_window(&self, pan_points: f32) -> Option<(u64, u64)> {
-        let dt = self.dt_ms_est().max(1);
+    fn compute_visible_window(&self, pan_points: f32) -> Option<(UnixMs, UnixMs)> {
+        let dt = self.dt_ms_est();
         let points: Vec<&[(u64, f32)]> = self.series.iter().map(|s| s.points.as_slice()).collect();
 
         domain::window(&points, self.zoom, pan_points, dt)
+            .map(|(start, end)| (UnixMs::new(start), UnixMs::new(end)))
     }
 
     fn desired_fetch_batches(&self, pan_points: f32) -> Vec<(FetchRange, Vec<TickerInfo>)> {
-        let dt = self.dt_ms_est().max(1);
+        let dt = self.dt_ms_est();
         let span = 500u64.saturating_mul(dt);
-        let last_closed = Self::align_floor(Self::now_ms(), dt);
+        let last_closed = self.align_floor(UnixMs::now());
 
         let mut batches: Vec<(FetchRange, Vec<TickerInfo>)> = Vec::new();
 
@@ -531,9 +519,9 @@ impl ComparisonChart {
 
         // Backfill-left relative to visible window
         if let Some((win_min, _win_max)) = self.compute_visible_window(pan_points) {
-            let mut need: Vec<(u64, TickerInfo)> = Vec::new();
+            let mut need: Vec<(UnixMs, TickerInfo)> = Vec::new();
             for s in &self.series {
-                if let Some(series_min) = s.points.first().map(|(x, _)| *x)
+                if let Some(series_min) = s.points.first().map(|(x, _)| UnixMs::new(*x))
                     && win_min < series_min
                 {
                     need.push((series_min, s.ticker_info));
@@ -541,7 +529,7 @@ impl ComparisonChart {
             }
             if !need.is_empty() {
                 let end = need.iter().map(|(e, _)| *e).min().unwrap_or(win_min);
-                let end = Self::align_floor(end, dt);
+                let end = self.align_floor(end);
                 let start = end.saturating_sub(span);
                 let tickers = need.into_iter().map(|(_, t)| t).collect();
                 batches.push((FetchRange::Kline(start, end), tickers));

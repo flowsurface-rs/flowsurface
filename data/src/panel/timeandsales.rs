@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use exchange::UnixMs;
 use exchange::unit::{Price, Qty};
 use serde::{Deserialize, Serialize};
 
@@ -40,7 +41,7 @@ pub struct TradeDisplay {
 
 #[derive(Debug, Clone)]
 pub struct TradeEntry {
-    pub ts_ms: u64,
+    pub ts_ms: UnixMs,
     pub display: TradeDisplay,
 }
 

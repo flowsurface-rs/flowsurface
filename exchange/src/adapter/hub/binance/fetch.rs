@@ -1,5 +1,6 @@
 use crate::{
-    Kline, OpenInterest, Price, Qty, Ticker, TickerInfo, TickerStats, Timeframe, Trade, Volume,
+    Kline, OpenInterest, Price, Qty, Ticker, TickerInfo, TickerStats, Timeframe, Trade, UnixMs,
+    Volume,
     depth::{DeOrder, DepthPayload},
     serde_util,
     serde_util::de_string_to_number,
@@ -133,7 +134,7 @@ pub(super) async fn fetch_depth_snapshot(
 
             Ok(DepthPayload {
                 last_update_id: fetched_depth.update_id,
-                time: chrono::Utc::now().timestamp_millis() as u64,
+                time: (chrono::Utc::now().timestamp_millis() as u64).into(),
                 bids: fetched_depth
                     .bids
                     .iter()
@@ -158,7 +159,7 @@ pub(super) async fn fetch_depth_snapshot(
 
             Ok(DepthPayload {
                 last_update_id: fetched_depth.update_id,
-                time: fetched_depth.time,
+                time: fetched_depth.time.into(),
                 bids: fetched_depth
                     .bids
                     .iter()
@@ -344,7 +345,7 @@ pub(super) async fn fetch_klines(
     hub: &mut HttpHub<BinanceLimiter>,
     ticker_info: TickerInfo,
     timeframe: Timeframe,
-    range: Option<(u64, u64)>,
+    range: Option<(UnixMs, UnixMs)>,
 ) -> Result<Vec<Kline>, AdapterError> {
     let ticker = ticker_info.ticker;
 
@@ -360,6 +361,8 @@ pub(super) async fn fetch_klines(
     let mut url = format!("{base_url}?symbol={symbol_str}&interval={timeframe_str}");
 
     let limit_param = if let Some((start, end)) = range {
+        let start = start.as_u64();
+        let end = end.as_u64();
         let interval_ms = timeframe.to_milliseconds();
         let num_intervals = ((end - start) / interval_ms).min(1000);
 
@@ -452,7 +455,7 @@ pub(super) async fn fetch_klines(
 pub(super) async fn fetch_historical_oi(
     hub: &mut HttpHub<BinanceLimiter>,
     ticker_info: TickerInfo,
-    range: Option<(u64, u64)>,
+    range: Option<(UnixMs, UnixMs)>,
     period: Timeframe,
 ) -> Result<Vec<OpenInterest>, AdapterError> {
     let (ticker_str, market) = ticker_info.ticker.to_full_symbol_and_type();
@@ -485,6 +488,8 @@ pub(super) async fn fetch_historical_oi(
     let mut url = format!("{base_url}{pair_str}&period={period_str}");
 
     if let Some((start, end)) = range {
+        let start = start.as_u64();
+        let end = end.as_u64();
         let thirty_days_ago = std::time::SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("Could not get system time")
@@ -527,7 +532,7 @@ pub(super) async fn fetch_historical_oi(
     let open_interest = binance_oi
         .iter()
         .map(|x| OpenInterest {
-            time: x.time,
+            time: x.time.into(),
             value: contract_size.map_or(x.sum, |size| x.sum * size.as_f32()),
         })
         .collect::<Vec<OpenInterest>>();
@@ -538,7 +543,7 @@ pub(super) async fn fetch_historical_oi(
 async fn fetch_intraday_trades(
     hub: &mut HttpHub<BinanceLimiter>,
     ticker_info: TickerInfo,
-    from: u64,
+    from: UnixMs,
 ) -> Result<Vec<Trade>, AdapterError> {
     let ticker = ticker_info.ticker;
     let (symbol_str, market_type) = ticker.to_full_symbol_and_type();
@@ -550,7 +555,7 @@ async fn fetch_intraday_trades(
     };
 
     let mut url = format!("{base_url}?symbol={symbol_str}&limit=1000");
-    url.push_str(&format!("&startTime={from}"));
+    url.push_str(&format!("&startTime={}", from.as_u64()));
 
     let de_trades: Vec<DeTrade> = hub.http_json_with_limiter(&url, weight, None, None).await?;
 
@@ -563,7 +568,7 @@ async fn fetch_intraday_trades(
     let trades = de_trades
         .into_iter()
         .map(|de_trade| Trade {
-            time: de_trade.time,
+            time: de_trade.time.into(),
             is_sell: de_trade.is_sell,
             price: Price::from_f32(de_trade.price).round_to_min_tick(ticker_info.min_ticksize),
             qty: qty_norm.normalize_qty(de_trade.qty, de_trade.price),
@@ -658,7 +663,7 @@ async fn get_hist_trades_with_client(
                 let qty = qty_norm.normalize_qty(record[2].parse::<f32>().ok()?, price_f32);
 
                 Some(Trade {
-                    time,
+                    time: time.into(),
                     is_sell,
                     price,
                     qty,
@@ -673,7 +678,7 @@ async fn get_hist_trades_with_client(
 pub(super) async fn fetch_trades(
     hub: &mut HttpHub<BinanceLimiter>,
     ticker_info: TickerInfo,
-    from_time: u64,
+    from_time: UnixMs,
     data_path: Option<PathBuf>,
 ) -> Result<Vec<Trade>, AdapterError> {
     let Some(data_path) = data_path else {
@@ -688,11 +693,11 @@ pub(super) async fn fetch_trades(
         .expect("midnight should always be valid")
         .and_utc();
 
-    if from_time as i64 >= today_midnight.timestamp_millis() {
+    if from_time.as_u64() as i64 >= today_midnight.timestamp_millis() {
         return fetch_intraday_trades(hub, ticker_info, from_time).await;
     }
 
-    let from_date = chrono::DateTime::from_timestamp_millis(from_time as i64)
+    let from_date = chrono::DateTime::from_timestamp_millis(from_time.as_u64() as i64)
         .ok_or_else(|| AdapterError::ParseError("Invalid timestamp".into()))?
         .date_naive();
 
