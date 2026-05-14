@@ -690,6 +690,7 @@ impl HeatmapShader {
             latest_depth,
             base_price,
             self.step,
+            self.depth_grid.y_anchor_price(),
             latest_time,
             self.anchor.scroll_ref_bucket(),
             palette,

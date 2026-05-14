@@ -104,6 +104,7 @@ impl InstanceBuilder {
         latest_depth: impl IntoIterator<Item = (Price, Qty, bool)>,
         base_price: Price,
         step: PriceStep,
+        y_anchor: Option<Price>,
         latest_time: u64,
         scroll_ref_bucket: i64,
         palette: &HeatmapPalette,
@@ -122,6 +123,7 @@ impl InstanceBuilder {
             trades,
             base_price,
             step,
+            y_anchor,
             scroll_ref_bucket,
             palette,
             config,
@@ -131,7 +133,15 @@ impl InstanceBuilder {
         let mut rects: Vec<RectInstance> = Vec::new();
 
         let prof_start = rects.len() as u32;
-        self.build_depth_profile_rects(w, latest_depth, base_price, step, palette, &mut rects);
+        self.build_depth_profile_rects(
+            w,
+            latest_depth,
+            base_price,
+            step,
+            y_anchor,
+            palette,
+            &mut rects,
+        );
         let prof_end = rects.len() as u32;
 
         let vol_start = rects.len() as u32;
@@ -147,6 +157,7 @@ impl InstanceBuilder {
                 trades,
                 base_price,
                 step,
+                y_anchor,
                 latest_time,
                 kind,
                 palette,
@@ -170,6 +181,7 @@ impl InstanceBuilder {
         trades: &TimeSeries<HeatmapDataPoint>,
         base_price: Price,
         step: PriceStep,
+        y_anchor: Option<Price>,
         latest_time: u64,
         profile_kind: &ProfileKind,
         palette: &HeatmapPalette,
@@ -179,8 +191,9 @@ impl InstanceBuilder {
             return;
         }
 
-        let min_rel_y_bin = w.y_bin_for_price(w.lowest, base_price, step);
-        let max_rel_y_bin = w.y_bin_for_price(w.highest, base_price, step);
+        let min_rel_y_bin = w.y_bin_for_price_texture_aligned(w.lowest, base_price, step, y_anchor);
+        let max_rel_y_bin =
+            w.y_bin_for_price_texture_aligned(w.highest, base_price, step, y_anchor);
         if max_rel_y_bin < min_rel_y_bin {
             return;
         }
@@ -217,7 +230,8 @@ impl InstanceBuilder {
             .range(UnixMs::new(earliest_profile_time)..=UnixMs::new(latest_profile_time))
         {
             for t in dp.grouped_trades.iter() {
-                let rel_y_bin = w.y_bin_for_price(t.price, base_price, step);
+                let rel_y_bin =
+                    w.y_bin_for_price_texture_aligned(t.price, base_price, step, y_anchor);
                 let idx = rel_y_bin - min_rel_y_bin;
                 if idx < 0 || idx >= len as i64 {
                     continue;
@@ -296,6 +310,7 @@ impl InstanceBuilder {
         trades: &TimeSeries<HeatmapDataPoint>,
         base_price: Price,
         step: PriceStep,
+        y_anchor: Option<Price>,
         ref_bucket: i64,
         palette: &HeatmapPalette,
         config: &Config,
@@ -342,6 +357,7 @@ impl InstanceBuilder {
                 ref_bucket,
                 base_price,
                 step,
+                y_anchor,
                 w,
                 palette,
                 max_qty,
@@ -359,6 +375,7 @@ impl InstanceBuilder {
         latest_depth: impl IntoIterator<Item = (Price, Qty, bool)>,
         base_price: Price,
         step: PriceStep,
+        y_anchor: Option<Price>,
         palette: &HeatmapPalette,
         rects: &mut Vec<RectInstance>,
     ) {
@@ -366,8 +383,9 @@ impl InstanceBuilder {
             return;
         }
 
-        let min_rel_y_bin = w.y_bin_for_price(w.lowest, base_price, step);
-        let max_rel_y_bin = w.y_bin_for_price(w.highest, base_price, step);
+        let min_rel_y_bin = w.y_bin_for_price_texture_aligned(w.lowest, base_price, step, y_anchor);
+        let max_rel_y_bin =
+            w.y_bin_for_price_texture_aligned(w.highest, base_price, step, y_anchor);
         if max_rel_y_bin < min_rel_y_bin {
             return;
         }
@@ -386,7 +404,7 @@ impl InstanceBuilder {
                 continue;
             }
 
-            let rel_y_bin = w.y_bin_for_price(price, base_price, step);
+            let rel_y_bin = w.y_bin_for_price_texture_aligned(price, base_price, step, y_anchor);
             let idx = rel_y_bin - min_rel_y_bin;
             if idx < 0 || idx >= len as i64 {
                 continue;

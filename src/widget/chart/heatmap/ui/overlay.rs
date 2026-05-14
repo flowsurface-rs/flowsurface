@@ -350,8 +350,11 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
             let snapped_world_x = (x_bin_rel - origin0) * cell_width;
 
             let steps_per_y_bin = self.scene.params.steps_per_y_bin();
-            let steps_at_y = super::step_floor_from_world_y(world_y, cell_height);
-            let base_rel_y_bin = steps_at_y.div_euclid(steps_per_y_bin.max(1));
+            let base_rel_y_bin = {
+                let steps_at_y = super::step_floor_from_world_y(world_y, cell_height);
+                steps_at_y / steps_per_y_bin.max(1)
+            };
+
             let snapped_world_y =
                 super::world_y_for_y_bin_center(base_rel_y_bin, steps_per_y_bin, cell_height);
 
