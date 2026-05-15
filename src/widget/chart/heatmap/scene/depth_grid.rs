@@ -166,8 +166,7 @@ impl GridRing {
             lowest,
         ) {
             // Map price -> y bin (view-relative around base_price).
-            let dy_steps: i64 = (price.units - base_price.units).div_euclid(step_units);
-            let dy_bins: i64 = dy_steps.div_euclid(self.steps_per_y_bin);
+            let dy_bins: i64 = self.price_delta_y_bins(*price, base_price, step_units);
 
             let y_i64 = half_h + dy_bins;
             if y_i64 < 0 || y_i64 >= self.tex_h as i64 {
@@ -315,8 +314,7 @@ impl GridRing {
         match self.y_anchor {
             None => self.y_anchor = Some(recenter_target),
             Some(anchor) => {
-                let delta_steps = (recenter_target.units - anchor.units).div_euclid(step_units);
-                let delta_bins = delta_steps.div_euclid(self.steps_per_y_bin.max(1));
+                let delta_bins = self.price_delta_y_bins(recenter_target, anchor, step_units);
 
                 if delta_bins.unsigned_abs() as i64 > recenter_threshold_bins.max(1) {
                     self.y_anchor = Some(recenter_target);
@@ -380,6 +378,16 @@ impl GridRing {
         }
     }
 
+    fn price_delta_y_bins(&self, price: Price, anchor: Price, step_units: i64) -> i64 {
+        let delta_steps = {
+            let step_units = step_units.max(1);
+            (price.units - anchor.units).div_euclid(step_units)
+        };
+
+        let steps_per_y_bin = self.steps_per_y_bin.max(1);
+        delta_steps / steps_per_y_bin
+    }
+
     /// Map an absolute bucket index to the ring texture x coordinate.
     /// Returns 0 if the ring is not laid out yet.
     #[inline]
@@ -404,11 +412,9 @@ impl GridRing {
         };
 
         let step_units = step.units.max(1);
-        let steps_per_y_bin = self.steps_per_y_bin.max(1);
 
         // delta_bins = (base - anchor) in y-bins
-        let delta_steps: i64 = (base_price.units - anchor.units).div_euclid(step_units);
-        let delta_bins: i64 = delta_steps.div_euclid(steps_per_y_bin);
+        let delta_bins: i64 = self.price_delta_y_bins(base_price, anchor, step_units);
 
         -(half_h as f32) - (delta_bins as f32)
     }
@@ -440,10 +446,10 @@ impl GridRing {
         };
 
         let step_units = step.units.max(1);
-        let steps_per_y_bin = self.steps_per_y_bin();
 
-        let delta_steps = (target.units - anchor.units).div_euclid(step_units);
-        let delta_bins = delta_steps.div_euclid(steps_per_y_bin).unsigned_abs() as i64;
+        let delta_bins = self
+            .price_delta_y_bins(target, anchor, step_units)
+            .unsigned_abs() as i64;
 
         let margin_bins = ((tex_h as f32) * RECENTER_Y_MARGIN_FRAC).round().max(1.0) as i64;
 
@@ -562,25 +568,9 @@ impl GridRing {
         order_size_filter: f32,
     ) {
         let half_h = (self.tex_h as i64) / 2;
-        let steps_per_y_bin = self.steps_per_y_bin.max(1);
-
-        let grid = if is_bid { &mut self.bid } else { &mut self.ask };
-        let col_max = if is_bid {
-            &mut self.col_max_bid
-        } else {
-            &mut self.col_max_ask
-        };
-
-        let block_max = if is_bid {
-            &mut self.block_max_bid
-        } else {
-            &mut self.block_max_ask
-        };
-
         let w = self.tex_w as usize;
         let x_usize = x as usize;
 
-        // Merge consecutive levels that round to the same side-step price (like HistoricalDepth).
         let mut current_price: Option<Price> = None;
         let mut current_qty: Qty = Qty::ZERO;
 
@@ -598,9 +588,7 @@ impl GridRing {
             }
 
             let q = qty_sum.to_f32_lossy();
-
-            let dy_steps: i64 = (rounded_price.units - anchor.units).div_euclid(step_units);
-            let dy_bins: i64 = dy_steps.div_euclid(steps_per_y_bin);
+            let dy_bins = self.price_delta_y_bins(rounded_price, anchor, step_units);
 
             let y_i64 = half_h + dy_bins;
             if y_i64 < 0 || y_i64 >= self.tex_h as i64 {
@@ -615,14 +603,24 @@ impl GridRing {
             let y = y_i64 as u32;
             let idx = (y as usize) * w + x_usize;
 
-            grid[idx] = grid[idx].max(q_u32);
-            col_max[x_usize] = col_max[x_usize].max(q_u32);
+            if is_bid {
+                self.bid[idx] = self.bid[idx].max(q_u32);
+                self.col_max_bid[x_usize] = self.col_max_bid[x_usize].max(q_u32);
 
-            // update y-block max
-            let by = y / Y_MAX_BLOCK_HEIGHT_BINS;
-            let bidx = (by as usize) * w + x_usize;
-            if bidx < block_max.len() {
-                block_max[bidx] = block_max[bidx].max(q_u32);
+                let by = y / Y_MAX_BLOCK_HEIGHT_BINS;
+                let bidx = (by as usize) * w + x_usize;
+                if bidx < self.block_max_bid.len() {
+                    self.block_max_bid[bidx] = self.block_max_bid[bidx].max(q_u32);
+                }
+            } else {
+                self.ask[idx] = self.ask[idx].max(q_u32);
+                self.col_max_ask[x_usize] = self.col_max_ask[x_usize].max(q_u32);
+
+                let by = y / Y_MAX_BLOCK_HEIGHT_BINS;
+                let bidx = (by as usize) * w + x_usize;
+                if bidx < self.block_max_ask.len() {
+                    self.block_max_ask[bidx] = self.block_max_ask[bidx].max(q_u32);
+                }
             }
         };
 

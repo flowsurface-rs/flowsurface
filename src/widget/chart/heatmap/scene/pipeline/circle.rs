@@ -29,6 +29,7 @@ impl CircleInstance {
         ref_bucket: i64,
         base_price: Price,
         step: PriceStep,
+        y_anchor: Option<Price>,
         w: &ViewWindow,
         palette: &HeatmapPalette,
         max_trade_qty: Qty,
@@ -38,7 +39,7 @@ impl CircleInstance {
         let x_bin_rel = (bucket - ref_bucket).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
         let x_frac = 0.0;
 
-        let y_world = Self::y_world_for_price(trade.price, base_price, step, w);
+        let y_world = w.y_center_for_price_texture_aligned(trade.price, base_price, step, y_anchor);
 
         let q = trade.qty.max(qty::Qty::zero()).to_f32_lossy();
         let t = (q / max_trade_qty.to_scale_or_one()).clamp(0.0, 1.0);
@@ -73,22 +74,5 @@ impl CircleInstance {
             _pad: 0.0,
             color: rgba,
         }
-    }
-
-    #[inline]
-    fn y_world_for_price(price: Price, base_price: Price, step: PriceStep, w: &ViewWindow) -> f32 {
-        let step_units = step.units.max(1);
-        let y_div = w.steps_per_y_bin.max(1);
-
-        let base_steps = base_price.units / step_units;
-        let base_abs_y_bin = base_steps.div_euclid(y_div);
-
-        let abs_steps = price.units / step_units;
-        let abs_y_bin = abs_steps.div_euclid(y_div);
-
-        let rel_y_bin = abs_y_bin - base_abs_y_bin;
-
-        let center_steps = (rel_y_bin as f32 + 0.5) * (w.steps_per_y_bin as f32);
-        -(center_steps * w.row_h)
     }
 }
