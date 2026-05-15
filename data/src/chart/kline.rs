@@ -333,7 +333,12 @@ impl std::fmt::Display for ClusterKind {
 }
 
 #[derive(Debug, Default, Copy, Clone, PartialEq, Deserialize, Serialize)]
-pub struct Config {}
+#[serde(default)]
+pub struct Config {
+    // Whether to show last value labels on top right/left when not hovering
+    // e.g. OHLC/bar change values for the main chart, or last value of an indicator series
+    pub data_labels_always_visible: bool,
+}
 
 #[derive(Default, Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
 pub enum ClusterScaling {

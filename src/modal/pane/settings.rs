@@ -579,10 +579,36 @@ pub fn kline_cfg_view<'a>(
     pane: pane_grid::Pane,
     basis: data::chart::Basis,
 ) -> Element<'a, Message> {
+    let display_readout_section = {
+        let data_labels_checkbox = tooltip(
+            checkbox(cfg.data_labels_always_visible)
+                .label("Keep latest label visible")
+                .on_toggle(move |value| {
+                    Message::VisualConfigChanged(
+                        pane,
+                        VisualConfig::Kline(data::chart::kline::Config {
+                            data_labels_always_visible: value,
+                        }),
+                        false,
+                    )
+                }),
+            Some("Show the latest datapoint label even when not hovering"),
+            TooltipPosition::Top,
+        );
+        column![text("Data labels").size(14), data_labels_checkbox,].spacing(8)
+    };
+
     let content = match kind {
-        KlineChartKind::Candles => column![text(
-            "This chart type doesn't have any configurations, WIP..."
-        )],
+        KlineChartKind::Candles => {
+            split_column![
+                display_readout_section,
+                row![
+                    space::horizontal(),
+                    sync_all_button(pane, VisualConfig::Kline(cfg))
+                ],
+                ; spacing = 12, align_x = Alignment::Start
+            ]
+        }
         KlineChartKind::Footprint {
             clusters,
             scaling,
@@ -632,6 +658,7 @@ pub fn kline_cfg_view<'a>(
             });
 
             split_column![
+                display_readout_section,
                 column![text("Cluster type").size(14), cluster_picklist].spacing(8),
                 column![text("Cluster scaling").size(14), scaling].spacing(8),
                 column![text("Studies").size(14), study_cfg].spacing(8),

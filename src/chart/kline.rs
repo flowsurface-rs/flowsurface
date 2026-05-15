@@ -9,7 +9,8 @@ use data::aggr::ticks::TickAggr;
 use data::aggr::time::TimeSeries;
 use data::chart::indicator::{Indicator, KlineIndicator};
 use data::chart::kline::{
-    ClusterKind, ClusterScaling, FootprintStudy, KlineDataPoint, KlineTrades, NPoc, PointOfControl,
+    ClusterKind, ClusterScaling, Config, FootprintStudy, KlineDataPoint, KlineTrades, NPoc,
+    PointOfControl,
 };
 use data::chart::{Autoscale, KlineChartKind, ViewConfig};
 
@@ -56,6 +57,8 @@ impl Chart for KlineChart {
             return vec![];
         }
 
+        let data_labels_always_visible = self.visual_config.data_labels_always_visible;
+
         let market = chart_state.ticker_info.market_type();
         let mut elements = vec![];
 
@@ -64,7 +67,11 @@ impl Chart for KlineChart {
                 continue;
             }
             if let Some(indi) = self.indicators[*selected_indicator].as_ref() {
-                elements.push(indi.element(chart_state, earliest..=latest));
+                elements.push(indi.element(
+                    chart_state,
+                    data_labels_always_visible,
+                    earliest..=latest,
+                ));
             }
         }
         elements
@@ -160,6 +167,7 @@ pub struct KlineChart {
     request_handler: RequestHandler,
     study_configurator: study::Configurator<FootprintStudy>,
     last_tick: Instant,
+    visual_config: Config,
 }
 
 impl KlineChart {
@@ -172,7 +180,10 @@ impl KlineChart {
         enabled_indicators: &[KlineIndicator],
         ticker_info: TickerInfo,
         kind: &KlineChartKind,
+        visual_config: Option<Config>,
     ) -> Self {
+        let visual_config = visual_config.unwrap_or_default();
+
         match basis {
             Basis::Time(interval) => {
                 let timeseries = TimeSeries::<KlineDataPoint>::new(interval, step, klines_raw)
@@ -212,7 +223,7 @@ impl KlineChart {
                     step.decimal_places(),
                     ticker_info,
                     ViewConfig {
-                        splits: layout.splits,
+                        splits: layout.splits.clone(),
                         autoscale: Some(Autoscale::FitToVisible),
                     },
                     cell_width,
@@ -244,6 +255,7 @@ impl KlineChart {
 
                 KlineChart {
                     chart,
+                    visual_config,
                     data_source,
                     raw_trades,
                     indicators,
@@ -270,7 +282,7 @@ impl KlineChart {
                     step.decimal_places(),
                     ticker_info,
                     ViewConfig {
-                        splits: layout.splits,
+                        splits: layout.splits.clone(),
                         autoscale: Some(Autoscale::FitToVisible),
                     },
                     cell_width,
@@ -300,6 +312,7 @@ impl KlineChart {
 
                 KlineChart {
                     chart,
+                    visual_config,
                     data_source,
                     raw_trades,
                     indicators,
@@ -486,6 +499,19 @@ impl KlineChart {
 
     pub fn chart_layout(&self) -> ViewConfig {
         self.chart.layout()
+    }
+
+    pub fn visual_config(&self) -> Config {
+        self.visual_config
+    }
+
+    pub fn set_visual_config(&mut self, visual_config: Config) {
+        self.visual_config = visual_config;
+        self.chart.cache.clear_all();
+        self.indicators
+            .values_mut()
+            .filter_map(Option::as_mut)
+            .for_each(|indi| indi.clear_all_caches());
     }
 
     pub fn set_cluster_kind(&mut self, new_kind: ClusterKind) {
@@ -1037,6 +1063,9 @@ impl canvas::Program<Message> for KlineChart {
         });
 
         let crosshair = chart.cache.crosshair.draw(renderer, bounds_size, |frame| {
+            let visible_region = chart.visible_region(bounds_size);
+            let visible_range = chart.interval_range(&visible_region);
+
             if let Some(cursor_position) = cursor.position_in(bounds) {
                 let (_, rounded_aggregation) =
                     chart.draw_crosshair(frame, theme, bounds_size, cursor_position, interaction);
@@ -1046,7 +1075,19 @@ impl canvas::Program<Message> for KlineChart {
                     &chart.ticker_info,
                     frame,
                     palette,
-                    rounded_aggregation,
+                    chart.basis,
+                    Some(rounded_aggregation),
+                    visible_range,
+                );
+            } else if self.visual_config.data_labels_always_visible {
+                draw_crosshair_tooltip(
+                    &self.data_source,
+                    &chart.ticker_info,
+                    frame,
+                    palette,
+                    chart.basis,
+                    None,
+                    visible_range,
                 );
             }
         });
@@ -1806,34 +1847,80 @@ fn draw_crosshair_tooltip(
     ticker_info: &TickerInfo,
     frame: &mut canvas::Frame,
     palette: &Extended,
-    at_interval: u64,
+    basis: Basis,
+    at_interval: Option<u64>,
+    visible_range: (u64, u64),
 ) {
-    let kline_opt = match data {
-        PlotData::TimeBased(timeseries) => timeseries
-            .datapoints
-            .iter()
-            .find(|(time, _)| **time == UnixMs::new(at_interval))
-            .map(|(_, dp)| &dp.kline)
-            .or_else(|| {
-                if timeseries.datapoints.is_empty() {
-                    None
-                } else {
-                    let (last_time, dp) = timeseries.datapoints.last_key_value()?;
-                    if at_interval > last_time.as_u64() {
-                        Some(&dp.kline)
+    let (visible_earliest, visible_latest) = visible_range;
+
+    let kline_opt = match (data, at_interval) {
+        (PlotData::TimeBased(timeseries), Some(at_interval)) => {
+            let in_visible = at_interval >= visible_earliest && at_interval <= visible_latest;
+
+            timeseries
+                .datapoints
+                .get(&UnixMs::new(at_interval))
+                .map(|dp| &dp.kline)
+                .or_else(|| {
+                    if in_visible {
+                        let search_end = at_interval.min(visible_latest);
+                        timeseries
+                            .datapoints
+                            .range(UnixMs::new(visible_earliest)..=UnixMs::new(search_end))
+                            .next_back()
+                            .map(|(_, dp)| &dp.kline)
                     } else {
                         None
                     }
-                }
-            }),
-        PlotData::TickBased(tick_aggr) => {
-            let index = (at_interval / u64::from(tick_aggr.interval.0)) as usize;
-            if index < tick_aggr.datapoints.len() {
-                Some(&tick_aggr.datapoints[tick_aggr.datapoints.len() - 1 - index].kline)
-            } else {
-                None
-            }
+                })
+                .or_else(|| {
+                    let right_of_latest = match basis {
+                        Basis::Time(_) => at_interval > visible_latest,
+                        Basis::Tick(_) => at_interval < visible_earliest,
+                    };
+
+                    if right_of_latest {
+                        timeseries
+                            .datapoints
+                            .range(UnixMs::new(visible_earliest)..=UnixMs::new(visible_latest))
+                            .next_back()
+                            .map(|(_, dp)| &dp.kline)
+                    } else {
+                        None
+                    }
+                })
+                .or_else(|| {
+                    let (last_time, dp) = timeseries.datapoints.last_key_value()?;
+                    (at_interval > last_time.as_u64()).then_some(&dp.kline)
+                })
         }
+        (PlotData::TickBased(tick_aggr), Some(at_interval)) => {
+            let kline_at = |interval: u64| {
+                let index = (interval / u64::from(tick_aggr.interval.0)) as usize;
+                (index < tick_aggr.datapoints.len())
+                    .then(|| &tick_aggr.datapoints[tick_aggr.datapoints.len() - 1 - index].kline)
+            };
+
+            let in_visible = at_interval >= visible_earliest && at_interval <= visible_latest;
+
+            kline_at(at_interval).or_else(|| {
+                let right_of_latest = match basis {
+                    Basis::Time(_) => at_interval > visible_latest,
+                    Basis::Tick(_) => at_interval < visible_earliest,
+                };
+
+                if in_visible || right_of_latest {
+                    kline_at(visible_earliest)
+                } else {
+                    None
+                }
+            })
+        }
+        (PlotData::TimeBased(timeseries), None) => timeseries
+            .datapoints
+            .last_key_value()
+            .map(|(_, dp)| &dp.kline),
+        (PlotData::TickBased(tick_aggr), None) => tick_aggr.datapoints.last().map(|dp| &dp.kline),
     };
 
     if let Some(kline) = kline_opt {

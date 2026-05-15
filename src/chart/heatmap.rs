@@ -183,7 +183,7 @@ impl HeatmapChart {
             step.decimal_places(),
             ticker_info,
             ViewConfig {
-                splits: layout.splits,
+                splits: layout.splits.clone(),
                 autoscale: Some(Autoscale::CenterLatest),
             },
             DEFAULT_CELL_WIDTH,

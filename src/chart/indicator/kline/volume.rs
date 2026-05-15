@@ -32,6 +32,7 @@ impl VolumeIndicator {
     fn indicator_elem<'a>(
         &'a self,
         main_chart: &'a ViewState,
+        data_labels_always_visible: bool,
         visible_range: RangeInclusive<u64>,
     ) -> iced::Element<'a, Message> {
         let tooltip = |volume: &Volume, _next: Option<&Volume>| {
@@ -66,6 +67,7 @@ impl VolumeIndicator {
         indicator_row(
             main_chart,
             &self.cache,
+            data_labels_always_visible,
             plot,
             self.data.as_plot_series(),
             visible_range,
@@ -85,9 +87,10 @@ impl KlineIndicatorImpl for VolumeIndicator {
     fn element<'a>(
         &'a self,
         chart: &'a ViewState,
+        data_labels_always_visible: bool,
         visible_range: RangeInclusive<u64>,
     ) -> iced::Element<'a, Message> {
-        self.indicator_elem(chart, visible_range)
+        self.indicator_elem(chart, data_labels_always_visible, visible_range)
     }
 
     fn rebuild_from_source(&mut self, source: &PlotData<KlineDataPoint>) {

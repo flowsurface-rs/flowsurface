@@ -448,6 +448,7 @@ impl State {
                 } else {
                     let (raw_trades, tick_size) = (chart.raw_trades(), chart.tick_size());
                     let layout = chart.chart_layout();
+                    let visual_config = chart.visual_config();
 
                     *chart = KlineChart::new(
                         layout,
@@ -458,6 +459,7 @@ impl State {
                         indicators,
                         ticker_info,
                         chart.kind(),
+                        Some(visual_config),
                     );
                 }
             }
@@ -924,7 +926,7 @@ impl State {
                     let settings_modal = || {
                         kline_cfg_view(
                             chart.study_configurator(),
-                            data::chart::kline::Config {},
+                            chart.visual_config(),
                             chart_kind,
                             id,
                             chart.basis(),
@@ -2010,6 +2012,7 @@ impl Content {
                 splits,
                 autoscale: Some(data::chart::Autoscale::FitToVisible),
             });
+        let visual_config = settings.visual_config.as_ref().and_then(|cfg| cfg.kline());
 
         let chart = KlineChart::new(
             layout.clone(),
@@ -2020,6 +2023,7 @@ impl Content {
             &enabled_indicators,
             ticker_info,
             &determined_chart_kind,
+            visual_config,
         );
 
         Content::Kline {
@@ -2169,20 +2173,23 @@ impl Content {
 
     pub fn change_visual_config(&mut self, config: VisualConfig) {
         match (self, config) {
+            (Content::Kline { chart: Some(c), .. }, VisualConfig::Kline(cfg)) => {
+                c.set_visual_config(cfg);
+            }
             (Content::Heatmap { chart: Some(c), .. }, VisualConfig::Heatmap(cfg)) => {
                 c.set_visual_config(cfg);
             }
             (Content::ShaderHeatmap { chart: Some(c), .. }, VisualConfig::Heatmap(cfg)) => {
                 c.set_visual_config(cfg);
             }
+            (Content::Comparison(Some(chart)), VisualConfig::Comparison(cfg)) => {
+                chart.config = cfg;
+            }
             (Content::TimeAndSales(Some(panel)), VisualConfig::TimeAndSales(cfg)) => {
                 panel.config = cfg;
             }
             (Content::Ladder(Some(panel)), VisualConfig::Ladder(cfg)) => {
                 panel.config = cfg;
-            }
-            (Content::Comparison(Some(chart)), VisualConfig::Comparison(cfg)) => {
-                chart.config = cfg;
             }
             _ => {}
         }

@@ -32,6 +32,7 @@ impl OpenInterestIndicator {
     fn indicator_elem<'a>(
         &'a self,
         main_chart: &'a ViewState,
+        data_labels_always_visible: bool,
         visible_range: RangeInclusive<u64>,
     ) -> iced::Element<'a, Message> {
         if let Some(message) = self.unavailable_message(main_chart, "Open Interest") {
@@ -70,6 +71,7 @@ impl OpenInterestIndicator {
         indicator_row(
             main_chart,
             &self.cache,
+            data_labels_always_visible,
             plot,
             AnySeries::forward_unix_ms(&self.data),
             visible_range,
@@ -127,9 +129,10 @@ impl KlineIndicatorImpl for OpenInterestIndicator {
     fn element<'a>(
         &'a self,
         chart: &'a ViewState,
+        data_labels_always_visible: bool,
         visible_range: RangeInclusive<u64>,
     ) -> iced::Element<'a, Message> {
-        self.indicator_elem(chart, visible_range)
+        self.indicator_elem(chart, data_labels_always_visible, visible_range)
     }
 
     fn availability(&self, chart: &ViewState) -> IndicatorAvailability {
