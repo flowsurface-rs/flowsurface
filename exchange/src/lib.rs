@@ -371,16 +371,7 @@ impl Ticker {
             // Use the custom display symbol (e.g., "HYPEUSDC" for Hyperliquid spot)
             self.display_as_str().to_owned()
         } else {
-            let mut result = self.as_str().to_owned();
-            // Transform Hyperliquid symbols to standardized display format
-            if matches!(self.exchange, Exchange::HyperliquidLinear)
-                && market_kind == MarketKind::LinearPerps
-            {
-                // For Hyperliquid Linear Perps, append USDT to match other exchanges' format
-                // The "P" suffix will be added later in compute_display_data for all perpetual contracts
-                result.push_str("USDT");
-            }
-            result
+            self.as_str().to_owned()
         };
 
         (result, market_kind)
