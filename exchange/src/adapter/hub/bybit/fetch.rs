@@ -95,6 +95,7 @@ pub(super) async fn fetch_ticker_metadata(
 
         if let Some(quote_asset) = item["quoteCoin"].as_str()
             && quote_asset != "USDT"
+            && quote_asset != "USDC"
             && quote_asset != "USD"
         {
             continue;

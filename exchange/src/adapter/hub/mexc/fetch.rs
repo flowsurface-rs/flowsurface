@@ -129,6 +129,7 @@ pub(super) async fn fetch_ticker_metadata(
 
             if let Some(quote_asset) = item["quoteAsset"].as_str()
                 && quote_asset != "USDT"
+                && quote_asset != "USDC"
                 && quote_asset != "USD"
             {
                 continue;
@@ -176,7 +177,7 @@ pub(super) async fn fetch_ticker_metadata(
                 return Err(AdapterError::ParseError("Missing quoteCoin".to_string()));
             };
 
-            if quote_asset != "USDT" && quote_asset != "USD" {
+            if quote_asset != "USDT" && quote_asset != "USD" && quote_asset != "USDC" {
                 continue;
             }
 
@@ -266,7 +267,7 @@ pub(super) async fn fetch_ticker_stats(
                 continue;
             }
 
-            if !symbol.ends_with("USDT") {
+            if !symbol.ends_with("USDT") && !symbol.ends_with("USD") && !symbol.ends_with("USDC") {
                 continue;
             }
 
