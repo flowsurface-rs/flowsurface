@@ -644,14 +644,17 @@ impl ViewWindow {
         // time range derived from buckets
         let latest_time_for_view: u64 = input.latest_time_render.max(input.latest_time_data);
 
-        let latest_t = latest_time_for_view as i128;
-        let aggr_i = input.aggr_time as i128;
+        let clamp_bucket_time = |bucket: i64| -> u64 {
+            if bucket >= 0 {
+                latest_time_for_view
+            } else {
+                latest_time_for_view
+                    .saturating_sub(bucket.unsigned_abs().saturating_mul(input.aggr_time))
+            }
+        };
 
-        let t_min_i = latest_t + (bucket_min as i128) * aggr_i;
-        let t_max_i = latest_t + (bucket_max as i128) * aggr_i;
-
-        let earliest = t_min_i.clamp(0, latest_t) as u64;
-        let latest_vis = t_max_i.clamp(0, latest_t) as u64;
+        let earliest = clamp_bucket_time(bucket_min);
+        let latest_vis = clamp_bucket_time(bucket_max);
 
         if earliest >= latest_vis {
             return None;

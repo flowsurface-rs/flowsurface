@@ -53,9 +53,9 @@ impl Price {
         if rounded_units < 0 {
             core::fmt::Write::write_char(out, '-')?;
         }
-        let abs_u = (rounded_units as i128).unsigned_abs();
+        let abs_u = rounded_units.unsigned_abs();
 
-        let scale_pow = 10u128.pow(scale_u);
+        let scale_pow = 10u64.pow(scale_u);
         let int_part = abs_u / scale_pow;
         write!(out, "{}", int_part)?;
 
@@ -63,7 +63,7 @@ impl Price {
             return Ok(());
         }
 
-        let frac_div = 10u128.pow(scale_u - decimals);
+        let frac_div = 10u64.pow(scale_u - decimals);
         let frac_part = (abs_u % scale_pow) / frac_div;
         write!(out, ".{:0width$}", frac_part, width = decimals as usize)
     }
@@ -231,7 +231,7 @@ pub struct PriceStep {
 impl PriceStep {
     /// Decimal places needed to represent this step without trailing zeros.
     pub fn decimal_places(self) -> usize {
-        let mut units = (self.units as i128).unsigned_abs();
+        let mut units = self.units.unsigned_abs();
         if units == 0 {
             return 0;
         }
@@ -254,8 +254,8 @@ impl PriceStep {
             out.push('-');
         }
 
-        let abs_u = (self.units as i128).unsigned_abs();
-        let scale = 10u128.pow(Price::ATOMIC_SCALE as u32);
+        let abs_u = self.units.unsigned_abs();
+        let scale = 10u64.pow(Price::ATOMIC_SCALE as u32);
         let int_part = abs_u / scale;
         out.push_str(&int_part.to_string());
 
