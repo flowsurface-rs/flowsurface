@@ -1,7 +1,7 @@
 use crate::{
     Event, Kline, OpenInterest, PushFrequency, TickerInfo, Timeframe, UnixMs,
     adapter::limiter::FixedWindowRateLimiterConfig,
-    adapter::{AdapterNetworkConfig, Exchange, MarketKind},
+    adapter::{Exchange, MarketKind},
     unit::qty::RawQtyUnit,
 };
 
@@ -16,7 +16,6 @@ const FETCH_DOMAIN: &str = "https://api.bybit.com";
 const LIMIT: usize = 600;
 const REFILL_RATE: Duration = Duration::from_secs(5);
 const LIMITER_BUFFER_PCT: f32 = 0.05;
-const DEFAULT_COMMAND_BUFFER_CAPACITY: usize = 128;
 
 fn exchange_from_market_type(market: MarketKind) -> Exchange {
     match market {
@@ -72,14 +71,14 @@ pub struct BybitHandle {
 }
 
 impl BybitHandle {
-    fn new(
-        request_port: RequestPort<BybitCommand>,
-        proxy_cfg: Option<crate::proxy::Proxy>,
-    ) -> Self {
-        Self {
+    pub fn new(proxy_cfg: Option<&crate::proxy::Proxy>) -> Result<Self, AdapterError> {
+        let worker = Worker::new_with_network(proxy_cfg)?;
+        let request_port = super::spawn_fetch_worker(worker);
+
+        Ok(Self {
             request_port,
-            proxy_cfg,
-        }
+            proxy_cfg: proxy_cfg.cloned(),
+        })
     }
 
     pub async fn fetch_ticker_metadata(
@@ -168,11 +167,11 @@ struct Worker {
 }
 
 impl Worker {
-    fn new_with_network(network: AdapterNetworkConfig) -> Result<Self, AdapterError> {
+    fn new_with_network(proxy_cfg: Option<&crate::proxy::Proxy>) -> Result<Self, AdapterError> {
         let config = BybitConfig::default();
 
         let limiter = BybitLimiter::new(config.limiter_config());
-        let hub = HttpHub::new(limiter, network.proxy_cfg)?;
+        let hub = HttpHub::new(limiter, proxy_cfg)?;
 
         Ok(Self { hub })
     }
@@ -214,14 +213,4 @@ impl super::FetchCommandHandler<MarketKind> for Worker {
             fetch::fetch_historical_oi(&mut self.hub, ticker_info, range, timeframe).await
         })
     }
-}
-
-pub fn spawn_bybit_with_network(
-    network: AdapterNetworkConfig,
-) -> Result<BybitHandle, AdapterError> {
-    let proxy_cfg = network.proxy_cfg.clone();
-    let worker = Worker::new_with_network(network)?;
-    let request_port = super::spawn_fetch_worker(DEFAULT_COMMAND_BUFFER_CAPACITY, worker);
-
-    Ok(BybitHandle::new(request_port, proxy_cfg))
 }

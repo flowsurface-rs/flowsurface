@@ -16,6 +16,8 @@ use tokio::sync::{mpsc, oneshot};
 
 use std::{collections::HashMap, path::PathBuf, time::Duration};
 
+const COMMAND_BUFFER_CAPACITY: usize = 128;
+
 const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -63,16 +65,16 @@ pub struct HttpHub<L> {
 }
 
 impl<L: RateLimiter> HttpHub<L> {
-    fn new(limiter: L, proxy_cfg: Option<super::Proxy>) -> Result<Self, AdapterError> {
+    fn new(limiter: L, proxy_cfg: Option<&super::Proxy>) -> Result<Self, AdapterError> {
         Self::with_config(limiter, proxy_cfg)
     }
 
-    fn with_config(limiter: L, proxy_cfg: Option<super::Proxy>) -> Result<Self, AdapterError> {
+    fn with_config(limiter: L, proxy_cfg: Option<&super::Proxy>) -> Result<Self, AdapterError> {
         let builder = Client::builder()
             .connect_timeout(HTTP_CONNECT_TIMEOUT)
             .timeout(HTTP_REQUEST_TIMEOUT);
 
-        let builder = super::proxy::try_apply_proxy(builder, proxy_cfg.as_ref());
+        let builder = super::proxy::try_apply_proxy(builder, proxy_cfg);
 
         let client = builder.build().map_err(|error| {
             AdapterError::InvalidRequest(format!("Failed to build worker HTTP client: {error}"))
@@ -322,15 +324,12 @@ pub trait FetchCommandHandler<M> {
     }
 }
 
-fn spawn_fetch_worker<H, M>(
-    command_buffer_capacity: usize,
-    mut worker: H,
-) -> RequestPort<FetchCommand<M>>
+fn spawn_fetch_worker<H, M>(mut worker: H) -> RequestPort<FetchCommand<M>>
 where
     H: FetchCommandHandler<M> + Send + 'static,
     M: Send + 'static,
 {
-    let (sender, mut receiver) = mpsc::channel(command_buffer_capacity);
+    let (sender, mut receiver) = mpsc::channel(COMMAND_BUFFER_CAPACITY);
     tokio::spawn(async move {
         while let Some(command) = receiver.recv().await {
             handle_fetch_command(&mut worker, command).await;

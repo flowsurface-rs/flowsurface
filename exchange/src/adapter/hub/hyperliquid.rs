@@ -1,7 +1,7 @@
 use crate::{
     Event, Kline, PushFrequency, TickMultiplier, TickerInfo, Timeframe, Trade, UnixMs,
     adapter::limiter::FixedWindowRateLimiterConfig,
-    adapter::{AdapterNetworkConfig, Exchange, MarketKind},
+    adapter::{Exchange, MarketKind},
     depth::DepthPayload,
     unit::{MinTicksize, qty::RawQtyUnit},
 };
@@ -20,7 +20,6 @@ const SIG_FIG_LIMIT: i32 = 5;
 const LIMIT: usize = 1200;
 const REFILL_RATE: Duration = Duration::from_secs(60);
 const LIMITER_BUFFER_PCT: f32 = 0.05;
-const DEFAULT_COMMAND_BUFFER_CAPACITY: usize = 128;
 
 const _MAX_DECIMALS_SPOT: u8 = 8;
 
@@ -94,14 +93,14 @@ pub struct HyperliquidHandle {
 }
 
 impl HyperliquidHandle {
-    fn new(
-        request_port: RequestPort<HyperliquidCommand>,
-        proxy_cfg: Option<crate::proxy::Proxy>,
-    ) -> Self {
-        Self {
+    pub fn new(proxy_cfg: Option<&crate::proxy::Proxy>) -> Result<Self, AdapterError> {
+        let worker = Worker::new_with_network(proxy_cfg)?;
+        let request_port = super::spawn_fetch_worker(worker);
+
+        Ok(Self {
             request_port,
-            proxy_cfg,
-        }
+            proxy_cfg: proxy_cfg.cloned(),
+        })
     }
 
     pub async fn fetch_ticker_metadata(
@@ -201,11 +200,11 @@ struct Worker {
 }
 
 impl Worker {
-    pub fn new_with_network(network: AdapterNetworkConfig) -> Result<Self, AdapterError> {
+    pub fn new_with_network(proxy_cfg: Option<&crate::proxy::Proxy>) -> Result<Self, AdapterError> {
         let config = HyperliquidConfig::default();
 
         let limiter = HyperliquidLimiter::new(config.limiter_config());
-        let hub = HttpHub::new(limiter, network.proxy_cfg)?;
+        let hub = HttpHub::new(limiter, proxy_cfg)?;
 
         Ok(Self { hub })
     }
@@ -243,14 +242,4 @@ impl super::FetchCommandHandler<MarketKind> for Worker {
     ) -> futures::future::BoxFuture<'_, Result<DepthPayload, AdapterError>> {
         Box::pin(async move { fetch::fetch_depth_snapshot(&mut self.hub, ticker).await })
     }
-}
-
-pub fn spawn_hyperliquid_with_network(
-    network: AdapterNetworkConfig,
-) -> Result<HyperliquidHandle, AdapterError> {
-    let proxy_cfg = network.proxy_cfg.clone();
-    let worker = Worker::new_with_network(network)?;
-    let request_port = super::spawn_fetch_worker(DEFAULT_COMMAND_BUFFER_CAPACITY, worker);
-
-    Ok(HyperliquidHandle::new(request_port, proxy_cfg))
 }

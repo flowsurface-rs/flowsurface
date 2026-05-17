@@ -16,10 +16,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 use std::{str::FromStr, sync::Arc, time::Duration};
 
-pub use client::{
-    AdapterHandles, AdapterNetworkConfig, MAX_KLINE_STREAMS_PER_STREAM,
-    MAX_TRADE_TICKERS_PER_STREAM,
-};
+pub use client::{AdapterHandles, MAX_KLINE_STREAMS_PER_STREAM, MAX_TRADE_TICKERS_PER_STREAM};
 pub use proxy::Proxy;
 
 /// Buffer trades and flush in this interval

@@ -131,20 +131,10 @@ impl Flowsurface {
             window::open(config)
         };
 
-        let (handles, adapter_init_err) = match exchange::adapter::AdapterHandles::spawn_all(
-            exchange::adapter::AdapterNetworkConfig {
-                proxy_cfg: saved_state.proxy_cfg.clone(),
-            },
-        ) {
-            Ok(handles) => (handles, None),
-            Err(err) => {
-                log::error!("Failed to spawn adapter handles: {err}");
-                (
-                    exchange::adapter::AdapterHandles::default(),
-                    Some(format!("Network adapters disabled: {}", err.ui_message())),
-                )
-            }
-        };
+        let handles = exchange::adapter::AdapterHandles::spawn_venues(
+            exchange::adapter::Venue::ALL,
+            saved_state.proxy_cfg.as_ref(),
+        );
 
         let (sidebar, launch_sidebar) = dashboard::Sidebar::new(&saved_state, handles.clone());
 
@@ -170,10 +160,6 @@ impl Flowsurface {
             state
                 .notifications
                 .push(Toast::error(format!("Audio disabled: {err}")));
-        }
-
-        if let Some(err) = adapter_init_err {
-            state.notifications.push(Toast::error(err));
         }
 
         if state.layout_manager.layouts.is_empty() {

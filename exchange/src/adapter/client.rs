@@ -5,19 +5,14 @@ use super::{
 use crate::{Kline, OpenInterest, Ticker, TickerInfo, TickerStats, Timeframe, Trade, UnixMs};
 
 use futures::{StreamExt, stream, stream::BoxStream};
-use std::{collections::HashMap, collections::HashSet, path::PathBuf};
+use std::{collections::HashMap, path::PathBuf};
 
 // Keep topics per websocket conservative across venues
 // allow up to 100 tickers per websocket stream
 pub const MAX_TRADE_TICKERS_PER_STREAM: usize = 100;
 pub const MAX_KLINE_STREAMS_PER_STREAM: usize = 100;
 
-#[derive(Debug, Clone, Default)]
-pub struct AdapterNetworkConfig {
-    pub proxy_cfg: Option<super::proxy::Proxy>,
-}
-
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct AdapterHandles {
     binance: Option<binance::BinanceHandle>,
     bybit: Option<bybit::BybitHandle>,
@@ -27,26 +22,61 @@ pub struct AdapterHandles {
 }
 
 impl AdapterHandles {
-    pub fn spawn_all(config: AdapterNetworkConfig) -> Result<Self, AdapterError> {
-        Self::spawn_selected(config, Venue::ALL)
-    }
-
-    pub fn spawn_selected(
-        config: AdapterNetworkConfig,
-        venues: impl IntoIterator<Item = Venue>,
-    ) -> Result<Self, AdapterError> {
-        let mut out = Self::default();
-        let mut seen = HashSet::new();
-
-        for venue in venues {
-            if !seen.insert(venue) {
-                continue;
+    pub fn spawn_venue(
+        &mut self,
+        venue: Venue,
+        proxy: Option<&super::proxy::Proxy>,
+    ) -> Result<(), AdapterError> {
+        match venue {
+            Venue::Binance => {
+                self.binance = Some(binance::BinanceHandle::new(proxy)?);
             }
-
-            out.spawn_venue(venue, config.clone())?;
+            Venue::Bybit => {
+                self.bybit = Some(bybit::BybitHandle::new(proxy)?);
+            }
+            Venue::Hyperliquid => {
+                self.hyperliquid = Some(hyperliquid::HyperliquidHandle::new(proxy)?);
+            }
+            Venue::Okex => {
+                self.okex = Some(okex::OkexHandle::new(proxy)?);
+            }
+            Venue::Mexc => {
+                self.mexc = Some(mexc::MexcHandle::new(proxy)?);
+            }
         }
 
-        Ok(out)
+        Ok(())
+    }
+
+    pub fn spawn_venues(
+        venues: impl IntoIterator<Item = Venue>,
+        proxy: Option<&super::proxy::Proxy>,
+    ) -> Self {
+        let mut out = Self {
+            binance: None,
+            bybit: None,
+            hyperliquid: None,
+            okex: None,
+            mexc: None,
+        };
+
+        for venue in venues {
+            if let Err(err) = out.spawn_venue(venue, proxy) {
+                log::error!("Failed to spawn {venue} adapter: {err}");
+            }
+        }
+
+        out
+    }
+
+    fn missing_venue_stream(exchange: Exchange) -> BoxStream<'static, Event> {
+        let err = format!("Adapter unavailable for {}", exchange.venue());
+        stream::once(async move { Event::Disconnected(exchange, err) }).boxed()
+    }
+
+    fn missing_venue_error(venue: Venue) -> AdapterError {
+        let err = format!("Adapter unavailable for venue {venue}");
+        AdapterError::unavailable(venue, err)
     }
 
     pub fn configured_venues(&self) -> impl Iterator<Item = Venue> + '_ {
@@ -63,44 +93,6 @@ impl AdapterHandles {
             Venue::Okex => self.okex.is_some(),
             Venue::Mexc => self.mexc.is_some(),
         }
-    }
-
-    fn spawn_venue(
-        &mut self,
-        venue: Venue,
-        config: AdapterNetworkConfig,
-    ) -> Result<(), AdapterError> {
-        match venue {
-            Venue::Binance => {
-                self.binance = Some(binance::spawn_binance_with_network(config)?);
-            }
-            Venue::Bybit => {
-                self.bybit = Some(bybit::spawn_bybit_with_network(config)?);
-            }
-            Venue::Hyperliquid => {
-                self.hyperliquid = Some(hyperliquid::spawn_hyperliquid_with_network(config)?);
-            }
-            Venue::Okex => {
-                self.okex = Some(okex::spawn_okex_with_network(config)?);
-            }
-            Venue::Mexc => {
-                self.mexc = Some(mexc::spawn_mexc_with_network(config)?);
-            }
-        }
-
-        Ok(())
-    }
-
-    fn missing_venue_stream(exchange: Exchange) -> BoxStream<'static, Event> {
-        let reason = format!(
-            "No adapter handle configured for venue {}",
-            exchange.venue()
-        );
-        stream::once(async move { Event::Disconnected(exchange, reason) }).boxed()
-    }
-
-    fn missing_venue_error(venue: Venue) -> AdapterError {
-        AdapterError::InvalidRequest(format!("No adapter handle configured for venue {venue}"))
     }
 
     pub fn kline_stream(
@@ -436,6 +428,12 @@ impl AdapterHandles {
                 "Trade fetch not available for {exchange}"
             ))),
         }
+    }
+}
+
+impl Default for AdapterHandles {
+    fn default() -> Self {
+        Self::spawn_venues(Venue::ALL, None)
     }
 }
 
