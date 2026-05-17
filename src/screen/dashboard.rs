@@ -226,8 +226,8 @@ impl Dashboard {
                         None
                     };
 
-                    if Some(focus_pane).is_some() {
-                        self.focus = Some((window, focus_pane.unwrap()));
+                    if let Some(focus_pane) = focus_pane {
+                        self.focus = Some((window, focus_pane));
                     }
                 }
                 pane::Message::ClosePane(pane) => {

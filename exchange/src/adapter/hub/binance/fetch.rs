@@ -468,17 +468,20 @@ pub(super) async fn fetch_historical_oi(
             format!("?symbol={ticker_str}"),
             12,
         ),
-        MarketKind::InversePerps => (
-            format!("{INVERSE_PERP_DOMAIN}/futures/data/openInterestHist"),
-            format!(
-                "?pair={}&contractType=PERPETUAL",
-                ticker_str
-                    .split('_')
-                    .next()
-                    .expect("Ticker format not supported"),
-            ),
-            1,
-        ),
+        MarketKind::InversePerps => {
+            let Some((pair, _)) = ticker_str.split_once('_') else {
+                let err_msg =
+                    format!("Unsupported inverse ticker format for open interest: {ticker_str}");
+                log::error!("{err_msg}");
+                return Err(AdapterError::InvalidRequest(err_msg));
+            };
+
+            (
+                format!("{INVERSE_PERP_DOMAIN}/futures/data/openInterestHist"),
+                format!("?pair={pair}&contractType=PERPETUAL"),
+                1,
+            )
+        }
         _ => {
             let err_msg = format!("Unsupported market type for open interest: {market:?}");
             log::error!("{}", err_msg);
@@ -491,11 +494,13 @@ pub(super) async fn fetch_historical_oi(
     if let Some((start, end)) = range {
         let start = start.as_u64();
         let end = end.as_u64();
-        let thirty_days_ago = std::time::SystemTime::now()
+        let now_ms = std::time::SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("Could not get system time")
-            .as_millis() as u64
-            - THIRTY_DAYS_MS;
+            .map_err(|err| {
+                AdapterError::ParseError(format!("System clock before UNIX_EPOCH: {err}"))
+            })?
+            .as_millis() as u64;
+        let thirty_days_ago = now_ms.saturating_sub(THIRTY_DAYS_MS);
 
         if end < thirty_days_ago {
             let err_msg = format!(
@@ -691,14 +696,19 @@ pub(super) async fn fetch_trades(
     let today_midnight = chrono::Utc::now()
         .date_naive()
         .and_hms_opt(0, 0, 0)
-        .expect("midnight should always be valid")
+        .ok_or_else(|| {
+            AdapterError::ParseError("Failed to construct UTC midnight timestamp".to_string())
+        })?
         .and_utc();
 
-    if from_time.as_u64() as i64 >= today_midnight.timestamp_millis() {
+    let from_time_ms = i64::try_from(from_time.as_u64())
+        .map_err(|_| AdapterError::InvalidRequest("Timestamp exceeds i64 range".to_string()))?;
+
+    if from_time_ms >= today_midnight.timestamp_millis() {
         return fetch_intraday_trades(hub, ticker_info, from_time).await;
     }
 
-    let from_date = chrono::DateTime::from_timestamp_millis(from_time.as_u64() as i64)
+    let from_date = chrono::DateTime::from_timestamp_millis(from_time_ms)
         .ok_or_else(|| AdapterError::ParseError("Invalid timestamp".into()))?
         .date_naive();
 

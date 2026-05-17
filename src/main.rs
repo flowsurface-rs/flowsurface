@@ -40,11 +40,15 @@ use iced::{
 use std::{borrow::Cow, collections::HashMap, vec};
 
 fn main() {
-    logger::setup(cfg!(debug_assertions)).expect("Failed to initialize logger");
+    logger::install_panic_hook();
+
+    if let Err(err) = logger::setup(cfg!(debug_assertions)) {
+        logger::report_stderr(&format!("Failed to initialize logger: {err}"));
+    }
 
     std::thread::spawn(data::cleanup_old_market_data);
 
-    let _ = iced::daemon(Flowsurface::new, Flowsurface::update, Flowsurface::view)
+    let daemon = iced::daemon(Flowsurface::new, Flowsurface::update, Flowsurface::view)
         .settings(iced::Settings {
             antialiasing: true,
             fonts: vec![
@@ -57,8 +61,13 @@ fn main() {
         .title(Flowsurface::title)
         .theme(Flowsurface::theme)
         .scale_factor(Flowsurface::scale_factor)
-        .subscription(Flowsurface::subscription)
-        .run();
+        .subscription(Flowsurface::subscription);
+
+    if let Err(err) = daemon.run() {
+        let message = format!("Runtime error: {err}");
+        log::error!("{message}");
+        logger::report_stderr(&message);
+    }
 }
 
 struct Flowsurface {
@@ -110,11 +119,6 @@ enum Message {
 impl Flowsurface {
     fn new() -> (Self, Task<Message>) {
         let saved_state = layout::load_saved_state();
-        let handles =
-            exchange::adapter::AdapterHandles::spawn_all(exchange::adapter::AdapterNetworkConfig {
-                proxy_cfg: saved_state.proxy_cfg.clone(),
-            })
-            .expect("Failed to spawn adapter handles");
 
         let (main_window_id, open_main_window) = {
             let (position, size) = saved_state.window();
@@ -125,6 +129,21 @@ impl Flowsurface {
                 ..window::settings()
             };
             window::open(config)
+        };
+
+        let (handles, adapter_init_err) = match exchange::adapter::AdapterHandles::spawn_all(
+            exchange::adapter::AdapterNetworkConfig {
+                proxy_cfg: saved_state.proxy_cfg.clone(),
+            },
+        ) {
+            Ok(handles) => (handles, None),
+            Err(err) => {
+                log::error!("Failed to spawn adapter handles: {err}");
+                (
+                    exchange::adapter::AdapterHandles::default(),
+                    Some(format!("Network adapters disabled: {}", err.ui_message())),
+                )
+            }
         };
 
         let (sidebar, launch_sidebar) = dashboard::Sidebar::new(&saved_state, handles.clone());
@@ -153,15 +172,33 @@ impl Flowsurface {
                 .push(Toast::error(format!("Audio disabled: {err}")));
         }
 
-        let active_layout_id = state.layout_manager.active_layout_id().unwrap_or(
-            &state
-                .layout_manager
-                .layouts
-                .first()
-                .expect("No layouts available")
-                .id,
-        );
-        let load_layout = state.load_layout(active_layout_id.unique, main_window_id);
+        if let Some(err) = adapter_init_err {
+            state.notifications.push(Toast::error(err));
+        }
+
+        if state.layout_manager.layouts.is_empty() {
+            log::error!("No layouts available after loading state; creating a default layout");
+            state.layout_manager = LayoutManager::new();
+        }
+
+        let active_layout_id = state
+            .layout_manager
+            .active_layout_id()
+            .or_else(|| {
+                state
+                    .layout_manager
+                    .layouts
+                    .first()
+                    .map(|layout| &layout.id)
+            })
+            .map(|layout| layout.unique);
+
+        let load_layout = active_layout_id
+            .map(|uid| state.load_layout(uid, main_window_id))
+            .unwrap_or_else(|| {
+                log::error!("No active layout could be selected at startup");
+                Task::none()
+            });
 
         (
             state,

@@ -887,10 +887,10 @@ impl ViewState {
                 .min_by(|(_, a), (_, b)| {
                     let da = (a.x - p2.x).hypot(a.y - p2.y);
                     let db = (b.x - p2.x).hypot(b.y - p2.y);
-                    da.partial_cmp(&db).unwrap()
+                    da.total_cmp(&db)
                 })
                 .map(|(i, &c)| (c, i))
-                .unwrap();
+                .unwrap_or((corners[0], 0));
 
             let text_padding = 8.0;
             let text_pos = match idx {

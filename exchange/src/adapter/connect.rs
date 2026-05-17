@@ -27,10 +27,9 @@ const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const WS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 
-pub static TLS_CONNECTOR: LazyLock<TlsConnector> =
-    LazyLock::new(|| tls_connector().expect("failed to create TLS connector"));
+pub static TLS_CONNECTOR: LazyLock<TlsConnector> = LazyLock::new(tls_connector);
 
-fn tls_connector() -> Result<TlsConnector, AdapterError> {
+fn tls_connector() -> TlsConnector {
     let mut root_store = tokio_rustls::rustls::RootCertStore::empty();
 
     root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|ta| {
@@ -46,7 +45,7 @@ fn tls_connector() -> Result<TlsConnector, AdapterError> {
         .with_root_certificates(root_store)
         .with_no_client_auth();
 
-    Ok(TlsConnector::from(std::sync::Arc::new(config)))
+    TlsConnector::from(std::sync::Arc::new(config))
 }
 
 pub enum State {

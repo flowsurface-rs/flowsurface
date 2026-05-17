@@ -345,19 +345,26 @@ pub fn load_saved_state() -> SavedState {
                     layouts.push(Layout { id, dashboard });
                 }
 
-                let active_layout =
-                    state
-                        .layout_manager
-                        .active_layout
-                        .as_ref()
-                        .and_then(|target_name| {
-                            layouts
-                                .iter()
-                                .find(|layout| layout.id.name == *target_name)
-                                .map(|layout| layout.id.clone())
-                        });
+                if layouts.is_empty() {
+                    log::error!(
+                        "Saved state contained no layouts. Starting with a default layout."
+                    );
+                    LayoutManager::new()
+                } else {
+                    let active_layout =
+                        state
+                            .layout_manager
+                            .active_layout
+                            .as_ref()
+                            .and_then(|target_name| {
+                                layouts
+                                    .iter()
+                                    .find(|layout| layout.id.name == *target_name)
+                                    .map(|layout| layout.id.clone())
+                            });
 
-                LayoutManager::from_config(layouts, active_layout)
+                    LayoutManager::from_config(layouts, active_layout)
+                }
             };
 
             crate::connector::fetcher::toggle_trade_fetch(state.trade_fetch_enabled);
