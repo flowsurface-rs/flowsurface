@@ -1,6 +1,4 @@
-use super::{
-    Chart, Interaction, Message, PlotConstants, TEXT_SIZE, ViewState, scale::linear::PriceInfoLabel,
-};
+use super::{Chart, Interaction, Message, PlotConstants, ViewState, scale::linear::PriceInfoLabel};
 use crate::{
     modal::pane::settings::study::{self, Study},
     style,
@@ -46,9 +44,10 @@ const MIN_CELL_HEIGHT: f32 = 1.0;
 
 const DEFAULT_CELL_WIDTH: f32 = 3.0;
 
-const TOOLTIP_WIDTH: f32 = 198.0;
+const TOOLTIP_WIDTH: f32 = 204.0;
 const TOOLTIP_HEIGHT: f32 = 66.0;
 const TOOLTIP_PADDING: f32 = 12.0;
+const TOOLTIP_COL_GAP_PX: f32 = 2.0;
 
 const MAX_CIRCLE_RADIUS: f32 = 16.0;
 const CURRENT_DEPTH_AREA_WIDTH_PX: f32 = 160.0;
@@ -852,7 +851,9 @@ impl canvas::Program<Message> for HeatmapChart {
                         palette.background.weakest.color.scale_alpha(0.9),
                     );
 
-                    let cell_width_overlay = TOOLTIP_WIDTH / 4.0;
+                    let col_count = time_interval_offsets.len() as f32;
+                    let cell_width_overlay =
+                        (TOOLTIP_WIDTH - ((col_count - 1.0) * TOOLTIP_COL_GAP_PX)) / col_count;
                     let cell_height_overlay = TOOLTIP_HEIGHT / 3.0;
 
                     let palette = theme.extended_palette();
@@ -873,7 +874,8 @@ impl canvas::Program<Message> for HeatmapChart {
                                 };
 
                                 let text_pos_x = overlay_top_left_x
-                                    + (display_col_idx as f32 * cell_width_overlay)
+                                    + (display_col_idx as f32
+                                        * (cell_width_overlay + TOOLTIP_COL_GAP_PX))
                                     + cell_width_overlay / 2.0;
                                 let text_pos_y = overlay_top_left_y
                                     + (display_row_idx as f32 * cell_height_overlay)
@@ -882,7 +884,7 @@ impl canvas::Program<Message> for HeatmapChart {
                                 frame.fill_text(canvas::Text {
                                     content: text_content,
                                     position: Point::new(text_pos_x, text_pos_y),
-                                    size: iced::Pixels(TEXT_SIZE - 2.0),
+                                    size: iced::Pixels(crate::style::text_size::TINY),
                                     color,
                                     font: style::AZERET_MONO,
                                     align_y: Alignment::Center.into(),

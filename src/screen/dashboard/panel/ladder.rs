@@ -321,7 +321,7 @@ impl canvas::Program<Message> for Ladder {
                                         visible_row.y + ROW_HEIGHT / 2.0,
                                     ),
                                     color: palette.secondary.strong.color,
-                                    size: (TEXT_SIZE - 1.0).into(),
+                                    size: style::text_size::TINY.into(),
                                     font: style::AZERET_MONO,
                                     align_x: Alignment::Center.into(),
                                     align_y: Alignment::Center.into(),

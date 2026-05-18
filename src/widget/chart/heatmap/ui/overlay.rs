@@ -12,12 +12,13 @@ use exchange::unit::{Price, PriceStep};
 use iced::widget::canvas::Path;
 use iced::{Alignment, Point, Rectangle, Renderer, Theme, mouse, widget::canvas};
 
-const TOOLTIP_WIDTH: f32 = 198.0;
+const TOOLTIP_WIDTH: f32 = 204.0;
 const TOOLTIP_HEIGHT: f32 = 66.0;
 const TOOLTIP_PADDING: f32 = 12.0;
+const TOOLTIP_COL_GAP_PX: f32 = 2.0;
 
 const OVERLAY_LABEL_PAD_PX: f32 = 6.0;
-const OVERLAY_LABEL_TEXT_SIZE: f32 = style::text_size::SMALL;
+const OVERLAY_SCALE_LABEL_TEXT_SIZE: f32 = style::text_size::TINY;
 
 const TOOLTIP_ROW_OFFSETS: [i64; 3] = [1, 0, -1];
 const TOOLTIP_COL_OFFSETS: [i64; 4] = [-2, -1, 0, 1];
@@ -45,6 +46,7 @@ struct TooltipLayout {
     rect: Rectangle,
     cell_w: f32,
     cell_h: f32,
+    col_gap: f32,
 }
 
 impl TooltipLayout {
@@ -71,18 +73,21 @@ impl TooltipLayout {
             height: TOOLTIP_HEIGHT,
         };
 
-        let cell_w = TOOLTIP_WIDTH / (TOOLTIP_COL_OFFSETS.len() as f32);
+        let col_count = TOOLTIP_COL_OFFSETS.len() as f32;
+        let col_gap = TOOLTIP_COL_GAP_PX;
+        let cell_w = (TOOLTIP_WIDTH - ((col_count - 1.0) * col_gap)) / col_count;
         let cell_h = TOOLTIP_HEIGHT / (TOOLTIP_ROW_OFFSETS.len() as f32);
 
         Self {
             rect,
             cell_w,
             cell_h,
+            col_gap,
         }
     }
 
     fn cell_center(&self, row_idx: usize, col_idx: usize) -> Point {
-        let x = self.rect.x + ((col_idx as f32) * self.cell_w) + self.cell_w / 2.0;
+        let x = self.rect.x + ((col_idx as f32) * (self.cell_w + self.col_gap)) + self.cell_w / 2.0;
         let y = self.rect.y + ((row_idx as f32) * self.cell_h) + self.cell_h / 2.0;
         Point::new(x, y)
     }
@@ -222,7 +227,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                     frame.fill_text(canvas::Text {
                         content: abbr_large_numbers(qty.into()),
                         position: Point::new(x_pos, strip_top_y),
-                        size: iced::Pixels(OVERLAY_LABEL_TEXT_SIZE - 1.),
+                        size: iced::Pixels(OVERLAY_SCALE_LABEL_TEXT_SIZE),
                         color: palette.background.base.text.scale_alpha(0.85),
                         font: style::AZERET_MONO,
                         align_x: Alignment::End.into(),
@@ -256,7 +261,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                             frame.fill_text(canvas::Text {
                                 content: abbr_large_numbers(qty.into()),
                                 position: Point::new(tx, ty),
-                                size: iced::Pixels(OVERLAY_LABEL_TEXT_SIZE - 1.),
+                                size: iced::Pixels(OVERLAY_SCALE_LABEL_TEXT_SIZE),
                                 color: palette.background.base.text.scale_alpha(0.85),
                                 font: style::AZERET_MONO,
                                 align_x: Alignment::End.into(),
@@ -297,7 +302,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                             frame.fill_text(canvas::Text {
                                 content: abbr_large_numbers(qty.into()),
                                 position: Point::new(tx, ty),
-                                size: iced::Pixels(OVERLAY_LABEL_TEXT_SIZE - 1.),
+                                size: iced::Pixels(OVERLAY_SCALE_LABEL_TEXT_SIZE),
                                 color: palette.background.base.text.scale_alpha(0.85),
                                 font: style::AZERET_MONO,
                                 align_x: Alignment::Start.into(),
@@ -455,7 +460,6 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                     };
 
                     let qty: f32 = (qty_u32 as f32) / self.qty_scale;
-
                     let color = if is_bid {
                         palette.success.strong.color
                     } else {
@@ -465,7 +469,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                     frame.fill_text(canvas::Text {
                         content: abbr_large_numbers(qty),
                         position: layout.cell_center(row_idx, col_idx),
-                        size: iced::Pixels(crate::style::text_size::SMALL),
+                        size: iced::Pixels(crate::style::text_size::TINY),
                         color: color.scale_alpha(0.95),
                         align_x: Alignment::Center.into(),
                         align_y: Alignment::Center.into(),
