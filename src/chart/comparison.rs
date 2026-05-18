@@ -117,7 +117,10 @@ impl ComparisonChart {
 
     pub fn view(&self, timezone: data::UserTimezone) -> iced::Element<'_, Message> {
         if self.series.iter().all(|s| s.points.is_empty()) {
-            return iced::widget::center(iced::widget::text("Waiting for data...").size(16)).into();
+            return iced::widget::center(
+                iced::widget::text("Waiting for data...").size(crate::style::text_size::TITLE),
+            )
+            .into();
         }
 
         let chart: iced::Element<_> = LineComparison::<Series>::new(&self.series, self.timeframe)
@@ -643,7 +646,8 @@ pub mod series_editor {
                         container("").width(14).height(14).style(move |theme| {
                             style::colored_circle_container(theme, applied)
                         }),
-                        text(s.ticker_info.ticker.symbol_and_exchange_string()).size(13),
+                        text(s.ticker_info.ticker.symbol_and_exchange_string())
+                            .size(crate::style::text_size::EMPHASIS),
                     ]
                     .width(Length::Fill)
                     .spacing(8)
@@ -673,7 +677,7 @@ pub mod series_editor {
                     inner_col = inner_col.push(
                         iced::widget::text_input("Set a custom label name", &label_name)
                             .on_input(Message::NameChanged)
-                            .size(14)
+                            .size(crate::style::text_size::SECTION)
                             .padding(4)
                             .width(Length::Fill),
                     );

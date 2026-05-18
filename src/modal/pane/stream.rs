@@ -449,7 +449,7 @@ impl Modifier {
                                 ModifierKind::Comparison(_) => "Timeframe",
                                 _ => "Aggregation",
                             };
-                            row![text(text_content).size(13)]
+                            row![text(text_content).size(crate::style::text_size::EMPHASIS)]
                         }
                     };
 
@@ -543,7 +543,7 @@ impl Modifier {
                         column![].padding(4).spacing(8).align_x(Horizontal::Center);
 
                     ticksizes_column = ticksizes_column
-                        .push(text("Tick size multiplier").size(13))
+                        .push(text("Tick size multiplier").size(crate::style::text_size::EMPHASIS))
                         .push(rule::horizontal(1).style(style::split_ruler));
 
                     let allows_custom_tsizes = exchange.is_depth_client_aggr()

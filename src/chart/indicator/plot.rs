@@ -602,7 +602,7 @@ impl PlotTooltip {
         frame.fill_text(canvas::Text {
             content: self.text.clone(),
             position: Point::new(text_x, 2.0),
-            size: iced::Pixels(10.0),
+            size: iced::Pixels(crate::style::text_size::TINY),
             color: palette.background.base.text,
             font: style::AZERET_MONO,
             align_x: align_x.into(),
@@ -622,7 +622,7 @@ impl PlotTooltip {
         frame.fill_text(canvas::Text {
             content: self.text.clone(),
             position: Point::new(TOOLTIP_MARGIN + TOOLTIP_PADDING, 2.0),
-            size: iced::Pixels(10.0),
+            size: iced::Pixels(crate::style::text_size::TINY),
             color: palette.background.base.text,
             font: style::AZERET_MONO,
             align_x: Alignment::Start.into(),

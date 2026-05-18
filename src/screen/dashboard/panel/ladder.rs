@@ -12,7 +12,7 @@ use iced::{Alignment, Event, Point, Rectangle, Renderer, Size, Theme, mouse};
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-const TEXT_SIZE: f32 = 11.0;
+const TEXT_SIZE: f32 = style::text_size::SMALL;
 const ROW_HEIGHT: f32 = 16.0;
 
 // Total width ratios must sum to 1.0

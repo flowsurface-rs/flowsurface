@@ -55,7 +55,7 @@ fn main() {
                 Cow::Borrowed(style::AZERET_MONO_BYTES),
                 Cow::Borrowed(style::ICONS_BYTES),
             ],
-            default_text_size: iced::Pixels(12.0),
+            default_text_size: style::text_size::BODY.into(),
             ..Default::default()
         })
         .title(Flowsurface::title)
@@ -687,7 +687,7 @@ impl Flowsurface {
                                 weight: iced::font::Weight::Bold,
                                 ..Default::default()
                             })
-                            .size(16)
+                            .size(crate::style::text_size::TITLE)
                             .style(style::title_text),
                     )
                     .height(20)
@@ -940,7 +940,8 @@ impl Flowsurface {
                         container(
                             row![
                                 decrease_btn,
-                                text(format!("{:.0}%", current_value * 100.0)).size(14),
+                                text(format!("{:.0}%", current_value * 100.0))
+                                    .size(crate::style::text_size::SECTION),
                                 increase_btn,
                             ]
                             .align_y(Alignment::Center)
@@ -989,12 +990,13 @@ impl Flowsurface {
                     let version_info = {
                         let (version_label, commit_label) = version::app_build_version_parts();
 
-                        let github_link_button = button(text(version_label).size(13))
-                            .padding(0)
-                            .style(style::button::text_link)
-                            .on_press(Message::OpenUrlRequested(Cow::Borrowed(
-                                version::GITHUB_REPOSITORY_URL,
-                            )));
+                        let github_link_button =
+                            button(text(version_label).size(crate::style::text_size::EMPHASIS))
+                                .padding(0)
+                                .style(style::button::text_link)
+                                .on_press(Message::OpenUrlRequested(Cow::Borrowed(
+                                    version::GITHUB_REPOSITORY_URL,
+                                )));
 
                         let github_button: Element<'_, Message> = iced::widget::tooltip(
                             github_link_button,
@@ -1015,10 +1017,11 @@ impl Flowsurface {
                         if let (Some(commit_label), Some(commit_url)) =
                             (commit_label, version::build_commit_url())
                         {
-                            let commit_button = button(text(commit_label).size(11))
-                                .padding(0)
-                                .style(style::button::text_link_secondary)
-                                .on_press(Message::OpenUrlRequested(Cow::Owned(commit_url)));
+                            let commit_button =
+                                button(text(commit_label).size(crate::style::text_size::SMALL))
+                                    .padding(0)
+                                    .style(style::button::text_link_secondary)
+                                    .on_press(Message::OpenUrlRequested(Cow::Owned(commit_url)));
 
                             column![github_button, commit_button]
                                 .spacing(2)
@@ -1038,13 +1041,13 @@ impl Flowsurface {
 
                     let column_content = split_column![
                         column![open_data_folder,].spacing(8),
-                        column![text("Sidebar position").size(14), sidebar_pos_picklist,].spacing(12),
-                        column![text("Time zone").size(14), timezone_picklist,].spacing(12),
-                        column![text("Market data").size(14), size_in_quote_currency_checkbox,].spacing(12),
-                        column![text("Theme").size(14), theme_picklist,].spacing(12),
-                        column![text("Interface scale").size(14), scale_factor,].spacing(12),
+                        column![text("Sidebar position").size(crate::style::text_size::SECTION), sidebar_pos_picklist,].spacing(12),
+                        column![text("Time zone").size(crate::style::text_size::SECTION), timezone_picklist,].spacing(12),
+                        column![text("Market data").size(crate::style::text_size::SECTION), size_in_quote_currency_checkbox,].spacing(12),
+                        column![text("Theme").size(crate::style::text_size::SECTION), theme_picklist,].spacing(12),
+                        column![text("Interface scale").size(crate::style::text_size::SECTION), scale_factor,].spacing(12),
                         column![
-                            text("Experimental").size(14),
+                            text("Experimental").size(crate::style::text_size::SECTION),
                             column![trade_fetch_checkbox, toggle_theme_editor, toggle_network_editor].spacing(8),
                         ]
                         .spacing(12),

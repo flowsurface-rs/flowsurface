@@ -11,7 +11,7 @@ use iced::{Alignment, Event, Point, Rectangle, Renderer, Size, Theme, mouse};
 use std::collections::VecDeque;
 use std::time::Instant;
 
-const TEXT_SIZE: iced::Pixels = iced::Pixels(11.0);
+const TEXT_SIZE: iced::Pixels = iced::Pixels(style::text_size::SMALL);
 const METRICS_HEIGHT_COMPACT: f32 = 8.0;
 const METRICS_HEIGHT_FULL: f32 = 18.0;
 const TRADE_ROW_HEIGHT: f32 = 14.0;

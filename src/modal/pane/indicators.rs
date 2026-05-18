@@ -145,7 +145,8 @@ where
     }
 
     column![
-        container(text("Indicators").size(14)).padding(padding::bottom(8)),
+        container(text("Indicators").size(crate::style::text_size::SECTION))
+            .padding(padding::bottom(8)),
         col.spacing(4)
     ]
     .spacing(4)

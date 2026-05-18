@@ -539,7 +539,7 @@ impl State {
             let content = row![
                 exchange_icon.align_y(Alignment::Center).line_height(1.4),
                 text(label)
-                    .size(14)
+                    .size(crate::style::text_size::SECTION)
                     .align_y(Alignment::Center)
                     .line_height(1.4)
             ]
@@ -564,7 +564,7 @@ impl State {
         } else if !matches!(self.content, Content::Starter) && !self.has_stream() {
             let content = row![
                 text("Choose a ticker")
-                    .size(13)
+                    .size(crate::style::text_size::EMPHASIS)
                     .align_y(Alignment::Center)
                     .line_height(1.4)
             ]
@@ -607,11 +607,11 @@ impl State {
 
         let uninitialized_base = |kind: ContentKind| -> Element<'a, Message> {
             if self.has_stream() {
-                center(text("Loading…").size(16)).into()
+                center(text("Loading…").size(crate::style::text_size::TITLE)).into()
             } else {
                 let content = column![
-                    text(kind.to_string()).size(16),
-                    text("No ticker selected").size(14)
+                    text(kind.to_string()).size(crate::style::text_size::TITLE),
+                    text("No ticker selected").size(crate::style::text_size::SECTION)
                 ]
                 .spacing(8)
                 .align_x(Alignment::Center);
@@ -630,7 +630,8 @@ impl State {
                 let base: Element<_> = widget::toast::Manager::new(
                     center(
                         column![
-                            text("Choose a view to get started").size(16),
+                            text("Choose a view to get started")
+                                .size(crate::style::text_size::TITLE),
                             content_picklist
                         ]
                         .align_x(Alignment::Center)
@@ -1082,16 +1083,19 @@ impl State {
 
         let top_right_buttons = {
             let compact_control = container(
-                button(text("...").size(13).align_y(Alignment::End))
-                    .on_press(Message::PaneEvent(id, Event::ShowModal(Modal::Controls)))
-                    .style(move |theme, status| {
-                        style::button::transparent(
-                            theme,
-                            status,
-                            self.modal == Some(Modal::Controls)
-                                || self.modal == Some(Modal::Settings),
-                        )
-                    }),
+                button(
+                    text("...")
+                        .size(crate::style::text_size::EMPHASIS)
+                        .align_y(Alignment::End),
+                )
+                .on_press(Message::PaneEvent(id, Event::ShowModal(Modal::Controls)))
+                .style(move |theme, status| {
+                    style::button::transparent(
+                        theme,
+                        status,
+                        self.modal == Some(Modal::Controls) || self.modal == Some(Modal::Settings),
+                    )
+                }),
             )
             .align_y(Alignment::Center)
             .padding(4);

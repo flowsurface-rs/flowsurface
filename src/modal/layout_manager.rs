@@ -246,7 +246,10 @@ impl LayoutManager {
                         let (confirm_btn, cancel_btn) = create_confirm_delete_buttons(layout_id);
 
                         layout_row = layout_row
-                            .push(center(text(format!("Delete {}?", layout.id.name)).size(12)))
+                            .push(center(
+                                text(format!("Delete {}?", layout.id.name))
+                                    .size(crate::style::text_size::BODY),
+                            ))
                             .push(confirm_btn)
                             .push(cancel_btn);
                     } else {

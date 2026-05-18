@@ -22,7 +22,7 @@ use iced::{
 };
 
 const ZOOM_SENSITIVITY: f32 = 30.0;
-const TEXT_SIZE: f32 = 12.0;
+const TEXT_SIZE: f32 = crate::style::text_size::BODY;
 
 #[derive(Default, Debug, Clone, Copy)]
 pub enum Interaction {
@@ -497,7 +497,7 @@ pub fn view<'a, T: Chart>(
     timezone: data::UserTimezone,
 ) -> Element<'a, Message> {
     if chart.is_empty() {
-        return center(text("Waiting for data...").size(16)).into();
+        return center(text("Waiting for data...").size(crate::style::text_size::TITLE)).into();
     }
 
     let state = chart.state();
@@ -527,7 +527,7 @@ pub fn view<'a, T: Chart>(
 
         let autoscale_button = button(
             autoscale_btn_placeholder
-                .size(10)
+                .size(crate::style::text_size::TINY)
                 .align_x(Alignment::Center)
                 .align_y(Alignment::Center),
         )
@@ -960,7 +960,7 @@ impl ViewState {
                 content: label_text,
                 position: text_pos,
                 color: palette.background.base.text,
-                size: iced::Pixels(11.0),
+                size: iced::Pixels(crate::style::text_size::SMALL),
                 align_x: match idx {
                     0 | 2 => Alignment::Start.into(),
                     1 | 3 => Alignment::End.into(),

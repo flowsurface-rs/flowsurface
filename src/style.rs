@@ -20,6 +20,16 @@ pub const AZERET_MONO: Font = Font {
 
 pub const TITLE_PADDING_TOP: f32 = if cfg!(target_os = "macos") { 20.0 } else { 0.0 };
 
+pub mod text_size {
+    pub const SMALL: f32 = 11.0;
+    pub const BODY: f32 = 12.0;
+    pub const SECTION: f32 = 14.0;
+    pub const TITLE: f32 = 16.0;
+
+    pub const TINY: f32 = SMALL - 1.0;
+    pub const EMPHASIS: f32 = BODY + 1.0;
+}
+
 /// Icon glyph code points for the `icons` font (`assets/fonts/icons.ttf`).
 /// Values represent each glyph's `code` in `assets/fonts/fontello.json`.
 /// Enum variant names may differ from Fontello CSS names.

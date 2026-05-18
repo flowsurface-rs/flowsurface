@@ -673,7 +673,7 @@ impl canvas::Program<Message> for AxisLabelsY<'_> {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
-        let text_size = 12.0;
+        let text_size = crate::style::text_size::BODY;
         let palette = theme.extended_palette();
 
         let labels = self.labels_cache.draw(renderer, bounds.size(), |frame| {
@@ -723,7 +723,7 @@ impl canvas::Program<Message> for AxisLabelsY<'_> {
                                 } else {
                                     Color::WHITE.scale_alpha(0.8)
                                 },
-                                text_size: 11.0,
+                                text_size: crate::style::text_size::SMALL,
                             })
                         } else {
                             None
@@ -749,7 +749,7 @@ impl canvas::Program<Message> for AxisLabelsY<'_> {
                             palette.primary.strong.text
                         }
                     },
-                    text_size: 12.0,
+                    text_size: crate::style::text_size::BODY,
                 };
 
                 let y_pos = bounds.height - ((price - lowest) / range * bounds.height);
@@ -774,7 +774,7 @@ impl canvas::Program<Message> for AxisLabelsY<'_> {
                     content: format!("{:.*}", self.decimals, rounded_price),
                     background_color: Some(palette.secondary.base.color),
                     text_color: palette.secondary.base.text,
-                    text_size: 12.0,
+                    text_size: crate::style::text_size::BODY,
                 };
 
                 all_labels.push(AxisLabel::Y {

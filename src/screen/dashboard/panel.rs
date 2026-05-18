@@ -28,7 +28,7 @@ pub trait Panel: canvas::Program<Message> {
 
 pub fn view<T: Panel>(panel: &'_ T, _timezone: data::UserTimezone) -> Element<'_, Message> {
     if panel.is_empty() {
-        return center(text("Waiting for data...").size(16)).into();
+        return center(text("Waiting for data...").size(crate::style::text_size::TITLE)).into();
     }
 
     container(

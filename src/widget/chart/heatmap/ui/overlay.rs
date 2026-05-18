@@ -17,7 +17,7 @@ const TOOLTIP_HEIGHT: f32 = 66.0;
 const TOOLTIP_PADDING: f32 = 12.0;
 
 const OVERLAY_LABEL_PAD_PX: f32 = 6.0;
-const OVERLAY_LABEL_TEXT_SIZE: f32 = 11.0;
+const OVERLAY_LABEL_TEXT_SIZE: f32 = style::text_size::SMALL;
 
 const TOOLTIP_ROW_OFFSETS: [i64; 3] = [1, 0, -1];
 const TOOLTIP_COL_OFFSETS: [i64; 4] = [-2, -1, 0, 1];
@@ -28,7 +28,7 @@ const HIGHLIGHT_BORDER_ALPHA: f32 = 0.95;
 
 const PAUSED_CTRL_TEXT: &str = "Paused";
 const PAUSED_CTRL_ICON_GAP_PX: f32 = 6.0;
-const PAUSED_CTRL_LABEL_TEXT_SIZE: f32 = 11.0;
+const PAUSED_CTRL_LABEL_TEXT_SIZE: f32 = style::text_size::SMALL;
 const PAUSED_CTRL_BG_PAD_X: f32 = 6.0;
 
 #[derive(Debug, Default)]
@@ -465,7 +465,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                     frame.fill_text(canvas::Text {
                         content: abbr_large_numbers(qty),
                         position: layout.cell_center(row_idx, col_idx),
-                        size: iced::Pixels(11.0),
+                        size: iced::Pixels(crate::style::text_size::SMALL),
                         color: color.scale_alpha(0.95),
                         align_x: Alignment::Center.into(),
                         align_y: Alignment::Center.into(),

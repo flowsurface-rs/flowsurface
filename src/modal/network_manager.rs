@@ -226,19 +226,25 @@ impl NetworkManager {
                 };
 
                 let mut lines = column![
-                    row![text("Effective:").size(11), text(effective).size(12),]
-                        .spacing(4)
-                        .align_y(iced::Alignment::Center)
-                        .width(iced::Length::Fill),
+                    row![
+                        text("Effective:").size(crate::style::text_size::SMALL),
+                        text(effective).size(crate::style::text_size::BODY),
+                    ]
+                    .spacing(4)
+                    .align_y(iced::Alignment::Center)
+                    .width(iced::Length::Fill),
                 ]
                 .spacing(4);
 
                 if let Some(pending) = pending_url {
                     lines = lines.push(
-                        row![text("Pending:").size(11), text(pending).size(12),]
-                            .spacing(4)
-                            .align_y(iced::Alignment::Center)
-                            .width(iced::Length::Fill),
+                        row![
+                            text("Pending:").size(crate::style::text_size::SMALL),
+                            text(pending).size(crate::style::text_size::BODY),
+                        ]
+                        .spacing(4)
+                        .align_y(iced::Alignment::Center)
+                        .width(iced::Length::Fill),
                     );
                 }
                 lines
@@ -380,7 +386,7 @@ impl NetworkManager {
             let mut body = column![
                 row![
                     iced::widget::rule::horizontal(1),
-                    text("Proxy").size(14),
+                    text("Proxy").size(crate::style::text_size::SECTION),
                     iced::widget::rule::horizontal(1),
                 ]
                 .spacing(4)
@@ -393,12 +399,15 @@ impl NetworkManager {
             .spacing(12);
 
             body = if let Some(err) = &self.error {
-                let error_line = text(err).size(12).style(|theme: &iced::Theme| {
-                    let palette = theme.palette();
-                    iced::widget::text::Style {
-                        color: Some(palette.danger),
-                    }
-                });
+                let error_line =
+                    text(err)
+                        .size(crate::style::text_size::BODY)
+                        .style(|theme: &iced::Theme| {
+                            let palette = theme.palette();
+                            iced::widget::text::Style {
+                                color: Some(palette.danger),
+                            }
+                        });
                 body.push(
                     container(error_line)
                         .align_x(iced::Alignment::Center)

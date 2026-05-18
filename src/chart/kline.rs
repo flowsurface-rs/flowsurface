@@ -1971,7 +1971,7 @@ fn draw_crosshair_tooltip(
             frame.fill_text(canvas::Text {
                 content: text.to_string(),
                 position: Point::new(x, position.y),
-                size: iced::Pixels(12.0),
+                size: iced::Pixels(crate::style::text_size::BODY),
                 color: seg_color,
                 font: style::AZERET_MONO,
                 ..canvas::Text::default()

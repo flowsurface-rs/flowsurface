@@ -51,6 +51,9 @@ const TOOLTIP_HEIGHT: f32 = 66.0;
 const TOOLTIP_PADDING: f32 = 12.0;
 
 const MAX_CIRCLE_RADIUS: f32 = 16.0;
+const CURRENT_DEPTH_AREA_WIDTH_PX: f32 = 160.0;
+const CURRENT_DEPTH_AREA_RIGHT_PAD_PX: f32 = 8.0;
+const CURRENT_DEPTH_LABEL_TOP_PAD_PX: f32 = 6.0;
 
 impl Chart for HeatmapChart {
     type IndicatorKind = HeatmapIndicator;
@@ -563,6 +566,16 @@ impl canvas::Program<Message> for HeatmapChart {
             }
 
             if let Some(latest_timestamp) = self.trades.latest_timestamp() {
+                let visible_space_right_of_zero = (region.x + region.width).max(0.0);
+                let desired_depth_area_width = CURRENT_DEPTH_AREA_WIDTH_PX / chart.scaling;
+                let current_depth_area_width =
+                    if desired_depth_area_width > visible_space_right_of_zero {
+                        let right_pad = CURRENT_DEPTH_AREA_RIGHT_PAD_PX / chart.scaling;
+                        (visible_space_right_of_zero - right_pad).max(0.0)
+                    } else {
+                        desired_depth_area_width
+                    };
+
                 let max_qty = self
                     .heatmap
                     .latest_order_runs(highest, lowest, latest_timestamp)
@@ -572,12 +585,13 @@ impl canvas::Program<Message> for HeatmapChart {
                     * 5.0
                     / 5.0;
 
-                if !max_qty.is_infinite() {
+                if max_qty.is_finite() && max_qty > 0.0 && current_depth_area_width > 0.0 {
                     self.heatmap
                         .latest_order_runs(highest, lowest, latest_timestamp)
                         .for_each(|(price, run)| {
                             let y_position = chart.price_to_y(*price);
-                            let bar_width = (run.qty.to_f32_lossy() / max_qty) * 50.0;
+                            let bar_width =
+                                (run.qty.to_f32_lossy() / max_qty) * current_depth_area_width;
 
                             frame.fill_rectangle(
                                 Point::new(0.0, y_position - (cell_height / 2.0)),
@@ -587,9 +601,13 @@ impl canvas::Program<Message> for HeatmapChart {
                         });
 
                     // max bid/ask quantity text
-                    let text_size = 9.0 / chart.scaling;
+                    let text_size = crate::style::text_size::TINY / chart.scaling;
                     let text_content = abbr_large_numbers(max_qty);
-                    let text_position = Point::new(50.0, region.y);
+
+                    let text_position = Point::new(
+                        current_depth_area_width,
+                        region.y + (CURRENT_DEPTH_LABEL_TOP_PAD_PX / chart.scaling),
+                    );
 
                     frame.fill_text(canvas::Text {
                         content: text_content,
@@ -597,6 +615,8 @@ impl canvas::Program<Message> for HeatmapChart {
                         size: iced::Pixels(text_size),
                         color: palette.background.base.text,
                         font: style::AZERET_MONO,
+                        align_x: Alignment::End.into(),
+                        align_y: Alignment::Start.into(),
                         ..canvas::Text::default()
                     });
                 }
@@ -668,12 +688,11 @@ impl canvas::Program<Message> for HeatmapChart {
                 });
 
             if volume_indicator && max_aggr_volume > 0.0 {
-                let text_size = 9.0 / chart.scaling;
+                let text_size = crate::style::text_size::TINY / chart.scaling;
                 let text_content = abbr_large_numbers(max_aggr_volume);
-                let text_width = (text_content.len() as f32 * text_size) / 1.5;
 
                 let text_position = Point::new(
-                    (region.x + region.width) - text_width,
+                    region.x + region.width - 4.0,
                     (region.y + region.height) - (bounds.height / chart.scaling) * 0.1 - text_size,
                 );
 
@@ -683,6 +702,7 @@ impl canvas::Program<Message> for HeatmapChart {
                     size: text_size.into(),
                     color: palette.background.base.text,
                     font: style::AZERET_MONO,
+                    align_x: Alignment::End.into(),
                     ..canvas::Text::default()
                 });
             }
@@ -1017,7 +1037,7 @@ fn draw_volume_profile(
         });
 
     if max_aggr_volume > 0.0 {
-        let text_size = 9.0 / chart.scaling;
+        let text_size = crate::style::text_size::TINY / chart.scaling;
         let text_content = abbr_large_numbers(max_aggr_volume);
 
         let text_position = Point::new(region.x + area_width, region.y);

@@ -686,7 +686,7 @@ impl TickersTable {
                 "Favorited tickers will appear here"
             };
             column![
-                text(hint).size(11),
+                text(hint).size(crate::style::text_size::SMALL),
                 rule::horizontal(2.0).style(style::split_ruler),
             ]
             .spacing(8)
@@ -1080,17 +1080,17 @@ impl TickersTable {
             container(
                 column![
                     row![
-                        text("Last Updated Price: ").size(11),
+                        text("Last Updated Price: ").size(crate::style::text_size::SMALL),
                         Space::new().width(Length::Fill).height(Length::Shrink),
                         text(display_data.mark_price_display.as_deref().unwrap_or("-"))
                     ],
                     row![
-                        text("Daily Change: ").size(11),
+                        text("Daily Change: ").size(crate::style::text_size::SMALL),
                         Space::new().width(Length::Fill).height(Length::Shrink),
                         text(&display_data.daily_change_pct),
                     ],
                     row![
-                        text("Daily Volume: ").size(11),
+                        text("Daily Volume: ").size(crate::style::text_size::SMALL),
                         Space::new().width(Length::Fill).height(Length::Shrink),
                         text(&display_data.volume_display),
                     ],
@@ -1424,7 +1424,7 @@ impl TickersTable {
 
         let right_el: Option<Element<'a, M>> = right_label_and_action.map(|(lbl, action)| {
             let btn_base = button(
-                row![text(lbl).size(11)]
+                row![text(lbl).size(crate::style::text_size::SMALL)]
                     .align_y(alignment::Vertical::Center)
                     .height(Length::Fill),
             )
@@ -1441,7 +1441,7 @@ impl TickersTable {
         });
 
         let chip_el: Option<Element<'a, M>> = chip_label.map(|lbl| {
-            container(text(lbl).size(11))
+            container(text(lbl).size(crate::style::text_size::SMALL))
                 .padding([2, 6])
                 .style(style::dragger_row_container)
                 .into()
