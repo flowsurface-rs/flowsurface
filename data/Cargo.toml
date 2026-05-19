@@ -23,9 +23,10 @@ dirs-next = "2.0.0"
 open = "5.3.5"
 log = { version = "0.4.29", default-features = false, features = ["std"] }
 thiserror = { version = "2.0.18", default-features = false, features = ["std"] }
+keyring-core = { version = "1.0.0", default-features = false }
 [target.'cfg(target_os = "macos")'.dependencies]
-keyring = { version = "3.6.3", default-features = false, features = ["apple-native"] }
+apple-native-keyring-store = { version = "1.0.0", default-features = false, features = ["keychain"] }
 [target.'cfg(target_os = "windows")'.dependencies]
-keyring = { version = "3.6.3", default-features = false, features = ["windows-native"] }
+windows-native-keyring-store = { version = "1.0.0", default-features = false }
 [target.'cfg(target_os = "linux")'.dependencies]
-keyring = { version = "3.6.3", default-features = false, features = ["linux-native"] }
+dbus-secret-service-keyring-store = { version = "1.0.0", default-features = false, features = ["crypto-rust"] }

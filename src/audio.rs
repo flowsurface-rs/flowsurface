@@ -1,4 +1,4 @@
-use rodio::{Decoder, OutputStream, OutputStreamHandle, Source};
+use rodio::{Decoder, Source};
 use std::time::{Duration, Instant};
 
 pub const BUY_SOUND_DATA: &[u8] = include_bytes!("../assets/sounds/hard-typewriter-click.wav");
@@ -24,11 +24,9 @@ pub enum SoundType {
 #[derive(Debug, thiserror::Error)]
 pub enum AudioError {
     #[error("Failed to open audio output: {0}")]
-    OpenOutput(#[from] rodio::StreamError),
+    OpenOutput(#[from] rodio::DeviceSinkError),
     #[error("Failed to decode sound data: {0}")]
     Decode(#[from] rodio::decoder::DecoderError),
-    #[error("Failed to create audio sink: {0}")]
-    CreateSink(#[from] rodio::PlayError),
     #[error("Sound '{0}' not loaded")]
     NotLoaded(SoundType),
     #[error("Failed to load default sound '{path}': {source}")]
@@ -43,8 +41,7 @@ impl AudioError {
     /// True when the audio output device is missing/unavailable/lost
     pub fn is_no_device(&self) -> bool {
         match self {
-            AudioError::OpenOutput(rodio::StreamError::NoDevice) => true,
-            AudioError::CreateSink(rodio::PlayError::NoDevice) => true,
+            AudioError::OpenOutput(rodio::DeviceSinkError::NoDevice) => true,
             AudioError::LoadDefaultSound { source, .. } => source.is_no_device(),
             _ => false,
         }
@@ -73,20 +70,19 @@ impl From<SoundType> for usize {
 }
 
 pub struct SoundCache {
-    _stream: OutputStream,
-    stream_handle: OutputStreamHandle,
+    sink: rodio::MixerDeviceSink,
     volume: Option<f32>,
-    sample_buffers: [Option<rodio::buffer::SamplesBuffer<i16>>; 4],
+    sample_buffers: [Option<rodio::buffer::SamplesBuffer>; 4],
     last_played: [(Option<Instant>, usize); 4],
 }
 
 impl SoundCache {
     pub fn new(volume: Option<f32>) -> Result<Self, AudioError> {
-        let (stream, stream_handle) = OutputStream::try_default()?;
+        let mut sink = rodio::DeviceSinkBuilder::open_default_sink()?;
+        sink.log_on_drop(false);
 
         Ok(SoundCache {
-            _stream: stream,
-            stream_handle,
+            sink,
             volume,
             sample_buffers: [None, None, None, None],
             last_played: [(None, 0), (None, 0), (None, 0), (None, 0)],
@@ -139,7 +135,7 @@ impl SoundCache {
         let sample_buffer = rodio::buffer::SamplesBuffer::new(
             decoder.channels(),
             decoder.sample_rate(),
-            decoder.collect::<Vec<i16>>(),
+            decoder.collect::<Vec<rodio::Sample>>(),
         );
 
         self.sample_buffers[index] = Some(sample_buffer);
@@ -178,10 +174,9 @@ impl SoundCache {
 
         let adjusted_volume = base_volume / (overlap_count as f32);
 
-        let sink = rodio::Sink::try_new(&self.stream_handle)?;
-        sink.set_volume(adjusted_volume / 100.0);
-        sink.append(buffer.clone());
-        sink.detach();
+        self.sink
+            .mixer()
+            .add(buffer.clone().amplify(adjusted_volume / 100.0));
 
         Ok(())
     }

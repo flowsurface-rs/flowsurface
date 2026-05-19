@@ -2,9 +2,28 @@ use exchange::proxy::{Proxy, ProxyAuth};
 
 const KEYCHAIN_SERVICE: &str = "flowsurface.proxy";
 
-fn entry_for(proxy: &Proxy) -> Result<keyring::Entry, keyring::Error> {
+fn ensure_default_store() -> Result<(), keyring_core::Error> {
+    if keyring_core::get_default_store().is_some() {
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    let store = apple_native_keyring_store::keychain::Store::new()?;
+
+    #[cfg(target_os = "windows")]
+    let store = windows_native_keyring_store::Store::new()?;
+
+    #[cfg(target_os = "linux")]
+    let store = dbus_secret_service_keyring_store::Store::new()?;
+
+    keyring_core::set_default_store(store);
+    Ok(())
+}
+
+fn entry_for(proxy: &Proxy) -> Result<keyring_core::Entry, keyring_core::Error> {
+    ensure_default_store()?;
     let key = proxy.to_url_string_no_auth();
-    keyring::Entry::new(KEYCHAIN_SERVICE, &key)
+    keyring_core::Entry::new(KEYCHAIN_SERVICE, &key)
 }
 
 pub fn load_proxy_auth(proxy: &Proxy) -> Option<ProxyAuth> {
