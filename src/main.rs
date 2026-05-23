@@ -202,9 +202,15 @@ impl Flowsurface {
                 let dashboard = self.active_dashboard_mut();
 
                 match event {
-                    exchange::Event::Connected(_exchange) => {}
-                    exchange::Event::Disconnected(exchange, reason) => {
-                        log::info!("a stream disconnected from {exchange} WS: {reason:?}");
+                    exchange::Event::Connected(streams) => {
+                        dashboard.mark_streams_connected(main_window_id, streams.as_ref());
+                    }
+                    exchange::Event::Disconnected(streams, reason) => {
+                        dashboard.mark_streams_disconnected(
+                            main_window_id,
+                            streams.as_ref(),
+                            &reason,
+                        );
                     }
                     exchange::Event::DepthReceived(stream, update_t, depth) => {
                         let task = dashboard
@@ -366,6 +372,13 @@ impl Flowsurface {
                                 log::debug!(
                                     "Deferring persisted stream resolution for pane {pane_id}: ticker metadata not loaded yet"
                                 );
+                                dashboard.set_pane_liveness(
+                                    main_window.id,
+                                    pane_id,
+                                    dashboard::pane::LivenessStatus::Waiting(
+                                        dashboard::pane::WaitingReason::Metadata,
+                                    ),
+                                );
                                 return Task::none();
                             }
 
@@ -402,9 +415,33 @@ impl Flowsurface {
                                 Err(err) => {
                                     // This is typically a transient state (e.g. partial metadata, stale symbol)
                                     log::debug!("{err}");
+                                    dashboard.set_pane_liveness(
+                                        main_window.id,
+                                        pane_id,
+                                        dashboard::pane::LivenessStatus::Waiting(
+                                            dashboard::pane::WaitingReason::StreamResolution,
+                                        ),
+                                    );
                                     Task::none()
                                 }
                             }
+                        }
+                        Some(dashboard::Event::RetryConnections(exchanges)) => {
+                            let proxy_cfg = self.network.proxy_cfg();
+
+                            for exchange in &exchanges {
+                                if let Err(err) = self
+                                    .handles
+                                    .spawn_venue(exchange.venue(), proxy_cfg.as_ref())
+                                {
+                                    self.notifications.push(Toast::error(format!(
+                                        "Failed to restart {exchange} adapter: {err}"
+                                    )));
+                                }
+                            }
+
+                            dashboard.retry_exchanges(main_window.id, &exchanges);
+                            Task::none()
                         }
                         Some(dashboard::Event::RequestPalette) => {
                             let theme = self.theme.0.clone();

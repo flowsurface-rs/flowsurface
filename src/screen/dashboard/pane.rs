@@ -38,29 +38,80 @@ use data::{
 };
 use exchange::{
     Kline, OpenInterest, StreamPairKind, TickMultiplier, TickerInfo, Timeframe,
-    adapter::{MarketKind, StreamKind, StreamTicksize},
+    adapter::{Exchange, MarketKind, StreamKind, StreamTicksize},
     unit::PriceStep,
 };
 use iced::{
     Alignment, Element, Length, Renderer, Theme, padding,
     widget::{button, center, column, container, pane_grid, pick_list, row, text, tooltip},
 };
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
 pub enum Effect {
     RefreshStreams,
     RequestFetch(Vec<FetchSpec>),
     SwitchTickersInGroup(TickerInfo),
+    RetryConnections(Vec<Exchange>),
     FocusWidget(iced::widget::Id),
 }
 
-#[derive(Debug, Default, Clone, PartialEq)]
-pub enum Status {
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum LivenessStatus {
     #[default]
-    Ready,
+    Idle,
+    Waiting(WaitingReason),
+    Live,
+    Stalled(String),
+    Disconnected(String),
+}
+
+#[derive(Debug, Default, Clone, PartialEq)]
+pub enum FetchStatus {
+    #[default]
+    Idle,
     Loading(InfoKind),
-    Stale(String),
+    Error(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaitingReason {
+    StreamResolution,
+    Metadata,
+    StreamData,
+}
+
+impl WaitingReason {
+    pub fn label(self) -> &'static str {
+        match self {
+            WaitingReason::StreamResolution => "Resolving saved streams...",
+            WaitingReason::Metadata => "Waiting for ticker metadata...",
+            WaitingReason::StreamData => "Waiting for live data...",
+        }
+    }
+}
+
+impl LivenessStatus {
+    fn placeholder_message(&self, has_stream: bool) -> Option<String> {
+        match self {
+            LivenessStatus::Idle if has_stream => Some("Waiting for live data...".to_string()),
+            LivenessStatus::Idle | LivenessStatus::Live => None,
+            LivenessStatus::Waiting(reason) => Some(reason.label().to_string()),
+            LivenessStatus::Stalled(message) | LivenessStatus::Disconnected(message) => {
+                Some(message.clone())
+            }
+        }
+    }
+}
+
+impl FetchStatus {
+    fn placeholder_message(&self) -> Option<String> {
+        match self {
+            FetchStatus::Idle => None,
+            FetchStatus::Loading(_) => Some("Loading...".to_string()),
+            FetchStatus::Error(message) => Some(message.clone()),
+        }
+    }
 }
 
 pub enum Action {
@@ -104,6 +155,7 @@ pub enum Event {
     ComparisonChartInteraction(super::chart::comparison::Message),
     HeatmapShaderInteraction(crate::widget::chart::heatmap::Message),
     MiniTickersListInteraction(modal::pane::mini_tickers_list::Message),
+    RetryConnection,
 }
 
 pub struct State {
@@ -113,7 +165,9 @@ pub struct State {
     pub settings: Settings,
     pub notifications: Vec<Toast>,
     pub streams: ResolvedStream,
-    pub status: Status,
+    pub liveness: LivenessStatus,
+    pub fetch_status: FetchStatus,
+    last_stream_data_at: Option<Instant>,
     pub link_group: Option<LinkGroup>,
 }
 
@@ -128,10 +182,19 @@ impl State {
         settings: Settings,
         link_group: Option<LinkGroup>,
     ) -> Self {
+        let liveness = if streams.is_empty() {
+            LivenessStatus::Idle
+        } else {
+            LivenessStatus::Waiting(WaitingReason::StreamResolution)
+        };
+
         Self {
             content,
             settings,
             streams: ResolvedStream::waiting(streams),
+            liveness,
+            fetch_status: FetchStatus::Idle,
+            last_stream_data_at: None,
             link_group,
             ..Default::default()
         }
@@ -161,6 +224,23 @@ impl State {
             1 => Some(StreamPairKind::SingleSource(unique[0])),
             _ => Some(StreamPairKind::MultiSource(unique)),
         }
+    }
+
+    fn active_exchanges(&self) -> Vec<Exchange> {
+        let Some(streams) = self.streams.ready_iter() else {
+            return vec![];
+        };
+
+        let mut exchanges = vec![];
+
+        for stream in streams {
+            let exchange = stream.ticker_info().exchange();
+            if !exchanges.contains(&exchange) {
+                exchanges.push(exchange);
+            }
+        }
+
+        exchanges
     }
 
     pub fn set_content_and_streams(
@@ -402,8 +482,69 @@ impl State {
 
         self.content = content;
         self.streams = ResolvedStream::Ready(streams.clone());
+        self.liveness = if streams.is_empty() {
+            LivenessStatus::Idle
+        } else {
+            LivenessStatus::Waiting(WaitingReason::StreamData)
+        };
+        self.fetch_status = FetchStatus::Idle;
+        self.last_stream_data_at = None;
 
         streams
+    }
+
+    pub fn mark_stream_activity(&mut self, now: Instant) {
+        self.last_stream_data_at = Some(now);
+        self.liveness = LivenessStatus::Live;
+    }
+
+    pub fn refresh_stream_liveness(&mut self, now: Instant, stale_after: Duration) {
+        if matches!(
+            self.liveness,
+            LivenessStatus::Waiting(WaitingReason::Metadata)
+                | LivenessStatus::Waiting(WaitingReason::StreamResolution)
+                | LivenessStatus::Disconnected(_)
+        ) {
+            return;
+        }
+
+        let has_ready_stream = self
+            .streams
+            .ready_iter()
+            .map(|mut streams| streams.next().is_some())
+            .unwrap_or(false);
+
+        if !has_ready_stream {
+            self.liveness = LivenessStatus::Idle;
+            return;
+        }
+
+        match self.last_stream_data_at {
+            Some(last_seen) if now.duration_since(last_seen) >= stale_after => {
+                self.liveness =
+                    LivenessStatus::Stalled("Stream stalled (no recent updates)".to_string());
+            }
+            Some(_) => self.liveness = LivenessStatus::Live,
+            None => self.liveness = LivenessStatus::Waiting(WaitingReason::StreamData),
+        }
+    }
+
+    pub fn set_liveness(&mut self, next: LivenessStatus) {
+        if matches!(
+            next,
+            LivenessStatus::Idle
+                | LivenessStatus::Waiting(WaitingReason::Metadata)
+                | LivenessStatus::Waiting(WaitingReason::StreamResolution)
+                | LivenessStatus::Waiting(WaitingReason::StreamData)
+        ) {
+            self.last_stream_data_at = None;
+        }
+
+        self.liveness = next;
+    }
+
+    pub fn set_fetch_status(&mut self, next: FetchStatus) {
+        self.fetch_status = next;
     }
 
     pub fn insert_hist_oi(&mut self, req_id: Option<uuid::Uuid>, oi: &[OpenInterest]) {
@@ -606,8 +747,13 @@ impl State {
         };
 
         let uninitialized_base = |kind: ContentKind| -> Element<'a, Message> {
-            if self.has_stream() {
-                center(text("Loading…").size(crate::style::text_size::TITLE)).into()
+            let placeholder_message = self
+                .fetch_status
+                .placeholder_message()
+                .or_else(|| self.liveness.placeholder_message(self.has_stream()));
+
+            if let Some(message) = placeholder_message {
+                center(text(message).size(crate::style::text_size::TITLE)).into()
             } else {
                 let content = column![
                     text(kind.to_string()).size(crate::style::text_size::TITLE),
@@ -620,7 +766,7 @@ impl State {
             }
         };
 
-        let body = match &self.content {
+        let mut body = match &self.content {
             Content::Starter => {
                 let content_picklist =
                     pick_list(ContentKind::ALL, Some(ContentKind::Starter), move |kind| {
@@ -1061,21 +1207,69 @@ impl State {
             }
         };
 
-        match &self.status {
-            Status::Loading(InfoKind::FetchingKlines) => {
+        if let Some(message) = match &self.liveness {
+            LivenessStatus::Stalled(msg) | LivenessStatus::Disconnected(msg) => Some(msg.clone()),
+            _ => None,
+        } {
+            let retry_button = button(text("Retry").size(crate::style::text_size::SMALL))
+                .on_press(Message::PaneEvent(id, Event::RetryConnection))
+                .style(move |theme, status| style::button::bordered_toggle(theme, status, false));
+
+            let banner = container(
+                row![
+                    icon_text(Icon::Return, 10),
+                    text(message).size(crate::style::text_size::SMALL),
+                    retry_button,
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            )
+            .padding(6)
+            .style(move |theme: &Theme| {
+                let palette = theme.extended_palette();
+
+                iced::widget::container::Style {
+                    background: Some(palette.danger.weak.color.scale_alpha(0.35).into()),
+                    border: iced::Border {
+                        color: palette.danger.base.color,
+                        width: 1.0,
+                        radius: 4.0.into(),
+                    },
+                    text_color: Some(palette.background.base.text),
+                    ..Default::default()
+                }
+            })
+            .align_x(iced::Alignment::Center)
+            .width(iced::Length::Fill);
+
+            body = column![banner, body].spacing(6).into();
+        }
+
+        match &self.fetch_status {
+            FetchStatus::Loading(InfoKind::FetchingKlines) => {
                 top_left_buttons = top_left_buttons.push(text("Fetching Klines..."));
             }
-            Status::Loading(InfoKind::FetchingTrades(count)) => {
+            FetchStatus::Loading(InfoKind::FetchingTrades(count)) => {
                 top_left_buttons =
                     top_left_buttons.push(text(format!("Fetching Trades... {count} fetched")));
             }
-            Status::Loading(InfoKind::FetchingOI) => {
+            FetchStatus::Loading(InfoKind::FetchingOI) => {
                 top_left_buttons = top_left_buttons.push(text("Fetching Open Interest..."));
             }
-            Status::Stale(msg) => {
+            FetchStatus::Error(msg) => {
                 top_left_buttons = top_left_buttons.push(text(msg));
             }
-            Status::Ready => {}
+            FetchStatus::Idle => {}
+        }
+
+        match &self.liveness {
+            LivenessStatus::Waiting(reason) => {
+                top_left_buttons = top_left_buttons.push(text(reason.label()));
+            }
+            LivenessStatus::Idle
+            | LivenessStatus::Live
+            | LivenessStatus::Stalled(_)
+            | LivenessStatus::Disconnected(_) => {}
         }
 
         let content = pane_grid::Content::new(body)
@@ -1522,6 +1716,13 @@ impl State {
                     }
                 }
             }
+            Event::RetryConnection => {
+                let exchanges = self.active_exchanges();
+
+                if !exchanges.is_empty() {
+                    return Some(Effect::RetryConnections(exchanges));
+                }
+            }
         }
         None
     }
@@ -1773,7 +1974,9 @@ impl State {
     pub fn park_for_inactive_layout(&mut self) {
         if let Content::ShaderHeatmap { chart, .. } = &mut self.content {
             *chart = None;
-            self.status = Status::Ready;
+            self.liveness = LivenessStatus::Idle;
+            self.fetch_status = FetchStatus::Idle;
+            self.last_stream_data_at = None;
         }
     }
 
@@ -1845,7 +2048,9 @@ impl Default for State {
             settings: Settings::default(),
             streams: ResolvedStream::waiting(vec![]),
             notifications: vec![],
-            status: Status::Ready,
+            liveness: LivenessStatus::Idle,
+            fetch_status: FetchStatus::Idle,
+            last_stream_data_at: None,
             link_group: None,
         }
     }

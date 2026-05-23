@@ -1,7 +1,7 @@
 use crate::{
     Event, Kline, OpenInterest, PushFrequency, TickerInfo, Timeframe, UnixMs,
     adapter::limiter::FixedWindowRateLimiterConfig,
-    adapter::{Exchange, MarketKind},
+    adapter::{Exchange, MarketKind, StreamTicksize},
     unit::qty::RawQtyUnit,
 };
 
@@ -140,9 +140,10 @@ impl BybitHandle {
     pub fn connect_depth_stream(
         self,
         ticker_info: TickerInfo,
+        depth_aggr: StreamTicksize,
         push_freq: PushFrequency,
     ) -> impl futures::Stream<Item = Event> {
-        stream::connect_depth_stream(ticker_info, push_freq, self.proxy_cfg)
+        stream::connect_depth_stream(ticker_info, depth_aggr, push_freq, self.proxy_cfg)
     }
 
     pub fn connect_trade_stream(

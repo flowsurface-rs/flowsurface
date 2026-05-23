@@ -209,19 +209,15 @@ pub(super) async fn fetch_ticker_metadata(
                 continue;
             }
 
-            let min_qty_contracts = item["minVol"]
-                .as_f64()
-                .ok_or_else(|| AdapterError::ParseError("Missing minVol (min_qty)".to_string()))?
-                as f32;
+            let min_qty_contracts = serde_util::value_as_f32(&item["minVol"])
+                .ok_or_else(|| AdapterError::ParseError("Missing minVol (min_qty)".to_string()))?;
 
-            let min_ticksize = item["priceUnit"].as_f64().ok_or_else(|| {
+            let min_ticksize = serde_util::value_as_f32(&item["priceUnit"]).ok_or_else(|| {
                 AdapterError::ParseError("Missing priceUnit (ticksize)".to_string())
-            })? as f32;
+            })?;
 
-            let contract_size = item["contractSize"]
-                .as_f64()
-                .ok_or_else(|| AdapterError::ParseError("Missing contractSize".to_string()))?
-                as f32;
+            let contract_size = serde_util::value_as_f32(&item["contractSize"])
+                .ok_or_else(|| AdapterError::ParseError("Missing contractSize".to_string()))?;
 
             let min_qty = min_qty_contracts * contract_size;
 
@@ -472,24 +468,24 @@ pub(super) async fn fetch_klines(
                         AdapterError::ParseError("Time value not found".to_string())
                     })? * 1000;
 
-                    let open = opens[i].as_f64().ok_or_else(|| {
+                    let open = serde_util::value_as_f32(&opens[i]).ok_or_else(|| {
                         AdapterError::ParseError("Open value not found".to_string())
-                    })? as f32;
-                    let high = highs[i].as_f64().ok_or_else(|| {
+                    })?;
+                    let high = serde_util::value_as_f32(&highs[i]).ok_or_else(|| {
                         AdapterError::ParseError("High value not found".to_string())
-                    })? as f32;
-                    let low = lows[i].as_f64().ok_or_else(|| {
+                    })?;
+                    let low = serde_util::value_as_f32(&lows[i]).ok_or_else(|| {
                         AdapterError::ParseError("Low value not found".to_string())
-                    })? as f32;
-                    let close = closes[i].as_f64().ok_or_else(|| {
+                    })?;
+                    let close = serde_util::value_as_f32(&closes[i]).ok_or_else(|| {
                         AdapterError::ParseError("Close value not found".to_string())
-                    })? as f32;
-                    let _amount = amounts[i].as_f64().ok_or_else(|| {
+                    })?;
+                    let _amount = serde_util::value_as_f32(&amounts[i]).ok_or_else(|| {
                         AdapterError::ParseError("Amount value not found".to_string())
-                    })? as f32;
-                    let volume = volumes[i].as_f64().ok_or_else(|| {
+                    })?;
+                    let volume = serde_util::value_as_f32(&volumes[i]).ok_or_else(|| {
                         AdapterError::ParseError("Vol value not found".to_string())
-                    })? as f32;
+                    })?;
 
                     let normalized_vol = qty_norm.normalize_qty(volume, close);
 

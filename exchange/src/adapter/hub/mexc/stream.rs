@@ -19,7 +19,12 @@ use hyper_util::rt::TokioIo;
 use rustc_hash::FxHashMap;
 use serde_json::json;
 use sonic_rs::{Deserialize, JsonValueTrait, to_object_iter_unchecked};
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
+
+const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(45);
+const HEARTBEAT_TIMEOUT_REASON: &str = "Heartbeat timeout (no websocket activity)";
+const HEARTBEAT_SEND_FAILED_REASON: &str = "Failed to send heartbeat ping";
+const HEARTBEAT_PONG_FAILED_REASON: &str = "Failed to reply pong";
 
 #[derive(Deserialize, Debug)]
 struct SonicTrade {
@@ -246,16 +251,23 @@ async fn send_ping(
 pub fn connect_depth_stream(
     handle: MexcHandle,
     ticker_info: TickerInfo,
+    depth_aggr: StreamTicksize,
     push_freq: PushFrequency,
     proxy_cfg: Option<crate::proxy::Proxy>,
 ) -> impl Stream<Item = Event> {
     channel(100, move |mut output| async move {
+        let stream = StreamKind::Depth {
+            ticker_info,
+            depth_aggr,
+            push_freq,
+        };
+
+        let stream_scope: Arc<[StreamKind]> = Arc::from(vec![stream].into_boxed_slice());
         let mut state: State = State::Disconnected;
 
         let ticker = ticker_info.ticker;
 
         let (symbol_str, market_type) = ticker.to_full_symbol_and_type();
-        let exchange = exchange_from_market_type(market_type);
 
         let mut orderbook = LocalDepthCache::default();
         let mut snapshot_ready = false;
@@ -268,6 +280,7 @@ pub fn connect_depth_stream(
         );
 
         let mut ping_interval = tokio::time::interval(Duration::from_secs(PING_INTERVAL));
+        let mut last_transport_activity = tokio::time::Instant::now();
 
         loop {
             match &mut state {
@@ -300,14 +313,17 @@ pub fn connect_depth_stream(
 
                             snapshot_ready = false;
                             snapshot_time = UnixMs::ZERO;
-                            let _ = output.send(Event::Connected(exchange)).await;
+                            let _ = output.send(Event::Connected(stream_scope.clone())).await;
                             state = State::Connected(websocket);
+                            last_transport_activity = tokio::time::Instant::now();
+                            ping_interval =
+                                tokio::time::interval(Duration::from_secs(PING_INTERVAL));
                         }
                         Err(_) => {
                             tokio::time::sleep(Duration::from_secs(1)).await;
                             let _ = output
                                 .send(Event::Disconnected(
-                                    exchange,
+                                    stream_scope.clone(),
                                     "Failed to connect to websocket".to_string(),
                                 ))
                                 .await;
@@ -318,14 +334,34 @@ pub fn connect_depth_stream(
                 State::Connected(websocket) => {
                     tokio::select! {
                         _ = ping_interval.tick() => {
+                            if last_transport_activity.elapsed() >= HEARTBEAT_TIMEOUT {
+                                state = State::Disconnected;
+                                let _ = output
+                                    .send(Event::Disconnected(
+                                        stream_scope.clone(),
+                                        HEARTBEAT_TIMEOUT_REASON.to_string(),
+                                    ))
+                                    .await;
+                                continue;
+                            }
+
                             if send_ping(websocket).await.is_err() {
                                 state = State::Disconnected;
+                                let _ = output
+                                    .send(Event::Disconnected(
+                                        stream_scope.clone(),
+                                        HEARTBEAT_SEND_FAILED_REASON.to_string(),
+                                    ))
+                                    .await;
                             }
                         }
 
                         msg = websocket.read_frame() => {
                             match msg {
-                                Ok(msg) => match msg.opcode {
+                                Ok(msg) => {
+                                    last_transport_activity = tokio::time::Instant::now();
+
+                                    match msg.opcode {
                                     OpCode::Text => {
                                         match feed_de(&msg.payload[..], Some(ticker), market_type) {
                                             Ok(data) => {
@@ -346,7 +382,7 @@ pub fn connect_depth_stream(
                                                                 Err(e) => {
                                                                     let _ = output
                                                                         .send(Event::Disconnected(
-                                                                            exchange,
+                                                                            stream_scope.clone(),
                                                                             format!("Failed to fetch depth snapshot: {e}"),
                                                                         ))
                                                                         .await;
@@ -389,11 +425,7 @@ pub fn connect_depth_stream(
 
                                                         let _ = output
                                                             .send(Event::DepthReceived(
-                                                                StreamKind::Depth {
-                                                                    ticker_info,
-                                                                    depth_aggr: StreamTicksize::Client,
-                                                                    push_freq,
-                                                                },
+                                                                stream,
                                                                 time.into(),
                                                                 orderbook.depth.clone(),
                                                             ))
@@ -408,21 +440,34 @@ pub fn connect_depth_stream(
                                             }
                                         }
                                     }
+                                    OpCode::Ping => {
+                                        if websocket.write_frame(Frame::pong(msg.payload)).await.is_err() {
+                                            let _ = output
+                                                .send(Event::Disconnected(
+                                                    stream_scope.clone(),
+                                                    HEARTBEAT_PONG_FAILED_REASON.to_string(),
+                                                ))
+                                                .await;
+                                            state = State::Disconnected;
+                                        }
+                                    }
+                                    OpCode::Pong => {}
                                     OpCode::Close => {
                                         let _ = output
                                             .send(Event::Disconnected(
-                                                exchange,
+                                                stream_scope.clone(),
                                                 "Connection closed".to_string(),
                                             ))
                                             .await;
                                         state = State::Disconnected;
                                     }
                                     _ => {}
-                                },
+                                }
+                                }
                                 Err(_) => {
                                     let _ = output
                                         .send(Event::Disconnected(
-                                            exchange,
+                                            stream_scope.clone(),
                                             "Error reading frame".to_string(),
                                         ))
                                         .await;
@@ -443,9 +488,28 @@ pub fn connect_trade_stream(
     proxy_cfg: Option<crate::proxy::Proxy>,
 ) -> impl Stream<Item = Event> {
     channel(100, move |mut output| async move {
+        let stream_scope: Arc<[StreamKind]> = Arc::from(
+            tickers
+                .iter()
+                .map(|ticker_info| StreamKind::Trades {
+                    ticker_info: *ticker_info,
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        );
+
+        if tickers.is_empty() {
+            let _ = output
+                .send(Event::Disconnected(
+                    stream_scope,
+                    "Empty MEXC trade stream payload".to_string(),
+                ))
+                .await;
+            return;
+        }
+
         let mut state: State = State::Disconnected;
 
-        let exchange = exchange_from_market_type(market_type);
         let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
 
         let ticker_info_map = tickers
@@ -469,6 +533,7 @@ pub fn connect_trade_stream(
         let mut last_flush = tokio::time::Instant::now();
 
         let mut ping_interval = tokio::time::interval(Duration::from_secs(PING_INTERVAL));
+        let mut last_transport_activity = tokio::time::Instant::now();
 
         loop {
             match &mut state {
@@ -502,14 +567,17 @@ pub fn connect_trade_stream(
                                 }
                             }
 
-                            let _ = output.send(Event::Connected(exchange)).await;
+                            let _ = output.send(Event::Connected(stream_scope.clone())).await;
                             state = State::Connected(websocket);
+                            last_transport_activity = tokio::time::Instant::now();
+                            ping_interval =
+                                tokio::time::interval(Duration::from_secs(PING_INTERVAL));
                         }
                         Err(_) => {
                             tokio::time::sleep(Duration::from_secs(1)).await;
                             let _ = output
                                 .send(Event::Disconnected(
-                                    exchange,
+                                    stream_scope.clone(),
                                     "Failed to connect to websocket".to_string(),
                                 ))
                                 .await;
@@ -519,14 +587,48 @@ pub fn connect_trade_stream(
                 State::Connected(websocket) => {
                     tokio::select! {
                         _ = ping_interval.tick() => {
-                            if send_ping(websocket).await.is_err() {
+                            if last_transport_activity.elapsed() >= HEARTBEAT_TIMEOUT {
+                                flush_trade_buffers(
+                                    &mut output,
+                                    &ticker_info_map,
+                                    &mut trades_buffer_map,
+                                )
+                                .await;
+
                                 state = State::Disconnected;
+                                let _ = output
+                                    .send(Event::Disconnected(
+                                        stream_scope.clone(),
+                                        HEARTBEAT_TIMEOUT_REASON.to_string(),
+                                    ))
+                                    .await;
+                                continue;
+                            }
+
+                            if send_ping(websocket).await.is_err() {
+                                flush_trade_buffers(
+                                    &mut output,
+                                    &ticker_info_map,
+                                    &mut trades_buffer_map,
+                                )
+                                .await;
+
+                                state = State::Disconnected;
+                                let _ = output
+                                    .send(Event::Disconnected(
+                                        stream_scope.clone(),
+                                        HEARTBEAT_SEND_FAILED_REASON.to_string(),
+                                    ))
+                                    .await;
                             }
                         }
 
                         msg = websocket.read_frame() => {
                             match msg {
-                                Ok(msg) => match msg.opcode {
+                                Ok(msg) => {
+                                    last_transport_activity = tokio::time::Instant::now();
+
+                                    match msg.opcode {
                                     OpCode::Text => {
                                         match feed_de(&msg.payload[..], None, market_type) {
                                             Ok(data) => {
@@ -576,6 +678,25 @@ pub fn connect_trade_stream(
                                             last_flush = tokio::time::Instant::now();
                                         }
                                     }
+                                    OpCode::Ping => {
+                                        if websocket.write_frame(Frame::pong(msg.payload)).await.is_err() {
+                                            flush_trade_buffers(
+                                                &mut output,
+                                                &ticker_info_map,
+                                                &mut trades_buffer_map,
+                                            )
+                                            .await;
+
+                                            let _ = output
+                                                .send(Event::Disconnected(
+                                                    stream_scope.clone(),
+                                                    HEARTBEAT_PONG_FAILED_REASON.to_string(),
+                                                ))
+                                                .await;
+                                            state = State::Disconnected;
+                                        }
+                                    }
+                                    OpCode::Pong => {}
                                     OpCode::Close => {
                                         flush_trade_buffers(
                                             &mut output,
@@ -585,14 +706,15 @@ pub fn connect_trade_stream(
                                         .await;
                                         let _ = output
                                             .send(Event::Disconnected(
-                                                exchange,
+                                                stream_scope.clone(),
                                                 "Connection closed".to_string(),
                                             ))
                                             .await;
                                         state = State::Disconnected;
                                     }
                                     _ => {}
-                                },
+                                }
+                                }
                                 Err(_) => {
                                     flush_trade_buffers(
                                         &mut output,
@@ -602,7 +724,7 @@ pub fn connect_trade_stream(
                                     .await;
                                     let _ = output
                                         .send(Event::Disconnected(
-                                            exchange,
+                                            stream_scope.clone(),
                                             "Error reading frame".to_string(),
                                         ))
                                         .await;
@@ -623,15 +745,34 @@ pub fn connect_kline_stream(
     proxy_cfg: Option<crate::proxy::Proxy>,
 ) -> impl Stream<Item = Event> {
     channel(100, move |mut output| async move {
-        let mut state = State::Disconnected;
+        let stream_scope: Arc<[StreamKind]> = Arc::from(
+            streams
+                .iter()
+                .map(|(ticker_info, timeframe)| StreamKind::Kline {
+                    ticker_info: *ticker_info,
+                    timeframe: *timeframe,
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        );
 
-        let exchange = exchange_from_market_type(market_type);
+        if streams.is_empty() {
+            let _ = output
+                .send(Event::Disconnected(
+                    stream_scope,
+                    "Empty MEXC kline stream payload".to_string(),
+                ))
+                .await;
+            return;
+        }
+
+        let mut state = State::Disconnected;
         let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
 
         if market_type == MarketKind::Spot {
             let _ = output
                 .send(Event::Disconnected(
-                    exchange,
+                    stream_scope.clone(),
                     "MEXC spot kline websocket stream is not supported".to_string(),
                 ))
                 .await;
@@ -663,13 +804,14 @@ pub fn connect_kline_stream(
             Ok(ticker_info_map) => ticker_info_map,
             Err(err) => {
                 let _ = output
-                    .send(Event::Disconnected(exchange, err.to_string()))
+                    .send(Event::Disconnected(stream_scope.clone(), err.to_string()))
                     .await;
                 return;
             }
         };
 
         let mut ping_interval = tokio::time::interval(Duration::from_secs(PING_INTERVAL));
+        let mut last_transport_activity = tokio::time::Instant::now();
 
         loop {
             match &mut state {
@@ -722,7 +864,7 @@ pub fn connect_kline_stream(
                             if !subscribed_any {
                                 let _ = output
                                     .send(Event::Disconnected(
-                                        exchange,
+                                        stream_scope.clone(),
                                         "No supported MEXC kline timeframes requested".to_string(),
                                     ))
                                     .await;
@@ -730,14 +872,17 @@ pub fn connect_kline_stream(
                                 continue;
                             }
 
-                            let _ = output.send(Event::Connected(exchange)).await;
+                            let _ = output.send(Event::Connected(stream_scope.clone())).await;
                             state = State::Connected(websocket);
+                            last_transport_activity = tokio::time::Instant::now();
+                            ping_interval =
+                                tokio::time::interval(Duration::from_secs(PING_INTERVAL));
                         }
                         Err(err) => {
                             tokio::time::sleep(Duration::from_secs(1)).await;
                             let _ = output
                                 .send(Event::Disconnected(
-                                    exchange,
+                                    stream_scope.clone(),
                                     format!("Failed to connect: {err}"),
                                 ))
                                 .await;
@@ -747,13 +892,33 @@ pub fn connect_kline_stream(
                 State::Connected(websocket) => {
                     tokio::select! {
                         _ = ping_interval.tick() => {
+                            if last_transport_activity.elapsed() >= HEARTBEAT_TIMEOUT {
+                                state = State::Disconnected;
+                                let _ = output
+                                    .send(Event::Disconnected(
+                                        stream_scope.clone(),
+                                        HEARTBEAT_TIMEOUT_REASON.to_string(),
+                                    ))
+                                    .await;
+                                continue;
+                            }
+
                             if send_ping(websocket).await.is_err() {
                                 state = State::Disconnected;
+                                let _ = output
+                                    .send(Event::Disconnected(
+                                        stream_scope.clone(),
+                                        HEARTBEAT_SEND_FAILED_REASON.to_string(),
+                                    ))
+                                    .await;
                             }
                         }
                         msg = websocket.read_frame() => {
                             match msg {
-                                Ok(msg) => match msg.opcode {
+                                Ok(msg) => {
+                                    last_transport_activity = tokio::time::Instant::now();
+
+                                    match msg.opcode {
                                     OpCode::Text => {
                                         if let Ok(StreamData::Kline(ticker, de_kline_vec)) =
                                             feed_de(&msg.payload[..], None, market_type)
@@ -806,22 +971,35 @@ pub fn connect_kline_stream(
                                             }
                                         }
                                     }
+                                    OpCode::Ping => {
+                                        if websocket.write_frame(Frame::pong(msg.payload)).await.is_err() {
+                                            state = State::Disconnected;
+                                            let _ = output
+                                                .send(Event::Disconnected(
+                                                    stream_scope.clone(),
+                                                    HEARTBEAT_PONG_FAILED_REASON.to_string(),
+                                                ))
+                                                .await;
+                                        }
+                                    }
+                                    OpCode::Pong => {}
                                     OpCode::Close => {
                                         state = State::Disconnected;
                                         let _ = output
                                             .send(Event::Disconnected(
-                                                exchange,
+                                                stream_scope.clone(),
                                                 "Connection closed".to_string(),
                                             ))
                                             .await;
                                     }
                                     _ => {}
-                                },
+                                }
+                                }
                                 Err(e) => {
                                     state = State::Disconnected;
                                     let _ = output
                                         .send(Event::Disconnected(
-                                            exchange,
+                                            stream_scope.clone(),
                                             "Error reading frame: ".to_string() + &e.to_string(),
                                         ))
                                         .await;

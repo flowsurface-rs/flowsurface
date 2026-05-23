@@ -1,5 +1,5 @@
 use crate::{
-    Event, Kline, Price, PushFrequency, Ticker, TickerInfo, Timeframe, Trade, Volume,
+    Event, Kline, Price, PushFrequency, Ticker, TickerInfo, Trade, Volume,
     adapter::connect::{State, channel, connect_ws},
     adapter::{MarketKind, StreamKind, StreamTicksize, TRADE_BUCKET_INTERVAL, flush_trade_buffers},
     depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
@@ -9,15 +9,25 @@ use crate::{
 
 use super::{BinanceHandle, exchange_from_market_type, raw_qty_unit_from_market_type};
 use crate::adapter::hub::AdapterError;
-use fastwebsockets::OpCode;
+use fastwebsockets::{Frame, OpCode};
 use futures::{SinkExt, Stream};
 use rustc_hash::FxHashMap;
 use serde::Deserialize;
 use sonic_rs::{JsonValueTrait, to_object_iter_unchecked};
-use std::collections::{HashMap, VecDeque};
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::Arc,
+    time::Duration,
+};
 use tokio::sync::oneshot;
 
 const MAX_PENDING_DEPTH_EVENTS: usize = 512;
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
+const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(45);
+const HEARTBEAT_TIMEOUT_REASON: &str = "Heartbeat timeout (no websocket activity)";
+const HEARTBEAT_SEND_FAILED_REASON: &str = "Failed to send heartbeat ping";
+const HEARTBEAT_PONG_FAILED_REASON: &str = "Failed to reply pong";
+const HEARTBEAT_PING_PAYLOAD: &[u8] = b"fs";
 
 fn ws_domain_from_market_type(market: MarketKind) -> &'static str {
     match market {
@@ -44,6 +54,7 @@ fn ws_stream_path(market: MarketKind, traffic_kind: WsTrafficKind) -> &'static s
 
 enum DepthReaderMsg {
     Depth(SonicDepth),
+    Activity,
     Disconnected(String),
 }
 
@@ -191,6 +202,7 @@ impl DepthSyncMachine {
                     self.on_live_diff(diff_update, ticker_info, qty_norm)
                 }
             }
+            DepthReaderMsg::Activity => Ok(None),
             DepthReaderMsg::Disconnected(reason) => Err(reason),
         }
     }
@@ -244,6 +256,24 @@ async fn read_next_depth_message(
                     if let Ok(StreamData::Depth(depth_type)) = feed_de(&msg.payload[..], market) {
                         return DepthReaderMsg::Depth(depth_type);
                     }
+
+                    return DepthReaderMsg::Activity;
+                }
+                OpCode::Ping => {
+                    if websocket
+                        .write_frame(Frame::pong(msg.payload))
+                        .await
+                        .is_err()
+                    {
+                        return DepthReaderMsg::Disconnected(
+                            HEARTBEAT_PONG_FAILED_REASON.to_string(),
+                        );
+                    }
+
+                    return DepthReaderMsg::Activity;
+                }
+                OpCode::Pong => {
+                    return DepthReaderMsg::Activity;
                 }
                 OpCode::Close => {
                     return DepthReaderMsg::Disconnected("Connection closed".to_string());
@@ -538,13 +568,33 @@ fn feed_de(slice: &[u8], market: MarketKind) -> Result<StreamData, AdapterError>
 }
 
 pub fn connect_kline_stream(
-    streams: Vec<(TickerInfo, Timeframe)>,
+    streams: Vec<(TickerInfo, crate::Timeframe)>,
     market: MarketKind,
     proxy_cfg: Option<crate::proxy::Proxy>,
 ) -> impl Stream<Item = Event> {
     channel(100, move |mut output| async move {
+        let stream_scope: Arc<[StreamKind]> = Arc::from(
+            streams
+                .iter()
+                .map(|(ticker_info, timeframe)| StreamKind::Kline {
+                    ticker_info: *ticker_info,
+                    timeframe: *timeframe,
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        );
+
+        if streams.is_empty() {
+            let _ = output
+                .send(Event::Disconnected(
+                    stream_scope,
+                    "Empty Binance kline stream payload".to_string(),
+                ))
+                .await;
+            return;
+        }
+
         let mut state = State::Disconnected;
-        let exchange = exchange_from_market_type(market);
 
         let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
 
@@ -564,6 +614,9 @@ pub fn connect_kline_stream(
                 )
             })
             .collect::<HashMap<Ticker, (TickerInfo, QtyNormalization)>>();
+
+        let mut heartbeat_interval = tokio::time::interval(HEARTBEAT_INTERVAL);
+        let mut last_transport_activity = tokio::time::Instant::now();
 
         loop {
             match &mut state {
@@ -587,100 +640,153 @@ pub fn connect_kline_stream(
 
                     if let Ok(websocket) = connect_ws(domain, &url, proxy_cfg.as_ref()).await {
                         state = State::Connected(websocket);
-                        let _ = output.send(Event::Connected(exchange)).await;
+                        last_transport_activity = tokio::time::Instant::now();
+                        heartbeat_interval = tokio::time::interval(HEARTBEAT_INTERVAL);
+                        let _ = output.send(Event::Connected(stream_scope.clone())).await;
                     } else {
                         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
                         let _ = output
                             .send(Event::Disconnected(
-                                exchange,
+                                stream_scope.clone(),
                                 "Failed to connect to websocket".to_string(),
                             ))
                             .await;
                     }
                 }
-                State::Connected(ws) => match ws.read_frame().await {
-                    Ok(msg) => match msg.opcode {
-                        OpCode::Text => {
-                            if let Ok(StreamData::Kline(ticker, de_kline)) =
-                                feed_de(&msg.payload[..], market)
+                State::Connected(ws) => {
+                    tokio::select! {
+                        _ = heartbeat_interval.tick() => {
+                            if last_transport_activity.elapsed() >= HEARTBEAT_TIMEOUT {
+                                state = State::Disconnected;
+                                let _ = output
+                                    .send(Event::Disconnected(
+                                        stream_scope.clone(),
+                                        HEARTBEAT_TIMEOUT_REASON.to_string(),
+                                    ))
+                                    .await;
+                                continue;
+                            }
+
+                            if ws
+                                .write_frame(Frame::new(
+                                    true,
+                                    OpCode::Ping,
+                                    None,
+                                    fastwebsockets::Payload::Borrowed(HEARTBEAT_PING_PAYLOAD),
+                                ))
+                                .await
+                                .is_err()
                             {
-                                let (buy_volume, sell_volume) = {
-                                    let buy_volume = de_kline.taker_buy_base_asset_volume;
-                                    let sell_volume = de_kline.volume - buy_volume;
-                                    (buy_volume, sell_volume)
-                                };
+                                state = State::Disconnected;
+                                let _ = output
+                                    .send(Event::Disconnected(
+                                        stream_scope.clone(),
+                                        HEARTBEAT_SEND_FAILED_REASON.to_string(),
+                                    ))
+                                    .await;
+                            }
+                        }
+                        frame = ws.read_frame() => match frame {
+                            Ok(msg) => {
+                                last_transport_activity = tokio::time::Instant::now();
 
-                                if let Some((_, tf)) = streams
-                                    .iter()
-                                    .find(|(_, tf)| tf.to_string() == de_kline.interval)
-                                {
-                                    if let Some((ticker_info, qty_norm)) =
-                                        ticker_info_map.get(&ticker)
-                                    {
-                                        let ticker_info = *ticker_info;
-                                        let timeframe = *tf;
+                                match msg.opcode {
+                                    OpCode::Text => {
+                                        if let Ok(StreamData::Kline(ticker, de_kline)) =
+                                            feed_de(&msg.payload[..], market)
+                                        {
+                                            let (buy_volume, sell_volume) = {
+                                                let buy_volume = de_kline.taker_buy_base_asset_volume;
+                                                let sell_volume = de_kline.volume - buy_volume;
+                                                (buy_volume, sell_volume)
+                                            };
 
-                                        let buy_volume =
-                                            qty_norm.normalize_qty(buy_volume, de_kline.close);
-                                        let sell_volume =
-                                            qty_norm.normalize_qty(sell_volume, de_kline.close);
+                                            if let Some((_, tf)) = streams
+                                                .iter()
+                                                .find(|(_, tf)| tf.to_string() == de_kline.interval)
+                                            {
+                                                if let Some((ticker_info, qty_norm)) =
+                                                    ticker_info_map.get(&ticker)
+                                                {
+                                                    let ticker_info = *ticker_info;
+                                                    let timeframe = *tf;
 
-                                        let volume = Volume::BuySell(buy_volume, sell_volume);
+                                                    let buy_volume =
+                                                        qty_norm.normalize_qty(buy_volume, de_kline.close);
+                                                    let sell_volume =
+                                                        qty_norm.normalize_qty(sell_volume, de_kline.close);
 
-                                        let kline = Kline::new(
-                                            de_kline.time,
-                                            de_kline.open,
-                                            de_kline.high,
-                                            de_kline.low,
-                                            de_kline.close,
-                                            volume,
-                                            ticker_info.min_ticksize,
-                                        );
+                                                    let volume = Volume::BuySell(buy_volume, sell_volume);
 
-                                        let _ = output
-                                            .send(Event::KlineReceived(
-                                                StreamKind::Kline {
-                                                    ticker_info,
-                                                    timeframe,
-                                                },
-                                                kline,
-                                            ))
-                                            .await;
-                                    } else {
-                                        log::error!("Ticker info not found for ticker: {ticker}");
+                                                    let kline = Kline::new(
+                                                        de_kline.time,
+                                                        de_kline.open,
+                                                        de_kline.high,
+                                                        de_kline.low,
+                                                        de_kline.close,
+                                                        volume,
+                                                        ticker_info.min_ticksize,
+                                                    );
+
+                                                    let _ = output
+                                                        .send(Event::KlineReceived(
+                                                            StreamKind::Kline {
+                                                                ticker_info,
+                                                                timeframe,
+                                                            },
+                                                            kline,
+                                                        ))
+                                                        .await;
+                                                } else {
+                                                    log::error!("Ticker info not found for ticker: {ticker}");
+                                                    state = State::Disconnected;
+                                                    let _ = output
+                                                        .send(Event::Disconnected(
+                                                            stream_scope.clone(),
+                                                            "Received kline for unknown ticker".to_string(),
+                                                        ))
+                                                        .await;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    OpCode::Ping => {
+                                        if ws.write_frame(Frame::pong(msg.payload)).await.is_err() {
+                                            state = State::Disconnected;
+                                            let _ = output
+                                                .send(Event::Disconnected(
+                                                    stream_scope.clone(),
+                                                    HEARTBEAT_PONG_FAILED_REASON.to_string(),
+                                                ))
+                                                .await;
+                                        }
+                                    }
+                                    OpCode::Pong => {}
+                                    OpCode::Close => {
                                         state = State::Disconnected;
                                         let _ = output
                                             .send(Event::Disconnected(
-                                                exchange,
-                                                "Received kline for unknown ticker".to_string(),
+                                                stream_scope.clone(),
+                                                "Connection closed".to_string(),
                                             ))
                                             .await;
                                     }
+                                    _ => {}
                                 }
                             }
+                            Err(e) => {
+                                state = State::Disconnected;
+                                let _ = output
+                                    .send(Event::Disconnected(
+                                        stream_scope.clone(),
+                                        "Error reading frame: ".to_string() + &e.to_string(),
+                                    ))
+                                    .await;
+                            }
                         }
-                        OpCode::Close => {
-                            state = State::Disconnected;
-                            let _ = output
-                                .send(Event::Disconnected(
-                                    exchange,
-                                    "Connection closed".to_string(),
-                                ))
-                                .await;
-                        }
-                        _ => {}
-                    },
-                    Err(e) => {
-                        state = State::Disconnected;
-                        let _ = output
-                            .send(Event::Disconnected(
-                                exchange,
-                                "Error reading frame: ".to_string() + &e.to_string(),
-                            ))
-                            .await;
                     }
-                },
+                }
             }
         }
     })
@@ -692,8 +798,27 @@ pub fn connect_trade_stream(
     proxy_cfg: Option<crate::proxy::Proxy>,
 ) -> impl Stream<Item = Event> {
     channel(100, move |mut output| async move {
+        let stream_scope: Arc<[StreamKind]> = Arc::from(
+            tickers
+                .iter()
+                .map(|ticker_info| StreamKind::Trades {
+                    ticker_info: *ticker_info,
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        );
+
+        if tickers.is_empty() {
+            let _ = output
+                .send(Event::Disconnected(
+                    stream_scope,
+                    "Empty Binance trade stream payload".to_string(),
+                ))
+                .await;
+            return;
+        }
+
         let mut state = State::Disconnected;
-        let exchange = exchange_from_market_type(market);
 
         let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
         let ticker_info_map = tickers
@@ -715,6 +840,8 @@ pub fn connect_trade_stream(
 
         let mut trades_buffer_map: FxHashMap<Ticker, Vec<Trade>> = FxHashMap::default();
         let mut last_flush = tokio::time::Instant::now();
+        let mut heartbeat_interval = tokio::time::interval(HEARTBEAT_INTERVAL);
+        let mut last_transport_activity = tokio::time::Instant::now();
 
         loop {
             match &mut state {
@@ -741,65 +868,25 @@ pub fn connect_trade_stream(
                     if let Ok(websocket) = connect_ws(domain, &url, proxy_cfg.as_ref()).await {
                         state = State::Connected(websocket);
                         last_flush = tokio::time::Instant::now();
+                        last_transport_activity = tokio::time::Instant::now();
+                        heartbeat_interval = tokio::time::interval(HEARTBEAT_INTERVAL);
 
-                        let _ = output.send(Event::Connected(exchange)).await;
+                        let _ = output.send(Event::Connected(stream_scope.clone())).await;
                     } else {
                         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
                         let _ = output
                             .send(Event::Disconnected(
-                                exchange,
+                                stream_scope.clone(),
                                 "Failed to connect to websocket".to_string(),
                             ))
                             .await;
                     }
                 }
                 State::Connected(ws) => {
-                    match ws.read_frame().await {
-                        Ok(msg) => match msg.opcode {
-                            OpCode::Text => {
-                                if let Ok(StreamData::Trade(ticker, de_trade)) =
-                                    feed_de(&msg.payload[..], market)
-                                {
-                                    if let Some((ticker_info, qty_norm)) =
-                                        ticker_info_map.get(&ticker)
-                                    {
-                                        let ticker_info = *ticker_info;
-                                        let price = Price::from_f32(de_trade.price)
-                                            .round_to_min_tick(ticker_info.min_ticksize);
-
-                                        let trade = Trade {
-                                            time: de_trade.time.into(),
-                                            is_sell: de_trade.is_sell,
-                                            price,
-                                            qty: qty_norm
-                                                .normalize_qty(de_trade.qty, de_trade.price),
-                                        };
-
-                                        trades_buffer_map.entry(ticker).or_default().push(trade);
-                                    } else {
-                                        log::error!("Ticker info not found for ticker: {ticker}");
-                                        state = State::Disconnected;
-                                        let _ = output
-                                            .send(Event::Disconnected(
-                                                exchange,
-                                                "Received trade for unknown ticker".to_string(),
-                                            ))
-                                            .await;
-                                    }
-                                }
-
-                                if last_flush.elapsed() >= TRADE_BUCKET_INTERVAL {
-                                    flush_trade_buffers(
-                                        &mut output,
-                                        &ticker_info_map,
-                                        &mut trades_buffer_map,
-                                    )
-                                    .await;
-                                    last_flush = tokio::time::Instant::now();
-                                }
-                            }
-                            OpCode::Close => {
+                    tokio::select! {
+                        _ = heartbeat_interval.tick() => {
+                            if last_transport_activity.elapsed() >= HEARTBEAT_TIMEOUT {
                                 flush_trade_buffers(
                                     &mut output,
                                     &ticker_info_map,
@@ -810,30 +897,142 @@ pub fn connect_trade_stream(
                                 state = State::Disconnected;
                                 let _ = output
                                     .send(Event::Disconnected(
-                                        exchange,
-                                        "Connection closed".to_string(),
+                                        stream_scope.clone(),
+                                        HEARTBEAT_TIMEOUT_REASON.to_string(),
+                                    ))
+                                    .await;
+                                continue;
+                            }
+
+                            if ws
+                                .write_frame(Frame::new(
+                                    true,
+                                    OpCode::Ping,
+                                    None,
+                                    fastwebsockets::Payload::Borrowed(HEARTBEAT_PING_PAYLOAD),
+                                ))
+                                .await
+                                .is_err()
+                            {
+                                flush_trade_buffers(
+                                    &mut output,
+                                    &ticker_info_map,
+                                    &mut trades_buffer_map,
+                                )
+                                .await;
+
+                                state = State::Disconnected;
+                                let _ = output
+                                    .send(Event::Disconnected(
+                                        stream_scope.clone(),
+                                        HEARTBEAT_SEND_FAILED_REASON.to_string(),
                                     ))
                                     .await;
                             }
-                            _ => {}
-                        },
-                        Err(e) => {
-                            flush_trade_buffers(
-                                &mut output,
-                                &ticker_info_map,
-                                &mut trades_buffer_map,
-                            )
-                            .await;
-
-                            state = State::Disconnected;
-                            let _ = output
-                                .send(Event::Disconnected(
-                                    exchange,
-                                    "Error reading frame: ".to_string() + &e.to_string(),
-                                ))
-                                .await;
                         }
-                    };
+                        frame = ws.read_frame() => match frame {
+                            Ok(msg) => {
+                                last_transport_activity = tokio::time::Instant::now();
+
+                                match msg.opcode {
+                                    OpCode::Text => {
+                                        if let Ok(StreamData::Trade(ticker, de_trade)) =
+                                            feed_de(&msg.payload[..], market)
+                                        {
+                                            if let Some((ticker_info, qty_norm)) =
+                                                ticker_info_map.get(&ticker)
+                                            {
+                                                let ticker_info = *ticker_info;
+                                                let price = Price::from_f32(de_trade.price)
+                                                    .round_to_min_tick(ticker_info.min_ticksize);
+
+                                                let trade = Trade {
+                                                    time: de_trade.time.into(),
+                                                    is_sell: de_trade.is_sell,
+                                                    price,
+                                                    qty: qty_norm
+                                                        .normalize_qty(de_trade.qty, de_trade.price),
+                                                };
+
+                                                trades_buffer_map.entry(ticker).or_default().push(trade);
+                                            } else {
+                                                log::error!("Ticker info not found for ticker: {ticker}");
+                                                state = State::Disconnected;
+                                                let _ = output
+                                                    .send(Event::Disconnected(
+                                                        stream_scope.clone(),
+                                                        "Received trade for unknown ticker".to_string(),
+                                                    ))
+                                                    .await;
+                                            }
+                                        }
+
+                                        if last_flush.elapsed() >= TRADE_BUCKET_INTERVAL {
+                                            flush_trade_buffers(
+                                                &mut output,
+                                                &ticker_info_map,
+                                                &mut trades_buffer_map,
+                                            )
+                                            .await;
+                                            last_flush = tokio::time::Instant::now();
+                                        }
+                                    }
+                                    OpCode::Ping => {
+                                        if ws.write_frame(Frame::pong(msg.payload)).await.is_err() {
+                                            flush_trade_buffers(
+                                                &mut output,
+                                                &ticker_info_map,
+                                                &mut trades_buffer_map,
+                                            )
+                                            .await;
+
+                                            state = State::Disconnected;
+                                            let _ = output
+                                                .send(Event::Disconnected(
+                                                    stream_scope.clone(),
+                                                    HEARTBEAT_PONG_FAILED_REASON.to_string(),
+                                                ))
+                                                .await;
+                                        }
+                                    }
+                                    OpCode::Pong => {}
+                                    OpCode::Close => {
+                                        flush_trade_buffers(
+                                            &mut output,
+                                            &ticker_info_map,
+                                            &mut trades_buffer_map,
+                                        )
+                                        .await;
+
+                                        state = State::Disconnected;
+                                        let _ = output
+                                            .send(Event::Disconnected(
+                                                stream_scope.clone(),
+                                                "Connection closed".to_string(),
+                                            ))
+                                            .await;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            Err(e) => {
+                                flush_trade_buffers(
+                                    &mut output,
+                                    &ticker_info_map,
+                                    &mut trades_buffer_map,
+                                )
+                                .await;
+
+                                state = State::Disconnected;
+                                let _ = output
+                                    .send(Event::Disconnected(
+                                        stream_scope.clone(),
+                                        "Error reading frame: ".to_string() + &e.to_string(),
+                                    ))
+                                    .await;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -843,13 +1042,19 @@ pub fn connect_trade_stream(
 pub fn connect_depth_stream(
     handle: BinanceHandle,
     ticker_info: TickerInfo,
+    depth_aggr: StreamTicksize,
     push_freq: PushFrequency,
     proxy_cfg: Option<crate::proxy::Proxy>,
 ) -> impl Stream<Item = Event> {
     channel(100, move |mut output| async move {
+        let stream = StreamKind::Depth {
+            ticker_info,
+            depth_aggr,
+            push_freq,
+        };
+        let stream_scope: Arc<[StreamKind]> = Arc::from(vec![stream].into_boxed_slice());
         let ticker = ticker_info.ticker;
         let (symbol_str, market) = ticker.to_full_symbol_and_type();
-        let exchange = exchange_from_market_type(market);
 
         let qty_norm = QtyNormalization::with_raw_qty_unit(
             volume_size_unit() == SizeUnit::Quote,
@@ -857,17 +1062,11 @@ pub fn connect_depth_stream(
             raw_qty_unit_from_market_type(market),
         );
 
-        let stream_kind = StreamKind::Depth {
-            ticker_info,
-            depth_aggr: StreamTicksize::Client,
-            push_freq,
-        };
-
         loop {
-            let stream = format!("{}@depth@100ms", symbol_str.to_lowercase());
+            let ws_stream = format!("{}@depth@100ms", symbol_str.to_lowercase());
             let domain = ws_domain_from_market_type(market);
             let stream_path = ws_stream_path(market, WsTrafficKind::Public);
-            let url = format!("wss://{domain}/{stream_path}?streams={stream}");
+            let url = format!("wss://{domain}/{stream_path}?streams={ws_stream}");
 
             let mut websocket = match connect_ws(domain, &url, proxy_cfg.as_ref()).await {
                 Ok(ws) => ws,
@@ -875,7 +1074,7 @@ pub fn connect_depth_stream(
                     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                     let _ = output
                         .send(Event::Disconnected(
-                            exchange,
+                            stream_scope.clone(),
                             "Failed to connect to websocket".to_string(),
                         ))
                         .await;
@@ -885,30 +1084,55 @@ pub fn connect_depth_stream(
 
             let mut sync_machine = DepthSyncMachine::new(handle.clone(), ticker);
             let mut connected_sent = false;
+            let mut heartbeat_interval = tokio::time::interval(HEARTBEAT_INTERVAL);
+            let mut last_transport_activity = tokio::time::Instant::now();
 
             let disconnect_reason = loop {
-                match sync_machine
-                    .tick(&mut websocket, market, ticker_info, qty_norm)
-                    .await
-                {
-                    Ok(Some(time)) => {
-                        if !connected_sent {
-                            connected_sent = true;
-                            let _ = output.send(Event::Connected(exchange)).await;
+                tokio::select! {
+                    _ = heartbeat_interval.tick() => {
+                        if last_transport_activity.elapsed() >= HEARTBEAT_TIMEOUT {
+                            break HEARTBEAT_TIMEOUT_REASON.to_string();
                         }
 
-                        let synced_book = sync_machine.current.depth.clone();
-
-                        let _ = output
-                            .send(Event::DepthReceived(stream_kind, time.into(), synced_book))
-                            .await;
+                        if websocket
+                            .write_frame(Frame::new(
+                                true,
+                                OpCode::Ping,
+                                None,
+                                fastwebsockets::Payload::Borrowed(HEARTBEAT_PING_PAYLOAD),
+                            ))
+                            .await
+                            .is_err()
+                        {
+                            break HEARTBEAT_SEND_FAILED_REASON.to_string();
+                        }
                     }
-                    Ok(None) => {}
-                    Err(reason) => break reason,
+                    tick_result = sync_machine.tick(&mut websocket, market, ticker_info, qty_norm) => {
+                        match tick_result {
+                            Ok(Some(time)) => {
+                                last_transport_activity = tokio::time::Instant::now();
+
+                                if !connected_sent {
+                                    connected_sent = true;
+                                    let _ = output.send(Event::Connected(stream_scope.clone())).await;
+                                }
+
+                                let synced_book = sync_machine.current.depth.clone();
+
+                                let _ = output
+                                    .send(Event::DepthReceived(stream, time.into(), synced_book))
+                                    .await;
+                            }
+                            Ok(None) => {
+                                last_transport_activity = tokio::time::Instant::now();
+                            }
+                            Err(reason) => break reason,
+                        }
+                    }
                 }
             };
             let _ = output
-                .send(Event::Disconnected(exchange, disconnect_reason))
+                .send(Event::Disconnected(stream_scope.clone(), disconnect_reason))
                 .await;
 
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;

@@ -25,8 +25,8 @@ use data::{
 use exchange::{
     Kline, PushFrequency, StreamPairKind, TickerInfo, Trade, UnixMs,
     adapter::{
-        AdapterHandles, MAX_KLINE_STREAMS_PER_STREAM, MAX_TRADE_TICKERS_PER_STREAM, StreamConfig,
-        StreamKind, StreamTicksize, UniqueStreams,
+        AdapterHandles, Exchange, MAX_KLINE_STREAMS_PER_STREAM, MAX_TRADE_TICKERS_PER_STREAM,
+        StreamConfig, StreamKind, StreamTicksize, UniqueStreams,
     },
     depth::Depth,
 };
@@ -38,12 +38,18 @@ use iced::{
         pane_grid::{self, Configuration},
     },
 };
-use std::{collections::HashMap, time::Instant, vec};
+use std::{
+    collections::{HashMap, HashSet},
+    time::{Duration, Instant},
+    vec,
+};
+
+const STREAM_STALE_AFTER: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone)]
 pub enum Message {
     Pane(window::Id, pane::Message),
-    ChangePaneStatus(uuid::Uuid, pane::Status),
+    ChangePaneFetchStatus(uuid::Uuid, pane::FetchStatus),
     SavePopoutSpecs(HashMap<window::Id, WindowSpec>),
     ErrorOccurred(Option<uuid::Uuid>, DashboardError),
     Notification(Toast),
@@ -62,6 +68,7 @@ pub struct Dashboard {
     pub focus: Option<(window::Id, pane_grid::Pane)>,
     pub popout: HashMap<window::Id, (pane_grid::State<pane::State>, WindowSpec)>,
     pub streams: UniqueStreams,
+    reconnect_nonce: HashMap<Exchange, u64>,
     layout_id: uuid::Uuid,
 }
 
@@ -72,6 +79,7 @@ impl Default for Dashboard {
             focus: None,
             streams: UniqueStreams::default(),
             popout: HashMap::new(),
+            reconnect_nonce: HashMap::new(),
             layout_id: uuid::Uuid::new_v4(),
         }
     }
@@ -90,6 +98,7 @@ pub enum Event {
         pane_id: uuid::Uuid,
         streams: Vec<PersistStreamKind>,
     },
+    RetryConnections(Vec<Exchange>),
     RequestPalette,
 }
 
@@ -139,6 +148,7 @@ impl Dashboard {
             focus: None,
             streams: UniqueStreams::default(),
             popout,
+            reconnect_nonce: HashMap::new(),
             layout_id,
         }
     }
@@ -194,7 +204,7 @@ impl Dashboard {
             Message::ErrorOccurred(pane_id, err) => match pane_id {
                 Some(id) => {
                     if let Some(state) = self.get_mut_pane_state_by_uuid(main_window.id, id) {
-                        state.status = pane::Status::Ready;
+                        state.set_fetch_status(pane::FetchStatus::Error(err.to_string()));
                         state.notifications.push(Toast::error(err.to_string()));
                     }
                 }
@@ -404,6 +414,9 @@ impl Dashboard {
                             pane::Effect::SwitchTickersInGroup(ticker_info) => {
                                 self.switch_tickers_in_group(handles, main_window.id, ticker_info)
                             }
+                            pane::Effect::RetryConnections(exchanges) => {
+                                return (Task::none(), Some(Event::RetryConnections(exchanges)));
+                            }
                             pane::Effect::FocusWidget(id) => {
                                 return (iced::widget::operation::focus(id), None);
                             }
@@ -415,9 +428,9 @@ impl Dashboard {
             Message::RequestPalette => {
                 return (Task::none(), Some(Event::RequestPalette));
             }
-            Message::ChangePaneStatus(pane_id, status) => {
+            Message::ChangePaneFetchStatus(pane_id, status) => {
                 if let Some(pane_state) = self.get_mut_pane_state_by_uuid(main_window.id, pane_id) {
-                    pane_state.status = status;
+                    pane_state.set_fetch_status(status);
                 }
             }
             Message::DistributeFetchedData {
@@ -702,7 +715,7 @@ impl Dashboard {
         match pane_id {
             Some(id) => {
                 if let Some(state) = self.get_mut_pane_state_by_uuid(main_window, id) {
-                    state.status = pane::Status::Ready;
+                    state.set_fetch_status(pane::FetchStatus::Error(err.to_string()));
                     state.notifications.push(Toast::error(err.to_string()));
                 }
                 Task::none()
@@ -865,7 +878,7 @@ impl Dashboard {
                     c.reset_request_handler();
 
                     if !is_enabled {
-                        state.status = pane::Status::Ready;
+                        state.set_fetch_status(pane::FetchStatus::Idle);
                     }
                 }
             });
@@ -904,7 +917,7 @@ impl Dashboard {
             }
             FetchedData::Klines { data, req_id } => {
                 if let Some(pane_state) = self.get_mut_pane_state_by_uuid(main_window, pane_id) {
-                    pane_state.status = pane::Status::Ready;
+                    pane_state.set_fetch_status(pane::FetchStatus::Idle);
 
                     if let StreamKind::Kline {
                         timeframe,
@@ -917,7 +930,7 @@ impl Dashboard {
             }
             FetchedData::OI { data, req_id } => {
                 if let Some(pane_state) = self.get_mut_pane_state_by_uuid(main_window, pane_id) {
-                    pane_state.status = pane::Status::Ready;
+                    pane_state.set_fetch_status(pane::FetchStatus::Idle);
 
                     if let StreamKind::Kline { .. } = stream_type {
                         pane_state.insert_hist_oi(req_id, &data);
@@ -944,12 +957,14 @@ impl Dashboard {
                 )
             })?;
 
-        match &mut pane_state.status {
-            pane::Status::Loading(InfoKind::FetchingTrades(count)) => {
+        match &mut pane_state.fetch_status {
+            pane::FetchStatus::Loading(InfoKind::FetchingTrades(count)) => {
                 *count += trades.len();
             }
             _ => {
-                pane_state.status = pane::Status::Loading(InfoKind::FetchingTrades(trades.len()));
+                pane_state.set_fetch_status(pane::FetchStatus::Loading(InfoKind::FetchingTrades(
+                    trades.len(),
+                )));
             }
         }
 
@@ -959,7 +974,7 @@ impl Dashboard {
                     c.insert_raw_trades(trades.to_owned(), is_batches_done);
 
                     if is_batches_done {
-                        pane_state.status = pane::Status::Ready;
+                        pane_state.set_fetch_status(pane::FetchStatus::Idle);
                     }
                     Ok(())
                 } else {
@@ -974,27 +989,48 @@ impl Dashboard {
         }
     }
 
+    fn update_stream_activity(
+        &mut self,
+        stream: &StreamKind,
+        main_window: window::Id,
+        now: Instant,
+        mut apply: impl FnMut(&mut pane::State) -> bool,
+    ) -> bool {
+        let mut found_match = false;
+
+        self.iter_all_panes_mut(main_window)
+            .for_each(|(_, _, pane_state)| {
+                if pane_state.matches_stream(stream) {
+                    found_match = true;
+
+                    if apply(pane_state) {
+                        pane_state.mark_stream_activity(now);
+                    }
+                }
+            });
+
+        found_match
+    }
+
     pub fn update_latest_klines(
         &mut self,
         stream: &StreamKind,
         kline: &Kline,
         main_window: window::Id,
     ) -> Task<Message> {
-        let mut found_match = false;
-
-        self.iter_all_panes_mut(main_window)
-            .for_each(|(_, _, pane_state)| {
-                if pane_state.matches_stream(stream) {
-                    match &mut pane_state.content {
-                        pane::Content::Kline { chart: Some(c), .. } => {
-                            c.update_latest_kline(kline);
-                        }
-                        pane::Content::Comparison(Some(c)) => {
-                            c.update_latest_kline(&stream.ticker_info(), kline);
-                        }
-                        _ => {}
+        let stream_ticker = stream.ticker_info();
+        let found_match =
+            self.update_stream_activity(stream, main_window, Instant::now(), |pane_state| {
+                match &mut pane_state.content {
+                    pane::Content::Kline { chart: Some(c), .. } => {
+                        c.update_latest_kline(kline);
+                        true
                     }
-                    found_match = true;
+                    pane::Content::Comparison(Some(c)) => {
+                        c.update_latest_kline(&stream_ticker, kline);
+                        true
+                    }
+                    _ => false,
                 }
             });
 
@@ -1013,32 +1049,37 @@ impl Dashboard {
         depth: &Depth,
         main_window: window::Id,
     ) -> Task<Message> {
-        let mut found_match = false;
-
-        self.iter_all_panes_mut(main_window)
-            .for_each(|(_, _, pane_state)| {
-                if pane_state.matches_stream(stream) {
-                    match &mut pane_state.content {
-                        pane::Content::Heatmap { chart, .. } => {
-                            if let Some(c) = chart {
-                                c.insert_depth(depth, update_t);
-                            }
-                        }
-                        pane::Content::ShaderHeatmap { chart, .. } => {
-                            if let Some(c) = chart {
-                                c.insert_depth(depth, update_t);
-                            }
-                        }
-                        pane::Content::Ladder(panel) => {
-                            if let Some(panel) = panel {
-                                panel.insert_depth(depth, update_t);
-                            }
-                        }
-                        _ => {
-                            log::error!("No chart found for the stream: {stream:?}");
+        let found_match =
+            self.update_stream_activity(stream, main_window, Instant::now(), |pane_state| {
+                match &mut pane_state.content {
+                    pane::Content::Heatmap { chart, .. } => {
+                        if let Some(c) = chart {
+                            c.insert_depth(depth, update_t);
+                            true
+                        } else {
+                            false
                         }
                     }
-                    found_match = true;
+                    pane::Content::ShaderHeatmap { chart, .. } => {
+                        if let Some(c) = chart {
+                            c.insert_depth(depth, update_t);
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    pane::Content::Ladder(panel) => {
+                        if let Some(panel) = panel {
+                            panel.insert_depth(depth, update_t);
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    _ => {
+                        log::error!("No chart found for the stream: {stream:?}");
+                        false
+                    }
                 }
             });
 
@@ -1056,42 +1097,53 @@ impl Dashboard {
         update_t: UnixMs,
         main_window: window::Id,
     ) -> Task<Message> {
-        let mut found_match = false;
-
-        self.iter_all_panes_mut(main_window)
-            .for_each(|(_, _, pane_state)| {
-                if pane_state.matches_stream(stream) {
-                    match &mut pane_state.content {
-                        pane::Content::Heatmap { chart, .. } => {
-                            if let Some(c) = chart {
-                                c.insert_trades(buffer, update_t);
-                            }
-                        }
-                        pane::Content::ShaderHeatmap { chart, .. } => {
-                            if let Some(c) = chart {
-                                c.insert_trades(buffer, update_t);
-                            }
-                        }
-                        pane::Content::Kline { chart, .. } => {
-                            if let Some(c) = chart {
-                                c.insert_trades(buffer);
-                            }
-                        }
-                        pane::Content::TimeAndSales(panel) => {
-                            if let Some(p) = panel {
-                                p.insert_buffer(buffer);
-                            }
-                        }
-                        pane::Content::Ladder(panel) => {
-                            if let Some(p) = panel {
-                                p.insert_trades(buffer);
-                            }
-                        }
-                        _ => {
-                            log::error!("No chart found for the stream: {stream:?}");
+        let found_match =
+            self.update_stream_activity(stream, main_window, Instant::now(), |pane_state| {
+                match &mut pane_state.content {
+                    pane::Content::Heatmap { chart, .. } => {
+                        if let Some(c) = chart {
+                            c.insert_trades(buffer, update_t);
+                            true
+                        } else {
+                            false
                         }
                     }
-                    found_match = true;
+                    pane::Content::ShaderHeatmap { chart, .. } => {
+                        if let Some(c) = chart {
+                            c.insert_trades(buffer, update_t);
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    pane::Content::Kline { chart, .. } => {
+                        if let Some(c) = chart {
+                            c.insert_trades(buffer);
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    pane::Content::TimeAndSales(panel) => {
+                        if let Some(p) = panel {
+                            p.insert_buffer(buffer);
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    pane::Content::Ladder(panel) => {
+                        if let Some(p) = panel {
+                            p.insert_trades(buffer);
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    _ => {
+                        log::error!("No chart found for the stream: {stream:?}");
+                        false
+                    }
                 }
             });
 
@@ -1122,59 +1174,63 @@ impl Dashboard {
     ) -> Task<Message> {
         let mut tasks = vec![];
 
-        let mut tick_state = |state: &mut pane::State| match state.tick(now) {
-            Some(pane::Action::Chart(action)) => match action {
-                chart::Action::ErrorOccurred(err) => {
-                    state.status = pane::Status::Ready;
-                    state.notifications.push(Toast::error(err.to_string()));
-                }
-                chart::Action::RequestFetch(reqs) => {
-                    let pane_id = state.unique_id();
-                    let ready_streams = state
-                        .streams
-                        .ready_iter()
-                        .map(|iter| iter.copied().collect::<Vec<_>>())
-                        .unwrap_or_default();
+        let mut tick_state = |state: &mut pane::State| {
+            state.refresh_stream_liveness(now, STREAM_STALE_AFTER);
 
-                    let fetch_tasks = fetcher::request_fetch_many(
-                        handles.clone(),
-                        pane_id,
-                        &ready_streams,
-                        self.layout_id,
-                        reqs.into_iter().map(|r| (r.req_id, r.fetch, r.stream)),
-                        |handle| {
-                            if let pane::Content::Kline { chart, .. } = &mut state.content
-                                && let Some(c) = chart
-                            {
-                                c.set_handle(handle);
-                            }
-                        },
-                    )
-                    .map(Message::from);
+            match state.tick(now) {
+                Some(pane::Action::Chart(action)) => match action {
+                    chart::Action::ErrorOccurred(err) => {
+                        state.set_fetch_status(pane::FetchStatus::Error(err.to_string()));
+                        state.notifications.push(Toast::error(err.to_string()));
+                    }
+                    chart::Action::RequestFetch(reqs) => {
+                        let pane_id = state.unique_id();
+                        let ready_streams = state
+                            .streams
+                            .ready_iter()
+                            .map(|iter| iter.copied().collect::<Vec<_>>())
+                            .unwrap_or_default();
 
-                    tasks.push(fetch_tasks);
+                        let fetch_tasks = fetcher::request_fetch_many(
+                            handles.clone(),
+                            pane_id,
+                            &ready_streams,
+                            self.layout_id,
+                            reqs.into_iter().map(|r| (r.req_id, r.fetch, r.stream)),
+                            |handle| {
+                                if let pane::Content::Kline { chart, .. } = &mut state.content
+                                    && let Some(c) = chart
+                                {
+                                    c.set_handle(handle);
+                                }
+                            },
+                        )
+                        .map(Message::from);
+
+                        tasks.push(fetch_tasks);
+                    }
+                    chart::Action::RequestPalette => {
+                        tasks.push(Task::done(Message::RequestPalette));
+                    }
+                },
+                Some(pane::Action::Panel(_action)) => {}
+                Some(pane::Action::ResolveStreams(streams)) => {
+                    tasks.push(Task::done(Message::ResolveStreams(
+                        state.unique_id(),
+                        streams,
+                    )));
                 }
-                chart::Action::RequestPalette => {
-                    tasks.push(Task::done(Message::RequestPalette));
-                }
-            },
-            Some(pane::Action::Panel(_action)) => {}
-            Some(pane::Action::ResolveStreams(streams)) => {
-                tasks.push(Task::done(Message::ResolveStreams(
-                    state.unique_id(),
-                    streams,
-                )));
-            }
-            Some(pane::Action::ResolveContent) => match state.stream_pair_kind() {
-                Some(StreamPairKind::MultiSource(tickers)) => {
-                    state.set_content_and_streams(tickers, state.content.kind());
-                }
-                Some(StreamPairKind::SingleSource(ticker)) => {
-                    state.set_content_and_streams(vec![ticker], state.content.kind());
-                }
+                Some(pane::Action::ResolveContent) => match state.stream_pair_kind() {
+                    Some(StreamPairKind::MultiSource(tickers)) => {
+                        state.set_content_and_streams(tickers, state.content.kind());
+                    }
+                    Some(StreamPairKind::SingleSource(ticker)) => {
+                        state.set_content_and_streams(vec![ticker], state.content.kind());
+                    }
+                    None => {}
+                },
                 None => {}
-            },
-            None => {}
+            }
         };
 
         // tick only the maximized pane if there is any, otherwise tick all panes
@@ -1204,8 +1260,155 @@ impl Dashboard {
     ) -> Task<Message> {
         if let Some(state) = self.get_mut_pane_state_by_uuid(main_window, pane_id) {
             state.streams = ResolvedStream::Ready(streams.clone());
+            let next_liveness = if streams.is_empty() {
+                pane::LivenessStatus::Idle
+            } else {
+                pane::LivenessStatus::Waiting(pane::WaitingReason::StreamData)
+            };
+            state.set_liveness(next_liveness);
         }
         self.refresh_streams(main_window)
+    }
+
+    pub fn set_pane_liveness(
+        &mut self,
+        main_window: window::Id,
+        pane_id: uuid::Uuid,
+        status: pane::LivenessStatus,
+    ) {
+        if let Some(state) = self.get_mut_pane_state_by_uuid(main_window, pane_id) {
+            state.set_liveness(status);
+        }
+    }
+
+    pub fn mark_exchange_disconnected(
+        &mut self,
+        main_window: window::Id,
+        exchange: Exchange,
+        reason: &str,
+    ) {
+        let short_reason = reason.lines().next().unwrap_or(reason);
+        let message = format!("{exchange} stream disconnected ({short_reason})");
+
+        self.iter_all_panes_mut(main_window)
+            .for_each(|(_, _, pane_state)| {
+                let has_exchange_stream = pane_state
+                    .streams
+                    .ready_iter()
+                    .map(|mut streams| {
+                        streams.any(|stream| stream.ticker_info().exchange() == exchange)
+                    })
+                    .unwrap_or(false);
+
+                if has_exchange_stream {
+                    pane_state.set_liveness(pane::LivenessStatus::Disconnected(message.clone()));
+                }
+            });
+    }
+
+    pub fn mark_streams_disconnected(
+        &mut self,
+        main_window: window::Id,
+        streams: &[StreamKind],
+        reason: &str,
+    ) {
+        if streams.is_empty() {
+            return;
+        }
+
+        let affected = streams.iter().copied().collect::<HashSet<_>>();
+        let exchange = streams[0].ticker_info().exchange();
+        let short_reason = reason.lines().next().unwrap_or(reason);
+        let message = format!("{exchange} stream disconnected ({short_reason})");
+
+        self.iter_all_panes_mut(main_window)
+            .for_each(|(_, _, pane_state)| {
+                let has_affected_stream = pane_state
+                    .streams
+                    .ready_iter()
+                    .map(|mut pane_streams| pane_streams.any(|stream| affected.contains(stream)))
+                    .unwrap_or(false);
+
+                if has_affected_stream {
+                    pane_state.set_liveness(pane::LivenessStatus::Disconnected(message.clone()));
+                }
+            });
+    }
+
+    pub fn mark_exchange_connected(&mut self, main_window: window::Id, exchange: Exchange) {
+        self.iter_all_panes_mut(main_window)
+            .for_each(|(_, _, pane_state)| {
+                let has_exchange_stream = pane_state
+                    .streams
+                    .ready_iter()
+                    .map(|mut streams| {
+                        streams.any(|stream| stream.ticker_info().exchange() == exchange)
+                    })
+                    .unwrap_or(false);
+
+                if has_exchange_stream
+                    && matches!(pane_state.liveness, pane::LivenessStatus::Disconnected(_))
+                {
+                    pane_state.set_liveness(pane::LivenessStatus::Waiting(
+                        pane::WaitingReason::StreamData,
+                    ));
+                }
+            });
+    }
+
+    pub fn mark_streams_connected(&mut self, main_window: window::Id, streams: &[StreamKind]) {
+        if streams.is_empty() {
+            return;
+        }
+
+        let affected = streams.iter().copied().collect::<HashSet<_>>();
+
+        self.iter_all_panes_mut(main_window)
+            .for_each(|(_, _, pane_state)| {
+                let has_affected_stream = pane_state
+                    .streams
+                    .ready_iter()
+                    .map(|mut pane_streams| pane_streams.any(|stream| affected.contains(stream)))
+                    .unwrap_or(false);
+
+                if has_affected_stream
+                    && matches!(pane_state.liveness, pane::LivenessStatus::Disconnected(_))
+                {
+                    pane_state.set_liveness(pane::LivenessStatus::Waiting(
+                        pane::WaitingReason::StreamData,
+                    ));
+                }
+            });
+    }
+
+    pub fn retry_exchanges(&mut self, main_window: window::Id, exchanges: &[Exchange]) {
+        if exchanges.is_empty() {
+            return;
+        }
+
+        let selected = exchanges.iter().copied().collect::<HashSet<_>>();
+
+        for exchange in &selected {
+            let nonce = self.reconnect_nonce.entry(*exchange).or_insert(0);
+            *nonce = nonce.saturating_add(1);
+        }
+
+        self.iter_all_panes_mut(main_window)
+            .for_each(|(_, _, pane_state)| {
+                let has_selected_exchange = pane_state
+                    .streams
+                    .ready_iter()
+                    .map(|mut streams| {
+                        streams.any(|stream| selected.contains(&stream.ticker_info().exchange()))
+                    })
+                    .unwrap_or(false);
+
+                if has_selected_exchange {
+                    pane_state.set_liveness(pane::LivenessStatus::Waiting(
+                        pane::WaitingReason::StreamData,
+                    ));
+                }
+            });
     }
 
     pub fn market_subscriptions(&self, handles: &AdapterHandles) -> Subscription<exchange::Event> {
@@ -1214,6 +1417,7 @@ impl Dashboard {
             .combined_used()
             .flat_map(|(exchange, specs)| {
                 let mut subs = vec![];
+                let reconnect_nonce = self.reconnect_nonce.get(&exchange).copied().unwrap_or(0);
 
                 if !specs.depth.is_empty() {
                     let depth_subs = specs
@@ -1232,7 +1436,7 @@ impl Dashboard {
                                 *push_freq,
                             );
 
-                            let data = (handles.clone(), config);
+                            let data = (handles.clone(), config, reconnect_nonce);
                             Subscription::run_with(data, |data| data.0.depth_stream(&data.1))
                         })
                         .collect::<Vec<_>>();
@@ -1254,7 +1458,7 @@ impl Dashboard {
                                 PushFrequency::ServerDefault,
                             );
 
-                            let data = (handles.clone(), config);
+                            let data = (handles.clone(), config, reconnect_nonce);
                             Subscription::run_with(data, |data| data.0.trade_stream(&data.1))
                         })
                         .collect::<Vec<_>>();
@@ -1276,7 +1480,7 @@ impl Dashboard {
                                 PushFrequency::ServerDefault,
                             );
 
-                            let data = (handles.clone(), config);
+                            let data = (handles.clone(), config, reconnect_nonce);
                             Subscription::run_with(data, |data| data.0.kline_stream(&data.1))
                         })
                         .collect::<Vec<_>>();
@@ -1315,10 +1519,10 @@ impl From<fetcher::FetchUpdate> for Message {
         match update {
             fetcher::FetchUpdate::Status { pane_id, status } => match status {
                 fetcher::FetchTaskStatus::Loading(info) => {
-                    Message::ChangePaneStatus(pane_id, pane::Status::Loading(info))
+                    Message::ChangePaneFetchStatus(pane_id, pane::FetchStatus::Loading(info))
                 }
                 fetcher::FetchTaskStatus::Completed => {
-                    Message::ChangePaneStatus(pane_id, pane::Status::Ready)
+                    Message::ChangePaneFetchStatus(pane_id, pane::FetchStatus::Idle)
                 }
             },
             fetcher::FetchUpdate::Data {

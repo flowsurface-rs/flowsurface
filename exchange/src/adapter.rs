@@ -531,8 +531,8 @@ impl Exchange {
 
 #[derive(Debug, Clone)]
 pub enum Event {
-    Connected(Exchange),
-    Disconnected(Exchange, String),
+    Connected(Arc<[StreamKind]>),
+    Disconnected(Arc<[StreamKind]>, String),
     DepthReceived(StreamKind, UnixMs, Arc<Depth>),
     TradesReceived(StreamKind, UnixMs, Box<[Trade]>),
     KlineReceived(StreamKind, Kline),

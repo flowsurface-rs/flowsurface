@@ -112,17 +112,17 @@ fn calc_time_step(
     (selected_step, rounded_earliest)
 }
 
-fn calc_x_pos(time_millis: u64, earliest: UnixMs, latest: UnixMs, width: f32) -> f64 {
+fn calc_x_pos(time_millis: u64, earliest: UnixMs, latest: UnixMs, width: f32) -> f32 {
     if latest > earliest {
         let span = latest - earliest;
-        ((time_millis - earliest.0) as f64 / span.0 as f64) * f64::from(width)
+        ((time_millis - earliest.0) as f32 / span.0 as f32) * width
     } else {
         0.0
     }
 }
 
-fn is_drawable(x_pos: f64, width: f32) -> bool {
-    x_pos >= (-TEXT_SIZE * 5.0).into() && x_pos <= f64::from(width) + f64::from(TEXT_SIZE * 5.0)
+fn is_drawable(x_pos: f32, width: f32) -> bool {
+    x_pos >= -TEXT_SIZE * 5.0 && x_pos <= width + (TEXT_SIZE * 5.0)
 }
 
 pub fn generate_time_labels(
@@ -214,8 +214,8 @@ fn above_daily_labels_gen<Tz, Next, Format, Skip>(
     latest: UnixMs,
     axis_bounds: iced_core::Rectangle,
     all_labels: &mut Vec<AxisLabel>,
-    calc_x_pos: impl Fn(u64, UnixMs, UnixMs, f32) -> f64,
-    is_drawable: impl Fn(f64, f32) -> bool,
+    calc_x_pos: impl Fn(u64, UnixMs, UnixMs, f32) -> f32,
+    is_drawable: impl Fn(f32, f32) -> bool,
     next: Next,
     format_label: Format,
     skip_label: Skip,
@@ -233,13 +233,7 @@ fn above_daily_labels_gen<Tz, Next, Format, Skip>(
             let x_pos = calc_x_pos(ts, earliest, latest, axis_bounds.width);
             if is_drawable(x_pos, axis_bounds.width) {
                 let label = format_label(&current);
-                all_labels.push(AxisLabel::new_x(
-                    x_pos as f32,
-                    label,
-                    axis_bounds,
-                    false,
-                    palette,
-                ));
+                all_labels.push(AxisLabel::new_x(x_pos, label, axis_bounds, false, palette));
             }
         }
 
@@ -263,8 +257,8 @@ fn daily_labels_gen(
     latest: UnixMs,
     start_utc_dt: DateTime<chrono::Utc>,
     end_utc_dt: DateTime<chrono::Utc>,
-    calc_x_pos: impl Fn(u64, UnixMs, UnixMs, f32) -> f64,
-    is_drawable: impl Fn(f64, f32) -> bool,
+    calc_x_pos: impl Fn(u64, UnixMs, UnixMs, f32) -> f32,
+    is_drawable: impl Fn(f32, f32) -> bool,
     palette: &Extended,
 ) {
     let current = start_utc_dt
@@ -298,8 +292,8 @@ fn monthly_labels_gen(
     latest: UnixMs,
     start_utc_dt: DateTime<chrono::Utc>,
     end_utc_dt: DateTime<chrono::Utc>,
-    calc_x_pos: impl Fn(u64, UnixMs, UnixMs, f32) -> f64,
-    is_drawable: impl Fn(f64, f32) -> bool,
+    calc_x_pos: impl Fn(u64, UnixMs, UnixMs, f32) -> f32,
+    is_drawable: impl Fn(f32, f32) -> bool,
     palette: &Extended,
 ) {
     let current = reset_to_start_of_month_utc(start_utc_dt);
@@ -330,8 +324,8 @@ fn yearly_labels_gen(
     latest: UnixMs,
     start_utc_dt: DateTime<chrono::Utc>,
     end_utc_dt: DateTime<chrono::Utc>,
-    calc_x_pos: impl Fn(u64, UnixMs, UnixMs, f32) -> f64,
-    is_drawable: impl Fn(f64, f32) -> bool,
+    calc_x_pos: impl Fn(u64, UnixMs, UnixMs, f32) -> f32,
+    is_drawable: impl Fn(f32, f32) -> bool,
     palette: &Extended,
 ) {
     let current = reset_to_start_of_year_utc(start_utc_dt);
@@ -364,8 +358,8 @@ fn sub_daily_labels_gen(
     time_step: u64,
     initial_rounded_earliest: u64,
     timeframe: exchange::Timeframe,
-    calc_x_pos: impl Fn(u64, UnixMs, UnixMs, f32) -> f64,
-    is_drawable: impl Fn(f64, f32) -> bool,
+    calc_x_pos: impl Fn(u64, UnixMs, UnixMs, f32) -> f32,
+    is_drawable: impl Fn(f32, f32) -> bool,
     palette: &Extended,
 ) {
     let mut current_time = initial_rounded_earliest;
@@ -382,7 +376,7 @@ fn sub_daily_labels_gen(
 
                 if let Some(content) = label_content {
                     all_labels.push(AxisLabel::new_x(
-                        x_position as f32,
+                        x_position,
                         content,
                         axis_bounds,
                         false,
