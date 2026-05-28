@@ -3,7 +3,7 @@ use crate::serde_util;
 use serde::{Deserialize, Serialize};
 
 /// Fixed atomic unit scale: 10^-ATOMIC_SCALE is the smallest stored fraction.
-/// MinTicksize has range [-8, 2], e.g. ATOMIC_SCALE = 8 to represent 10^-8 atomic units.
+/// MinTicksize has range [-11, 2], e.g. ATOMIC_SCALE = 11 to represent 10^-11 atomic units.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd, Deserialize, Serialize)]
 pub struct Price {
     /// number of atomic units (atomic unit = 10^-ATOMIC_SCALE)
@@ -11,8 +11,8 @@ pub struct Price {
 }
 
 impl Price {
-    /// number of decimal places of the atomic unit (10^-8)
-    const ATOMIC_SCALE: i32 = 8;
+    /// number of decimal places of the atomic unit (10^-11)
+    const ATOMIC_SCALE: i32 = 11;
 
     #[inline]
     pub fn to_string<const MIN: i8, const MAX: i8>(self, precision: Power10<MIN, MAX>) -> String {

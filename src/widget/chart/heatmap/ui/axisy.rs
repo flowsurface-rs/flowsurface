@@ -17,7 +17,6 @@ pub struct AxisYLabelCanvas<'a> {
     pub step: PriceStep,
     pub row_h: f32,
     /// Rounds/formats labels to a decade step (e.g. power=-2 => 0.01).
-    /// Type alias: MinTicksize = Power10<-8, 2>
     pub label_precision: MinTicksize,
 }
 
