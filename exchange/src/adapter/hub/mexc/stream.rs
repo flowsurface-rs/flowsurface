@@ -2,9 +2,8 @@ use crate::{
     Event, Kline, Price, PushFrequency, Ticker, TickerInfo, Timeframe, Trade, UnixMs, Volume,
     adapter::{
         MarketKind, StreamKind, StreamTicksize, TRADE_BUCKET_INTERVAL,
-        connect::{WsTransport, channel, connect_ws},
+        connect::{WsAdapter, WsControlConfig, WsTransport, channel, connect_ws},
         flush_trade_buffers,
-        hub::ws_control::{WsAdapter, WsControlConfig},
     },
     depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
     unit::qty::{QtyNormalization, SizeUnit, volume_size_unit},

@@ -2,9 +2,11 @@ use crate::{
     Event, Kline, Price, PushFrequency, Ticker, TickerInfo, Trade, Volume,
     adapter::{
         MarketKind, StreamKind, StreamTicksize, TRADE_BUCKET_INTERVAL,
-        connect::{WsTransport, channel, connect_ws},
+        connect::{
+            ConnectedEventMode, WsAdapter, WsControlConfig, WsTransport, channel, connect_ws,
+            emit_connected,
+        },
         flush_trade_buffers,
-        hub::ws_control::WsAdapter,
     },
     depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
     serde_util::de_string_to_number,
@@ -12,10 +14,7 @@ use crate::{
 };
 
 use super::{BinanceHandle, exchange_from_market_type, raw_qty_unit_from_market_type};
-use crate::adapter::hub::{
-    AdapterError,
-    ws_control::{ConnectedEventMode, WsControlConfig, emit_connected},
-};
+use crate::adapter::hub::AdapterError;
 use futures::{SinkExt, Stream, channel::mpsc};
 use rustc_hash::FxHashMap;
 use serde::Deserialize;

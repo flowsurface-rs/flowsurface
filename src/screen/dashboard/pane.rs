@@ -62,7 +62,7 @@ pub enum LivenessStatus {
     Idle,
     Waiting(WaitingReason),
     Live,
-    Stalled(String),
+    ConnectedNoData(String),
     Disconnected(String),
 }
 
@@ -86,7 +86,7 @@ impl WaitingReason {
         match self {
             WaitingReason::StreamResolution => "Resolving saved streams...",
             WaitingReason::Metadata => "Waiting for ticker metadata...",
-            WaitingReason::StreamData => "Waiting for live data...",
+            WaitingReason::StreamData => "Connected, waiting for first market update...",
         }
     }
 }
@@ -94,10 +94,12 @@ impl WaitingReason {
 impl LivenessStatus {
     fn placeholder_message(&self, has_stream: bool) -> Option<String> {
         match self {
-            LivenessStatus::Idle if has_stream => Some("Waiting for live data...".to_string()),
+            LivenessStatus::Idle if has_stream => {
+                Some("Connected, waiting for market updates...".to_string())
+            }
             LivenessStatus::Idle | LivenessStatus::Live => None,
             LivenessStatus::Waiting(reason) => Some(reason.label().to_string()),
-            LivenessStatus::Stalled(message) | LivenessStatus::Disconnected(message) => {
+            LivenessStatus::ConnectedNoData(message) | LivenessStatus::Disconnected(message) => {
                 Some(message.clone())
             }
         }
@@ -521,8 +523,9 @@ impl State {
 
         match self.last_stream_data_at {
             Some(last_seen) if now.duration_since(last_seen) >= stale_after => {
-                self.liveness =
-                    LivenessStatus::Stalled("Stream stalled (no recent updates)".to_string());
+                self.liveness = LivenessStatus::ConnectedNoData(
+                    "Connected, no recent market updates".to_string(),
+                );
             }
             Some(_) => self.liveness = LivenessStatus::Live,
             None => self.liveness = LivenessStatus::Waiting(WaitingReason::StreamData),
@@ -1208,7 +1211,7 @@ impl State {
         };
 
         if let Some(message) = match &self.liveness {
-            LivenessStatus::Stalled(msg) | LivenessStatus::Disconnected(msg) => Some(msg.clone()),
+            LivenessStatus::Disconnected(msg) => Some(msg.clone()),
             _ => None,
         } {
             let retry_button = button(text("Retry").size(crate::style::text_size::SMALL))
@@ -1266,10 +1269,13 @@ impl State {
             LivenessStatus::Waiting(reason) => {
                 top_left_buttons = top_left_buttons.push(text(reason.label()));
             }
-            LivenessStatus::Idle
-            | LivenessStatus::Live
-            | LivenessStatus::Stalled(_)
-            | LivenessStatus::Disconnected(_) => {}
+            LivenessStatus::ConnectedNoData(message) => {
+                top_left_buttons = top_left_buttons.push(text(message));
+            }
+            LivenessStatus::Disconnected(_) => {
+                top_left_buttons = top_left_buttons.push(text("Connection lost"));
+            }
+            LivenessStatus::Idle | LivenessStatus::Live => {}
         }
 
         let content = pane_grid::Content::new(body)

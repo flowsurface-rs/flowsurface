@@ -1,6 +1,6 @@
 use crate::{
     Event, Kline, Price, PushFrequency, Ticker, TickerInfo, Timeframe, Trade, Volume,
-    adapter::connect::{WsTransport, channel, connect_ws},
+    adapter::connect::{WsAdapter, WsControlConfig, WsTransport, channel, connect_ws},
     adapter::{MarketKind, StreamKind, StreamTicksize, TRADE_BUCKET_INTERVAL, flush_trade_buffers},
     depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
     serde_util::de_string_to_number,
@@ -8,10 +8,7 @@ use crate::{
 };
 
 use super::{WS_DOMAIN, exchange_from_market_type, raw_qty_unit_from_market_type};
-use crate::adapter::hub::{
-    AdapterError,
-    ws_control::{WsAdapter, WsControlConfig},
-};
+use crate::adapter::hub::AdapterError;
 use fastwebsockets::Frame;
 use futures::{SinkExt, Stream, channel::mpsc};
 use rustc_hash::FxHashMap;

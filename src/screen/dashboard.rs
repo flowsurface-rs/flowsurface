@@ -44,7 +44,7 @@ use std::{
     vec,
 };
 
-const STREAM_STALE_AFTER: Duration = Duration::from_secs(10);
+const STREAM_STALE_AFTER: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -68,7 +68,6 @@ pub struct Dashboard {
     pub focus: Option<(window::Id, pane_grid::Pane)>,
     pub popout: HashMap<window::Id, (pane_grid::State<pane::State>, WindowSpec)>,
     pub streams: UniqueStreams,
-    reconnect_nonce: HashMap<Exchange, u64>,
     layout_id: uuid::Uuid,
 }
 
@@ -79,7 +78,6 @@ impl Default for Dashboard {
             focus: None,
             streams: UniqueStreams::default(),
             popout: HashMap::new(),
-            reconnect_nonce: HashMap::new(),
             layout_id: uuid::Uuid::new_v4(),
         }
     }
@@ -148,7 +146,6 @@ impl Dashboard {
             focus: None,
             streams: UniqueStreams::default(),
             popout,
-            reconnect_nonce: HashMap::new(),
             layout_id,
         }
     }
@@ -1388,11 +1385,6 @@ impl Dashboard {
 
         let selected = exchanges.iter().copied().collect::<HashSet<_>>();
 
-        for exchange in &selected {
-            let nonce = self.reconnect_nonce.entry(*exchange).or_insert(0);
-            *nonce = nonce.saturating_add(1);
-        }
-
         self.iter_all_panes_mut(main_window)
             .for_each(|(_, _, pane_state)| {
                 let has_selected_exchange = pane_state
@@ -1417,7 +1409,6 @@ impl Dashboard {
             .combined_used()
             .flat_map(|(exchange, specs)| {
                 let mut subs = vec![];
-                let reconnect_nonce = self.reconnect_nonce.get(&exchange).copied().unwrap_or(0);
 
                 if !specs.depth.is_empty() {
                     let depth_subs = specs
@@ -1436,7 +1427,7 @@ impl Dashboard {
                                 *push_freq,
                             );
 
-                            let data = (handles.clone(), config, reconnect_nonce);
+                            let data = (handles.clone(), config);
                             Subscription::run_with(data, |data| data.0.depth_stream(&data.1))
                         })
                         .collect::<Vec<_>>();
@@ -1458,7 +1449,7 @@ impl Dashboard {
                                 PushFrequency::ServerDefault,
                             );
 
-                            let data = (handles.clone(), config, reconnect_nonce);
+                            let data = (handles.clone(), config);
                             Subscription::run_with(data, |data| data.0.trade_stream(&data.1))
                         })
                         .collect::<Vec<_>>();
@@ -1480,7 +1471,7 @@ impl Dashboard {
                                 PushFrequency::ServerDefault,
                             );
 
-                            let data = (handles.clone(), config, reconnect_nonce);
+                            let data = (handles.clone(), config);
                             Subscription::run_with(data, |data| data.0.kline_stream(&data.1))
                         })
                         .collect::<Vec<_>>();
