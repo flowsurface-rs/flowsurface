@@ -1,6 +1,6 @@
 use crate::{
     Event, Kline, Price, PushFrequency, Ticker, TickerInfo, Timeframe, Trade, Volume,
-    adapter::connect::{State, channel, connect_ws},
+    adapter::connect::{WsTransport, channel, connect_ws},
     adapter::{MarketKind, StreamKind, StreamTicksize, TRADE_BUCKET_INTERVAL, flush_trade_buffers},
     depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
     serde_util,
@@ -9,19 +9,17 @@ use crate::{
 };
 
 use super::{WS_DOMAIN, raw_qty_unit_from_market_type, timeframe_to_okx_bar};
-use crate::adapter::hub::AdapterError;
-use fastwebsockets::{Frame, OpCode};
+use crate::adapter::hub::{
+    AdapterError,
+    ws_control::{WsAdapter, WsControlConfig},
+};
+use fastwebsockets::Frame;
 use futures::{SinkExt, Stream, channel::mpsc};
 use rustc_hash::FxHashMap;
 use serde::Deserialize;
 use serde_json::Value;
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc};
 
-const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
-const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(45);
-const HEARTBEAT_TIMEOUT_REASON: &str = "Heartbeat timeout (no websocket activity)";
-const HEARTBEAT_SEND_FAILED_REASON: &str = "Failed to send heartbeat ping";
-const HEARTBEAT_PONG_FAILED_REASON: &str = "Failed to reply pong";
 const OKX_PING_PAYLOAD: &[u8] = b"ping";
 
 #[derive(Deserialize, Debug)]
@@ -45,6 +43,27 @@ struct SonicDepth {
 enum StreamData {
     Trade(String, Vec<SonicTrade>),
     Depth(SonicDepth, String, u64),
+}
+
+async fn connect_and_subscribe(
+    streams: &Value,
+    topic: &str,
+    proxy_cfg: Option<&crate::proxy::Proxy>,
+) -> Result<WsTransport, String> {
+    let url = format!("wss://{WS_DOMAIN}/ws/v5/{topic}");
+
+    let mut websocket = connect_ws(WS_DOMAIN, &url, proxy_cfg)
+        .await
+        .map_err(|err| format!("Failed to connect: {err}"))?;
+
+    websocket
+        .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
+            streams.to_string().as_bytes(),
+        )))
+        .await
+        .map_err(|e| format!("Failed subscribing: {e}"))?;
+
+    Ok(websocket)
 }
 
 fn feed_de(slice: &[u8]) -> Result<StreamData, AdapterError> {
@@ -128,234 +147,222 @@ fn feed_de(slice: &[u8]) -> Result<StreamData, AdapterError> {
     Err(AdapterError::ParseError("Unknown data".to_string()))
 }
 
-async fn try_connect(
-    streams: &Value,
-    stream_scope: &Arc<[StreamKind]>,
-    output: &mut mpsc::Sender<Event>,
-    topic: &str,
-    proxy_cfg: Option<&crate::proxy::Proxy>,
-) -> State {
-    let url = format!("wss://{WS_DOMAIN}/ws/v5/{topic}");
-
-    match connect_ws(WS_DOMAIN, &url, proxy_cfg).await {
-        Ok(mut websocket) => {
-            if let Err(e) = websocket
-                .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
-                    streams.to_string().as_bytes(),
-                )))
-                .await
-            {
-                let _ = output
-                    .send(Event::Disconnected(
-                        stream_scope.clone(),
-                        format!("Failed subscribing: {e}"),
-                    ))
-                    .await;
-                return State::Disconnected;
-            }
-
-            let _ = output.send(Event::Connected(stream_scope.clone())).await;
-            State::Connected(websocket)
-        }
-        Err(err) => {
-            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-            let _ = output
-                .send(Event::Disconnected(
-                    stream_scope.clone(),
-                    format!("Failed to connect: {err}"),
-                ))
-                .await;
-            State::Disconnected
-        }
-    }
+struct KlineAdapter {
+    subscribe_message: serde_json::Value,
+    proxy_cfg: Option<crate::proxy::Proxy>,
+    lookup: Arc<HashMap<(String, String), (TickerInfo, Timeframe)>>,
+    size_in_quote_ccy: bool,
+    market_type: MarketKind,
 }
 
-pub fn connect_depth_stream(
-    ticker_info: TickerInfo,
-    depth_aggr: StreamTicksize,
-    push_freq: PushFrequency,
+impl WsAdapter for KlineAdapter {
+    async fn connect(&mut self) -> Result<WsTransport, String> {
+        connect_and_subscribe(&self.subscribe_message, "business", self.proxy_cfg.as_ref()).await
+    }
+
+    async fn on_connected(&mut self, _output: &mut mpsc::Sender<Event>) {}
+
+    async fn on_text(
+        &mut self,
+        payload: &[u8],
+        output: &mut mpsc::Sender<Event>,
+    ) -> Result<(), String> {
+        if let Ok(v) = serde_json::from_slice::<Value>(payload) {
+            let channel = v["arg"]["channel"].as_str().unwrap_or("");
+            if !channel.starts_with("candle") {
+                return Ok(());
+            }
+
+            let inst = match v["arg"]["instId"].as_str() {
+                Some(s) => s,
+                None => return Ok(()),
+            };
+            let (ticker_info, timeframe) =
+                match self.lookup.get(&(channel.to_string(), inst.to_string())) {
+                    Some(t) => *t,
+                    None => return Ok(()),
+                };
+            let qty_norm = QtyNormalization::with_raw_qty_unit(
+                self.size_in_quote_ccy,
+                ticker_info,
+                raw_qty_unit_from_market_type(self.market_type),
+            );
+
+            if let Some(data) = v.get("data").and_then(|d| d.as_array()) {
+                for row in data {
+                    let time = row.get(0).and_then(serde_util::value_as_u64);
+                    let open = row.get(1).and_then(serde_util::value_as_f32);
+                    let high = row.get(2).and_then(serde_util::value_as_f32);
+                    let low = row.get(3).and_then(serde_util::value_as_f32);
+                    let close = row.get(4).and_then(serde_util::value_as_f32);
+                    let volume = row.get(5).and_then(serde_util::value_as_f32);
+
+                    let (ts, open, high, low, close) = match (time, open, high, low, close) {
+                        (Some(ts), Some(open), Some(high), Some(low), Some(close)) => {
+                            (ts, open, high, low, close)
+                        }
+                        _ => continue,
+                    };
+
+                    let volume_in_display = if let Some(vq) = volume {
+                        qty_norm.normalize_qty(vq, close)
+                    } else {
+                        qty_norm.normalize_qty(0.0, close)
+                    };
+
+                    let kline = Kline::new(
+                        ts,
+                        open,
+                        high,
+                        low,
+                        close,
+                        Volume::TotalOnly(volume_in_display),
+                        ticker_info.min_ticksize,
+                    );
+                    let _ = output
+                        .send(Event::KlineReceived(
+                            StreamKind::Kline {
+                                ticker_info,
+                                timeframe,
+                            },
+                            kline,
+                        ))
+                        .await;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn on_disconnected(&mut self, _reason: &str, _output: &mut mpsc::Sender<Event>) {}
+}
+
+pub fn connect_kline_stream(
+    streams: Vec<(TickerInfo, Timeframe)>,
+    market_type: MarketKind,
     proxy_cfg: Option<crate::proxy::Proxy>,
 ) -> impl Stream<Item = Event> {
     channel(100, move |mut output| async move {
-        let stream = StreamKind::Depth {
-            ticker_info,
-            depth_aggr,
-            push_freq,
-        };
+        let stream_scope: Arc<[StreamKind]> = Arc::from(
+            streams
+                .iter()
+                .map(|(ticker_info, timeframe)| StreamKind::Kline {
+                    ticker_info: *ticker_info,
+                    timeframe: *timeframe,
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        );
 
-        let stream_scope = Arc::from(vec![stream].into_boxed_slice());
-        let mut state: State = State::Disconnected;
+        if streams.is_empty() {
+            let _ = output
+                .send(Event::Disconnected(
+                    stream_scope,
+                    "Empty OKX kline stream payload".to_string(),
+                ))
+                .await;
+            return;
+        }
 
-        let ticker = ticker_info.ticker;
+        let mut args = Vec::with_capacity(streams.len());
+        let mut lookup = HashMap::new();
+        for (ticker_info, timeframe) in &streams {
+            let ticker = ticker_info.ticker;
 
-        let (symbol_str, market_type) = ticker.to_full_symbol_and_type();
+            if let Some(bar) = timeframe_to_okx_bar(*timeframe) {
+                let (symbol, _mt) = ticker.to_full_symbol_and_type();
+                let channel = format!("candle{bar}");
+                args.push(serde_json::json!({
+                    "channel": channel,
+                    "instId": symbol,
+                }));
+                lookup.insert((channel, symbol), (*ticker_info, *timeframe));
+            }
+        }
 
         let subscribe_message = serde_json::json!({
             "op": "subscribe",
-            "args": [
-                { "channel": "books",  "instId": symbol_str },
-            ],
+            "args": args,
         });
 
-        let mut orderbook = LocalDepthCache::default();
-
+        let lookup = Arc::new(lookup);
         let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
-        let qty_norm = QtyNormalization::with_raw_qty_unit(
+
+        let control =
+            WsControlConfig::with_text_ping(OKX_PING_PAYLOAD, Some(b"pong"), stream_scope);
+
+        let mut adapter = KlineAdapter {
+            subscribe_message: subscribe_message.clone(),
+            proxy_cfg: proxy_cfg.clone(),
+            lookup: lookup.clone(),
             size_in_quote_ccy,
-            ticker_info,
-            raw_qty_unit_from_market_type(market_type),
-        );
+            market_type,
+        };
 
-        let mut heartbeat_interval = tokio::time::interval(HEARTBEAT_INTERVAL);
-        let mut last_transport_activity = tokio::time::Instant::now();
+        control.run(&mut adapter, &mut output).await;
+    })
+}
 
-        loop {
-            match &mut state {
-                State::Disconnected => {
-                    state = try_connect(
-                        &subscribe_message,
-                        &stream_scope,
-                        &mut output,
-                        "public",
-                        proxy_cfg.as_ref(),
-                    )
-                    .await;
+struct TradeAdapter {
+    ticker_info_map: FxHashMap<Ticker, (TickerInfo, QtyNormalization)>,
+    symbol_to_ticker: FxHashMap<String, Ticker>,
+    trades_buffer_map: FxHashMap<Ticker, Vec<Trade>>,
+    last_flush: tokio::time::Instant,
+    subscribe_message: serde_json::Value,
+    proxy_cfg: Option<crate::proxy::Proxy>,
+}
 
-                    if matches!(state, State::Connected(_)) {
-                        last_transport_activity = tokio::time::Instant::now();
-                        heartbeat_interval = tokio::time::interval(HEARTBEAT_INTERVAL);
-                    }
+impl WsAdapter for TradeAdapter {
+    async fn connect(&mut self) -> Result<WsTransport, String> {
+        connect_and_subscribe(&self.subscribe_message, "public", self.proxy_cfg.as_ref()).await
+    }
+
+    async fn on_connected(&mut self, _output: &mut mpsc::Sender<Event>) {
+        self.last_flush = tokio::time::Instant::now();
+    }
+
+    async fn on_text(
+        &mut self,
+        payload: &[u8],
+        output: &mut mpsc::Sender<Event>,
+    ) -> Result<(), String> {
+        if let Ok(StreamData::Trade(inst_id, de_trade_vec)) = feed_de(payload) {
+            if let Some(ticker) = self.symbol_to_ticker.get(&inst_id)
+                && let Some((ticker_info, qty_norm)) = self.ticker_info_map.get(ticker)
+            {
+                let ticker_info = *ticker_info;
+                let trades_buffer = self.trades_buffer_map.entry(*ticker).or_default();
+
+                for de_trade in &de_trade_vec {
+                    let price =
+                        Price::from_f32(de_trade.price).round_to_min_tick(ticker_info.min_ticksize);
+                    let qty = qty_norm.normalize_qty(de_trade.qty, de_trade.price);
+
+                    let trade = Trade {
+                        time: de_trade.time.into(),
+                        is_sell: de_trade.is_sell == "sell" || de_trade.is_sell == "SELL",
+                        price,
+                        qty,
+                    };
+                    trades_buffer.push(trade);
                 }
-                State::Connected(ws) => {
-                    tokio::select! {
-                        _ = heartbeat_interval.tick() => {
-                            if last_transport_activity.elapsed() >= HEARTBEAT_TIMEOUT {
-                                state = State::Disconnected;
-                                let _ = output
-                                    .send(Event::Disconnected(
-                                        stream_scope.clone(),
-                                        HEARTBEAT_TIMEOUT_REASON.to_string(),
-                                    ))
-                                    .await;
-                                continue;
-                            }
-
-                            if ws
-                                .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
-                                    OKX_PING_PAYLOAD,
-                                )))
-                                .await
-                                .is_err()
-                            {
-                                state = State::Disconnected;
-                                let _ = output
-                                    .send(Event::Disconnected(
-                                        stream_scope.clone(),
-                                        HEARTBEAT_SEND_FAILED_REASON.to_string(),
-                                    ))
-                                    .await;
-                            }
-                        }
-                        frame = ws.read_frame() => match frame {
-                            Ok(msg) => {
-                                last_transport_activity = tokio::time::Instant::now();
-
-                                match msg.opcode {
-                                    OpCode::Text => {
-                                        if &msg.payload[..] == b"pong" {
-                                            continue;
-                                        }
-
-                                        if let Ok(data) = feed_de(&msg.payload[..]) {
-                                            match data {
-                                                StreamData::Depth(de_depth, data_type, time) => {
-                                                    let depth = DepthPayload {
-                                                        last_update_id: de_depth.update_id,
-                                                        time: time.into(),
-                                                        bids: de_depth
-                                                            .bids
-                                                            .iter()
-                                                            .map(|x| DeOrder {
-                                                                price: x.price,
-                                                                qty: x.qty,
-                                                            })
-                                                            .collect(),
-                                                        asks: de_depth
-                                                            .asks
-                                                            .iter()
-                                                            .map(|x| DeOrder {
-                                                                price: x.price,
-                                                                qty: x.qty,
-                                                            })
-                                                            .collect(),
-                                                    };
-
-                                                    if (data_type == "snapshot") || (depth.last_update_id == 1)
-                                                    {
-                                                        orderbook.update_with_qty_norm(
-                                                            DepthUpdate::Snapshot(depth),
-                                                            ticker_info.min_ticksize,
-                                                            Some(qty_norm),
-                                                        );
-                                                    } else if data_type == "delta" {
-                                                        orderbook.update_with_qty_norm(
-                                                            DepthUpdate::Diff(depth),
-                                                            ticker_info.min_ticksize,
-                                                            Some(qty_norm),
-                                                        );
-
-                                                        let _ = output
-                                                            .send(Event::DepthReceived(
-                                                                stream,
-                                                                time.into(),
-                                                                orderbook.depth.clone(),
-                                                            ))
-                                                            .await;
-                                                    }
-                                                }
-                                                StreamData::Trade(_, _) => {}
-                                            }
-                                        }
-                                    }
-                                    OpCode::Ping => {
-                                        if ws.write_frame(Frame::pong(msg.payload)).await.is_err() {
-                                            state = State::Disconnected;
-                                            let _ = output
-                                                .send(Event::Disconnected(
-                                                    stream_scope.clone(),
-                                                    HEARTBEAT_PONG_FAILED_REASON.to_string(),
-                                                ))
-                                                .await;
-                                        }
-                                    }
-                                    OpCode::Pong => {}
-                                    OpCode::Close => {
-                                        state = State::Disconnected;
-                                        let _ = output
-                                            .send(Event::Disconnected(
-                                                stream_scope.clone(),
-                                                "Connection closed".to_string(),
-                                            ))
-                                            .await;
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            Err(e) => {
-                                state = State::Disconnected;
-                                let _ = output
-                                    .send(Event::Disconnected(
-                                        stream_scope.clone(),
-                                        "Error reading frame: ".to_string() + &e.to_string(),
-                                    ))
-                                    .await;
-                            }
-                        }
-                    }
-                }
+            } else {
+                log::error!("Ticker info not found for symbol: {}", inst_id);
             }
         }
-    })
+
+        if self.last_flush.elapsed() >= TRADE_BUCKET_INTERVAL {
+            flush_trade_buffers(output, &self.ticker_info_map, &mut self.trades_buffer_map).await;
+            self.last_flush = tokio::time::Instant::now();
+        }
+
+        Ok(())
+    }
+
+    async fn on_disconnected(&mut self, _reason: &str, output: &mut mpsc::Sender<Event>) {
+        flush_trade_buffers(output, &self.ticker_info_map, &mut self.trades_buffer_map).await;
+    }
 }
 
 pub fn connect_trade_stream(
@@ -383,8 +390,6 @@ pub fn connect_trade_stream(
                 .await;
             return;
         }
-
-        let mut state: State = State::Disconnected;
 
         let args = streams
             .iter()
@@ -428,399 +433,139 @@ pub fn connect_trade_stream(
             })
             .collect::<FxHashMap<String, Ticker>>();
 
-        let mut trades_buffer_map: FxHashMap<Ticker, Vec<Trade>> = FxHashMap::default();
-        let mut last_flush = tokio::time::Instant::now();
-        let mut heartbeat_interval = tokio::time::interval(HEARTBEAT_INTERVAL);
-        let mut last_transport_activity = tokio::time::Instant::now();
+        let control =
+            WsControlConfig::with_text_ping(OKX_PING_PAYLOAD, Some(b"pong"), stream_scope);
 
-        loop {
-            match &mut state {
-                State::Disconnected => {
-                    state = try_connect(
-                        &subscribe_message,
-                        &stream_scope,
-                        &mut output,
-                        "public",
-                        proxy_cfg.as_ref(),
-                    )
-                    .await;
-                    last_flush = tokio::time::Instant::now();
+        let mut adapter = TradeAdapter {
+            ticker_info_map,
+            symbol_to_ticker,
+            trades_buffer_map: FxHashMap::default(),
+            last_flush: tokio::time::Instant::now(),
+            subscribe_message: subscribe_message.clone(),
+            proxy_cfg: proxy_cfg.clone(),
+        };
 
-                    if matches!(state, State::Connected(_)) {
-                        last_transport_activity = tokio::time::Instant::now();
-                        heartbeat_interval = tokio::time::interval(HEARTBEAT_INTERVAL);
-                    }
-                }
-                State::Connected(ws) => {
-                    tokio::select! {
-                        _ = heartbeat_interval.tick() => {
-                            if last_transport_activity.elapsed() >= HEARTBEAT_TIMEOUT {
-                                flush_trade_buffers(
-                                    &mut output,
-                                    &ticker_info_map,
-                                    &mut trades_buffer_map,
-                                )
-                                .await;
-
-                                state = State::Disconnected;
-                                let _ = output
-                                    .send(Event::Disconnected(
-                                        stream_scope.clone(),
-                                        HEARTBEAT_TIMEOUT_REASON.to_string(),
-                                    ))
-                                    .await;
-                                continue;
-                            }
-
-                            if ws
-                                .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
-                                    OKX_PING_PAYLOAD,
-                                )))
-                                .await
-                                .is_err()
-                            {
-                                flush_trade_buffers(
-                                    &mut output,
-                                    &ticker_info_map,
-                                    &mut trades_buffer_map,
-                                )
-                                .await;
-
-                                state = State::Disconnected;
-                                let _ = output
-                                    .send(Event::Disconnected(
-                                        stream_scope.clone(),
-                                        HEARTBEAT_SEND_FAILED_REASON.to_string(),
-                                    ))
-                                    .await;
-                            }
-                        }
-                        frame = ws.read_frame() => match frame {
-                            Ok(msg) => {
-                                last_transport_activity = tokio::time::Instant::now();
-
-                                match msg.opcode {
-                                    OpCode::Text => {
-                                        if &msg.payload[..] == b"pong" {
-                                            continue;
-                                        }
-
-                                        if let Ok(StreamData::Trade(inst_id, de_trade_vec)) =
-                                            feed_de(&msg.payload[..])
-                                        {
-                                            if let Some(ticker) = symbol_to_ticker.get(&inst_id)
-                                                && let Some((ticker_info, qty_norm)) =
-                                                    ticker_info_map.get(ticker)
-                                            {
-                                                let ticker_info = *ticker_info;
-                                                let trades_buffer =
-                                                    trades_buffer_map.entry(*ticker).or_default();
-
-                                                for de_trade in &de_trade_vec {
-                                                    let price = Price::from_f32(de_trade.price)
-                                                        .round_to_min_tick(ticker_info.min_ticksize);
-                                                    let qty =
-                                                        qty_norm.normalize_qty(de_trade.qty, de_trade.price);
-
-                                                    let trade = Trade {
-                                                        time: de_trade.time.into(),
-                                                        is_sell: de_trade.is_sell == "sell"
-                                                            || de_trade.is_sell == "SELL",
-                                                        price,
-                                                        qty,
-                                                    };
-                                                    trades_buffer.push(trade);
-                                                }
-                                            } else {
-                                                log::error!("Ticker info not found for symbol: {}", inst_id);
-                                            }
-                                        }
-
-                                        if last_flush.elapsed() >= TRADE_BUCKET_INTERVAL {
-                                            flush_trade_buffers(
-                                                &mut output,
-                                                &ticker_info_map,
-                                                &mut trades_buffer_map,
-                                            )
-                                            .await;
-                                            last_flush = tokio::time::Instant::now();
-                                        }
-                                    }
-                                    OpCode::Ping => {
-                                        if ws.write_frame(Frame::pong(msg.payload)).await.is_err() {
-                                            flush_trade_buffers(
-                                                &mut output,
-                                                &ticker_info_map,
-                                                &mut trades_buffer_map,
-                                            )
-                                            .await;
-
-                                            state = State::Disconnected;
-                                            let _ = output
-                                                .send(Event::Disconnected(
-                                                    stream_scope.clone(),
-                                                    HEARTBEAT_PONG_FAILED_REASON.to_string(),
-                                                ))
-                                                .await;
-                                        }
-                                    }
-                                    OpCode::Pong => {}
-                                    OpCode::Close => {
-                                        flush_trade_buffers(
-                                            &mut output,
-                                            &ticker_info_map,
-                                            &mut trades_buffer_map,
-                                        )
-                                        .await;
-
-                                        state = State::Disconnected;
-                                        let _ = output
-                                            .send(Event::Disconnected(
-                                                stream_scope.clone(),
-                                                "Connection closed".to_string(),
-                                            ))
-                                            .await;
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            Err(e) => {
-                                flush_trade_buffers(&mut output, &ticker_info_map, &mut trades_buffer_map)
-                                    .await;
-
-                                state = State::Disconnected;
-                                let _ = output
-                                    .send(Event::Disconnected(
-                                        stream_scope.clone(),
-                                        "Error reading frame: ".to_string() + &e.to_string(),
-                                    ))
-                                    .await;
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        control.run(&mut adapter, &mut output).await;
     })
 }
 
-pub fn connect_kline_stream(
-    streams: Vec<(TickerInfo, Timeframe)>,
-    market_type: MarketKind,
+struct DepthAdapter {
+    stream: StreamKind,
+    ticker_info: TickerInfo,
+    qty_norm: QtyNormalization,
+    orderbook: LocalDepthCache,
+    subscribe_message: serde_json::Value,
+    proxy_cfg: Option<crate::proxy::Proxy>,
+}
+
+impl WsAdapter for DepthAdapter {
+    async fn connect(&mut self) -> Result<WsTransport, String> {
+        connect_and_subscribe(&self.subscribe_message, "public", self.proxy_cfg.as_ref()).await
+    }
+
+    async fn on_connected(&mut self, _output: &mut mpsc::Sender<Event>) {}
+
+    async fn on_text(
+        &mut self,
+        payload: &[u8],
+        output: &mut mpsc::Sender<Event>,
+    ) -> Result<(), String> {
+        if let Ok(StreamData::Depth(de_depth, data_type, time)) = feed_de(payload) {
+            let depth = DepthPayload {
+                last_update_id: de_depth.update_id,
+                time: time.into(),
+                bids: de_depth
+                    .bids
+                    .iter()
+                    .map(|x| DeOrder {
+                        price: x.price,
+                        qty: x.qty,
+                    })
+                    .collect(),
+                asks: de_depth
+                    .asks
+                    .iter()
+                    .map(|x| DeOrder {
+                        price: x.price,
+                        qty: x.qty,
+                    })
+                    .collect(),
+            };
+
+            if (data_type == "snapshot") || (depth.last_update_id == 1) {
+                self.orderbook.update_with_qty_norm(
+                    DepthUpdate::Snapshot(depth),
+                    self.ticker_info.min_ticksize,
+                    Some(self.qty_norm),
+                );
+            } else if data_type == "delta" {
+                self.orderbook.update_with_qty_norm(
+                    DepthUpdate::Diff(depth),
+                    self.ticker_info.min_ticksize,
+                    Some(self.qty_norm),
+                );
+
+                let _ = output
+                    .send(Event::DepthReceived(
+                        self.stream,
+                        time.into(),
+                        self.orderbook.depth.clone(),
+                    ))
+                    .await;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn on_disconnected(&mut self, _reason: &str, _output: &mut mpsc::Sender<Event>) {}
+}
+
+pub fn connect_depth_stream(
+    ticker_info: TickerInfo,
+    depth_aggr: StreamTicksize,
+    push_freq: PushFrequency,
     proxy_cfg: Option<crate::proxy::Proxy>,
 ) -> impl Stream<Item = Event> {
     channel(100, move |mut output| async move {
-        let stream_scope: Arc<[StreamKind]> = Arc::from(
-            streams
-                .iter()
-                .map(|(ticker_info, timeframe)| StreamKind::Kline {
-                    ticker_info: *ticker_info,
-                    timeframe: *timeframe,
-                })
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
-        );
+        let stream = StreamKind::Depth {
+            ticker_info,
+            depth_aggr,
+            push_freq,
+        };
 
-        if streams.is_empty() {
-            let _ = output
-                .send(Event::Disconnected(
-                    stream_scope,
-                    "Empty OKX kline stream payload".to_string(),
-                ))
-                .await;
-            return;
-        }
+        let stream_scope = Arc::from(vec![stream].into_boxed_slice());
 
-        let mut state = State::Disconnected;
+        let ticker = ticker_info.ticker;
 
-        let mut args = Vec::with_capacity(streams.len());
-        let mut lookup = HashMap::new();
-        for (ticker_info, timeframe) in &streams {
-            let ticker = ticker_info.ticker;
-
-            if let Some(bar) = timeframe_to_okx_bar(*timeframe) {
-                let (symbol, _mt) = ticker.to_full_symbol_and_type();
-                let channel = format!("candle{bar}");
-                args.push(serde_json::json!({
-                    "channel": channel,
-                    "instId": symbol,
-                }));
-                lookup.insert((channel, symbol), (*ticker_info, *timeframe));
-            }
-        }
+        let (symbol_str, market_type) = ticker.to_full_symbol_and_type();
 
         let subscribe_message = serde_json::json!({
             "op": "subscribe",
-            "args": args,
+            "args": [
+                { "channel": "books",  "instId": symbol_str },
+            ],
         });
 
         let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
-        let mut heartbeat_interval = tokio::time::interval(HEARTBEAT_INTERVAL);
-        let mut last_transport_activity = tokio::time::Instant::now();
+        let qty_norm = QtyNormalization::with_raw_qty_unit(
+            size_in_quote_ccy,
+            ticker_info,
+            raw_qty_unit_from_market_type(market_type),
+        );
 
-        loop {
-            match &mut state {
-                State::Disconnected => {
-                    state = try_connect(
-                        &subscribe_message,
-                        &stream_scope,
-                        &mut output,
-                        "business",
-                        proxy_cfg.as_ref(),
-                    )
-                    .await;
+        let control =
+            WsControlConfig::with_text_ping(OKX_PING_PAYLOAD, Some(b"pong"), stream_scope);
 
-                    if matches!(state, State::Connected(_)) {
-                        last_transport_activity = tokio::time::Instant::now();
-                        heartbeat_interval = tokio::time::interval(HEARTBEAT_INTERVAL);
-                    }
-                }
-                State::Connected(ws) => {
-                    tokio::select! {
-                        _ = heartbeat_interval.tick() => {
-                            if last_transport_activity.elapsed() >= HEARTBEAT_TIMEOUT {
-                                state = State::Disconnected;
-                                let _ = output
-                                    .send(Event::Disconnected(
-                                        stream_scope.clone(),
-                                        HEARTBEAT_TIMEOUT_REASON.to_string(),
-                                    ))
-                                    .await;
-                                continue;
-                            }
+        let mut adapter = DepthAdapter {
+            stream,
+            ticker_info,
+            qty_norm,
+            orderbook: LocalDepthCache::default(),
+            subscribe_message: subscribe_message.clone(),
+            proxy_cfg: proxy_cfg.clone(),
+        };
 
-                            if ws
-                                .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
-                                    OKX_PING_PAYLOAD,
-                                )))
-                                .await
-                                .is_err()
-                            {
-                                state = State::Disconnected;
-                                let _ = output
-                                    .send(Event::Disconnected(
-                                        stream_scope.clone(),
-                                        HEARTBEAT_SEND_FAILED_REASON.to_string(),
-                                    ))
-                                    .await;
-                            }
-                        }
-                        frame = ws.read_frame() => match frame {
-                            Ok(msg) => {
-                                last_transport_activity = tokio::time::Instant::now();
-
-                                match msg.opcode {
-                                    OpCode::Text => {
-                                        if &msg.payload[..] == b"pong" {
-                                            continue;
-                                        }
-
-                                        if let Ok(v) = serde_json::from_slice::<Value>(&msg.payload[..]) {
-                                            let channel = v["arg"]["channel"].as_str().unwrap_or("");
-                                            if !channel.starts_with("candle") {
-                                                continue;
-                                            }
-
-                                            let inst = match v["arg"]["instId"].as_str() {
-                                                Some(s) => s,
-                                                None => continue,
-                                            };
-                                            let (ticker_info, timeframe) =
-                                                match lookup.get(&(channel.to_string(), inst.to_string())) {
-                                                    Some(t) => *t,
-                                                    None => continue,
-                                                };
-                                            let qty_norm = QtyNormalization::with_raw_qty_unit(
-                                                size_in_quote_ccy,
-                                                ticker_info,
-                                                raw_qty_unit_from_market_type(market_type),
-                                            );
-
-                                            if let Some(data) = v.get("data").and_then(|d| d.as_array()) {
-                                                for row in data {
-                                                    let time = row.get(0).and_then(serde_util::value_as_u64);
-                                                    let open = row.get(1).and_then(serde_util::value_as_f32);
-                                                    let high = row.get(2).and_then(serde_util::value_as_f32);
-                                                    let low = row.get(3).and_then(serde_util::value_as_f32);
-                                                    let close = row.get(4).and_then(serde_util::value_as_f32);
-                                                    let volume = row.get(5).and_then(serde_util::value_as_f32);
-
-                                                    let (ts, open, high, low, close) =
-                                                        match (time, open, high, low, close) {
-                                                            (
-                                                                Some(ts),
-                                                                Some(open),
-                                                                Some(high),
-                                                                Some(low),
-                                                                Some(close),
-                                                            ) => (ts, open, high, low, close),
-                                                            _ => continue,
-                                                        };
-
-                                                    let volume_in_display = if let Some(vq) = volume {
-                                                        qty_norm.normalize_qty(vq, close)
-                                                    } else {
-                                                        qty_norm.normalize_qty(0.0, close)
-                                                    };
-
-                                                    let kline = Kline::new(
-                                                        ts,
-                                                        open,
-                                                        high,
-                                                        low,
-                                                        close,
-                                                        Volume::TotalOnly(volume_in_display),
-                                                        ticker_info.min_ticksize,
-                                                    );
-                                                    let _ = output
-                                                        .send(Event::KlineReceived(
-                                                            StreamKind::Kline {
-                                                                ticker_info,
-                                                                timeframe,
-                                                            },
-                                                            kline,
-                                                        ))
-                                                        .await;
-                                                }
-                                            }
-                                        }
-                                    }
-                                    OpCode::Ping => {
-                                        if ws.write_frame(Frame::pong(msg.payload)).await.is_err() {
-                                            state = State::Disconnected;
-                                            let _ = output
-                                                .send(Event::Disconnected(
-                                                    stream_scope.clone(),
-                                                    HEARTBEAT_PONG_FAILED_REASON.to_string(),
-                                                ))
-                                                .await;
-                                        }
-                                    }
-                                    OpCode::Close => {
-                                        state = State::Disconnected;
-                                        let _ = output
-                                            .send(Event::Disconnected(
-                                                stream_scope.clone(),
-                                                "Connection closed".to_string(),
-                                            ))
-                                            .await;
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            Err(e) => {
-                                state = State::Disconnected;
-                                let _ = output
-                                    .send(Event::Disconnected(
-                                        stream_scope.clone(),
-                                        "Error reading frame: ".to_string() + &e.to_string(),
-                                    ))
-                                    .await;
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        control.run(&mut adapter, &mut output).await;
     })
 }

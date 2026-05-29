@@ -29,6 +29,8 @@ const WS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub static TLS_CONNECTOR: LazyLock<TlsConnector> = LazyLock::new(tls_connector);
 
+pub type WsTransport = FragmentCollector<TokioIo<Upgraded>>;
+
 fn tls_connector() -> TlsConnector {
     let mut root_store = tokio_rustls::rustls::RootCertStore::empty();
 
@@ -46,11 +48,6 @@ fn tls_connector() -> TlsConnector {
         .with_no_client_auth();
 
     TlsConnector::from(std::sync::Arc::new(config))
-}
-
-pub enum State {
-    Disconnected,
-    Connected(FragmentCollector<TokioIo<Upgraded>>),
 }
 
 struct ChannelStream<T> {
@@ -90,7 +87,7 @@ pub async fn connect_ws(
     domain: &str,
     url: &str,
     proxy_cfg: Option<&super::proxy::Proxy>,
-) -> Result<FragmentCollector<TokioIo<Upgraded>>, AdapterError> {
+) -> Result<WsTransport, AdapterError> {
     let parsed = Url::parse(url).map_err(|e| AdapterError::InvalidRequest(e.to_string()))?;
 
     let url_host = parsed
@@ -181,7 +178,7 @@ async fn upgrade_to_websocket<S>(
     domain: &str,
     stream: S,
     parsed: &Url,
-) -> Result<FragmentCollector<TokioIo<Upgraded>>, AdapterError>
+) -> Result<WsTransport, AdapterError>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {

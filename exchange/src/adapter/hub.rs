@@ -3,6 +3,7 @@ pub mod bybit;
 pub mod hyperliquid;
 pub mod mexc;
 pub mod okex;
+pub mod ws_control;
 
 use crate::adapter::AdapterError;
 use crate::adapter::limiter::RateLimiter;

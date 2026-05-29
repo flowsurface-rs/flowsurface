@@ -15,7 +15,6 @@ pub mod stream;
 const FETCH_DOMAIN: &str = "https://api.mexc.com/api";
 const MEXC_FUTURES_WS_DOMAIN: &str = "contract.mexc.com";
 const MEXC_FUTURES_WS_PATH: &str = "/edge";
-const PING_INTERVAL: u64 = 15;
 const LIMIT: usize = 10;
 const REFILL_RATE: Duration = Duration::from_secs(2);
 const LIMITER_BUFFER_PCT: f32 = 0.0;
