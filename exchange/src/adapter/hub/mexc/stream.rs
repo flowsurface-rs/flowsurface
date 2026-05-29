@@ -1,9 +1,9 @@
 use crate::{
     Event, Kline, Price, PushFrequency, Ticker, TickerInfo, Timeframe, Trade, UnixMs, Volume,
     adapter::{
-        MarketKind, StreamKind, StreamTicksize, TRADE_BUCKET_INTERVAL,
+        MarketKind, StreamKind, StreamTicksize,
         connect::{WsAdapter, WsControlConfig, WsTransport, channel, connect_ws},
-        flush_trade_buffers,
+        hub::TradeBuffer,
     },
     depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
     unit::qty::{QtyNormalization, SizeUnit, volume_size_unit},
@@ -233,10 +233,8 @@ async fn connect_websocket(
 struct TradeAdapter {
     market_type: MarketKind,
     tickers: Vec<TickerInfo>,
-    ticker_info_map: FxHashMap<Ticker, (TickerInfo, QtyNormalization)>,
+    buffer: TradeBuffer,
     proxy_cfg: Option<crate::proxy::Proxy>,
-    trades_buffer_map: FxHashMap<Ticker, Vec<Trade>>,
-    last_flush: tokio::time::Instant,
 }
 
 impl WsAdapter for TradeAdapter {
@@ -273,7 +271,7 @@ impl WsAdapter for TradeAdapter {
     }
 
     async fn on_connected(&mut self, _output: &mut mpsc::Sender<Event>) {
-        self.last_flush = tokio::time::Instant::now();
+        self.buffer.last_flush = tokio::time::Instant::now();
     }
 
     async fn on_text(
@@ -281,50 +279,38 @@ impl WsAdapter for TradeAdapter {
         payload: &[u8],
         output: &mut mpsc::Sender<Event>,
     ) -> Result<(), String> {
-        match feed_de(payload, None, self.market_type) {
-            Ok(data) => match data {
-                StreamData::Trade(ticker, mut de_trades, _) => {
-                    if let Some((ticker_info, qty_norm)) = self.ticker_info_map.get(&ticker) {
-                        let ticker_info = *ticker_info;
+        if let Ok(StreamData::Trade(ticker, mut de_trades, _)) =
+            feed_de(payload, None, self.market_type)
+        {
+            if let Some((ticker_info, qty_norm)) = self.buffer.ticker_info(&ticker) {
+                let ticker_info = *ticker_info;
+                let qty_norm = *qty_norm;
 
-                        de_trades.sort_unstable_by_key(|t| t.time);
-                        let trades_buffer = self.trades_buffer_map.entry(ticker).or_default();
-
-                        for trade in &de_trades {
-                            let price = Price::from_f32(trade.price)
-                                .round_to_min_tick(ticker_info.min_ticksize);
-
-                            trades_buffer.push(Trade {
-                                time: trade.time.into(),
-                                is_sell: trade.direction == 2,
-                                price,
-                                qty: qty_norm.normalize_qty(trade.qty, trade.price),
-                            });
-                        }
-                    } else {
-                        log::error!("Ticker info not found for ticker: {}", ticker);
-                    }
+                de_trades.sort_unstable_by_key(|t| t.time);
+                for trade in &de_trades {
+                    let price =
+                        Price::from_f32(trade.price).round_to_min_tick(ticker_info.min_ticksize);
+                    self.buffer.push(
+                        ticker,
+                        Trade {
+                            time: trade.time.into(),
+                            is_sell: trade.direction == 2,
+                            price,
+                            qty: qty_norm.normalize_qty(trade.qty, trade.price),
+                        },
+                    );
                 }
-                StreamData::Pong(_)
-                | StreamData::Subscription(_)
-                | StreamData::Depth(_, _)
-                | StreamData::Kline(_, _) => {}
-            },
-            Err(e) => {
-                log::error!("Failed to parse MEXC trade message: {}", e);
+            } else {
+                log::error!("Ticker info not found for ticker: {}", ticker);
             }
         }
 
-        if self.last_flush.elapsed() >= TRADE_BUCKET_INTERVAL {
-            flush_trade_buffers(output, &self.ticker_info_map, &mut self.trades_buffer_map).await;
-            self.last_flush = tokio::time::Instant::now();
-        }
-
+        self.buffer.flush_if_ready(output).await;
         Ok(())
     }
 
     async fn on_disconnected(&mut self, _reason: &str, output: &mut mpsc::Sender<Event>) {
-        flush_trade_buffers(output, &self.ticker_info_map, &mut self.trades_buffer_map).await;
+        self.buffer.flush(output).await;
     }
 }
 
@@ -374,10 +360,8 @@ pub fn connect_trade_stream(
         let mut adapter = TradeAdapter {
             market_type,
             tickers,
-            ticker_info_map,
+            buffer: TradeBuffer::new(ticker_info_map),
             proxy_cfg,
-            trades_buffer_map: FxHashMap::default(),
-            last_flush: tokio::time::Instant::now(),
         };
 
         WsControlConfig::with_text_ping(PING_PAYLOAD, Some(b"pong"), stream_scope)
@@ -388,7 +372,6 @@ pub fn connect_trade_stream(
 
 struct DepthAdapter {
     handle: MexcHandle,
-    ticker: Ticker,
     ticker_info: TickerInfo,
     market_type: MarketKind,
     symbol_str: String,
@@ -438,12 +421,14 @@ impl WsAdapter for DepthAdapter {
         payload: &[u8],
         output: &mut mpsc::Sender<Event>,
     ) -> Result<(), String> {
-        match feed_de(payload, Some(self.ticker), self.market_type) {
+        let ticker = self.ticker_info.ticker;
+
+        match feed_de(payload, Some(ticker), self.market_type) {
             Ok(data) => match data {
                 StreamData::Pong(_) => {}
                 StreamData::Subscription(stream_name) => {
                     if stream_name == "depth" {
-                        match self.handle.fetch_depth_snapshot(self.ticker).await {
+                        match self.handle.fetch_depth_snapshot(ticker).await {
                             Ok(snapshot) => {
                                 self.snapshot_time = snapshot.time;
                                 self.snapshot_ready = true;
@@ -537,7 +522,6 @@ pub fn connect_depth_stream(
 
         let mut adapter = DepthAdapter {
             handle,
-            ticker,
             ticker_info,
             market_type,
             symbol_str,

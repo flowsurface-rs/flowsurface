@@ -4,15 +4,21 @@ pub mod hyperliquid;
 pub mod mexc;
 pub mod okex;
 
-use crate::adapter::AdapterError;
 use crate::adapter::limiter::RateLimiter;
+use crate::adapter::{AdapterError, StreamKind};
 use crate::depth::DepthPayload;
-use crate::{Kline, OpenInterest, Ticker, TickerInfo, TickerStats, Timeframe, Trade, UnixMs};
+use crate::unit::qty::QtyNormalization;
+use crate::{
+    Event, Kline, OpenInterest, Ticker, TickerInfo, TickerStats, Timeframe, Trade, UnixMs,
+};
 
+use futures::SinkExt;
 use futures::future::BoxFuture;
 use reqwest::{Client, Method, Response, header};
+use rustc_hash::FxHashMap;
 use serde::de::DeserializeOwned;
 use tokio::sync::{mpsc, oneshot};
+use tokio::time::Instant;
 
 use std::{collections::HashMap, path::PathBuf, time::Duration};
 
@@ -329,7 +335,7 @@ where
     H: FetchCommandHandler<M> + Send + 'static,
     M: Send + 'static,
 {
-    let (sender, mut receiver) = mpsc::channel(COMMAND_BUFFER_CAPACITY);
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(COMMAND_BUFFER_CAPACITY);
     tokio::spawn(async move {
         while let Some(command) = receiver.recv().await {
             handle_fetch_command(&mut worker, command).await;
@@ -423,5 +429,70 @@ impl<C> RequestPort<C> {
         reply_rx
             .await
             .map_err(|_| AdapterError::WebsocketError("Response channel dropped".to_string()))?
+    }
+}
+
+struct TradeBuffer {
+    buffer_map: FxHashMap<Ticker, Vec<Trade>>,
+    ticker_info_map: FxHashMap<Ticker, (TickerInfo, QtyNormalization)>,
+    last_flush: Instant,
+}
+
+impl TradeBuffer {
+    /// Buffer trades and flush in this interval
+    const TRADE_BUCKET_INTERVAL: Duration = Duration::from_micros(33_333);
+
+    fn new(ticker_info_map: FxHashMap<Ticker, (TickerInfo, QtyNormalization)>) -> Self {
+        Self {
+            buffer_map: FxHashMap::default(),
+            ticker_info_map,
+            last_flush: Instant::now(),
+        }
+    }
+
+    fn ticker_info(&self, ticker: &Ticker) -> Option<&(TickerInfo, QtyNormalization)> {
+        self.ticker_info_map.get(ticker)
+    }
+
+    fn push(&mut self, ticker: Ticker, trade: Trade) {
+        self.buffer_map.entry(ticker).or_default().push(trade);
+    }
+
+    async fn flush_if_ready(&mut self, output: &mut futures::channel::mpsc::Sender<Event>) {
+        if self.last_flush.elapsed() >= Self::TRADE_BUCKET_INTERVAL {
+            self.flush(output).await;
+        }
+    }
+
+    async fn flush(&mut self, output: &mut futures::channel::mpsc::Sender<Event>) {
+        let interval_ms = Self::TRADE_BUCKET_INTERVAL.as_millis() as u64;
+
+        for (ticker, trades_buffer) in self.buffer_map.iter_mut() {
+            if trades_buffer.is_empty() {
+                continue;
+            }
+
+            let bucket_update_t = trades_buffer
+                .iter()
+                .map(|t| t.time.as_u64())
+                .max()
+                .map(|t| UnixMs::new((t / interval_ms) * interval_ms));
+
+            if let Some((ticker_info, _)) = self.ticker_info_map.get(ticker)
+                && let Some(update_t) = bucket_update_t
+            {
+                let _ = output
+                    .send(Event::TradesReceived(
+                        StreamKind::Trades {
+                            ticker_info: *ticker_info,
+                        },
+                        update_t,
+                        std::mem::take(trades_buffer).into_boxed_slice(),
+                    ))
+                    .await;
+            }
+        }
+
+        self.last_flush = Instant::now();
     }
 }

@@ -1,8 +1,11 @@
 use crate::{
     Event, Kline, Price, PushFrequency, TickMultiplier, Ticker, TickerInfo, Timeframe, Trade,
     Volume,
-    adapter::connect::{WsAdapter, WsControlConfig, WsTransport, channel, connect_ws},
-    adapter::{MarketKind, StreamKind, StreamTicksize, TRADE_BUCKET_INTERVAL, flush_trade_buffers},
+    adapter::{
+        MarketKind, StreamKind, StreamTicksize,
+        connect::{WsAdapter, WsControlConfig, WsTransport, channel, connect_ws},
+        hub::TradeBuffer,
+    },
     depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
     serde_util::de_string_to_number,
     unit::qty::{QtyNormalization, SizeUnit, volume_size_unit},
@@ -191,152 +194,9 @@ fn parse_websocket_message(payload: &[u8]) -> Result<StreamData, AdapterError> {
     }
 }
 
-struct KlineAdapter {
-    market_type: MarketKind,
-    size_in_quote_ccy: bool,
-    stream_lookup: FxHashMap<(String, String), (TickerInfo, Timeframe)>,
-    subscriptions: Vec<(String, String)>,
-    proxy_cfg: Option<crate::proxy::Proxy>,
-}
-
-impl WsAdapter for KlineAdapter {
-    async fn connect(&mut self) -> Result<WsTransport, String> {
-        let mut websocket = connect_websocket(WS_DOMAIN, "/ws", self.proxy_cfg.as_ref())
-            .await
-            .map_err(|e| format!("Failed to connect to websocket: {e}"))?;
-
-        for (symbol_str, interval) in &self.subscriptions {
-            let subscribe_msg = json!({
-                "method": "subscribe",
-                "subscription": {
-                    "type": "candle",
-                    "coin": symbol_str,
-                    "interval": interval
-                }
-            });
-
-            websocket
-                .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
-                    subscribe_msg.to_string().as_bytes(),
-                )))
-                .await
-                .map_err(|e| format!("Failed subscribing: {e}"))?;
-        }
-
-        Ok(websocket)
-    }
-
-    async fn on_connected(&mut self, _output: &mut mpsc::Sender<Event>) {}
-
-    async fn on_text(
-        &mut self,
-        payload: &[u8],
-        output: &mut mpsc::Sender<Event>,
-    ) -> Result<(), String> {
-        if let Ok(StreamData::Kline(hl_kline)) = parse_websocket_message(payload)
-            && let Some((ticker_info, timeframe)) = self
-                .stream_lookup
-                .get(&(hl_kline.symbol.clone(), hl_kline.interval.clone()))
-        {
-            let qty_norm = QtyNormalization::with_raw_qty_unit(
-                self.size_in_quote_ccy,
-                *ticker_info,
-                raw_qty_unit_from_market_type(self.market_type),
-            );
-            let volume = qty_norm.normalize_qty(hl_kline.volume, hl_kline.close);
-
-            let kline = Kline::new(
-                hl_kline.time,
-                hl_kline.open,
-                hl_kline.high,
-                hl_kline.low,
-                hl_kline.close,
-                Volume::TotalOnly(volume),
-                ticker_info.min_ticksize,
-            );
-
-            let stream_kind = StreamKind::Kline {
-                ticker_info: *ticker_info,
-                timeframe: *timeframe,
-            };
-            let _ = output.send(Event::KlineReceived(stream_kind, kline)).await;
-        }
-
-        Ok(())
-    }
-
-    async fn on_disconnected(&mut self, _reason: &str, _output: &mut mpsc::Sender<Event>) {}
-}
-
-pub fn connect_kline_stream(
-    streams: Vec<(TickerInfo, Timeframe)>,
-    market_type: MarketKind,
-    proxy_cfg: Option<crate::proxy::Proxy>,
-) -> impl Stream<Item = Event> {
-    channel(100, move |mut output| async move {
-        let stream_scope: Arc<[StreamKind]> = Arc::from(
-            streams
-                .iter()
-                .map(|(ticker_info, timeframe)| StreamKind::Kline {
-                    ticker_info: *ticker_info,
-                    timeframe: *timeframe,
-                })
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
-        );
-
-        if streams.is_empty() {
-            let _ = output
-                .send(Event::Disconnected(
-                    stream_scope,
-                    "Empty Hyperliquid kline stream payload".to_string(),
-                ))
-                .await;
-            return;
-        }
-
-        let control = WsControlConfig::with_text_ping(HYPERLIQUID_PING_PAYLOAD, None, stream_scope);
-
-        let stream_lookup = streams
-            .iter()
-            .map(|(ticker_info, timeframe)| {
-                (
-                    (
-                        ticker_info.ticker.to_full_symbol_and_type().0,
-                        timeframe.to_string(),
-                    ),
-                    (*ticker_info, *timeframe),
-                )
-            })
-            .collect();
-
-        let subscriptions = streams
-            .iter()
-            .map(|(ticker_info, timeframe)| {
-                (
-                    ticker_info.ticker.to_full_symbol_and_type().0,
-                    timeframe.to_string(),
-                )
-            })
-            .collect();
-
-        let mut adapter = KlineAdapter {
-            market_type,
-            size_in_quote_ccy: volume_size_unit() == SizeUnit::Quote,
-            stream_lookup,
-            subscriptions,
-            proxy_cfg: proxy_cfg.clone(),
-        };
-
-        control.run(&mut adapter, &mut output).await;
-    })
-}
-
 struct TradeAdapter {
-    ticker_info_map: FxHashMap<Ticker, (TickerInfo, QtyNormalization)>,
     symbol_to_ticker: FxHashMap<String, Ticker>,
-    trades_buffer_map: FxHashMap<Ticker, Vec<Trade>>,
-    last_flush: tokio::time::Instant,
+    buffer: TradeBuffer,
     subscription_coins: Vec<String>,
     proxy_cfg: Option<crate::proxy::Proxy>,
 }
@@ -368,7 +228,7 @@ impl WsAdapter for TradeAdapter {
     }
 
     async fn on_connected(&mut self, _output: &mut mpsc::Sender<Event>) {
-        self.last_flush = tokio::time::Instant::now();
+        self.buffer.last_flush = tokio::time::Instant::now();
     }
 
     async fn on_text(
@@ -379,22 +239,21 @@ impl WsAdapter for TradeAdapter {
         if let Ok(StreamData::Trade(trades)) = parse_websocket_message(payload) {
             for hl_trade in trades {
                 if let Some(ticker) = self.symbol_to_ticker.get(&hl_trade.coin)
-                    && let Some((ticker_info, qty_norm)) = self.ticker_info_map.get(ticker)
+                    && let Some((ticker_info, qty_norm)) = self.buffer.ticker_info(ticker)
                 {
                     let ticker_info = *ticker_info;
+                    let qty_norm = *qty_norm;
                     let price =
                         Price::from_f32(hl_trade.px).round_to_min_tick(ticker_info.min_ticksize);
-
-                    let trade = Trade {
-                        time: hl_trade.time.into(),
-                        is_sell: hl_trade.side == "A",
-                        price,
-                        qty: qty_norm.normalize_qty(hl_trade.sz, hl_trade.px),
-                    };
-                    self.trades_buffer_map
-                        .entry(*ticker)
-                        .or_default()
-                        .push(trade);
+                    self.buffer.push(
+                        *ticker,
+                        Trade {
+                            time: hl_trade.time.into(),
+                            is_sell: hl_trade.side == "A",
+                            price,
+                            qty: qty_norm.normalize_qty(hl_trade.sz, hl_trade.px),
+                        },
+                    );
                 } else {
                     log::error!(
                         "Ticker info not found for Hyperliquid coin: {}",
@@ -404,16 +263,12 @@ impl WsAdapter for TradeAdapter {
             }
         }
 
-        if self.last_flush.elapsed() >= TRADE_BUCKET_INTERVAL {
-            flush_trade_buffers(output, &self.ticker_info_map, &mut self.trades_buffer_map).await;
-            self.last_flush = tokio::time::Instant::now();
-        }
-
+        self.buffer.flush_if_ready(output).await;
         Ok(())
     }
 
     async fn on_disconnected(&mut self, _reason: &str, output: &mut mpsc::Sender<Event>) {
-        flush_trade_buffers(output, &self.ticker_info_map, &mut self.trades_buffer_map).await;
+        self.buffer.flush(output).await;
     }
 }
 
@@ -476,10 +331,8 @@ pub fn connect_trade_stream(
             .collect();
 
         let mut adapter = TradeAdapter {
-            ticker_info_map,
             symbol_to_ticker,
-            trades_buffer_map: FxHashMap::default(),
-            last_flush: tokio::time::Instant::now(),
+            buffer: TradeBuffer::new(ticker_info_map),
             subscription_coins,
             proxy_cfg: proxy_cfg.clone(),
         };
@@ -492,7 +345,6 @@ struct DepthAdapter {
     handle: HyperliquidHandle,
     stream: StreamKind,
     ticker_info: TickerInfo,
-    ticker: Ticker,
     symbol_str: String,
     qty_norm: QtyNormalization,
     user_multiplier: u16,
@@ -505,7 +357,7 @@ impl WsAdapter for DepthAdapter {
     async fn connect(&mut self) -> Result<WsTransport, String> {
         let snapshot = self
             .handle
-            .fetch_depth_snapshot(self.ticker)
+            .fetch_depth_snapshot(self.ticker_info.ticker)
             .await
             .map_err(|e| format!("Failed to fetch depth snapshot: {e}"))?;
 
@@ -651,12 +503,152 @@ pub fn connect_depth_stream(
             handle,
             stream,
             ticker_info,
-            ticker,
             symbol_str,
             qty_norm,
             user_multiplier,
             local_depth_cache: LocalDepthCache::default(),
             pending_snapshot_emit_ms: None,
+            proxy_cfg: proxy_cfg.clone(),
+        };
+
+        control.run(&mut adapter, &mut output).await;
+    })
+}
+
+struct KlineAdapter {
+    market_type: MarketKind,
+    size_in_quote_ccy: bool,
+    stream_lookup: FxHashMap<(String, String), (TickerInfo, Timeframe)>,
+    subscriptions: Vec<(String, String)>,
+    proxy_cfg: Option<crate::proxy::Proxy>,
+}
+
+impl WsAdapter for KlineAdapter {
+    async fn connect(&mut self) -> Result<WsTransport, String> {
+        let mut websocket = connect_websocket(WS_DOMAIN, "/ws", self.proxy_cfg.as_ref())
+            .await
+            .map_err(|e| format!("Failed to connect to websocket: {e}"))?;
+
+        for (symbol_str, interval) in &self.subscriptions {
+            let subscribe_msg = json!({
+                "method": "subscribe",
+                "subscription": {
+                    "type": "candle",
+                    "coin": symbol_str,
+                    "interval": interval
+                }
+            });
+
+            websocket
+                .write_frame(Frame::text(fastwebsockets::Payload::Borrowed(
+                    subscribe_msg.to_string().as_bytes(),
+                )))
+                .await
+                .map_err(|e| format!("Failed subscribing: {e}"))?;
+        }
+
+        Ok(websocket)
+    }
+
+    async fn on_connected(&mut self, _output: &mut mpsc::Sender<Event>) {}
+
+    async fn on_text(
+        &mut self,
+        payload: &[u8],
+        output: &mut mpsc::Sender<Event>,
+    ) -> Result<(), String> {
+        if let Ok(StreamData::Kline(hl_kline)) = parse_websocket_message(payload)
+            && let Some((ticker_info, timeframe)) = self
+                .stream_lookup
+                .get(&(hl_kline.symbol.clone(), hl_kline.interval.clone()))
+        {
+            let qty_norm = QtyNormalization::with_raw_qty_unit(
+                self.size_in_quote_ccy,
+                *ticker_info,
+                raw_qty_unit_from_market_type(self.market_type),
+            );
+            let volume = qty_norm.normalize_qty(hl_kline.volume, hl_kline.close);
+
+            let kline = Kline::new(
+                hl_kline.time,
+                hl_kline.open,
+                hl_kline.high,
+                hl_kline.low,
+                hl_kline.close,
+                Volume::TotalOnly(volume),
+                ticker_info.min_ticksize,
+            );
+
+            let stream_kind = StreamKind::Kline {
+                ticker_info: *ticker_info,
+                timeframe: *timeframe,
+            };
+            let _ = output.send(Event::KlineReceived(stream_kind, kline)).await;
+        }
+
+        Ok(())
+    }
+
+    async fn on_disconnected(&mut self, _reason: &str, _output: &mut mpsc::Sender<Event>) {}
+}
+
+pub fn connect_kline_stream(
+    streams: Vec<(TickerInfo, Timeframe)>,
+    market_type: MarketKind,
+    proxy_cfg: Option<crate::proxy::Proxy>,
+) -> impl Stream<Item = Event> {
+    channel(100, move |mut output| async move {
+        let stream_scope: Arc<[StreamKind]> = Arc::from(
+            streams
+                .iter()
+                .map(|(ticker_info, timeframe)| StreamKind::Kline {
+                    ticker_info: *ticker_info,
+                    timeframe: *timeframe,
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        );
+
+        if streams.is_empty() {
+            let _ = output
+                .send(Event::Disconnected(
+                    stream_scope,
+                    "Empty Hyperliquid kline stream payload".to_string(),
+                ))
+                .await;
+            return;
+        }
+
+        let control = WsControlConfig::with_text_ping(HYPERLIQUID_PING_PAYLOAD, None, stream_scope);
+
+        let stream_lookup = streams
+            .iter()
+            .map(|(ticker_info, timeframe)| {
+                (
+                    (
+                        ticker_info.ticker.to_full_symbol_and_type().0,
+                        timeframe.to_string(),
+                    ),
+                    (*ticker_info, *timeframe),
+                )
+            })
+            .collect();
+
+        let subscriptions = streams
+            .iter()
+            .map(|(ticker_info, timeframe)| {
+                (
+                    ticker_info.ticker.to_full_symbol_and_type().0,
+                    timeframe.to_string(),
+                )
+            })
+            .collect();
+
+        let mut adapter = KlineAdapter {
+            market_type,
+            size_in_quote_ccy: volume_size_unit() == SizeUnit::Quote,
+            stream_lookup,
+            subscriptions,
             proxy_cfg: proxy_cfg.clone(),
         };
 

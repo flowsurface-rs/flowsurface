@@ -1,12 +1,12 @@
 use crate::{
     Event, Kline, Price, PushFrequency, Ticker, TickerInfo, Trade, Volume,
     adapter::{
-        MarketKind, StreamKind, StreamTicksize, TRADE_BUCKET_INTERVAL,
+        MarketKind, StreamKind, StreamTicksize,
         connect::{
             ConnectedEventMode, WsAdapter, WsControlConfig, WsTransport, channel, connect_ws,
             emit_connected,
         },
-        flush_trade_buffers,
+        hub::TradeBuffer,
     },
     depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
     serde_util::de_string_to_number,
@@ -16,7 +16,6 @@ use crate::{
 use super::{BinanceHandle, exchange_from_market_type, raw_qty_unit_from_market_type};
 use crate::adapter::hub::AdapterError;
 use futures::{SinkExt, Stream, channel::mpsc};
-use rustc_hash::FxHashMap;
 use serde::Deserialize;
 use sonic_rs::{JsonValueTrait, to_object_iter_unchecked};
 use std::{
@@ -514,6 +513,249 @@ fn feed_de(slice: &[u8], market: MarketKind) -> Result<StreamData, AdapterError>
     ))
 }
 
+struct TradeAdapter {
+    market: MarketKind,
+    buffer: TradeBuffer,
+    stream: String,
+    proxy_cfg: Option<crate::proxy::Proxy>,
+}
+
+impl WsAdapter for TradeAdapter {
+    async fn connect(&mut self) -> Result<WsTransport, String> {
+        connect_stream_socket(
+            self.market,
+            WsTrafficKind::Market,
+            &self.stream,
+            self.proxy_cfg.as_ref(),
+        )
+        .await
+    }
+
+    async fn on_connected(&mut self, _output: &mut mpsc::Sender<Event>) {
+        self.buffer.last_flush = tokio::time::Instant::now();
+    }
+
+    async fn on_text(
+        &mut self,
+        payload: &[u8],
+        output: &mut mpsc::Sender<Event>,
+    ) -> Result<(), String> {
+        if let Ok(StreamData::Trade(ticker, de_trade)) = feed_de(payload, self.market) {
+            if let Some((ticker_info, qty_norm)) = self.buffer.ticker_info_map.get(&ticker) {
+                let ticker_info = *ticker_info;
+                let price =
+                    Price::from_f32(de_trade.price).round_to_min_tick(ticker_info.min_ticksize);
+
+                let trade = Trade {
+                    time: de_trade.time.into(),
+                    is_sell: de_trade.is_sell,
+                    price,
+                    qty: qty_norm.normalize_qty(de_trade.qty, de_trade.price),
+                };
+
+                self.buffer.push(ticker, trade);
+            } else {
+                log::error!("Ticker info not found for ticker: {ticker}");
+                return Err("Received trade for unknown ticker".to_string());
+            }
+        }
+
+        self.buffer.flush_if_ready(output).await;
+        Ok(())
+    }
+
+    async fn on_disconnected(&mut self, _reason: &str, output: &mut mpsc::Sender<Event>) {
+        self.buffer.flush(output).await;
+    }
+}
+
+pub fn connect_trade_stream(
+    tickers: Vec<TickerInfo>,
+    market: MarketKind,
+    proxy_cfg: Option<crate::proxy::Proxy>,
+) -> impl Stream<Item = Event> {
+    channel(100, move |mut output| async move {
+        let stream_scope: Arc<[StreamKind]> = Arc::from(
+            tickers
+                .iter()
+                .map(|ticker_info| StreamKind::Trades {
+                    ticker_info: *ticker_info,
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        );
+
+        if tickers.is_empty() {
+            let _ = output
+                .send(Event::Disconnected(
+                    stream_scope,
+                    "Empty Binance trade stream payload".to_string(),
+                ))
+                .await;
+            return;
+        }
+
+        let stream = tickers
+            .iter()
+            .map(|ticker_info| {
+                format!(
+                    "{}@aggTrade",
+                    ticker_info
+                        .ticker
+                        .to_full_symbol_and_type()
+                        .0
+                        .to_lowercase()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("/");
+
+        let ticker_info_map = tickers
+            .iter()
+            .map(|ticker_info| {
+                (
+                    ticker_info.ticker,
+                    (
+                        *ticker_info,
+                        QtyNormalization::with_raw_qty_unit(
+                            volume_size_unit() == SizeUnit::Quote,
+                            *ticker_info,
+                            raw_qty_unit_from_market_type(market),
+                        ),
+                    ),
+                )
+            })
+            .collect();
+
+        let control =
+            WsControlConfig::with_opcode_ping(BINANCE_OPCODE_PING_PAYLOAD, None, stream_scope);
+
+        let mut adapter = TradeAdapter {
+            market,
+            buffer: TradeBuffer::new(ticker_info_map),
+            stream: stream.clone(),
+            proxy_cfg: proxy_cfg.clone(),
+        };
+
+        control.run(&mut adapter, &mut output).await;
+    })
+}
+
+struct DepthAdapter {
+    handle: BinanceHandle,
+    market: MarketKind,
+    ticker_info: TickerInfo,
+    qty_norm: QtyNormalization,
+    stream: StreamKind,
+    stream_scope: Arc<[StreamKind]>,
+    ws_stream: String,
+    proxy_cfg: Option<crate::proxy::Proxy>,
+    sync_machine: DepthSyncMachine,
+    connected_sent: bool,
+}
+
+impl WsAdapter for DepthAdapter {
+    async fn connect(&mut self) -> Result<WsTransport, String> {
+        let websocket = connect_stream_socket(
+            self.market,
+            WsTrafficKind::Public,
+            &self.ws_stream,
+            self.proxy_cfg.as_ref(),
+        )
+        .await?;
+
+        self.sync_machine = DepthSyncMachine::new(self.handle.clone(), self.ticker_info.ticker);
+        self.connected_sent = false;
+
+        Ok(websocket)
+    }
+
+    async fn on_connected(&mut self, _output: &mut mpsc::Sender<Event>) {}
+
+    async fn on_text(
+        &mut self,
+        payload: &[u8],
+        output: &mut mpsc::Sender<Event>,
+    ) -> Result<(), String> {
+        self.sync_machine
+            .poll_snapshot_if_ready(self.ticker_info, self.qty_norm)?;
+
+        if let Ok(StreamData::Depth(depth_type)) = feed_de(payload, self.market)
+            && let Some(time) = self.sync_machine.handle_depth_update(
+                depth_type,
+                self.ticker_info,
+                self.qty_norm,
+            )?
+        {
+            if !self.connected_sent {
+                self.connected_sent = true;
+                emit_connected(output, &self.stream_scope).await;
+            }
+
+            let _ = output
+                .send(Event::DepthReceived(
+                    self.stream,
+                    time.into(),
+                    self.sync_machine.current.depth.clone(),
+                ))
+                .await;
+        }
+
+        Ok(())
+    }
+
+    async fn on_disconnected(&mut self, _reason: &str, _output: &mut mpsc::Sender<Event>) {}
+}
+
+pub fn connect_depth_stream(
+    handle: BinanceHandle,
+    ticker_info: TickerInfo,
+    depth_aggr: StreamTicksize,
+    push_freq: PushFrequency,
+    proxy_cfg: Option<crate::proxy::Proxy>,
+) -> impl Stream<Item = Event> {
+    channel(100, move |mut output| async move {
+        let stream = StreamKind::Depth {
+            ticker_info,
+            depth_aggr,
+            push_freq,
+        };
+        let stream_scope: Arc<[StreamKind]> = Arc::from(vec![stream].into_boxed_slice());
+        let ticker = ticker_info.ticker;
+        let (symbol_str, market) = ticker.to_full_symbol_and_type();
+
+        let qty_norm = QtyNormalization::with_raw_qty_unit(
+            volume_size_unit() == SizeUnit::Quote,
+            ticker_info,
+            raw_qty_unit_from_market_type(market),
+        );
+
+        let ws_stream = format!("{}@depth@100ms", symbol_str.to_lowercase());
+
+        let control = WsControlConfig::with_opcode_ping(
+            BINANCE_OPCODE_PING_PAYLOAD,
+            None,
+            stream_scope.clone(),
+        )
+        .with_connected_event_mode(ConnectedEventMode::AdapterManaged);
+
+        let mut adapter = DepthAdapter {
+            handle: handle.clone(),
+            market,
+            ticker_info,
+            qty_norm,
+            stream,
+            stream_scope: stream_scope.clone(),
+            ws_stream: ws_stream.clone(),
+            proxy_cfg,
+            sync_machine: DepthSyncMachine::new(handle, ticker),
+            connected_sent: false,
+        };
+
+        control.run(&mut adapter, &mut output).await;
+    })
+}
+
 struct KlineAdapter {
     market: MarketKind,
     ticker_info_map: HashMap<Ticker, (TickerInfo, QtyNormalization)>,
@@ -656,262 +898,6 @@ pub fn connect_kline_stream(
             timeframe_by_interval,
             stream_str: stream_str.clone(),
             proxy_cfg: proxy_cfg.clone(),
-        };
-
-        control.run(&mut adapter, &mut output).await;
-    })
-}
-
-struct TradeAdapter {
-    market: MarketKind,
-    ticker_info_map: FxHashMap<Ticker, (TickerInfo, QtyNormalization)>,
-    trades_buffer_map: FxHashMap<Ticker, Vec<Trade>>,
-    last_flush: tokio::time::Instant,
-    stream: String,
-    proxy_cfg: Option<crate::proxy::Proxy>,
-}
-
-impl WsAdapter for TradeAdapter {
-    async fn connect(&mut self) -> Result<WsTransport, String> {
-        connect_stream_socket(
-            self.market,
-            WsTrafficKind::Market,
-            &self.stream,
-            self.proxy_cfg.as_ref(),
-        )
-        .await
-    }
-
-    async fn on_connected(&mut self, _output: &mut mpsc::Sender<Event>) {
-        self.last_flush = tokio::time::Instant::now();
-    }
-
-    async fn on_text(
-        &mut self,
-        payload: &[u8],
-        output: &mut mpsc::Sender<Event>,
-    ) -> Result<(), String> {
-        if let Ok(StreamData::Trade(ticker, de_trade)) = feed_de(payload, self.market) {
-            if let Some((ticker_info, qty_norm)) = self.ticker_info_map.get(&ticker) {
-                let ticker_info = *ticker_info;
-                let price =
-                    Price::from_f32(de_trade.price).round_to_min_tick(ticker_info.min_ticksize);
-
-                let trade = Trade {
-                    time: de_trade.time.into(),
-                    is_sell: de_trade.is_sell,
-                    price,
-                    qty: qty_norm.normalize_qty(de_trade.qty, de_trade.price),
-                };
-
-                self.trades_buffer_map
-                    .entry(ticker)
-                    .or_default()
-                    .push(trade);
-            } else {
-                log::error!("Ticker info not found for ticker: {ticker}");
-                return Err("Received trade for unknown ticker".to_string());
-            }
-        }
-
-        if self.last_flush.elapsed() >= TRADE_BUCKET_INTERVAL {
-            flush_trade_buffers(output, &self.ticker_info_map, &mut self.trades_buffer_map).await;
-            self.last_flush = tokio::time::Instant::now();
-        }
-
-        Ok(())
-    }
-
-    async fn on_disconnected(&mut self, _reason: &str, output: &mut mpsc::Sender<Event>) {
-        flush_trade_buffers(output, &self.ticker_info_map, &mut self.trades_buffer_map).await;
-    }
-}
-
-pub fn connect_trade_stream(
-    tickers: Vec<TickerInfo>,
-    market: MarketKind,
-    proxy_cfg: Option<crate::proxy::Proxy>,
-) -> impl Stream<Item = Event> {
-    channel(100, move |mut output| async move {
-        let stream_scope: Arc<[StreamKind]> = Arc::from(
-            tickers
-                .iter()
-                .map(|ticker_info| StreamKind::Trades {
-                    ticker_info: *ticker_info,
-                })
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
-        );
-
-        if tickers.is_empty() {
-            let _ = output
-                .send(Event::Disconnected(
-                    stream_scope,
-                    "Empty Binance trade stream payload".to_string(),
-                ))
-                .await;
-            return;
-        }
-
-        let stream = tickers
-            .iter()
-            .map(|ticker_info| {
-                format!(
-                    "{}@aggTrade",
-                    ticker_info
-                        .ticker
-                        .to_full_symbol_and_type()
-                        .0
-                        .to_lowercase()
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("/");
-
-        let ticker_info_map = tickers
-            .iter()
-            .map(|ticker_info| {
-                (
-                    ticker_info.ticker,
-                    (
-                        *ticker_info,
-                        QtyNormalization::with_raw_qty_unit(
-                            volume_size_unit() == SizeUnit::Quote,
-                            *ticker_info,
-                            raw_qty_unit_from_market_type(market),
-                        ),
-                    ),
-                )
-            })
-            .collect();
-
-        let control =
-            WsControlConfig::with_opcode_ping(BINANCE_OPCODE_PING_PAYLOAD, None, stream_scope);
-
-        let mut adapter = TradeAdapter {
-            market,
-            ticker_info_map,
-            trades_buffer_map: FxHashMap::default(),
-            last_flush: tokio::time::Instant::now(),
-            stream: stream.clone(),
-            proxy_cfg: proxy_cfg.clone(),
-        };
-
-        control.run(&mut adapter, &mut output).await;
-    })
-}
-
-struct DepthAdapter {
-    handle: BinanceHandle,
-    ticker: Ticker,
-    market: MarketKind,
-    ticker_info: TickerInfo,
-    qty_norm: QtyNormalization,
-    stream: StreamKind,
-    stream_scope: Arc<[StreamKind]>,
-    ws_stream: String,
-    proxy_cfg: Option<crate::proxy::Proxy>,
-    sync_machine: DepthSyncMachine,
-    connected_sent: bool,
-}
-
-impl WsAdapter for DepthAdapter {
-    async fn connect(&mut self) -> Result<WsTransport, String> {
-        let websocket = connect_stream_socket(
-            self.market,
-            WsTrafficKind::Public,
-            &self.ws_stream,
-            self.proxy_cfg.as_ref(),
-        )
-        .await?;
-
-        self.sync_machine = DepthSyncMachine::new(self.handle.clone(), self.ticker);
-        self.connected_sent = false;
-
-        Ok(websocket)
-    }
-
-    async fn on_connected(&mut self, _output: &mut mpsc::Sender<Event>) {}
-
-    async fn on_text(
-        &mut self,
-        payload: &[u8],
-        output: &mut mpsc::Sender<Event>,
-    ) -> Result<(), String> {
-        self.sync_machine
-            .poll_snapshot_if_ready(self.ticker_info, self.qty_norm)?;
-
-        if let Ok(StreamData::Depth(depth_type)) = feed_de(payload, self.market)
-            && let Some(time) = self.sync_machine.handle_depth_update(
-                depth_type,
-                self.ticker_info,
-                self.qty_norm,
-            )?
-        {
-            if !self.connected_sent {
-                self.connected_sent = true;
-                emit_connected(output, &self.stream_scope).await;
-            }
-
-            let _ = output
-                .send(Event::DepthReceived(
-                    self.stream,
-                    time.into(),
-                    self.sync_machine.current.depth.clone(),
-                ))
-                .await;
-        }
-
-        Ok(())
-    }
-
-    async fn on_disconnected(&mut self, _reason: &str, _output: &mut mpsc::Sender<Event>) {}
-}
-
-pub fn connect_depth_stream(
-    handle: BinanceHandle,
-    ticker_info: TickerInfo,
-    depth_aggr: StreamTicksize,
-    push_freq: PushFrequency,
-    proxy_cfg: Option<crate::proxy::Proxy>,
-) -> impl Stream<Item = Event> {
-    channel(100, move |mut output| async move {
-        let stream = StreamKind::Depth {
-            ticker_info,
-            depth_aggr,
-            push_freq,
-        };
-        let stream_scope: Arc<[StreamKind]> = Arc::from(vec![stream].into_boxed_slice());
-        let ticker = ticker_info.ticker;
-        let (symbol_str, market) = ticker.to_full_symbol_and_type();
-
-        let qty_norm = QtyNormalization::with_raw_qty_unit(
-            volume_size_unit() == SizeUnit::Quote,
-            ticker_info,
-            raw_qty_unit_from_market_type(market),
-        );
-
-        let ws_stream = format!("{}@depth@100ms", symbol_str.to_lowercase());
-
-        let control = WsControlConfig::with_opcode_ping(
-            BINANCE_OPCODE_PING_PAYLOAD,
-            None,
-            stream_scope.clone(),
-        )
-        .with_connected_event_mode(ConnectedEventMode::AdapterManaged);
-
-        let mut adapter = DepthAdapter {
-            handle: handle.clone(),
-            ticker,
-            market,
-            ticker_info,
-            qty_norm,
-            stream,
-            stream_scope: stream_scope.clone(),
-            ws_stream: ws_stream.clone(),
-            proxy_cfg,
-            sync_machine: DepthSyncMachine::new(handle, ticker),
-            connected_sent: false,
         };
 
         control.run(&mut adapter, &mut output).await;

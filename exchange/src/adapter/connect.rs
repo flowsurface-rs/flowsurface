@@ -268,7 +268,6 @@ impl PingPayload {
 }
 
 #[derive(Clone, Copy, Debug)]
-#[allow(dead_code)]
 pub enum ConnectedEventMode {
     Immediate,
     AdapterManaged,
@@ -357,7 +356,6 @@ impl WsControlConfig {
                         tokio::time::sleep(self.reconnect_delay).await;
                     }
                 },
-
                 WsState::Connected(websocket) => {
                     let disconnect_reason = tokio::select! {
                         _ = heartbeat.interval_mut().tick() => {
@@ -458,7 +456,7 @@ pub async fn emit_connected(output: &mut mpsc::Sender<Event>, stream_scope: &Arc
     let _ = output.send(Event::Connected(stream_scope.clone())).await;
 }
 
-pub async fn emit_disconnected(
+async fn emit_disconnected(
     output: &mut mpsc::Sender<Event>,
     stream_scope: &Arc<[StreamKind]>,
     reason: impl Into<String>,
