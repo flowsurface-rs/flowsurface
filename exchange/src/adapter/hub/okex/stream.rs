@@ -2,7 +2,7 @@ use crate::{
     Event, Kline, Price, PushFrequency, Ticker, TickerInfo, Timeframe, Trade, Volume,
     adapter::{
         MarketKind, StreamKind, StreamTicksize,
-        connect::{WsAdapter, WsControlConfig, WsTransport, channel, connect_ws},
+        connect::{WsAdapter, WsSession, WsTransport, channel, connect_ws},
         hub::TradeBuffer,
     },
     depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
@@ -269,8 +269,7 @@ pub fn connect_trade_stream(
             })
             .collect::<FxHashMap<String, Ticker>>();
 
-        let control =
-            WsControlConfig::with_text_ping(OKX_PING_PAYLOAD, Some(b"pong"), stream_scope);
+        let control = WsSession::with_text_ping(OKX_PING_PAYLOAD, Some(b"pong"), stream_scope);
 
         let mut adapter = TradeAdapter {
             symbol_to_ticker,
@@ -388,8 +387,7 @@ pub fn connect_depth_stream(
             raw_qty_unit_from_market_type(market_type),
         );
 
-        let control =
-            WsControlConfig::with_text_ping(OKX_PING_PAYLOAD, Some(b"pong"), stream_scope);
+        let control = WsSession::with_text_ping(OKX_PING_PAYLOAD, Some(b"pong"), stream_scope);
 
         let mut adapter = DepthAdapter {
             stream,
@@ -546,8 +544,7 @@ pub fn connect_kline_stream(
         let lookup = Arc::new(lookup);
         let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
 
-        let control =
-            WsControlConfig::with_text_ping(OKX_PING_PAYLOAD, Some(b"pong"), stream_scope);
+        let control = WsSession::with_text_ping(OKX_PING_PAYLOAD, Some(b"pong"), stream_scope);
 
         let mut adapter = KlineAdapter {
             subscribe_message: subscribe_message.clone(),

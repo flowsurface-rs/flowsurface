@@ -3,7 +3,7 @@ use crate::{
     adapter::{
         MarketKind, StreamKind, StreamTicksize,
         connect::{
-            ConnectedEventMode, WsAdapter, WsControlConfig, WsTransport, channel, connect_ws,
+            ConnectedEventMode, WsAdapter, WsSession, WsTransport, channel, connect_ws,
             emit_connected,
         },
         hub::TradeBuffer,
@@ -627,8 +627,7 @@ pub fn connect_trade_stream(
             })
             .collect();
 
-        let control =
-            WsControlConfig::with_opcode_ping(BINANCE_OPCODE_PING_PAYLOAD, None, stream_scope);
+        let control = WsSession::with_opcode_ping(BINANCE_OPCODE_PING_PAYLOAD, None, stream_scope);
 
         let mut adapter = TradeAdapter {
             market,
@@ -732,12 +731,9 @@ pub fn connect_depth_stream(
 
         let ws_stream = format!("{}@depth@100ms", symbol_str.to_lowercase());
 
-        let control = WsControlConfig::with_opcode_ping(
-            BINANCE_OPCODE_PING_PAYLOAD,
-            None,
-            stream_scope.clone(),
-        )
-        .with_connected_event_mode(ConnectedEventMode::AdapterManaged);
+        let control =
+            WsSession::with_opcode_ping(BINANCE_OPCODE_PING_PAYLOAD, None, stream_scope.clone())
+                .with_connected_event_mode(ConnectedEventMode::AdapterManaged);
 
         let mut adapter = DepthAdapter {
             handle: handle.clone(),
@@ -889,8 +885,7 @@ pub fn connect_kline_stream(
             .map(|(_, timeframe)| (timeframe.to_string(), *timeframe))
             .collect();
 
-        let control =
-            WsControlConfig::with_opcode_ping(BINANCE_OPCODE_PING_PAYLOAD, None, stream_scope);
+        let control = WsSession::with_opcode_ping(BINANCE_OPCODE_PING_PAYLOAD, None, stream_scope);
 
         let mut adapter = KlineAdapter {
             market,

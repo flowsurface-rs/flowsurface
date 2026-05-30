@@ -3,7 +3,7 @@ use crate::{
     Volume,
     adapter::{
         MarketKind, StreamKind, StreamTicksize,
-        connect::{WsAdapter, WsControlConfig, WsTransport, channel, connect_ws},
+        connect::{WsAdapter, WsSession, WsTransport, channel, connect_ws},
         hub::TradeBuffer,
     },
     depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
@@ -298,7 +298,7 @@ pub fn connect_trade_stream(
             return;
         }
 
-        let control = WsControlConfig::with_text_ping(HYPERLIQUID_PING_PAYLOAD, None, stream_scope);
+        let control = WsSession::with_text_ping(HYPERLIQUID_PING_PAYLOAD, None, stream_scope);
 
         let ticker_info_map = tickers
             .iter()
@@ -497,7 +497,7 @@ pub fn connect_depth_stream(
 
         let (symbol_str, _) = ticker.to_full_symbol_and_type();
 
-        let control = WsControlConfig::with_text_ping(HYPERLIQUID_PING_PAYLOAD, None, stream_scope);
+        let control = WsSession::with_text_ping(HYPERLIQUID_PING_PAYLOAD, None, stream_scope);
 
         let mut adapter = DepthAdapter {
             handle,
@@ -619,7 +619,7 @@ pub fn connect_kline_stream(
             return;
         }
 
-        let control = WsControlConfig::with_text_ping(HYPERLIQUID_PING_PAYLOAD, None, stream_scope);
+        let control = WsSession::with_text_ping(HYPERLIQUID_PING_PAYLOAD, None, stream_scope);
 
         let stream_lookup = streams
             .iter()

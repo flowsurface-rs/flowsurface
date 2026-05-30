@@ -2,7 +2,7 @@ use crate::error::AdapterError;
 
 use crate::{Event, adapter::StreamKind};
 use bytes::Bytes;
-use fastwebsockets::FragmentCollector;
+use fastwebsockets::{FragmentCollector, WebSocketError};
 use futures::{Stream as FuturesStream, channel::mpsc};
 use http_body_util::Empty;
 use hyper::{
@@ -29,11 +29,11 @@ use futures::SinkExt;
 use std::sync::Arc;
 use tokio::time::{Instant, Interval};
 
-pub const DEFAULT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
-pub const DEFAULT_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(45);
-pub const DEFAULT_RECONNECT_DELAY: Duration = Duration::from_secs(1);
-pub const HEARTBEAT_SEND_FAILED_REASON: &str = "Failed to send heartbeat ping";
-pub const HEARTBEAT_PONG_FAILED_REASON: &str = "Failed to reply pong";
+const DEFAULT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
+const DEFAULT_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(45);
+const DEFAULT_RECONNECT_DELAY: Duration = Duration::from_secs(1);
+const HEARTBEAT_SEND_FAILED_REASON: &str = "Failed to send heartbeat ping";
+const HEARTBEAT_PONG_FAILED_REASON: &str = "Failed to reply pong";
 
 const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -41,7 +41,40 @@ const WS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub static TLS_CONNECTOR: LazyLock<TlsConnector> = LazyLock::new(tls_connector);
 
-pub type WsTransport = FragmentCollector<TokioIo<Upgraded>>;
+pub struct WsTransport(FragmentCollector<TokioIo<Upgraded>>);
+
+impl WsTransport {
+    fn new(inner: FragmentCollector<TokioIo<Upgraded>>) -> Self {
+        Self(inner)
+    }
+
+    async fn read_frame(&mut self) -> Result<Frame<'_>, WebSocketError> {
+        self.0.read_frame().await
+    }
+
+    pub(crate) async fn write_frame(&mut self, frame: Frame<'_>) -> Result<(), WebSocketError> {
+        self.0.write_frame(frame).await
+    }
+
+    async fn reply_pong(&mut self, payload: Payload<'_>) -> Result<(), &'static str> {
+        self.write_frame(Frame::pong(payload))
+            .await
+            .map_err(|_| HEARTBEAT_PONG_FAILED_REASON)
+    }
+
+    async fn send_heartbeat_ping(&mut self, ping_payload: PingPayload) -> Result<(), &'static str> {
+        let frame = match ping_payload {
+            PingPayload::Text(payload) => Frame::text(Payload::Borrowed(payload)),
+            PingPayload::OpCode(payload) => {
+                Frame::new(true, OpCode::Ping, None, Payload::Borrowed(payload))
+            }
+        };
+
+        self.write_frame(frame)
+            .await
+            .map_err(|_| HEARTBEAT_SEND_FAILED_REASON)
+    }
+}
 
 fn tls_connector() -> TlsConnector {
     let mut root_store = tokio_rustls::rustls::RootCertStore::empty();
@@ -95,7 +128,7 @@ where
     ChannelStream { receiver, task }
 }
 
-enum WsState {
+enum State {
     Disconnected,
     Connected(WsTransport),
 }
@@ -239,32 +272,13 @@ where
         .await
         .map_err(|e| AdapterError::WebsocketError(e.to_string()))?;
 
-    Ok(FragmentCollector::new(ws))
+    Ok(WsTransport::new(FragmentCollector::new(ws)))
 }
 
 #[derive(Clone, Copy, Debug)]
-pub enum PingPayload {
+enum PingPayload {
     Text(&'static [u8]),
     OpCode(&'static [u8]),
-}
-
-impl PingPayload {
-    pub async fn send_heartbeat_ping(
-        &self,
-        websocket: &mut WsTransport,
-    ) -> Result<(), &'static str> {
-        let frame = match self {
-            PingPayload::Text(payload) => Frame::text(Payload::Borrowed(payload)),
-            PingPayload::OpCode(payload) => {
-                Frame::new(true, OpCode::Ping, None, Payload::Borrowed(payload))
-            }
-        };
-
-        websocket
-            .write_frame(frame)
-            .await
-            .map_err(|_| HEARTBEAT_SEND_FAILED_REASON)
-    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -274,14 +288,14 @@ pub enum ConnectedEventMode {
 }
 
 #[derive(Clone, Debug)]
-pub struct WsControlConfig {
-    pub heartbeat_interval: Duration,
-    pub heartbeat_timeout: Duration,
-    pub reconnect_delay: Duration,
-    pub ping_payload: PingPayload,
-    pub text_pong_payload: Option<&'static [u8]>,
-    pub connected_event_mode: ConnectedEventMode,
-    pub stream_scope: Arc<[StreamKind]>,
+pub struct WsSession {
+    heartbeat_interval: Duration,
+    heartbeat_timeout: Duration,
+    reconnect_delay: Duration,
+    ping_payload: PingPayload,
+    text_pong_payload: Option<&'static [u8]>,
+    connected_event_mode: ConnectedEventMode,
+    stream_scope: Arc<[StreamKind]>,
 }
 
 pub trait WsAdapter {
@@ -295,7 +309,7 @@ pub trait WsAdapter {
     async fn on_disconnected(&mut self, reason: &str, output: &mut mpsc::Sender<Event>);
 }
 
-impl WsControlConfig {
+impl WsSession {
     pub fn with_text_ping(
         ping_payload: &'static [u8],
         text_pong_payload: Option<&'static [u8]>,
@@ -334,15 +348,15 @@ impl WsControlConfig {
     }
 
     pub async fn run<A: WsAdapter>(&self, adapter: &mut A, output: &mut mpsc::Sender<Event>) -> ! {
-        let mut ws_state = WsState::Disconnected;
+        let mut ws_state = State::Disconnected;
         let mut heartbeat = WsHeartbeat::new(self.heartbeat_interval, self.heartbeat_timeout);
         let stream_scope = self.stream_scope.clone();
 
         loop {
             match &mut ws_state {
-                WsState::Disconnected => match adapter.connect().await {
+                State::Disconnected => match adapter.connect().await {
                     Ok(websocket) => {
-                        ws_state = WsState::Connected(websocket);
+                        ws_state = State::Connected(websocket);
                         heartbeat.reset();
 
                         if matches!(self.connected_event_mode, ConnectedEventMode::Immediate) {
@@ -356,12 +370,16 @@ impl WsControlConfig {
                         tokio::time::sleep(self.reconnect_delay).await;
                     }
                 },
-                WsState::Connected(websocket) => {
+                State::Connected(websocket) => {
                     let disconnect_reason = tokio::select! {
                         _ = heartbeat.interval_mut().tick() => {
                             if heartbeat.timed_out() {
                                 Some("Heartbeat timeout (no websocket activity)".to_string())
-                            } else if self.ping_payload.send_heartbeat_ping(websocket).await.is_err() {
+                            } else if websocket
+                                .send_heartbeat_ping(self.ping_payload)
+                                .await
+                                .is_err()
+                            {
                                 Some(HEARTBEAT_SEND_FAILED_REASON.to_string())
                             } else {
                                 None
@@ -382,7 +400,8 @@ impl WsControlConfig {
                                         }
                                     }
                                     OpCode::Ping => {
-                                        if reply_pong(websocket, msg.payload).await.is_err() {
+                                        let payload = Vec::from(msg.payload);
+                                        if websocket.reply_pong(Payload::Owned(payload)).await.is_err() {
                                             Some(HEARTBEAT_PONG_FAILED_REASON.to_string())
                                         } else {
                                             None
@@ -398,7 +417,7 @@ impl WsControlConfig {
 
                     if let Some(reason) = disconnect_reason {
                         adapter.on_disconnected(&reason, output).await;
-                        ws_state = WsState::Disconnected;
+                        ws_state = State::Disconnected;
                         emit_disconnected(output, &stream_scope, reason).await;
                     }
                 }
@@ -415,7 +434,7 @@ pub struct WsHeartbeat {
 }
 
 impl WsHeartbeat {
-    pub fn new(interval: Duration, timeout: Duration) -> Self {
+    fn new(interval: Duration, timeout: Duration) -> Self {
         Self {
             interval,
             timeout,
@@ -424,32 +443,22 @@ impl WsHeartbeat {
         }
     }
 
-    pub fn reset(&mut self) {
+    fn reset(&mut self) {
         self.last_transport_activity = Instant::now();
         self.heartbeat_interval = tokio::time::interval(self.interval);
     }
 
-    pub fn interval_mut(&mut self) -> &mut Interval {
+    fn interval_mut(&mut self) -> &mut Interval {
         &mut self.heartbeat_interval
     }
 
-    pub fn mark_activity(&mut self) {
+    fn mark_activity(&mut self) {
         self.last_transport_activity = Instant::now();
     }
 
-    pub fn timed_out(&self) -> bool {
+    fn timed_out(&self) -> bool {
         self.last_transport_activity.elapsed() >= self.timeout
     }
-}
-
-pub async fn reply_pong(
-    websocket: &mut WsTransport,
-    payload: Payload<'_>,
-) -> Result<(), &'static str> {
-    websocket
-        .write_frame(Frame::pong(payload))
-        .await
-        .map_err(|_| HEARTBEAT_PONG_FAILED_REASON)
 }
 
 pub async fn emit_connected(output: &mut mpsc::Sender<Event>, stream_scope: &Arc<[StreamKind]>) {

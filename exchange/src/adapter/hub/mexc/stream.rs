@@ -2,7 +2,7 @@ use crate::{
     Event, Kline, Price, PushFrequency, Ticker, TickerInfo, Timeframe, Trade, UnixMs, Volume,
     adapter::{
         MarketKind, StreamKind, StreamTicksize,
-        connect::{WsAdapter, WsControlConfig, WsTransport, channel, connect_ws},
+        connect::{WsAdapter, WsSession, WsTransport, channel, connect_ws},
         hub::TradeBuffer,
     },
     depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
@@ -14,10 +14,8 @@ use super::{
     convert_to_mexc_timeframe, exchange_from_market_type, raw_qty_unit_from_market_type,
 };
 use crate::adapter::hub::AdapterError;
-use fastwebsockets::{FragmentCollector, Frame};
+use fastwebsockets::Frame;
 use futures::{SinkExt, Stream, channel::mpsc};
-use hyper::upgrade::Upgraded;
-use hyper_util::rt::TokioIo;
 use rustc_hash::FxHashMap;
 use serde_json::json;
 use sonic_rs::{Deserialize, JsonValueTrait, to_object_iter_unchecked};
@@ -225,7 +223,7 @@ async fn connect_websocket(
     domain: &str,
     path: &str,
     proxy_cfg: Option<&crate::proxy::Proxy>,
-) -> Result<FragmentCollector<TokioIo<Upgraded>>, AdapterError> {
+) -> Result<WsTransport, AdapterError> {
     let url = format!("wss://{}{}", domain, path);
     connect_ws(domain, &url, proxy_cfg).await
 }
@@ -364,7 +362,7 @@ pub fn connect_trade_stream(
             proxy_cfg,
         };
 
-        WsControlConfig::with_text_ping(PING_PAYLOAD, Some(b"pong"), stream_scope)
+        WsSession::with_text_ping(PING_PAYLOAD, Some(b"pong"), stream_scope)
             .run(&mut adapter, &mut output)
             .await;
     })
@@ -533,7 +531,7 @@ pub fn connect_depth_stream(
             snapshot_time: UnixMs::ZERO,
         };
 
-        WsControlConfig::with_text_ping(PING_PAYLOAD, Some(b"pong"), stream_scope)
+        WsSession::with_text_ping(PING_PAYLOAD, Some(b"pong"), stream_scope)
             .run(&mut adapter, &mut output)
             .await;
     })
@@ -729,7 +727,7 @@ pub fn connect_kline_stream(
             proxy_cfg,
         };
 
-        WsControlConfig::with_text_ping(PING_PAYLOAD, None, stream_scope)
+        WsSession::with_text_ping(PING_PAYLOAD, None, stream_scope)
             .run(&mut adapter, &mut output)
             .await;
     })
