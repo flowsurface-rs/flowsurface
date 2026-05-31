@@ -2,7 +2,7 @@ use crate::{
     Event, Kline, Price, PushFrequency, Ticker, TickerInfo, Timeframe, Trade, UnixMs, Volume,
     adapter::{
         MarketKind, StreamKind, StreamTicksize,
-        connect::{WsAdapter, WsSession, WsTransport, channel, connect_ws},
+        connect::{WsAdapter, WsSession, WsTransport, channel, connect_ws, emit_connected},
         hub::TradeBuffer,
     },
     depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
@@ -379,6 +379,7 @@ struct DepthAdapter {
     orderbook: LocalDepthCache,
     snapshot_ready: bool,
     snapshot_time: UnixMs,
+    stream_scope: Arc<[StreamKind]>,
 }
 
 impl WsAdapter for DepthAdapter {
@@ -408,10 +409,10 @@ impl WsAdapter for DepthAdapter {
         Ok(websocket)
     }
 
-    async fn on_connected(&mut self, _output: &mut mpsc::Sender<Event>) {
-        // Reset snapshot state on each reconnect
+    async fn on_connected(&mut self, output: &mut mpsc::Sender<Event>) {
         self.snapshot_ready = false;
         self.snapshot_time = UnixMs::ZERO;
+        emit_connected(output, &self.stream_scope).await;
     }
 
     async fn on_text(
@@ -529,6 +530,7 @@ pub fn connect_depth_stream(
             orderbook: LocalDepthCache::default(),
             snapshot_ready: false,
             snapshot_time: UnixMs::ZERO,
+            stream_scope: stream_scope.clone(),
         };
 
         WsSession::with_text_ping(PING_PAYLOAD, Some(b"pong"), stream_scope)

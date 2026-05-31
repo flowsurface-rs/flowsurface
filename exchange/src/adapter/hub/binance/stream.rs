@@ -2,10 +2,7 @@ use crate::{
     Event, Kline, Price, PushFrequency, Ticker, TickerInfo, Trade, Volume,
     adapter::{
         MarketKind, StreamKind, StreamTicksize,
-        connect::{
-            ConnectedEventMode, WsAdapter, WsSession, WsTransport, channel, connect_ws,
-            emit_connected,
-        },
+        connect::{WsAdapter, WsSession, WsTransport, channel, connect_ws, emit_connected},
         hub::TradeBuffer,
     },
     depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
@@ -650,7 +647,7 @@ struct DepthAdapter {
     ws_stream: String,
     proxy_cfg: Option<crate::proxy::Proxy>,
     sync_machine: DepthSyncMachine,
-    connected_sent: bool,
+    stream_ready: bool,
 }
 
 impl WsAdapter for DepthAdapter {
@@ -664,7 +661,7 @@ impl WsAdapter for DepthAdapter {
         .await?;
 
         self.sync_machine = DepthSyncMachine::new(self.handle.clone(), self.ticker_info.ticker);
-        self.connected_sent = false;
+        self.stream_ready = false;
 
         Ok(websocket)
     }
@@ -686,8 +683,8 @@ impl WsAdapter for DepthAdapter {
                 self.qty_norm,
             )?
         {
-            if !self.connected_sent {
-                self.connected_sent = true;
+            if !self.stream_ready {
+                self.stream_ready = true;
                 emit_connected(output, &self.stream_scope).await;
             }
 
@@ -732,8 +729,7 @@ pub fn connect_depth_stream(
         let ws_stream = format!("{}@depth@100ms", symbol_str.to_lowercase());
 
         let control =
-            WsSession::with_opcode_ping(BINANCE_OPCODE_PING_PAYLOAD, None, stream_scope.clone())
-                .with_connected_event_mode(ConnectedEventMode::AdapterManaged);
+            WsSession::with_opcode_ping(BINANCE_OPCODE_PING_PAYLOAD, None, stream_scope.clone());
 
         let mut adapter = DepthAdapter {
             handle: handle.clone(),
@@ -745,7 +741,7 @@ pub fn connect_depth_stream(
             ws_stream: ws_stream.clone(),
             proxy_cfg,
             sync_machine: DepthSyncMachine::new(handle, ticker),
-            connected_sent: false,
+            stream_ready: false,
         };
 
         control.run(&mut adapter, &mut output).await;

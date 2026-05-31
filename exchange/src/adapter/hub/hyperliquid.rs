@@ -1,5 +1,5 @@
 use crate::{
-    Event, Kline, PushFrequency, TickerInfo, Timeframe, Trade, UnixMs,
+    Event, Kline, PushFrequency, TickerInfo, Timeframe, UnixMs,
     adapter::limiter::FixedWindowRateLimiterConfig,
     adapter::{MarketKind, StreamTicksize},
     depth::DepthPayload,
@@ -131,22 +131,6 @@ impl HyperliquidHandle {
                 ticker,
                 timeframe,
                 range,
-                reply,
-            })
-            .await
-    }
-
-    pub async fn fetch_trades(
-        &self,
-        ticker: TickerInfo,
-        from_time: UnixMs,
-        data_path: Option<std::path::PathBuf>,
-    ) -> Result<Vec<Trade>, AdapterError> {
-        self.request_port
-            .request(move |reply| HyperliquidCommand::Trades {
-                ticker,
-                from_time,
-                data_path,
                 reply,
             })
             .await

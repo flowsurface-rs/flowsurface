@@ -492,12 +492,6 @@ impl AdapterHandles {
                 };
                 handle.fetch_trades(ticker_info, from_time, data_path).await
             }
-            Venue::Hyperliquid => {
-                let Some(handle) = self.hyperliquid.as_ref() else {
-                    return Err(Self::missing_venue_error(exchange.venue()));
-                };
-                handle.fetch_trades(ticker_info, from_time, data_path).await
-            }
             _ => Err(AdapterError::InvalidRequest(format!(
                 "Trade fetch not available for {exchange}"
             ))),

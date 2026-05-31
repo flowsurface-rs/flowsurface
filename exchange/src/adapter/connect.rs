@@ -29,8 +29,6 @@ use futures::SinkExt;
 use std::sync::Arc;
 use tokio::time::{Instant, Interval};
 
-const DEFAULT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
-const DEFAULT_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(45);
 const DEFAULT_RECONNECT_DELAY: Duration = Duration::from_secs(1);
 const HEARTBEAT_SEND_FAILED_REASON: &str = "Failed to send heartbeat ping";
 const HEARTBEAT_PONG_FAILED_REASON: &str = "Failed to reply pong";
@@ -281,21 +279,12 @@ enum PingPayload {
     OpCode(&'static [u8]),
 }
 
-#[derive(Clone, Copy, Debug)]
-pub enum ConnectedEventMode {
-    Immediate,
-    AdapterManaged,
-}
-
 #[derive(Clone, Debug)]
 pub struct WsSession {
-    heartbeat_interval: Duration,
-    heartbeat_timeout: Duration,
     reconnect_delay: Duration,
     ping_payload: PingPayload,
     text_pong_payload: Option<&'static [u8]>,
-    connected_event_mode: ConnectedEventMode,
-    stream_scope: Arc<[StreamKind]>,
+    streams: Arc<[StreamKind]>,
 }
 
 pub trait WsAdapter {
@@ -313,44 +302,33 @@ impl WsSession {
     pub fn with_text_ping(
         ping_payload: &'static [u8],
         text_pong_payload: Option<&'static [u8]>,
-        stream_scope: Arc<[StreamKind]>,
+        streams: Arc<[StreamKind]>,
     ) -> Self {
         Self {
-            heartbeat_interval: DEFAULT_HEARTBEAT_INTERVAL,
-            heartbeat_timeout: DEFAULT_HEARTBEAT_TIMEOUT,
             reconnect_delay: DEFAULT_RECONNECT_DELAY,
             ping_payload: PingPayload::Text(ping_payload),
             text_pong_payload,
-            connected_event_mode: ConnectedEventMode::Immediate,
-            stream_scope,
+            streams,
         }
     }
 
     pub fn with_opcode_ping(
         ping_payload: &'static [u8],
         text_pong_payload: Option<&'static [u8]>,
-        stream_scope: Arc<[StreamKind]>,
+        streams: Arc<[StreamKind]>,
     ) -> Self {
         Self {
-            heartbeat_interval: DEFAULT_HEARTBEAT_INTERVAL,
-            heartbeat_timeout: DEFAULT_HEARTBEAT_TIMEOUT,
             reconnect_delay: DEFAULT_RECONNECT_DELAY,
             ping_payload: PingPayload::OpCode(ping_payload),
             text_pong_payload,
-            connected_event_mode: ConnectedEventMode::Immediate,
-            stream_scope,
+            streams,
         }
-    }
-
-    pub fn with_connected_event_mode(mut self, mode: ConnectedEventMode) -> Self {
-        self.connected_event_mode = mode;
-        self
     }
 
     pub async fn run<A: WsAdapter>(&self, adapter: &mut A, output: &mut mpsc::Sender<Event>) -> ! {
         let mut ws_state = State::Disconnected;
-        let mut heartbeat = WsHeartbeat::new(self.heartbeat_interval, self.heartbeat_timeout);
-        let stream_scope = self.stream_scope.clone();
+        let mut heartbeat = WsHeartbeat::default();
+        let streams = self.streams.clone();
 
         loop {
             match &mut ws_state {
@@ -359,14 +337,10 @@ impl WsSession {
                         ws_state = State::Connected(websocket);
                         heartbeat.reset();
 
-                        if matches!(self.connected_event_mode, ConnectedEventMode::Immediate) {
-                            emit_connected(output, &stream_scope).await;
-                        }
-
                         adapter.on_connected(output).await;
                     }
                     Err(reason) => {
-                        emit_disconnected(output, &stream_scope, reason).await;
+                        emit_disconnected(output, &streams, reason).await;
                         tokio::time::sleep(self.reconnect_delay).await;
                     }
                 },
@@ -418,7 +392,7 @@ impl WsSession {
                     if let Some(reason) = disconnect_reason {
                         adapter.on_disconnected(&reason, output).await;
                         ws_state = State::Disconnected;
-                        emit_disconnected(output, &stream_scope, reason).await;
+                        emit_disconnected(output, &streams, reason).await;
                     }
                 }
             }
@@ -426,7 +400,7 @@ impl WsSession {
     }
 }
 
-pub struct WsHeartbeat {
+struct WsHeartbeat {
     interval: Duration,
     timeout: Duration,
     heartbeat_interval: Interval,
@@ -434,6 +408,9 @@ pub struct WsHeartbeat {
 }
 
 impl WsHeartbeat {
+    const DEFAULT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
+    const DEFAULT_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(45);
+
     fn new(interval: Duration, timeout: Duration) -> Self {
         Self {
             interval,
@@ -461,16 +438,25 @@ impl WsHeartbeat {
     }
 }
 
-pub async fn emit_connected(output: &mut mpsc::Sender<Event>, stream_scope: &Arc<[StreamKind]>) {
-    let _ = output.send(Event::Connected(stream_scope.clone())).await;
+impl Default for WsHeartbeat {
+    fn default() -> Self {
+        Self::new(
+            Self::DEFAULT_HEARTBEAT_INTERVAL,
+            Self::DEFAULT_HEARTBEAT_TIMEOUT,
+        )
+    }
+}
+
+pub async fn emit_connected(output: &mut mpsc::Sender<Event>, streams: &Arc<[StreamKind]>) {
+    let _ = output.send(Event::Connected(streams.clone())).await;
 }
 
 async fn emit_disconnected(
     output: &mut mpsc::Sender<Event>,
-    stream_scope: &Arc<[StreamKind]>,
+    streams: &Arc<[StreamKind]>,
     reason: impl Into<String>,
 ) {
     let _ = output
-        .send(Event::Disconnected(stream_scope.clone(), reason.into()))
+        .send(Event::Disconnected(streams.clone(), reason.into()))
         .await;
 }
