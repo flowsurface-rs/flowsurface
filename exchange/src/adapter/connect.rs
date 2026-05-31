@@ -288,13 +288,19 @@ pub struct WsSession {
 }
 
 pub trait WsAdapter {
+    /// Connects to the WebSocket and returns a transport for it.
+    /// This will be retried indefinitely until it succeeds, with a delay of `WsSession::reconnect_delay` between attempts.
     async fn connect(&mut self) -> Result<WsTransport, String>;
+    /// Called when a connection is established.
+    /// This is called on every successful connection, including after reconnects.
     async fn on_connected(&mut self, output: &mut mpsc::Sender<Event>);
+    /// Called when a text message is received that doesn't match the optional `text_pong_payload`.
     async fn on_text(
         &mut self,
         payload: &[u8],
         output: &mut mpsc::Sender<Event>,
     ) -> Result<(), String>;
+    /// Called when the connection is closed or a fatal error occurs.
     async fn on_disconnected(&mut self, reason: &str, output: &mut mpsc::Sender<Event>);
 }
 

@@ -9,8 +9,8 @@ use super::DashboardError;
 use crate::{
     chart,
     connector::{
-        ResolvedStream,
-        fetcher::{self, FetchedData, InfoKind},
+        self, ResolvedStream,
+        fetcher::{self, FetchStatus, FetchedData, InfoKind},
     },
     screen::dashboard::tickers_table::TickersTable,
     style,
@@ -49,7 +49,7 @@ const STREAM_STALE_AFTER: Duration = Duration::from_secs(60);
 #[derive(Debug, Clone)]
 pub enum Message {
     Pane(window::Id, pane::Message),
-    ChangePaneFetchStatus(uuid::Uuid, pane::FetchStatus),
+    ChangePaneFetchStatus(uuid::Uuid, FetchStatus),
     SavePopoutSpecs(HashMap<window::Id, WindowSpec>),
     ErrorOccurred(Option<uuid::Uuid>, DashboardError),
     Notification(Toast),
@@ -201,7 +201,7 @@ impl Dashboard {
             Message::ErrorOccurred(pane_id, err) => match pane_id {
                 Some(id) => {
                     if let Some(state) = self.get_mut_pane_state_by_uuid(main_window.id, id) {
-                        state.set_fetch_status(pane::FetchStatus::Error(err.to_string()));
+                        state.set_fetch_status(FetchStatus::Error(err.to_string()));
                         state.notifications.push(Toast::error(err.to_string()));
                     }
                 }
@@ -410,9 +410,6 @@ impl Dashboard {
                             }
                             pane::Effect::SwitchTickersInGroup(ticker_info) => {
                                 self.switch_tickers_in_group(handles, main_window.id, ticker_info)
-                            }
-                            pane::Effect::RetryConnections(exchanges) => {
-                                return (Task::none(), Some(Event::RetryConnections(exchanges)));
                             }
                             pane::Effect::FocusWidget(id) => {
                                 return (iced::widget::operation::focus(id), None);
@@ -712,7 +709,7 @@ impl Dashboard {
         match pane_id {
             Some(id) => {
                 if let Some(state) = self.get_mut_pane_state_by_uuid(main_window, id) {
-                    state.set_fetch_status(pane::FetchStatus::Error(err.to_string()));
+                    state.set_fetch_status(FetchStatus::Error(err.to_string()));
                     state.notifications.push(Toast::error(err.to_string()));
                 }
                 Task::none()
@@ -875,7 +872,7 @@ impl Dashboard {
                     c.reset_request_handler();
 
                     if !is_enabled {
-                        state.set_fetch_status(pane::FetchStatus::Idle);
+                        state.set_fetch_status(FetchStatus::Idle);
                     }
                 }
             });
@@ -914,7 +911,7 @@ impl Dashboard {
             }
             FetchedData::Klines { data, req_id } => {
                 if let Some(pane_state) = self.get_mut_pane_state_by_uuid(main_window, pane_id) {
-                    pane_state.set_fetch_status(pane::FetchStatus::Idle);
+                    pane_state.set_fetch_status(FetchStatus::Idle);
 
                     if let StreamKind::Kline {
                         timeframe,
@@ -927,7 +924,7 @@ impl Dashboard {
             }
             FetchedData::OI { data, req_id } => {
                 if let Some(pane_state) = self.get_mut_pane_state_by_uuid(main_window, pane_id) {
-                    pane_state.set_fetch_status(pane::FetchStatus::Idle);
+                    pane_state.set_fetch_status(FetchStatus::Idle);
 
                     if let StreamKind::Kline { .. } = stream_type {
                         pane_state.insert_hist_oi(req_id, &data);
@@ -955,13 +952,12 @@ impl Dashboard {
             })?;
 
         match &mut pane_state.fetch_status {
-            pane::FetchStatus::Loading(InfoKind::FetchingTrades(count)) => {
+            FetchStatus::Loading(InfoKind::FetchingTrades(count)) => {
                 *count += trades.len();
             }
             _ => {
-                pane_state.set_fetch_status(pane::FetchStatus::Loading(InfoKind::FetchingTrades(
-                    trades.len(),
-                )));
+                pane_state
+                    .set_fetch_status(FetchStatus::Loading(InfoKind::FetchingTrades(trades.len())));
             }
         }
 
@@ -971,7 +967,7 @@ impl Dashboard {
                     c.insert_raw_trades(trades.to_owned(), is_batches_done);
 
                     if is_batches_done {
-                        pane_state.set_fetch_status(pane::FetchStatus::Idle);
+                        pane_state.set_fetch_status(FetchStatus::Idle);
                     }
                     Ok(())
                 } else {
@@ -1177,7 +1173,7 @@ impl Dashboard {
             match state.tick(now) {
                 Some(pane::Action::Chart(action)) => match action {
                     chart::Action::ErrorOccurred(err) => {
-                        state.set_fetch_status(pane::FetchStatus::Error(err.to_string()));
+                        state.set_fetch_status(FetchStatus::Error(err.to_string()));
                         state.notifications.push(Toast::error(err.to_string()));
                     }
                     chart::Action::RequestFetch(reqs) => {
@@ -1258,9 +1254,9 @@ impl Dashboard {
         if let Some(state) = self.get_mut_pane_state_by_uuid(main_window, pane_id) {
             state.streams = ResolvedStream::Ready(streams.clone());
             let next_liveness = if streams.is_empty() {
-                pane::LivenessStatus::Idle
+                connector::Liveness::Idle
             } else {
-                pane::LivenessStatus::Waiting(pane::WaitingReason::StreamData)
+                connector::Liveness::waiting_for_stream_data()
             };
             state.set_liveness(next_liveness);
         }
@@ -1271,36 +1267,11 @@ impl Dashboard {
         &mut self,
         main_window: window::Id,
         pane_id: uuid::Uuid,
-        status: pane::LivenessStatus,
+        status: connector::Liveness,
     ) {
         if let Some(state) = self.get_mut_pane_state_by_uuid(main_window, pane_id) {
             state.set_liveness(status);
         }
-    }
-
-    pub fn mark_exchange_disconnected(
-        &mut self,
-        main_window: window::Id,
-        exchange: Exchange,
-        reason: &str,
-    ) {
-        let short_reason = reason.lines().next().unwrap_or(reason);
-        let message = format!("{exchange} stream disconnected ({short_reason})");
-
-        self.iter_all_panes_mut(main_window)
-            .for_each(|(_, _, pane_state)| {
-                let has_exchange_stream = pane_state
-                    .streams
-                    .ready_iter()
-                    .map(|mut streams| {
-                        streams.any(|stream| stream.ticker_info().exchange() == exchange)
-                    })
-                    .unwrap_or(false);
-
-                if has_exchange_stream {
-                    pane_state.set_liveness(pane::LivenessStatus::Disconnected(message.clone()));
-                }
-            });
     }
 
     pub fn mark_streams_disconnected(
@@ -1327,28 +1298,7 @@ impl Dashboard {
                     .unwrap_or(false);
 
                 if has_affected_stream {
-                    pane_state.set_liveness(pane::LivenessStatus::Disconnected(message.clone()));
-                }
-            });
-    }
-
-    pub fn mark_exchange_connected(&mut self, main_window: window::Id, exchange: Exchange) {
-        self.iter_all_panes_mut(main_window)
-            .for_each(|(_, _, pane_state)| {
-                let has_exchange_stream = pane_state
-                    .streams
-                    .ready_iter()
-                    .map(|mut streams| {
-                        streams.any(|stream| stream.ticker_info().exchange() == exchange)
-                    })
-                    .unwrap_or(false);
-
-                if has_exchange_stream
-                    && matches!(pane_state.liveness, pane::LivenessStatus::Disconnected(_))
-                {
-                    pane_state.set_liveness(pane::LivenessStatus::Waiting(
-                        pane::WaitingReason::StreamData,
-                    ));
+                    pane_state.set_liveness(connector::Liveness::Disconnected(message.clone()));
                 }
             });
     }
@@ -1369,11 +1319,9 @@ impl Dashboard {
                     .unwrap_or(false);
 
                 if has_affected_stream
-                    && matches!(pane_state.liveness, pane::LivenessStatus::Disconnected(_))
+                    && matches!(pane_state.liveness, connector::Liveness::Disconnected(_))
                 {
-                    pane_state.set_liveness(pane::LivenessStatus::Waiting(
-                        pane::WaitingReason::StreamData,
-                    ));
+                    pane_state.set_liveness(connector::Liveness::waiting_for_stream_data());
                 }
             });
     }
@@ -1396,9 +1344,7 @@ impl Dashboard {
                     .unwrap_or(false);
 
                 if has_selected_exchange {
-                    pane_state.set_liveness(pane::LivenessStatus::Waiting(
-                        pane::WaitingReason::StreamData,
-                    ));
+                    pane_state.set_liveness(connector::Liveness::waiting_for_stream_data());
                 }
             });
     }
@@ -1510,10 +1456,10 @@ impl From<fetcher::FetchUpdate> for Message {
         match update {
             fetcher::FetchUpdate::Status { pane_id, status } => match status {
                 fetcher::FetchTaskStatus::Loading(info) => {
-                    Message::ChangePaneFetchStatus(pane_id, pane::FetchStatus::Loading(info))
+                    Message::ChangePaneFetchStatus(pane_id, FetchStatus::Loading(info))
                 }
                 fetcher::FetchTaskStatus::Completed => {
-                    Message::ChangePaneFetchStatus(pane_id, pane::FetchStatus::Idle)
+                    Message::ChangePaneFetchStatus(pane_id, FetchStatus::Idle)
                 }
             },
             fetcher::FetchUpdate::Data {

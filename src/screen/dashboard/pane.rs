@@ -1,8 +1,8 @@
 use crate::{
     chart::{self, comparison::ComparisonChart, heatmap::HeatmapChart, kline::KlineChart},
     connector::{
-        ResolvedStream,
-        fetcher::{FetchSpec, InfoKind},
+        Liveness, ResolvedStream, WaitingReason,
+        fetcher::{FetchSpec, FetchStatus, InfoKind},
     },
     modal::{
         self, ModifierKind,
@@ -38,7 +38,7 @@ use data::{
 };
 use exchange::{
     Kline, OpenInterest, StreamPairKind, TickMultiplier, TickerInfo, Timeframe,
-    adapter::{Exchange, MarketKind, StreamKind, StreamTicksize},
+    adapter::{MarketKind, StreamKind, StreamTicksize},
     unit::PriceStep,
 };
 use iced::{
@@ -52,68 +52,7 @@ pub enum Effect {
     RefreshStreams,
     RequestFetch(Vec<FetchSpec>),
     SwitchTickersInGroup(TickerInfo),
-    RetryConnections(Vec<Exchange>),
     FocusWidget(iced::widget::Id),
-}
-
-#[derive(Debug, Clone, PartialEq, Default)]
-pub enum LivenessStatus {
-    #[default]
-    Idle,
-    Waiting(WaitingReason),
-    Live,
-    ConnectedNoData(String),
-    Disconnected(String),
-}
-
-#[derive(Debug, Default, Clone, PartialEq)]
-pub enum FetchStatus {
-    #[default]
-    Idle,
-    Loading(InfoKind),
-    Error(String),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WaitingReason {
-    StreamResolution,
-    Metadata,
-    StreamData,
-}
-
-impl WaitingReason {
-    pub fn label(self) -> &'static str {
-        match self {
-            WaitingReason::StreamResolution => "Resolving saved streams...",
-            WaitingReason::Metadata => "Waiting for ticker metadata...",
-            WaitingReason::StreamData => "Connected, waiting for first market update...",
-        }
-    }
-}
-
-impl LivenessStatus {
-    fn placeholder_message(&self, has_stream: bool) -> Option<String> {
-        match self {
-            LivenessStatus::Idle if has_stream => {
-                Some("Connected, waiting for market updates...".to_string())
-            }
-            LivenessStatus::Idle | LivenessStatus::Live => None,
-            LivenessStatus::Waiting(reason) => Some(reason.label().to_string()),
-            LivenessStatus::ConnectedNoData(message) | LivenessStatus::Disconnected(message) => {
-                Some(message.clone())
-            }
-        }
-    }
-}
-
-impl FetchStatus {
-    fn placeholder_message(&self) -> Option<String> {
-        match self {
-            FetchStatus::Idle => None,
-            FetchStatus::Loading(_) => Some("Loading...".to_string()),
-            FetchStatus::Error(message) => Some(message.clone()),
-        }
-    }
 }
 
 pub enum Action {
@@ -157,7 +96,6 @@ pub enum Event {
     ComparisonChartInteraction(super::chart::comparison::Message),
     HeatmapShaderInteraction(crate::widget::chart::heatmap::Message),
     MiniTickersListInteraction(modal::pane::mini_tickers_list::Message),
-    RetryConnection,
 }
 
 pub struct State {
@@ -167,7 +105,7 @@ pub struct State {
     pub settings: Settings,
     pub notifications: Vec<Toast>,
     pub streams: ResolvedStream,
-    pub liveness: LivenessStatus,
+    pub liveness: Liveness,
     pub fetch_status: FetchStatus,
     last_stream_data_at: Option<Instant>,
     pub link_group: Option<LinkGroup>,
@@ -185,9 +123,9 @@ impl State {
         link_group: Option<LinkGroup>,
     ) -> Self {
         let liveness = if streams.is_empty() {
-            LivenessStatus::Idle
+            Liveness::Idle
         } else {
-            LivenessStatus::Waiting(WaitingReason::StreamResolution)
+            Liveness::Waiting(WaitingReason::StreamResolution)
         };
 
         Self {
@@ -226,23 +164,6 @@ impl State {
             1 => Some(StreamPairKind::SingleSource(unique[0])),
             _ => Some(StreamPairKind::MultiSource(unique)),
         }
-    }
-
-    fn active_exchanges(&self) -> Vec<Exchange> {
-        let Some(streams) = self.streams.ready_iter() else {
-            return vec![];
-        };
-
-        let mut exchanges = vec![];
-
-        for stream in streams {
-            let exchange = stream.ticker_info().exchange();
-            if !exchanges.contains(&exchange) {
-                exchanges.push(exchange);
-            }
-        }
-
-        exchanges
     }
 
     pub fn set_content_and_streams(
@@ -485,9 +406,9 @@ impl State {
         self.content = content;
         self.streams = ResolvedStream::Ready(streams.clone());
         self.liveness = if streams.is_empty() {
-            LivenessStatus::Idle
+            Liveness::Idle
         } else {
-            LivenessStatus::Waiting(WaitingReason::StreamData)
+            Liveness::Waiting(WaitingReason::StreamData)
         };
         self.fetch_status = FetchStatus::Idle;
         self.last_stream_data_at = None;
@@ -497,15 +418,15 @@ impl State {
 
     pub fn mark_stream_activity(&mut self, now: Instant) {
         self.last_stream_data_at = Some(now);
-        self.liveness = LivenessStatus::Live;
+        self.liveness = Liveness::Live;
     }
 
     pub fn refresh_stream_liveness(&mut self, now: Instant, stale_after: Duration) {
         if matches!(
             self.liveness,
-            LivenessStatus::Waiting(WaitingReason::Metadata)
-                | LivenessStatus::Waiting(WaitingReason::StreamResolution)
-                | LivenessStatus::Disconnected(_)
+            Liveness::Waiting(WaitingReason::Metadata)
+                | Liveness::Waiting(WaitingReason::StreamResolution)
+                | Liveness::Disconnected(_)
         ) {
             return;
         }
@@ -517,28 +438,27 @@ impl State {
             .unwrap_or(false);
 
         if !has_ready_stream {
-            self.liveness = LivenessStatus::Idle;
+            self.liveness = Liveness::Idle;
             return;
         }
 
         match self.last_stream_data_at {
             Some(last_seen) if now.duration_since(last_seen) >= stale_after => {
-                self.liveness = LivenessStatus::ConnectedNoData(
-                    "Connected, no recent market updates".to_string(),
-                );
+                self.liveness =
+                    Liveness::ConnectedNoData("Connected, no recent market updates".to_string());
             }
-            Some(_) => self.liveness = LivenessStatus::Live,
-            None => self.liveness = LivenessStatus::Waiting(WaitingReason::StreamData),
+            Some(_) => self.liveness = Liveness::Live,
+            None => self.liveness = Liveness::Waiting(WaitingReason::StreamData),
         }
     }
 
-    pub fn set_liveness(&mut self, next: LivenessStatus) {
+    pub fn set_liveness(&mut self, next: Liveness) {
         if matches!(
             next,
-            LivenessStatus::Idle
-                | LivenessStatus::Waiting(WaitingReason::Metadata)
-                | LivenessStatus::Waiting(WaitingReason::StreamResolution)
-                | LivenessStatus::Waiting(WaitingReason::StreamData)
+            Liveness::Idle
+                | Liveness::Waiting(WaitingReason::Metadata)
+                | Liveness::Waiting(WaitingReason::StreamResolution)
+                | Liveness::Waiting(WaitingReason::StreamData)
         ) {
             self.last_stream_data_at = None;
         }
@@ -1211,18 +1131,13 @@ impl State {
         };
 
         if let Some(message) = match &self.liveness {
-            LivenessStatus::Disconnected(msg) => Some(msg.clone()),
+            Liveness::Disconnected(msg) => Some(msg.clone()),
             _ => None,
         } {
-            let retry_button = button(text("Retry").size(crate::style::text_size::SMALL))
-                .on_press(Message::PaneEvent(id, Event::RetryConnection))
-                .style(move |theme, status| style::button::bordered_toggle(theme, status, false));
-
             let banner = container(
                 row![
                     icon_text(Icon::Return, 10),
                     text(message).size(crate::style::text_size::SMALL),
-                    retry_button,
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),
@@ -1266,16 +1181,16 @@ impl State {
         }
 
         match &self.liveness {
-            LivenessStatus::Waiting(reason) => {
+            Liveness::Waiting(reason) => {
                 top_left_buttons = top_left_buttons.push(text(reason.label()));
             }
-            LivenessStatus::ConnectedNoData(message) => {
+            Liveness::ConnectedNoData(message) => {
                 top_left_buttons = top_left_buttons.push(text(message));
             }
-            LivenessStatus::Disconnected(_) => {
+            Liveness::Disconnected(_) => {
                 top_left_buttons = top_left_buttons.push(text("Connection lost"));
             }
-            LivenessStatus::Idle | LivenessStatus::Live => {}
+            Liveness::Idle | Liveness::Live => {}
         }
 
         let content = pane_grid::Content::new(body)
@@ -1722,13 +1637,6 @@ impl State {
                     }
                 }
             }
-            Event::RetryConnection => {
-                let exchanges = self.active_exchanges();
-
-                if !exchanges.is_empty() {
-                    return Some(Effect::RetryConnections(exchanges));
-                }
-            }
         }
         None
     }
@@ -1980,7 +1888,7 @@ impl State {
     pub fn park_for_inactive_layout(&mut self) {
         if let Content::ShaderHeatmap { chart, .. } = &mut self.content {
             *chart = None;
-            self.liveness = LivenessStatus::Idle;
+            self.liveness = Liveness::Idle;
             self.fetch_status = FetchStatus::Idle;
             self.last_stream_data_at = None;
         }
@@ -2054,7 +1962,7 @@ impl Default for State {
             settings: Settings::default(),
             streams: ResolvedStream::waiting(vec![]),
             notifications: vec![],
-            liveness: LivenessStatus::Idle,
+            liveness: Liveness::Idle,
             fetch_status: FetchStatus::Idle,
             last_stream_data_at: None,
             link_group: None,

@@ -375,9 +375,7 @@ impl Flowsurface {
                                 dashboard.set_pane_liveness(
                                     main_window.id,
                                     pane_id,
-                                    dashboard::pane::LivenessStatus::Waiting(
-                                        dashboard::pane::WaitingReason::Metadata,
-                                    ),
+                                    connector::Liveness::waiting_for_metadata(),
                                 );
                                 return Task::none();
                             }
@@ -418,9 +416,7 @@ impl Flowsurface {
                                     dashboard.set_pane_liveness(
                                         main_window.id,
                                         pane_id,
-                                        dashboard::pane::LivenessStatus::Waiting(
-                                            dashboard::pane::WaitingReason::StreamResolution,
-                                        ),
+                                        connector::Liveness::waiting_for_stream_resolution(),
                                     );
                                     Task::none()
                                 }
