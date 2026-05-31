@@ -185,24 +185,6 @@ pub enum FetchTaskStatus {
     Completed,
 }
 
-#[derive(Debug, Default, Clone, PartialEq)]
-pub enum FetchStatus {
-    #[default]
-    Idle,
-    Loading(InfoKind),
-    Error(String),
-}
-
-impl FetchStatus {
-    pub fn placeholder_message(&self) -> Option<String> {
-        match self {
-            FetchStatus::Idle => None,
-            FetchStatus::Loading(_) => Some("Loading...".to_string()),
-            FetchStatus::Error(message) => Some(message.clone()),
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub enum FetchUpdate {
     Status {

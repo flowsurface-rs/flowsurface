@@ -551,8 +551,8 @@ impl CoalesceKind {
             return candidate_lots == 0;
         }
 
-        let lots_diff = base_lots.abs_diff(candidate_lots) as f32;
-        let allowed_diff = (base_lots as f32) * ratio;
+        let lots_diff = base_lots.abs_diff(candidate_lots) as f64;
+        let allowed_diff = (base_lots as f64) * (ratio as f64);
 
         lots_diff <= allowed_diff
     }

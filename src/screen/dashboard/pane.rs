@@ -1,8 +1,8 @@
 use crate::{
     chart::{self, comparison::ComparisonChart, heatmap::HeatmapChart, kline::KlineChart},
     connector::{
-        Liveness, ResolvedStream, WaitingReason,
-        fetcher::{FetchSpec, FetchStatus, InfoKind},
+        ResolvedStream,
+        fetcher::{FetchSpec, InfoKind},
     },
     modal::{
         self, ModifierKind,
@@ -45,7 +45,7 @@ use iced::{
     Alignment, Element, Length, Renderer, Theme, padding,
     widget::{button, center, column, container, pane_grid, pick_list, row, text, tooltip},
 };
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 #[derive(Debug, Clone)]
 pub enum Effect {
@@ -53,6 +53,14 @@ pub enum Effect {
     RequestFetch(Vec<FetchSpec>),
     SwitchTickersInGroup(TickerInfo),
     FocusWidget(iced::widget::Id),
+}
+
+#[derive(Debug, Default, Clone, PartialEq)]
+pub enum Status {
+    #[default]
+    Ready,
+    Loading(InfoKind),
+    Stale(String),
 }
 
 pub enum Action {
@@ -105,9 +113,7 @@ pub struct State {
     pub settings: Settings,
     pub notifications: Vec<Toast>,
     pub streams: ResolvedStream,
-    pub liveness: Liveness,
-    pub fetch_status: FetchStatus,
-    last_stream_data_at: Option<Instant>,
+    pub status: Status,
     pub link_group: Option<LinkGroup>,
 }
 
@@ -122,19 +128,10 @@ impl State {
         settings: Settings,
         link_group: Option<LinkGroup>,
     ) -> Self {
-        let liveness = if streams.is_empty() {
-            Liveness::Idle
-        } else {
-            Liveness::Waiting(WaitingReason::StreamResolution)
-        };
-
         Self {
             content,
             settings,
             streams: ResolvedStream::waiting(streams),
-            liveness,
-            fetch_status: FetchStatus::Idle,
-            last_stream_data_at: None,
             link_group,
             ..Default::default()
         }
@@ -405,69 +402,8 @@ impl State {
 
         self.content = content;
         self.streams = ResolvedStream::Ready(streams.clone());
-        self.liveness = if streams.is_empty() {
-            Liveness::Idle
-        } else {
-            Liveness::Waiting(WaitingReason::StreamData)
-        };
-        self.fetch_status = FetchStatus::Idle;
-        self.last_stream_data_at = None;
 
         streams
-    }
-
-    pub fn mark_stream_activity(&mut self, now: Instant) {
-        self.last_stream_data_at = Some(now);
-        self.liveness = Liveness::Live;
-    }
-
-    pub fn refresh_stream_liveness(&mut self, now: Instant, stale_after: Duration) {
-        if matches!(
-            self.liveness,
-            Liveness::Waiting(WaitingReason::Metadata)
-                | Liveness::Waiting(WaitingReason::StreamResolution)
-                | Liveness::Disconnected(_)
-        ) {
-            return;
-        }
-
-        let has_ready_stream = self
-            .streams
-            .ready_iter()
-            .map(|mut streams| streams.next().is_some())
-            .unwrap_or(false);
-
-        if !has_ready_stream {
-            self.liveness = Liveness::Idle;
-            return;
-        }
-
-        match self.last_stream_data_at {
-            Some(last_seen) if now.duration_since(last_seen) >= stale_after => {
-                self.liveness =
-                    Liveness::ConnectedNoData("Connected, no recent market updates".to_string());
-            }
-            Some(_) => self.liveness = Liveness::Live,
-            None => self.liveness = Liveness::Waiting(WaitingReason::StreamData),
-        }
-    }
-
-    pub fn set_liveness(&mut self, next: Liveness) {
-        if matches!(
-            next,
-            Liveness::Idle
-                | Liveness::Waiting(WaitingReason::Metadata)
-                | Liveness::Waiting(WaitingReason::StreamResolution)
-                | Liveness::Waiting(WaitingReason::StreamData)
-        ) {
-            self.last_stream_data_at = None;
-        }
-
-        self.liveness = next;
-    }
-
-    pub fn set_fetch_status(&mut self, next: FetchStatus) {
-        self.fetch_status = next;
     }
 
     pub fn insert_hist_oi(&mut self, req_id: Option<uuid::Uuid>, oi: &[OpenInterest]) {
@@ -670,13 +606,8 @@ impl State {
         };
 
         let uninitialized_base = |kind: ContentKind| -> Element<'a, Message> {
-            let placeholder_message = self
-                .fetch_status
-                .placeholder_message()
-                .or_else(|| self.liveness.placeholder_message(self.has_stream()));
-
-            if let Some(message) = placeholder_message {
-                center(text(message).size(crate::style::text_size::TITLE)).into()
+            if self.has_stream() {
+                center(text("Loading…").size(crate::style::text_size::TITLE)).into()
             } else {
                 let content = column![
                     text(kind.to_string()).size(crate::style::text_size::TITLE),
@@ -689,7 +620,7 @@ impl State {
             }
         };
 
-        let mut body = match &self.content {
+        let body = match &self.content {
             Content::Starter => {
                 let content_picklist =
                     pick_list(ContentKind::ALL, Some(ContentKind::Starter), move |kind| {
@@ -1130,67 +1061,21 @@ impl State {
             }
         };
 
-        if let Some(message) = match &self.liveness {
-            Liveness::Disconnected(msg) => Some(msg.clone()),
-            _ => None,
-        } {
-            let banner = container(
-                row![
-                    icon_text(Icon::Return, 10),
-                    text(message).size(crate::style::text_size::SMALL),
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center),
-            )
-            .padding(6)
-            .style(move |theme: &Theme| {
-                let palette = theme.extended_palette();
-
-                iced::widget::container::Style {
-                    background: Some(palette.danger.weak.color.scale_alpha(0.35).into()),
-                    border: iced::Border {
-                        color: palette.danger.base.color,
-                        width: 1.0,
-                        radius: 4.0.into(),
-                    },
-                    text_color: Some(palette.background.base.text),
-                    ..Default::default()
-                }
-            })
-            .align_x(iced::Alignment::Center)
-            .width(iced::Length::Fill);
-
-            body = column![banner, body].spacing(6).into();
-        }
-
-        match &self.fetch_status {
-            FetchStatus::Loading(InfoKind::FetchingKlines) => {
+        match &self.status {
+            Status::Loading(InfoKind::FetchingKlines) => {
                 top_left_buttons = top_left_buttons.push(text("Fetching Klines..."));
             }
-            FetchStatus::Loading(InfoKind::FetchingTrades(count)) => {
+            Status::Loading(InfoKind::FetchingTrades(count)) => {
                 top_left_buttons =
                     top_left_buttons.push(text(format!("Fetching Trades... {count} fetched")));
             }
-            FetchStatus::Loading(InfoKind::FetchingOI) => {
+            Status::Loading(InfoKind::FetchingOI) => {
                 top_left_buttons = top_left_buttons.push(text("Fetching Open Interest..."));
             }
-            FetchStatus::Error(msg) => {
+            Status::Stale(msg) => {
                 top_left_buttons = top_left_buttons.push(text(msg));
             }
-            FetchStatus::Idle => {}
-        }
-
-        match &self.liveness {
-            Liveness::Waiting(reason) => {
-                top_left_buttons = top_left_buttons.push(text(reason.label()));
-            }
-            Liveness::ConnectedNoData(message) => {
-                top_left_buttons = top_left_buttons.push(text(message));
-            }
-            Liveness::Disconnected(_) => {
-                top_left_buttons = top_left_buttons.push(text("Connection lost"));
-            }
-            Liveness::Idle | Liveness::Live => {}
+            Status::Ready => {}
         }
 
         let content = pane_grid::Content::new(body)
@@ -1888,9 +1773,7 @@ impl State {
     pub fn park_for_inactive_layout(&mut self) {
         if let Content::ShaderHeatmap { chart, .. } = &mut self.content {
             *chart = None;
-            self.liveness = Liveness::Idle;
-            self.fetch_status = FetchStatus::Idle;
-            self.last_stream_data_at = None;
+            self.status = Status::Ready;
         }
     }
 
@@ -1962,9 +1845,7 @@ impl Default for State {
             settings: Settings::default(),
             streams: ResolvedStream::waiting(vec![]),
             notifications: vec![],
-            liveness: Liveness::Idle,
-            fetch_status: FetchStatus::Idle,
-            last_stream_data_at: None,
+            status: Status::Ready,
             link_group: None,
         }
     }
