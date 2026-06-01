@@ -2,8 +2,8 @@ use crate::{
     Event, Kline, Price, PushFrequency, Ticker, TickerInfo, Timeframe, Trade, UnixMs, Volume,
     adapter::{
         MarketKind, StreamKind, StreamTicksize,
-        connect::{WsAdapter, WsSession, WsTransport, channel, connect_ws, emit_connected},
-        hub::TradeBuffer,
+        connect::{WsAdapter, WsSession, WsTransport, emit_connected},
+        hub::{TradeBuffer, channel},
     },
     depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
     unit::qty::{QtyNormalization, SizeUnit, volume_size_unit},
@@ -225,7 +225,7 @@ async fn connect_websocket(
     proxy_cfg: Option<&crate::proxy::Proxy>,
 ) -> Result<WsTransport, AdapterError> {
     let url = format!("wss://{}{}", domain, path);
-    connect_ws(domain, &url, proxy_cfg).await
+    WsTransport::establish(domain, &url, proxy_cfg).await
 }
 
 struct TradeAdapter {

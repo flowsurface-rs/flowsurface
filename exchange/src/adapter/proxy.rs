@@ -1,4 +1,4 @@
-use crate::error::AdapterError;
+use crate::{adapter::connect::TCP_CONNECT_TIMEOUT, error::AdapterError};
 use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf},
@@ -19,6 +19,27 @@ const PROXY_TUNNEL_TIMEOUT: Duration = Duration::from_secs(10);
 pub enum ProxyStream {
     Plain(TcpStream),
     TlsToProxy(Box<tokio_rustls::client::TlsStream<TcpStream>>),
+}
+
+impl ProxyStream {
+    pub async fn connect_tcp(
+        domain: &str,
+        port: u16,
+        proxy_cfg: Option<&Proxy>,
+    ) -> Result<Self, AdapterError> {
+        if let Some(proxy) = proxy_cfg {
+            log::info!("Using proxy for WS: {}", proxy);
+            return proxy.connect_tcp(domain, port).await;
+        }
+
+        let addr = format!("{domain}:{port}");
+        let tcp = tokio::time::timeout(TCP_CONNECT_TIMEOUT, TcpStream::connect(&addr))
+            .await
+            .map_err(|_| AdapterError::WebsocketError(format!("TCP connect timeout: {addr}")))?
+            .map_err(|e| AdapterError::WebsocketError(e.to_string()))?;
+
+        Ok(Self::Plain(tcp))
+    }
 }
 
 impl AsyncRead for ProxyStream {

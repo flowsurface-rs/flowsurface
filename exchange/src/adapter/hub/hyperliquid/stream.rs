@@ -3,8 +3,8 @@ use crate::{
     Volume,
     adapter::{
         MarketKind, StreamKind, StreamTicksize,
-        connect::{WsAdapter, WsSession, WsTransport, channel, connect_ws},
-        hub::TradeBuffer,
+        connect::{WsAdapter, WsSession, WsTransport},
+        hub::{TradeBuffer, channel},
     },
     depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
     serde_util::de_string_to_number,
@@ -159,7 +159,7 @@ async fn connect_websocket(
     proxy_cfg: Option<&crate::proxy::Proxy>,
 ) -> Result<WsTransport, AdapterError> {
     let url = format!("wss://{}{}", domain, path);
-    connect_ws(domain, &url, proxy_cfg).await
+    WsTransport::establish(domain, &url, proxy_cfg).await
 }
 
 fn parse_websocket_message(payload: &[u8]) -> Result<StreamData, AdapterError> {

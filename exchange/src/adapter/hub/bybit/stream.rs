@@ -2,8 +2,8 @@ use crate::{
     Event, Kline, Price, PushFrequency, Ticker, TickerInfo, Timeframe, Trade, Volume,
     adapter::{
         MarketKind, StreamKind, StreamTicksize,
-        connect::{WsAdapter, WsSession, WsTransport, channel, connect_ws},
-        hub::TradeBuffer,
+        connect::{WsAdapter, WsSession, WsTransport},
+        hub::{TradeBuffer, channel},
     },
     depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
     serde_util::de_string_to_number,
@@ -117,7 +117,7 @@ async fn connect_and_subscribe(
         }
     );
 
-    let mut websocket = connect_ws(WS_DOMAIN, &url, proxy_cfg)
+    let mut websocket = WsTransport::establish(WS_DOMAIN, &url, proxy_cfg)
         .await
         .map_err(|err| format!("Failed to connect: {err}"))?;
 

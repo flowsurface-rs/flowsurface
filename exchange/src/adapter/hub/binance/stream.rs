@@ -2,8 +2,8 @@ use crate::{
     Event, Kline, Price, PushFrequency, Ticker, TickerInfo, Trade, Volume,
     adapter::{
         MarketKind, StreamKind, StreamTicksize,
-        connect::{WsAdapter, WsSession, WsTransport, channel, connect_ws, emit_connected},
-        hub::TradeBuffer,
+        connect::{WsAdapter, WsSession, WsTransport, emit_connected},
+        hub::{TradeBuffer, channel},
     },
     depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
     serde_util::de_string_to_number,
@@ -58,7 +58,7 @@ async fn connect_stream_socket(
     let stream_path = ws_stream_path(market, traffic_kind);
     let url = format!("wss://{domain}/{stream_path}?streams={stream}");
 
-    connect_ws(domain, &url, proxy_cfg)
+    WsTransport::establish(domain, &url, proxy_cfg)
         .await
         .map_err(|e| format!("Failed to connect to websocket: {e}"))
 }

@@ -432,6 +432,42 @@ impl<C> RequestPort<C> {
     }
 }
 
+struct ChannelStream<T> {
+    receiver: futures::channel::mpsc::Receiver<T>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl<T> futures::Stream for ChannelStream<T> {
+    type Item = T;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        std::pin::Pin::new(&mut self.receiver).poll_next(cx)
+    }
+}
+
+impl<T> Drop for ChannelStream<T> {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+fn channel<T, Fut, F>(buffer: usize, f: F) -> impl futures::Stream<Item = T>
+where
+    T: Send + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+    F: FnOnce(futures::channel::mpsc::Sender<T>) -> Fut + Send + 'static,
+{
+    let (sender, receiver) = futures::channel::mpsc::channel(buffer);
+    let task = tokio::spawn(async move {
+        f(sender).await;
+    });
+
+    ChannelStream { receiver, task }
+}
+
 struct TradeBuffer {
     buffer_map: FxHashMap<Ticker, Vec<Trade>>,
     ticker_info_map: FxHashMap<Ticker, (TickerInfo, QtyNormalization)>,
