@@ -298,8 +298,6 @@ pub fn connect_trade_stream(
             return;
         }
 
-        let control = WsSession::with_text_ping(HYPERLIQUID_PING_PAYLOAD, None, stream_scope);
-
         let ticker_info_map = tickers
             .iter()
             .map(|ticker_info| {
@@ -337,7 +335,9 @@ pub fn connect_trade_stream(
             proxy_cfg: proxy_cfg.clone(),
         };
 
-        control.run(&mut adapter, &mut output).await;
+        WsSession::with_text_ping(HYPERLIQUID_PING_PAYLOAD, None, stream_scope)
+            .run(&mut adapter, &mut output)
+            .await;
     })
 }
 
@@ -497,8 +497,6 @@ pub fn connect_depth_stream(
 
         let (symbol_str, _) = ticker.to_full_symbol_and_type();
 
-        let control = WsSession::with_text_ping(HYPERLIQUID_PING_PAYLOAD, None, stream_scope);
-
         let mut adapter = DepthAdapter {
             handle,
             stream,
@@ -511,7 +509,9 @@ pub fn connect_depth_stream(
             proxy_cfg: proxy_cfg.clone(),
         };
 
-        control.run(&mut adapter, &mut output).await;
+        WsSession::with_text_ping(HYPERLIQUID_PING_PAYLOAD, None, stream_scope)
+            .run(&mut adapter, &mut output)
+            .await;
     })
 }
 
@@ -619,8 +619,6 @@ pub fn connect_kline_stream(
             return;
         }
 
-        let control = WsSession::with_text_ping(HYPERLIQUID_PING_PAYLOAD, None, stream_scope);
-
         let stream_lookup = streams
             .iter()
             .map(|(ticker_info, timeframe)| {
@@ -652,6 +650,8 @@ pub fn connect_kline_stream(
             proxy_cfg: proxy_cfg.clone(),
         };
 
-        control.run(&mut adapter, &mut output).await;
+        WsSession::with_text_ping(HYPERLIQUID_PING_PAYLOAD, None, stream_scope)
+            .run(&mut adapter, &mut output)
+            .await;
     })
 }

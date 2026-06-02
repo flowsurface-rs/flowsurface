@@ -269,8 +269,6 @@ pub fn connect_trade_stream(
             })
             .collect::<FxHashMap<String, Ticker>>();
 
-        let control = WsSession::with_text_ping(OKX_PING_PAYLOAD, Some(b"pong"), stream_scope);
-
         let mut adapter = TradeAdapter {
             symbol_to_ticker,
             buffer: TradeBuffer::new(ticker_info_map),
@@ -278,7 +276,9 @@ pub fn connect_trade_stream(
             proxy_cfg: proxy_cfg.clone(),
         };
 
-        control.run(&mut adapter, &mut output).await;
+        WsSession::with_text_ping(OKX_PING_PAYLOAD, Some(b"pong"), stream_scope)
+            .run(&mut adapter, &mut output)
+            .await;
     })
 }
 
@@ -387,8 +387,6 @@ pub fn connect_depth_stream(
             raw_qty_unit_from_market_type(market_type),
         );
 
-        let control = WsSession::with_text_ping(OKX_PING_PAYLOAD, Some(b"pong"), stream_scope);
-
         let mut adapter = DepthAdapter {
             stream,
             ticker_info,
@@ -398,7 +396,9 @@ pub fn connect_depth_stream(
             proxy_cfg: proxy_cfg.clone(),
         };
 
-        control.run(&mut adapter, &mut output).await;
+        WsSession::with_text_ping(OKX_PING_PAYLOAD, Some(b"pong"), stream_scope)
+            .run(&mut adapter, &mut output)
+            .await;
     })
 }
 
@@ -544,8 +544,6 @@ pub fn connect_kline_stream(
         let lookup = Arc::new(lookup);
         let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
 
-        let control = WsSession::with_text_ping(OKX_PING_PAYLOAD, Some(b"pong"), stream_scope);
-
         let mut adapter = KlineAdapter {
             subscribe_message: subscribe_message.clone(),
             proxy_cfg: proxy_cfg.clone(),
@@ -554,6 +552,8 @@ pub fn connect_kline_stream(
             market_type,
         };
 
-        control.run(&mut adapter, &mut output).await;
+        WsSession::with_text_ping(OKX_PING_PAYLOAD, Some(b"pong"), stream_scope)
+            .run(&mut adapter, &mut output)
+            .await;
     })
 }

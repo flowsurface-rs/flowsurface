@@ -624,8 +624,6 @@ pub fn connect_trade_stream(
             })
             .collect();
 
-        let control = WsSession::with_opcode_ping(BINANCE_OPCODE_PING_PAYLOAD, None, stream_scope);
-
         let mut adapter = TradeAdapter {
             market,
             buffer: TradeBuffer::new(ticker_info_map),
@@ -633,7 +631,9 @@ pub fn connect_trade_stream(
             proxy_cfg: proxy_cfg.clone(),
         };
 
-        control.run(&mut adapter, &mut output).await;
+        WsSession::with_opcode_ping(BINANCE_OPCODE_PING_PAYLOAD, None, stream_scope)
+            .run(&mut adapter, &mut output)
+            .await;
     })
 }
 
@@ -728,9 +728,6 @@ pub fn connect_depth_stream(
 
         let ws_stream = format!("{}@depth@100ms", symbol_str.to_lowercase());
 
-        let control =
-            WsSession::with_opcode_ping(BINANCE_OPCODE_PING_PAYLOAD, None, stream_scope.clone());
-
         let mut adapter = DepthAdapter {
             handle: handle.clone(),
             market,
@@ -744,7 +741,9 @@ pub fn connect_depth_stream(
             stream_ready: false,
         };
 
-        control.run(&mut adapter, &mut output).await;
+        WsSession::with_opcode_ping(BINANCE_OPCODE_PING_PAYLOAD, None, stream_scope.clone())
+            .run(&mut adapter, &mut output)
+            .await;
     })
 }
 
@@ -881,8 +880,6 @@ pub fn connect_kline_stream(
             .map(|(_, timeframe)| (timeframe.to_string(), *timeframe))
             .collect();
 
-        let control = WsSession::with_opcode_ping(BINANCE_OPCODE_PING_PAYLOAD, None, stream_scope);
-
         let mut adapter = KlineAdapter {
             market,
             ticker_info_map,
@@ -891,6 +888,8 @@ pub fn connect_kline_stream(
             proxy_cfg: proxy_cfg.clone(),
         };
 
-        control.run(&mut adapter, &mut output).await;
+        WsSession::with_opcode_ping(BINANCE_OPCODE_PING_PAYLOAD, None, stream_scope)
+            .run(&mut adapter, &mut output)
+            .await;
     })
 }

@@ -342,8 +342,6 @@ pub fn connect_trade_stream(
             "args": stream
         });
 
-        let control = WsSession::with_text_ping(BYBIT_PING_PAYLOAD, None, stream_scope);
-
         let ticker_info_map: FxHashMap<Ticker, (TickerInfo, QtyNormalization)> = tickers
             .iter()
             .map(|ticker_info| {
@@ -368,7 +366,9 @@ pub fn connect_trade_stream(
             proxy_cfg: proxy_cfg.clone(),
         };
 
-        control.run(&mut adapter, &mut output).await;
+        WsSession::with_text_ping(BYBIT_PING_PAYLOAD, None, stream_scope)
+            .run(&mut adapter, &mut output)
+            .await;
     })
 }
 
@@ -503,8 +503,6 @@ pub fn connect_depth_stream(
             "args": [ws_stream]
         });
 
-        let control = WsSession::with_text_ping(BYBIT_PING_PAYLOAD, None, stream_scope);
-
         let mut adapter = DepthAdapter {
             stream,
             ticker_info,
@@ -515,7 +513,9 @@ pub fn connect_depth_stream(
             proxy_cfg: proxy_cfg.clone(),
         };
 
-        control.run(&mut adapter, &mut output).await;
+        WsSession::with_text_ping(BYBIT_PING_PAYLOAD, None, stream_scope)
+            .run(&mut adapter, &mut output)
+            .await;
     })
 }
 
@@ -649,8 +649,6 @@ pub fn connect_kline_stream(
             "args": stream_str
         });
 
-        let control = WsSession::with_text_ping(BYBIT_PING_PAYLOAD, None, stream_scope.clone());
-
         let ticker_info_map: HashMap<Ticker, (TickerInfo, QtyNormalization)> = streams
             .iter()
             .map(|(ticker_info, _)| {
@@ -675,6 +673,8 @@ pub fn connect_kline_stream(
             proxy_cfg: proxy_cfg.clone(),
         };
 
-        control.run(&mut adapter, &mut output).await;
+        WsSession::with_text_ping(BYBIT_PING_PAYLOAD, None, stream_scope.clone())
+            .run(&mut adapter, &mut output)
+            .await;
     })
 }
