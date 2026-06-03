@@ -175,6 +175,39 @@ jobs:
             - name: Set artifact path
               run: ${{ matrix.target.artifact_path }}
 
+            - name: Sign Windows executable with SignPath
+              if: matrix.target.target == 'windows-x64'
+              shell: pwsh
+              env:
+                  SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+                  SIGNPATH_ORG_ID: ${{ secrets.SIGNPATH_ORG_ID }}
+              run: |
+                  Install-Module -Name SignPath -Force -Scope CurrentUser -SkipPublisherCheck
+
+                  $zipPath = "target/release/flowsurface-x86_64-windows.zip"
+                  $extractDir = "target/release/win-sign"
+
+                  Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
+
+                  Write-Host "Signing flowsurface.exe..."
+                  Submit-SigningRequest @{
+                      InputArtifactPath  = "$extractDir/flowsurface.exe"
+                      ApiToken           = $env:SIGNPATH_API_TOKEN
+                      OrganizationId     = $env:SIGNPATH_ORG_ID
+                      ProjectSlug        = "flowsurface"
+                      SigningPolicySlug  = "test-signing"
+                      OutputArtifactPath = "$extractDir/flowsurface-signed.exe"
+                      WaitForCompletion  = $true
+                  }
+
+                  Remove-Item "$extractDir/flowsurface.exe"
+                  Rename-Item "$extractDir/flowsurface-signed.exe" "flowsurface.exe"
+
+                  Write-Host "Repackaging signed zip..."
+                  Remove-Item $zipPath
+                  Compress-Archive -Path "$extractDir/*" -DestinationPath $zipPath -Force
+                  Write-Host "Done: $zipPath"
+
             - name: Upload artifact
               uses: actions/upload-artifact@v4
               env:
@@ -241,59 +274,9 @@ jobs:
                   name: macos-universal
                   path: target/release/flowsurface-universal-macos.tar.gz
 
-    add-assets:
+    aggregate-artifacts:
+        name: Aggregate Release Artifacts
         needs: [create-release, create-universal]
-        name: Add Assets
-
-        strategy:
-            matrix:
-                target:
-                    - artifact: macos-universal
-                      artifact_name: |
-                          echo "ARTIFACT_NAME=flowsurface-universal-macos.tar.gz" >> "$GITHUB_ENV"
-                      asset_type: application/gzip
-                    - artifact: windows-x64
-                      artifact_name: |
-                          echo "ARTIFACT_NAME=flowsurface-x86_64-windows.zip" >> "$GITHUB_ENV"
-                      asset_type: application/x-dosexec
-                    - artifact: linux-x64
-                      artifact_name: |
-                          echo "ARTIFACT_NAME=flowsurface-x86_64-linux.tar.gz" >> "$GITHUB_ENV"
-                      asset_type: application/gzip
-                    - artifact: linux-arm
-                      artifact_name: |
-                          echo "ARTIFACT_NAME=flowsurface-aarch64-linux.tar.gz" >> "$GITHUB_ENV"
-                      asset_type: application/gzip
-
-        runs-on: ubuntu-latest
-        env:
-            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-        steps:
-            - uses: actions/checkout@v3
-
-            - name: Download artifact
-              uses: actions/download-artifact@v4
-              with:
-                  name: ${{ matrix.target.artifact }}
-                  path: ${{ matrix.target.artifact }}
-
-            - name: Set artifact name
-              run: ${{ matrix.target.artifact_name }}
-
-            - name: Upload asset
-              uses: actions/upload-release-asset@v1
-              env:
-                  ARTIFACT_NAME: ${{ env.ARTIFACT_NAME }}
-              with:
-                  upload_url: ${{ needs.create-release.outputs.upload_url }}
-                  asset_path: ./${{ matrix.target.artifact }}/${{ env.ARTIFACT_NAME }}
-                  asset_name: ${{ env.ARTIFACT_NAME }}
-                  asset_content_type: ${{ matrix.target.asset_type }}
-
-    generate-checksums:
-        needs: [create-release, create-universal]
-        name: Generate Checksums
         runs-on: ubuntu-latest
         steps:
             - name: Download all artifacts
@@ -301,16 +284,85 @@ jobs:
               with:
                   path: artifacts
 
+            - name: Collect artifacts
+              shell: bash
+              run: |
+                  mkdir -p release-artifacts
+
+                  cp artifacts/windows-x64/flowsurface-x86_64-windows.zip release-artifacts/
+
+                  cp artifacts/macos-universal/flowsurface-universal-macos.tar.gz release-artifacts/
+
+                  cp artifacts/linux-x64/flowsurface-x86_64-linux.tar.gz release-artifacts/
+
+                  cp artifacts/linux-arm/flowsurface-aarch64-linux.tar.gz release-artifacts/
+
+                  ls -la release-artifacts/
+
+            - name: Upload collected artifacts
+              uses: actions/upload-artifact@v4
+              with:
+                  name: signed-artifacts
+                  path: release-artifacts/
+
+    add-assets:
+        needs: [create-release, aggregate-artifacts]
+        name: Add Assets
+
+        strategy:
+            matrix:
+                target:
+                    - artifact_name: flowsurface-universal-macos.tar.gz
+                      asset_type: application/gzip
+                    - artifact_name: flowsurface-x86_64-windows.zip
+                      asset_type: application/zip
+                    - artifact_name: flowsurface-x86_64-linux.tar.gz
+                      asset_type: application/gzip
+                    - artifact_name: flowsurface-aarch64-linux.tar.gz
+                      asset_type: application/gzip
+
+        runs-on: ubuntu-latest
+        env:
+            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+        steps:
+            - name: Download signed artifacts
+              uses: actions/download-artifact@v4
+              with:
+                  name: signed-artifacts
+                  path: signed-artifacts
+
+            - name: Upload asset
+              uses: actions/upload-release-asset@v1
+              env:
+                  ARTIFACT_NAME: ${{ matrix.target.artifact_name }}
+              with:
+                  upload_url: ${{ needs.create-release.outputs.upload_url }}
+                  asset_path: ./signed-artifacts/${{ matrix.target.artifact_name }}
+                  asset_name: ${{ matrix.target.artifact_name }}
+                  asset_content_type: ${{ matrix.target.asset_type }}
+
+    generate-checksums:
+        needs: [create-release, aggregate-artifacts]
+        name: Generate Checksums
+        runs-on: ubuntu-latest
+        steps:
+            - name: Download signed artifacts
+              uses: actions/download-artifact@v4
+              with:
+                  name: signed-artifacts
+                  path: artifacts
+
             - name: Generate checksums
               run: |
                   # Universal macOS
-                  sha256sum artifacts/macos-universal/flowsurface-universal-macos.tar.gz | awk '{print $1 "  flowsurface-universal-macos.tar.gz"}' >> SHA256SUMS
+                  sha256sum artifacts/flowsurface-universal-macos.tar.gz | awk '{print $1 "  flowsurface-universal-macos.tar.gz"}' >> SHA256SUMS
                   # Windows x64
-                  sha256sum artifacts/windows-x64/flowsurface-x86_64-windows.zip | awk '{print $1 "  flowsurface-x86_64-windows.zip"}' >> SHA256SUMS
+                  sha256sum artifacts/flowsurface-x86_64-windows.zip | awk '{print $1 "  flowsurface-x86_64-windows.zip"}' >> SHA256SUMS
                   # Linux x64
-                  sha256sum artifacts/linux-x64/flowsurface-x86_64-linux.tar.gz | awk '{print $1 "  flowsurface-x86_64-linux.tar.gz"}' >> SHA256SUMS
+                  sha256sum artifacts/flowsurface-x86_64-linux.tar.gz | awk '{print $1 "  flowsurface-x86_64-linux.tar.gz"}' >> SHA256SUMS
                   # Linux ARM
-                  sha256sum artifacts/linux-arm/flowsurface-aarch64-linux.tar.gz | awk '{print $1 "  flowsurface-aarch64-linux.tar.gz"}' >> SHA256SUMS
+                  sha256sum artifacts/flowsurface-aarch64-linux.tar.gz | awk '{print $1 "  flowsurface-aarch64-linux.tar.gz"}' >> SHA256SUMS
 
                   cat SHA256SUMS
 
