@@ -190,7 +190,7 @@ jobs:
                   Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
 
                   Write-Host "Signing flowsurface.exe..."
-                  Submit-SigningRequest @{
+                  $signParams = @{
                       InputArtifactPath  = "$extractDir/flowsurface.exe"
                       ApiToken           = $env:SIGNPATH_API_TOKEN
                       OrganizationId     = $env:SIGNPATH_ORG_ID
@@ -199,6 +199,7 @@ jobs:
                       OutputArtifactPath = "$extractDir/flowsurface-signed.exe"
                       WaitForCompletion  = $true
                   }
+                  Submit-SigningRequest @signParams
 
                   Remove-Item "$extractDir/flowsurface.exe"
                   Rename-Item "$extractDir/flowsurface-signed.exe" "flowsurface.exe"
