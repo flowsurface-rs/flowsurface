@@ -24,7 +24,6 @@ use futures::SinkExt;
 use std::sync::Arc;
 use tokio::time::{Instant, Interval};
 
-const DEFAULT_RECONNECT_DELAY: Duration = Duration::from_secs(1);
 const HEARTBEAT_SEND_FAILED_REASON: &str = "Failed to send heartbeat ping";
 const HEARTBEAT_PONG_FAILED_REASON: &str = "Failed to reply pong";
 
@@ -230,7 +229,6 @@ enum PingPayload {
 
 #[derive(Clone, Debug)]
 pub struct WsSession {
-    reconnect_delay: Duration,
     ping_payload: PingPayload,
     text_pong_payload: Option<&'static [u8]>,
     streams: Arc<[StreamKind]>,
@@ -238,7 +236,8 @@ pub struct WsSession {
 
 pub trait WsAdapter {
     /// Connects to the WebSocket and returns a transport for it.
-    /// This will be retried indefinitely until it succeeds, with a delay of `WsSession::reconnect_delay` between attempts.
+    /// This will be retried indefinitely until it succeeds, with an exponential backoff
+    /// between attempts (base ~500ms, doubling, capped at 30s, with jitter).
     async fn connect(&mut self) -> Result<WsTransport, String>;
     /// Called when a connection is established.
     /// This is called on every successful connection, including after reconnects.
@@ -260,7 +259,6 @@ impl WsSession {
         streams: Arc<[StreamKind]>,
     ) -> Self {
         Self {
-            reconnect_delay: DEFAULT_RECONNECT_DELAY,
             ping_payload: PingPayload::Text(ping_payload),
             text_pong_payload,
             streams,
@@ -273,7 +271,6 @@ impl WsSession {
         streams: Arc<[StreamKind]>,
     ) -> Self {
         Self {
-            reconnect_delay: DEFAULT_RECONNECT_DELAY,
             ping_payload: PingPayload::OpCode(ping_payload),
             text_pong_payload,
             streams,
@@ -283,6 +280,7 @@ impl WsSession {
     pub async fn run<A: WsAdapter>(&self, adapter: &mut A, output: &mut mpsc::Sender<Event>) -> ! {
         let mut state = State::Disconnected;
         let mut heartbeat = WsHeartbeat::default();
+        let mut backoff = ReconnectBackoff::new();
         let streams = self.streams.clone();
 
         loop {
@@ -291,12 +289,15 @@ impl WsSession {
                     Ok(websocket) => {
                         state = State::Connected(websocket);
                         heartbeat.reset();
+                        backoff.reset();
 
                         adapter.on_connected(output).await;
+                        emit_connected(output, &streams).await;
                     }
                     Err(reason) => {
                         emit_disconnected(output, &streams, reason).await;
-                        tokio::time::sleep(self.reconnect_delay).await;
+                        tokio::time::sleep(backoff.delay()).await;
+                        backoff.record_failure();
                     }
                 },
                 State::Connected(websocket) => {
@@ -399,6 +400,50 @@ impl Default for WsHeartbeat {
             Self::DEFAULT_HEARTBEAT_INTERVAL,
             Self::DEFAULT_HEARTBEAT_TIMEOUT,
         )
+    }
+}
+
+/// Exponential backoff for WebSocket reconnection attempts.
+///
+/// Starts at ~500ms, doubles each failure, caps at 30s, and adds ±25% jitter
+/// to spread reconnections across streams when multiple disconnect at once.
+struct ReconnectBackoff {
+    current: Duration,
+    max_delay: Duration,
+    multiplier: f64,
+    jitter: f64,
+}
+
+impl ReconnectBackoff {
+    const INITIAL: Duration = Duration::from_millis(500);
+    const MAX: Duration = Duration::from_secs(30);
+
+    fn new() -> Self {
+        Self {
+            current: Self::INITIAL,
+            max_delay: Self::MAX,
+            multiplier: 2.0,
+            jitter: 0.25,
+        }
+    }
+
+    /// Returns the delay before the next reconnect attempt, with ±jitter applied.
+    fn delay(&self) -> Duration {
+        let jitter_range = self.current.mul_f64(self.jitter);
+        let jitter = Duration::from_secs_f64(
+            (rand::random::<f64>() * 2.0 - 1.0) * jitter_range.as_secs_f64(),
+        );
+        (self.current + jitter).clamp(Duration::ZERO, self.max_delay)
+    }
+
+    /// Advances the backoff after a failed attempt (multiplies delay, capped at max).
+    fn record_failure(&mut self) {
+        self.current = (self.current.mul_f64(self.multiplier)).min(self.max_delay);
+    }
+
+    /// Resets back to the initial delay after a successful connection.
+    fn reset(&mut self) {
+        self.current = Self::INITIAL;
     }
 }
 

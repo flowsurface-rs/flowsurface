@@ -16,6 +16,7 @@ thiserror.workspace = true
 enum-map.workspace = true
 rustc-hash.workspace = true
 url.workspace = true
+rand.workspace = true
 
 tokio = { version = "1.52", default-features = false, features = ["rt", "macros"] }
 reqwest = { version = "0.12.28", default-features = false, features = ["json", "brotli", "rustls-tls", "socks"] }
