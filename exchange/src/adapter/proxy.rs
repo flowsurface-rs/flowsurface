@@ -1,4 +1,4 @@
-use crate::{adapter::connect::TCP_CONNECT_TIMEOUT, error::AdapterError};
+use crate::error::AdapterError;
 use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf},
@@ -33,7 +33,7 @@ impl ProxyStream {
         }
 
         let addr = format!("{domain}:{port}");
-        let tcp = tokio::time::timeout(TCP_CONNECT_TIMEOUT, TcpStream::connect(&addr))
+        let tcp = tokio::time::timeout(super::ws::TCP_CONNECT_TIMEOUT, TcpStream::connect(&addr))
             .await
             .map_err(|_| AdapterError::WebsocketError(format!("TCP connect timeout: {addr}")))?
             .map_err(|e| AdapterError::WebsocketError(e.to_string()))?;
@@ -395,7 +395,7 @@ impl Proxy {
                         |_| AdapterError::ParseError("invalid proxy dnsname".to_string()),
                     )?;
 
-                let mut tls = super::connect::TLS_CONNECTOR
+                let mut tls = super::ws::TLS_CONNECTOR
                     .connect(server_name, tcp)
                     .await
                     .map_err(|e| AdapterError::WebsocketError(e.to_string()))?;

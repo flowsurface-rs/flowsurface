@@ -2,8 +2,7 @@ use crate::{
     Event, Kline, Price, PushFrequency, Ticker, TickerInfo, Timeframe, Trade, Volume,
     adapter::{
         MarketKind, StreamKind, StreamTicksize,
-        connect::{WsAdapter, WsSession, WsTransport},
-        hub::{TradeBuffer, channel},
+        hub::{TradeBuffer, WsAdapter, WsSession, WsTransport},
     },
     depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
     serde_util::{self, de_string_to_number},
@@ -206,80 +205,67 @@ pub fn connect_trade_stream(
     market_type: MarketKind,
     proxy_cfg: Option<crate::proxy::Proxy>,
 ) -> impl Stream<Item = Event> {
-    channel(100, move |mut output| async move {
-        let stream_scope: Arc<[StreamKind]> = Arc::from(
-            streams
-                .iter()
-                .map(|ticker_info| StreamKind::Trades {
-                    ticker_info: *ticker_info,
-                })
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
-        );
-
-        if streams.is_empty() {
-            let _ = output
-                .send(Event::Disconnected(
-                    stream_scope,
-                    "Empty OKX trade stream payload".to_string(),
-                ))
-                .await;
-            return;
-        }
-
-        let args = streams
+    let stream_scope: Arc<[StreamKind]> = Arc::from(
+        streams
             .iter()
-            .map(|ticker_info| {
-                let (symbol_str, _) = ticker_info.ticker.to_full_symbol_and_type();
-                serde_json::json!({
-                    "channel": "trades",
-                    "instId": symbol_str,
-                })
+            .map(|ticker_info| StreamKind::Trades {
+                ticker_info: *ticker_info,
             })
-            .collect::<Vec<_>>();
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+    );
 
-        let subscribe_message = serde_json::json!({
-            "op": "subscribe",
-            "args": args,
-        });
+    let args = streams
+        .iter()
+        .map(|ticker_info| {
+            let (symbol_str, _) = ticker_info.ticker.to_full_symbol_and_type();
+            serde_json::json!({
+                "channel": "trades",
+                "instId": symbol_str,
+            })
+        })
+        .collect::<Vec<_>>();
 
-        let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
-        let ticker_info_map = streams
-            .iter()
-            .map(|ticker_info| {
+    let subscribe_message = serde_json::json!({
+        "op": "subscribe",
+        "args": args,
+    });
+
+    let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
+    let ticker_info_map = streams
+        .iter()
+        .map(|ticker_info| {
+            (
+                ticker_info.ticker,
                 (
-                    ticker_info.ticker,
-                    (
+                    *ticker_info,
+                    QtyNormalization::with_raw_qty_unit(
+                        size_in_quote_ccy,
                         *ticker_info,
-                        QtyNormalization::with_raw_qty_unit(
-                            size_in_quote_ccy,
-                            *ticker_info,
-                            raw_qty_unit_from_market_type(market_type),
-                        ),
+                        raw_qty_unit_from_market_type(market_type),
                     ),
-                )
-            })
-            .collect::<FxHashMap<Ticker, (TickerInfo, QtyNormalization)>>();
+                ),
+            )
+        })
+        .collect::<FxHashMap<Ticker, (TickerInfo, QtyNormalization)>>();
 
-        let symbol_to_ticker = streams
-            .iter()
-            .map(|ticker_info| {
-                let (symbol_str, _) = ticker_info.ticker.to_full_symbol_and_type();
-                (symbol_str, ticker_info.ticker)
-            })
-            .collect::<FxHashMap<String, Ticker>>();
+    let symbol_to_ticker = streams
+        .iter()
+        .map(|ticker_info| {
+            let (symbol_str, _) = ticker_info.ticker.to_full_symbol_and_type();
+            (symbol_str, ticker_info.ticker)
+        })
+        .collect::<FxHashMap<String, Ticker>>();
 
-        let mut adapter = TradeAdapter {
-            symbol_to_ticker,
-            buffer: TradeBuffer::new(ticker_info_map),
-            subscribe_message: subscribe_message.clone(),
-            proxy_cfg: proxy_cfg.clone(),
-        };
+    let adapter = TradeAdapter {
+        symbol_to_ticker,
+        buffer: TradeBuffer::new(ticker_info_map),
+        subscribe_message,
+        proxy_cfg,
+    };
+    let session = WsSession::with_text_ping(OKX_PING_PAYLOAD, Some(b"pong"), stream_scope);
 
-        WsSession::with_text_ping(OKX_PING_PAYLOAD, Some(b"pong"), stream_scope)
-            .run(&mut adapter, &mut output)
-            .await;
-    })
+    session.run(adapter)
 }
 
 struct DepthAdapter {
@@ -360,46 +346,42 @@ pub fn connect_depth_stream(
     push_freq: PushFrequency,
     proxy_cfg: Option<crate::proxy::Proxy>,
 ) -> impl Stream<Item = Event> {
-    channel(100, move |mut output| async move {
-        let stream = StreamKind::Depth {
-            ticker_info,
-            depth_aggr,
-            push_freq,
-        };
+    let stream = StreamKind::Depth {
+        ticker_info,
+        depth_aggr,
+        push_freq,
+    };
 
-        let stream_scope = Arc::from(vec![stream].into_boxed_slice());
+    let stream_scope = Arc::from(vec![stream].into_boxed_slice());
 
-        let ticker = ticker_info.ticker;
+    let ticker = ticker_info.ticker;
 
-        let (symbol_str, market_type) = ticker.to_full_symbol_and_type();
+    let (symbol_str, market_type) = ticker.to_full_symbol_and_type();
 
-        let subscribe_message = serde_json::json!({
-            "op": "subscribe",
-            "args": [
-                { "channel": "books",  "instId": symbol_str },
-            ],
-        });
+    let subscribe_message = serde_json::json!({
+        "op": "subscribe",
+        "args": [
+            { "channel": "books",  "instId": symbol_str },
+        ],
+    });
 
-        let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
-        let qty_norm = QtyNormalization::with_raw_qty_unit(
-            size_in_quote_ccy,
-            ticker_info,
-            raw_qty_unit_from_market_type(market_type),
-        );
+    let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
+    let qty_norm = QtyNormalization::with_raw_qty_unit(
+        size_in_quote_ccy,
+        ticker_info,
+        raw_qty_unit_from_market_type(market_type),
+    );
 
-        let mut adapter = DepthAdapter {
-            stream,
-            ticker_info,
-            qty_norm,
-            orderbook: LocalDepthCache::default(),
-            subscribe_message: subscribe_message.clone(),
-            proxy_cfg: proxy_cfg.clone(),
-        };
+    let adapter = DepthAdapter {
+        stream,
+        ticker_info,
+        qty_norm,
+        orderbook: LocalDepthCache::default(),
+        subscribe_message,
+        proxy_cfg,
+    };
 
-        WsSession::with_text_ping(OKX_PING_PAYLOAD, Some(b"pong"), stream_scope)
-            .run(&mut adapter, &mut output)
-            .await;
-    })
+    WsSession::with_text_ping(OKX_PING_PAYLOAD, Some(b"pong"), stream_scope).run(adapter)
 }
 
 struct KlineAdapter {
@@ -498,62 +480,48 @@ pub fn connect_kline_stream(
     market_type: MarketKind,
     proxy_cfg: Option<crate::proxy::Proxy>,
 ) -> impl Stream<Item = Event> {
-    channel(100, move |mut output| async move {
-        let stream_scope: Arc<[StreamKind]> = Arc::from(
-            streams
-                .iter()
-                .map(|(ticker_info, timeframe)| StreamKind::Kline {
-                    ticker_info: *ticker_info,
-                    timeframe: *timeframe,
-                })
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
-        );
+    let stream_scope: Arc<[StreamKind]> = Arc::from(
+        streams
+            .iter()
+            .map(|(ticker_info, timeframe)| StreamKind::Kline {
+                ticker_info: *ticker_info,
+                timeframe: *timeframe,
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+    );
 
-        if streams.is_empty() {
-            let _ = output
-                .send(Event::Disconnected(
-                    stream_scope,
-                    "Empty OKX kline stream payload".to_string(),
-                ))
-                .await;
-            return;
+    let mut args = Vec::with_capacity(streams.len());
+    let mut lookup = HashMap::new();
+    for (ticker_info, timeframe) in &streams {
+        let ticker = ticker_info.ticker;
+
+        if let Some(bar) = timeframe_to_okx_bar(*timeframe) {
+            let (symbol, _mt) = ticker.to_full_symbol_and_type();
+            let channel = format!("candle{bar}");
+            args.push(serde_json::json!({
+                "channel": channel,
+                "instId": symbol,
+            }));
+            lookup.insert((channel, symbol), (*ticker_info, *timeframe));
         }
+    }
 
-        let mut args = Vec::with_capacity(streams.len());
-        let mut lookup = HashMap::new();
-        for (ticker_info, timeframe) in &streams {
-            let ticker = ticker_info.ticker;
+    let subscribe_message = serde_json::json!({
+        "op": "subscribe",
+        "args": args,
+    });
 
-            if let Some(bar) = timeframe_to_okx_bar(*timeframe) {
-                let (symbol, _mt) = ticker.to_full_symbol_and_type();
-                let channel = format!("candle{bar}");
-                args.push(serde_json::json!({
-                    "channel": channel,
-                    "instId": symbol,
-                }));
-                lookup.insert((channel, symbol), (*ticker_info, *timeframe));
-            }
-        }
+    let lookup = Arc::new(lookup);
+    let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
 
-        let subscribe_message = serde_json::json!({
-            "op": "subscribe",
-            "args": args,
-        });
+    let adapter = KlineAdapter {
+        subscribe_message,
+        proxy_cfg,
+        lookup,
+        size_in_quote_ccy,
+        market_type,
+    };
 
-        let lookup = Arc::new(lookup);
-        let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
-
-        let mut adapter = KlineAdapter {
-            subscribe_message: subscribe_message.clone(),
-            proxy_cfg: proxy_cfg.clone(),
-            lookup: lookup.clone(),
-            size_in_quote_ccy,
-            market_type,
-        };
-
-        WsSession::with_text_ping(OKX_PING_PAYLOAD, Some(b"pong"), stream_scope)
-            .run(&mut adapter, &mut output)
-            .await;
-    })
+    WsSession::with_text_ping(OKX_PING_PAYLOAD, Some(b"pong"), stream_scope).run(adapter)
 }

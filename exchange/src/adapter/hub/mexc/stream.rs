@@ -2,8 +2,7 @@ use crate::{
     Event, Kline, Price, PushFrequency, Ticker, TickerInfo, Timeframe, Trade, UnixMs, Volume,
     adapter::{
         MarketKind, StreamKind, StreamTicksize,
-        connect::{WsAdapter, WsSession, WsTransport, emit_connected},
-        hub::{TradeBuffer, channel},
+        hub::{TradeBuffer, WsAdapter, WsSession, WsTransport},
     },
     depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
     unit::qty::{QtyNormalization, SizeUnit, volume_size_unit},
@@ -317,55 +316,41 @@ pub fn connect_trade_stream(
     market_type: MarketKind,
     proxy_cfg: Option<crate::proxy::Proxy>,
 ) -> impl Stream<Item = Event> {
-    channel(100, move |mut output| async move {
-        let stream_scope: Arc<[StreamKind]> = Arc::from(
-            tickers
-                .iter()
-                .map(|ticker_info| StreamKind::Trades {
-                    ticker_info: *ticker_info,
-                })
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
-        );
-
-        if tickers.is_empty() {
-            let _ = output
-                .send(Event::Disconnected(
-                    stream_scope,
-                    "Empty MEXC trade stream payload".to_string(),
-                ))
-                .await;
-            return;
-        }
-
-        let ticker_info_map = tickers
+    let stream_scope: Arc<[StreamKind]> = Arc::from(
+        tickers
             .iter()
-            .map(|ticker_info| {
-                (
-                    ticker_info.ticker,
-                    (
-                        *ticker_info,
-                        QtyNormalization::with_raw_qty_unit(
-                            volume_size_unit() == SizeUnit::Quote,
-                            *ticker_info,
-                            raw_qty_unit_from_market_type(market_type),
-                        ),
-                    ),
-                )
+            .map(|ticker_info| StreamKind::Trades {
+                ticker_info: *ticker_info,
             })
-            .collect::<FxHashMap<Ticker, (TickerInfo, QtyNormalization)>>();
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+    );
 
-        let mut adapter = TradeAdapter {
-            market_type,
-            tickers,
-            buffer: TradeBuffer::new(ticker_info_map),
-            proxy_cfg,
-        };
+    let ticker_info_map = tickers
+        .iter()
+        .map(|ticker_info| {
+            (
+                ticker_info.ticker,
+                (
+                    *ticker_info,
+                    QtyNormalization::with_raw_qty_unit(
+                        volume_size_unit() == SizeUnit::Quote,
+                        *ticker_info,
+                        raw_qty_unit_from_market_type(market_type),
+                    ),
+                ),
+            )
+        })
+        .collect::<FxHashMap<Ticker, (TickerInfo, QtyNormalization)>>();
 
-        WsSession::with_text_ping(PING_PAYLOAD, Some(b"pong"), stream_scope)
-            .run(&mut adapter, &mut output)
-            .await;
-    })
+    let adapter = TradeAdapter {
+        market_type,
+        tickers,
+        buffer: TradeBuffer::new(ticker_info_map),
+        proxy_cfg,
+    };
+
+    WsSession::with_text_ping(PING_PAYLOAD, Some(b"pong"), stream_scope).run(adapter)
 }
 
 struct DepthAdapter {
@@ -412,7 +397,7 @@ impl WsAdapter for DepthAdapter {
     async fn on_connected(&mut self, output: &mut mpsc::Sender<Event>) {
         self.snapshot_ready = false;
         self.snapshot_time = UnixMs::ZERO;
-        emit_connected(output, &self.stream_scope).await;
+        crate::adapter::hub::emit_connected(output, &self.stream_scope).await;
     }
 
     async fn on_text(
@@ -503,40 +488,36 @@ pub fn connect_depth_stream(
     push_freq: PushFrequency,
     proxy_cfg: Option<crate::proxy::Proxy>,
 ) -> impl Stream<Item = Event> {
-    channel(100, move |mut output| async move {
-        let stream = StreamKind::Depth {
-            ticker_info,
-            depth_aggr,
-            push_freq,
-        };
-        let stream_scope: Arc<[StreamKind]> = Arc::from(vec![stream].into_boxed_slice());
-        let ticker = ticker_info.ticker;
-        let (symbol_str, market_type) = ticker.to_full_symbol_and_type();
+    let stream = StreamKind::Depth {
+        ticker_info,
+        depth_aggr,
+        push_freq,
+    };
+    let stream_scope: Arc<[StreamKind]> = Arc::from(vec![stream].into_boxed_slice());
+    let ticker = ticker_info.ticker;
+    let (symbol_str, market_type) = ticker.to_full_symbol_and_type();
 
-        let qty_norm = QtyNormalization::with_raw_qty_unit(
-            volume_size_unit() == SizeUnit::Quote,
-            ticker_info,
-            raw_qty_unit_from_market_type(market_type),
-        );
+    let qty_norm = QtyNormalization::with_raw_qty_unit(
+        volume_size_unit() == SizeUnit::Quote,
+        ticker_info,
+        raw_qty_unit_from_market_type(market_type),
+    );
 
-        let mut adapter = DepthAdapter {
-            handle,
-            ticker_info,
-            market_type,
-            symbol_str,
-            stream,
-            proxy_cfg,
-            qty_norm,
-            orderbook: LocalDepthCache::default(),
-            snapshot_ready: false,
-            snapshot_time: UnixMs::ZERO,
-            stream_scope: stream_scope.clone(),
-        };
+    let adapter = DepthAdapter {
+        handle,
+        ticker_info,
+        market_type,
+        symbol_str,
+        stream,
+        proxy_cfg,
+        qty_norm,
+        orderbook: LocalDepthCache::default(),
+        snapshot_ready: false,
+        snapshot_time: UnixMs::ZERO,
+        stream_scope: stream_scope.clone(),
+    };
 
-        WsSession::with_text_ping(PING_PAYLOAD, Some(b"pong"), stream_scope)
-            .run(&mut adapter, &mut output)
-            .await;
-    })
+    WsSession::with_text_ping(PING_PAYLOAD, Some(b"pong"), stream_scope).run(adapter)
 }
 
 struct KlineAdapter {
@@ -659,78 +640,42 @@ pub fn connect_kline_stream(
     market_type: MarketKind,
     proxy_cfg: Option<crate::proxy::Proxy>,
 ) -> impl Stream<Item = Event> {
-    channel(100, move |mut output| async move {
-        let stream_scope: Arc<[StreamKind]> = Arc::from(
-            streams
-                .iter()
-                .map(|(ticker_info, timeframe)| StreamKind::Kline {
-                    ticker_info: *ticker_info,
-                    timeframe: *timeframe,
-                })
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
-        );
-
-        if streams.is_empty() {
-            let _ = output
-                .send(Event::Disconnected(
-                    stream_scope,
-                    "Empty MEXC kline stream payload".to_string(),
-                ))
-                .await;
-            return;
-        }
-
-        if market_type == MarketKind::Spot {
-            let _ = output
-                .send(Event::Disconnected(
-                    stream_scope,
-                    "MEXC spot kline websocket stream is not supported".to_string(),
-                ))
-                .await;
-            return;
-        }
-
-        let ticker_info_map = streams
+    let stream_scope: Arc<[StreamKind]> = Arc::from(
+        streams
             .iter()
-            .map(|(ticker_info, _)| {
-                contract_size_for_market(*ticker_info, market_type, "connect_kline_stream").map(
-                    |_| {
-                        (
-                            ticker_info.ticker,
-                            (
-                                *ticker_info,
-                                QtyNormalization::with_raw_qty_unit(
-                                    volume_size_unit() == SizeUnit::Quote,
-                                    *ticker_info,
-                                    raw_qty_unit_from_market_type(market_type),
-                                ),
-                            ),
-                        )
-                    },
-                )
+            .map(|(ticker_info, timeframe)| StreamKind::Kline {
+                ticker_info: *ticker_info,
+                timeframe: *timeframe,
             })
-            .collect::<Result<HashMap<_, _>, _>>();
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+    );
 
-        let ticker_info_map = match ticker_info_map {
-            Ok(map) => map,
-            Err(err) => {
-                let _ = output
-                    .send(Event::Disconnected(stream_scope, err.to_string()))
-                    .await;
-                return;
-            }
-        };
+    let ticker_info_map: HashMap<Ticker, (TickerInfo, QtyNormalization)> = streams
+        .iter()
+        .filter_map(|(ticker_info, _)| {
+            let _ =
+                contract_size_for_market(*ticker_info, market_type, "connect_kline_stream").ok()?;
+            Some((
+                ticker_info.ticker,
+                (
+                    *ticker_info,
+                    QtyNormalization::with_raw_qty_unit(
+                        volume_size_unit() == SizeUnit::Quote,
+                        *ticker_info,
+                        raw_qty_unit_from_market_type(market_type),
+                    ),
+                ),
+            ))
+        })
+        .collect();
 
-        let mut adapter = KlineAdapter {
-            market_type,
-            streams,
-            ticker_info_map,
-            proxy_cfg,
-        };
+    let adapter = KlineAdapter {
+        market_type,
+        streams,
+        ticker_info_map,
+        proxy_cfg,
+    };
 
-        WsSession::with_text_ping(PING_PAYLOAD, None, stream_scope)
-            .run(&mut adapter, &mut output)
-            .await;
-    })
+    WsSession::with_text_ping(PING_PAYLOAD, None, stream_scope).run(adapter)
 }

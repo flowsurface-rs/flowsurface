@@ -2,8 +2,7 @@ use crate::{
     Event, Kline, Price, PushFrequency, Ticker, TickerInfo, Trade, Volume,
     adapter::{
         MarketKind, StreamKind, StreamTicksize,
-        connect::{WsAdapter, WsSession, WsTransport, emit_connected},
-        hub::{TradeBuffer, channel},
+        hub::{TradeBuffer, WsAdapter, WsSession, WsTransport, emit_connected},
     },
     depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
     serde_util::de_string_to_number,
@@ -571,70 +570,56 @@ pub fn connect_trade_stream(
     market: MarketKind,
     proxy_cfg: Option<crate::proxy::Proxy>,
 ) -> impl Stream<Item = Event> {
-    channel(100, move |mut output| async move {
-        let stream_scope: Arc<[StreamKind]> = Arc::from(
-            tickers
-                .iter()
-                .map(|ticker_info| StreamKind::Trades {
-                    ticker_info: *ticker_info,
-                })
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
-        );
-
-        if tickers.is_empty() {
-            let _ = output
-                .send(Event::Disconnected(
-                    stream_scope,
-                    "Empty Binance trade stream payload".to_string(),
-                ))
-                .await;
-            return;
-        }
-
-        let stream = tickers
+    let stream_scope: Arc<[StreamKind]> = Arc::from(
+        tickers
             .iter()
-            .map(|ticker_info| {
-                format!(
-                    "{}@aggTrade",
-                    ticker_info
-                        .ticker
-                        .to_full_symbol_and_type()
-                        .0
-                        .to_lowercase()
-                )
+            .map(|ticker_info| StreamKind::Trades {
+                ticker_info: *ticker_info,
             })
             .collect::<Vec<_>>()
-            .join("/");
+            .into_boxed_slice(),
+    );
 
-        let ticker_info_map = tickers
-            .iter()
-            .map(|ticker_info| {
+    let stream = tickers
+        .iter()
+        .map(|ticker_info| {
+            format!(
+                "{}@aggTrade",
+                ticker_info
+                    .ticker
+                    .to_full_symbol_and_type()
+                    .0
+                    .to_lowercase()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("/");
+
+    let ticker_info_map = tickers
+        .iter()
+        .map(|ticker_info| {
+            (
+                ticker_info.ticker,
                 (
-                    ticker_info.ticker,
-                    (
+                    *ticker_info,
+                    QtyNormalization::with_raw_qty_unit(
+                        volume_size_unit() == SizeUnit::Quote,
                         *ticker_info,
-                        QtyNormalization::with_raw_qty_unit(
-                            volume_size_unit() == SizeUnit::Quote,
-                            *ticker_info,
-                            raw_qty_unit_from_market_type(market),
-                        ),
+                        raw_qty_unit_from_market_type(market),
                     ),
-                )
-            })
-            .collect();
+                ),
+            )
+        })
+        .collect();
 
-        let mut adapter = TradeAdapter {
-            market,
-            buffer: TradeBuffer::new(ticker_info_map),
-            stream: stream.clone(),
-            proxy_cfg: proxy_cfg.clone(),
-        };
+    let adapter = TradeAdapter {
+        market,
+        buffer: TradeBuffer::new(ticker_info_map),
+        stream: stream.clone(),
+        proxy_cfg: proxy_cfg.clone(),
+    };
 
-        WsSession::with_opcode_ping(BINANCE_OPCODE_PING_PAYLOAD, None, stream_scope)
-            .run(&mut adapter, &mut output)
-            .await;
-    })
+    WsSession::with_opcode_ping(BINANCE_OPCODE_PING_PAYLOAD, None, stream_scope).run(adapter)
 }
 
 struct DepthAdapter {
@@ -710,41 +695,38 @@ pub fn connect_depth_stream(
     push_freq: PushFrequency,
     proxy_cfg: Option<crate::proxy::Proxy>,
 ) -> impl Stream<Item = Event> {
-    channel(100, move |mut output| async move {
-        let stream = StreamKind::Depth {
-            ticker_info,
-            depth_aggr,
-            push_freq,
-        };
-        let stream_scope: Arc<[StreamKind]> = Arc::from(vec![stream].into_boxed_slice());
-        let ticker = ticker_info.ticker;
-        let (symbol_str, market) = ticker.to_full_symbol_and_type();
+    let stream = StreamKind::Depth {
+        ticker_info,
+        depth_aggr,
+        push_freq,
+    };
+    let stream_scope: Arc<[StreamKind]> = Arc::from(vec![stream].into_boxed_slice());
+    let ticker = ticker_info.ticker;
+    let (symbol_str, market) = ticker.to_full_symbol_and_type();
 
-        let qty_norm = QtyNormalization::with_raw_qty_unit(
-            volume_size_unit() == SizeUnit::Quote,
-            ticker_info,
-            raw_qty_unit_from_market_type(market),
-        );
+    let qty_norm = QtyNormalization::with_raw_qty_unit(
+        volume_size_unit() == SizeUnit::Quote,
+        ticker_info,
+        raw_qty_unit_from_market_type(market),
+    );
 
-        let ws_stream = format!("{}@depth@100ms", symbol_str.to_lowercase());
+    let ws_stream = format!("{}@depth@100ms", symbol_str.to_lowercase());
 
-        let mut adapter = DepthAdapter {
-            handle: handle.clone(),
-            market,
-            ticker_info,
-            qty_norm,
-            stream,
-            stream_scope: stream_scope.clone(),
-            ws_stream: ws_stream.clone(),
-            proxy_cfg,
-            sync_machine: DepthSyncMachine::new(handle, ticker),
-            stream_ready: false,
-        };
+    let adapter = DepthAdapter {
+        handle: handle.clone(),
+        market,
+        ticker_info,
+        qty_norm,
+        stream,
+        stream_scope: stream_scope.clone(),
+        ws_stream: ws_stream.clone(),
+        proxy_cfg,
+        sync_machine: DepthSyncMachine::new(handle, ticker),
+        stream_ready: false,
+    };
 
-        WsSession::with_opcode_ping(BINANCE_OPCODE_PING_PAYLOAD, None, stream_scope.clone())
-            .run(&mut adapter, &mut output)
-            .await;
-    })
+    WsSession::with_opcode_ping(BINANCE_OPCODE_PING_PAYLOAD, None, stream_scope.clone())
+        .run(adapter)
 }
 
 struct KlineAdapter {
@@ -823,73 +805,59 @@ pub fn connect_kline_stream(
     market: MarketKind,
     proxy_cfg: Option<crate::proxy::Proxy>,
 ) -> impl Stream<Item = Event> {
-    channel(100, move |mut output| async move {
-        let stream_scope: Arc<[StreamKind]> = Arc::from(
-            streams
-                .iter()
-                .map(|(ticker_info, timeframe)| StreamKind::Kline {
-                    ticker_info: *ticker_info,
-                    timeframe: *timeframe,
-                })
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
-        );
-
-        if streams.is_empty() {
-            let _ = output
-                .send(Event::Disconnected(
-                    stream_scope,
-                    "Empty Binance kline stream payload".to_string(),
-                ))
-                .await;
-            return;
-        }
-
-        let stream_str = streams
+    let stream_scope: Arc<[StreamKind]> = Arc::from(
+        streams
             .iter()
-            .map(|(ticker_info, timeframe)| {
-                let ticker = ticker_info.ticker;
-                format!(
-                    "{}@kline_{}",
-                    ticker.to_full_symbol_and_type().0.to_lowercase(),
-                    timeframe
-                )
+            .map(|(ticker_info, timeframe)| StreamKind::Kline {
+                ticker_info: *ticker_info,
+                timeframe: *timeframe,
             })
-            .collect::<Vec<String>>()
-            .join("/");
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+    );
 
-        let ticker_info_map = streams
-            .iter()
-            .map(|(ticker_info, _)| {
+    let stream_str = streams
+        .iter()
+        .map(|(ticker_info, timeframe)| {
+            let ticker = ticker_info.ticker;
+            format!(
+                "{}@kline_{}",
+                ticker.to_full_symbol_and_type().0.to_lowercase(),
+                timeframe
+            )
+        })
+        .collect::<Vec<String>>()
+        .join("/");
+
+    let ticker_info_map = streams
+        .iter()
+        .map(|(ticker_info, _)| {
+            (
+                ticker_info.ticker,
                 (
-                    ticker_info.ticker,
-                    (
+                    *ticker_info,
+                    QtyNormalization::with_raw_qty_unit(
+                        volume_size_unit() == SizeUnit::Quote,
                         *ticker_info,
-                        QtyNormalization::with_raw_qty_unit(
-                            volume_size_unit() == SizeUnit::Quote,
-                            *ticker_info,
-                            raw_qty_unit_from_market_type(market),
-                        ),
+                        raw_qty_unit_from_market_type(market),
                     ),
-                )
-            })
-            .collect();
+                ),
+            )
+        })
+        .collect();
 
-        let timeframe_by_interval = streams
-            .iter()
-            .map(|(_, timeframe)| (timeframe.to_string(), *timeframe))
-            .collect();
+    let timeframe_by_interval = streams
+        .iter()
+        .map(|(_, timeframe)| (timeframe.to_string(), *timeframe))
+        .collect();
 
-        let mut adapter = KlineAdapter {
-            market,
-            ticker_info_map,
-            timeframe_by_interval,
-            stream_str: stream_str.clone(),
-            proxy_cfg: proxy_cfg.clone(),
-        };
+    let adapter = KlineAdapter {
+        market,
+        ticker_info_map,
+        timeframe_by_interval,
+        stream_str: stream_str.clone(),
+        proxy_cfg: proxy_cfg.clone(),
+    };
 
-        WsSession::with_opcode_ping(BINANCE_OPCODE_PING_PAYLOAD, None, stream_scope)
-            .run(&mut adapter, &mut output)
-            .await;
-    })
+    WsSession::with_opcode_ping(BINANCE_OPCODE_PING_PAYLOAD, None, stream_scope).run(adapter)
 }

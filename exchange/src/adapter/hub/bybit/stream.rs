@@ -2,8 +2,7 @@ use crate::{
     Event, Kline, Price, PushFrequency, Ticker, TickerInfo, Timeframe, Trade, Volume,
     adapter::{
         MarketKind, StreamKind, StreamTicksize,
-        connect::{WsAdapter, WsSession, WsTransport},
-        hub::{TradeBuffer, channel},
+        hub::{TradeBuffer, WsAdapter, WsSession, WsTransport},
     },
     depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
     serde_util::de_string_to_number,
@@ -307,69 +306,55 @@ pub fn connect_trade_stream(
     market_type: MarketKind,
     proxy_cfg: Option<crate::proxy::Proxy>,
 ) -> impl Stream<Item = Event> {
-    channel(100, move |mut output| async move {
-        let stream_scope: Arc<[StreamKind]> = Arc::from(
-            tickers
-                .iter()
-                .map(|ticker_info| StreamKind::Trades {
-                    ticker_info: *ticker_info,
-                })
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
-        );
-
-        if tickers.is_empty() {
-            let _ = output
-                .send(Event::Disconnected(
-                    stream_scope,
-                    "Empty Bybit trade stream payload".to_string(),
-                ))
-                .await;
-            return;
-        }
-
-        let stream = tickers
+    let stream_scope: Arc<[StreamKind]> = Arc::from(
+        tickers
             .iter()
-            .map(|ticker_info| {
-                format!(
-                    "publicTrade.{}",
-                    ticker_info.ticker.to_full_symbol_and_type().0
-                )
+            .map(|ticker_info| StreamKind::Trades {
+                ticker_info: *ticker_info,
             })
-            .collect::<Vec<_>>();
-        let subscribe_message = serde_json::json!({
-            "op": "subscribe",
-            "args": stream
-        });
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+    );
 
-        let ticker_info_map: FxHashMap<Ticker, (TickerInfo, QtyNormalization)> = tickers
-            .iter()
-            .map(|ticker_info| {
+    let stream = tickers
+        .iter()
+        .map(|ticker_info| {
+            format!(
+                "publicTrade.{}",
+                ticker_info.ticker.to_full_symbol_and_type().0
+            )
+        })
+        .collect::<Vec<_>>();
+    let subscribe_message = serde_json::json!({
+        "op": "subscribe",
+        "args": stream
+    });
+
+    let ticker_info_map: FxHashMap<Ticker, (TickerInfo, QtyNormalization)> = tickers
+        .iter()
+        .map(|ticker_info| {
+            (
+                ticker_info.ticker,
                 (
-                    ticker_info.ticker,
-                    (
+                    *ticker_info,
+                    QtyNormalization::with_raw_qty_unit(
+                        volume_size_unit() == SizeUnit::Quote,
                         *ticker_info,
-                        QtyNormalization::with_raw_qty_unit(
-                            volume_size_unit() == SizeUnit::Quote,
-                            *ticker_info,
-                            raw_qty_unit_from_market_type(market_type),
-                        ),
+                        raw_qty_unit_from_market_type(market_type),
                     ),
-                )
-            })
-            .collect();
+                ),
+            )
+        })
+        .collect();
 
-        let mut adapter = TradeAdapter {
-            market_type,
-            buffer: TradeBuffer::new(ticker_info_map),
-            subscribe_message: subscribe_message.clone(),
-            proxy_cfg: proxy_cfg.clone(),
-        };
+    let adapter = TradeAdapter {
+        market_type,
+        buffer: TradeBuffer::new(ticker_info_map),
+        subscribe_message,
+        proxy_cfg,
+    };
 
-        WsSession::with_text_ping(BYBIT_PING_PAYLOAD, None, stream_scope)
-            .run(&mut adapter, &mut output)
-            .await;
-    })
+    WsSession::with_text_ping(BYBIT_PING_PAYLOAD, None, stream_scope).run(adapter)
 }
 
 struct DepthAdapter {
@@ -464,59 +449,55 @@ pub fn connect_depth_stream(
     push_freq: PushFrequency,
     proxy_cfg: Option<crate::proxy::Proxy>,
 ) -> impl Stream<Item = Event> {
-    channel(100, move |mut output| async move {
-        let stream = StreamKind::Depth {
-            ticker_info,
-            depth_aggr,
-            push_freq,
-        };
-        let stream_scope: Arc<[StreamKind]> = Arc::from(vec![stream].into_boxed_slice());
+    let stream = StreamKind::Depth {
+        ticker_info,
+        depth_aggr,
+        push_freq,
+    };
+    let stream_scope: Arc<[StreamKind]> = Arc::from(vec![stream].into_boxed_slice());
 
-        let (symbol_str, market_type) = ticker_info.ticker.to_full_symbol_and_type();
+    let (symbol_str, market_type) = ticker_info.ticker.to_full_symbol_and_type();
 
-        let qty_norm = QtyNormalization::with_raw_qty_unit(
-            volume_size_unit() == SizeUnit::Quote,
-            ticker_info,
-            raw_qty_unit_from_market_type(market_type),
-        );
+    let qty_norm = QtyNormalization::with_raw_qty_unit(
+        volume_size_unit() == SizeUnit::Quote,
+        ticker_info,
+        raw_qty_unit_from_market_type(market_type),
+    );
 
-        let depth_level = if let PushFrequency::Custom(tf) = push_freq {
-            match market_type {
-                MarketKind::Spot => match tf {
-                    Timeframe::MS200 => "200",
-                    Timeframe::MS300 => "1000",
-                    _ => "200",
-                },
-                MarketKind::LinearPerps | MarketKind::InversePerps => match tf {
-                    Timeframe::MS100 => "200",
-                    Timeframe::MS300 => "1000",
-                    _ => "200",
-                },
-            }
-        } else {
-            "200"
-        };
+    let depth_level = if let PushFrequency::Custom(tf) = push_freq {
+        match market_type {
+            MarketKind::Spot => match tf {
+                Timeframe::MS200 => "200",
+                Timeframe::MS300 => "1000",
+                _ => "200",
+            },
+            MarketKind::LinearPerps | MarketKind::InversePerps => match tf {
+                Timeframe::MS100 => "200",
+                Timeframe::MS300 => "1000",
+                _ => "200",
+            },
+        }
+    } else {
+        "200"
+    };
 
-        let ws_stream = format!("orderbook.{depth_level}.{symbol_str}");
-        let subscribe_message = serde_json::json!({
-            "op": "subscribe",
-            "args": [ws_stream]
-        });
+    let ws_stream = format!("orderbook.{depth_level}.{symbol_str}");
+    let subscribe_message = serde_json::json!({
+        "op": "subscribe",
+        "args": [ws_stream]
+    });
 
-        let mut adapter = DepthAdapter {
-            stream,
-            ticker_info,
-            market_type,
-            qty_norm,
-            orderbook: LocalDepthCache::default(),
-            subscribe_message: subscribe_message.clone(),
-            proxy_cfg: proxy_cfg.clone(),
-        };
+    let adapter = DepthAdapter {
+        stream,
+        ticker_info,
+        market_type,
+        qty_norm,
+        orderbook: LocalDepthCache::default(),
+        subscribe_message,
+        proxy_cfg,
+    };
 
-        WsSession::with_text_ping(BYBIT_PING_PAYLOAD, None, stream_scope)
-            .run(&mut adapter, &mut output)
-            .await;
-    })
+    WsSession::with_text_ping(BYBIT_PING_PAYLOAD, None, stream_scope).run(adapter)
 }
 
 fn string_to_timeframe(interval: &str) -> Option<Timeframe> {
@@ -607,74 +588,60 @@ pub fn connect_kline_stream(
     market_type: MarketKind,
     proxy_cfg: Option<crate::proxy::Proxy>,
 ) -> impl Stream<Item = Event> {
-    channel(100, move |mut output| async move {
-        let stream_scope: Arc<[StreamKind]> = Arc::from(
-            streams
-                .iter()
-                .map(|(ticker_info, timeframe)| StreamKind::Kline {
-                    ticker_info: *ticker_info,
-                    timeframe: *timeframe,
-                })
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
-        );
-
-        if streams.is_empty() {
-            let _ = output
-                .send(Event::Disconnected(
-                    stream_scope,
-                    "Empty Bybit kline stream payload".to_string(),
-                ))
-                .await;
-            return;
-        }
-
-        let stream_str = streams
+    let stream_scope: Arc<[StreamKind]> = Arc::from(
+        streams
             .iter()
-            .map(|(ticker_info, timeframe)| {
-                let ticker = ticker_info.ticker;
-                let timeframe_str = if Timeframe::D1 == *timeframe {
-                    "D".to_string()
-                } else {
-                    timeframe.to_minutes().to_string()
-                };
-                format!(
-                    "kline.{timeframe_str}.{}",
-                    ticker.to_full_symbol_and_type().0
-                )
+            .map(|(ticker_info, timeframe)| StreamKind::Kline {
+                ticker_info: *ticker_info,
+                timeframe: *timeframe,
             })
-            .collect::<Vec<String>>();
-        let subscribe_message = serde_json::json!({
-            "op": "subscribe",
-            "args": stream_str
-        });
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+    );
 
-        let ticker_info_map: HashMap<Ticker, (TickerInfo, QtyNormalization)> = streams
-            .iter()
-            .map(|(ticker_info, _)| {
+    let stream_str = streams
+        .iter()
+        .map(|(ticker_info, timeframe)| {
+            let ticker = ticker_info.ticker;
+            let timeframe_str = if Timeframe::D1 == *timeframe {
+                "D".to_string()
+            } else {
+                timeframe.to_minutes().to_string()
+            };
+            format!(
+                "kline.{timeframe_str}.{}",
+                ticker.to_full_symbol_and_type().0
+            )
+        })
+        .collect::<Vec<String>>();
+    let subscribe_message = serde_json::json!({
+        "op": "subscribe",
+        "args": stream_str
+    });
+
+    let ticker_info_map: HashMap<Ticker, (TickerInfo, QtyNormalization)> = streams
+        .iter()
+        .map(|(ticker_info, _)| {
+            (
+                ticker_info.ticker,
                 (
-                    ticker_info.ticker,
-                    (
+                    *ticker_info,
+                    QtyNormalization::with_raw_qty_unit(
+                        volume_size_unit() == SizeUnit::Quote,
                         *ticker_info,
-                        QtyNormalization::with_raw_qty_unit(
-                            volume_size_unit() == SizeUnit::Quote,
-                            *ticker_info,
-                            raw_qty_unit_from_market_type(market_type),
-                        ),
+                        raw_qty_unit_from_market_type(market_type),
                     ),
-                )
-            })
-            .collect();
+                ),
+            )
+        })
+        .collect();
 
-        let mut adapter = KlineAdapter {
-            market_type,
-            ticker_info_map,
-            subscribe_message: subscribe_message.clone(),
-            proxy_cfg: proxy_cfg.clone(),
-        };
+    let adapter = KlineAdapter {
+        market_type,
+        ticker_info_map,
+        subscribe_message,
+        proxy_cfg,
+    };
 
-        WsSession::with_text_ping(BYBIT_PING_PAYLOAD, None, stream_scope.clone())
-            .run(&mut adapter, &mut output)
-            .await;
-    })
+    WsSession::with_text_ping(BYBIT_PING_PAYLOAD, None, stream_scope).run(adapter)
 }

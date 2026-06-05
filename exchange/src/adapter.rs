@@ -1,8 +1,9 @@
 mod client;
-mod connect;
+mod http;
 mod hub;
 mod limiter;
 pub mod proxy;
+mod ws;
 
 use super::Timeframe;
 pub use super::error::AdapterError;
