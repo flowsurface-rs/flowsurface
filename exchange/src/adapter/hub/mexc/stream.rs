@@ -354,7 +354,7 @@ pub fn connect_trade_stream(
         proxy_cfg,
     };
 
-    WsSession::with_text_ping(PING_PAYLOAD, Some(b"pong"), stream_scope).run(adapter)
+    WsSession::with_text_ping(PING_PAYLOAD, None, stream_scope).run(adapter)
 }
 
 struct DepthAdapter {
@@ -365,9 +365,7 @@ struct DepthAdapter {
     stream: StreamKind,
     proxy_cfg: Option<crate::proxy::Proxy>,
     qty_norm: QtyNormalization,
-    stream_scope: Arc<[StreamKind]>,
     sync_machine: DepthSyncMachine,
-    stream_ready: bool,
 }
 
 impl WsAdapter for DepthAdapter {
@@ -395,8 +393,6 @@ impl WsAdapter for DepthAdapter {
             .map_err(|_| "Failed to send depth subscription frame".to_string())?;
 
         self.sync_machine = DepthSyncMachine::new(self.handle.clone(), self.ticker_info.ticker);
-        self.stream_ready = false;
-
         Ok(websocket)
     }
 
@@ -442,11 +438,6 @@ impl WsAdapter for DepthAdapter {
                 self.sync_machine
                     .handle_depth_update(diff, self.ticker_info, self.qty_norm)?
             {
-                if !self.stream_ready {
-                    self.stream_ready = true;
-                    crate::adapter::hub::emit_connected(output, &self.stream_scope).await;
-                }
-
                 let _ = output
                     .send(Event::DepthReceived(
                         self.stream,
@@ -668,12 +659,10 @@ pub fn connect_depth_stream(
         stream,
         proxy_cfg,
         qty_norm,
-        stream_scope: stream_scope.clone(),
         sync_machine: DepthSyncMachine::new(handle, ticker),
-        stream_ready: false,
     };
 
-    WsSession::with_text_ping(PING_PAYLOAD, Some(b"pong"), stream_scope).run(adapter)
+    WsSession::with_text_ping(PING_PAYLOAD, None, stream_scope).run(adapter)
 }
 
 struct KlineAdapter {

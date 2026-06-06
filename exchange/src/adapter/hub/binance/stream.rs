@@ -2,7 +2,7 @@ use crate::{
     Event, Kline, Price, PushFrequency, Ticker, TickerInfo, Trade, Volume,
     adapter::{
         MarketKind, StreamKind, StreamTicksize,
-        hub::{TradeBuffer, WsAdapter, WsSession, WsTransport, emit_connected},
+        hub::{TradeBuffer, WsAdapter, WsSession, WsTransport},
     },
     depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
     serde_util::de_string_to_number,
@@ -459,11 +459,9 @@ struct DepthAdapter {
     ticker_info: TickerInfo,
     qty_norm: QtyNormalization,
     stream: StreamKind,
-    stream_scope: Arc<[StreamKind]>,
     ws_stream: String,
     proxy_cfg: Option<crate::proxy::Proxy>,
     sync_machine: DepthSyncMachine,
-    stream_ready: bool,
 }
 
 impl WsAdapter for DepthAdapter {
@@ -477,8 +475,6 @@ impl WsAdapter for DepthAdapter {
         .await?;
 
         self.sync_machine = DepthSyncMachine::new(self.handle.clone(), self.ticker_info.ticker);
-        self.stream_ready = false;
-
         Ok(websocket)
     }
 
@@ -501,11 +497,6 @@ impl WsAdapter for DepthAdapter {
                 self.qty_norm,
             )?
         {
-            if !self.stream_ready {
-                self.stream_ready = true;
-                emit_connected(output, &self.stream_scope).await;
-            }
-
             let _ = output
                 .send(Event::DepthReceived(
                     self.stream,
@@ -718,11 +709,9 @@ pub fn connect_depth_stream(
         ticker_info,
         qty_norm,
         stream,
-        stream_scope: stream_scope.clone(),
         ws_stream: ws_stream.clone(),
         proxy_cfg,
         sync_machine: DepthSyncMachine::new(handle, ticker),
-        stream_ready: false,
     };
 
     WsSession::with_opcode_ping(BINANCE_OPCODE_PING_PAYLOAD, None, stream_scope.clone())

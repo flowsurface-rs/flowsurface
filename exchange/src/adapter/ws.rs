@@ -497,7 +497,7 @@ impl ReconnectBackoff {
     }
 }
 
-pub(super) async fn emit_connected(output: &mut Sender<Event>, streams: &Arc<[StreamKind]>) {
+async fn emit_connected(output: &mut Sender<Event>, streams: &Arc<[StreamKind]>) {
     let _ = output.send(Event::Connected(streams.clone())).await;
 }
 
