@@ -478,12 +478,6 @@ enum DepthSyncState {
     Live,
 }
 
-/// - Each `push.depth` update has a monotonically-increasing `version` number
-///   that may jump by more than 1 between messages (it counts order-book changes).
-/// - MEXC diffs carry absolute quantities, so any `version > local_last_version`
-///   can be safely applied without needing to fill intermediate gaps.
-/// - A full snapshot is fetched on (re)connect; no incremental `depth_commits`
-///   recovery is implemented — the snapshot alone is sufficient.
 struct DepthSyncMachine {
     handle: MexcHandle,
     ticker: Ticker,
@@ -543,9 +537,10 @@ impl DepthSyncMachine {
         );
         self.local_last_version = self.current.last_update_id;
 
-        // Replay buffered diffs.  Skip stale entries (version <= local_last_version)
-        // and apply every newer diff in arrival order.
-        while let Some(diff) = self.pending.pop_front() {
+        let mut pending: Vec<DepthDiff> = self.pending.drain(..).collect();
+        pending.sort_unstable_by_key(|d| d.version);
+
+        for diff in pending {
             if diff.version <= self.local_last_version {
                 continue;
             }
