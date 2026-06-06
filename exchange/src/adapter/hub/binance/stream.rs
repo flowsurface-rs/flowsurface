@@ -527,8 +527,8 @@ impl WsAdapter for TradeAdapter {
         .await
     }
 
-    async fn on_connected(&mut self, _output: &mut mpsc::Sender<Event>) {
-        self.buffer.last_flush = tokio::time::Instant::now();
+    async fn on_connected(&mut self, output: &mut mpsc::Sender<Event>) {
+        self.buffer.flush(output).await;
     }
 
     async fn on_text(
@@ -537,7 +537,7 @@ impl WsAdapter for TradeAdapter {
         output: &mut mpsc::Sender<Event>,
     ) -> Result<(), String> {
         if let Ok(StreamData::Trade(ticker, de_trade)) = feed_de(payload, self.market) {
-            if let Some((ticker_info, qty_norm)) = self.buffer.ticker_info_map.get(&ticker) {
+            if let Some((ticker_info, qty_norm)) = self.buffer.ticker_info(&ticker) {
                 let ticker_info = *ticker_info;
                 let price =
                     Price::from_f32(de_trade.price).round_to_min_tick(ticker_info.min_ticksize);

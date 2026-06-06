@@ -256,8 +256,8 @@ impl WsAdapter for TradeAdapter {
         .await
     }
 
-    async fn on_connected(&mut self, _output: &mut mpsc::Sender<Event>) {
-        self.buffer.last_flush = tokio::time::Instant::now();
+    async fn on_connected(&mut self, output: &mut mpsc::Sender<Event>) {
+        self.buffer.flush(output).await;
     }
 
     async fn on_text(

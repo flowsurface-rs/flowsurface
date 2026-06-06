@@ -88,18 +88,21 @@ pub(super) trait WsAdapter {
     /// This will be retried indefinitely until it succeeds, with an exponential backoff
     /// between attempts (base ~500ms, doubling, capped at 30s, with jitter).
     fn connect(&mut self) -> impl std::future::Future<Output = Result<WsTransport, String>> + Send;
+
     /// Called when a connection is established.
     /// This is called on every successful connection, including after reconnects.
     fn on_connected(
         &mut self,
         output: &mut Sender<Event>,
     ) -> impl std::future::Future<Output = ()> + Send;
+
     /// Called when a text message is received that doesn't match the optional `text_pong_payload`.
     fn on_text(
         &mut self,
         payload: &[u8],
         output: &mut Sender<Event>,
     ) -> impl std::future::Future<Output = Result<(), String>> + Send;
+
     /// Called when the connection is closed or a fatal error occurs.
     fn on_disconnected(
         &mut self,
@@ -294,7 +297,7 @@ impl WsTransport {
         self.0.write_frame(frame).await
     }
 
-    pub(super) async fn reply_pong(&mut self, payload: Payload<'_>) -> Result<(), &'static str> {
+    async fn reply_pong(&mut self, payload: Payload<'_>) -> Result<(), &'static str> {
         self.write_frame(Frame::pong(payload))
             .await
             .map_err(|_| HEARTBEAT_PONG_FAILED_REASON)
@@ -457,8 +460,8 @@ impl Default for WsHeartbeat {
 struct ReconnectBackoff {
     current: Duration,
     max_delay: Duration,
-    multiplier: f64,
-    jitter: f64,
+    multiplier: f32,
+    jitter: f32,
 }
 
 impl ReconnectBackoff {
@@ -476,16 +479,16 @@ impl ReconnectBackoff {
 
     /// Returns the delay before the next reconnect attempt, with ±jitter applied.
     fn delay(&self) -> Duration {
-        let jitter_range = self.current.mul_f64(self.jitter);
-        let jitter = Duration::from_secs_f64(
-            (rand::random::<f64>() * 2.0 - 1.0) * jitter_range.as_secs_f64(),
+        let jitter_range = self.current.mul_f32(self.jitter);
+        let jitter = Duration::from_secs_f32(
+            (rand::random::<f32>() * 2.0 - 1.0) * jitter_range.as_secs_f32(),
         );
         (self.current + jitter).clamp(Duration::ZERO, self.max_delay)
     }
 
     /// Advances the backoff after a failed attempt (multiplies delay, capped at max).
     fn record_failure(&mut self) {
-        self.current = (self.current.mul_f64(self.multiplier)).min(self.max_delay);
+        self.current = (self.current.mul_f32(self.multiplier)).min(self.max_delay);
     }
 
     /// Resets back to the initial delay after a successful connection.
@@ -510,8 +513,8 @@ async fn emit_disconnected(
 
 pub(super) struct TradeBuffer {
     buffer_map: FxHashMap<Ticker, Vec<Trade>>,
-    pub(super) ticker_info_map: FxHashMap<Ticker, (TickerInfo, QtyNormalization)>,
-    pub(super) last_flush: Instant,
+    ticker_info_map: FxHashMap<Ticker, (TickerInfo, QtyNormalization)>,
+    last_flush: Instant,
 }
 
 impl TradeBuffer {

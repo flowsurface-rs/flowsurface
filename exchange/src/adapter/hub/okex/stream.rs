@@ -157,8 +157,8 @@ impl WsAdapter for TradeAdapter {
         connect_and_subscribe(&self.subscribe_message, "public", self.proxy_cfg.as_ref()).await
     }
 
-    async fn on_connected(&mut self, _output: &mut mpsc::Sender<Event>) {
-        self.buffer.last_flush = tokio::time::Instant::now();
+    async fn on_connected(&mut self, output: &mut mpsc::Sender<Event>) {
+        self.buffer.flush(output).await;
     }
 
     async fn on_text(
@@ -168,7 +168,7 @@ impl WsAdapter for TradeAdapter {
     ) -> Result<(), String> {
         if let Ok(StreamData::Trade(inst_id, de_trade_vec)) = feed_de(payload) {
             if let Some(ticker) = self.symbol_to_ticker.get(&inst_id)
-                && let Some((ticker_info, qty_norm)) = self.buffer.ticker_info_map.get(ticker)
+                && let Some((ticker_info, qty_norm)) = self.buffer.ticker_info(ticker)
             {
                 let ticker_info = *ticker_info;
                 let qty_norm = *qty_norm;
