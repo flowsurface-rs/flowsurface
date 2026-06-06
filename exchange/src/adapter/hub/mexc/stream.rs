@@ -1,5 +1,5 @@
 use crate::{
-    Event, Kline, Price, PushFrequency, Ticker, TickerInfo, Timeframe, Trade, UnixMs, Volume,
+    Event, Kline, Price, PushFrequency, Ticker, TickerInfo, Timeframe, Trade, Volume,
     adapter::{
         MarketKind, StreamKind, StreamTicksize,
         hub::{TradeBuffer, WsAdapter, WsSession, WsTransport},
@@ -18,7 +18,11 @@ use futures::{SinkExt, Stream, channel::mpsc};
 use rustc_hash::FxHashMap;
 use serde_json::json;
 use sonic_rs::{Deserialize, JsonValueTrait, to_object_iter_unchecked};
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::Arc,
+};
+use tokio::sync::oneshot::{self, error::TryRecvError};
 
 const PING_PAYLOAD: &[u8] = br#"{"method":"ping"}"#;
 
@@ -361,10 +365,9 @@ struct DepthAdapter {
     stream: StreamKind,
     proxy_cfg: Option<crate::proxy::Proxy>,
     qty_norm: QtyNormalization,
-    orderbook: LocalDepthCache,
-    snapshot_ready: bool,
-    snapshot_time: UnixMs,
     stream_scope: Arc<[StreamKind]>,
+    sync_machine: DepthSyncMachine,
+    stream_ready: bool,
 }
 
 impl WsAdapter for DepthAdapter {
@@ -391,13 +394,14 @@ impl WsAdapter for DepthAdapter {
             .await
             .map_err(|_| "Failed to send depth subscription frame".to_string())?;
 
+        self.sync_machine = DepthSyncMachine::new(self.handle.clone(), self.ticker_info.ticker);
+        self.stream_ready = false;
+
         Ok(websocket)
     }
 
-    async fn on_connected(&mut self, output: &mut mpsc::Sender<Event>) {
-        self.snapshot_ready = false;
-        self.snapshot_time = UnixMs::ZERO;
-        crate::adapter::hub::emit_connected(output, &self.stream_scope).await;
+    async fn on_connected(&mut self, _output: &mut mpsc::Sender<Event>) {
+        self.sync_machine.begin_resync();
     }
 
     async fn on_text(
@@ -405,73 +409,51 @@ impl WsAdapter for DepthAdapter {
         payload: &[u8],
         output: &mut mpsc::Sender<Event>,
     ) -> Result<(), String> {
+        self.sync_machine
+            .poll_snapshot_if_ready(self.ticker_info, self.qty_norm)?;
+
         let ticker = self.ticker_info.ticker;
 
-        match feed_de(payload, Some(ticker), self.market_type) {
-            Ok(data) => match data {
-                StreamData::Pong(_) => {}
-                StreamData::Subscription(stream_name) => {
-                    if stream_name == "depth" {
-                        match self.handle.fetch_depth_snapshot(ticker).await {
-                            Ok(snapshot) => {
-                                self.snapshot_time = snapshot.time;
-                                self.snapshot_ready = true;
-                                self.orderbook.update_with_qty_norm(
-                                    DepthUpdate::Snapshot(snapshot),
-                                    self.ticker_info.min_ticksize,
-                                    Some(self.qty_norm),
-                                );
-                            }
-                            Err(e) => {
-                                return Err(format!("Failed to fetch depth snapshot: {e}"));
-                            }
-                        }
-                    }
+        if let Ok(StreamData::Depth(de_depth, time)) =
+            feed_de(payload, Some(ticker), self.market_type)
+        {
+            let diff = DepthDiff {
+                version: de_depth.version,
+                time,
+                bids: de_depth
+                    .bids
+                    .iter()
+                    .map(|x| DeOrder {
+                        price: x.price,
+                        qty: x.qty,
+                    })
+                    .collect(),
+                asks: de_depth
+                    .asks
+                    .iter()
+                    .map(|x| DeOrder {
+                        price: x.price,
+                        qty: x.qty,
+                    })
+                    .collect(),
+            };
+
+            if let Some(update_time) =
+                self.sync_machine
+                    .handle_depth_update(diff, self.ticker_info, self.qty_norm)?
+            {
+                if !self.stream_ready {
+                    self.stream_ready = true;
+                    crate::adapter::hub::emit_connected(output, &self.stream_scope).await;
                 }
-                StreamData::Depth(de_depth, time) => {
-                    if !self.snapshot_ready || time < self.snapshot_time.as_u64() {
-                        return Ok(());
-                    }
 
-                    let depth = DepthPayload {
-                        last_update_id: de_depth.version,
-                        time: time.into(),
-                        bids: de_depth
-                            .bids
-                            .iter()
-                            .map(|x| DeOrder {
-                                price: x.price,
-                                qty: x.qty,
-                            })
-                            .collect(),
-                        asks: de_depth
-                            .asks
-                            .iter()
-                            .map(|x| DeOrder {
-                                price: x.price,
-                                qty: x.qty,
-                            })
-                            .collect(),
-                    };
-
-                    self.orderbook.update_with_qty_norm(
-                        DepthUpdate::Diff(depth),
-                        self.ticker_info.min_ticksize,
-                        Some(self.qty_norm),
-                    );
-
-                    let _ = output
-                        .send(Event::DepthReceived(
-                            self.stream,
-                            time.into(),
-                            self.orderbook.depth.clone(),
-                        ))
-                        .await;
-                }
-                StreamData::Trade(_, _, _) | StreamData::Kline(_, _) => {}
-            },
-            Err(e) => {
-                log::error!("Failed to parse MEXC depth message: {}", e);
+                let _ = output
+                    .send(Event::DepthReceived(
+                        self.stream,
+                        update_time.into(),
+                        self.sync_machine.current.depth.clone(),
+                    ))
+                    .await;
             }
         }
 
@@ -479,6 +461,186 @@ impl WsAdapter for DepthAdapter {
     }
 
     async fn on_disconnected(&mut self, _reason: &str, _output: &mut mpsc::Sender<Event>) {}
+}
+
+/// A buffered depth diff from the WebSocket, queued while the snapshot is being fetched.
+struct DepthDiff {
+    version: u64,
+    time: u64,
+    bids: Vec<DeOrder>,
+    asks: Vec<DeOrder>,
+}
+
+enum DepthSyncState {
+    /// Fetching the initial snapshot; diffs received in the meantime are buffered.
+    WaitingSnapshot(oneshot::Receiver<Result<DepthPayload, AdapterError>>),
+    /// Fully synced - applying live diffs and emitting orderbook updates.
+    Live,
+}
+
+/// - Each `push.depth` update has a monotonically-increasing `version` number
+///   that may jump by more than 1 between messages (it counts order-book changes).
+/// - MEXC diffs carry absolute quantities, so any `version > local_last_version`
+///   can be safely applied without needing to fill intermediate gaps.
+/// - A full snapshot is fetched on (re)connect; no incremental `depth_commits`
+///   recovery is implemented — the snapshot alone is sufficient.
+struct DepthSyncMachine {
+    handle: MexcHandle,
+    ticker: Ticker,
+    state: DepthSyncState,
+    local_last_version: u64,
+    pending: VecDeque<DepthDiff>,
+    current: LocalDepthCache,
+}
+
+impl DepthSyncMachine {
+    const MAX_PENDING_DEPTH_EVENTS: usize = 512;
+
+    fn new(handle: MexcHandle, ticker: Ticker) -> Self {
+        Self {
+            state: DepthSyncState::Live,
+            handle,
+            ticker,
+            local_last_version: 0,
+            current: LocalDepthCache::default(),
+            pending: VecDeque::new(),
+        }
+    }
+
+    fn begin_resync(&mut self) {
+        let fetch_snapshot = {
+            let handle = self.handle.clone();
+            let ticker = self.ticker;
+            let (tx, rx) = oneshot::channel();
+
+            tokio::spawn(async move {
+                let result = handle.fetch_depth_snapshot(ticker).await;
+                let _ = tx.send(result);
+            });
+
+            rx
+        };
+
+        self.local_last_version = 0;
+        self.state = DepthSyncState::WaitingSnapshot(fetch_snapshot);
+    }
+
+    fn handle_snapshot_result(
+        &mut self,
+        snapshot_result: Result<DepthPayload, AdapterError>,
+        ticker_info: TickerInfo,
+        qty_norm: QtyNormalization,
+    ) -> Result<(), String> {
+        let snapshot = match snapshot_result {
+            Ok(snapshot) => snapshot,
+            Err(e) => return Err(format!("Depth fetch failed: {e}")),
+        };
+
+        self.current.update_with_qty_norm(
+            DepthUpdate::Snapshot(snapshot),
+            ticker_info.min_ticksize,
+            Some(qty_norm),
+        );
+        self.local_last_version = self.current.last_update_id;
+
+        // Replay buffered diffs.  Skip stale entries (version <= local_last_version)
+        // and apply every newer diff in arrival order.
+        while let Some(diff) = self.pending.pop_front() {
+            if diff.version <= self.local_last_version {
+                continue;
+            }
+
+            let depth = DepthPayload {
+                last_update_id: diff.version,
+                time: diff.time.into(),
+                bids: diff.bids,
+                asks: diff.asks,
+            };
+
+            self.current.update_with_qty_norm(
+                DepthUpdate::Diff(depth),
+                ticker_info.min_ticksize,
+                Some(qty_norm),
+            );
+            self.local_last_version = diff.version;
+        }
+
+        self.state = DepthSyncState::Live;
+        Ok(())
+    }
+
+    fn on_live_diff(
+        &mut self,
+        diff: DepthDiff,
+        ticker_info: TickerInfo,
+        qty_norm: QtyNormalization,
+    ) -> Result<Option<u64>, String> {
+        if diff.version <= self.local_last_version {
+            return Ok(None);
+        }
+
+        let depth = DepthPayload {
+            last_update_id: diff.version,
+            time: diff.time.into(),
+            bids: diff.bids,
+            asks: diff.asks,
+        };
+
+        self.current.update_with_qty_norm(
+            DepthUpdate::Diff(depth),
+            ticker_info.min_ticksize,
+            Some(qty_norm),
+        );
+        self.local_last_version = diff.version;
+        Ok(Some(diff.time))
+    }
+
+    fn queue_pending_diff(&mut self, diff: DepthDiff) {
+        if self.pending.len() == Self::MAX_PENDING_DEPTH_EVENTS {
+            self.pending.pop_front();
+        }
+        self.pending.push_back(diff);
+    }
+
+    fn poll_snapshot_if_ready(
+        &mut self,
+        ticker_info: TickerInfo,
+        qty_norm: QtyNormalization,
+    ) -> Result<(), String> {
+        let snapshot_result = {
+            let DepthSyncState::WaitingSnapshot(snapshot_rx) = &mut self.state else {
+                return Ok(());
+            };
+
+            match snapshot_rx.try_recv() {
+                Ok(snapshot_result) => Some(snapshot_result),
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Closed) => {
+                    return Err("Depth fetch channel closed".to_string());
+                }
+            }
+        };
+
+        if let Some(snapshot_result) = snapshot_result {
+            self.handle_snapshot_result(snapshot_result, ticker_info, qty_norm)?;
+        }
+
+        Ok(())
+    }
+
+    fn handle_depth_update(
+        &mut self,
+        diff: DepthDiff,
+        ticker_info: TickerInfo,
+        qty_norm: QtyNormalization,
+    ) -> Result<Option<u64>, String> {
+        if matches!(self.state, DepthSyncState::WaitingSnapshot(_)) {
+            self.queue_pending_diff(diff);
+            Ok(None)
+        } else {
+            self.on_live_diff(diff, ticker_info, qty_norm)
+        }
+    }
 }
 
 pub fn connect_depth_stream(
@@ -504,17 +666,16 @@ pub fn connect_depth_stream(
     );
 
     let adapter = DepthAdapter {
-        handle,
+        handle: handle.clone(),
         ticker_info,
         market_type,
         symbol_str,
         stream,
         proxy_cfg,
         qty_norm,
-        orderbook: LocalDepthCache::default(),
-        snapshot_ready: false,
-        snapshot_time: UnixMs::ZERO,
         stream_scope: stream_scope.clone(),
+        sync_machine: DepthSyncMachine::new(handle, ticker),
+        stream_ready: false,
     };
 
     WsSession::with_text_ping(PING_PAYLOAD, Some(b"pong"), stream_scope).run(adapter)

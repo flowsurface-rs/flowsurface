@@ -62,175 +62,6 @@ async fn connect_stream_socket(
         .map_err(|e| format!("Failed to connect to websocket: {e}"))
 }
 
-enum ApplyDepthResult {
-    Applied(u64),
-    Skipped,
-    NeedsResync(String),
-}
-
-enum DepthSyncState {
-    /// Unsynced state where we need snapshots to correctly apply diff. updates.
-    /// Buffers incoming diff. updates until snapshot is applied, then replays them.
-    /// Never emits local orderbook to the caller in this state.
-    WaitingSnapshot(oneshot::Receiver<Result<DepthPayload, AdapterError>>),
-    /// Synced and applying live diff. updates, without needing snapshots.
-    /// Emits local orderbook to the caller only as live diff. updates are applied.
-    Live,
-}
-
-struct DepthSyncMachine {
-    handle: BinanceHandle,
-    ticker: Ticker,
-    state: DepthSyncState,
-    prev_id: u64,
-    pending: VecDeque<SonicDepth>,
-    current: LocalDepthCache,
-}
-
-impl DepthSyncMachine {
-    fn new(handle: BinanceHandle, ticker: Ticker) -> Self {
-        let mut depth_sync = Self {
-            state: DepthSyncState::Live,
-            handle,
-            ticker,
-            prev_id: 0,
-            current: LocalDepthCache::default(),
-            pending: VecDeque::new(),
-        };
-        depth_sync.begin_resync();
-        depth_sync
-    }
-
-    fn begin_resync(&mut self) {
-        let fetch_snapshot = {
-            let handle = self.handle.clone();
-            let ticker = self.ticker;
-            let (tx, rx) = oneshot::channel();
-
-            tokio::spawn(async move {
-                let result = handle.fetch_depth_snapshot(ticker).await;
-                let _ = tx.send(result);
-            });
-
-            rx
-        };
-
-        self.state = DepthSyncState::WaitingSnapshot(fetch_snapshot);
-    }
-
-    fn handle_snapshot_result(
-        &mut self,
-        snapshot_result: Result<DepthPayload, AdapterError>,
-        ticker_info: TickerInfo,
-        qty_norm: QtyNormalization,
-    ) -> Result<(), String> {
-        let snapshot = match snapshot_result {
-            Ok(snapshot) => snapshot,
-            Err(e) => return Err(format!("Depth fetch failed: {e}")),
-        };
-
-        self.current.update_with_qty_norm(
-            DepthUpdate::Snapshot(snapshot),
-            ticker_info.min_ticksize,
-            Some(qty_norm),
-        );
-        self.prev_id = 0;
-
-        while let Some(depth_type) = self.pending.pop_front() {
-            match depth_type.apply_depth_diff(
-                &mut self.current,
-                ticker_info,
-                qty_norm,
-                &mut self.prev_id,
-            ) {
-                ApplyDepthResult::Applied(_) => {}
-                ApplyDepthResult::Skipped => {}
-                ApplyDepthResult::NeedsResync(reason) => {
-                    log::warn!("{}", reason);
-                    self.begin_resync();
-                    return Ok(());
-                }
-            }
-        }
-
-        self.state = DepthSyncState::Live;
-        Ok(())
-    }
-
-    fn on_live_diff(
-        &mut self,
-        diff_update: SonicDepth,
-        ticker_info: TickerInfo,
-        qty_norm: QtyNormalization,
-    ) -> Result<Option<u64>, String> {
-        match diff_update.apply_depth_diff(
-            &mut self.current,
-            ticker_info,
-            qty_norm,
-            &mut self.prev_id,
-        ) {
-            ApplyDepthResult::Applied(time) => Ok(Some(time)),
-            ApplyDepthResult::Skipped => Ok(None),
-            ApplyDepthResult::NeedsResync(reason) => {
-                log::warn!("{}", reason);
-                self.pending.clear();
-                self.pending.push_back(diff_update);
-                self.prev_id = 0;
-                self.begin_resync();
-                Ok(None)
-            }
-        }
-    }
-
-    fn queue_pending_diff(&mut self, diff_update: SonicDepth) {
-        if self.pending.len() == MAX_PENDING_DEPTH_EVENTS {
-            self.pending.pop_front();
-        }
-
-        self.pending.push_back(diff_update);
-    }
-
-    fn poll_snapshot_if_ready(
-        &mut self,
-        ticker_info: TickerInfo,
-        qty_norm: QtyNormalization,
-    ) -> Result<(), String> {
-        let snapshot_result = {
-            let DepthSyncState::WaitingSnapshot(snapshot_rx) = &mut self.state else {
-                return Ok(());
-            };
-
-            match snapshot_rx.try_recv() {
-                Ok(snapshot_result) => Some(snapshot_result),
-                Err(TryRecvError::Empty) => None,
-                Err(TryRecvError::Closed) => {
-                    return Err("Depth fetch channel error: channel closed".to_string());
-                }
-            }
-        };
-
-        if let Some(snapshot_result) = snapshot_result {
-            self.handle_snapshot_result(snapshot_result, ticker_info, qty_norm)?;
-        }
-
-        Ok(())
-    }
-
-    fn handle_depth_update(
-        &mut self,
-        diff_update: SonicDepth,
-        ticker_info: TickerInfo,
-        qty_norm: QtyNormalization,
-    ) -> Result<Option<u64>, String> {
-        if matches!(self.state, DepthSyncState::WaitingSnapshot(_)) {
-            self.queue_pending_diff(diff_update);
-            Ok(None)
-        } else {
-            self.on_live_diff(diff_update, ticker_info, qty_norm)
-        }
-    }
-}
-
 #[derive(Deserialize, Debug, Clone)]
 struct SonicKline {
     #[serde(rename = "t")]
@@ -288,7 +119,7 @@ impl SonicDepth {
 
         match self {
             SonicDepth::Perp(de_depth) => {
-                if (de_depth.final_id <= last_update_id) || last_update_id == 0 {
+                if last_update_id == 0 || de_depth.final_id <= last_update_id {
                     return ApplyDepthResult::Skipped;
                 }
 
@@ -317,7 +148,7 @@ impl SonicDepth {
                 ApplyDepthResult::Applied(de_depth.time)
             }
             SonicDepth::Spot(de_depth) => {
-                if (de_depth.final_id <= last_update_id) || last_update_id == 0 {
+                if last_update_id == 0 || de_depth.final_id <= last_update_id {
                     return ApplyDepthResult::Skipped;
                 }
 
@@ -651,7 +482,9 @@ impl WsAdapter for DepthAdapter {
         Ok(websocket)
     }
 
-    async fn on_connected(&mut self, _output: &mut mpsc::Sender<Event>) {}
+    async fn on_connected(&mut self, _output: &mut mpsc::Sender<Event>) {
+        self.sync_machine.begin_resync();
+    }
 
     async fn on_text(
         &mut self,
@@ -686,6 +519,173 @@ impl WsAdapter for DepthAdapter {
     }
 
     async fn on_disconnected(&mut self, _reason: &str, _output: &mut mpsc::Sender<Event>) {}
+}
+
+enum ApplyDepthResult {
+    Applied(u64),
+    Skipped,
+    NeedsResync(String),
+}
+
+enum DepthSyncState {
+    /// Unsynced state where we need snapshots to correctly apply diff. updates.
+    /// Buffers incoming diff. updates until snapshot is applied, then replays them.
+    /// Never emits local orderbook to the caller in this state.
+    WaitingSnapshot(oneshot::Receiver<Result<DepthPayload, AdapterError>>),
+    /// Synced and applying live diff. updates, without needing snapshots.
+    /// Emits local orderbook to the caller only as live diff. updates are applied.
+    Live,
+}
+
+struct DepthSyncMachine {
+    handle: BinanceHandle,
+    ticker: Ticker,
+    state: DepthSyncState,
+    prev_id: u64,
+    pending: VecDeque<SonicDepth>,
+    current: LocalDepthCache,
+}
+
+impl DepthSyncMachine {
+    fn new(handle: BinanceHandle, ticker: Ticker) -> Self {
+        Self {
+            state: DepthSyncState::Live,
+            handle,
+            ticker,
+            prev_id: 0,
+            current: LocalDepthCache::default(),
+            pending: VecDeque::new(),
+        }
+    }
+
+    fn begin_resync(&mut self) {
+        let fetch_snapshot = {
+            let handle = self.handle.clone();
+            let ticker = self.ticker;
+            let (tx, rx) = oneshot::channel();
+
+            tokio::spawn(async move {
+                let result = handle.fetch_depth_snapshot(ticker).await;
+                let _ = tx.send(result);
+            });
+
+            rx
+        };
+
+        self.state = DepthSyncState::WaitingSnapshot(fetch_snapshot);
+    }
+
+    fn handle_snapshot_result(
+        &mut self,
+        snapshot_result: Result<DepthPayload, AdapterError>,
+        ticker_info: TickerInfo,
+        qty_norm: QtyNormalization,
+    ) -> Result<(), String> {
+        let snapshot = match snapshot_result {
+            Ok(snapshot) => snapshot,
+            Err(e) => return Err(format!("Depth fetch failed: {e}")),
+        };
+
+        self.current.update_with_qty_norm(
+            DepthUpdate::Snapshot(snapshot),
+            ticker_info.min_ticksize,
+            Some(qty_norm),
+        );
+        self.prev_id = 0;
+
+        while let Some(depth_type) = self.pending.pop_front() {
+            match depth_type.apply_depth_diff(
+                &mut self.current,
+                ticker_info,
+                qty_norm,
+                &mut self.prev_id,
+            ) {
+                ApplyDepthResult::Applied(_) => {}
+                ApplyDepthResult::Skipped => {}
+                ApplyDepthResult::NeedsResync(reason) => {
+                    log::warn!("{}", reason);
+                    self.begin_resync();
+                    return Ok(());
+                }
+            }
+        }
+
+        self.state = DepthSyncState::Live;
+        Ok(())
+    }
+
+    fn on_live_diff(
+        &mut self,
+        diff_update: SonicDepth,
+        ticker_info: TickerInfo,
+        qty_norm: QtyNormalization,
+    ) -> Result<Option<u64>, String> {
+        match diff_update.apply_depth_diff(
+            &mut self.current,
+            ticker_info,
+            qty_norm,
+            &mut self.prev_id,
+        ) {
+            ApplyDepthResult::Applied(time) => Ok(Some(time)),
+            ApplyDepthResult::Skipped => Ok(None),
+            ApplyDepthResult::NeedsResync(reason) => {
+                log::warn!("{}", reason);
+                self.pending.clear();
+                self.pending.push_back(diff_update);
+                self.prev_id = 0;
+                self.begin_resync();
+                Ok(None)
+            }
+        }
+    }
+
+    fn queue_pending_diff(&mut self, diff_update: SonicDepth) {
+        if self.pending.len() == MAX_PENDING_DEPTH_EVENTS {
+            self.pending.pop_front();
+        }
+
+        self.pending.push_back(diff_update);
+    }
+
+    fn poll_snapshot_if_ready(
+        &mut self,
+        ticker_info: TickerInfo,
+        qty_norm: QtyNormalization,
+    ) -> Result<(), String> {
+        let snapshot_result = {
+            let DepthSyncState::WaitingSnapshot(snapshot_rx) = &mut self.state else {
+                return Ok(());
+            };
+
+            match snapshot_rx.try_recv() {
+                Ok(snapshot_result) => Some(snapshot_result),
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Closed) => {
+                    return Err("Depth fetch channel error: channel closed".to_string());
+                }
+            }
+        };
+
+        if let Some(snapshot_result) = snapshot_result {
+            self.handle_snapshot_result(snapshot_result, ticker_info, qty_norm)?;
+        }
+
+        Ok(())
+    }
+
+    fn handle_depth_update(
+        &mut self,
+        diff_update: SonicDepth,
+        ticker_info: TickerInfo,
+        qty_norm: QtyNormalization,
+    ) -> Result<Option<u64>, String> {
+        if matches!(self.state, DepthSyncState::WaitingSnapshot(_)) {
+            self.queue_pending_diff(diff_update);
+            Ok(None)
+        } else {
+            self.on_live_diff(diff_update, ticker_info, qty_norm)
+        }
+    }
 }
 
 pub fn connect_depth_stream(
