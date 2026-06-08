@@ -490,7 +490,11 @@ where
                 let ratio = cursor_position.y / bounds.height;
                 let value = highest + ratio * (lowest - highest);
                 let rounded = round_to_tick(value, tick);
-                let snap_ratio = (rounded - highest) / (lowest - highest);
+                let snap_ratio = if lowest == highest {
+                    cursor_position.y / bounds.height
+                } else {
+                    (rounded - highest) / (lowest - highest)
+                };
 
                 frame.stroke(
                     &Path::line(
