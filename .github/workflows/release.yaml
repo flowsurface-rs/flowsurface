@@ -183,6 +183,127 @@ jobs:
                   name: ${{ matrix.target.target }}
                   path: ${{ env.ARTIFACT_PATH }}
 
+    package-macos-dmg:
+        name: Package macOS DMG
+        needs: create-signed-tag
+        strategy:
+            matrix:
+                target:
+                    - artifact: macos-arm-dmg
+                      os: macos-latest
+                      arch: aarch64
+                      lto: fat
+                    - artifact: macos-x64-dmg
+                      os: macos-15-intel
+                      arch: x86_64
+                      lto: thin
+        runs-on: ${{ matrix.target.os }}
+        env:
+            FLOWSURFACE_OFFICIAL_RELEASE: "true"
+        steps:
+            - uses: actions/checkout@v3
+              with:
+                  fetch-depth: 0
+                  ref: refs/tags/${{ github.event.inputs.tag }}
+
+            - name: Read rust toolchain from rust-toolchain.toml
+              id: rust_toolchain
+              shell: bash
+              run: |
+                  channel="$(sed -nE 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"([^"]+)"[[:space:]]*$/\1/p' rust-toolchain.toml)"
+                  if [ -z "$channel" ]; then
+                      echo "Failed to read toolchain channel from rust-toolchain.toml" >&2
+                      exit 1
+                  fi
+                  echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+            - uses: actions-rs/toolchain@v1
+              with:
+                  profile: minimal
+                  toolchain: ${{ steps.rust_toolchain.outputs.channel }}
+                  override: true
+
+            - name: Configure optimized release profile
+              shell: bash
+              run: |
+                  if grep -q "\[profile.release\]" Cargo.toml; then
+                    sed -i '/\[profile.release\]/,/^\[/s/^lto.*//g' Cargo.toml
+                    sed -i '/\[profile.release\]/,/^\[/s/^codegen-units.*//g' Cargo.toml
+                    sed -i '/\[profile.release\]/,/^\[/s/^opt-level.*//g' Cargo.toml
+                    sed -i '/\[profile.release\]/a opt-level = 3\ncodegen-units = 1\nlto = "${{ matrix.target.lto }}"' Cargo.toml
+                  else
+                    cat >> Cargo.toml << EOF
+
+                  [profile.release]
+                  lto = "${{ matrix.target.lto }}"
+                  codegen-units = 1
+                  opt-level = 3
+                  EOF
+                  fi
+                  rm -f .cargo/config.toml
+
+            - name: Install DMG packaging tools
+              run: |
+                  cargo install cargo-bundle
+                  brew install create-dmg
+
+            - name: Import Apple signing certificate
+              env:
+                  APPLE_SIGNING_CERTIFICATE_P12: ${{ secrets.APPLE_SIGNING_CERTIFICATE_P12 }}
+                  APPLE_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_SIGNING_CERTIFICATE_PASSWORD }}
+                  KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+              run: |
+                  if [ -z "${APPLE_SIGNING_CERTIFICATE_P12:-}" ]; then
+                    echo "Skipping Apple certificate import. APPLE_SIGNING_CERTIFICATE_P12 is not set."
+                    exit 0
+                  fi
+
+                  keychain_path="$RUNNER_TEMP/app-signing.keychain-db"
+                  cert_path="$RUNNER_TEMP/apple-signing-certificate.p12"
+                  keychain_password="${KEYCHAIN_PASSWORD:-$(uuidgen)}"
+                  echo "$APPLE_SIGNING_CERTIFICATE_P12" | base64 --decode > "$cert_path"
+
+                  security create-keychain -p "$keychain_password" "$keychain_path"
+                  security set-keychain-settings -lut 21600 "$keychain_path"
+                  security unlock-keychain -p "$keychain_password" "$keychain_path"
+                  security import "$cert_path" -P "$APPLE_SIGNING_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain_path"
+                  security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain_path"
+                  security list-keychains -d user -s "$keychain_path" $(security list-keychains -d user | tr -d '"')
+
+            - name: Store notarization credentials
+              env:
+                  APPLE_ID: ${{ secrets.APPLE_ID }}
+                  APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+                  APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+              run: |
+                  if [ -z "${APPLE_ID:-}" ]; then
+                    echo "Skipping notarization credentials. APPLE_ID is not set."
+                    exit 0
+                  fi
+
+                  notary_profile="flowsurface-notary"
+                  xcrun notarytool store-credentials "$notary_profile" \
+                    --apple-id "$APPLE_ID" \
+                    --team-id "$APPLE_TEAM_ID" \
+                    --password "$APPLE_APP_SPECIFIC_PASSWORD"
+                  echo "NOTARY_PROFILE=$notary_profile" >> "$GITHUB_ENV"
+
+            - name: Build DMG
+              env:
+                  SIGNING_IDENTITY: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION }}
+                  DMG_SIGNING_IDENTITY: ${{ secrets.APPLE_DEVELOPER_ID_INSTALLER }}
+              run: bash scripts/package-dmg.sh "${{ matrix.target.arch }}"
+
+            - name: Set DMG artifact path
+              run: |
+                  echo "DMG_PATH=$(ls target/macos-dist/flowsurface-*-macos.dmg | head -1)" >> "$GITHUB_ENV"
+
+            - name: Upload DMG artifact
+              uses: actions/upload-artifact@v4
+              with:
+                  name: ${{ matrix.target.artifact }}
+                  path: ${{ env.DMG_PATH }}
+
     create-release:
         needs: build
         name: Create Release
@@ -242,7 +363,7 @@ jobs:
                   path: target/release/flowsurface-universal-macos.tar.gz
 
     add-assets:
-        needs: [create-release, create-universal]
+        needs: [create-release, create-universal, package-macos-dmg]
         name: Add Assets
 
         strategy:
@@ -252,6 +373,14 @@ jobs:
                       artifact_name: |
                           echo "ARTIFACT_NAME=flowsurface-universal-macos.tar.gz" >> "$GITHUB_ENV"
                       asset_type: application/gzip
+                    - artifact: macos-arm-dmg
+                      artifact_name: |
+                          echo "ARTIFACT_NAME=$(basename $(ls ./macos-arm-dmg/flowsurface-*-aarch64-macos.dmg))" >> "$GITHUB_ENV"
+                      asset_type: application/x-apple-diskimage
+                    - artifact: macos-x64-dmg
+                      artifact_name: |
+                          echo "ARTIFACT_NAME=$(basename $(ls ./macos-x64-dmg/flowsurface-*-x86_64-macos.dmg))" >> "$GITHUB_ENV"
+                      asset_type: application/x-apple-diskimage
                     - artifact: windows-x64
                       artifact_name: |
                           echo "ARTIFACT_NAME=flowsurface-x86_64-windows.zip" >> "$GITHUB_ENV"
@@ -292,7 +421,7 @@ jobs:
                   asset_content_type: ${{ matrix.target.asset_type }}
 
     generate-checksums:
-        needs: [create-release, create-universal]
+        needs: [create-release, create-universal, package-macos-dmg]
         name: Generate Checksums
         runs-on: ubuntu-latest
         steps:
@@ -305,6 +434,14 @@ jobs:
               run: |
                   # Universal macOS
                   sha256sum artifacts/macos-universal/flowsurface-universal-macos.tar.gz | awk '{print $1 "  flowsurface-universal-macos.tar.gz"}' >> SHA256SUMS
+                  # macOS DMG (arm64)
+                  for f in artifacts/macos-arm-dmg/flowsurface-*-aarch64-macos.dmg; do
+                    sha256sum "$f" | awk '{print $1 "  " $2}' >> SHA256SUMS
+                  done
+                  # macOS DMG (x86_64)
+                  for f in artifacts/macos-x64-dmg/flowsurface-*-x86_64-macos.dmg; do
+                    sha256sum "$f" | awk '{print $1 "  " $2}' >> SHA256SUMS
+                  done
                   # Windows x64
                   sha256sum artifacts/windows-x64/flowsurface-x86_64-windows.zip | awk '{print $1 "  flowsurface-x86_64-windows.zip"}' >> SHA256SUMS
                   # Linux x64

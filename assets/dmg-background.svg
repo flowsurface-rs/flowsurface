@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="420" viewBox="0 0 640 420">
+  <defs>
+    <linearGradient id="base" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#06090c"/>
+      <stop offset="45%" stop-color="#071015"/>
+      <stop offset="100%" stop-color="#04131a"/>
+    </linearGradient>
+    <radialGradient id="centerGlow" cx="50%" cy="49%" r="46%">
+      <stop offset="0%" stop-color="#1fd6d4" stop-opacity="0.26"/>
+      <stop offset="45%" stop-color="#0b5960" stop-opacity="0.10"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="leftGlow" cx="19%" cy="28%" r="24%">
+      <stop offset="0%" stop-color="#3a84e9" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="rightGlow" cx="79%" cy="69%" r="22%">
+      <stop offset="0%" stop-color="#1db0a8" stop-opacity="0.11"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="panel" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#0d1f23" stop-opacity="0.92"/>
+      <stop offset="100%" stop-color="#071117" stop-opacity="0.95"/>
+    </linearGradient>
+    <linearGradient id="line" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#35dbe1" stop-opacity="0.16"/>
+      <stop offset="52%" stop-color="#43eff0" stop-opacity="0.92"/>
+      <stop offset="100%" stop-color="#b6fbff" stop-opacity="0.95"/>
+    </linearGradient>
+  </defs>
+  <rect width="640" height="420" fill="url(#base)"/>
+  <rect width="640" height="420" fill="url(#centerGlow)"/>
+  <rect width="640" height="420" fill="url(#leftGlow)"/>
+  <rect width="640" height="420" fill="url(#rightGlow)"/>
+  <rect x="100" y="135" width="140" height="140" rx="24" fill="url(#panel)" fill-opacity="0.88" stroke="#25c8d2" stroke-opacity="0.26"/>
+  <rect x="400" y="135" width="140" height="140" rx="24" fill="url(#panel)" fill-opacity="0.88" stroke="#25c8d2" stroke-opacity="0.22"/>
+  <rect x="246" y="202" width="148" height="6" rx="3" fill="url(#line)" fill-opacity="0.65"/>
+  <path d="M 382 198 L 402 205 L 382 212 Z" fill="#61f3f4" fill-opacity="0.78"/>
+</svg>
