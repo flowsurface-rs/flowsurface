@@ -12,6 +12,9 @@ use crate::chart::{
 
 const DEFAULT_BAR_WIDTH_FACTOR: f32 = 0.9;
 
+/// Predicate that decides whether a datapoint is valid for drawing.
+type ValidFn<T> = Box<dyn Fn(&T) -> bool>;
+
 pub struct LinePlot<V, T> {
     pub value: V,
     pub tooltip: Option<TooltipFn<T>>,
@@ -23,10 +26,18 @@ pub struct LinePlot<V, T> {
     /// Horizontal shift in bucket units (screen-space).
     /// Positive values move points right, negative values move left.
     pub x_shift_buckets: i32,
+    /// Optional predicate to determine whether a point is "valid".
+    /// Invalid points break the line (they are not connected to
+    /// neighbours) and show `invalid_point_message` in the tooltip.
+    /// When `None`, all points are treated as valid.
+    pub is_valid: Option<ValidFn<T>>,
+    /// Message shown in the tooltip area when the user hovers over (or the
+    /// always-visible label lands on) an invalid point.  When `None` (the
+    /// default) the tooltip is suppressed entirely.
+    pub invalid_point_message: Option<String>,
     _phantom: std::marker::PhantomData<T>,
 }
 
-#[allow(dead_code)]
 impl<V, T> LinePlot<V, T> {
     /// Create a new LinePlot with the given mapping function for Y values and tooltip function.
     pub fn new(value: V) -> Self {
@@ -38,6 +49,8 @@ impl<V, T> LinePlot<V, T> {
             show_points: true,
             point_radius_factor: 0.2,
             x_shift_buckets: 0,
+            is_valid: None,
+            invalid_point_message: None,
             _phantom: std::marker::PhantomData,
         }
     }
@@ -73,6 +86,28 @@ impl<V, T> LinePlot<V, T> {
         self
     }
 
+    /// Set a predicate that decides whether a datapoint is "valid".
+    /// Invalid points break the line (no connection to neighbours)
+    /// and show `invalid_point_message` if one is configured.
+    /// When `None` (the default), every point is considered valid.
+    pub fn valid_when<F>(mut self, predicate: F) -> Self
+    where
+        F: Fn(&T) -> bool + 'static,
+    {
+        self.is_valid = Some(Box::new(predicate));
+        self
+    }
+
+    /// Set a message to show in the tooltip area when a point is invalid
+    /// (according to [`valid_when`]).  When not set the tooltip is hidden
+    /// entirely for invalid points.
+    ///
+    /// [`valid_when`]: Self::valid_when
+    pub fn invalid_point_message(mut self, msg: impl Into<String>) -> Self {
+        self.invalid_point_message = Some(msg.into());
+        self
+    }
+
     pub fn with_tooltip<F>(mut self, tooltip: F) -> Self
     where
         F: Fn(&T, Option<&T>) -> PlotTooltip + 'static,
@@ -92,12 +127,14 @@ where
         let mut max_v = f32::MIN;
 
         datapoints.for_each_in(range, |_, y| {
-            let v = (self.value)(y);
-            if v < min_v {
-                min_v = v;
-            }
-            if v > max_v {
-                max_v = v;
+            if self.is_valid.as_ref().is_none_or(|f| f(y)) {
+                let v = (self.value)(y);
+                if v < min_v {
+                    min_v = v;
+                }
+                if v > max_v {
+                    max_v = v;
+                }
             }
         });
 
@@ -144,32 +181,44 @@ where
         // Line points are anchored to the right edge of the default bar width.
         let x_for = |x: u64| -> f32 { ctx.interval_to_x(x) + half_bar_width + shift_px };
 
-        // Polyline
+        let radius = self
+            .show_points
+            .then(|| (ctx.cell_width * self.point_radius_factor).min(5.0));
+
+        // Draw line segments, skipping over invalid points.
+        // When a point is invalid, `prev` is reset so the next valid
+        // point starts a new disconnected segment.
         let mut prev: Option<(f32, f32)> = None;
         datapoints.for_each_in(range.clone(), |x, y| {
-            let sx = x_for(x);
-            let vy = (self.value)(y);
-            let sy = scale.to_y(vy);
-            if let Some((px, py)) = prev {
-                frame.stroke(
-                    &Path::line(iced::Point::new(px, py), iced::Point::new(sx, sy)),
-                    stroke,
-                );
-            }
-            prev = Some((sx, sy));
-        });
-
-        if self.show_points {
-            let radius = (ctx.cell_width * self.point_radius_factor).min(5.0);
-            datapoints.for_each_in(range, |x, y| {
+            let valid = self.is_valid.as_ref().is_none_or(|f| f(y));
+            if valid {
                 let sx = x_for(x);
                 let sy = scale.to_y((self.value)(y));
-                frame.fill(&Path::circle(iced::Point::new(sx, sy), radius), color);
-            });
-        }
+                if let Some((px, py)) = prev {
+                    frame.stroke(
+                        &Path::line(iced::Point::new(px, py), iced::Point::new(sx, sy)),
+                        stroke,
+                    );
+                }
+                if let Some(r) = radius {
+                    frame.fill(&Path::circle(iced::Point::new(sx, sy), r), color);
+                }
+                prev = Some((sx, sy));
+            } else {
+                prev = None;
+            }
+        });
     }
 
     fn tooltip_fn(&self) -> Option<&TooltipFn<S::Y>> {
         self.tooltip.as_ref()
+    }
+
+    fn is_point_valid(&self, y: &S::Y) -> bool {
+        self.is_valid.as_ref().is_none_or(|f| f(y))
+    }
+
+    fn invalid_point_message(&self) -> Option<&str> {
+        self.invalid_point_message.as_deref()
     }
 }

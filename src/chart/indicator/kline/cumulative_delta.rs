@@ -10,24 +10,32 @@ use crate::chart::{
     },
 };
 
-use data::chart::{
-    PlotData,
-    kline::{KlineDataPoint, KlineTrades},
-};
+use data::chart::{PlotData, kline::KlineDataPoint};
 use data::util::format_with_commas;
-use exchange::{Kline, Trade, Volume, unit::Qty};
+use exchange::{Kline, Trade, unit::Qty};
 
 use iced::widget::{center, text};
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::RangeInclusive;
 
+/// Minimum number of consecutive bars with non-zero delta required
+/// before CVD data is considered trustworthy.
+const MIN_DIRECTIONAL_RUN: usize = 2;
+
 #[derive(Debug, Clone, Copy, Default)]
-pub struct CumulativeDeltaPoint {
+struct CumulativeDeltaPoint {
     /// Buy volume - sell volume for this candle / tick bucket.
-    pub delta: Qty,
+    delta: Qty,
     /// Running sum of delta from the oldest loaded datapoint to this datapoint.
-    pub cumulative: Qty,
+    cumulative: Qty,
+    /// Whether this point is considered trustworthy.  A point is
+    /// reliable only when it has a directional predecessor within a
+    /// run of at least `MIN_DIRECTIONAL_RUN` consecutive bars with
+    /// non-zero delta.  The first bar of every qualifying run is
+    /// excluded (it lacks a directional predecessor to anchor
+    /// against), as are points outside any qualifying run.
+    reliable: bool,
 }
 
 pub struct CumulativeDeltaIndicator {
@@ -79,6 +87,12 @@ impl CumulativeDeltaIndicator {
             .show_points(true)
             .point_radius_factor(0.2)
             .padding(0.08)
+            // Only treat bars as valid when they belong to a long enough
+            // run of consecutive directional data
+            .valid_when(|point: &CumulativeDeltaPoint| point.reliable)
+            .invalid_point_message(format!(
+                "CVD requires {MIN_DIRECTIONAL_RUN}+ consecutive bars\nwith directional volume",
+            ))
             .with_tooltip(tooltip);
 
         indicator_row(
@@ -89,40 +103,6 @@ impl CumulativeDeltaIndicator {
             self.data.as_plot_series(),
             visible_range,
         )
-    }
-
-    fn has_directional_volume(volume: Volume) -> bool {
-        volume.buy_sell().is_some()
-    }
-
-    fn volume_delta(volume: Volume) -> Qty {
-        volume
-            .buy_sell()
-            .map(|(buy, sell)| buy - sell)
-            .unwrap_or(Qty::ZERO)
-    }
-
-    fn delta_from_parts(footprint: &KlineTrades, volume: Volume) -> Qty {
-        if footprint.trades.is_empty() {
-            Self::volume_delta(volume)
-        } else {
-            footprint
-                .trades
-                .values()
-                .fold(Qty::ZERO, |acc, group| acc + group.delta_qty())
-        }
-    }
-
-    fn is_directional_parts(footprint: &KlineTrades, volume: Volume) -> bool {
-        !footprint.trades.is_empty() || Self::has_directional_volume(volume)
-    }
-
-    fn datapoint_delta(dp: &KlineDataPoint) -> Qty {
-        Self::delta_from_parts(&dp.footprint, dp.kline.volume)
-    }
-
-    fn is_datapoint_directional(dp: &KlineDataPoint) -> bool {
-        Self::is_directional_parts(&dp.footprint, dp.kline.volume)
     }
 
     fn set_availability(&mut self, has_points: bool, has_directional: bool) {
@@ -136,16 +116,83 @@ impl CumulativeDeltaIndicator {
     }
 
     fn rebuild_cumulative(&mut self) {
-        let mut cumulative = Qty::ZERO;
-        self.data = self.delta.map(|delta| {
-            cumulative += *delta;
-            CumulativeDeltaPoint {
-                delta: *delta,
-                cumulative,
+        match &self.delta {
+            BasisSeries::Time(deltas) => {
+                let entries: Vec<_> = deltas.iter().collect();
+                let reliable = Self::reliable_indices(&entries, MIN_DIRECTIONAL_RUN);
+
+                let mut cumulative = Qty::ZERO;
+                let data: BTreeMap<_, _> = entries
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &(&time, &delta))| {
+                        cumulative += delta;
+                        (
+                            time,
+                            CumulativeDeltaPoint {
+                                delta,
+                                cumulative,
+                                reliable: reliable[i],
+                            },
+                        )
+                    })
+                    .collect();
+
+                self.data = BasisSeries::Time(data);
             }
-        });
+            BasisSeries::Tick(deltas) => {
+                let entries: Vec<_> = deltas.iter().collect();
+                let reliable = Self::reliable_indices(&entries, MIN_DIRECTIONAL_RUN);
+
+                let mut cumulative = Qty::ZERO;
+                let data: BTreeMap<_, _> = entries
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &(&idx, &delta))| {
+                        cumulative += delta;
+                        (
+                            idx,
+                            CumulativeDeltaPoint {
+                                delta,
+                                cumulative,
+                                reliable: reliable[i],
+                            },
+                        )
+                    })
+                    .collect();
+
+                self.data = BasisSeries::Tick(data);
+            }
+        }
 
         self.clear_all_caches();
+    }
+
+    /// Mark which positions in `entries` belong to a qualifying run
+    /// (≥ `min_run` consecutive non-zero deltas, excluding the first
+    /// bar of each run).
+    fn reliable_indices<K>(entries: &[(&K, &Qty)], min_run: usize) -> Vec<bool> {
+        let n = entries.len();
+        let mut reliable = vec![false; n];
+        let mut i = 0;
+        while i < n {
+            if *entries[i].1 != Qty::ZERO {
+                let run_start = i;
+                while i < n && *entries[i].1 != Qty::ZERO {
+                    i += 1;
+                }
+                // Skip the first bar of every qualifying run — it lacks
+                // a directional predecessor to anchor its delta against.
+                if i - run_start >= min_run {
+                    for slot in reliable.iter_mut().take(i).skip(run_start + 1) {
+                        *slot = true;
+                    }
+                }
+            } else {
+                i += 1;
+            }
+        }
+        reliable
     }
 
     fn rebuild_from_deltas(&mut self, deltas: BasisSeries<Qty>) {
@@ -182,7 +229,7 @@ impl KlineIndicatorImpl for CumulativeDeltaIndicator {
                 timeseries
                     .datapoints
                     .iter()
-                    .map(|(&time, dp)| (time, Self::datapoint_delta(dp)))
+                    .map(|(&time, dp)| (time, dp.volume_delta()))
                     .collect()
             },
             |tickseries| {
@@ -190,12 +237,7 @@ impl KlineIndicatorImpl for CumulativeDeltaIndicator {
                     .datapoints
                     .iter()
                     .enumerate()
-                    .map(|(idx, dp)| {
-                        (
-                            idx as u64,
-                            Self::delta_from_parts(&dp.footprint, dp.kline.volume),
-                        )
-                    })
+                    .map(|(idx, dp)| (idx as u64, dp.volume_delta()))
                     .collect()
             },
         );
@@ -203,19 +245,13 @@ impl KlineIndicatorImpl for CumulativeDeltaIndicator {
         let (deltas, has_points, has_directional) = match source {
             PlotData::TimeBased(timeseries) => {
                 let has_points = !timeseries.datapoints.is_empty();
-                let has_directional = timeseries
-                    .datapoints
-                    .values()
-                    .any(Self::is_datapoint_directional);
+                let has_directional = timeseries.datapoints.values().any(|dp| dp.is_directional());
 
                 (deltas, has_points, has_directional)
             }
             PlotData::TickBased(tickseries) => {
                 let has_points = !tickseries.datapoints.is_empty();
-                let has_directional = tickseries
-                    .datapoints
-                    .iter()
-                    .any(|dp| Self::is_directional_parts(&dp.footprint, dp.kline.volume));
+                let has_directional = tickseries.datapoints.iter().any(|dp| dp.is_directional());
 
                 (deltas, has_points, has_directional)
             }
@@ -241,15 +277,9 @@ impl KlineIndicatorImpl for CumulativeDeltaIndicator {
             for kline in klines {
                 let (delta, directional) = if let Some(dp) = timeseries.datapoints.get(&kline.time)
                 {
-                    (
-                        Self::datapoint_delta(dp),
-                        Self::is_datapoint_directional(dp),
-                    )
+                    (dp.volume_delta(), dp.is_directional())
                 } else {
-                    (
-                        Self::volume_delta(kline.volume),
-                        Self::has_directional_volume(kline.volume),
-                    )
+                    (kline.volume.delta(), kline.volume.is_directional())
                 };
 
                 deltas.insert(kline.time, delta);
@@ -297,7 +327,7 @@ impl KlineIndicatorImpl for CumulativeDeltaIndicator {
 
                 for time in touched_times {
                     if let Some(dp) = timeseries.datapoints.get(&time) {
-                        deltas.insert(time, Self::datapoint_delta(dp));
+                        deltas.insert(time, dp.volume_delta());
                         touched = true;
                     }
                 }
@@ -310,10 +340,7 @@ impl KlineIndicatorImpl for CumulativeDeltaIndicator {
                 let start_idx = old_dp_len.saturating_sub(1);
 
                 for (idx, dp) in tickseries.datapoints.iter().enumerate().skip(start_idx) {
-                    deltas.insert(
-                        idx as u64,
-                        Self::delta_from_parts(&dp.footprint, dp.kline.volume),
-                    );
+                    deltas.insert(idx as u64, dp.volume_delta());
                     touched = true;
                 }
             }

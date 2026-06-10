@@ -654,6 +654,18 @@ impl Volume {
             Volume::TotalOnly(total) => Volume::TotalOnly(total + qty),
         }
     }
+
+    /// Net buy minus sell volume. Returns zero when directional data is unavailable.
+    pub fn delta(&self) -> Qty {
+        self.buy_sell()
+            .map(|(buy, sell)| buy - sell)
+            .unwrap_or(Qty::ZERO)
+    }
+
+    /// Whether this volume breaks down into buy vs sell (directional).
+    pub fn is_directional(&self) -> bool {
+        self.buy_sell().is_some()
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]

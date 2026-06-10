@@ -69,6 +69,24 @@ impl TickAccumulation {
     pub fn calculate_poc(&mut self) {
         self.footprint.calculate_poc();
     }
+
+    pub fn volume_delta(&self) -> Qty {
+        if self.kline.volume.is_directional() {
+            self.kline.volume.delta()
+        } else if !self.footprint.trades.is_empty() {
+            self.footprint
+                .trades
+                .values()
+                .fold(Qty::ZERO, |acc, group| acc + group.delta_qty())
+        } else {
+            Qty::ZERO
+        }
+    }
+
+    /// Whether this tick accumulation has directional (buy vs sell) data.
+    pub fn is_directional(&self) -> bool {
+        !self.footprint.trades.is_empty() || self.kline.volume.is_directional()
+    }
 }
 
 pub struct TickAggr {

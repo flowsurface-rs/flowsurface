@@ -304,6 +304,21 @@ pub trait Plot<S: Series> {
     fn tooltip(&self, y: &S::Y, next: Option<&S::Y>, _theme: &Theme) -> Option<PlotTooltip> {
         self.tooltip_fn().map(|tt| tt(y, next))
     }
+
+    /// Whether an individual datapoint should be considered "valid" for
+    /// always-visible data labels.  Returns `true` by default so that
+    /// existing plots are unaffected.  Override this when some points carry
+    /// unreliable / incomplete data (e.g. bars with no directional trades).
+    fn is_point_valid(&self, _y: &S::Y) -> bool {
+        true
+    }
+
+    /// Message shown in the tooltip area when the user hovers over (or the
+    /// always-visible label lands on) an *invalid* point.  Return `None`
+    /// (the default) to suppress the tooltip entirely.
+    fn invalid_point_message(&self) -> Option<&str> {
+        None
+    }
 }
 
 pub struct ChartCanvas<'a, P, S>
@@ -477,8 +492,12 @@ where
                 if let Some((x, y)) = hovered {
                     let next = self.series.next_after(x).map(|(_, v)| v);
 
-                    if let Some(tooltip) = self.plot.tooltip(y, next, theme) {
-                        tooltip.draw(frame, theme, bounds, cursor_position.x);
+                    if self.plot.is_point_valid(y) {
+                        if let Some(tooltip) = self.plot.tooltip(y, next, theme) {
+                            tooltip.draw(frame, theme, bounds, cursor_position.x);
+                        }
+                    } else if let Some(msg) = self.plot.invalid_point_message() {
+                        PlotTooltip::warning(msg).draw_static(frame, theme, bounds);
                     }
                 }
             } else if let Some(cursor_position) = cursor.position_in(bounds) {
@@ -509,10 +528,14 @@ where
                     Basis::Tick(_) => self.series.first_in(earliest..=latest),
                 }
             {
-                let next = self.series.next_after(x).map(|(_, v)| v);
+                if self.plot.is_point_valid(y) {
+                    let next = self.series.next_after(x).map(|(_, v)| v);
 
-                if let Some(tooltip) = self.plot.tooltip(y, next, theme) {
-                    tooltip.draw_static(frame, theme, bounds);
+                    if let Some(tooltip) = self.plot.tooltip(y, next, theme) {
+                        tooltip.draw_static(frame, theme, bounds);
+                    }
+                } else if let Some(msg) = self.plot.invalid_point_message() {
+                    PlotTooltip::warning(msg).draw_static(frame, theme, bounds);
                 }
             }
         });
@@ -540,8 +563,31 @@ type TooltipFn<T> = Box<dyn Fn(&T, Option<&T>) -> PlotTooltip>;
 const TOOLTIP_MARGIN: f32 = 4.0; // px from edge of canvas
 const TOOLTIP_PADDING: f32 = 8.0; // px inside tooltip box
 
+/// The visual style of a tooltip: either normal data display or a warning.
+pub enum TooltipKind {
+    Info(String),
+    Warning(String),
+}
+
+impl TooltipKind {
+    fn text(&self) -> &str {
+        match self {
+            TooltipKind::Info(t) | TooltipKind::Warning(t) => t,
+        }
+    }
+
+    /// Return the segments that make up this tooltip's first line.
+    /// Each segment is `(text, is_danger_colored)`.
+    fn segments(&self) -> Vec<(&str, bool)> {
+        match self {
+            TooltipKind::Info(text) => vec![(text.as_str(), false)],
+            TooltipKind::Warning(text) => vec![("<!> ", true), (text.as_str(), false)],
+        }
+    }
+}
+
 pub struct PlotTooltip {
-    pub text: String,
+    pub kind: TooltipKind,
 }
 
 impl PlotTooltip {
@@ -551,16 +597,38 @@ impl PlotTooltip {
     const TOOLTIP_PAD_Y: f32 = 6.0; // top+bottom padding total
 
     pub fn new<T: Into<String>>(text: T) -> Self {
-        Self { text: text.into() }
+        Self {
+            kind: TooltipKind::Info(text.into()),
+        }
+    }
+
+    /// Convenience constructor that flags the tooltip as a warning.
+    /// Rendered with danger colours and a "<!> " prefix.
+    pub fn warning<T: Into<String>>(text: T) -> Self {
+        Self {
+            kind: TooltipKind::Warning(text.into()),
+        }
     }
 
     pub fn guesstimate(&self) -> (f32, f32) {
+        let segments = self.kind.segments();
+        let prefix_chars: usize = segments
+            .iter()
+            .filter(|(_, danger)| *danger)
+            .map(|(t, _)| t.chars().count())
+            .sum();
+
+        let body = self.kind.text();
         let mut max_cols: usize = 0;
         let mut lines: usize = 0;
 
-        for line in self.text.split('\n') {
+        for (i, line) in body.split('\n').enumerate() {
             lines += 1;
-            let cols = line.chars().count();
+            let cols = if i == 0 {
+                line.chars().count() + prefix_chars
+            } else {
+                line.chars().count()
+            };
             if cols > max_cols {
                 max_cols = cols;
             }
@@ -588,14 +656,10 @@ impl PlotTooltip {
             }
         };
 
-        let (rect_x, text_x, align_x) = if switch_sides {
-            let rx = bounds.width - tooltip_w - TOOLTIP_MARGIN;
-            let tx = rx + tooltip_w - TOOLTIP_PADDING;
-            (rx, tx, Alignment::End)
+        let rect_x = if switch_sides {
+            bounds.width - tooltip_w - TOOLTIP_MARGIN
         } else {
-            let rx = TOOLTIP_MARGIN;
-            let tx = rx + TOOLTIP_PADDING;
-            (rx, tx, Alignment::Start)
+            TOOLTIP_MARGIN
         };
 
         frame.fill_rectangle(
@@ -603,15 +667,28 @@ impl PlotTooltip {
             Size::new(tooltip_w, tooltip_h),
             palette.background.weakest.color.scale_alpha(0.9),
         );
-        frame.fill_text(canvas::Text {
-            content: self.text.clone(),
-            position: Point::new(text_x, 2.0),
-            size: iced::Pixels(crate::style::text_size::TINY),
-            color: palette.background.base.text,
-            font: style::AZERET_MONO,
-            align_x: align_x.into(),
-            ..canvas::Text::default()
-        });
+
+        // All segments drawn left-to-right with Start alignment from the
+        // text area's left edge (box origin + padding).
+        let mut cursor = rect_x + TOOLTIP_PADDING;
+
+        for (text, is_danger) in self.kind.segments() {
+            let color = if is_danger {
+                palette.danger.base.color
+            } else {
+                palette.background.base.text
+            };
+            frame.fill_text(canvas::Text {
+                content: text.to_string(),
+                position: Point::new(cursor, 2.0),
+                size: iced::Pixels(crate::style::text_size::TINY),
+                color,
+                font: style::AZERET_MONO,
+                align_x: Alignment::Start.into(),
+                ..canvas::Text::default()
+            });
+            cursor += text.chars().count() as f32 * Self::TOOLTIP_CHAR_W;
+        }
     }
 
     pub fn draw_static(&self, frame: &mut canvas::Frame, theme: &Theme, _bounds: Rectangle) {
@@ -623,14 +700,25 @@ impl PlotTooltip {
             Size::new(tooltip_w, tooltip_h),
             palette.background.weakest.color.scale_alpha(0.9),
         );
-        frame.fill_text(canvas::Text {
-            content: self.text.clone(),
-            position: Point::new(TOOLTIP_MARGIN + TOOLTIP_PADDING, 2.0),
-            size: iced::Pixels(crate::style::text_size::TINY),
-            color: palette.background.base.text,
-            font: style::AZERET_MONO,
-            align_x: Alignment::Start.into(),
-            ..canvas::Text::default()
-        });
+
+        let mut cursor = TOOLTIP_MARGIN + TOOLTIP_PADDING;
+
+        for (text, is_danger) in self.kind.segments() {
+            let color = if is_danger {
+                palette.danger.base.color
+            } else {
+                palette.background.base.text
+            };
+            frame.fill_text(canvas::Text {
+                content: text.to_string(),
+                position: Point::new(cursor, 2.0),
+                size: iced::Pixels(crate::style::text_size::TINY),
+                color,
+                font: style::AZERET_MONO,
+                align_x: Alignment::Start.into(),
+                ..canvas::Text::default()
+            });
+            cursor += text.chars().count() as f32 * Self::TOOLTIP_CHAR_W;
+        }
     }
 }
