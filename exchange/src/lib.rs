@@ -298,7 +298,6 @@ impl Ticker {
         display_symbol: Option<&str>,
     ) -> Self {
         assert!(ticker.len() <= Self::MAX_LEN as usize, "Ticker too long");
-        assert!(ticker.is_ascii(), "Ticker must be ASCII");
         assert!(!ticker.contains('|'), "Ticker cannot contain '|'");
 
         let mut bytes = [0u8; Self::MAX_LEN as usize];
