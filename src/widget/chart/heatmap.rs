@@ -171,8 +171,11 @@ impl HeatmapShader {
                 anchor_screen_x,
                 viewport_w,
             } => {
-                self.scene
-                    .zoom_column_world_keep_anchor(factor, 0.0, anchor_screen_x, viewport_w);
+                self.scene.zoom_column_world_keep_screen_anchor(
+                    factor,
+                    anchor_screen_x,
+                    viewport_w,
+                );
                 self.canvas_invalidation.mark_axis_x_motion();
 
                 let resumed = self.try_resume_if_x0_visible();

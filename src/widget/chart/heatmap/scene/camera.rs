@@ -246,28 +246,36 @@ impl Camera {
         );
     }
 
-    pub fn zoom_column_world_keep_anchor(
+    /// Column-stable zoom: the column under `anchor_screen_x` stays pinned
+    /// there after zooming (like [`Camera::zoom_column_world_at`]).
+    pub fn zoom_column_world_keep_screen_anchor(
         &mut self,
         factor: f32,
-        anchor_world_x: f32,
         anchor_screen_x: f32,
         vw_px: f32,
         cell: &mut Cell,
     ) {
-        if !factor.is_finite()
-            || !anchor_world_x.is_finite()
-            || !anchor_screen_x.is_finite()
-            || !vw_px.is_finite()
-            || vw_px <= 1.0
+        if !factor.is_finite() || !anchor_screen_x.is_finite() || !vw_px.is_finite() || vw_px <= 1.0
         {
             return;
         }
 
+        let world_x_before =
+            self.world_x_at_screen_x_padded_right(anchor_screen_x, vw_px, MIN_CAMERA_SCALE);
+
+        if !world_x_before.is_finite() {
+            return;
+        }
+
+        let col_units = world_x_before / cell.width_world().max(MIN_COL_W_WORLD);
+
         let s = self.scale_x_with_min(MIN_CAMERA_SCALE);
         cell.zoom_width_world_clamped(factor, s);
 
+        let world_x_after = col_units * cell.width_world();
+
         self.set_offset_x_for_world_x_at_screen_x_padded_right(
-            anchor_world_x,
+            world_x_after,
             anchor_screen_x,
             vw_px,
             MIN_CAMERA_SCALE,
