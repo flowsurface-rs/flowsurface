@@ -991,8 +991,9 @@ impl TickersTable {
 
         let icon = icon_text(style::venue_icon(ticker.exchange.venue()), 12);
         let display_ticker = {
-            if display_data.display_ticker.len() >= 11 {
-                format!("{}...", &display_data.display_ticker[..9])
+            if display_data.display_ticker.chars().count() >= 11 {
+                let truncated: String = display_data.display_ticker.chars().take(9).collect();
+                format!("{}...", truncated)
             } else {
                 format!(
                     "{}{}",

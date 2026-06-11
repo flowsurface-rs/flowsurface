@@ -103,8 +103,8 @@ pub fn calc_search_rank(ticker: &Ticker, query: &str) -> Option<SearchRank> {
     let (mut display_str, _) = ticker.display_symbol_and_type();
     let (mut raw_str, _) = ticker.to_full_symbol_and_type();
 
-    display_str.make_ascii_uppercase();
-    raw_str.make_ascii_uppercase();
+    display_str = display_str.to_uppercase();
+    raw_str = raw_str.to_uppercase();
 
     let suffix = market_suffix(ticker.market_type());
     let is_perp = !suffix.is_empty();
