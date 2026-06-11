@@ -289,6 +289,10 @@ pub trait Plot<S: Series> {
         (min, max)
     }
 
+    fn x_shift_buckets(&self) -> i32 {
+        0
+    }
+
     fn draw<'a>(
         &'a self,
         frame: &'a mut canvas::Frame,
@@ -334,6 +338,7 @@ where
     pub series: S,
     pub max_for_labels: f32,
     pub min_for_labels: f32,
+    pub visible_range: RangeInclusive<u64>,
 }
 
 impl<P, S> canvas::Program<Message> for ChartCanvas<'_, P, S>
@@ -388,14 +393,7 @@ where
                 (-bounds.height / ctx.scaling) / 2.0,
             ));
 
-            let width = frame.width() / ctx.scaling;
-            let region = Rectangle {
-                x: -ctx.translation.x - width / 2.0,
-                y: 0.0,
-                width,
-                height: frame.height() / ctx.scaling,
-            };
-            let (earliest, latest) = ctx.interval_range(&region);
+            let (earliest, latest) = (*self.visible_range.start(), *self.visible_range.end());
             if latest < earliest {
                 return;
             }
@@ -406,8 +404,14 @@ where
                 px_height: frame.height() / ctx.scaling,
             };
 
-            self.plot
-                .draw(frame, ctx, theme, &self.series, earliest..=latest, &scale);
+            self.plot.draw(
+                frame,
+                ctx,
+                theme,
+                &self.series,
+                self.visible_range.clone(),
+                &scale,
+            );
         });
 
         let crosshair = self.crosshair_cache.draw(renderer, bounds.size(), |frame| {
@@ -419,7 +423,7 @@ where
                 width,
                 height: frame.height() / ctx.scaling,
             };
-            let (earliest, latest) = ctx.interval_range(&region);
+            let (earliest, latest) = (*self.visible_range.start(), *self.visible_range.end());
             if latest < earliest {
                 return;
             }

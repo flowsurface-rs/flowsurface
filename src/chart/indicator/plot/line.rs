@@ -221,4 +221,8 @@ where
     fn invalid_point_message(&self) -> Option<&str> {
         self.invalid_point_message.as_deref()
     }
+
+    fn x_shift_buckets(&self) -> i32 {
+        self.x_shift_buckets
+    }
 }
