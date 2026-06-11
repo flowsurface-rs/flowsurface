@@ -518,7 +518,7 @@ impl Exchange {
     pub fn is_symbol_supported(&self, symbol: &str, log: bool) -> bool {
         let valid_symbol = symbol
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '-');
 
         if valid_symbol {
             return true;
