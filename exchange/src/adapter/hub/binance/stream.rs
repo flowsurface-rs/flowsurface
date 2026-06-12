@@ -450,7 +450,7 @@ pub fn connect_trade_stream(
         proxy_cfg: proxy_cfg.clone(),
     };
 
-    WsSession::with_opcode_ping(BINANCE_OPCODE_PING_PAYLOAD, None, stream_scope).run(adapter)
+    WsSession::with_opcode_ping(BINANCE_OPCODE_PING_PAYLOAD, stream_scope).run(adapter)
 }
 
 struct DepthAdapter {
@@ -714,8 +714,7 @@ pub fn connect_depth_stream(
         sync_machine: DepthSyncMachine::new(handle, ticker),
     };
 
-    WsSession::with_opcode_ping(BINANCE_OPCODE_PING_PAYLOAD, None, stream_scope.clone())
-        .run(adapter)
+    WsSession::with_opcode_ping(BINANCE_OPCODE_PING_PAYLOAD, stream_scope.clone()).run(adapter)
 }
 
 struct KlineAdapter {
@@ -848,5 +847,5 @@ pub fn connect_kline_stream(
         proxy_cfg: proxy_cfg.clone(),
     };
 
-    WsSession::with_opcode_ping(BINANCE_OPCODE_PING_PAYLOAD, None, stream_scope).run(adapter)
+    WsSession::with_opcode_ping(BINANCE_OPCODE_PING_PAYLOAD, stream_scope).run(adapter)
 }

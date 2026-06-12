@@ -263,7 +263,7 @@ pub fn connect_trade_stream(
         subscribe_message,
         proxy_cfg,
     };
-    let session = WsSession::with_text_ping(OKX_PING_PAYLOAD, Some(b"pong"), stream_scope);
+    let session = WsSession::with_text_ping(OKX_PING_PAYLOAD, stream_scope);
 
     session.run(adapter)
 }
@@ -381,7 +381,7 @@ pub fn connect_depth_stream(
         proxy_cfg,
     };
 
-    WsSession::with_text_ping(OKX_PING_PAYLOAD, Some(b"pong"), stream_scope).run(adapter)
+    WsSession::with_text_ping(OKX_PING_PAYLOAD, stream_scope).run(adapter)
 }
 
 struct KlineAdapter {
@@ -523,5 +523,5 @@ pub fn connect_kline_stream(
         market_type,
     };
 
-    WsSession::with_text_ping(OKX_PING_PAYLOAD, Some(b"pong"), stream_scope).run(adapter)
+    WsSession::with_text_ping(OKX_PING_PAYLOAD, stream_scope).run(adapter)
 }

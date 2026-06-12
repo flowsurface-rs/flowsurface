@@ -323,7 +323,7 @@ pub fn connect_trade_stream(
         proxy_cfg,
     };
 
-    WsSession::with_text_ping(HYPERLIQUID_PING_PAYLOAD, None, stream_scope).run(adapter)
+    WsSession::with_text_ping(HYPERLIQUID_PING_PAYLOAD, stream_scope).run(adapter)
 }
 
 struct DepthAdapter {
@@ -493,7 +493,7 @@ pub fn connect_depth_stream(
         proxy_cfg,
     };
 
-    WsSession::with_text_ping(HYPERLIQUID_PING_PAYLOAD, None, stream_scope).run(adapter)
+    WsSession::with_text_ping(HYPERLIQUID_PING_PAYLOAD, stream_scope).run(adapter)
 }
 
 struct KlineAdapter {
@@ -620,5 +620,5 @@ pub fn connect_kline_stream(
         proxy_cfg,
     };
 
-    WsSession::with_text_ping(HYPERLIQUID_PING_PAYLOAD, None, stream_scope).run(adapter)
+    WsSession::with_text_ping(HYPERLIQUID_PING_PAYLOAD, stream_scope).run(adapter)
 }

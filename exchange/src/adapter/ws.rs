@@ -79,7 +79,6 @@ impl<T> Drop for ChannelStream<T> {
 #[derive(Clone, Debug)]
 pub(super) struct WsSession {
     ping_payload: PingPayload,
-    text_pong_payload: Option<&'static [u8]>,
     streams: Arc<[StreamKind]>,
 }
 
@@ -96,7 +95,7 @@ pub(super) trait WsAdapter {
         output: &mut Sender<Event>,
     ) -> impl std::future::Future<Output = ()> + Send;
 
-    /// Called when a text message is received that doesn't match the optional `text_pong_payload`.
+    /// Called when a text message is received.
     fn on_text(
         &mut self,
         payload: &[u8],
@@ -112,26 +111,19 @@ pub(super) trait WsAdapter {
 }
 
 impl WsSession {
-    pub(super) fn with_text_ping(
-        ping_payload: &'static [u8],
-        text_pong_payload: Option<&'static [u8]>,
-        streams: Arc<[StreamKind]>,
-    ) -> Self {
+    pub(super) fn with_text_ping(ping_payload: &'static [u8], streams: Arc<[StreamKind]>) -> Self {
         Self {
             ping_payload: PingPayload::Text(ping_payload),
-            text_pong_payload,
             streams,
         }
     }
 
     pub(super) fn with_opcode_ping(
         ping_payload: &'static [u8],
-        text_pong_payload: Option<&'static [u8]>,
         streams: Arc<[StreamKind]>,
     ) -> Self {
         Self {
             ping_payload: PingPayload::OpCode(ping_payload),
-            text_pong_payload,
             streams,
         }
     }
@@ -140,8 +132,6 @@ impl WsSession {
         let (mut output, receiver) = futures::channel::mpsc::channel(100);
 
         let ping_payload = self.ping_payload;
-        let text_pong_payload = self.text_pong_payload;
-
         let streams = Arc::clone(&self.streams);
 
         let task = tokio::spawn(async move {
@@ -190,13 +180,7 @@ impl WsSession {
 
                                         match msg.opcode {
                                             OpCode::Text => {
-                                                if text_pong_payload
-                                                    .is_some_and(|pong| &msg.payload[..] == pong)
-                                                {
-                                                    None
-                                                } else {
-                                                    adapter.on_text(&msg.payload[..], &mut output).await.err()
-                                                }
+                                                adapter.on_text(&msg.payload[..], &mut output).await.err()
                                             }
                                             OpCode::Ping => {
                                                 let payload = Vec::from(msg.payload);
