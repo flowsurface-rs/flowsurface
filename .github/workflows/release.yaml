@@ -206,11 +206,10 @@ jobs:
 
             - name: Repackage signed Windows artifact
               if: matrix.target.target == 'windows-x64'
-              shell: bash
+              shell: pwsh
               run: |
-                  rm -f target/release/flowsurface-x86_64-windows.zip
-                  (cd target/release/win-signed && \
-                   zip -r ../flowsurface-x86_64-windows.zip .)
+                  Remove-Item target/release/flowsurface-x86_64-windows.zip -Force -ErrorAction SilentlyContinue
+                  Compress-Archive -Path target/release/win-signed/* -DestinationPath target/release/flowsurface-x86_64-windows.zip -Force
 
             - name: Upload artifact
               uses: actions/upload-artifact@v4
