@@ -2,6 +2,7 @@ name: "Release"
 
 permissions:
     contents: write
+    actions: read
 on:
     workflow_dispatch:
         inputs:
@@ -175,39 +176,41 @@ jobs:
             - name: Set artifact path
               run: ${{ matrix.target.artifact_path }}
 
-            - name: Sign Windows executable with SignPath
+            - name: Extract Windows artifact for signing
               if: matrix.target.target == 'windows-x64'
-              shell: pwsh
-              env:
-                  SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
-                  SIGNPATH_ORG_ID: ${{ secrets.SIGNPATH_ORG_ID }}
+              shell: bash
               run: |
-                  Install-Module -Name SignPath -Force -Scope CurrentUser -SkipPublisherCheck
+                  mkdir -p target/release/win-unsigned
+                  unzip -o target/release/flowsurface-x86_64-windows.zip \
+                    -d target/release/win-unsigned
 
-                  $zipPath = "target/release/flowsurface-x86_64-windows.zip"
-                  $extractDir = "target/release/win-sign"
+            - name: Upload unsigned Windows files for SignPath
+              if: matrix.target.target == 'windows-x64'
+              id: upload-unsigned-windows
+              uses: actions/upload-artifact@v4
+              with:
+                  name: windows-unsigned
+                  path: target/release/win-unsigned
 
-                  Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
+            - name: Submit SignPath signing request
+              if: matrix.target.target == 'windows-x64'
+              uses: signpath/github-action-submit-signing-request@v2
+              with:
+                  api-token: "${{ secrets.SIGNPATH_API_TOKEN }}"
+                  organization-id: "${{ secrets.SIGNPATH_ORG_ID }}"
+                  project-slug: "flowsurface"
+                  signing-policy-slug: "test-signing"
+                  github-artifact-id: "${{ steps.upload-unsigned-windows.outputs.artifact-id }}"
+                  wait-for-completion: true
+                  output-artifact-directory: "target/release/win-signed"
 
-                  Write-Host "Signing flowsurface.exe..."
-                  $signParams = @{
-                      InputArtifactPath  = "$extractDir/flowsurface.exe"
-                      ApiToken           = $env:SIGNPATH_API_TOKEN
-                      OrganizationId     = $env:SIGNPATH_ORG_ID
-                      ProjectSlug        = "flowsurface"
-                      SigningPolicySlug  = "test-signing"
-                      OutputArtifactPath = "$extractDir/flowsurface-signed.exe"
-                      WaitForCompletion  = $true
-                  }
-                  Submit-SigningRequest @signParams
-
-                  Remove-Item "$extractDir/flowsurface.exe"
-                  Rename-Item "$extractDir/flowsurface-signed.exe" "flowsurface.exe"
-
-                  Write-Host "Repackaging signed zip..."
-                  Remove-Item $zipPath
-                  Compress-Archive -Path "$extractDir/*" -DestinationPath $zipPath -Force
-                  Write-Host "Done: $zipPath"
+            - name: Repackage signed Windows artifact
+              if: matrix.target.target == 'windows-x64'
+              shell: bash
+              run: |
+                  rm -f target/release/flowsurface-x86_64-windows.zip
+                  (cd target/release/win-signed && \
+                   zip -r ../flowsurface-x86_64-windows.zip .)
 
             - name: Upload artifact
               uses: actions/upload-artifact@v4
