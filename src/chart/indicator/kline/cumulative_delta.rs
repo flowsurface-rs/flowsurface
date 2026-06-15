@@ -68,19 +68,13 @@ impl CumulativeDeltaIndicator {
         }
 
         let tooltip = |point: &CumulativeDeltaPoint, _next: Option<&CumulativeDeltaPoint>| {
-            let cvd = format!(
-                "CVD: {}",
-                format_with_commas(point.cumulative.to_f32_lossy())
-            );
+            let cvd = format!("CVD: {}", format_with_commas(point.cumulative.to_f64()));
             let sign = if point.delta >= Qty::ZERO { "+" } else { "" };
-            let delta = format!(
-                "Delta: {sign}{}",
-                format_with_commas(point.delta.to_f32_lossy())
-            );
+            let delta = format!("Delta: {sign}{}", format_with_commas(point.delta.to_f64()));
             PlotTooltip::new(format!("{cvd}\n{delta}"))
         };
 
-        let value_fn = |point: &CumulativeDeltaPoint| point.cumulative.to_f32_lossy();
+        let value_fn = |point: &CumulativeDeltaPoint| point.cumulative.to_f64() as f32;
 
         let plot = LinePlot::new(value_fn)
             .stroke_width(1.0)

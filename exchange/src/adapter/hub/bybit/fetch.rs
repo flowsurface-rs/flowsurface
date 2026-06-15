@@ -21,7 +21,7 @@ struct DeOpenInterest {
         rename = "openInterest",
         deserialize_with = "serde_util::de_string_to_number"
     )]
-    pub value: f32,
+    pub value: f64,
     #[serde(deserialize_with = "serde_util::de_string_to_number")]
     pub timestamp: u64,
 }
@@ -236,12 +236,12 @@ pub(super) async fn fetch_klines(
         .map(|kline| {
             let time = parse_kline_field::<u64>(kline[0].as_str())?;
 
-            let open = parse_kline_field::<f32>(kline[1].as_str())?;
-            let high = parse_kline_field::<f32>(kline[2].as_str())?;
-            let low = parse_kline_field::<f32>(kline[3].as_str())?;
-            let close = parse_kline_field::<f32>(kline[4].as_str())?;
+            let open = parse_kline_field::<f64>(kline[1].as_str())?;
+            let high = parse_kline_field::<f64>(kline[2].as_str())?;
+            let low = parse_kline_field::<f64>(kline[3].as_str())?;
+            let close = parse_kline_field::<f64>(kline[4].as_str())?;
 
-            let volume = parse_kline_field::<f32>(kline[5].as_str())?;
+            let volume = parse_kline_field::<f64>(kline[5].as_str())?;
             let volume = qty_norm.normalize_qty(volume, close);
 
             let kline = Kline::new(

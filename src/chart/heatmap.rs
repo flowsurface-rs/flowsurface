@@ -601,7 +601,7 @@ impl canvas::Program<Message> for HeatmapChart {
 
                     // max bid/ask quantity text
                     let text_size = crate::style::text_size::TINY / chart.scaling;
-                    let text_content = abbr_large_numbers(max_qty);
+                    let text_content = abbr_large_numbers(max_qty as f64);
 
                     let text_position = Point::new(
                         current_depth_area_width,
@@ -688,7 +688,7 @@ impl canvas::Program<Message> for HeatmapChart {
 
             if volume_indicator && max_aggr_volume > 0.0 {
                 let text_size = crate::style::text_size::TINY / chart.scaling;
-                let text_content = abbr_large_numbers(max_aggr_volume);
+                let text_content = abbr_large_numbers(max_aggr_volume as f64);
 
                 let text_position = Point::new(
                     region.x + region.width - 4.0,
@@ -866,7 +866,7 @@ impl canvas::Program<Message> for HeatmapChart {
                             if let Some((qty, is_bid)) =
                                 display_grid_qtys.get(&(data_time_val, data_price_key))
                             {
-                                let text_content = abbr_large_numbers(qty.to_f32_lossy());
+                                let text_content = abbr_large_numbers(qty.to_f64());
                                 let color = if *is_bid {
                                     palette.success.strong.color
                                 } else {
@@ -1040,7 +1040,7 @@ fn draw_volume_profile(
 
     if max_aggr_volume > 0.0 {
         let text_size = crate::style::text_size::TINY / chart.scaling;
-        let text_content = abbr_large_numbers(max_aggr_volume);
+        let text_content = abbr_large_numbers(max_aggr_volume as f64);
 
         let text_position = Point::new(region.x + area_width, region.y);
 

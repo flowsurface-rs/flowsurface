@@ -20,15 +20,15 @@ use std::{collections::HashMap, io::BufReader, path::PathBuf, time::UNIX_EPOCH};
 #[derive(Deserialize, Debug, Clone)]
 struct FetchedKline(
     u64,
-    #[serde(deserialize_with = "de_string_to_number")] f32,
-    #[serde(deserialize_with = "de_string_to_number")] f32,
-    #[serde(deserialize_with = "de_string_to_number")] f32,
-    #[serde(deserialize_with = "de_string_to_number")] f32,
-    #[serde(deserialize_with = "de_string_to_number")] f32,
+    #[serde(deserialize_with = "de_string_to_number")] f64,
+    #[serde(deserialize_with = "de_string_to_number")] f64,
+    #[serde(deserialize_with = "de_string_to_number")] f64,
+    #[serde(deserialize_with = "de_string_to_number")] f64,
+    #[serde(deserialize_with = "de_string_to_number")] f64,
     u64,
     String,
     u32,
-    #[serde(deserialize_with = "de_string_to_number")] f32,
+    #[serde(deserialize_with = "de_string_to_number")] f64,
     String,
     String,
 );
@@ -39,7 +39,7 @@ struct DeOpenInterest {
     #[serde(rename = "timestamp")]
     pub time: u64,
     #[serde(rename = "sumOpenInterest", deserialize_with = "de_string_to_number")]
-    pub sum: f32,
+    pub sum: f64,
 }
 
 #[derive(Deserialize, Debug)]
@@ -47,9 +47,9 @@ struct DeTrade {
     #[serde(rename = "T")]
     time: u64,
     #[serde(rename = "p", deserialize_with = "de_string_to_number")]
-    price: f32,
+    price: f64,
     #[serde(rename = "q", deserialize_with = "de_string_to_number")]
-    qty: f32,
+    qty: f64,
     #[serde(rename = "m")]
     is_sell: bool,
 }
@@ -250,7 +250,7 @@ pub(super) async fn fetch_ticker_metadata(
                     .ok_or_else(|| AdapterError::ParseError("Failed to parse minQty".to_string()))
             })?;
 
-        let contract_size = serde_util::value_as_f32(&item["contractSize"]);
+        let contract_size = serde_util::value_as_f64(&item["contractSize"]);
 
         let ticker = Ticker::new(symbol_str, exchange);
 
@@ -539,7 +539,7 @@ pub(super) async fn fetch_historical_oi(
         .iter()
         .map(|x| OpenInterest {
             time: x.time.into(),
-            value: contract_size.map_or(x.sum, |size| x.sum * size.as_f32()),
+            value: contract_size.map_or(x.sum, |size| x.sum * size.as_f64()),
         })
         .collect::<Vec<OpenInterest>>();
 
@@ -576,7 +576,7 @@ async fn fetch_intraday_trades(
         .map(|de_trade| Trade {
             time: de_trade.time.into(),
             is_sell: de_trade.is_sell,
-            price: Price::from_f32(de_trade.price).round_to_min_tick(ticker_info.min_ticksize),
+            price: Price::from_f64(de_trade.price).round_to_min_tick(ticker_info.min_ticksize),
             qty: qty_norm.normalize_qty(de_trade.qty, de_trade.price),
         })
         .collect();
@@ -663,10 +663,10 @@ async fn get_hist_trades_with_client(
             record.ok().and_then(|record| {
                 let time = record[5].parse::<u64>().ok()?;
                 let is_sell = record[6].parse::<bool>().ok()?;
-                let price_f32 = record[1].parse::<f32>().ok()?;
+                let price_f64 = record[1].parse::<f64>().ok()?;
 
-                let price = Price::from_f32(price_f32).round_to_min_tick(ticker_info.min_ticksize);
-                let qty = qty_norm.normalize_qty(record[2].parse::<f32>().ok()?, price_f32);
+                let price = Price::from_f64(price_f64).round_to_min_tick(ticker_info.min_ticksize);
+                let qty = qty_norm.normalize_qty(record[2].parse::<f64>().ok()?, price_f64);
 
                 Some(Trade {
                     time: time.into(),

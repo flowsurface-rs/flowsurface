@@ -56,7 +56,7 @@ impl RectInstance {
         w: &ViewWindow,
         palette: &HeatmapPalette,
     ) -> Self {
-        let t = (qty.to_f32_lossy() / max_qty.to_scale_or_one()).clamp(0.0, 1.0);
+        let t = (qty.to_f64() / max_qty.to_scale_or_one()).clamp(0.0, 1.0) as f32;
         let raw_w_world = t * w.depth_profile_max_width;
         let (w_world, subpx_alpha) = Self::extent_and_subpx_alpha(raw_w_world, w.cam_scale);
         let center_x = 0.5 * w_world;
@@ -99,7 +99,7 @@ impl RectInstance {
             (palette.secondary_rgb, true)
         };
 
-        let raw_total_h = (total_qty.to_f32_lossy() / denom) * w.volume_area_max_height;
+        let raw_total_h = ((total_qty.to_f64() / denom) * w.volume_area_max_height as f64) as f32;
         let (total_h, subpx_alpha) = Self::extent_and_subpx_alpha(raw_total_h, w.cam_scale);
         let total_center_y = w.volume_area_bottom_y - 0.5 * total_h;
 
@@ -131,7 +131,7 @@ impl RectInstance {
     ) -> Self {
         let denom = max_qty.to_scale_or_one();
         let raw_overlay_h =
-            ((diff_qty.to_f32_lossy() / denom) * w.volume_area_max_height).min(total_h.max(0.0));
+            ((diff_qty.to_f64() / denom) * w.volume_area_max_height as f64).min(total_h.max(0.0_f32) as f64) as f32;
         let (overlay_h, subpx_alpha) = Self::extent_and_subpx_alpha(raw_overlay_h, w.cam_scale);
         let overlay_h = overlay_h.min(total_h.max(0.0));
 

@@ -525,7 +525,7 @@ impl TickerInfo {
         ticker: Ticker,
         min_ticksize: f32,
         min_qty: f32,
-        contract_size: Option<f32>,
+        contract_size: Option<f64>,
     ) -> Self {
         Self {
             ticker,
@@ -570,10 +570,10 @@ pub struct Kline {
 impl Kline {
     pub fn new(
         time: impl Into<UnixMs>,
-        open: f32,
-        high: f32,
-        low: f32,
-        close: f32,
+        open: f64,
+        high: f64,
+        low: f64,
+        close: f64,
         volume: Volume,
         min_ticksize: MinTicksize,
     ) -> Self {
@@ -581,10 +581,10 @@ impl Kline {
 
         Self {
             time,
-            open: Price::from_f32(open).round_to_min_tick(min_ticksize),
-            high: Price::from_f32(high).round_to_min_tick(min_ticksize),
-            low: Price::from_f32(low).round_to_min_tick(min_ticksize),
-            close: Price::from_f32(close).round_to_min_tick(min_ticksize),
+            open: Price::from_f64(open).round_to_min_tick(min_ticksize),
+            high: Price::from_f64(high).round_to_min_tick(min_ticksize),
+            low: Price::from_f64(low).round_to_min_tick(min_ticksize),
+            close: Price::from_f64(close).round_to_min_tick(min_ticksize),
             volume,
         }
     }
@@ -681,7 +681,7 @@ pub struct TickerStats {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OpenInterest {
     pub time: UnixMs,
-    pub value: f32,
+    pub value: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Hash)]

@@ -24,9 +24,9 @@ struct SonicTrade {
     #[serde(rename = "ts", deserialize_with = "de_string_to_number")]
     pub time: u64,
     #[serde(rename = "px", deserialize_with = "de_string_to_number")]
-    pub price: f32,
+    pub price: f64,
     #[serde(rename = "sz", deserialize_with = "de_string_to_number")]
-    pub qty: f32,
+    pub qty: f64,
     #[serde(rename = "side")]
     pub is_sell: String,
 }
@@ -373,7 +373,7 @@ pub fn connect_trade_stream(
                                         trades_buffer_map.entry(*ticker).or_default();
 
                                     for de_trade in &de_trade_vec {
-                                        let price = Price::from_f32(de_trade.price)
+                                        let price = Price::from_f64(de_trade.price)
                                             .round_to_min_tick(ticker_info.min_ticksize);
                                         let qty =
                                             qty_norm.normalize_qty(de_trade.qty, de_trade.price);
@@ -513,11 +513,11 @@ pub fn connect_kline_stream(
                                 if let Some(data) = v.get("data").and_then(|d| d.as_array()) {
                                     for row in data {
                                         let time = row.get(0).and_then(serde_util::value_as_u64);
-                                        let open = row.get(1).and_then(serde_util::value_as_f32);
-                                        let high = row.get(2).and_then(serde_util::value_as_f32);
-                                        let low = row.get(3).and_then(serde_util::value_as_f32);
-                                        let close = row.get(4).and_then(serde_util::value_as_f32);
-                                        let volume = row.get(5).and_then(serde_util::value_as_f32);
+                                        let open = row.get(1).and_then(serde_util::value_as_f64);
+                                        let high = row.get(2).and_then(serde_util::value_as_f64);
+                                        let low = row.get(3).and_then(serde_util::value_as_f64);
+                                        let close = row.get(4).and_then(serde_util::value_as_f64);
+                                        let volume = row.get(5).and_then(serde_util::value_as_f64);
 
                                         let (ts, open, high, low, close) =
                                             match (time, open, high, low, close) {

@@ -169,7 +169,7 @@ impl canvas::Program<Message> for IndicatorLabel<'_> {
                 );
 
                 let label = LabelContent {
-                    content: abbr_large_numbers(rounded_value),
+                    content: abbr_large_numbers(rounded_value as f64),
                     background_color: Some(palette.secondary.base.color),
                     text_color: palette.secondary.base.text,
                     text_size: TEXT_SIZE,

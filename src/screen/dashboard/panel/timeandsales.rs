@@ -389,8 +389,8 @@ impl canvas::Program<Message> for TimeAndSales {
 
                             (
                                 buy_ratio,
-                                data::util::abbr_large_numbers(buy_val),
-                                data::util::abbr_large_numbers(sell_val),
+                                data::util::abbr_large_numbers(buy_val as f64),
+                                data::util::abbr_large_numbers(sell_val as f64),
                             )
                         }
                     };
@@ -542,7 +542,7 @@ impl canvas::Program<Message> for TimeAndSales {
                 frame.fill_text(trade_price);
 
                 let trade_qty = create_text(
-                    data::util::abbr_large_numbers(trade.qty.to_f32_lossy()),
+                    data::util::abbr_large_numbers(trade.qty.to_f64()),
                     Point {
                         x: row_width * 0.9,
                         y: y_position,

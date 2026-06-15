@@ -114,7 +114,7 @@ pub(super) async fn fetch_ticker_metadata(
                 .ok_or_else(|| AdapterError::ParseError("Tick size not found".to_string()))?;
             let min_qty = serde_util::value_as_f32(&item["lotSz"])
                 .ok_or_else(|| AdapterError::ParseError("Lot size not found".to_string()))?;
-            let contract_size = serde_util::value_as_f32(&item["ctVal"]);
+            let contract_size = serde_util::value_as_f64(&item["ctVal"]);
 
             let ticker = Ticker::new(symbol, exchange);
             let info = TickerInfo::new(ticker, min_ticksize, min_qty, contract_size);
@@ -308,11 +308,11 @@ pub(super) async fn fetch_klines(
 
     for row in list {
         let time = row.get(0).and_then(serde_util::value_as_u64);
-        let open = row.get(1).and_then(serde_util::value_as_f32);
-        let high = row.get(2).and_then(serde_util::value_as_f32);
-        let low = row.get(3).and_then(serde_util::value_as_f32);
-        let close = row.get(4).and_then(serde_util::value_as_f32);
-        let volume = row.get(5).and_then(serde_util::value_as_f32);
+        let open = row.get(1).and_then(serde_util::value_as_f64);
+        let high = row.get(2).and_then(serde_util::value_as_f64);
+        let low = row.get(3).and_then(serde_util::value_as_f64);
+        let close = row.get(4).and_then(serde_util::value_as_f64);
+        let volume = row.get(5).and_then(serde_util::value_as_f64);
 
         let (ts, open, high, low, close) = match (time, open, high, low, close) {
             (Some(ts), Some(o), Some(h), Some(l), Some(c)) => (ts, o, h, l, c),
@@ -374,7 +374,7 @@ pub(super) async fn fetch_historical_oi(
         .filter_map(|row| {
             let arr = row.as_array()?;
             let ts = serde_util::value_as_u64(arr.first()?)?;
-            let oi_ccy = serde_util::value_as_f32(arr.get(2)?)?;
+            let oi_ccy = serde_util::value_as_f64(arr.get(2)?)?;
             Some(OpenInterest {
                 time: ts.into(),
                 value: oi_ccy,

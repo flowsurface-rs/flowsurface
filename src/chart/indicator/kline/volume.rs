@@ -37,13 +37,13 @@ impl VolumeIndicator {
     ) -> iced::Element<'a, Message> {
         let tooltip = |volume: &Volume, _next: Option<&Volume>| {
             if let Some((buy, sell)) = volume.buy_sell() {
-                let buy_t = format!("Buy Volume: {}", format_with_commas(f32::from(buy)));
-                let sell_t = format!("Sell Volume: {}", format_with_commas(f32::from(sell)));
+                let buy_t = format!("Buy Volume: {}", format_with_commas(f64::from(buy)));
+                let sell_t = format!("Sell Volume: {}", format_with_commas(f64::from(sell)));
                 PlotTooltip::new(format!("{buy_t}\n{sell_t}"))
             } else {
                 PlotTooltip::new(format!(
                     "Volume: {}",
-                    format_with_commas(f32::from(volume.total()))
+                    format_with_commas(f64::from(volume.total()))
                 ))
             }
         };

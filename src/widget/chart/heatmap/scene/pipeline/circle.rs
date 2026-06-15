@@ -41,8 +41,8 @@ impl CircleInstance {
 
         let y_world = w.y_center_for_price_texture_aligned(trade.price, base_price, step, y_anchor);
 
-        let q = trade.qty.max(qty::Qty::zero()).to_f32_lossy();
-        let t = (q / max_trade_qty.to_scale_or_one()).clamp(0.0, 1.0);
+        let q = trade.qty.max(qty::Qty::zero()).to_f64();
+        let t = (q / max_trade_qty.to_scale_or_one()).clamp(0.0, 1.0) as f32;
         let radius_px = if let Some(scale_pct) = trade_size_scale {
             let scale_factor = (scale_pct as f32 / 100.0).max(0.0);
             Self::R_MIN_PX + t * (Self::R_MAX_PX - Self::R_MIN_PX) * scale_factor

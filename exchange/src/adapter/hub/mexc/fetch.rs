@@ -29,19 +29,19 @@ struct KlineSpot {
     #[serde()]
     open_ts: u64,
     #[serde(deserialize_with = "de_string_to_number")]
-    open: f32,
+    open: f64,
     #[serde(deserialize_with = "de_string_to_number")]
-    high: f32,
+    high: f64,
     #[serde(deserialize_with = "de_string_to_number")]
-    low: f32,
+    low: f64,
     #[serde(deserialize_with = "de_string_to_number")]
-    close: f32,
+    close: f64,
     #[serde(deserialize_with = "de_string_to_number")]
-    vol: f32,
+    vol: f64,
     #[serde()]
     close_ts: u64,
     #[serde(deserialize_with = "de_string_to_number")]
-    asset_vol: f32,
+    asset_vol: f64,
 }
 
 #[derive(Deserialize)]
@@ -220,10 +220,9 @@ pub(super) async fn fetch_ticker_metadata(
 
             let contract_size = item["contractSize"]
                 .as_f64()
-                .ok_or_else(|| AdapterError::ParseError("Missing contractSize".to_string()))?
-                as f32;
+                .ok_or_else(|| AdapterError::ParseError("Missing contractSize".to_string()))?;
 
-            let min_qty = min_qty_contracts * contract_size;
+            let min_qty = (min_qty_contracts as f64 * contract_size) as f32;
 
             let ticker = Ticker::new(symbol, exchange);
             let info = TickerInfo::new(ticker, min_ticksize, min_qty, Some(contract_size));
@@ -474,22 +473,22 @@ pub(super) async fn fetch_klines(
 
                     let open = opens[i].as_f64().ok_or_else(|| {
                         AdapterError::ParseError("Open value not found".to_string())
-                    })? as f32;
+                    })?;
                     let high = highs[i].as_f64().ok_or_else(|| {
                         AdapterError::ParseError("High value not found".to_string())
-                    })? as f32;
+                    })?;
                     let low = lows[i].as_f64().ok_or_else(|| {
                         AdapterError::ParseError("Low value not found".to_string())
-                    })? as f32;
+                    })?;
                     let close = closes[i].as_f64().ok_or_else(|| {
                         AdapterError::ParseError("Close value not found".to_string())
-                    })? as f32;
+                    })?;
                     let _amount = amounts[i].as_f64().ok_or_else(|| {
                         AdapterError::ParseError("Amount value not found".to_string())
-                    })? as f32;
+                    })?;
                     let volume = volumes[i].as_f64().ok_or_else(|| {
                         AdapterError::ParseError("Vol value not found".to_string())
-                    })? as f32;
+                    })?;
 
                     let normalized_vol = qty_norm.normalize_qty(volume, close);
 

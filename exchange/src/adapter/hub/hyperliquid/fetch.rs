@@ -41,17 +41,17 @@ struct HyperliquidSpotMeta {
 #[derive(Debug, Deserialize)]
 struct HyperliquidAssetContext {
     #[serde(rename = "dayNtlVlm", deserialize_with = "de_string_to_number")]
-    day_notional_volume: f32,
+    day_notional_volume: f64,
     #[serde(rename = "markPx", deserialize_with = "de_string_to_number")]
-    mark_price: f32,
+    mark_price: f64,
     #[serde(rename = "midPx", deserialize_with = "de_string_to_number")]
-    mid_price: f32,
+    mid_price: f64,
     #[serde(rename = "prevDayPx", deserialize_with = "de_string_to_number")]
-    prev_day_price: f32,
+    prev_day_price: f64,
 }
 
 impl HyperliquidAssetContext {
-    fn price(&self) -> f32 {
+    fn price(&self) -> f64 {
         if self.mid_price > 0.0 {
             self.mid_price
         } else {
@@ -72,15 +72,15 @@ struct HyperliquidKline {
     #[serde(rename = "i")]
     interval: String,
     #[serde(rename = "o", deserialize_with = "de_string_to_number")]
-    open: f32,
+    open: f64,
     #[serde(rename = "h", deserialize_with = "de_string_to_number")]
-    high: f32,
+    high: f64,
     #[serde(rename = "l", deserialize_with = "de_string_to_number")]
-    low: f32,
+    low: f64,
     #[serde(rename = "c", deserialize_with = "de_string_to_number")]
-    close: f32,
+    close: f64,
     #[serde(rename = "v", deserialize_with = "de_string_to_number")]
-    volume: f32,
+    volume: f64,
     #[serde(rename = "n")]
     trade_count: u64,
 }
@@ -94,9 +94,9 @@ struct HyperliquidDepth {
 #[derive(Debug, Deserialize)]
 struct HyperliquidLevel {
     #[serde(deserialize_with = "de_string_to_number")]
-    px: f32,
+    px: f64,
     #[serde(deserialize_with = "de_string_to_number")]
-    sz: f32,
+    sz: f64,
 }
 
 type TickerMetadata = (
@@ -257,15 +257,15 @@ fn insert_ticker_from_ctx(
         return;
     }
 
-    let ticker_info = create_ticker_info(ticker, price, sz_decimals);
+    let ticker_info = create_ticker_info(ticker, price as f32, sz_decimals);
     ticker_info_map.insert(ticker, Some(ticker_info));
 
     ticker_stats_map.insert(
         ticker,
         TickerStats {
-            mark_price: Price::from_f32(ctx.mark_price),
-            daily_price_chg: daily_price_chg_pct(price, ctx.prev_day_price),
-            daily_volume: Qty::from_f32(ctx.day_notional_volume),
+            mark_price: Price::from_f64(ctx.mark_price),
+            daily_price_chg: daily_price_chg_pct(price as f32, ctx.prev_day_price as f32),
+            daily_volume: Qty::from_f64(ctx.day_notional_volume),
         },
     );
 }

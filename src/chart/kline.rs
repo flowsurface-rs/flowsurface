@@ -1422,11 +1422,11 @@ fn effective_cluster_qty(
     let individual_max_f32 = f32::from(individual_max);
 
     match scaling {
-        ClusterScaling::VisibleRange => Qty::scale_or_one(visible_max),
-        ClusterScaling::Datapoint => individual_max.to_scale_or_one(),
+        ClusterScaling::VisibleRange => Qty::scale_or_one(visible_max as f64) as f32,
+        ClusterScaling::Datapoint => individual_max.to_scale_or_one() as f32,
         ClusterScaling::Hybrid { weight } => {
             let w = weight.clamp(0.0, 1.0);
-            Qty::scale_or_one(visible_max * w + individual_max_f32 * (1.0 - w))
+            Qty::scale_or_one((visible_max * w + individual_max_f32 * (1.0 - w)) as f64) as f32
         }
     }
 }
@@ -1494,7 +1494,7 @@ fn draw_clusters(
                         if show_text {
                             draw_cluster_text(
                                 frame,
-                                &abbr_large_numbers(f32::from(group.total_qty())),
+                                &abbr_large_numbers(f64::from(group.total_qty())),
                                 Point::new(area.bars_left, y),
                                 text_size,
                                 text_color,
@@ -1508,7 +1508,7 @@ fn draw_clusters(
                         if show_text {
                             draw_cluster_text(
                                 frame,
-                                &abbr_large_numbers(delta),
+                                &abbr_large_numbers(delta as f64),
                                 Point::new(area.bars_left, y),
                                 text_size,
                                 text_color,
@@ -1605,7 +1605,7 @@ fn draw_clusters(
                     if show_text {
                         draw_cluster_text(
                             frame,
-                            &abbr_large_numbers(buy_qty),
+                            &abbr_large_numbers(buy_qty as f64),
                             Point::new(area.bid_area_left, y),
                             text_size,
                             text_color,
@@ -1627,7 +1627,7 @@ fn draw_clusters(
                     if show_text {
                         draw_cluster_text(
                             frame,
-                            &abbr_large_numbers(sell_qty),
+                            &abbr_large_numbers(sell_qty as f64),
                             Point::new(area.ask_area_right, y),
                             text_size,
                             text_color,
@@ -1705,7 +1705,7 @@ fn draw_clusters(
 
         draw_cluster_text(
             frame,
-            &format!("V: {}", abbr_large_numbers(total_vol.to_f32_lossy())),
+            &format!("V: {}", abbr_large_numbers(total_vol.to_f64())),
             Point::new(x_position, summary_y),
             text_size * 0.9,
             palette.background.weakest.text,
@@ -1721,7 +1721,7 @@ fn draw_clusters(
 
         draw_cluster_text(
             frame,
-            &format!("Δ: {}", abbr_large_numbers(total_delta.to_f32_lossy())),
+            &format!("Δ: {}", abbr_large_numbers(total_delta.to_f64())),
             Point::new(x_position, summary_y + line_spacing),
             text_size * 0.9,
             delta_color,
