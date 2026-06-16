@@ -130,8 +130,8 @@ impl RectInstance {
         w: &ViewWindow,
     ) -> Self {
         let denom = max_qty.to_scale_or_one();
-        let raw_overlay_h =
-            ((diff_qty.to_f64() / denom) * w.volume_area_max_height as f64).min(total_h.max(0.0_f32) as f64) as f32;
+        let raw_overlay_h = ((diff_qty.to_f64() / denom) * w.volume_area_max_height as f64)
+            .min(total_h.max(0.0_f32) as f64) as f32;
         let (overlay_h, subpx_alpha) = Self::extent_and_subpx_alpha(raw_overlay_h, w.cam_scale);
         let overlay_h = overlay_h.min(total_h.max(0.0));
 

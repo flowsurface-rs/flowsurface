@@ -725,7 +725,7 @@ impl KlineChart {
                     rounded_highest,
                     rounded_lowest,
                 )
-                .into(),
+                .to_f32_lossy(),
             PlotData::TickBased(tick_aggr) => {
                 let earliest = earliest as usize;
                 let latest = latest as usize;
@@ -738,7 +738,7 @@ impl KlineChart {
                         rounded_highest,
                         rounded_lowest,
                     )
-                    .into()
+                    .to_f32_lossy()
             }
         }
     }
@@ -1419,7 +1419,7 @@ fn effective_cluster_qty(
             .max()
             .unwrap_or_default(),
     };
-    let individual_max_f32 = f32::from(individual_max);
+    let individual_max_f32 = individual_max.to_f32_lossy();
 
     match scaling {
         ClusterScaling::VisibleRange => Qty::scale_or_one(visible_max as f64) as f32,
@@ -1470,8 +1470,8 @@ fn draw_clusters(
             let bar_alpha = if show_text { 0.25 } else { 1.0 };
 
             for (price, group) in &footprint.trades {
-                let buy_qty = f32::from(group.buy_qty);
-                let sell_qty = f32::from(group.sell_qty);
+                let buy_qty = group.buy_qty.to_f32_lossy();
+                let sell_qty = group.sell_qty.to_f32_lossy();
                 let y = price_to_y(*price);
 
                 match cluster_kind {
@@ -1504,7 +1504,7 @@ fn draw_clusters(
                         }
                     }
                     ClusterKind::DeltaProfile => {
-                        let delta = f32::from(group.delta_qty());
+                        let delta = group.delta_qty().to_f32_lossy();
                         if show_text {
                             draw_cluster_text(
                                 frame,
@@ -1597,8 +1597,8 @@ fn draw_clusters(
             let left_area_width = (area.ask_area_right - left_min_x).max(0.0);
 
             for (price, group) in &footprint.trades {
-                let buy_qty = f32::from(group.buy_qty);
-                let sell_qty = f32::from(group.sell_qty);
+                let buy_qty = group.buy_qty.to_f32_lossy();
+                let sell_qty = group.sell_qty.to_f32_lossy();
                 let y = price_to_y(*price);
 
                 if buy_qty > 0.0 && right_area_width > 0.0 {
@@ -1688,9 +1688,9 @@ fn draw_clusters(
     }
 
     if show_text {
-        let mut total_buy = Qty::zero();
-        let mut total_sell = Qty::zero();
-        let mut total_delta = Qty::zero();
+        let mut total_buy = Qty::ZERO;
+        let mut total_sell = Qty::ZERO;
+        let mut total_delta = Qty::ZERO;
 
         for group in footprint.trades.values() {
             total_buy += group.buy_qty;
@@ -1713,7 +1713,7 @@ fn draw_clusters(
             Alignment::Start,
         );
 
-        let delta_color = if total_delta >= Qty::zero() {
+        let delta_color = if total_delta >= Qty::ZERO {
             palette.success.base.color
         } else {
             palette.danger.base.color
@@ -1752,7 +1752,7 @@ fn draw_imbalance_markers(
     }
 
     if let Some(group) = footprint.trades.get(&higher_price) {
-        let diagonal_buy_qty = f32::from(group.buy_qty);
+        let diagonal_buy_qty = group.buy_qty.to_f32_lossy();
 
         if ignore_zeros && diagonal_buy_qty <= 0.0 {
             return;

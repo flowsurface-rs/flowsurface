@@ -181,7 +181,7 @@ pub(super) async fn fetch_ticker_stats(
                 TickerStats {
                     mark_price: Price::from_f32(last_price),
                     daily_price_chg,
-                    daily_volume: Qty::from_f32(vol24h),
+                    daily_volume: Qty::from_f32_lossy(vol24h),
                 },
             );
         }
@@ -248,7 +248,7 @@ pub(super) async fn fetch_ticker_stats(
                 TickerStats {
                     mark_price: Price::from_f32(last_price),
                     daily_price_chg,
-                    daily_volume: Qty::from_f32(vol24h * last_price),
+                    daily_volume: Qty::from_f32_lossy(vol24h * last_price),
                 },
             );
         }

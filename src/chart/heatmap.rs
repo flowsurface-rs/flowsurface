@@ -629,7 +629,7 @@ impl canvas::Program<Message> for HeatmapChart {
 
                     dp.grouped_trades.iter().for_each(|trade| {
                         let y_position = chart.price_to_y(trade.price);
-                        let trade_qty = f32::from(trade.qty);
+                        let trade_qty = trade.qty.to_f32_lossy();
 
                         let trade_size = market_type.qty_in_quote_value(
                             trade.qty,
@@ -673,8 +673,8 @@ impl canvas::Program<Message> for HeatmapChart {
                             frame,
                             x_position,
                             (region.y + region.height) - area_height,
-                            f32::from(buy_volume),
-                            f32::from(sell_volume),
+                            buy_volume.to_f32_lossy(),
+                            sell_volume.to_f32_lossy(),
                             max_aggr_volume,
                             area_height,
                             bar_width,
@@ -998,7 +998,7 @@ fn draw_volume_profile(
                     let index = ((grouped_price.units - first_tick.units) / step.units) as usize;
 
                     if let Some(entry) = profile.get_mut(index) {
-                        let trade_qty = f32::from(trade.qty);
+                        let trade_qty = trade.qty.to_f32_lossy();
                         if trade.is_sell {
                             entry.1 += trade_qty;
                         } else {

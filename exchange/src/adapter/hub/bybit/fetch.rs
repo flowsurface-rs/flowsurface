@@ -172,7 +172,7 @@ pub(super) async fn fetch_ticker_stats(
         let ticker_stats = TickerStats {
             mark_price: Price::from_f32(mark_price),
             daily_price_chg: daily_price_chg * 100.0,
-            daily_volume: Qty::from_f32(volume_in_usd),
+            daily_volume: Qty::from_f32_lossy(volume_in_usd),
         };
 
         ticker_prices_map.insert(Ticker::new(symbol, exchange), ticker_stats);

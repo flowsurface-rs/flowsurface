@@ -48,10 +48,6 @@ impl Qty {
     pub const QTY_SCALE: i32 = 8;
     pub const ZERO: Self = Self { units: 0 };
 
-    pub const fn zero() -> Self {
-        Self::ZERO
-    }
-
     /// Lossy: convert qty to f32, may lose precision beyond `QTY_SCALE`
     pub fn to_f32_lossy(self) -> f32 {
         self.to_f64() as f32
@@ -62,12 +58,6 @@ impl Qty {
         Self::from_f64(v as f64)
     }
 
-    pub fn from_f32(v: f32) -> Self {
-        Self::from_f32_lossy(v)
-    }
-
-    /// Convert qty to f64.  f64 has ~15 significant digits, enough for
-    /// any practical cumulative volume without visible drift.
     pub fn to_f64(self) -> f64 {
         let scale = 10f64.powi(Self::QTY_SCALE);
         (self.units as f64) / scale
@@ -150,18 +140,6 @@ impl Qty {
 
     pub const fn is_zero(self) -> bool {
         self.units == 0
-    }
-}
-
-impl From<Qty> for f32 {
-    fn from(value: Qty) -> Self {
-        value.to_f32_lossy()
-    }
-}
-
-impl From<f32> for Qty {
-    fn from(value: f32) -> Self {
-        Qty::from_f32(value)
     }
 }
 

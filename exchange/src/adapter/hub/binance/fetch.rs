@@ -313,7 +313,7 @@ pub(super) async fn fetch_ticker_stats(
         };
 
         let daily_volume = match market {
-            MarketKind::Spot | MarketKind::LinearPerps => Qty::from_f32(volume),
+            MarketKind::Spot | MarketKind::LinearPerps => Qty::from_f32_lossy(volume),
             MarketKind::InversePerps => {
                 let contract_size = match contract_sizes
                     .and_then(|sizes| sizes.get(&ticker))
@@ -326,7 +326,7 @@ pub(super) async fn fetch_ticker_stats(
                     }
                 };
 
-                Qty::from_f32(volume * contract_size)
+                Qty::from_f32_lossy(volume * contract_size)
             }
         };
 

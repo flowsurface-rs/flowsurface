@@ -51,14 +51,14 @@ impl VolumeIndicator {
         let bar_kind = |volume: &Volume| {
             if let Some((buy, sell)) = volume.buy_sell() {
                 BarClass::Overlay {
-                    overlay: f32::from(buy) - f32::from(sell),
+                    overlay: buy.to_f32_lossy() - sell.to_f32_lossy(),
                 }
             } else {
                 BarClass::Single
             }
         };
 
-        let value_fn = |volume: &Volume| f32::from(volume.total());
+        let value_fn = |volume: &Volume| volume.total().to_f32_lossy();
 
         let plot = BarPlot::new(value_fn, bar_kind)
             .bar_width_factor(0.9)
