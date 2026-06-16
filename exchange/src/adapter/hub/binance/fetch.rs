@@ -305,28 +305,28 @@ pub(super) async fn fetch_ticker_stats(
 
         let volume = match market {
             MarketKind::Spot | MarketKind::LinearPerps => {
-                serde_util::value_as_f32(&item["quoteVolume"])
+                serde_util::value_as_f64(&item["quoteVolume"])
                     .ok_or_else(|| AdapterError::ParseError("Quote volume not found".to_string()))?
             }
-            MarketKind::InversePerps => serde_util::value_as_f32(&item["volume"])
+            MarketKind::InversePerps => serde_util::value_as_f64(&item["volume"])
                 .ok_or_else(|| AdapterError::ParseError("Volume not found".to_string()))?,
         };
 
         let daily_volume = match market {
-            MarketKind::Spot | MarketKind::LinearPerps => Qty::from_f32_lossy(volume),
+            MarketKind::Spot | MarketKind::LinearPerps => Qty::from_f64(volume),
             MarketKind::InversePerps => {
                 let contract_size = match contract_sizes
                     .and_then(|sizes| sizes.get(&ticker))
                     .copied()
                 {
-                    Some(size) => size,
+                    Some(size) => size as f64,
                     None => {
                         log::debug!("Missing contract size for {ticker}, skipping ticker in stats");
                         continue;
                     }
                 };
 
-                Qty::from_f32_lossy(volume * contract_size)
+                Qty::from_f64(volume * contract_size)
             }
         };
 

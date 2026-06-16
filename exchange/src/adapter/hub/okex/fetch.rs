@@ -159,7 +159,7 @@ pub(super) async fn fetch_ticker_stats(
 
             let last_trade_price = serde_util::value_as_f32(&item["last"]);
             let open24h = serde_util::value_as_f32(&item["open24h"]);
-            let Some(vol24h) = serde_util::value_as_f32(&item["volCcy24h"]) else {
+            let Some(vol24h) = serde_util::value_as_f64(&item["volCcy24h"]) else {
                 continue;
             };
 
@@ -181,7 +181,7 @@ pub(super) async fn fetch_ticker_stats(
                 TickerStats {
                     mark_price: Price::from_f32(last_price),
                     daily_price_chg,
-                    daily_volume: Qty::from_f32_lossy(vol24h),
+                    daily_volume: Qty::from_f64(vol24h),
                 },
             );
         }
@@ -227,7 +227,7 @@ pub(super) async fn fetch_ticker_stats(
             let last_trade_price = serde_util::value_as_f32(&item["last"]);
             let open24h = serde_util::value_as_f32(&item["open24h"]);
 
-            let Some(vol24h) = serde_util::value_as_f32(&item["volCcy24h"]) else {
+            let Some(vol24h) = serde_util::value_as_f64(&item["volCcy24h"]) else {
                 continue;
             };
 
@@ -248,7 +248,7 @@ pub(super) async fn fetch_ticker_stats(
                 TickerStats {
                     mark_price: Price::from_f32(last_price),
                     daily_price_chg,
-                    daily_volume: Qty::from_f32_lossy(vol24h * last_price),
+                    daily_volume: Qty::from_f64(vol24h * last_price as f64),
                 },
             );
         }

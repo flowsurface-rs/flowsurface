@@ -541,7 +541,7 @@ impl canvas::Program<Message> for HeatmapChart {
                                     *price,
                                     size_in_quote_ccy,
                                 );
-                                order_size > self.visual_config.order_size_filter
+                                order_size as f32 > self.visual_config.order_size_filter
                             })
                             .for_each(|run| {
                                 let start_x = chart.interval_to_x(
@@ -637,7 +637,7 @@ impl canvas::Program<Message> for HeatmapChart {
                             size_in_quote_ccy,
                         );
 
-                        if trade_size > self.visual_config.trade_size_filter {
+                        if trade_size as f32 > self.visual_config.trade_size_filter {
                             let color = if trade.is_sell {
                                 palette.danger.base.color
                             } else {

@@ -278,13 +278,13 @@ pub(super) async fn fetch_ticker_stats(
                     AdapterError::ParseError("Price change percent not found".to_string())
                 })?;
 
-            let volume = serde_util::value_as_f32(&item["volume"])
+            let volume = serde_util::value_as_f64(&item["volume"])
                 .ok_or_else(|| AdapterError::ParseError("Volume not found".to_string()))?;
 
-            let volume_in_usd = if let Some(qv) = serde_util::value_as_f32(&item["quoteVolume"]) {
+            let volume_in_usd = if let Some(qv) = serde_util::value_as_f64(&item["quoteVolume"]) {
                 qv
             } else {
-                volume * last_price
+                volume * last_price as f64
             };
 
             let daily_price_chg = price_change_percent * 100.0;
@@ -292,7 +292,7 @@ pub(super) async fn fetch_ticker_stats(
             let ticker_stats = TickerStats {
                 mark_price: Price::from_f32(last_price),
                 daily_price_chg,
-                daily_volume: Qty::from_f32_lossy(volume_in_usd),
+                daily_volume: Qty::from_f64(volume_in_usd),
             };
 
             ticker_prices_map.insert(Ticker::new(symbol, exchange), ticker_stats);
@@ -342,13 +342,13 @@ pub(super) async fn fetch_ticker_stats(
             let rise_fall_rate = serde_util::value_as_f32(&item["riseFallRate"])
                 .ok_or_else(|| AdapterError::ParseError("Missing riseFallRate".to_string()))?;
 
-            let volume_24 = serde_util::value_as_f32(&item["volume24"])
+            let volume_24 = serde_util::value_as_f64(&item["volume24"])
                 .ok_or_else(|| AdapterError::ParseError("Missing volume24".to_string()))?;
 
             let volume_in_usd = if perps_market == MarketKind::InversePerps {
-                volume_24 * cs
+                volume_24 * cs as f64
             } else {
-                volume_24 * cs * last_price
+                volume_24 * cs as f64 * last_price as f64
             };
 
             let daily_price_chg = rise_fall_rate * 100.0;
@@ -356,7 +356,7 @@ pub(super) async fn fetch_ticker_stats(
             let ticker_stats = TickerStats {
                 mark_price: Price::from_f32(last_price),
                 daily_price_chg,
-                daily_volume: Qty::from_f32_lossy(volume_in_usd),
+                daily_volume: Qty::from_f64(volume_in_usd),
             };
 
             ticker_prices_map.insert(ticker, ticker_stats);

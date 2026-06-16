@@ -127,7 +127,7 @@ impl TimeAndSales {
                     size_in_quote_ccy,
                 );
 
-                if trade_size_value >= size_filter {
+                if trade_size_value as f32 >= size_filter {
                     self.max_filtered_qty = self.max_filtered_qty.max(trade_display.qty);
                 }
 
@@ -225,7 +225,7 @@ impl TimeAndSales {
                         t.display.price,
                         size_in_quote_ccy,
                     );
-                    trade_size >= size_filter
+                    trade_size as f32 >= size_filter
                 })
                 .map(|e| e.display.qty)
                 .fold(Qty::ZERO, Qty::max);
@@ -456,7 +456,7 @@ impl canvas::Program<Message> for TimeAndSales {
                         t.display.price,
                         size_in_quote_ccy,
                     );
-                    trade_size >= self.config.trade_size_filter
+                    trade_size as f32 >= self.config.trade_size_filter
                 })
                 .rev()
                 .skip(start_index)
