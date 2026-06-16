@@ -271,7 +271,7 @@ pub(super) async fn fetch_ticker_metadata(
 pub(super) async fn fetch_ticker_stats(
     hub: &mut HttpHub<BinanceLimiter>,
     market: MarketKind,
-    contract_sizes: Option<&HashMap<Ticker, f32>>,
+    contract_sizes: Option<&HashMap<Ticker, crate::unit::ContractSize>>,
 ) -> Result<super::super::TickerStatsMap, AdapterError> {
     let (url, weight) = match market {
         MarketKind::Spot => (format!("{SPOT_DOMAIN}/api/v3/ticker/24hr"), 80),
@@ -319,7 +319,7 @@ pub(super) async fn fetch_ticker_stats(
                     .and_then(|sizes| sizes.get(&ticker))
                     .copied()
                 {
-                    Some(size) => size as f64,
+                    Some(size) => size.as_f64(),
                     None => {
                         log::debug!("Missing contract size for {ticker}, skipping ticker in stats");
                         continue;

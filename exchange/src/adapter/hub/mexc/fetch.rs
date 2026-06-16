@@ -236,7 +236,7 @@ pub(super) async fn fetch_ticker_metadata(
 pub(super) async fn fetch_ticker_stats(
     hub: &mut HttpHub<MexcLimiter>,
     markets: &[MarketKind],
-    contract_sizes: Option<&HashMap<Ticker, f32>>,
+    contract_sizes: Option<&HashMap<Ticker, crate::unit::ContractSize>>,
 ) -> Result<super::super::TickerStatsMap, AdapterError> {
     let mut ticker_prices_map = HashMap::new();
 
@@ -346,9 +346,9 @@ pub(super) async fn fetch_ticker_stats(
                 .ok_or_else(|| AdapterError::ParseError("Missing volume24".to_string()))?;
 
             let volume_in_usd = if perps_market == MarketKind::InversePerps {
-                volume_24 * cs as f64
+                volume_24 * cs.as_f64()
             } else {
-                volume_24 * cs as f64 * last_price as f64
+                volume_24 * cs.as_f64() * last_price as f64
             };
 
             let daily_price_chg = rise_fall_rate * 100.0;
