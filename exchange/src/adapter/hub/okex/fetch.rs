@@ -114,7 +114,7 @@ pub(super) async fn fetch_ticker_metadata(
                 .ok_or_else(|| AdapterError::ParseError("Tick size not found".to_string()))?;
             let min_qty = serde_util::value_as_f32(&item["lotSz"])
                 .ok_or_else(|| AdapterError::ParseError("Lot size not found".to_string()))?;
-            let contract_size = serde_util::value_as_f64(&item["ctVal"]);
+            let contract_size = serde_util::value_as_f32(&item["ctVal"]);
 
             let ticker = Ticker::new(symbol, exchange);
             let info = TickerInfo::new(ticker, min_ticksize, min_qty, contract_size);

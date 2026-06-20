@@ -525,7 +525,7 @@ impl TickerInfo {
         ticker: Ticker,
         min_ticksize: f32,
         min_qty: f32,
-        contract_size: Option<f64>,
+        contract_size: Option<f32>,
     ) -> Self {
         Self {
             ticker,

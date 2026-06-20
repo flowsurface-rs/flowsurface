@@ -209,20 +209,17 @@ pub(super) async fn fetch_ticker_metadata(
                 continue;
             }
 
-            let min_qty_contracts = item["minVol"]
-                .as_f64()
-                .ok_or_else(|| AdapterError::ParseError("Missing minVol (min_qty)".to_string()))?
-                as f32;
+            let min_qty_contracts = serde_util::value_as_f32(&item["minVol"])
+                .ok_or_else(|| AdapterError::ParseError("Missing minVol (min_qty)".to_string()))?;
 
-            let min_ticksize = item["priceUnit"].as_f64().ok_or_else(|| {
+            let min_ticksize = serde_util::value_as_f32(&item["priceUnit"]).ok_or_else(|| {
                 AdapterError::ParseError("Missing priceUnit (ticksize)".to_string())
-            })? as f32;
+            })?;
 
-            let contract_size = item["contractSize"]
-                .as_f64()
+            let contract_size = serde_util::value_as_f32(&item["contractSize"])
                 .ok_or_else(|| AdapterError::ParseError("Missing contractSize".to_string()))?;
 
-            let min_qty = (min_qty_contracts as f64 * contract_size) as f32;
+            let min_qty = min_qty_contracts * contract_size;
 
             let ticker = Ticker::new(symbol, exchange);
             let info = TickerInfo::new(ticker, min_ticksize, min_qty, Some(contract_size));

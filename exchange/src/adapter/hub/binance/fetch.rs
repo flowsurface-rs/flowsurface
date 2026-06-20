@@ -250,7 +250,7 @@ pub(super) async fn fetch_ticker_metadata(
                     .ok_or_else(|| AdapterError::ParseError("Failed to parse minQty".to_string()))
             })?;
 
-        let contract_size = serde_util::value_as_f64(&item["contractSize"]);
+        let contract_size = serde_util::value_as_f32(&item["contractSize"]);
 
         let ticker = Ticker::new(symbol_str, exchange);
 
