@@ -53,11 +53,6 @@ impl Qty {
         self.to_f64() as f32
     }
 
-    /// Lossy: create Qty from f32 (rounds to nearest atomic unit)
-    pub fn from_f32_lossy(v: f32) -> Self {
-        Self::from_f64(v as f64)
-    }
-
     pub fn to_f64(self) -> f64 {
         let scale = 10f64.powi(Self::QTY_SCALE);
         (self.units as f64) / scale

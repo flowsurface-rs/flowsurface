@@ -73,17 +73,9 @@ impl Price {
         self.to_f64() as f32
     }
 
-    /// Lossy: create Price from f32 (rounds to nearest atomic unit)
-    pub fn from_f32_lossy(v: f32) -> Self {
-        Self::from_f64(v as f64)
-    }
-
+    /// Create Price from f32 (widens to f64, then rounds to nearest atomic unit)
     pub fn from_f32(v: f32) -> Self {
-        Self::from_f32_lossy(v)
-    }
-
-    pub fn to_f32(self) -> f32 {
-        self.to_f32_lossy()
+        Self::from_f64(v as f64)
     }
 
     /// Convert price to f64.  f64 has ~15 significant digits.
@@ -212,6 +204,16 @@ impl std::ops::Div<i64> for Price {
     }
 }
 
+impl std::ops::Div for Price {
+    type Output = f64;
+
+    /// Ratio of two prices as a dimensionless f64.
+    /// Both sides share the same atomic scale so this is exact.
+    fn div(self, rhs: Self) -> f64 {
+        self.units as f64 / rhs.units as f64
+    }
+}
+
 impl std::ops::Sub for Price {
     type Output = Self;
 
@@ -289,13 +291,9 @@ impl PriceStep {
         self.to_f64_lossy() as f32
     }
 
-    /// Lossy: from f32 step (rounds to nearest atomic unit)
-    pub fn from_f32_lossy(step: f32) -> Self {
-        Self::from_f64_lossy(step as f64)
-    }
-
+    /// from f32 step (widens to f64, then rounds to nearest atomic unit)
     pub fn from_f32(step: f32) -> Self {
-        Self::from_f32_lossy(step)
+        Self::from_f64_lossy(step as f64)
     }
 
     /// f64 step for UI

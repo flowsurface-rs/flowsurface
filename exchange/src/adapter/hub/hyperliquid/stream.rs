@@ -72,7 +72,7 @@ fn snap_multiplier_to_125(multiplier: u16) -> (i32, i32) {
     (kf as i32, mantissa)
 }
 
-fn config_from_multiplier(price: f32, multiplier: u16) -> DepthFeedConfig {
+fn config_from_multiplier(price: f64, multiplier: u16) -> DepthFeedConfig {
     if price <= 0.0 {
         return DepthFeedConfig::full_precision();
     }
@@ -245,7 +245,7 @@ pub fn connect_depth_stream(
                         continue;
                     };
 
-                    let depth_cfg = config_from_multiplier(best_bid_price as f32, user_multiplier);
+                    let depth_cfg = config_from_multiplier(best_bid_price, user_multiplier);
                     let snapshot_time = snapshot.time;
 
                     local_depth_cache.update_with_qty_norm(

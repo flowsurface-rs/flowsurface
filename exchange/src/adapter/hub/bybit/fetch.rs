@@ -154,7 +154,7 @@ pub(super) async fn fetch_ticker_stats(
             continue;
         }
 
-        let mark_price = serde_util::value_as_f32(&item["lastPrice"])
+        let mark_price = serde_util::value_as_f64(&item["lastPrice"])
             .ok_or_else(|| AdapterError::ParseError("Mark price not found".to_string()))?;
 
         let daily_price_chg = serde_util::value_as_f32(&item["price24hPcnt"])
@@ -166,11 +166,11 @@ pub(super) async fn fetch_ticker_stats(
         let volume_in_usd = if market_type == MarketKind::InversePerps {
             daily_volume
         } else {
-            daily_volume * mark_price as f64
+            daily_volume * mark_price
         };
 
         let ticker_stats = TickerStats {
-            mark_price: Price::from_f32(mark_price),
+            mark_price: Price::from_f64(mark_price),
             daily_price_chg: daily_price_chg * 100.0,
             daily_volume: Qty::from_f64(volume_in_usd),
         };

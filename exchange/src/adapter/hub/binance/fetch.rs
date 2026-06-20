@@ -295,7 +295,7 @@ pub(super) async fn fetch_ticker_stats(
 
         let ticker = Ticker::new(symbol, exchange);
 
-        let last_price = serde_util::value_as_f32(&item["lastPrice"])
+        let last_price = serde_util::value_as_f64(&item["lastPrice"])
             .ok_or_else(|| AdapterError::ParseError("Last price not found".to_string()))?;
 
         let price_change_pt =
@@ -331,7 +331,7 @@ pub(super) async fn fetch_ticker_stats(
         };
 
         let ticker_stats = TickerStats {
-            mark_price: Price::from_f32(last_price),
+            mark_price: Price::from_f64(last_price),
             daily_price_chg: price_change_pt,
             daily_volume,
         };

@@ -257,14 +257,14 @@ fn insert_ticker_from_ctx(
         return;
     }
 
-    let ticker_info = create_ticker_info(ticker, price as f32, sz_decimals);
+    let ticker_info = create_ticker_info(ticker, price, sz_decimals);
     ticker_info_map.insert(ticker, Some(ticker_info));
 
     ticker_stats_map.insert(
         ticker,
         TickerStats {
             mark_price: Price::from_f64(ctx.mark_price),
-            daily_price_chg: daily_price_chg_pct(price as f32, ctx.prev_day_price as f32),
+            daily_price_chg: daily_price_chg_pct(price, ctx.prev_day_price),
             daily_volume: Qty::from_f64(ctx.day_notional_volume),
         },
     );
@@ -364,7 +364,7 @@ fn process_spot_assets(
     Ok((ticker_info_map, ticker_stats_map))
 }
 
-fn create_ticker_info(ticker: Ticker, price: f32, sz_decimals: u32) -> TickerInfo {
+fn create_ticker_info(ticker: Ticker, price: f64, sz_decimals: u32) -> TickerInfo {
     let market = ticker.market_type();
 
     let tick_size = compute_tick_size(price, sz_decimals, market);
@@ -392,15 +392,15 @@ fn create_display_symbol(
     }
 }
 
-fn daily_price_chg_pct(price: f32, prev_day_price: f32) -> f32 {
+fn daily_price_chg_pct(price: f64, prev_day_price: f64) -> f32 {
     if prev_day_price > 0.0 {
-        ((price - prev_day_price) / prev_day_price) * 100.0
+        (((price - prev_day_price) / prev_day_price) * 100.0) as f32
     } else {
         0.0
     }
 }
 
-fn compute_tick_size(price: f32, sz_decimals: u32, market: MarketKind) -> f32 {
+fn compute_tick_size(price: f64, sz_decimals: u32, market: MarketKind) -> f32 {
     if price <= 0.0 {
         return 0.001;
     }

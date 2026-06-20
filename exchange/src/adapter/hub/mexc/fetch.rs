@@ -267,7 +267,7 @@ pub(super) async fn fetch_ticker_stats(
                 continue;
             }
 
-            let last_price = serde_util::value_as_f32(&item["lastPrice"])
+            let last_price = serde_util::value_as_f64(&item["lastPrice"])
                 .ok_or_else(|| AdapterError::ParseError("Last price not found".to_string()))?;
 
             let price_change_percent = serde_util::value_as_f32(&item["priceChangePercent"])
@@ -281,13 +281,13 @@ pub(super) async fn fetch_ticker_stats(
             let volume_in_usd = if let Some(qv) = serde_util::value_as_f64(&item["quoteVolume"]) {
                 qv
             } else {
-                volume * last_price as f64
+                volume * last_price
             };
 
             let daily_price_chg = price_change_percent * 100.0;
 
             let ticker_stats = TickerStats {
-                mark_price: Price::from_f32(last_price),
+                mark_price: Price::from_f64(last_price),
                 daily_price_chg,
                 daily_volume: Qty::from_f64(volume_in_usd),
             };
@@ -333,7 +333,7 @@ pub(super) async fn fetch_ticker_stats(
                 continue;
             };
 
-            let last_price = serde_util::value_as_f32(&item["lastPrice"])
+            let last_price = serde_util::value_as_f64(&item["lastPrice"])
                 .ok_or_else(|| AdapterError::ParseError("Last price not found".to_string()))?;
 
             let rise_fall_rate = serde_util::value_as_f32(&item["riseFallRate"])
@@ -345,13 +345,13 @@ pub(super) async fn fetch_ticker_stats(
             let volume_in_usd = if perps_market == MarketKind::InversePerps {
                 volume_24 * cs.as_f64()
             } else {
-                volume_24 * cs.as_f64() * last_price as f64
+                volume_24 * cs.as_f64() * last_price
             };
 
             let daily_price_chg = rise_fall_rate * 100.0;
 
             let ticker_stats = TickerStats {
-                mark_price: Price::from_f32(last_price),
+                mark_price: Price::from_f64(last_price),
                 daily_price_chg,
                 daily_volume: Qty::from_f64(volume_in_usd),
             };
