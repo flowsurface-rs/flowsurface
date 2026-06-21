@@ -1,9 +1,8 @@
 use crate::{
     Event, Kline, OpenInterest, PushFrequency, Ticker, TickerInfo, Timeframe, Trade, UnixMs,
-    adapter::limiter::DynamicRateLimiterConfig,
-    adapter::{Exchange, MarketKind},
+    adapter::{Exchange, MarketKind, limiter::DynamicRateLimiterConfig},
     depth::DepthPayload,
-    unit::qty::RawQtyUnit,
+    unit::{ContractSize, qty::RawQtyUnit},
 };
 
 use super::{AdapterError, HttpHub, RequestPort};
@@ -80,7 +79,7 @@ pub type BinanceLimiter = crate::adapter::limiter::HeaderDynamicRateLimiter;
 #[derive(Debug, Clone)]
 pub struct BinanceMarketScope {
     pub market: MarketKind,
-    pub contract_sizes: Option<HashMap<Ticker, f32>>,
+    pub contract_sizes: Option<HashMap<Ticker, ContractSize>>,
 }
 
 impl BinanceMarketScope {
@@ -91,7 +90,10 @@ impl BinanceMarketScope {
         }
     }
 
-    pub fn stats(market: MarketKind, contract_sizes: Option<HashMap<Ticker, f32>>) -> Self {
+    pub fn stats(
+        market: MarketKind,
+        contract_sizes: Option<HashMap<Ticker, ContractSize>>,
+    ) -> Self {
         Self {
             market,
             contract_sizes,

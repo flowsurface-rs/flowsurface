@@ -264,17 +264,17 @@ struct SonicKline {
     #[serde(rename = "t")]
     time: u64,
     #[serde(rename = "o", deserialize_with = "de_string_to_number")]
-    open: f32,
+    open: f64,
     #[serde(rename = "h", deserialize_with = "de_string_to_number")]
-    high: f32,
+    high: f64,
     #[serde(rename = "l", deserialize_with = "de_string_to_number")]
-    low: f32,
+    low: f64,
     #[serde(rename = "c", deserialize_with = "de_string_to_number")]
-    close: f32,
+    close: f64,
     #[serde(rename = "v", deserialize_with = "de_string_to_number")]
-    volume: f32,
+    volume: f64,
     #[serde(rename = "V", deserialize_with = "de_string_to_number")]
-    taker_buy_base_asset_volume: f32,
+    taker_buy_base_asset_volume: f64,
     #[serde(rename = "i")]
     interval: String,
 }
@@ -292,9 +292,9 @@ struct SonicTrade {
     #[serde(rename = "T")]
     time: u64,
     #[serde(rename = "p", deserialize_with = "de_string_to_number")]
-    price: f32,
+    price: f64,
     #[serde(rename = "q", deserialize_with = "de_string_to_number")]
-    qty: f32,
+    qty: f64,
     #[serde(rename = "m")]
     is_sell: bool,
 }
@@ -765,7 +765,7 @@ pub fn connect_trade_stream(
                                         ticker_info_map.get(&ticker)
                                     {
                                         let ticker_info = *ticker_info;
-                                        let price = Price::from_f32(de_trade.price)
+                                        let price = Price::from_f64(de_trade.price)
                                             .round_to_min_tick(ticker_info.min_ticksize);
 
                                         let trade = Trade {

@@ -482,9 +482,9 @@ impl canvas::Program<Message> for HeatmapChart {
             let cell_height = chart.cell_height;
             let qty_scales = self.calc_qty_scales(earliest, latest, highest, lowest);
 
-            let max_depth_qty = qty_scales.max_depth_qty.to_f32_lossy();
-            let max_aggr_volume = qty_scales.max_aggr_volume.to_f32_lossy();
-            let max_trade_qty = qty_scales.max_trade_qty.to_f32_lossy();
+            let max_depth_qty = qty_scales.max_depth_qty.to_f64();
+            let max_aggr_volume = qty_scales.max_aggr_volume.to_f64();
+            let max_trade_qty = qty_scales.max_trade_qty.to_f64();
 
             let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
 
@@ -519,7 +519,7 @@ impl canvas::Program<Message> for HeatmapChart {
                     let width = end_x - start_x;
 
                     if width > 0.001 {
-                        let color_alpha = (visual_run.qty.to_f32_lossy() / max_depth_qty).min(1.0);
+                        let color_alpha = (visual_run.qty.to_f64() / max_depth_qty).min(1.0) as f32;
 
                         frame.fill_rectangle(
                             Point::new(start_x, y_position - (cell_height / 2.0)),
@@ -541,7 +541,7 @@ impl canvas::Program<Message> for HeatmapChart {
                                     *price,
                                     size_in_quote_ccy,
                                 );
-                                order_size > self.visual_config.order_size_filter
+                                order_size as f32 > self.visual_config.order_size_filter
                             })
                             .for_each(|run| {
                                 let start_x = chart.interval_to_x(
@@ -553,7 +553,8 @@ impl canvas::Program<Message> for HeatmapChart {
 
                                 let width = end_x - start_x;
 
-                                let color_alpha = (run.qty.to_f32_lossy() / max_depth_qty).min(1.0);
+                                let color_alpha =
+                                    (run.qty.to_f64() / max_depth_qty).min(1.0) as f32;
 
                                 frame.fill_rectangle(
                                     Point::new(start_x, y_position - (cell_height / 2.0)),
@@ -601,7 +602,7 @@ impl canvas::Program<Message> for HeatmapChart {
 
                     // max bid/ask quantity text
                     let text_size = crate::style::text_size::TINY / chart.scaling;
-                    let text_content = abbr_large_numbers(max_qty);
+                    let text_content = abbr_large_numbers(max_qty as f64);
 
                     let text_position = Point::new(
                         current_depth_area_width,
@@ -629,7 +630,7 @@ impl canvas::Program<Message> for HeatmapChart {
 
                     dp.grouped_trades.iter().for_each(|trade| {
                         let y_position = chart.price_to_y(trade.price);
-                        let trade_qty = f32::from(trade.qty);
+                        let trade_qty = trade.qty.to_f64();
 
                         let trade_size = market_type.qty_in_quote_value(
                             trade.qty,
@@ -637,7 +638,7 @@ impl canvas::Program<Message> for HeatmapChart {
                             size_in_quote_ccy,
                         );
 
-                        if trade_size > self.visual_config.trade_size_filter {
+                        if trade_size as f32 > self.visual_config.trade_size_filter {
                             let color = if trade.is_sell {
                                 palette.danger.base.color
                             } else {
@@ -648,7 +649,7 @@ impl canvas::Program<Message> for HeatmapChart {
                                 if let Some(trade_size_scale) = self.visual_config.trade_size_scale
                                 {
                                     let scale_factor = (trade_size_scale as f32) / 100.0;
-                                    1.0 + (trade_qty / max_trade_qty)
+                                    1.0 + (trade_qty / max_trade_qty) as f32
                                         * (MAX_CIRCLE_RADIUS - 1.0)
                                         * scale_factor
                                 } else {
@@ -673,8 +674,8 @@ impl canvas::Program<Message> for HeatmapChart {
                             frame,
                             x_position,
                             (region.y + region.height) - area_height,
-                            f32::from(buy_volume),
-                            f32::from(sell_volume),
+                            buy_volume.to_f64(),
+                            sell_volume.to_f64(),
                             max_aggr_volume,
                             area_height,
                             bar_width,
@@ -866,7 +867,7 @@ impl canvas::Program<Message> for HeatmapChart {
                             if let Some((qty, is_bid)) =
                                 display_grid_qtys.get(&(data_time_val, data_price_key))
                             {
-                                let text_content = abbr_large_numbers(qty.to_f32_lossy());
+                                let text_content = abbr_large_numbers(qty.to_f64());
                                 let color = if *is_bid {
                                     palette.success.strong.color
                                 } else {
@@ -976,8 +977,8 @@ fn draw_volume_profile(
         return;
     }
 
-    let mut profile = vec![(0.0f32, 0.0f32); num_ticks];
-    let mut max_aggr_volume = 0.0f32;
+    let mut profile = vec![(0.0f64, 0.0f64); num_ticks];
+    let mut max_aggr_volume = 0.0f64;
 
     timeseries
         .datapoints
@@ -998,7 +999,7 @@ fn draw_volume_profile(
                     let index = ((grouped_price.units - first_tick.units) / step.units) as usize;
 
                     if let Some(entry) = profile.get_mut(index) {
-                        let trade_qty = f32::from(trade.qty);
+                        let trade_qty = trade.qty.to_f64();
                         if trade.is_sell {
                             entry.1 += trade_qty;
                         } else {

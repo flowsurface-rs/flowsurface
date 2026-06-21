@@ -122,7 +122,7 @@ impl<D: DataPoint> TimeSeries<D> {
 
     pub fn min_max_price_in_range(&self, earliest: UnixMs, latest: UnixMs) -> Option<(f32, f32)> {
         self.min_max_price_in_range_prices(earliest, latest)
-            .map(|(min_p, max_p)| (min_p.to_f32(), max_p.to_f32()))
+            .map(|(min_p, max_p)| (min_p.to_f32_lossy(), max_p.to_f32_lossy()))
     }
 
     /// Ensures a datapoint bucket exists at `rounded_t` and ingests all trades into it.

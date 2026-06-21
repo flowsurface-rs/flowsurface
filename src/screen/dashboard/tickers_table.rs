@@ -1649,7 +1649,7 @@ fn fetch_ticker_stats_task(
             .filter_map(|(ticker, info)| {
                 (ticker.exchange.venue() == venue).then_some(())?;
                 let contract_size = info.as_ref()?.contract_size?;
-                Some((*ticker, contract_size.as_f32()))
+                Some((*ticker, contract_size))
             })
             .collect()
     });

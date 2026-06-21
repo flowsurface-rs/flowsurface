@@ -144,7 +144,7 @@ impl ComparisonChart {
         let timeframe = self.timeframe;
         let mut incoming: Vec<(u64, f32)> = klines
             .iter()
-            .map(|k| (k.time.floor_to(timeframe).as_u64(), k.close.to_f32()))
+            .map(|k| (k.time.floor_to(timeframe).as_u64(), k.close.to_f32_lossy()))
             .collect();
 
         let idx = self.get_or_create_series_idx(&ticker_info);
@@ -212,7 +212,7 @@ impl ComparisonChart {
         let series = &mut self.series[idx];
 
         // Align to timeframe grid
-        let new_point = (t, kline.close.to_f32());
+        let new_point = (t, kline.close.to_f32_lossy());
 
         if let Some((last_x, last_y)) = series.points.last_mut() {
             if *last_x == new_point.0 {

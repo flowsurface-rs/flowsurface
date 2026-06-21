@@ -24,9 +24,9 @@ use std::{collections::HashMap, time::Duration};
 #[derive(Deserialize, Debug)]
 struct SonicTrade {
     #[serde(rename = "p")]
-    pub price: f32,
+    pub price: f64,
     #[serde(rename = "v")]
-    pub qty: f32,
+    pub qty: f64,
     #[serde(rename = "T")]
     pub direction: u8,
     #[serde(rename = "t")]
@@ -37,11 +37,11 @@ struct SonicTrade {
 #[derive(Deserialize)]
 struct FuturesDepthItem {
     #[serde()]
-    pub price: f32,
+    pub price: f64,
     #[serde()]
-    pub qty: f32,
+    pub qty: f64,
     #[serde()]
-    pub order_count: f32,
+    pub order_count: f64,
 }
 
 #[derive(Deserialize)]
@@ -59,17 +59,17 @@ struct SonicKline {
     #[serde(rename = "t")]
     time: u64,
     #[serde(rename = "o")]
-    open: f32,
+    open: f64,
     #[serde(rename = "h")]
-    high: f32,
+    high: f64,
     #[serde(rename = "l")]
-    low: f32,
+    low: f64,
     #[serde(rename = "c")]
-    close: f32,
+    close: f64,
     #[serde(rename = "q")]
-    quote_volume: f32,
+    quote_volume: f64,
     #[serde(rename = "a")]
-    _amount: f32,
+    _amount: f64,
     #[serde(rename = "interval")]
     interval: String,
     #[serde(rename = "symbol")]
@@ -539,7 +539,7 @@ pub fn connect_trade_stream(
 
                                                             de_trades.sort_unstable_by_key(|t| t.time);
                                                             for trade in &de_trades {
-                                                                let price = Price::from_f32(trade.price)
+                                                                let price = Price::from_f64(trade.price)
                                                                     .round_to_min_tick(ticker_info.min_ticksize);
 
                                                                 let trade_entity = Trade {

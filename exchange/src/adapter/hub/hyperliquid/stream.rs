@@ -72,7 +72,7 @@ fn snap_multiplier_to_125(multiplier: u16) -> (i32, i32) {
     (kf as i32, mantissa)
 }
 
-fn config_from_multiplier(price: f32, multiplier: u16) -> DepthFeedConfig {
+fn config_from_multiplier(price: f64, multiplier: u16) -> DepthFeedConfig {
     if price <= 0.0 {
         return DepthFeedConfig::full_precision();
     }
@@ -111,9 +111,9 @@ struct HyperliquidDepth {
 #[derive(Debug, Deserialize)]
 struct HyperliquidLevel {
     #[serde(deserialize_with = "de_string_to_number")]
-    px: f32,
+    px: f64,
     #[serde(deserialize_with = "de_string_to_number")]
-    sz: f32,
+    sz: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -121,9 +121,9 @@ struct HyperliquidTrade {
     coin: String,
     side: String,
     #[serde(deserialize_with = "de_string_to_number")]
-    px: f32,
+    px: f64,
     #[serde(deserialize_with = "de_string_to_number")]
-    sz: f32,
+    sz: f64,
     time: u64,
 }
 
@@ -136,15 +136,15 @@ struct HyperliquidKline {
     #[serde(rename = "i")]
     interval: String,
     #[serde(rename = "o", deserialize_with = "de_string_to_number")]
-    open: f32,
+    open: f64,
     #[serde(rename = "h", deserialize_with = "de_string_to_number")]
-    high: f32,
+    high: f64,
     #[serde(rename = "l", deserialize_with = "de_string_to_number")]
-    low: f32,
+    low: f64,
     #[serde(rename = "c", deserialize_with = "de_string_to_number")]
-    close: f32,
+    close: f64,
     #[serde(rename = "v", deserialize_with = "de_string_to_number")]
-    volume: f32,
+    volume: f64,
 }
 
 enum StreamData {
@@ -496,7 +496,7 @@ pub fn connect_trade_stream(
                                             ticker_info_map.get(ticker)
                                     {
                                         let ticker_info = *ticker_info;
-                                        let price = Price::from_f32(hl_trade.px)
+                                        let price = Price::from_f64(hl_trade.px)
                                             .round_to_min_tick(ticker_info.min_ticksize);
 
                                         let trade = Trade {
