@@ -5,7 +5,6 @@ use crate::{Ticker, TickerInfo, Trade, UnixMs};
 
 use bytes::Bytes;
 use fastwebsockets::{FragmentCollector, Frame, OpCode, Payload, WebSocketError};
-use futures::SinkExt;
 use http_body_util::Empty;
 use hyper::{
     Request,
@@ -14,7 +13,7 @@ use hyper::{
 };
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use rustc_hash::FxHashMap;
-use tokio::time::{Instant, Interval};
+use tokio::time::Instant;
 use tokio_rustls::{
     TlsConnector,
     rustls::{ClientConfig, OwnedTrustAnchor},
@@ -52,7 +51,6 @@ pub(super) static TLS_CONNECTOR: LazyLock<TlsConnector> = LazyLock::new(|| {
 });
 
 type Receiver<T> = futures::channel::mpsc::Receiver<T>;
-type Sender<T> = futures::channel::mpsc::Sender<T>;
 
 pub(super) struct ChannelStream<T> {
     receiver: Receiver<T>,
@@ -82,32 +80,58 @@ pub(super) struct WsSession {
     streams: Arc<[StreamKind]>,
 }
 
+/// How often [`on_tick`](WsAdapter::on_tick) fires. Also serves as the time-bucket
+/// granularity for trade aggregation — trades within one interval are collapsed
+/// into a single [`Event::TradesReceived`].
+const ADAPTER_TICK_INTERVAL: Duration = Duration::from_micros(33_333);
+
 pub(super) trait WsAdapter {
     /// Connects to the WebSocket and returns a transport for it.
     /// This will be retried indefinitely until it succeeds, with an exponential backoff
     /// between attempts (base ~500ms, doubling, capped at 30s, with jitter).
     fn connect(&mut self) -> impl std::future::Future<Output = Result<WsTransport, String>> + Send;
 
+    /// Tick interval controlling how often [`on_tick`](WsAdapter::on_tick) is called
+    /// and the time-bucket granularity for trade aggregation.
+    fn tick_interval(&self) -> Duration {
+        ADAPTER_TICK_INTERVAL
+    }
+
     /// Called when a connection is established.
     /// This is called on every successful connection, including after reconnects.
-    fn on_connected(
-        &mut self,
-        output: &mut Sender<Event>,
-    ) -> impl std::future::Future<Output = ()> + Send;
+    fn on_connected(&mut self) -> impl std::future::Future<Output = Vec<Event>> + Send;
+
+    /// Called periodically while connected, at the cadence returned by
+    /// [`tick_interval`].
+    ///
+    /// This is where **trade adapters** flush their [`TradeBuffer`] — trades are
+    /// batched across one tick interval and emerge as a single
+    /// [`Event::TradesReceived`]. Non-trade adapters leave this as the default
+    /// no-op because they push events directly in [`on_text`](Self::on_text).
+    fn on_tick(&mut self) -> impl std::future::Future<Output = Vec<Event>> + Send {
+        async { Vec::new() }
+    }
 
     /// Called when a text message is received.
+    ///
+    /// Adapters parse incoming data and return resulting `Event`s.
+    /// The session loop sends them to the output channel.
+    /// If the output channel is full, events are silently dropped —
+    /// market data is time-sensitive and stale events are worthless.
+    ///
+    /// **Flush model**: non-trade adapters return events here directly.
+    /// Trade adapters only buffer into [`TradeBuffer`] here and return
+    /// events later in [`on_tick`](Self::on_tick).
     fn on_text(
         &mut self,
         payload: &[u8],
-        output: &mut Sender<Event>,
-    ) -> impl std::future::Future<Output = Result<(), String>> + Send;
+    ) -> impl std::future::Future<Output = Result<Vec<Event>, String>> + Send;
 
     /// Called when the connection is closed or a fatal error occurs.
     fn on_disconnected(
         &mut self,
         reason: &str,
-        output: &mut Sender<Event>,
-    ) -> impl std::future::Future<Output = ()> + Send;
+    ) -> impl std::future::Future<Output = Vec<Event>> + Send;
 }
 
 impl WsSession {
@@ -136,9 +160,13 @@ impl WsSession {
 
         let task = tokio::spawn(async move {
             if streams.is_empty() {
-                emit_disconnected(&mut output, &streams, "Empty stream payload".to_string()).await;
+                let _ = output.try_send(Event::Disconnected(
+                    streams,
+                    "Empty stream payload".to_string(),
+                ));
             } else {
                 let mut state = State::Disconnected;
+
                 let mut heartbeat = WsHeartbeat::default();
                 let mut backoff = ReconnectBackoff::new();
 
@@ -148,60 +176,118 @@ impl WsSession {
                             Ok(websocket) => {
                                 state = State::Connected(websocket);
                                 heartbeat.reset();
-                                backoff.reset();
 
-                                adapter.on_connected(&mut output).await;
-                                emit_connected(&mut output, &streams).await;
+                                for event in adapter.on_connected().await {
+                                    let _ = output.try_send(event);
+                                }
+
+                                let _ = output.try_send(Event::Connected(Arc::clone(&streams)));
                             }
                             Err(reason) => {
-                                emit_disconnected(&mut output, &streams, reason).await;
+                                let _ = output
+                                    .try_send(Event::Disconnected(Arc::clone(&streams), reason));
                                 tokio::time::sleep(backoff.delay()).await;
                                 backoff.record_failure();
                             }
                         },
                         State::Connected(websocket) => {
-                            let disconnect_reason = tokio::select! {
-                                _ = heartbeat.interval_mut().tick() => {
-                                    if heartbeat.timed_out() {
-                                        Some("Heartbeat timeout (no websocket activity)".to_string())
-                                    } else if websocket
-                                        .send_heartbeat_ping(ping_payload)
+                            let mut last_tick = Instant::now();
+
+                            loop {
+                                let read_timeout = heartbeat
+                                    .time_until_next_ping()
+                                    .max(Duration::from_millis(1));
+
+                                let mut disconnect_reason: Option<String> =
+                                    match tokio::time::timeout(read_timeout, websocket.read_frame())
                                         .await
-                                        .is_err()
                                     {
-                                        Some(HEARTBEAT_SEND_FAILED_REASON.to_string())
-                                    } else {
-                                        None
-                                    }
-                                }
-                                frame = websocket.read_frame() => match frame {
-                                    Ok(msg) => {
-                                        heartbeat.mark_activity();
+                                        Ok(Ok(msg)) => {
+                                            heartbeat.mark_activity();
 
-                                        match msg.opcode {
-                                            OpCode::Text => {
-                                                adapter.on_text(&msg.payload[..], &mut output).await.err()
-                                            }
-                                            OpCode::Ping => {
-                                                let payload = Vec::from(msg.payload);
-                                                if websocket.reply_pong(Payload::Owned(payload)).await.is_err() {
-                                                    Some(HEARTBEAT_PONG_FAILED_REASON.to_string())
-                                                } else {
-                                                    None
+                                            match msg.opcode {
+                                                OpCode::Text => {
+                                                    match adapter.on_text(&msg.payload[..]).await {
+                                                        Ok(events) => {
+                                                            let had_events = !events.is_empty();
+                                                            for event in events {
+                                                                let _ = output.try_send(event);
+                                                            }
+                                                            if had_events {
+                                                                backoff.record_success();
+                                                            }
+                                                            None
+                                                        }
+                                                        Err(reason) => Some(reason),
+                                                    }
                                                 }
+                                                OpCode::Ping => {
+                                                    let payload = Vec::from(msg.payload);
+                                                    if websocket
+                                                        .reply_pong(Payload::Owned(payload))
+                                                        .await
+                                                        .is_err()
+                                                    {
+                                                        Some(
+                                                            HEARTBEAT_PONG_FAILED_REASON
+                                                                .to_string(),
+                                                        )
+                                                    } else {
+                                                        None
+                                                    }
+                                                }
+                                                OpCode::Close => {
+                                                    Some("Connection closed".to_string())
+                                                }
+                                                _ => None,
                                             }
-                                            OpCode::Close => Some("Connection closed".to_string()),
-                                            _ => None,
                                         }
-                                    }
-                                    Err(e) => Some(format!("Error reading frame: {e}")),
-                                }
-                            };
+                                        Ok(Err(e)) => Some(format!("Error reading frame: {e}")),
+                                        Err(_elapsed) => {
+                                            if heartbeat.timed_out() {
+                                                Some(
+                                                    "Heartbeat timeout (no websocket activity)"
+                                                        .to_string(),
+                                                )
+                                            } else {
+                                                None
+                                            }
+                                        }
+                                    };
 
-                            if let Some(reason) = disconnect_reason {
-                                adapter.on_disconnected(&reason, &mut output).await;
-                                state = State::Disconnected;
-                                emit_disconnected(&mut output, &streams, reason).await;
+                                if disconnect_reason.is_none() && heartbeat.should_send_ping() {
+                                    if websocket.send_heartbeat_ping(ping_payload).await.is_err() {
+                                        disconnect_reason =
+                                            Some(HEARTBEAT_SEND_FAILED_REASON.to_string());
+                                    } else {
+                                        heartbeat.record_ping_sent();
+                                    }
+                                }
+
+                                if disconnect_reason.is_none()
+                                    && last_tick.elapsed() >= adapter.tick_interval()
+                                {
+                                    for event in adapter.on_tick().await {
+                                        let _ = output.try_send(event);
+                                    }
+                                    last_tick = Instant::now();
+                                }
+
+                                if let Some(reason) = disconnect_reason {
+                                    for event in adapter.on_disconnected(&reason).await {
+                                        let _ = output.try_send(event);
+                                    }
+
+                                    state = State::Disconnected;
+                                    let _ = output.try_send(Event::Disconnected(
+                                        Arc::clone(&streams),
+                                        reason,
+                                    ));
+
+                                    tokio::time::sleep(backoff.delay()).await;
+                                    backoff.record_failure();
+                                    break;
+                                }
                             }
                         }
                     }
@@ -393,8 +479,8 @@ enum PingPayload {
 struct WsHeartbeat {
     interval: Duration,
     timeout: Duration,
-    heartbeat_interval: Interval,
     last_transport_activity: Instant,
+    last_ping_sent: Instant,
 }
 
 impl WsHeartbeat {
@@ -402,21 +488,19 @@ impl WsHeartbeat {
     const DEFAULT_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(45);
 
     fn new(interval: Duration, timeout: Duration) -> Self {
+        let now = Instant::now();
         Self {
             interval,
             timeout,
-            heartbeat_interval: tokio::time::interval(interval),
-            last_transport_activity: Instant::now(),
+            last_transport_activity: now,
+            last_ping_sent: now,
         }
     }
 
     fn reset(&mut self) {
-        self.last_transport_activity = Instant::now();
-        self.heartbeat_interval = tokio::time::interval(self.interval);
-    }
-
-    fn interval_mut(&mut self) -> &mut Interval {
-        &mut self.heartbeat_interval
+        let now = Instant::now();
+        self.last_transport_activity = now;
+        self.last_ping_sent = now;
     }
 
     fn mark_activity(&mut self) {
@@ -425,6 +509,22 @@ impl WsHeartbeat {
 
     fn timed_out(&self) -> bool {
         self.last_transport_activity.elapsed() >= self.timeout
+    }
+
+    /// Returns true when the ping interval has elapsed since the last ping was sent.
+    fn should_send_ping(&self) -> bool {
+        self.last_ping_sent.elapsed() >= self.interval
+    }
+
+    /// Call after successfully sending a heartbeat ping.
+    fn record_ping_sent(&mut self) {
+        self.last_ping_sent = Instant::now();
+    }
+
+    /// How long until the next ping is due (used as the read_frame timeout so
+    /// heartbeats are checked even on idle connections).
+    fn time_until_next_ping(&self) -> Duration {
+        self.interval.saturating_sub(self.last_ping_sent.elapsed())
     }
 }
 
@@ -439,77 +539,53 @@ impl Default for WsHeartbeat {
 
 /// Exponential backoff for WebSocket reconnection attempts.
 ///
-/// Starts at ~500ms, doubles each failure, caps at 30s, and adds ±25% jitter
-/// to spread reconnections across streams when multiple disconnect at once.
+/// Delay doubles on each failure, resets to the initial 500ms on success.
+/// Capped at 30s with ±25% multiplicative jitter to spread reconnections
+/// across streams when multiple disconnect at once.
 struct ReconnectBackoff {
     current: Duration,
-    max_delay: Duration,
-    multiplier: f32,
-    jitter: f32,
 }
 
 impl ReconnectBackoff {
     const INITIAL: Duration = Duration::from_millis(500);
     const MAX: Duration = Duration::from_secs(30);
+    const JITTER: f32 = 0.25;
 
     fn new() -> Self {
         Self {
             current: Self::INITIAL,
-            max_delay: Self::MAX,
-            multiplier: 2.0,
-            jitter: 0.25,
         }
     }
 
     /// Returns the delay before the next reconnect attempt, with ±jitter applied.
     fn delay(&self) -> Duration {
-        let jitter_range = self.current.mul_f32(self.jitter);
-        let jitter = Duration::from_secs_f32(
-            (rand::random::<f32>() * 2.0 - 1.0) * jitter_range.as_secs_f32(),
-        );
-        (self.current + jitter).clamp(Duration::ZERO, self.max_delay)
+        let factor = 1.0 + (rand::random::<f32>() * 2.0 - 1.0) * Self::JITTER;
+        let secs = self.current.as_secs_f32() * factor;
+        Duration::from_secs_f32(secs.max(0.0)).min(Self::MAX)
     }
 
-    /// Advances the backoff after a failed attempt (multiplies delay, capped at max).
+    /// Doubles the delay (capped) after a failed attempt.
     fn record_failure(&mut self) {
-        self.current = (self.current.mul_f32(self.multiplier)).min(self.max_delay);
+        self.current = (self.current.mul_f32(2.0)).min(Self::MAX);
     }
 
-    /// Resets back to the initial delay after a successful connection.
-    fn reset(&mut self) {
+    /// Resets the delay to the initial value after genuine success
+    /// (real market-data events were produced by the connection).
+    fn record_success(&mut self) {
         self.current = Self::INITIAL;
     }
-}
-
-async fn emit_connected(output: &mut Sender<Event>, streams: &Arc<[StreamKind]>) {
-    let _ = output.send(Event::Connected(streams.clone())).await;
-}
-
-async fn emit_disconnected(
-    output: &mut Sender<Event>,
-    streams: &Arc<[StreamKind]>,
-    reason: impl Into<String>,
-) {
-    let _ = output
-        .send(Event::Disconnected(streams.clone(), reason.into()))
-        .await;
 }
 
 pub(super) struct TradeBuffer {
     buffer_map: FxHashMap<Ticker, Vec<Trade>>,
     ticker_info_map: FxHashMap<Ticker, (TickerInfo, QtyNormalization)>,
-    last_flush: Instant,
 }
 
 impl TradeBuffer {
-    /// Buffer trades and flush in this interval
-    const TRADE_BUCKET_INTERVAL: Duration = Duration::from_micros(33_333);
-
     pub(super) fn new(ticker_info_map: FxHashMap<Ticker, (TickerInfo, QtyNormalization)>) -> Self {
         Self {
             buffer_map: FxHashMap::default(),
             ticker_info_map,
-            last_flush: Instant::now(),
         }
     }
 
@@ -521,14 +597,14 @@ impl TradeBuffer {
         self.buffer_map.entry(ticker).or_default().push(trade);
     }
 
-    pub(super) async fn flush_if_ready(&mut self, output: &mut Sender<Event>) {
-        if self.last_flush.elapsed() >= Self::TRADE_BUCKET_INTERVAL {
-            self.flush(output).await;
-        }
-    }
-
-    pub(super) async fn flush(&mut self, output: &mut Sender<Event>) {
-        let interval_ms = Self::TRADE_BUCKET_INTERVAL.as_millis() as u64;
+    /// Drain all buffered trades, clearing internal buffers.
+    ///
+    /// Each ticker's trades are collapsed into a single [`Event::TradesReceived`]
+    /// keyed by the most recent trade's time rounded down to the nearest
+    /// [`ADAPTER_TICK_INTERVAL`] bucket.
+    pub(super) fn flush(&mut self) -> Vec<Event> {
+        let interval_ms = ADAPTER_TICK_INTERVAL.as_millis() as u64;
+        let mut events = Vec::new();
 
         for (ticker, trades_buffer) in self.buffer_map.iter_mut() {
             if trades_buffer.is_empty() {
@@ -544,18 +620,16 @@ impl TradeBuffer {
             if let Some((ticker_info, _)) = self.ticker_info_map.get(ticker)
                 && let Some(update_t) = bucket_update_t
             {
-                let _ = output
-                    .send(Event::TradesReceived(
-                        StreamKind::Trades {
-                            ticker_info: *ticker_info,
-                        },
-                        update_t,
-                        std::mem::take(trades_buffer).into_boxed_slice(),
-                    ))
-                    .await;
+                events.push(Event::TradesReceived(
+                    StreamKind::Trades {
+                        ticker_info: *ticker_info,
+                    },
+                    update_t,
+                    std::mem::take(trades_buffer).into_boxed_slice(),
+                ));
             }
         }
 
-        self.last_flush = Instant::now();
+        events
     }
 }

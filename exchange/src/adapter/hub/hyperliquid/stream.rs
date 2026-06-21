@@ -13,7 +13,7 @@ use crate::{
 use super::{HyperliquidHandle, WS_DOMAIN, raw_qty_unit_from_market_type};
 use crate::adapter::hub::AdapterError;
 use fastwebsockets::Frame;
-use futures::{SinkExt, Stream, channel::mpsc};
+use futures::Stream;
 use rustc_hash::FxHashMap;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -226,15 +226,11 @@ impl WsAdapter for TradeAdapter {
         Ok(websocket)
     }
 
-    async fn on_connected(&mut self, output: &mut mpsc::Sender<Event>) {
-        self.buffer.flush(output).await;
+    async fn on_connected(&mut self) -> Vec<Event> {
+        self.buffer.flush()
     }
 
-    async fn on_text(
-        &mut self,
-        payload: &[u8],
-        output: &mut mpsc::Sender<Event>,
-    ) -> Result<(), String> {
+    async fn on_text(&mut self, payload: &[u8]) -> Result<Vec<Event>, String> {
         if let Ok(StreamData::Trade(trades)) = parse_websocket_message(payload) {
             for hl_trade in trades {
                 if let Some(ticker) = self.symbol_to_ticker.get(&hl_trade.coin)
@@ -262,12 +258,15 @@ impl WsAdapter for TradeAdapter {
             }
         }
 
-        self.buffer.flush_if_ready(output).await;
-        Ok(())
+        Ok(Vec::new())
     }
 
-    async fn on_disconnected(&mut self, _reason: &str, output: &mut mpsc::Sender<Event>) {
-        self.buffer.flush(output).await;
+    async fn on_disconnected(&mut self, _reason: &str) -> Vec<Event> {
+        self.buffer.flush()
+    }
+
+    async fn on_tick(&mut self) -> Vec<Event> {
+        self.buffer.flush()
     }
 }
 
@@ -392,23 +391,19 @@ impl WsAdapter for DepthAdapter {
         Ok(websocket)
     }
 
-    async fn on_connected(&mut self, output: &mut mpsc::Sender<Event>) {
+    async fn on_connected(&mut self) -> Vec<Event> {
         if let Some(snapshot_time_ms) = self.pending_snapshot_emit_ms.take() {
-            let _ = output
-                .send(Event::DepthReceived(
-                    self.stream,
-                    snapshot_time_ms.into(),
-                    self.local_depth_cache.depth.clone(),
-                ))
-                .await;
+            vec![Event::DepthReceived(
+                self.stream,
+                snapshot_time_ms.into(),
+                self.local_depth_cache.depth.clone(),
+            )]
+        } else {
+            Vec::new()
         }
     }
 
-    async fn on_text(
-        &mut self,
-        payload: &[u8],
-        output: &mut mpsc::Sender<Event>,
-    ) -> Result<(), String> {
+    async fn on_text(&mut self, payload: &[u8]) -> Result<Vec<Event>, String> {
         if let Ok(StreamData::Depth(depth)) = parse_websocket_message(payload) {
             let bids = depth.levels[0]
                 .iter()
@@ -437,19 +432,19 @@ impl WsAdapter for DepthAdapter {
                 Some(self.qty_norm),
             );
 
-            let _ = output
-                .send(Event::DepthReceived(
-                    self.stream,
-                    depth.time.into(),
-                    self.local_depth_cache.depth.clone(),
-                ))
-                .await;
+            return Ok(vec![Event::DepthReceived(
+                self.stream,
+                depth.time.into(),
+                self.local_depth_cache.depth.clone(),
+            )]);
         }
 
-        Ok(())
+        Ok(Vec::new())
     }
 
-    async fn on_disconnected(&mut self, _reason: &str, _output: &mut mpsc::Sender<Event>) {}
+    async fn on_disconnected(&mut self, _reason: &str) -> Vec<Event> {
+        Vec::new()
+    }
 }
 
 pub fn connect_depth_stream(
@@ -531,13 +526,11 @@ impl WsAdapter for KlineAdapter {
         Ok(websocket)
     }
 
-    async fn on_connected(&mut self, _output: &mut mpsc::Sender<Event>) {}
+    async fn on_connected(&mut self) -> Vec<Event> {
+        Vec::new()
+    }
 
-    async fn on_text(
-        &mut self,
-        payload: &[u8],
-        output: &mut mpsc::Sender<Event>,
-    ) -> Result<(), String> {
+    async fn on_text(&mut self, payload: &[u8]) -> Result<Vec<Event>, String> {
         if let Ok(StreamData::Kline(hl_kline)) = parse_websocket_message(payload)
             && let Some((ticker_info, timeframe)) = self
                 .stream_lookup
@@ -564,13 +557,15 @@ impl WsAdapter for KlineAdapter {
                 ticker_info: *ticker_info,
                 timeframe: *timeframe,
             };
-            let _ = output.send(Event::KlineReceived(stream_kind, kline)).await;
+            return Ok(vec![Event::KlineReceived(stream_kind, kline)]);
         }
 
-        Ok(())
+        Ok(Vec::new())
     }
 
-    async fn on_disconnected(&mut self, _reason: &str, _output: &mut mpsc::Sender<Event>) {}
+    async fn on_disconnected(&mut self, _reason: &str) -> Vec<Event> {
+        Vec::new()
+    }
 }
 
 pub fn connect_kline_stream(

@@ -12,11 +12,12 @@ use crate::{
 use super::{WS_DOMAIN, raw_qty_unit_from_market_type, timeframe_to_okx_bar};
 use crate::adapter::hub::AdapterError;
 use fastwebsockets::Frame;
-use futures::{SinkExt, Stream, channel::mpsc};
+use futures::Stream;
 use rustc_hash::FxHashMap;
 use serde::Deserialize;
 use serde_json::Value;
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
+use std::sync::Arc;
 
 const OKX_PING_PAYLOAD: &[u8] = b"ping";
 
@@ -157,15 +158,11 @@ impl WsAdapter for TradeAdapter {
         connect_and_subscribe(&self.subscribe_message, "public", self.proxy_cfg.as_ref()).await
     }
 
-    async fn on_connected(&mut self, output: &mut mpsc::Sender<Event>) {
-        self.buffer.flush(output).await;
+    async fn on_connected(&mut self) -> Vec<Event> {
+        self.buffer.flush()
     }
 
-    async fn on_text(
-        &mut self,
-        payload: &[u8],
-        output: &mut mpsc::Sender<Event>,
-    ) -> Result<(), String> {
+    async fn on_text(&mut self, payload: &[u8]) -> Result<Vec<Event>, String> {
         if let Ok(StreamData::Trade(inst_id, de_trade_vec)) = feed_de(payload) {
             if let Some(ticker) = self.symbol_to_ticker.get(&inst_id)
                 && let Some((ticker_info, qty_norm)) = self.buffer.ticker_info(ticker)
@@ -191,12 +188,15 @@ impl WsAdapter for TradeAdapter {
             }
         }
 
-        self.buffer.flush_if_ready(output).await;
-        Ok(())
+        Ok(Vec::new())
     }
 
-    async fn on_disconnected(&mut self, _reason: &str, output: &mut mpsc::Sender<Event>) {
-        self.buffer.flush(output).await;
+    async fn on_disconnected(&mut self, _reason: &str) -> Vec<Event> {
+        self.buffer.flush()
+    }
+
+    async fn on_tick(&mut self) -> Vec<Event> {
+        self.buffer.flush()
     }
 }
 
@@ -282,13 +282,11 @@ impl WsAdapter for DepthAdapter {
         connect_and_subscribe(&self.subscribe_message, "public", self.proxy_cfg.as_ref()).await
     }
 
-    async fn on_connected(&mut self, _output: &mut mpsc::Sender<Event>) {}
+    async fn on_connected(&mut self) -> Vec<Event> {
+        Vec::new()
+    }
 
-    async fn on_text(
-        &mut self,
-        payload: &[u8],
-        output: &mut mpsc::Sender<Event>,
-    ) -> Result<(), String> {
+    async fn on_text(&mut self, payload: &[u8]) -> Result<Vec<Event>, String> {
         if let Ok(StreamData::Depth(de_depth, data_type, time)) = feed_de(payload) {
             let depth = DepthPayload {
                 last_update_id: de_depth.update_id,
@@ -324,20 +322,20 @@ impl WsAdapter for DepthAdapter {
                     Some(self.qty_norm),
                 );
 
-                let _ = output
-                    .send(Event::DepthReceived(
-                        self.stream,
-                        time.into(),
-                        self.orderbook.depth.clone(),
-                    ))
-                    .await;
+                return Ok(vec![Event::DepthReceived(
+                    self.stream,
+                    time.into(),
+                    self.orderbook.depth.clone(),
+                )]);
             }
         }
 
-        Ok(())
+        Ok(Vec::new())
     }
 
-    async fn on_disconnected(&mut self, _reason: &str, _output: &mut mpsc::Sender<Event>) {}
+    async fn on_disconnected(&mut self, _reason: &str) -> Vec<Event> {
+        Vec::new()
+    }
 }
 
 pub fn connect_depth_stream(
@@ -397,27 +395,25 @@ impl WsAdapter for KlineAdapter {
         connect_and_subscribe(&self.subscribe_message, "business", self.proxy_cfg.as_ref()).await
     }
 
-    async fn on_connected(&mut self, _output: &mut mpsc::Sender<Event>) {}
+    async fn on_connected(&mut self) -> Vec<Event> {
+        Vec::new()
+    }
 
-    async fn on_text(
-        &mut self,
-        payload: &[u8],
-        output: &mut mpsc::Sender<Event>,
-    ) -> Result<(), String> {
+    async fn on_text(&mut self, payload: &[u8]) -> Result<Vec<Event>, String> {
         if let Ok(v) = serde_json::from_slice::<Value>(payload) {
             let channel = v["arg"]["channel"].as_str().unwrap_or("");
             if !channel.starts_with("candle") {
-                return Ok(());
+                return Ok(Vec::new());
             }
 
             let inst = match v["arg"]["instId"].as_str() {
                 Some(s) => s,
-                None => return Ok(()),
+                None => return Ok(Vec::new()),
             };
             let (ticker_info, timeframe) =
                 match self.lookup.get(&(channel.to_string(), inst.to_string())) {
                     Some(t) => *t,
-                    None => return Ok(()),
+                    None => return Ok(Vec::new()),
                 };
             let qty_norm = QtyNormalization::with_raw_qty_unit(
                 self.size_in_quote_ccy,
@@ -426,6 +422,7 @@ impl WsAdapter for KlineAdapter {
             );
 
             if let Some(data) = v.get("data").and_then(|d| d.as_array()) {
+                let mut events = Vec::new();
                 for row in data {
                     let time = row.get(0).and_then(serde_util::value_as_u64);
                     let open = row.get(1).and_then(serde_util::value_as_f64);
@@ -456,23 +453,24 @@ impl WsAdapter for KlineAdapter {
                         Volume::TotalOnly(volume_in_display),
                         ticker_info.min_ticksize,
                     );
-                    let _ = output
-                        .send(Event::KlineReceived(
-                            StreamKind::Kline {
-                                ticker_info,
-                                timeframe,
-                            },
-                            kline,
-                        ))
-                        .await;
+                    events.push(Event::KlineReceived(
+                        StreamKind::Kline {
+                            ticker_info,
+                            timeframe,
+                        },
+                        kline,
+                    ));
                 }
+                return Ok(events);
             }
         }
 
-        Ok(())
+        Ok(Vec::new())
     }
 
-    async fn on_disconnected(&mut self, _reason: &str, _output: &mut mpsc::Sender<Event>) {}
+    async fn on_disconnected(&mut self, _reason: &str) -> Vec<Event> {
+        Vec::new()
+    }
 }
 
 pub fn connect_kline_stream(

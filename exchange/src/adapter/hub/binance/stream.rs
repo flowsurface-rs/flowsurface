@@ -11,7 +11,7 @@ use crate::{
 
 use super::{BinanceHandle, exchange_from_market_type, raw_qty_unit_from_market_type};
 use crate::adapter::hub::AdapterError;
-use futures::{SinkExt, Stream, channel::mpsc};
+use futures::Stream;
 use serde::Deserialize;
 use sonic_rs::{JsonValueTrait, to_object_iter_unchecked};
 use std::{
@@ -358,15 +358,11 @@ impl WsAdapter for TradeAdapter {
         .await
     }
 
-    async fn on_connected(&mut self, output: &mut mpsc::Sender<Event>) {
-        self.buffer.flush(output).await;
+    async fn on_connected(&mut self) -> Vec<Event> {
+        self.buffer.flush()
     }
 
-    async fn on_text(
-        &mut self,
-        payload: &[u8],
-        output: &mut mpsc::Sender<Event>,
-    ) -> Result<(), String> {
+    async fn on_text(&mut self, payload: &[u8]) -> Result<Vec<Event>, String> {
         if let Ok(StreamData::Trade(ticker, de_trade)) = feed_de(payload, self.market) {
             if let Some((ticker_info, qty_norm)) = self.buffer.ticker_info(&ticker) {
                 let ticker_info = *ticker_info;
@@ -387,12 +383,15 @@ impl WsAdapter for TradeAdapter {
             }
         }
 
-        self.buffer.flush_if_ready(output).await;
-        Ok(())
+        Ok(Vec::new())
     }
 
-    async fn on_disconnected(&mut self, _reason: &str, output: &mut mpsc::Sender<Event>) {
-        self.buffer.flush(output).await;
+    async fn on_disconnected(&mut self, _reason: &str) -> Vec<Event> {
+        self.buffer.flush()
+    }
+
+    async fn on_tick(&mut self) -> Vec<Event> {
+        self.buffer.flush()
     }
 }
 
@@ -478,15 +477,12 @@ impl WsAdapter for DepthAdapter {
         Ok(websocket)
     }
 
-    async fn on_connected(&mut self, _output: &mut mpsc::Sender<Event>) {
+    async fn on_connected(&mut self) -> Vec<Event> {
         self.sync_machine.begin_resync();
+        Vec::new()
     }
 
-    async fn on_text(
-        &mut self,
-        payload: &[u8],
-        output: &mut mpsc::Sender<Event>,
-    ) -> Result<(), String> {
+    async fn on_text(&mut self, payload: &[u8]) -> Result<Vec<Event>, String> {
         self.sync_machine
             .poll_snapshot_if_ready(self.ticker_info, self.qty_norm)?;
 
@@ -497,19 +493,19 @@ impl WsAdapter for DepthAdapter {
                 self.qty_norm,
             )?
         {
-            let _ = output
-                .send(Event::DepthReceived(
-                    self.stream,
-                    time.into(),
-                    self.sync_machine.current.depth.clone(),
-                ))
-                .await;
+            return Ok(vec![Event::DepthReceived(
+                self.stream,
+                time.into(),
+                self.sync_machine.current.depth.clone(),
+            )]);
         }
 
-        Ok(())
+        Ok(Vec::new())
     }
 
-    async fn on_disconnected(&mut self, _reason: &str, _output: &mut mpsc::Sender<Event>) {}
+    async fn on_disconnected(&mut self, _reason: &str) -> Vec<Event> {
+        Vec::new()
+    }
 }
 
 enum ApplyDepthResult {
@@ -736,16 +732,14 @@ impl WsAdapter for KlineAdapter {
         .await
     }
 
-    async fn on_connected(&mut self, _output: &mut mpsc::Sender<Event>) {}
+    async fn on_connected(&mut self) -> Vec<Event> {
+        Vec::new()
+    }
 
-    async fn on_text(
-        &mut self,
-        payload: &[u8],
-        output: &mut mpsc::Sender<Event>,
-    ) -> Result<(), String> {
+    async fn on_text(&mut self, payload: &[u8]) -> Result<Vec<Event>, String> {
         if let Ok(StreamData::Kline(ticker, de_kline)) = feed_de(payload, self.market) {
             let Some(timeframe) = self.timeframe_by_interval.get(&de_kline.interval) else {
-                return Ok(());
+                return Ok(Vec::new());
             };
 
             if let Some((ticker_info, qty_norm)) = self.ticker_info_map.get(&ticker) {
@@ -767,25 +761,25 @@ impl WsAdapter for KlineAdapter {
                     ticker_info.min_ticksize,
                 );
 
-                let _ = output
-                    .send(Event::KlineReceived(
-                        StreamKind::Kline {
-                            ticker_info,
-                            timeframe: *timeframe,
-                        },
-                        kline,
-                    ))
-                    .await;
+                return Ok(vec![Event::KlineReceived(
+                    StreamKind::Kline {
+                        ticker_info,
+                        timeframe: *timeframe,
+                    },
+                    kline,
+                )]);
             } else {
                 log::error!("Ticker info not found for ticker: {ticker}");
                 return Err("Received kline for unknown ticker".to_string());
             }
         }
 
-        Ok(())
+        Ok(Vec::new())
     }
 
-    async fn on_disconnected(&mut self, _reason: &str, _output: &mut mpsc::Sender<Event>) {}
+    async fn on_disconnected(&mut self, _reason: &str) -> Vec<Event> {
+        Vec::new()
+    }
 }
 
 pub fn connect_kline_stream(
