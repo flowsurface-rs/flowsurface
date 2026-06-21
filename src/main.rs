@@ -1177,7 +1177,20 @@ impl Flowsurface {
                     ]
                     .spacing(8)
                 } else {
-                    column![text("No pane selected"),].spacing(8)
+                    let reset_pane_button =
+                        button(text("Reset").align_x(Alignment::Center)).width(iced::Length::Fill);
+                    let split_pane_button =
+                        button(text("Split").align_x(Alignment::Center)).width(iced::Length::Fill);
+
+                    column![
+                        text("No pane selected"),
+                        row![
+                            tooltip(reset_pane_button, None, TooltipPosition::Top),
+                            tooltip(split_pane_button, None, TooltipPosition::Top),
+                        ]
+                        .spacing(8)
+                    ]
+                    .spacing(8)
                 };
 
                 let manage_layout_modal = {
