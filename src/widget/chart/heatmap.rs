@@ -115,6 +115,7 @@ impl HeatmapShader {
         ticker_info: TickerInfo,
         studies: Vec<HeatmapStudy>,
         indicators: Vec<HeatmapIndicator>,
+        config: Option<data::chart::heatmap::Config>,
     ) -> Self {
         let depth_history = HistoricalDepth::new(ticker_info.min_qty, step, basis);
         let trades = TimeSeries::<HeatmapDataPoint>::new(basis, step);
@@ -151,7 +152,7 @@ impl HeatmapShader {
             rebuild_policy: view::RebuildPolicy::Idle,
             indicators,
             anchor: view::Anchor::default(),
-            config: data::chart::heatmap::Config::default(),
+            config: config.unwrap_or_default(),
             studies,
             study_configurator: study::Configurator::new(),
         }
