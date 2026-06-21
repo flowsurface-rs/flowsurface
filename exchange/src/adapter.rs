@@ -22,10 +22,6 @@ pub use proxy::Proxy;
 /// Buffer trades and flush in this interval
 const TRADE_BUCKET_INTERVAL: Duration = Duration::from_micros(33_333);
 
-pub fn allowed_multipliers_for_min_tick(min_ticksize: crate::unit::MinTicksize) -> &'static [u16] {
-    hub::hyperliquid::allowed_multipliers_for_min_tick(min_ticksize)
-}
-
 async fn flush_trade_buffers<V>(
     output: &mut futures::channel::mpsc::Sender<Event>,
     ticker_info_map: &FxHashMap<Ticker, (TickerInfo, V)>,
@@ -513,6 +509,30 @@ impl Exchange {
         } else {
             StreamTicksize::ServerSide(multiplier.unwrap_or(server_fallback))
         }
+    }
+
+    pub fn allowed_tick_multipliers(
+        &self,
+        min_ticksize: Option<super::unit::MinTicksize>,
+    ) -> Vec<TickMultiplier> {
+        if self.is_depth_client_aggr() {
+            return TickMultiplier::ALL.to_vec();
+        }
+
+        let Some(min_tick) = min_ticksize else {
+            return vec![];
+        };
+
+        let allowed = match self.venue() {
+            Venue::Hyperliquid => hub::hyperliquid::allowed_multipliers_for_min_tick(min_tick),
+            _ => return TickMultiplier::ALL.to_vec(),
+        };
+
+        TickMultiplier::ALL
+            .iter()
+            .copied()
+            .filter(|tm| allowed.contains(&tm.0))
+            .collect()
     }
 
     pub fn is_symbol_supported(&self, symbol: &str, log: bool) -> bool {

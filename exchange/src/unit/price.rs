@@ -291,24 +291,10 @@ impl PriceStep {
         self.to_f64_lossy() as f32
     }
 
-    /// from f32 step (widens to f64, then rounds to nearest atomic unit)
-    pub fn from_f32(step: f32) -> Self {
-        Self::from_f64_lossy(step as f64)
-    }
-
     /// f64 step for UI
     pub fn to_f64_lossy(self) -> f64 {
         let scale = 10f64.powi(Price::ATOMIC_SCALE);
         (self.units as f64) / scale
-    }
-
-    /// from f64 step (rounds to nearest atomic unit)
-    pub fn from_f64_lossy(step: f64) -> Self {
-        assert!(step > 0.0, "step must be > 0");
-        let scale = 10f64.powi(Price::ATOMIC_SCALE);
-        let units = (step * scale).round() as i64;
-        assert!(units > 0, "step too small at given ATOMIC_SCALE");
-        Self { units }
     }
 }
 
