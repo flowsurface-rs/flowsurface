@@ -6,7 +6,7 @@ use crate::{
 use data::chart::Basis;
 use exchange::{
     StreamPairKind, TickMultiplier, Timeframe,
-    adapter::{Exchange, allowed_multipliers_for_min_tick},
+    adapter::Exchange,
     unit::{MinTicksize, PriceStep},
 };
 use iced::{
@@ -550,17 +550,9 @@ impl Modifier {
                         || matches!(kind, ModifierKind::Footprint(_, _));
 
                     let allowed_tm = if allows_custom_tsizes {
-                        exchange::TickMultiplier::ALL.to_vec()
-                    } else if let Some(min_tick) = self.min_ticksize {
-                        let allow = allowed_multipliers_for_min_tick(min_tick);
-
-                        exchange::TickMultiplier::ALL
-                            .iter()
-                            .copied()
-                            .filter(|tm| allow.contains(&tm.0))
-                            .collect()
+                        TickMultiplier::ALL.to_vec()
                     } else {
-                        vec![]
+                        exchange.allowed_tick_multipliers(self.min_ticksize)
                     };
 
                     let tick_multiplier_grid = modifiers_grid(

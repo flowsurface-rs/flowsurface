@@ -37,13 +37,13 @@ impl VolumeIndicator {
     ) -> iced::Element<'a, Message> {
         let tooltip = |volume: &Volume, _next: Option<&Volume>| {
             if let Some((buy, sell)) = volume.buy_sell() {
-                let buy_t = format!("Buy Volume: {}", format_with_commas(f32::from(buy)));
-                let sell_t = format!("Sell Volume: {}", format_with_commas(f32::from(sell)));
+                let buy_t = format!("Buy Volume: {}", format_with_commas(f64::from(buy)));
+                let sell_t = format!("Sell Volume: {}", format_with_commas(f64::from(sell)));
                 PlotTooltip::new(format!("{buy_t}\n{sell_t}"))
             } else {
                 PlotTooltip::new(format!(
                     "Volume: {}",
-                    format_with_commas(f32::from(volume.total()))
+                    format_with_commas(f64::from(volume.total()))
                 ))
             }
         };
@@ -51,14 +51,14 @@ impl VolumeIndicator {
         let bar_kind = |volume: &Volume| {
             if let Some((buy, sell)) = volume.buy_sell() {
                 BarClass::Overlay {
-                    overlay: f32::from(buy) - f32::from(sell),
+                    overlay: buy.to_f32_lossy() - sell.to_f32_lossy(),
                 }
             } else {
                 BarClass::Single
             }
         };
 
-        let value_fn = |volume: &Volume| f32::from(volume.total());
+        let value_fn = |volume: &Volume| volume.total().to_f32_lossy();
 
         let plot = BarPlot::new(value_fn, bar_kind)
             .bar_width_factor(0.9)

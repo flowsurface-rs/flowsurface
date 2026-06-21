@@ -201,7 +201,7 @@ impl GridRing {
                 }
                 if order_size_filter > 0.0 {
                     let order_size = market_type.qty_in_quote_value(q, *price, size_in_quote_ccy);
-                    if order_size <= order_size_filter {
+                    if order_size as f32 <= order_size_filter {
                         continue;
                     }
                 }
@@ -582,7 +582,7 @@ impl GridRing {
             if order_size_filter > 0.0 {
                 let order_size =
                     market_type.qty_in_quote_value(qty_sum, rounded_price, size_in_quote_ccy);
-                if order_size <= order_size_filter {
+                if order_size as f32 <= order_size_filter {
                     return;
                 }
             }

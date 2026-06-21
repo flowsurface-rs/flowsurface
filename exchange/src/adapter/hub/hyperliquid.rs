@@ -29,6 +29,7 @@ const MULTS_FRACTIONAL: &[u16] = &[1, 2, 5, 10, 100, 1000];
 // safe intersection when base tick is exactly 1 (cannot disambiguate boundary case)
 const MULTS_SAFE: &[u16] = &[1, 10, 100, 1000];
 
+/// Allowed multipliers based on observed Hyperliquid tick rules.
 pub fn allowed_multipliers_for_min_tick(min_ticksize: MinTicksize) -> &'static [u16] {
     if min_ticksize.power < 0 {
         // int_digits <= 4 (fractional/boundary region)

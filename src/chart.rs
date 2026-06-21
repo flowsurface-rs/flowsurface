@@ -681,7 +681,7 @@ impl ViewState {
             cell_height,
             basis,
             last_price: None,
-            base_price_y: Price::from_f32_lossy(0.0),
+            base_price_y: Price::from_f32(0.0),
             latest_x: 0,
             tick_size,
             decimals,
@@ -816,7 +816,7 @@ impl ViewState {
                 let ratio = y / bounds.height;
                 let price = highest + ratio * (lowest - highest);
 
-                let p = Price::from_f32_lossy(price);
+                let p = Price::from_f32(price);
                 let tick_units = effective_step.units;
                 let tick_index = p.units.div_euclid(tick_units);
                 let rounded_price_p = Price::from_units(tick_index * tick_units);
@@ -980,7 +980,7 @@ impl ViewState {
         let crosshair_ratio = cursor_position.y / bounds.height;
         let crosshair_price = highest + crosshair_ratio * (lowest - highest);
 
-        let rounded_price = Price::from_f32_lossy(crosshair_price)
+        let rounded_price = Price::from_f32(crosshair_price)
             .round_to_step(effective_step)
             .to_f32_lossy();
         let snap_ratio = (rounded_price - highest) / (lowest - highest);
@@ -1145,9 +1145,9 @@ fn draw_volume_bar(
     frame: &mut canvas::Frame,
     start_x: f32,
     start_y: f32,
-    buy_qty: f32,
-    sell_qty: f32,
-    max_qty: f32,
+    buy_qty: f64,
+    sell_qty: f64,
+    max_qty: f64,
     bar_length: f32,
     thickness: f32,
     buy_color: iced::Color,
@@ -1160,10 +1160,10 @@ fn draw_volume_bar(
         return;
     }
 
-    let total_bar_length = (total_qty / max_qty) * bar_length;
+    let total_bar_length = (total_qty / max_qty) as f32 * bar_length;
 
-    let buy_proportion = buy_qty / total_qty;
-    let sell_proportion = sell_qty / total_qty;
+    let buy_proportion = (buy_qty / total_qty) as f32;
+    let sell_proportion = (sell_qty / total_qty) as f32;
 
     let buy_bar_length = buy_proportion * total_bar_length;
     let sell_bar_length = sell_proportion * total_bar_length;

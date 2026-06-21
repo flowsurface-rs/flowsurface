@@ -37,8 +37,8 @@ impl MarketKind {
         MarketKind::InversePerps,
     ];
 
-    pub fn qty_in_quote_value(&self, qty: Qty, price: Price, size_in_quote_ccy: bool) -> f32 {
-        let qty = qty.to_f32_lossy();
+    pub fn qty_in_quote_value(&self, qty: Qty, price: Price, size_in_quote_ccy: bool) -> f64 {
+        let qty = qty.to_f64();
 
         match self {
             MarketKind::InversePerps => qty,
@@ -46,7 +46,7 @@ impl MarketKind {
                 if size_in_quote_ccy {
                     qty
                 } else {
-                    price.to_f32() * qty
+                    price.to_f64() * qty
                 }
             }
         }
@@ -478,10 +478,34 @@ impl Exchange {
         }
     }
 
+    pub fn allowed_tick_multipliers(
+        &self,
+        min_ticksize: Option<super::unit::MinTicksize>,
+    ) -> Vec<TickMultiplier> {
+        if self.is_depth_client_aggr() {
+            return TickMultiplier::ALL.to_vec();
+        }
+
+        let Some(min_tick) = min_ticksize else {
+            return vec![];
+        };
+
+        let allowed = match self.venue() {
+            Venue::Hyperliquid => hub::hyperliquid::allowed_multipliers_for_min_tick(min_tick),
+            _ => return TickMultiplier::ALL.to_vec(),
+        };
+
+        TickMultiplier::ALL
+            .iter()
+            .copied()
+            .filter(|tm| allowed.contains(&tm.0))
+            .collect()
+    }
+
     pub fn is_symbol_supported(&self, symbol: &str, log: bool) -> bool {
         let valid_symbol = symbol
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '-');
 
         if valid_symbol {
             return true;

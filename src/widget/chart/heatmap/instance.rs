@@ -337,7 +337,7 @@ impl InstanceBuilder {
 
                 let trade_size =
                     market_type.qty_in_quote_value(trade.qty, trade.price, size_in_quote_ccy);
-                if trade_size <= trade_size_filter {
+                if trade_size as f32 <= trade_size_filter {
                     continue;
                 }
 

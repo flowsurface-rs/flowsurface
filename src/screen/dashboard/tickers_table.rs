@@ -991,8 +991,9 @@ impl TickersTable {
 
         let icon = icon_text(style::venue_icon(ticker.exchange.venue()), 12);
         let display_ticker = {
-            if display_data.display_ticker.len() >= 11 {
-                format!("{}...", &display_data.display_ticker[..9])
+            if display_data.display_ticker.chars().count() >= 11 {
+                let truncated: String = display_data.display_ticker.chars().take(9).collect();
+                format!("{}...", truncated)
             } else {
                 format!(
                     "{}{}",
@@ -1648,7 +1649,7 @@ fn fetch_ticker_stats_task(
             .filter_map(|(ticker, info)| {
                 (ticker.exchange.venue() == venue).then_some(())?;
                 let contract_size = info.as_ref()?.contract_size?;
-                Some((*ticker, contract_size.as_f32()))
+                Some((*ticker, contract_size))
             })
             .collect()
     });

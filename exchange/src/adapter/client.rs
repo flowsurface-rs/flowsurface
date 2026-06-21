@@ -350,7 +350,7 @@ impl AdapterHandles {
         &self,
         venue: Venue,
         markets: &[MarketKind],
-        contract_sizes: Option<HashMap<Ticker, f32>>,
+        contract_sizes: Option<HashMap<Ticker, crate::unit::ContractSize>>,
     ) -> Result<HashMap<Ticker, TickerStats>, AdapterError> {
         match venue {
             Venue::Binance => {

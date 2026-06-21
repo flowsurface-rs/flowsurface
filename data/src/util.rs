@@ -15,13 +15,13 @@ where
     Ok(T::deserialize(v).unwrap_or_default())
 }
 
-pub fn abbr_large_numbers(value: f32) -> String {
+pub fn abbr_large_numbers(value: f64) -> String {
     let abs_value = value.abs();
     let sign = if value < 0.0 { "-" } else { "" };
 
     match abs_value {
         v if v >= 1_000_000_000.0 => {
-            format!("{}{:.3}b", sign, v / 100_000_000.0)
+            format!("{}{:.3}b", sign, v / 1_000_000_000.0)
         }
         v if v >= 1_000_000.0 => format!("{}{:.2}m", sign, v / 1_000_000.0),
         v if v >= 10_000.0 => format!("{}{:.1}k", sign, v / 1_000.0),
@@ -43,7 +43,7 @@ pub fn abbr_large_numbers(value: f32) -> String {
     }
 }
 
-pub fn format_with_commas(num: f32) -> String {
+pub fn format_with_commas(num: f64) -> String {
     if num == 0.0 {
         return "0".to_string();
     }

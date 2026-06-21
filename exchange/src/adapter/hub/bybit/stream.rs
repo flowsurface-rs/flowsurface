@@ -35,9 +35,9 @@ struct SonicTrade {
     #[serde(rename = "T")]
     pub time: u64,
     #[serde(rename = "p", deserialize_with = "de_string_to_number")]
-    pub price: f32,
+    pub price: f64,
     #[serde(rename = "v", deserialize_with = "de_string_to_number")]
-    pub qty: f32,
+    pub qty: f64,
     #[serde(rename = "S")]
     pub is_sell: String,
 }
@@ -47,15 +47,15 @@ pub struct SonicKline {
     #[serde(rename = "start")]
     pub time: u64,
     #[serde(rename = "open", deserialize_with = "de_string_to_number")]
-    pub open: f32,
+    pub open: f64,
     #[serde(rename = "high", deserialize_with = "de_string_to_number")]
-    pub high: f32,
+    pub high: f64,
     #[serde(rename = "low", deserialize_with = "de_string_to_number")]
-    pub low: f32,
+    pub low: f64,
     #[serde(rename = "close", deserialize_with = "de_string_to_number")]
-    pub close: f32,
+    pub close: f64,
     #[serde(rename = "volume", deserialize_with = "de_string_to_number")]
-    pub volume: f32,
+    pub volume: f64,
     #[serde(rename = "interval")]
     pub interval: String,
 }
@@ -274,7 +274,7 @@ impl WsAdapter for TradeAdapter {
 
                 for de_trade in &de_trade_vec {
                     let price =
-                        Price::from_f32(de_trade.price).round_to_min_tick(ticker_info.min_ticksize);
+                        Price::from_f64(de_trade.price).round_to_min_tick(ticker_info.min_ticksize);
                     let qty = qty_norm.normalize_qty(de_trade.qty, de_trade.price);
 
                     self.buffer.push(

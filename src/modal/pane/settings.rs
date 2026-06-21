@@ -62,7 +62,7 @@ pub fn heatmap_cfg_view<'a>(
                     false,
                 )
             },
-            |value| format!(">${}", format_with_commas(*value)),
+            |value| format!(">${}", format_with_commas(*value as f64)),
             Some(500.0),
         )
     };
@@ -83,7 +83,7 @@ pub fn heatmap_cfg_view<'a>(
                     false,
                 )
             },
-            |value| format!(">${}", format_with_commas(*value)),
+            |value| format!(">${}", format_with_commas(*value as f64)),
             Some(5000.0),
         )
     };
@@ -304,7 +304,7 @@ pub fn heatmap_shader_cfg_view<'a>(
                     false,
                 )
             },
-            |value| format!(">${}", format_with_commas(*value)),
+            |value| format!(">${}", format_with_commas(*value as f64)),
             Some(500.0),
         )
     };
@@ -325,7 +325,7 @@ pub fn heatmap_shader_cfg_view<'a>(
                     false,
                 )
             },
-            |value| format!(">${}", format_with_commas(*value)),
+            |value| format!(">${}", format_with_commas(*value as f64)),
             Some(5000.0),
         )
     };
@@ -421,7 +421,7 @@ pub fn timesales_cfg_view<'a>(
                     false,
                 )
             },
-            |value| format!(">${}", format_with_commas(*value)),
+            |value| format!(">${}", format_with_commas(*value as f64)),
             Some(500.0),
         );
 

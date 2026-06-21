@@ -380,6 +380,12 @@ impl State {
                         )
                     };
 
+                    let config = self
+                        .settings
+                        .visual_config
+                        .clone()
+                        .and_then(|cfg| cfg.heatmap());
+
                     let content = Content::ShaderHeatmap {
                         chart: Some(Box::new(HeatmapShader::new(
                             basis,
@@ -387,6 +393,7 @@ impl State {
                             base_ticker,
                             studies.clone(),
                             indicators.clone(),
+                            config,
                         ))),
                         studies,
                         indicators,
@@ -1248,12 +1255,14 @@ impl State {
                                             studies,
                                             ..
                                         } => {
+                                            let saved_config = c.config;
                                             **c = HeatmapShader::new(
                                                 c.basis,
                                                 tm.multiply_with_min_tick_step(ticker),
                                                 c.ticker_info,
                                                 studies.clone(),
                                                 indicators.clone(),
+                                                Some(saved_config),
                                             );
                                         }
                                         _ => {}
@@ -1319,12 +1328,15 @@ impl State {
                                         indicators,
                                         ..
                                     } => {
+                                        let saved_config = c.config;
+                                        let saved_studies = c.studies.clone();
                                         **c = HeatmapShader::new(
                                             new_basis,
                                             c.tick_size(),
                                             c.ticker_info,
-                                            c.studies.clone(),
+                                            saved_studies,
                                             indicators.clone(),
+                                            Some(saved_config),
                                         );
 
                                         if let Some(stream_type) =
@@ -1365,23 +1377,6 @@ impl State {
                                                         c.kind,
                                                         data::chart::KlineChartKind::Footprint { .. }
                                                     ) {
-                                                        let depth_aggr = if base_ticker
-                                                            .exchange()
-                                                            .is_depth_client_aggr()
-                                                        {
-                                                            StreamTicksize::Client
-                                                        } else {
-                                                            StreamTicksize::ServerSide(
-                                                                self.settings
-                                                                    .tick_multiply
-                                                                    .unwrap_or(TickMultiplier(1)),
-                                                            )
-                                                        };
-                                                        streams.push(StreamKind::Depth {
-                                                            ticker_info: base_ticker,
-                                                            depth_aggr,
-                                                            push_freq: exchange::PushFrequency::ServerDefault,
-                                                        });
                                                         streams.push(StreamKind::Trades {
                                                             ticker_info: base_ticker,
                                                         });
@@ -1398,25 +1393,7 @@ impl State {
                                                     }
                                                 }
                                                 Basis::Tick(_) => {
-                                                    let depth_aggr = if base_ticker
-                                                        .exchange()
-                                                        .is_depth_client_aggr()
-                                                    {
-                                                        StreamTicksize::Client
-                                                    } else {
-                                                        StreamTicksize::ServerSide(
-                                                            self.settings
-                                                                .tick_multiply
-                                                                .unwrap_or(TickMultiplier(1)),
-                                                        )
-                                                    };
-
                                                     self.streams = ResolvedStream::Ready(vec![
-                                                        StreamKind::Depth {
-                                                            ticker_info: base_ticker,
-                                                            depth_aggr,
-                                                            push_freq: exchange::PushFrequency::ServerDefault,
-                                                        },
                                                         StreamKind::Trades {
                                                             ticker_info: base_ticker,
                                                         },
