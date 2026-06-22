@@ -306,11 +306,11 @@ pub(super) async fn fetch_ticker_stats(
         let volume = match market {
             MarketKind::Spot | MarketKind::LinearPerps => {
                 serde_util::value_as_f64(&item["quoteVolume"])
-                    .ok_or_else(|| AdapterError::ParseError("Quote volume not found".to_string()))?
+                    .or_else(|| serde_util::value_as_f64(&item["volume"]))
             }
-            MarketKind::InversePerps => serde_util::value_as_f64(&item["volume"])
-                .ok_or_else(|| AdapterError::ParseError("Volume not found".to_string()))?,
-        };
+            _ => serde_util::value_as_f64(&item["volume"]),
+        }
+        .ok_or_else(|| AdapterError::ParseError("Volume not found".to_string()))?;
 
         let daily_volume = match market {
             MarketKind::Spot | MarketKind::LinearPerps => Qty::from_f64(volume),
