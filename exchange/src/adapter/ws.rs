@@ -20,6 +20,8 @@ use tokio_rustls::{
 };
 use url::Url;
 
+use futures::channel::mpsc::{Receiver, Sender};
+use futures::{SinkExt, StreamExt};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
@@ -49,8 +51,6 @@ pub(super) static TLS_CONNECTOR: LazyLock<TlsConnector> = LazyLock::new(|| {
 
     TlsConnector::from(Arc::new(config))
 });
-
-type Receiver<T> = futures::channel::mpsc::Receiver<T>;
 
 pub(super) struct ChannelStream<T> {
     receiver: Receiver<T>,
@@ -153,149 +153,109 @@ impl WsSession {
     }
 
     pub(super) fn run<A: WsAdapter + Send + 'static>(self, mut adapter: A) -> ChannelStream<Event> {
-        let (mut output, receiver) = futures::channel::mpsc::channel(100);
-
+        let (mut event_tx, event_rx) = futures::channel::mpsc::channel(512);
         let ping_payload = self.ping_payload;
         let streams = Arc::clone(&self.streams);
 
         let task = tokio::spawn(async move {
             if streams.is_empty() {
-                let _ = output.try_send(Event::Disconnected(
+                let _ = event_tx.try_send(Event::Disconnected(
                     streams,
                     "Empty stream payload".to_string(),
                 ));
-            } else {
-                let mut state = State::Disconnected;
+                return;
+            }
 
-                let mut heartbeat = WsHeartbeat::default();
-                let mut backoff = ReconnectBackoff::new();
+            let mut backoff = ReconnectBackoff::new();
 
-                loop {
-                    match &mut state {
-                        State::Disconnected => match adapter.connect().await {
-                            Ok(websocket) => {
-                                state = State::Connected(websocket);
-                                heartbeat.reset();
+            loop {
+                let transport = match adapter.connect().await {
+                    Ok(t) => t,
+                    Err(reason) => {
+                        let _ =
+                            event_tx.try_send(Event::Disconnected(Arc::clone(&streams), reason));
+                        tokio::time::sleep(backoff.delay()).await;
+                        backoff.record_failure();
+                        continue;
+                    }
+                };
 
-                                for event in adapter.on_connected().await {
-                                    let _ = output.try_send(event);
-                                }
+                let (frame_tx, mut frame_rx) =
+                    futures::channel::mpsc::channel::<Result<Vec<u8>, String>>(64);
+                let io_handle = tokio::spawn(transport.read_frame(ping_payload, frame_tx));
 
-                                let _ = output.try_send(Event::Connected(Arc::clone(&streams)));
-                            }
-                            Err(reason) => {
-                                let _ = output
-                                    .try_send(Event::Disconnected(Arc::clone(&streams), reason));
-                                tokio::time::sleep(backoff.delay()).await;
-                                backoff.record_failure();
-                            }
-                        },
-                        State::Connected(websocket) => {
-                            let mut last_tick = Instant::now();
+                for event in adapter.on_connected().await {
+                    let _ = event_tx.try_send(event);
+                }
+                let _ = event_tx.try_send(Event::Connected(Arc::clone(&streams)));
 
-                            loop {
-                                let read_timeout = heartbeat
-                                    .time_until_next_ping()
-                                    .max(Duration::from_millis(1));
+                let tick_interval = adapter.tick_interval();
+                let tick_sleep = tokio::time::sleep(tick_interval);
+                tokio::pin!(tick_sleep);
 
-                                let mut disconnect_reason: Option<String> =
-                                    match tokio::time::timeout(read_timeout, websocket.read_frame())
-                                        .await
-                                    {
-                                        Ok(Ok(msg)) => {
-                                            heartbeat.mark_activity();
-
-                                            match msg.opcode {
-                                                OpCode::Text => {
-                                                    match adapter.on_text(&msg.payload[..]).await {
-                                                        Ok(events) => {
-                                                            let had_events = !events.is_empty();
-                                                            for event in events {
-                                                                let _ = output.try_send(event);
-                                                            }
-                                                            if had_events {
-                                                                backoff.record_success();
-                                                            }
-                                                            None
-                                                        }
-                                                        Err(reason) => Some(reason),
-                                                    }
-                                                }
-                                                OpCode::Ping => {
-                                                    let payload = Vec::from(msg.payload);
-                                                    if websocket
-                                                        .reply_pong(Payload::Owned(payload))
-                                                        .await
-                                                        .is_err()
-                                                    {
-                                                        Some(
-                                                            HEARTBEAT_PONG_FAILED_REASON
-                                                                .to_string(),
-                                                        )
-                                                    } else {
-                                                        None
-                                                    }
-                                                }
-                                                OpCode::Close => {
-                                                    Some("Connection closed".to_string())
-                                                }
-                                                _ => None,
+                let disconnect_reason = loop {
+                    tokio::select! {
+                        frame = frame_rx.next() => {
+                            match frame {
+                                Some(Ok(payload)) => {
+                                    match adapter.on_text(&payload).await {
+                                        Ok(events) => {
+                                            let had_events = !events.is_empty();
+                                            for event in events {
+                                                let _ = event_tx.try_send(event);
+                                            }
+                                            if had_events {
+                                                backoff.record_success();
                                             }
                                         }
-                                        Ok(Err(e)) => Some(format!("Error reading frame: {e}")),
-                                        Err(_elapsed) => {
-                                            if heartbeat.timed_out() {
-                                                Some(
-                                                    "Heartbeat timeout (no websocket activity)"
-                                                        .to_string(),
-                                                )
-                                            } else {
-                                                None
-                                            }
-                                        }
-                                    };
-
-                                if disconnect_reason.is_none() && heartbeat.should_send_ping() {
-                                    if websocket.send_heartbeat_ping(ping_payload).await.is_err() {
-                                        disconnect_reason =
-                                            Some(HEARTBEAT_SEND_FAILED_REASON.to_string());
-                                    } else {
-                                        heartbeat.record_ping_sent();
+                                        Err(reason) => break Some(reason),
                                     }
                                 }
-
-                                if disconnect_reason.is_none()
-                                    && last_tick.elapsed() >= adapter.tick_interval()
-                                {
-                                    for event in adapter.on_tick().await {
-                                        let _ = output.try_send(event);
-                                    }
-                                    last_tick = Instant::now();
+                                Some(Err(reason)) => {
+                                    break Some(reason);
                                 }
-
-                                if let Some(reason) = disconnect_reason {
-                                    for event in adapter.on_disconnected(&reason).await {
-                                        let _ = output.try_send(event);
-                                    }
-
-                                    state = State::Disconnected;
-                                    let _ = output.try_send(Event::Disconnected(
-                                        Arc::clone(&streams),
-                                        reason,
-                                    ));
-
-                                    tokio::time::sleep(backoff.delay()).await;
-                                    backoff.record_failure();
-                                    break;
+                                None => {
+                                    break Some(
+                                        "I/O task closed channel unexpectedly".to_string(),
+                                    );
                                 }
                             }
                         }
+                        _ = &mut tick_sleep => {
+                            for event in adapter.on_tick().await {
+                                let _ = event_tx.try_send(event);
+                            }
+                            tick_sleep
+                                .as_mut()
+                                .reset(tokio::time::Instant::now() + tick_interval);
+                        }
                     }
+                };
+
+                if io_handle.is_finished() {
+                    if let Err(e) = io_handle.await {
+                        log::error!("WebSocket I/O task panicked (reconnecting): {e}");
+                    }
+                } else {
+                    io_handle.abort();
                 }
+
+                if let Some(reason) = disconnect_reason {
+                    for event in adapter.on_disconnected(&reason).await {
+                        let _ = event_tx.try_send(event);
+                    }
+                    let _ = event_tx.try_send(Event::Disconnected(Arc::clone(&streams), reason));
+                }
+
+                tokio::time::sleep(backoff.delay()).await;
+                backoff.record_failure();
             }
         });
 
-        ChannelStream { receiver, task }
+        ChannelStream {
+            receiver: event_rx,
+            task,
+        }
     }
 }
 
@@ -359,12 +319,72 @@ impl WsTransport {
         }
     }
 
-    async fn read_frame(&mut self) -> Result<Frame<'_>, WebSocketError> {
-        self.0.read_frame().await
-    }
-
     pub(super) async fn write_frame(&mut self, frame: Frame<'_>) -> Result<(), WebSocketError> {
         self.0.write_frame(frame).await
+    }
+
+    /// Reads frames, handles heartbeat and Ping/Pong at transport level,
+    /// forwards text frames to the processor task.
+    async fn read_frame(
+        mut self,
+        ping_payload: PingPayload,
+        mut frame_tx: Sender<Result<Vec<u8>, String>>,
+    ) {
+        let mut heartbeat = WsHeartbeat::default();
+
+        loop {
+            let read_timeout = heartbeat
+                .time_until_next_ping()
+                .max(Duration::from_millis(1));
+
+            match tokio::time::timeout(read_timeout, self.0.read_frame()).await {
+                Ok(Ok(msg)) => {
+                    heartbeat.mark_activity();
+
+                    match msg.opcode {
+                        OpCode::Text => {
+                            let payload = Vec::from(&msg.payload[..]);
+                            if frame_tx.send(Ok(payload)).await.is_err() {
+                                break;
+                            }
+                        }
+                        OpCode::Ping => {
+                            let payload = Vec::from(msg.payload);
+                            let _ = self.reply_pong(Payload::Owned(payload)).await;
+                        }
+                        OpCode::Close => {
+                            let _ = frame_tx.send(Err("Connection closed".into())).await;
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(Err(e)) => {
+                    let _ = frame_tx
+                        .send(Err(format!("Error reading frame: {e}")))
+                        .await;
+                    break;
+                }
+                Err(_elapsed) => {
+                    if heartbeat.timed_out() {
+                        let _ = frame_tx
+                            .send(Err("Heartbeat timeout (no websocket activity)".into()))
+                            .await;
+                        break;
+                    }
+
+                    if heartbeat.should_send_ping() {
+                        if self.send_heartbeat_ping(ping_payload).await.is_err() {
+                            let _ = frame_tx
+                                .send(Err(HEARTBEAT_SEND_FAILED_REASON.into()))
+                                .await;
+                            break;
+                        }
+                        heartbeat.record_ping_sent();
+                    }
+                }
+            }
+        }
     }
 
     async fn reply_pong(&mut self, payload: Payload<'_>) -> Result<(), &'static str> {
@@ -465,11 +485,6 @@ impl WsTransport {
     }
 }
 
-enum State {
-    Disconnected,
-    Connected(WsTransport),
-}
-
 #[derive(Clone, Copy, Debug)]
 enum PingPayload {
     Text(&'static [u8]),
@@ -495,12 +510,6 @@ impl WsHeartbeat {
             last_transport_activity: now,
             last_ping_sent: now,
         }
-    }
-
-    fn reset(&mut self) {
-        let now = Instant::now();
-        self.last_transport_activity = now;
-        self.last_ping_sent = now;
     }
 
     fn mark_activity(&mut self) {
