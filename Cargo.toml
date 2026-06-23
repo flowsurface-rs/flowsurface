@@ -70,3 +70,14 @@ data.workspace = true
 
 [features]
 debug = ["iced/hot"]
+
+[package.metadata.bundle]
+name = "Flowsurface"
+identifier = "com.flowsurface.app"
+icon = ["assets/icon.icns"]
+version = "0.8.8"
+copyright = "Copyright © 2026 Flowsurface contributors"
+category = "Finance"
+short_description = "A native desktop charting platform for crypto markets"
+long_description = "Flowsurface is an open-source native desktop charting application for crypto markets."
+osx_minimum_system_version = "11.0"

@@ -96,6 +96,43 @@ cargo build --release
 cargo run --release
 ```
 
+#### macOS DMG packaging
+
+To build a drag-to-Applications DMG:
+
+```bash
+# Install packaging tools once
+cargo install cargo-bundle
+brew install create-dmg
+
+# Apple Silicon
+bash scripts/package-dmg.sh aarch64
+
+# Intel
+bash scripts/package-dmg.sh x86_64
+```
+
+The DMG is written to `target/macos-dist/`. Install it by opening the DMG,
+dragging `Flowsurface.app` to `Applications`, and launching it from `/Applications`.
+
+For public release builds, provide Apple Developer credentials/signing identities before
+running the packaging script:
+
+```bash
+export SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)"
+export DMG_SIGNING_IDENTITY="Developer ID Installer: Your Name (TEAMID)"
+export NOTARY_PROFILE="flowsurface-notary"
+
+xcrun notarytool store-credentials "$NOTARY_PROFILE" \
+  --apple-id "you@example.com" \
+  --team-id "TEAMID" \
+  --password "xxxx-xxxx-xxxx-xxxx"
+
+bash scripts/package-dmg.sh aarch64
+```
+
+Without these variables, the script produces a local testing DMG with ad-hoc signing and no notarization.
+
 ## Credits and thanks to
 
 -   [Kraken Desktop](https://www.kraken.com/desktop) (formerly [Cryptowatch](https://blog.kraken.com/product/cryptowatch-to-sunset-kraken-pro-to-integrate-cryptowatch-features)), the main inspiration that sparked this project
