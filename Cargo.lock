@@ -1044,7 +1044,7 @@ checksum = "8bf7cc16383c4b8d58b9905a8509f02926ce3058053c056376248d958c9df1e8"
 
 [[package]]
 name = "flowsurface"
-version = "0.8.8"
+version = "0.8.9"
 dependencies = [
  "bytemuck",
  "chrono",
@@ -1070,7 +1070,7 @@ dependencies = [
 
 [[package]]
 name = "flowsurface-data"
-version = "0.8.8"
+version = "0.8.9"
 dependencies = [
  "chrono",
  "dirs-next",
@@ -1091,7 +1091,7 @@ dependencies = [
 
 [[package]]
 name = "flowsurface-exchange"
-version = "0.8.8"
+version = "0.8.9"
 dependencies = [
  "base64 0.22.1",
  "bytes",
