@@ -82,9 +82,8 @@ impl VolumeIndicator {
 
         let value_fn = |volume: &Volume| volume.total().to_f32_lossy();
 
-        let mut plot = BarPlot::new(value_fn, bar_kind).bar_width_factor(
-            self.settings.bar_width_factor.clamp(0.2, 1.0),
-        );
+        let mut plot = BarPlot::new(value_fn, bar_kind)
+            .bar_width_factor(self.settings.bar_width_factor.clamp(0.2, 1.0));
         if self.settings.show_tooltip {
             plot = plot.with_tooltip(tooltip);
         }

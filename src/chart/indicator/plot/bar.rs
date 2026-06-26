@@ -26,7 +26,11 @@ pub enum BarClass {
     /// draw a single bar using the provided color.
     Single { color: Color },
     /// draw two bars, a success/danger colored (alpha) and an overlay using full color.
-    Overlay { overlay: f32, positive: Color, negative: Color }, // signed; sign decides color
+    Overlay {
+        overlay: f32,
+        positive: Color,
+        negative: Color,
+    }, // signed; sign decides color
 }
 
 pub struct BarPlot<V, CL, T> {

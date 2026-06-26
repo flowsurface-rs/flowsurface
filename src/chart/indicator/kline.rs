@@ -140,14 +140,14 @@ pub fn make(config: KlineIndicatorConfig) -> Box<dyn KlineIndicatorImpl> {
         KlineIndicatorConfig::Volume(settings) => {
             Box::new(super::kline::volume::VolumeIndicator::new(settings))
         }
-        KlineIndicatorConfig::BarAnalysis(settings) => {
-            Box::new(super::kline::bar_analysis::BarAnalysisIndicator::new(settings))
-        }
+        KlineIndicatorConfig::BarAnalysis(settings) => Box::new(
+            super::kline::bar_analysis::BarAnalysisIndicator::new(settings),
+        ),
         KlineIndicatorConfig::CumulativeDelta(settings) => {
             Box::new(super::kline::cumulative_delta::CumulativeDeltaIndicator::new(settings))
         }
-        KlineIndicatorConfig::OpenInterest(settings) => {
-            Box::new(super::kline::open_interest::OpenInterestIndicator::new(settings))
-        }
+        KlineIndicatorConfig::OpenInterest(settings) => Box::new(
+            super::kline::open_interest::OpenInterestIndicator::new(settings),
+        ),
     }
 }

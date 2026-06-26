@@ -20,13 +20,9 @@ pub fn view<'a>(
 ) -> Element<'a, Message> {
     let content_allows_dragging = matches!(state.content, pane::Content::Kline { .. });
     let content = match (&state.content, market_type) {
-        (pane::Content::Kline { indicators, .. }, Some(market)) => content_row_kline(
-            pane,
-            state,
-            indicators,
-            market,
-            content_allows_dragging,
-        ),
+        (pane::Content::Kline { indicators, .. }, Some(market)) => {
+            content_row_kline(pane, state, indicators, market, content_allows_dragging)
+        }
         (pane::Content::Heatmap { indicators, .. }, Some(market))
         | (pane::Content::ShaderHeatmap { indicators, .. }, Some(market)) => {
             content_row_heatmap(pane, state, indicators, market, false)
@@ -315,8 +311,11 @@ fn volume_editor<'a>(pane: pane_grid::Pane, settings: KlineVolumeSettings) -> El
                         },
                     )),
                 )
-        }),
-        text(format!("Bar width: {:.0}%", settings.bar_width_factor * 100.0)),
+            }),
+        text(format!(
+            "Bar width: {:.0}%",
+            settings.bar_width_factor * 100.0
+        )),
         width,
     ]
     .spacing(8);
@@ -485,17 +484,21 @@ fn cumulative_delta_editor<'a>(
     })
     .step(0.25);
 
-    let min_run = slider(1.0..=8.0, settings.min_directional_run as f32, move |value| {
-        Message::PaneEvent(
-            pane,
-            pane::Event::ConfigureKlineIndicator(KlineIndicatorConfig::CumulativeDelta(
-                CumulativeDeltaSettings {
-                    min_directional_run: value.round() as usize,
-                    ..settings
-                },
-            )),
-        )
-    })
+    let min_run = slider(
+        1.0..=8.0,
+        settings.min_directional_run as f32,
+        move |value| {
+            Message::PaneEvent(
+                pane,
+                pane::Event::ConfigureKlineIndicator(KlineIndicatorConfig::CumulativeDelta(
+                    CumulativeDeltaSettings {
+                        min_directional_run: value.round() as usize,
+                        ..settings
+                    },
+                )),
+            )
+        },
+    )
     .step(1.0);
 
     let mut content = column![
@@ -542,13 +545,13 @@ fn cumulative_delta_editor<'a>(
             color_picker_section("Line color", color, move |new_color| {
                 Message::PaneEvent(
                     pane,
-                    pane::Event::ConfigureKlineIndicator(
-                        KlineIndicatorConfig::CumulativeDelta(CumulativeDeltaSettings {
+                    pane::Event::ConfigureKlineIndicator(KlineIndicatorConfig::CumulativeDelta(
+                        CumulativeDeltaSettings {
                             custom_color_enabled: true,
                             custom_color: Some(new_color),
                             ..settings
-                        }),
-                    )
+                        },
+                    )),
                 )
             }),
         ]
@@ -563,7 +566,11 @@ fn cumulative_delta_editor<'a>(
                         pane::Event::ConfigureKlineIndicator(
                             KlineIndicatorConfig::CumulativeDelta(CumulativeDeltaSettings {
                                 custom_color_enabled: value,
-                                custom_color: if value { Some(iced::Color::WHITE) } else { None },
+                                custom_color: if value {
+                                    Some(iced::Color::WHITE)
+                                } else {
+                                    None
+                                },
                                 ..settings
                             }),
                         ),
@@ -621,25 +628,25 @@ fn open_interest_editor<'a>(
                 .on_toggle(move |value| {
                     Message::PaneEvent(
                         pane,
-                        pane::Event::ConfigureKlineIndicator(
-                            KlineIndicatorConfig::OpenInterest(OpenInterestSettings {
+                        pane::Event::ConfigureKlineIndicator(KlineIndicatorConfig::OpenInterest(
+                            OpenInterestSettings {
                                 custom_color_enabled: value,
                                 custom_color: if value { Some(color) } else { None },
                                 ..settings
-                            }),
-                        ),
+                            },
+                        )),
                     )
                 }),
             color_picker_section("Line color", color, move |new_color| {
                 Message::PaneEvent(
                     pane,
-                    pane::Event::ConfigureKlineIndicator(
-                        KlineIndicatorConfig::OpenInterest(OpenInterestSettings {
+                    pane::Event::ConfigureKlineIndicator(KlineIndicatorConfig::OpenInterest(
+                        OpenInterestSettings {
                             custom_color_enabled: true,
                             custom_color: Some(new_color),
                             ..settings
-                        })
-                    )
+                        },
+                    )),
                 )
             }),
         ]
@@ -651,13 +658,17 @@ fn open_interest_editor<'a>(
                 .on_toggle(move |value| {
                     Message::PaneEvent(
                         pane,
-                        pane::Event::ConfigureKlineIndicator(
-                            KlineIndicatorConfig::OpenInterest(OpenInterestSettings {
+                        pane::Event::ConfigureKlineIndicator(KlineIndicatorConfig::OpenInterest(
+                            OpenInterestSettings {
                                 custom_color_enabled: value,
-                                custom_color: if value { Some(iced::Color::WHITE) } else { None },
+                                custom_color: if value {
+                                    Some(iced::Color::WHITE)
+                                } else {
+                                    None
+                                },
                                 ..settings
-                            }),
-                        ),
+                            },
+                        )),
                     )
                 }),
         ]

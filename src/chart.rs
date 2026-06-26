@@ -70,10 +70,8 @@ pub trait Chart: PlotConstants + canvas::Program<Message> {
 
     fn invalidate_crosshair(&mut self);
 
-    fn view_indicators(
-        &'_ self,
-        enabled: &[Self::IndicatorSelection],
-    ) -> Vec<Element<'_, Message>>;
+    fn view_indicators(&'_ self, enabled: &[Self::IndicatorSelection])
+    -> Vec<Element<'_, Message>>;
 
     fn visible_timerange(&self) -> Option<(u64, u64)>;
 

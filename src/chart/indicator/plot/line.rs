@@ -1,8 +1,7 @@
 use std::ops::RangeInclusive;
 
 use iced::{
-    Color,
-    Theme,
+    Color, Theme,
     widget::canvas::{self, Path, Stroke},
 };
 

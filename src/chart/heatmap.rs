@@ -371,7 +371,9 @@ impl HeatmapChart {
     }
 
     pub fn sync_indicator_configs(&mut self, configs: &[HeatmapIndicatorConfig]) {
-        let volume_enabled = configs.iter().any(|cfg| cfg.kind() == HeatmapIndicator::Volume);
+        let volume_enabled = configs
+            .iter()
+            .any(|cfg| cfg.kind() == HeatmapIndicator::Volume);
         self.indicators[HeatmapIndicator::Volume] = if volume_enabled {
             Some(IndicatorData::Volume)
         } else {

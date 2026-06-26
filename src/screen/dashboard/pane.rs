@@ -383,7 +383,9 @@ impl State {
                             vec![HeatmapStudy::VolumeProfile(
                                 data::chart::heatmap::ProfileKind::default(),
                             )],
-                            vec![HeatmapIndicatorConfig::default_for(HeatmapIndicator::Volume)],
+                            vec![HeatmapIndicatorConfig::default_for(
+                                HeatmapIndicator::Volume,
+                            )],
                         )
                     };
 
@@ -1904,7 +1906,9 @@ impl Content {
             )
         } else {
             (
-                vec![HeatmapIndicatorConfig::default_for(HeatmapIndicator::Volume)],
+                vec![HeatmapIndicatorConfig::default_for(
+                    HeatmapIndicator::Volume,
+                )],
                 ViewConfig {
                     splits: vec![],
                     autoscale: Some(data::chart::Autoscale::CenterLatest),
@@ -1989,15 +1993,16 @@ impl Content {
                                     (content_kind, i.kind()),
                                     (
                                         ContentKind::CandlestickChart,
-                                        KlineIndicator::Volume | KlineIndicator::CumulativeDelta | KlineIndicator::OpenInterest
+                                        KlineIndicator::Volume
+                                            | KlineIndicator::CumulativeDelta
+                                            | KlineIndicator::OpenInterest
+                                    ) | (
+                                        ContentKind::FootprintChart,
+                                        KlineIndicator::Volume
+                                            | KlineIndicator::BarAnalysis
+                                            | KlineIndicator::CumulativeDelta
+                                            | KlineIndicator::OpenInterest
                                     )
-                                        | (
-                                            ContentKind::FootprintChart,
-                                            KlineIndicator::Volume
-                                                | KlineIndicator::BarAnalysis
-                                                | KlineIndicator::CumulativeDelta
-                                                | KlineIndicator::OpenInterest
-                                        )
                                 )
                         })
                         .collect()
@@ -2082,14 +2087,18 @@ impl Content {
             },
             ContentKind::ShaderHeatmap => Content::ShaderHeatmap {
                 chart: None,
-                indicators: vec![HeatmapIndicatorConfig::default_for(HeatmapIndicator::Volume)],
+                indicators: vec![HeatmapIndicatorConfig::default_for(
+                    HeatmapIndicator::Volume,
+                )],
                 studies: vec![data::chart::heatmap::HeatmapStudy::VolumeProfile(
                     data::chart::heatmap::ProfileKind::default(),
                 )],
             },
             ContentKind::HeatmapChart => Content::Heatmap {
                 chart: None,
-                indicators: vec![HeatmapIndicatorConfig::default_for(HeatmapIndicator::Volume)],
+                indicators: vec![HeatmapIndicatorConfig::default_for(
+                    HeatmapIndicator::Volume,
+                )],
                 studies: vec![],
                 layout: ViewConfig {
                     splits: vec![],
@@ -2174,13 +2183,17 @@ impl Content {
 
     pub fn reorder_indicators(&mut self, event: &column_drag::DragEvent) {
         match self {
-            Content::Heatmap { chart, indicators, .. } => {
+            Content::Heatmap {
+                chart, indicators, ..
+            } => {
                 column_drag::reorder_vec(indicators, event);
                 if let Some(chart) = chart {
                     chart.sync_indicator_configs(indicators);
                 }
             }
-            Content::Kline { chart, indicators, .. } => {
+            Content::Kline {
+                chart, indicators, ..
+            } => {
                 column_drag::reorder_vec(indicators, event);
                 if let Some(chart) = chart {
                     chart.sync_indicator_configs(indicators);
@@ -2221,8 +2234,12 @@ impl Content {
     }
 
     pub fn update_kline_indicator(&mut self, config: KlineIndicatorConfig) {
-        if let Content::Kline { chart, indicators, .. } = self
-            && let Some(existing) = indicators.iter_mut().find(|cfg| cfg.kind() == config.kind())
+        if let Content::Kline {
+            chart, indicators, ..
+        } = self
+            && let Some(existing) = indicators
+                .iter_mut()
+                .find(|cfg| cfg.kind() == config.kind())
         {
             *existing = config;
             if let Some(chart) = chart {
@@ -2233,8 +2250,12 @@ impl Content {
 
     pub fn update_heatmap_indicator(&mut self, config: HeatmapIndicatorConfig) {
         match self {
-            Content::Heatmap { chart, indicators, .. } => {
-                if let Some(existing) = indicators.iter_mut().find(|cfg| cfg.kind() == config.kind())
+            Content::Heatmap {
+                chart, indicators, ..
+            } => {
+                if let Some(existing) = indicators
+                    .iter_mut()
+                    .find(|cfg| cfg.kind() == config.kind())
                 {
                     *existing = config;
                     if let Some(chart) = chart {
@@ -2242,8 +2263,12 @@ impl Content {
                     }
                 }
             }
-            Content::ShaderHeatmap { chart, indicators, .. } => {
-                if let Some(existing) = indicators.iter_mut().find(|cfg| cfg.kind() == config.kind())
+            Content::ShaderHeatmap {
+                chart, indicators, ..
+            } => {
+                if let Some(existing) = indicators
+                    .iter_mut()
+                    .find(|cfg| cfg.kind() == config.kind())
                 {
                     *existing = config;
                     if let Some(chart) = chart {
