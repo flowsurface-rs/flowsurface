@@ -610,6 +610,7 @@ pub fn kline_cfg_view<'a>(
                         pane,
                         VisualConfig::Kline(data::chart::kline::Config {
                             data_labels_always_visible: value,
+                            ..cfg
                         }),
                         false,
                     )
@@ -617,9 +618,24 @@ pub fn kline_cfg_view<'a>(
             Some("Show the latest datapoint label even when not hovering"),
             TooltipPosition::Top,
         );
+
+        let footprint_summary_checkbox = checkbox(cfg.show_footprint_summary)
+            .label("Show footprint summary")
+            .on_toggle(move |value| {
+                Message::VisualConfigChanged(
+                    pane,
+                    VisualConfig::Kline(data::chart::kline::Config {
+                        show_footprint_summary: value,
+                        ..cfg
+                    }),
+                    false,
+                )
+            });
+
         column![
             text("Data labels").size(crate::style::text_size::SECTION),
             data_labels_checkbox,
+            footprint_summary_checkbox,
         ]
         .spacing(8)
     };
@@ -676,24 +692,65 @@ pub fn kline_cfg_view<'a>(
                 }
             };
 
-            let study_cfg = study_config.view(studies, basis).map(move |msg| {
-                Message::PaneEvent(
-                    pane,
-                    Event::StudyConfigurator(study::StudyMessage::Footprint(msg)),
-                )
+            let available_studies = FootprintStudy::ALL.into_iter().filter(|study| {
+                !(*clusters == ClusterKind::Table && matches!(study, FootprintStudy::NPoC { .. }))
             });
 
-            split_column![
-                display_readout_section,
-                column![text("Cluster type").size(crate::style::text_size::SECTION), cluster_picklist].spacing(8),
-                column![text("Cluster scaling").size(crate::style::text_size::SECTION), scaling].spacing(8),
-                column![text("Studies").size(crate::style::text_size::SECTION), study_cfg].spacing(8),
-                row![
-                    space::horizontal(),
-                    sync_all_button(pane, VisualConfig::Kline(cfg))
-                ],
-                ; spacing = 12, align_x = Alignment::Start
+            let study_cfg = study_config
+                .view_available(studies, basis, available_studies)
+                .map(move |msg| {
+                    Message::PaneEvent(
+                        pane,
+                        Event::StudyConfigurator(study::StudyMessage::Footprint(msg)),
+                    )
+                });
+
+            let cluster_type_section = column![
+                text("Cluster type").size(crate::style::text_size::SECTION),
+                cluster_picklist
             ]
+            .spacing(8);
+            let table_candle_section = checkbox(cfg.show_footprint_table_candle)
+                .label("Show candle beside table")
+                .on_toggle(move |value| {
+                    Message::VisualConfigChanged(
+                        pane,
+                        VisualConfig::Kline(data::chart::kline::Config {
+                            show_footprint_table_candle: value,
+                            ..cfg
+                        }),
+                        false,
+                    )
+                });
+            let studies_section = column![
+                text("Studies").size(crate::style::text_size::SECTION),
+                study_cfg
+            ]
+            .spacing(8);
+            let sync_section = row![
+                space::horizontal(),
+                sync_all_button(pane, VisualConfig::Kline(cfg))
+            ];
+
+            if *clusters == ClusterKind::Table {
+                split_column![
+                    display_readout_section,
+                    cluster_type_section,
+                    table_candle_section,
+                    studies_section,
+                    sync_section,
+                    ; spacing = 12, align_x = Alignment::Start
+                ]
+            } else {
+                split_column![
+                    display_readout_section,
+                    cluster_type_section,
+                    column![text("Cluster scaling").size(crate::style::text_size::SECTION), scaling].spacing(8),
+                    studies_section,
+                    sync_section,
+                    ; spacing = 12, align_x = Alignment::Start
+                ]
+            }
         }
     };
 
@@ -803,11 +860,13 @@ fn sync_all_button<'a>(pane: pane_grid::Pane, config: VisualConfig) -> Element<'
 
 pub mod study {
     use crate::{
+        modal::pane::settings_control::color_picker_section,
         split_column,
         style::{self, Icon, icon_text},
     };
     use data::chart::heatmap::{CLEANUP_THRESHOLD, HeatmapStudy, ProfileKind};
     use data::chart::kline::FootprintStudy;
+    use data::chart::style::{BuySellColors, NakedFilledColors, RatioColorScale, SingleColorStyle};
     use iced::{
         Element, padding,
         widget::{button, checkbox, column, container, row, slider, space, text},
@@ -844,33 +903,82 @@ pub mod study {
             on_change: impl Fn(Self) -> Message<Self> + Copy + 'a,
         ) -> Element<'a, Message<Self>> {
             match *self {
-                FootprintStudy::NPoC { lookback } => {
+                FootprintStudy::NPoC { lookback, colors } => {
                     let slider_ui = slider(10.0..=400.0, lookback as f32, move |new_value| {
                         on_change(FootprintStudy::NPoC {
                             lookback: new_value as usize,
+                            colors,
                         })
                     })
                     .step(10.0);
 
-                    column![text(format!("Lookback: {lookback} datapoints")), slider_ui]
-                        .padding(8)
-                        .spacing(4)
-                        .into()
+                    let naked_color_picker = color_picker_section(
+                        "Naked POC color",
+                        colors.naked_color,
+                        move |new_color| {
+                            on_change(FootprintStudy::NPoC {
+                                lookback,
+                                colors: NakedFilledColors {
+                                    naked_color: new_color,
+                                    ..colors
+                                },
+                            })
+                        },
+                    );
+
+                    let filled_color_picker = color_picker_section(
+                        "Filled POC color",
+                        colors.filled_color,
+                        move |new_color| {
+                            on_change(FootprintStudy::NPoC {
+                                lookback,
+                                colors: NakedFilledColors {
+                                    filled_color: new_color,
+                                    ..colors
+                                },
+                            })
+                        },
+                    );
+
+                    column![
+                        text(format!("Lookback: {lookback} datapoints")),
+                        slider_ui,
+                        naked_color_picker,
+                        filled_color_picker,
+                    ]
+                    .padding(8)
+                    .spacing(8)
+                    .into()
                 }
+                FootprintStudy::PointOfControl { style } => column![
+                    text(
+                        "Shows the candle POC as a horizontal marker inside each footprint candle"
+                    ),
+                    color_picker_section("POC marker color", style.color, move |new_color| {
+                        on_change(FootprintStudy::PointOfControl {
+                            style: SingleColorStyle { color: new_color },
+                        })
+                    }),
+                ]
+                .padding(8)
+                .spacing(8)
+                .into(),
                 FootprintStudy::Imbalance {
                     threshold,
-                    color_scale,
+                    scale,
                     ignore_zeros,
+                    colors,
                 } => {
                     let qty_threshold = {
                         let info_text = text(format!("Ask:Bid threshold: {threshold}%"));
 
                         let threshold_slider =
-                            slider(100.0..=800.0, threshold as f32, move |new_value| {
+                            slider(100.0..=1000.0, threshold as f32, move |new_value| {
                                 on_change(FootprintStudy::Imbalance {
                                     threshold: new_value as usize,
-                                    color_scale,
+                                    scale,
                                     ignore_zeros,
+                                    colors,
                                 })
                             })
                             .step(25.0);
@@ -879,31 +987,33 @@ pub mod study {
                     };
 
                     let color_scaling = {
-                        let color_scale_enabled = color_scale.is_some();
-                        let color_scale_value = color_scale.unwrap_or(100);
+                        let color_scale_enabled = scale.color_scale.is_some();
+                        let color_scale_value = scale.color_scale.unwrap_or(100);
 
                         let color_scale_checkbox = checkbox(color_scale_enabled)
                             .label("Dynamic color scaling")
                             .on_toggle(move |is_enabled| {
                                 on_change(FootprintStudy::Imbalance {
                                     threshold,
-                                    color_scale: if is_enabled {
+                                    scale: RatioColorScale::new(if is_enabled {
                                         Some(color_scale_value)
                                     } else {
                                         None
-                                    },
+                                    }),
                                     ignore_zeros,
+                                    colors,
                                 })
                             });
 
                         if color_scale_enabled {
                             let scaling_slider = column![
-                                text(format!("Opaque color at: {color_scale_value}x")),
+                                text(format!("Color scale: {color_scale_value}")),
                                 slider(50.0..=2000.0, color_scale_value as f32, move |new_value| {
                                     on_change(FootprintStudy::Imbalance {
                                         threshold,
-                                        color_scale: Some(new_value as usize),
+                                        scale: RatioColorScale::new(Some(new_value as usize)),
                                         ignore_zeros,
+                                        colors,
                                     })
                                 })
                                 .step(50.0)
@@ -923,8 +1033,9 @@ pub mod study {
                             move |is_checked| {
                                 on_change(FootprintStudy::Imbalance {
                                     threshold,
-                                    color_scale,
+                                    scale,
                                     ignore_zeros: is_checked,
+                                    colors,
                                 })
                             },
                         );
@@ -932,9 +1043,47 @@ pub mod study {
                         column![cbox].padding(8).spacing(4)
                     };
 
-                    split_column![qty_threshold, color_scaling, ignore_zeros_checkbox]
-                        .padding(4)
-                        .into()
+                    let sell_color_picker = color_picker_section(
+                        "Sell imbalance color",
+                        colors.sell_color,
+                        move |new_color| {
+                            on_change(FootprintStudy::Imbalance {
+                                threshold,
+                                scale,
+                                ignore_zeros,
+                                colors: BuySellColors {
+                                    sell_color: new_color,
+                                    ..colors
+                                },
+                            })
+                        },
+                    );
+
+                    let buy_color_picker = color_picker_section(
+                        "Buy imbalance color",
+                        colors.buy_color,
+                        move |new_color| {
+                            on_change(FootprintStudy::Imbalance {
+                                threshold,
+                                scale,
+                                ignore_zeros,
+                                colors: BuySellColors {
+                                    buy_color: new_color,
+                                    ..colors
+                                },
+                            })
+                        },
+                    );
+
+                    split_column![
+                        qty_threshold,
+                        color_scaling,
+                        ignore_zeros_checkbox,
+                        sell_color_picker,
+                        buy_color_picker,
+                    ]
+                    .padding(4)
+                    .into()
                 }
             }
         }
@@ -1085,9 +1234,18 @@ pub mod study {
             active_studies: &'a [S],
             basis: data::chart::Basis,
         ) -> Element<'a, Message<S>> {
+            self.view_available(active_studies, basis, S::all())
+        }
+
+        pub fn view_available<'a>(
+            &self,
+            active_studies: &'a [S],
+            basis: data::chart::Basis,
+            available_studies: impl IntoIterator<Item = S>,
+        ) -> Element<'a, Message<S>> {
             let mut content = column![].spacing(4);
 
-            for available_study in S::all() {
+            for available_study in available_studies {
                 content =
                     content.push(self.create_study_row(available_study, active_studies, basis));
             }

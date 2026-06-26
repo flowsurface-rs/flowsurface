@@ -1,4 +1,7 @@
-use crate::aggr::time::DataPoint;
+use crate::{
+    aggr::time::DataPoint,
+    chart::style::{BuySellColors, NakedFilledColors, RatioColorScale, SingleColorStyle},
+};
 use exchange::{
     Kline, Trade, UnixMs,
     unit::price::{Price, PriceStep},
@@ -152,7 +155,7 @@ impl GroupedTrades {
 
     pub fn max_cluster_qty(&self, cluster_kind: ClusterKind) -> Qty {
         match cluster_kind {
-            ClusterKind::BidAsk => self.buy_qty.max(self.sell_qty),
+            ClusterKind::BidAsk | ClusterKind::Table => self.buy_qty.max(self.sell_qty),
             ClusterKind::DeltaProfile => self.buy_qty.abs_diff(self.sell_qty),
             ClusterKind::VolumeProfile => self.total_qty(),
         }
@@ -261,7 +264,52 @@ impl KlineTrades {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FootprintSummary {
+    pub buy: Qty,
+    pub sell: Qty,
+    pub total: Qty,
+    pub delta: Qty,
+    pub delta_pct: f64,
+}
+
+impl FootprintSummary {
+    pub fn new(buy: Qty, sell: Qty) -> Self {
+        let total = buy + sell;
+        let delta = buy - sell;
+        let total_f = total.to_f64();
+        let delta_pct = if total_f > 0.0 {
+            (delta.to_f64() / total_f) * 100.0
+        } else {
+            0.0
+        };
+
+        Self {
+            buy,
+            sell,
+            total,
+            delta,
+            delta_pct,
+        }
+    }
+
+    pub fn from_trades(footprint: &KlineTrades) -> Option<Self> {
+        if footprint.trades.is_empty() {
+            return None;
+        }
+
+        let (buy, sell) = footprint
+            .trades
+            .values()
+            .fold((Qty::ZERO, Qty::ZERO), |(buy, sell), group| {
+                (buy + group.buy_qty, sell + group.sell_qty)
+            });
+
+        Some(Self::new(buy, sell))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Deserialize, Serialize)]
 pub enum KlineChartKind {
     #[default]
     Candles,
@@ -330,13 +378,15 @@ pub enum ClusterKind {
     BidAsk,
     VolumeProfile,
     DeltaProfile,
+    Table,
 }
 
 impl ClusterKind {
-    pub const ALL: [ClusterKind; 3] = [
+    pub const ALL: [ClusterKind; 4] = [
         ClusterKind::BidAsk,
         ClusterKind::VolumeProfile,
         ClusterKind::DeltaProfile,
+        ClusterKind::Table,
     ];
 }
 
@@ -346,16 +396,31 @@ impl std::fmt::Display for ClusterKind {
             ClusterKind::BidAsk => write!(f, "Bid/Ask"),
             ClusterKind::VolumeProfile => write!(f, "Volume Profile"),
             ClusterKind::DeltaProfile => write!(f, "Delta Profile"),
+            ClusterKind::Table => write!(f, "Table"),
         }
     }
 }
 
-#[derive(Debug, Default, Copy, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Config {
     // Whether to show last value labels on top right/left when not hovering
     // e.g. OHLC/bar change values for the main chart, or last value of an indicator series
     pub data_labels_always_visible: bool,
+    // Whether to show the footprint per-bar summary below each candle.
+    pub show_footprint_summary: bool,
+    // Whether to show a small candle on the left side of footprint table clusters.
+    pub show_footprint_table_candle: bool,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            data_labels_always_visible: false,
+            show_footprint_summary: true,
+            show_footprint_table_candle: false,
+        }
+    }
 }
 
 #[derive(Default, Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
@@ -390,16 +455,93 @@ impl std::fmt::Display for ClusterScaling {
 
 impl std::cmp::Eq for ClusterScaling {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub enum FootprintStudy {
     NPoC {
         lookback: usize,
+        #[serde(flatten)]
+        colors: NakedFilledColors,
+    },
+    PointOfControl {
+        #[serde(flatten)]
+        style: SingleColorStyle,
     },
     Imbalance {
+        /// Full diagonal ask:bid ratio percentage required to flag an imbalance.
+        /// 300 means the dominant side must be at least 3x the diagonal opposite side.
         threshold: usize,
-        color_scale: Option<usize>,
+        #[serde(flatten)]
+        scale: RatioColorScale,
         ignore_zeros: bool,
+        #[serde(flatten)]
+        colors: BuySellColors,
     },
+}
+
+impl<'de> Deserialize<'de> for FootprintStudy {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Compat {
+            Current(CurrentFootprintStudy),
+            LegacyPointOfControl(LegacyPointOfControl),
+        }
+
+        #[derive(Deserialize)]
+        enum CurrentFootprintStudy {
+            NPoC {
+                lookback: usize,
+                #[serde(flatten)]
+                colors: NakedFilledColors,
+            },
+            PointOfControl {
+                #[serde(flatten)]
+                style: SingleColorStyle,
+            },
+            Imbalance {
+                threshold: usize,
+                #[serde(flatten)]
+                scale: RatioColorScale,
+                ignore_zeros: bool,
+                #[serde(flatten)]
+                colors: BuySellColors,
+            },
+        }
+
+        #[derive(Deserialize)]
+        enum LegacyPointOfControl {
+            PointOfControl,
+        }
+
+        match Compat::deserialize(deserializer)? {
+            Compat::Current(CurrentFootprintStudy::NPoC { lookback, colors }) => {
+                Ok(FootprintStudy::NPoC { lookback, colors })
+            }
+            Compat::Current(CurrentFootprintStudy::PointOfControl { style }) => {
+                Ok(FootprintStudy::PointOfControl { style })
+            }
+            Compat::Current(CurrentFootprintStudy::Imbalance {
+                threshold,
+                scale,
+                ignore_zeros,
+                colors,
+            }) => Ok(FootprintStudy::Imbalance {
+                threshold,
+                scale,
+                ignore_zeros,
+                colors,
+            }),
+
+            Compat::LegacyPointOfControl(LegacyPointOfControl::PointOfControl) => {
+                Ok(FootprintStudy::PointOfControl {
+                    style: SingleColorStyle::default(),
+                })
+            }
+        }
+    }
 }
 
 impl FootprintStudy {
@@ -407,6 +549,10 @@ impl FootprintStudy {
         matches!(
             (self, other),
             (FootprintStudy::NPoC { .. }, FootprintStudy::NPoC { .. })
+                | (
+                    FootprintStudy::PointOfControl { .. },
+                    FootprintStudy::PointOfControl { .. }
+                )
                 | (
                     FootprintStudy::Imbalance { .. },
                     FootprintStudy::Imbalance { .. }
@@ -416,12 +562,19 @@ impl FootprintStudy {
 }
 
 impl FootprintStudy {
-    pub const ALL: [FootprintStudy; 2] = [
-        FootprintStudy::NPoC { lookback: 80 },
+    pub const ALL: [FootprintStudy; 3] = [
+        FootprintStudy::NPoC {
+            lookback: 80,
+            colors: NakedFilledColors::default_npoc(),
+        },
+        FootprintStudy::PointOfControl {
+            style: SingleColorStyle::default_poc(),
+        },
         FootprintStudy::Imbalance {
-            threshold: 200,
-            color_scale: Some(400),
+            threshold: 300,
+            scale: RatioColorScale::new(Some(400)),
             ignore_zeros: true,
+            colors: BuySellColors::default_imbalance(),
         },
     ];
 }
@@ -430,6 +583,7 @@ impl std::fmt::Display for FootprintStudy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             FootprintStudy::NPoC { .. } => write!(f, "Naked Point of Control"),
+            FootprintStudy::PointOfControl { .. } => write!(f, "Point of Control"),
             FootprintStudy::Imbalance { .. } => write!(f, "Imbalance"),
         }
     }

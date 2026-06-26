@@ -2,6 +2,7 @@ pub mod comparison;
 pub mod heatmap;
 pub mod indicator;
 pub mod kline;
+pub mod style;
 
 use exchange::UnixMs;
 use exchange::{Timeframe, unit::Price};
