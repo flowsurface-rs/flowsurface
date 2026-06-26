@@ -2125,9 +2125,11 @@ impl Content {
 
     pub fn chart_kind(&self) -> Option<data::chart::KlineChartKind> {
         match self {
-            Content::Kline { chart, kind, .. } => {
-                Some(chart.as_ref().map_or_else(|| kind.clone(), |c| c.kind().clone()))
-            }
+            Content::Kline { chart, kind, .. } => Some(
+                chart
+                    .as_ref()
+                    .map_or_else(|| kind.clone(), |c| c.kind().clone()),
+            ),
             _ => None,
         }
     }

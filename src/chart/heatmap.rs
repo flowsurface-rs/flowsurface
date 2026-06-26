@@ -656,7 +656,8 @@ impl canvas::Program<Message> for HeatmapChart {
                                     (1.0_f64
                                         + (trade_qty / max_trade_qty)
                                             * f64::from(MAX_CIRCLE_RADIUS - 1.0)
-                                            * scale_factor) as f32
+                                            * scale_factor)
+                                        as f32
                                 } else {
                                     cell_height / 2.0
                                 }
