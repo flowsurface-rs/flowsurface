@@ -545,7 +545,7 @@ impl canvas::Program<Message> for HeatmapChart {
                                     *price,
                                     size_in_quote_ccy,
                                 );
-                                order_size as f32 > self.visual_config.order_size_filter
+                                order_size > f64::from(self.visual_config.order_size_filter)
                             })
                             .for_each(|run| {
                                 let start_x = chart.interval_to_x(
@@ -642,7 +642,7 @@ impl canvas::Program<Message> for HeatmapChart {
                             size_in_quote_ccy,
                         );
 
-                        if trade_size as f32 > self.visual_config.trade_size_filter {
+                        if trade_size > f64::from(self.visual_config.trade_size_filter) {
                             let color = if trade.is_sell {
                                 palette.danger.base.color
                             } else {
@@ -652,10 +652,11 @@ impl canvas::Program<Message> for HeatmapChart {
                             let radius = {
                                 if let Some(trade_size_scale) = self.visual_config.trade_size_scale
                                 {
-                                    let scale_factor = (trade_size_scale as f32) / 100.0;
-                                    1.0 + (trade_qty / max_trade_qty) as f32
-                                        * (MAX_CIRCLE_RADIUS - 1.0)
-                                        * scale_factor
+                                    let scale_factor = (trade_size_scale as f64) / 100.0;
+                                    (1.0_f64
+                                        + (trade_qty / max_trade_qty)
+                                            * f64::from(MAX_CIRCLE_RADIUS - 1.0)
+                                            * scale_factor) as f32
                                 } else {
                                     cell_height / 2.0
                                 }

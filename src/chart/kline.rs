@@ -917,7 +917,7 @@ impl KlineChart {
         }
 
         if let Some(main_split) = self.chart.layout.splits.first() {
-            let current_indi_count = configs.len();
+            let current_indi_count = self.indicators.values().filter(|v| v.is_some()).count();
             self.chart.layout.splits = data::util::calc_panel_splits(
                 *main_split,
                 current_indi_count,
