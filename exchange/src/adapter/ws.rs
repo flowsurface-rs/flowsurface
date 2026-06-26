@@ -20,7 +20,9 @@ use tokio_rustls::{
 };
 use url::Url;
 
-use futures::channel::mpsc::{Receiver, Sender};
+use futures::channel::mpsc::Sender;
+#[cfg(feature = "unbounded-channel")]
+use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender};
 use futures::{SinkExt, StreamExt};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
@@ -52,8 +54,33 @@ pub(super) static TLS_CONNECTOR: LazyLock<TlsConnector> = LazyLock::new(|| {
     TlsConnector::from(Arc::new(config))
 });
 
+enum AnySender<T> {
+    #[cfg(not(feature = "unbounded-channel"))]
+    Bounded(Sender<T>),
+    #[cfg(feature = "unbounded-channel")]
+    Unbounded(UnboundedSender<T>),
+}
+
+impl<T> AnySender<T> {
+    fn send(&mut self, item: T) -> Result<(), futures::channel::mpsc::TrySendError<T>> {
+        match self {
+            #[cfg(not(feature = "unbounded-channel"))]
+            AnySender::Bounded(tx) => tx.try_send(item),
+            #[cfg(feature = "unbounded-channel")]
+            AnySender::Unbounded(tx) => tx.unbounded_send(item),
+        }
+    }
+}
+
+enum AnyReceiver<T> {
+    #[cfg(not(feature = "unbounded-channel"))]
+    Bounded(futures::channel::mpsc::Receiver<T>),
+    #[cfg(feature = "unbounded-channel")]
+    Unbounded(UnboundedReceiver<T>),
+}
+
 pub(super) struct ChannelStream<T> {
-    receiver: Receiver<T>,
+    receiver: AnyReceiver<T>,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -61,10 +88,16 @@ impl<T> futures::Stream for ChannelStream<T> {
     type Item = T;
 
     fn poll_next(
-        mut self: std::pin::Pin<&mut Self>,
+        self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        std::pin::Pin::new(&mut self.receiver).poll_next(cx)
+        let this = self.get_mut();
+        match &mut this.receiver {
+            #[cfg(not(feature = "unbounded-channel"))]
+            AnyReceiver::Bounded(rx) => std::pin::Pin::new(rx).poll_next(cx),
+            #[cfg(feature = "unbounded-channel")]
+            AnyReceiver::Unbounded(rx) => std::pin::Pin::new(rx).poll_next(cx),
+        }
     }
 }
 
@@ -116,8 +149,7 @@ pub(super) trait WsAdapter {
     ///
     /// Adapters parse incoming data and return resulting `Event`s.
     /// The session loop sends them to the output channel.
-    /// If the output channel is full, events are silently dropped —
-    /// market data is time-sensitive and stale events are worthless.
+    /// If the output channel is full, events are silently dropped
     ///
     /// **Flush model**: non-trade adapters return events here directly.
     /// Trade adapters only buffer into [`TradeBuffer`] here and return
@@ -153,13 +185,23 @@ impl WsSession {
     }
 
     pub(super) fn run<A: WsAdapter + Send + 'static>(self, mut adapter: A) -> ChannelStream<Event> {
-        let (mut event_tx, event_rx) = futures::channel::mpsc::channel(512);
+        #[cfg(not(feature = "unbounded-channel"))]
+        let (mut event_tx, event_rx) = {
+            let (tx, rx) = futures::channel::mpsc::channel(512);
+            (AnySender::Bounded(tx), AnyReceiver::Bounded(rx))
+        };
+        #[cfg(feature = "unbounded-channel")]
+        let (mut event_tx, event_rx) = {
+            let (tx, rx) = futures::channel::mpsc::unbounded();
+            (AnySender::Unbounded(tx), AnyReceiver::Unbounded(rx))
+        };
+
         let ping_payload = self.ping_payload;
         let streams = Arc::clone(&self.streams);
 
         let task = tokio::spawn(async move {
             if streams.is_empty() {
-                let _ = event_tx.try_send(Event::Disconnected(
+                let _ = event_tx.send(Event::Disconnected(
                     streams,
                     "Empty stream payload".to_string(),
                 ));
@@ -172,8 +214,7 @@ impl WsSession {
                 let transport = match adapter.connect().await {
                     Ok(t) => t,
                     Err(reason) => {
-                        let _ =
-                            event_tx.try_send(Event::Disconnected(Arc::clone(&streams), reason));
+                        let _ = event_tx.send(Event::Disconnected(Arc::clone(&streams), reason));
                         tokio::time::sleep(backoff.delay()).await;
                         backoff.record_failure();
                         continue;
@@ -185,9 +226,9 @@ impl WsSession {
                 let io_handle = tokio::spawn(transport.read_frame(ping_payload, frame_tx));
 
                 for event in adapter.on_connected().await {
-                    let _ = event_tx.try_send(event);
+                    let _ = event_tx.send(event);
                 }
-                let _ = event_tx.try_send(Event::Connected(Arc::clone(&streams)));
+                let _ = event_tx.send(Event::Connected(Arc::clone(&streams)));
 
                 let tick_interval = adapter.tick_interval();
                 let tick_sleep = tokio::time::sleep(tick_interval);
@@ -195,6 +236,7 @@ impl WsSession {
 
                 let disconnect_reason = loop {
                     tokio::select! {
+                        biased;
                         frame = frame_rx.next() => {
                             match frame {
                                 Some(Ok(payload)) => {
@@ -202,7 +244,7 @@ impl WsSession {
                                         Ok(events) => {
                                             let had_events = !events.is_empty();
                                             for event in events {
-                                                let _ = event_tx.try_send(event);
+                                                let _ = event_tx.send(event);
                                             }
                                             if had_events {
                                                 backoff.record_success();
@@ -223,7 +265,7 @@ impl WsSession {
                         }
                         _ = &mut tick_sleep => {
                             for event in adapter.on_tick().await {
-                                let _ = event_tx.try_send(event);
+                                let _ = event_tx.send(event);
                             }
                             tick_sleep
                                 .as_mut()
@@ -242,9 +284,9 @@ impl WsSession {
 
                 if let Some(reason) = disconnect_reason {
                     for event in adapter.on_disconnected(&reason).await {
-                        let _ = event_tx.try_send(event);
+                        let _ = event_tx.send(event);
                     }
-                    let _ = event_tx.try_send(Event::Disconnected(Arc::clone(&streams), reason));
+                    let _ = event_tx.send(Event::Disconnected(Arc::clone(&streams), reason));
                 }
 
                 tokio::time::sleep(backoff.delay()).await;
