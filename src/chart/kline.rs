@@ -7,7 +7,7 @@ use crate::connector::fetcher::{FetchRange, RequestHandler, is_trade_fetch_enabl
 use crate::{modal::pane::settings::study, style};
 use data::aggr::ticks::TickAggr;
 use data::aggr::time::TimeSeries;
-use data::chart::indicator::{Indicator, KlineIndicator};
+use data::chart::indicator::{Indicator, KlineIndicator, KlineIndicatorConfig};
 use data::chart::kline::{
     ClusterKind, ClusterScaling, Config, FootprintStudy, FootprintSummary, KlineDataPoint,
     KlineTrades, NPoc, PointOfControl,
@@ -28,7 +28,7 @@ use enum_map::EnumMap;
 use std::time::Instant;
 
 impl Chart for KlineChart {
-    type IndicatorKind = KlineIndicator;
+    type IndicatorSelection = KlineIndicatorConfig;
 
     fn state(&self) -> &ViewState {
         &self.chart
@@ -50,7 +50,10 @@ impl Chart for KlineChart {
         self.invalidate(None);
     }
 
-    fn view_indicators(&'_ self, enabled: &[Self::IndicatorKind]) -> Vec<Element<'_, Message>> {
+    fn view_indicators(
+        &'_ self,
+        enabled: &[Self::IndicatorSelection],
+    ) -> Vec<Element<'_, Message>> {
         let chart_state = self.state();
         let visible_region = chart_state.visible_region(chart_state.bounds.size());
         let (earliest, latest) = chart_state.interval_range(&visible_region);
@@ -64,10 +67,11 @@ impl Chart for KlineChart {
         let mut elements = vec![];
 
         for selected_indicator in enabled {
-            if !KlineIndicator::for_market(market).contains(selected_indicator) {
+            let kind = selected_indicator.kind();
+            if !KlineIndicator::for_market(market).contains(&kind) {
                 continue;
             }
-            if let Some(indi) = self.indicators[*selected_indicator].as_ref() {
+            if let Some(indi) = self.indicators[kind].as_ref() {
                 elements.push(indi.element(
                     chart_state,
                     data_labels_always_visible,
@@ -178,7 +182,7 @@ impl KlineChart {
         step: PriceStep,
         klines_raw: &[Kline],
         raw_trades: Vec<Trade>,
-        enabled_indicators: &[KlineIndicator],
+        enabled_indicators: &[KlineIndicatorConfig],
         ticker_info: TickerInfo,
         kind: &KlineChartKind,
         visual_config: Option<Config>,
@@ -248,10 +252,10 @@ impl KlineChart {
                 let data_source = PlotData::TimeBased(timeseries);
 
                 let mut indicators = EnumMap::default();
-                for &i in enabled_indicators {
-                    let mut indi = indicator::kline::make_empty(i);
+                for &config in enabled_indicators {
+                    let mut indi = indicator::kline::make(config);
                     indi.rebuild_from_source(&data_source);
-                    indicators[i] = Some(indi);
+                    indicators[config.kind()] = Some(indi);
                 }
 
                 KlineChart {
@@ -305,10 +309,10 @@ impl KlineChart {
                 let data_source = PlotData::TickBased(TickAggr::new(interval, step, &raw_trades));
 
                 let mut indicators = EnumMap::default();
-                for &i in enabled_indicators {
-                    let mut indi = indicator::kline::make_empty(i);
+                for &config in enabled_indicators {
+                    let mut indi = indicator::kline::make(config);
                     indi.rebuild_from_source(&data_source);
-                    indicators[i] = Some(indi);
+                    indicators[config.kind()] = Some(indi);
                 }
 
                 KlineChart {
@@ -879,19 +883,41 @@ impl KlineChart {
         }
     }
 
-    pub fn toggle_indicator(&mut self, indicator: KlineIndicator) {
+    pub fn sync_indicator_configs(&mut self, configs: &[KlineIndicatorConfig]) {
         let prev_indi_count = self.indicators.values().filter(|v| v.is_some()).count();
 
-        if self.indicators[indicator].is_some() {
-            self.indicators[indicator] = None;
-        } else {
-            let mut box_indi = indicator::kline::make_empty(indicator);
-            box_indi.rebuild_from_source(&self.data_source);
-            self.indicators[indicator] = Some(box_indi);
+        for kind in [
+            KlineIndicator::Volume,
+            KlineIndicator::BarAnalysis,
+            KlineIndicator::CumulativeDelta,
+            KlineIndicator::OpenInterest,
+        ] {
+            if matches!(self.kind, KlineChartKind::Candles)
+                && matches!(kind, KlineIndicator::BarAnalysis)
+            {
+                self.indicators[kind] = None;
+                continue;
+            }
+            let config = configs.iter().find(|cfg| cfg.kind() == kind);
+
+            match (self.indicators[kind].as_mut(), config) {
+                (Some(indicator), Some(config)) => {
+                    indicator.apply_config(config, &self.data_source);
+                }
+                (None, Some(config)) => {
+                    let mut indicator = indicator::kline::make(*config);
+                    indicator.rebuild_from_source(&self.data_source);
+                    self.indicators[kind] = Some(indicator);
+                }
+                (Some(_), None) => {
+                    self.indicators[kind] = None;
+                }
+                (None, None) => {}
+            }
         }
 
         if let Some(main_split) = self.chart.layout.splits.first() {
-            let current_indi_count = self.indicators.values().filter(|v| v.is_some()).count();
+            let current_indi_count = configs.len();
             self.chart.layout.splits = data::util::calc_panel_splits(
                 *main_split,
                 current_indi_count,

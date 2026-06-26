@@ -8,7 +8,11 @@ use crate::chart::{
 };
 use crate::connector::fetcher::FetchRange;
 
-use data::chart::{PlotData, kline::KlineDataPoint};
+use data::chart::{
+    PlotData,
+    indicator::{KlineIndicatorConfig, OpenInterestSettings},
+    kline::KlineDataPoint,
+};
 use data::util::format_with_commas;
 use exchange::adapter::Exchange;
 use exchange::{Kline, Timeframe, Trade, UnixMs};
@@ -19,13 +23,15 @@ use std::{collections::BTreeMap, ops::RangeInclusive};
 pub struct OpenInterestIndicator {
     cache: Caches,
     pub data: BTreeMap<UnixMs, f64>,
+    settings: OpenInterestSettings,
 }
 
 impl OpenInterestIndicator {
-    pub fn new() -> Self {
+    pub fn new(settings: OpenInterestSettings) -> Self {
         Self {
             cache: Caches::default(),
             data: BTreeMap::new(),
+            settings,
         }
     }
 
@@ -57,16 +63,21 @@ impl OpenInterestIndicator {
         };
 
         let value_fn = |v: &f64| *v as f32;
+        let line_color = self
+            .settings
+            .custom_color
+            .filter(|_| self.settings.custom_color_enabled);
 
         let plot = LinePlot::new(value_fn)
-            .stroke_width(1.0)
-            .show_points(true)
+            .stroke_width(self.settings.line_width.clamp(0.5, 4.0))
+            .show_points(self.settings.show_points)
             .point_radius_factor(0.2)
             // Open interest is snapshotted at candle open, not computed from close like regular indicators.
             // Shift left by 1 so each OI value aligns with the equivalent candle close.
             .shift(-1)
             .padding(0.08)
-            .with_tooltip(tooltip);
+            .with_tooltip(tooltip)
+            .with_line_color(line_color);
 
         indicator_row(
             main_chart,
@@ -186,5 +197,14 @@ impl KlineIndicatorImpl for OpenInterestIndicator {
     fn on_open_interest(&mut self, data: &[exchange::OpenInterest]) {
         self.data.extend(data.iter().map(|oi| (oi.time, oi.value)));
         self.clear_all_caches();
+    }
+
+    fn apply_config(&mut self, config: &KlineIndicatorConfig, _source: &PlotData<KlineDataPoint>) {
+        if let KlineIndicatorConfig::OpenInterest(settings) = config
+            && self.settings != *settings
+        {
+            self.settings = *settings;
+            self.clear_all_caches();
+        }
     }
 }

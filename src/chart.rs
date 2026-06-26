@@ -8,7 +8,7 @@ use crate::connector::fetcher::{FetchRange, FetchSpec, RequestHandler};
 use crate::style;
 use crate::widget::multi_split::{DRAG_SIZE, MultiSplit};
 use crate::widget::tooltip;
-use data::chart::{Autoscale, Basis, PlotData, ViewConfig, indicator::Indicator};
+use data::chart::{Autoscale, Basis, PlotData, ViewConfig};
 use exchange::TickerInfo;
 use exchange::unit::{Price, PriceStep};
 use scale::linear::PriceInfoLabel;
@@ -60,7 +60,7 @@ pub enum Message {
 }
 
 pub trait Chart: PlotConstants + canvas::Program<Message> {
-    type IndicatorKind: Indicator;
+    type IndicatorSelection;
 
     fn state(&self) -> &ViewState;
 
@@ -70,7 +70,10 @@ pub trait Chart: PlotConstants + canvas::Program<Message> {
 
     fn invalidate_crosshair(&mut self);
 
-    fn view_indicators(&'_ self, enabled: &[Self::IndicatorKind]) -> Vec<Element<'_, Message>>;
+    fn view_indicators(
+        &'_ self,
+        enabled: &[Self::IndicatorSelection],
+    ) -> Vec<Element<'_, Message>>;
 
     fn visible_timerange(&self) -> Option<(u64, u64)>;
 
@@ -493,7 +496,7 @@ pub fn update<T: Chart>(chart: &mut T, message: &Message) {
 
 pub fn view<'a, T: Chart>(
     chart: &'a T,
-    indicators: &'a [T::IndicatorKind],
+    indicators: &'a [T::IndicatorSelection],
     timezone: data::UserTimezone,
 ) -> Element<'a, Message> {
     if chart.is_empty() {

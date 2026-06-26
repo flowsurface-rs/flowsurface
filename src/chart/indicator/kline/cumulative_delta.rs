@@ -10,7 +10,11 @@ use crate::chart::{
     },
 };
 
-use data::chart::{PlotData, kline::KlineDataPoint};
+use data::chart::{
+    PlotData,
+    indicator::{CumulativeDeltaSettings, KlineIndicatorConfig},
+    kline::KlineDataPoint,
+};
 use data::util::format_with_commas;
 use exchange::{Kline, Trade, unit::Qty};
 
@@ -18,10 +22,6 @@ use iced::widget::{center, text};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::RangeInclusive;
-
-/// Minimum number of consecutive bars with non-zero delta required
-/// before CVD data is considered trustworthy.
-const MIN_DIRECTIONAL_RUN: usize = 2;
 
 #[derive(Debug, Clone, Copy, Default)]
 struct CumulativeDeltaPoint {
@@ -45,15 +45,17 @@ pub struct CumulativeDeltaIndicator {
     delta: BasisSeries<Qty>,
     data: BasisSeries<CumulativeDeltaPoint>,
     availability: IndicatorAvailability,
+    settings: CumulativeDeltaSettings,
 }
 
 impl CumulativeDeltaIndicator {
-    pub fn new() -> Self {
+    pub fn new(settings: CumulativeDeltaSettings) -> Self {
         Self {
             cache: Caches::default(),
             delta: BasisSeries::default(),
             data: BasisSeries::default(),
             availability: IndicatorAvailability::Unknown,
+            settings,
         }
     }
 
@@ -75,17 +77,22 @@ impl CumulativeDeltaIndicator {
         };
 
         let value_fn = |point: &CumulativeDeltaPoint| point.cumulative.to_f64() as f32;
+        let line_color = self
+            .settings
+            .custom_color
+            .filter(|_| self.settings.custom_color_enabled);
 
         let plot = LinePlot::new(value_fn)
-            .stroke_width(1.0)
-            .show_points(true)
+            .stroke_width(self.settings.line_width.clamp(0.5, 4.0))
+            .show_points(self.settings.show_points)
             .point_radius_factor(0.2)
             .padding(0.08)
             // Only treat bars as valid when they belong to a long enough
             // run of consecutive directional data
             .valid_when(|point: &CumulativeDeltaPoint| point.reliable)
             .invalid_point_message(format!(
-                "CVD requires {MIN_DIRECTIONAL_RUN}+ consecutive bars\nwith directional volume",
+                "CVD requires {}+ consecutive bars\nwith directional volume",
+                self.settings.min_directional_run,
             ))
             .with_tooltip(tooltip);
 
@@ -93,7 +100,7 @@ impl CumulativeDeltaIndicator {
             main_chart,
             &self.cache,
             data_labels_always_visible,
-            plot,
+            plot.with_line_color(line_color),
             self.data.as_plot_series(),
             visible_range,
         )
@@ -113,7 +120,8 @@ impl CumulativeDeltaIndicator {
         match &self.delta {
             BasisSeries::Time(deltas) => {
                 let entries: Vec<_> = deltas.iter().collect();
-                let reliable = Self::reliable_indices(&entries, MIN_DIRECTIONAL_RUN);
+                let reliable =
+                    Self::reliable_indices(&entries, self.settings.min_directional_run.max(1));
 
                 let mut cumulative = Qty::ZERO;
                 let data: BTreeMap<_, _> = entries
@@ -136,7 +144,8 @@ impl CumulativeDeltaIndicator {
             }
             BasisSeries::Tick(deltas) => {
                 let entries: Vec<_> = deltas.iter().collect();
-                let reliable = Self::reliable_indices(&entries, MIN_DIRECTIONAL_RUN);
+                let reliable =
+                    Self::reliable_indices(&entries, self.settings.min_directional_run.max(1));
 
                 let mut cumulative = Qty::ZERO;
                 let data: BTreeMap<_, _> = entries
@@ -352,5 +361,14 @@ impl KlineIndicatorImpl for CumulativeDeltaIndicator {
 
     fn on_basis_change(&mut self, source: &PlotData<KlineDataPoint>) {
         self.rebuild_from_source(source);
+    }
+
+    fn apply_config(&mut self, config: &KlineIndicatorConfig, source: &PlotData<KlineDataPoint>) {
+        if let KlineIndicatorConfig::CumulativeDelta(settings) = config
+            && self.settings != *settings
+        {
+            self.settings = *settings;
+            self.rebuild_from_source(source);
+        }
     }
 }

@@ -31,7 +31,10 @@ use data::{
     chart::{
         Basis, ViewConfig,
         heatmap::HeatmapStudy,
-        indicator::{HeatmapIndicator, Indicator, KlineIndicator, UiIndicator},
+        indicator::{
+            HeatmapIndicator, HeatmapIndicatorConfig, Indicator, KlineIndicator,
+            KlineIndicatorConfig, UiIndicator,
+        },
     },
     layout::pane::{ContentKind, LinkGroup, PaneSetup, Settings, VisualConfig},
     stream::PersistStreamKind,
@@ -95,6 +98,9 @@ pub enum Event {
     ChartInteraction(super::chart::Message),
     PanelInteraction(super::panel::Message),
     ToggleIndicator(UiIndicator),
+    ToggleIndicatorSettings(UiIndicator),
+    ConfigureKlineIndicator(KlineIndicatorConfig),
+    ConfigureHeatmapIndicator(HeatmapIndicatorConfig),
     DeleteNotification(usize),
     ReorderIndicator(column_drag::DragEvent),
     ClusterKindSelected(data::chart::kline::ClusterKind),
@@ -115,6 +121,7 @@ pub struct State {
     pub streams: ResolvedStream,
     pub status: Status,
     pub link_group: Option<LinkGroup>,
+    pub expanded_indicator_settings: Option<UiIndicator>,
 }
 
 impl State {
@@ -376,7 +383,7 @@ impl State {
                             vec![HeatmapStudy::VolumeProfile(
                                 data::chart::heatmap::ProfileKind::default(),
                             )],
-                            vec![HeatmapIndicator::Volume],
+                            vec![HeatmapIndicatorConfig::default_for(HeatmapIndicator::Volume)],
                         )
                     };
 
@@ -844,7 +851,6 @@ impl State {
                         Some(modal::indicators::view(
                             id,
                             self,
-                            indicators,
                             self.stream_pair().map(|i| i.ticker.market_type()),
                         ))
                     } else {
@@ -945,7 +951,6 @@ impl State {
                         Some(modal::indicators::view(
                             id,
                             self,
-                            indicators,
                             self.stream_pair().map(|i| i.ticker.market_type()),
                         ))
                     } else {
@@ -981,7 +986,9 @@ impl State {
                 }
             }
             Content::ShaderHeatmap {
-                chart, indicators, ..
+                chart,
+                indicators: _,
+                ..
             } => {
                 if let Some(chart) = chart {
                     let base = HeatmapShader::view(chart, timezone).map(move |message| {
@@ -1021,7 +1028,6 @@ impl State {
                         Some(modal::indicators::view(
                             id,
                             self,
-                            indicators,
                             self.stream_pair().map(|i| i.ticker.market_type()),
                         ))
                     } else {
@@ -1141,6 +1147,7 @@ impl State {
             }
             Event::HideModal => {
                 self.modal = None;
+                self.expanded_indicator_settings = None;
             }
             Event::ContentSelected(kind) => {
                 self.content = Content::placeholder(kind);
@@ -1169,7 +1176,23 @@ impl State {
                 _ => {}
             },
             Event::ToggleIndicator(ind) => {
+                self.expanded_indicator_settings = None;
                 self.content.toggle_indicator(ind);
+            }
+            Event::ToggleIndicatorSettings(indicator) => {
+                if self.content.toggle_indicator_settings(indicator) {
+                    if self.expanded_indicator_settings == Some(indicator) {
+                        self.expanded_indicator_settings = None;
+                    } else {
+                        self.expanded_indicator_settings = Some(indicator);
+                    }
+                }
+            }
+            Event::ConfigureKlineIndicator(config) => {
+                self.content.update_kline_indicator(config);
+            }
+            Event::ConfigureHeatmapIndicator(config) => {
+                self.content.update_heatmap_indicator(config);
             }
             Event::DeleteNotification(idx) => {
                 if idx < self.notifications.len() {
@@ -1824,6 +1847,7 @@ impl Default for State {
             notifications: vec![],
             status: Status::Ready,
             link_group: None,
+            expanded_indicator_settings: None,
         }
     }
 }
@@ -1834,18 +1858,18 @@ pub enum Content {
     Starter,
     Heatmap {
         chart: Option<HeatmapChart>,
-        indicators: Vec<HeatmapIndicator>,
+        indicators: Vec<HeatmapIndicatorConfig>,
         layout: data::chart::ViewConfig,
         studies: Vec<data::chart::heatmap::HeatmapStudy>,
     },
     ShaderHeatmap {
         chart: Option<Box<HeatmapShader>>,
-        indicators: Vec<HeatmapIndicator>,
+        indicators: Vec<HeatmapIndicatorConfig>,
         studies: Vec<data::chart::heatmap::HeatmapStudy>,
     },
     Kline {
         chart: Option<KlineChart>,
-        indicators: Vec<KlineIndicator>,
+        indicators: Vec<KlineIndicatorConfig>,
         layout: data::chart::ViewConfig,
         kind: data::chart::KlineChartKind,
     },
@@ -1880,7 +1904,7 @@ impl Content {
             )
         } else {
             (
-                vec![HeatmapIndicator::Volume],
+                vec![HeatmapIndicatorConfig::default_for(HeatmapIndicator::Volume)],
                 ViewConfig {
                     splits: vec![],
                     autoscale: Some(data::chart::Autoscale::CenterLatest),
@@ -1955,11 +1979,27 @@ impl Content {
         let enabled_indicators = {
             let available = KlineIndicator::for_market(ticker_info.market_type());
             prev_indis.map_or_else(
-                || vec![KlineIndicator::Volume],
+                || vec![KlineIndicatorConfig::default_for(KlineIndicator::Volume)],
                 |indis| {
                     indis
                         .into_iter()
-                        .filter(|i| available.contains(i))
+                        .filter(|i| {
+                            available.contains(&i.kind())
+                                && matches!(
+                                    (content_kind, i.kind()),
+                                    (
+                                        ContentKind::CandlestickChart,
+                                        KlineIndicator::Volume | KlineIndicator::CumulativeDelta | KlineIndicator::OpenInterest
+                                    )
+                                        | (
+                                            ContentKind::FootprintChart,
+                                            KlineIndicator::Volume
+                                                | KlineIndicator::BarAnalysis
+                                                | KlineIndicator::CumulativeDelta
+                                                | KlineIndicator::OpenInterest
+                                        )
+                                )
+                        })
                         .collect()
                 },
             )
@@ -2020,7 +2060,7 @@ impl Content {
             ContentKind::Starter => Content::Starter,
             ContentKind::CandlestickChart => Content::Kline {
                 chart: None,
-                indicators: vec![KlineIndicator::Volume],
+                indicators: vec![KlineIndicatorConfig::default_for(KlineIndicator::Volume)],
                 kind: data::chart::KlineChartKind::Candles,
                 layout: ViewConfig {
                     splits: vec![],
@@ -2029,7 +2069,7 @@ impl Content {
             },
             ContentKind::FootprintChart => Content::Kline {
                 chart: None,
-                indicators: vec![KlineIndicator::Volume],
+                indicators: vec![KlineIndicatorConfig::default_for(KlineIndicator::Volume)],
                 kind: data::chart::KlineChartKind::Footprint {
                     clusters: data::chart::kline::ClusterKind::default(),
                     scaling: data::chart::kline::ClusterScaling::default(),
@@ -2042,14 +2082,14 @@ impl Content {
             },
             ContentKind::ShaderHeatmap => Content::ShaderHeatmap {
                 chart: None,
-                indicators: vec![HeatmapIndicator::Volume],
+                indicators: vec![HeatmapIndicatorConfig::default_for(HeatmapIndicator::Volume)],
                 studies: vec![data::chart::heatmap::HeatmapStudy::VolumeProfile(
                     data::chart::heatmap::ProfileKind::default(),
                 )],
             },
             ContentKind::HeatmapChart => Content::Heatmap {
                 chart: None,
-                indicators: vec![HeatmapIndicator::Volume],
+                indicators: vec![HeatmapIndicatorConfig::default_for(HeatmapIndicator::Volume)],
                 studies: vec![],
                 layout: ViewConfig {
                     splits: vec![],
@@ -2089,16 +2129,14 @@ impl Content {
                 },
                 UiIndicator::Heatmap(ind),
             ) => {
-                let Some(chart) = chart else {
-                    return;
-                };
-
-                if indicators.contains(&ind) {
-                    indicators.retain(|i| i != &ind);
+                if indicators.iter().any(|cfg| cfg.kind() == ind) {
+                    indicators.retain(|cfg| cfg.kind() != ind);
                 } else {
-                    indicators.push(ind);
+                    indicators.push(HeatmapIndicatorConfig::default_for(ind));
                 }
-                chart.toggle_indicator(ind);
+                if let Some(chart) = chart {
+                    chart.sync_indicator_configs(indicators);
+                }
             }
             (
                 Content::Kline {
@@ -2106,16 +2144,14 @@ impl Content {
                 },
                 UiIndicator::Kline(ind),
             ) => {
-                let Some(chart) = chart else {
-                    return;
-                };
-
-                if indicators.contains(&ind) {
-                    indicators.retain(|i| i != &ind);
+                if indicators.iter().any(|cfg| cfg.kind() == ind) {
+                    indicators.retain(|cfg| cfg.kind() != ind);
                 } else {
-                    indicators.push(ind);
+                    indicators.push(KlineIndicatorConfig::default_for(ind));
                 }
-                chart.toggle_indicator(ind);
+                if let Some(chart) = chart {
+                    chart.sync_indicator_configs(indicators);
+                }
             }
             (
                 Content::ShaderHeatmap {
@@ -2123,16 +2159,14 @@ impl Content {
                 },
                 UiIndicator::Heatmap(ind),
             ) => {
-                let Some(chart) = chart else {
-                    return;
-                };
-
-                if indicators.contains(&ind) {
-                    indicators.retain(|i| i != &ind);
+                if indicators.iter().any(|cfg| cfg.kind() == ind) {
+                    indicators.retain(|cfg| cfg.kind() != ind);
                 } else {
-                    indicators.push(ind);
+                    indicators.push(HeatmapIndicatorConfig::default_for(ind));
                 }
-                chart.toggle_indicator(ind);
+                if let Some(chart) = chart {
+                    chart.sync_indicator_configs(indicators.clone());
+                }
             }
             _ => panic!("indicator toggle on {indicator:?} pane",),
         }
@@ -2140,8 +2174,18 @@ impl Content {
 
     pub fn reorder_indicators(&mut self, event: &column_drag::DragEvent) {
         match self {
-            Content::Heatmap { indicators, .. } => column_drag::reorder_vec(indicators, event),
-            Content::Kline { indicators, .. } => column_drag::reorder_vec(indicators, event),
+            Content::Heatmap { chart, indicators, .. } => {
+                column_drag::reorder_vec(indicators, event);
+                if let Some(chart) = chart {
+                    chart.sync_indicator_configs(indicators);
+                }
+            }
+            Content::Kline { chart, indicators, .. } => {
+                column_drag::reorder_vec(indicators, event);
+                if let Some(chart) = chart {
+                    chart.sync_indicator_configs(indicators);
+                }
+            }
             Content::TimeAndSales(_)
             | Content::Ladder(_)
             | Content::Starter
@@ -2149,6 +2193,65 @@ impl Content {
             | Content::ShaderHeatmap { .. } => {
                 panic!("indicator reorder on {} pane", self)
             }
+        }
+    }
+
+    pub fn toggle_indicator_settings(&mut self, indicator: UiIndicator) -> bool {
+        let has_settings = match (self, indicator) {
+            (Content::Heatmap { indicators, .. }, UiIndicator::Heatmap(ind)) => indicators
+                .iter()
+                .find(|cfg| cfg.kind() == ind)
+                .is_some_and(HeatmapIndicatorConfig::has_settings),
+            (Content::Kline { indicators, .. }, UiIndicator::Kline(ind)) => indicators
+                .iter()
+                .find(|cfg| cfg.kind() == ind)
+                .is_some_and(KlineIndicatorConfig::has_settings),
+            (Content::ShaderHeatmap { indicators, .. }, UiIndicator::Heatmap(ind)) => indicators
+                .iter()
+                .find(|cfg| cfg.kind() == ind)
+                .is_some_and(HeatmapIndicatorConfig::has_settings),
+            _ => false,
+        };
+
+        if !has_settings {
+            return false;
+        }
+
+        true
+    }
+
+    pub fn update_kline_indicator(&mut self, config: KlineIndicatorConfig) {
+        if let Content::Kline { chart, indicators, .. } = self
+            && let Some(existing) = indicators.iter_mut().find(|cfg| cfg.kind() == config.kind())
+        {
+            *existing = config;
+            if let Some(chart) = chart {
+                chart.sync_indicator_configs(indicators);
+            }
+        }
+    }
+
+    pub fn update_heatmap_indicator(&mut self, config: HeatmapIndicatorConfig) {
+        match self {
+            Content::Heatmap { chart, indicators, .. } => {
+                if let Some(existing) = indicators.iter_mut().find(|cfg| cfg.kind() == config.kind())
+                {
+                    *existing = config;
+                    if let Some(chart) = chart {
+                        chart.sync_indicator_configs(indicators);
+                    }
+                }
+            }
+            Content::ShaderHeatmap { chart, indicators, .. } => {
+                if let Some(existing) = indicators.iter_mut().find(|cfg| cfg.kind() == config.kind())
+                {
+                    *existing = config;
+                    if let Some(chart) = chart {
+                        chart.sync_indicator_configs(indicators.clone());
+                    }
+                }
+            }
+            _ => {}
         }
     }
 

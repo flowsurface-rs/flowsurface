@@ -11,6 +11,7 @@ use crate::{
 
 use data::chart::{
     BasisSeries, PlotData,
+    indicator::{BarAnalysisSettings, KlineIndicatorConfig},
     kline::{FootprintSummary, KlineDataPoint},
 };
 use data::util::abbr_large_numbers;
@@ -29,13 +30,15 @@ use std::{collections::BTreeMap, ops::RangeInclusive};
 pub struct BarAnalysisIndicator {
     cache: Caches,
     data: BasisSeries<FootprintSummary>,
+    settings: BarAnalysisSettings,
 }
 
 impl BarAnalysisIndicator {
-    pub fn new() -> Self {
+    pub fn new(settings: BarAnalysisSettings) -> Self {
         Self {
             cache: Caches::default(),
             data: BasisSeries::default(),
+            settings,
         }
     }
 
@@ -48,6 +51,7 @@ impl BarAnalysisIndicator {
             cache: &self.cache.main,
             ctx: main_chart,
             series: self.data.as_plot_series(),
+            settings: self.settings,
             visible_range,
         })
         .height(Length::Fill)
@@ -129,12 +133,22 @@ impl KlineIndicatorImpl for BarAnalysisIndicator {
     fn on_basis_change(&mut self, source: &PlotData<KlineDataPoint>) {
         self.rebuild(source);
     }
+
+    fn apply_config(&mut self, config: &KlineIndicatorConfig, _source: &PlotData<KlineDataPoint>) {
+        if let KlineIndicatorConfig::BarAnalysis(settings) = config
+            && self.settings != *settings
+        {
+            self.settings = *settings;
+            self.clear_all_caches();
+        }
+    }
 }
 
 struct BarAnalysisCanvas<'a> {
     cache: &'a Cache,
     ctx: &'a ViewState,
     series: AnySeries<'a, FootprintSummary>,
+    settings: BarAnalysisSettings,
     visible_range: RangeInclusive<u64>,
 }
 
@@ -178,7 +192,22 @@ impl canvas::Program<Message> for BarAnalysisCanvas<'_> {
             let pane_height = frame.height() / ctx.scaling;
             let table_top = 3.0;
             let table_height = (pane_height - 6.0).max(24.0);
-            let rows_count = 5.0;
+            let rows_count = {
+                let mut count: f32 = 0.0;
+                if self.settings.show_buy_sell {
+                    count += 2.0;
+                }
+                if self.settings.show_volume {
+                    count += 1.0;
+                }
+                if self.settings.show_delta {
+                    count += 1.0;
+                }
+                if self.settings.show_delta_pct {
+                    count += 1.0;
+                }
+                count.max(1.0)
+            };
             let row_height = table_height / rows_count;
             let column_width = ctx.cell_width;
             let text_size = (row_height * 0.42).clamp(5.0, TEXT_SIZE * 0.75);
@@ -206,25 +235,32 @@ impl canvas::Program<Message> for BarAnalysisCanvas<'_> {
                         palette.danger.base.color
                     };
 
-                    let rows = [
-                        (
+                    let mut rows = Vec::with_capacity(5);
+                    if self.settings.show_buy_sell {
+                        rows.push((
                             format!("Ask {}", abbr_large_numbers(row.sell.to_f64())),
                             palette.danger.base.color,
-                        ),
-                        (
+                        ));
+                        rows.push((
                             format!("Bid {}", abbr_large_numbers(row.buy.to_f64())),
                             palette.success.base.color,
-                        ),
-                        (
+                        ));
+                    }
+                    if self.settings.show_volume {
+                        rows.push((
                             format!("Vol {}", abbr_large_numbers(row.total.to_f64())),
                             palette.background.weakest.text,
-                        ),
-                        (
+                        ));
+                    }
+                    if self.settings.show_delta {
+                        rows.push((
                             format!("Δ {}", abbr_large_numbers(row.delta.to_f64())),
                             delta_color,
-                        ),
-                        (format!("Δ% {:+.1}%", row.delta_pct), delta_color),
-                    ];
+                        ));
+                    }
+                    if self.settings.show_delta_pct {
+                        rows.push((format!("Δ% {:+.1}%", row.delta_pct), delta_color));
+                    }
 
                     for (idx, (label, color)) in rows.iter().enumerate() {
                         let row_y = table_top + row_height * idx as f32;

@@ -9,7 +9,7 @@ use data::chart::{
         CLEANUP_THRESHOLD, Config, HeatmapDataPoint, HeatmapStudy, HistoricalDepth, ProfileKind,
         QtyScale,
     },
-    indicator::HeatmapIndicator,
+    indicator::{HeatmapIndicator, HeatmapIndicatorConfig},
 };
 use data::util::abbr_large_numbers;
 use data::{
@@ -55,7 +55,7 @@ const CURRENT_DEPTH_AREA_RIGHT_PAD_PX: f32 = 8.0;
 const CURRENT_DEPTH_LABEL_TOP_PAD_PX: f32 = 6.0;
 
 impl Chart for HeatmapChart {
-    type IndicatorKind = HeatmapIndicator;
+    type IndicatorSelection = HeatmapIndicatorConfig;
 
     fn state(&self) -> &ViewState {
         &self.chart
@@ -73,7 +73,10 @@ impl Chart for HeatmapChart {
         self.invalidate(None);
     }
 
-    fn view_indicators(&'_ self, _indicators: &[Self::IndicatorKind]) -> Vec<Element<'_, Message>> {
+    fn view_indicators(
+        &'_ self,
+        _indicators: &[Self::IndicatorSelection],
+    ) -> Vec<Element<'_, Message>> {
         vec![]
     }
 
@@ -165,14 +168,14 @@ impl HeatmapChart {
         layout: ViewConfig,
         basis: Basis,
         step: PriceStep,
-        enabled_indicators: &[HeatmapIndicator],
+        enabled_indicators: &[HeatmapIndicatorConfig],
         ticker_info: TickerInfo,
         config: Option<Config>,
         studies: Vec<HeatmapStudy>,
     ) -> Self {
         let mut indicators = EnumMap::default();
         for &indicator in enabled_indicators {
-            indicators[indicator] = Some(match indicator {
+            indicators[indicator.kind()] = Some(match indicator.kind() {
                 HeatmapIndicator::Volume => IndicatorData::Volume,
             });
         }
@@ -367,15 +370,14 @@ impl HeatmapChart {
         self.chart.tick_size
     }
 
-    pub fn toggle_indicator(&mut self, indicator: HeatmapIndicator) {
-        if self.indicators[indicator].is_some() {
-            self.indicators[indicator] = None;
+    pub fn sync_indicator_configs(&mut self, configs: &[HeatmapIndicatorConfig]) {
+        let volume_enabled = configs.iter().any(|cfg| cfg.kind() == HeatmapIndicator::Volume);
+        self.indicators[HeatmapIndicator::Volume] = if volume_enabled {
+            Some(IndicatorData::Volume)
         } else {
-            let data = match indicator {
-                HeatmapIndicator::Volume => IndicatorData::Volume,
-            };
-            self.indicators[indicator] = Some(data);
-        }
+            None
+        };
+        self.invalidate(Some(Instant::now()));
     }
 
     pub fn invalidate(&mut self, now: Option<Instant>) -> Option<super::Action> {

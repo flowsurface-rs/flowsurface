@@ -1,6 +1,6 @@
 use std::ops::RangeInclusive;
 
-use iced::{Point, Size, Theme, widget::canvas};
+use iced::{Color, Point, Size, Theme, widget::canvas};
 
 use crate::chart::{
     ViewState,
@@ -23,10 +23,10 @@ pub enum Baseline {
 /// What kind of bar to render, and whether it carries a signed overlay.
 /// The sign of `overlay` selects up (success) vs down (danger).
 pub enum BarClass {
-    /// draw a single bar using secondary strong color
-    Single,
+    /// draw a single bar using the provided color.
+    Single { color: Color },
     /// draw two bars, a success/danger colored (alpha) and an overlay using full color.
-    Overlay { overlay: f32 }, // signed; sign decides color
+    Overlay { overlay: f32, positive: Color, negative: Color }, // signed; sign decides color
 }
 
 pub struct BarPlot<V, CL, T> {
@@ -123,12 +123,11 @@ where
         &self,
         frame: &mut canvas::Frame,
         ctx: &ViewState,
-        theme: &Theme,
+        _theme: &Theme,
         datapoints: &S,
         range: RangeInclusive<u64>,
         scale: &YScale,
     ) {
-        let palette = theme.extended_palette();
         let bar_width = ctx.cell_width * self.bar_width_factor;
 
         let baseline_value = match self.baseline {
@@ -157,19 +156,20 @@ where
             }
 
             match (self.classify)(y) {
-                BarClass::Single => {
+                BarClass::Single { color } => {
                     frame.fill_rectangle(
                         Point::new(left, top_y),
                         Size::new(bar_width, h_total),
-                        palette.secondary.strong.color,
+                        color,
                     );
                 }
-                BarClass::Overlay { overlay } => {
-                    let base_color = if overlay >= 0.0 {
-                        palette.success.base.color
-                    } else {
-                        palette.danger.base.color
-                    };
+                BarClass::Overlay {
+                    overlay,
+                    positive,
+                    negative,
+                } => {
+                    let base_color = if overlay >= 0.0 { positive } else { negative };
+                    let overlay_color = base_color;
 
                     frame.fill_rectangle(
                         Point::new(left, top_y),
@@ -185,7 +185,7 @@ where
                             frame.fill_rectangle(
                                 Point::new(left, y_overlay),
                                 Size::new(bar_width, h_overlay),
-                                base_color,
+                                overlay_color,
                             );
                         }
                     }
