@@ -1,7 +1,7 @@
 use crate::chart::{Basis, Message, ViewState};
 use crate::connector::fetcher::FetchRange;
 
-use data::chart::indicator::KlineIndicator;
+use data::chart::indicator::KlineIndicatorConfig;
 use data::chart::kline::KlineDataPoint;
 use data::chart::{BasisSeries, PlotData};
 use exchange::adapter::Exchange;
@@ -9,6 +9,7 @@ use exchange::{Kline, Timeframe, Trade, UnixMs};
 
 use super::plot::AnySeries;
 
+pub mod bar_analysis;
 pub mod cumulative_delta;
 pub mod open_interest;
 pub mod volume;
@@ -105,6 +106,9 @@ pub trait KlineIndicatorImpl {
     /// Rebuild data using kline(OHLCV) source
     fn rebuild_from_source(&mut self, _source: &PlotData<KlineDataPoint>) {}
 
+    fn apply_config(&mut self, _config: &KlineIndicatorConfig, _source: &PlotData<KlineDataPoint>) {
+    }
+
     fn on_insert_klines(&mut self, _klines: &[Kline], _source: &PlotData<KlineDataPoint>) {}
 
     fn on_insert_trades(
@@ -131,14 +135,19 @@ pub struct FetchCtx<'a> {
     pub prefetch_earliest: UnixMs,
 }
 
-pub fn make_empty(which: KlineIndicator) -> Box<dyn KlineIndicatorImpl> {
-    match which {
-        KlineIndicator::Volume => Box::new(super::kline::volume::VolumeIndicator::new()),
-        KlineIndicator::CumulativeDelta => {
-            Box::new(super::kline::cumulative_delta::CumulativeDeltaIndicator::new())
+pub fn make(config: KlineIndicatorConfig) -> Box<dyn KlineIndicatorImpl> {
+    match config {
+        KlineIndicatorConfig::Volume(settings) => {
+            Box::new(super::kline::volume::VolumeIndicator::new(settings))
         }
-        KlineIndicator::OpenInterest => {
-            Box::new(super::kline::open_interest::OpenInterestIndicator::new())
+        KlineIndicatorConfig::BarAnalysis(settings) => Box::new(
+            super::kline::bar_analysis::BarAnalysisIndicator::new(settings),
+        ),
+        KlineIndicatorConfig::CumulativeDelta(settings) => {
+            Box::new(super::kline::cumulative_delta::CumulativeDeltaIndicator::new(settings))
         }
+        KlineIndicatorConfig::OpenInterest(settings) => Box::new(
+            super::kline::open_interest::OpenInterestIndicator::new(settings),
+        ),
     }
 }

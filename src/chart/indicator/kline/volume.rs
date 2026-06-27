@@ -10,7 +10,11 @@ use crate::chart::{
     },
 };
 
-use data::chart::{PlotData, kline::KlineDataPoint};
+use data::chart::{
+    PlotData,
+    indicator::{KlineIndicatorConfig, KlineVolumeSettings},
+    kline::KlineDataPoint,
+};
 use data::util::format_with_commas;
 use exchange::{Kline, Trade, Volume};
 
@@ -19,13 +23,15 @@ use std::ops::RangeInclusive;
 pub struct VolumeIndicator {
     cache: Caches,
     data: BasisSeries<Volume>,
+    settings: KlineVolumeSettings,
 }
 
 impl VolumeIndicator {
-    pub fn new() -> Self {
+    pub fn new(settings: KlineVolumeSettings) -> Self {
         Self {
             cache: Caches::default(),
             data: BasisSeries::default(),
+            settings,
         }
     }
 
@@ -52,17 +58,35 @@ impl VolumeIndicator {
             if let Some((buy, sell)) = volume.buy_sell() {
                 BarClass::Overlay {
                     overlay: buy.to_f32_lossy() - sell.to_f32_lossy(),
+                    positive: self
+                        .settings
+                        .custom_buy_color
+                        .filter(|_| self.settings.custom_color_enabled)
+                        .unwrap_or(self.settings.colors.buy_color),
+                    negative: self
+                        .settings
+                        .custom_sell_color
+                        .filter(|_| self.settings.custom_color_enabled)
+                        .unwrap_or(self.settings.colors.sell_color),
                 }
             } else {
-                BarClass::Single
+                BarClass::Single {
+                    color: self
+                        .settings
+                        .custom_buy_color
+                        .filter(|_| self.settings.custom_color_enabled)
+                        .unwrap_or(self.settings.colors.buy_color),
+                }
             }
         };
 
         let value_fn = |volume: &Volume| volume.total().to_f32_lossy();
 
-        let plot = BarPlot::new(value_fn, bar_kind)
-            .bar_width_factor(0.9)
-            .with_tooltip(tooltip);
+        let mut plot = BarPlot::new(value_fn, bar_kind)
+            .bar_width_factor(self.settings.bar_width_factor.clamp(0.2, 1.0));
+        if self.settings.show_tooltip {
+            plot = plot.with_tooltip(tooltip);
+        }
 
         indicator_row(
             main_chart,
@@ -141,5 +165,14 @@ impl KlineIndicatorImpl for VolumeIndicator {
 
     fn on_basis_change(&mut self, source: &PlotData<KlineDataPoint>) {
         self.rebuild_from_source(source);
+    }
+
+    fn apply_config(&mut self, config: &KlineIndicatorConfig, _source: &PlotData<KlineDataPoint>) {
+        if let KlineIndicatorConfig::Volume(settings) = config
+            && self.settings != *settings
+        {
+            self.settings = *settings;
+            self.clear_all_caches();
+        }
     }
 }

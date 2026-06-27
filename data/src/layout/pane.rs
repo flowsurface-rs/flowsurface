@@ -9,7 +9,7 @@ use crate::util::ok_or_default;
 use crate::chart::{
     Basis, ViewConfig,
     heatmap::HeatmapStudy,
-    indicator::{HeatmapIndicator, KlineIndicator},
+    indicator::{HeatmapIndicatorConfig, KlineIndicatorConfig},
     kline::KlineChartKind,
 };
 
@@ -40,7 +40,7 @@ pub enum Pane {
         #[serde(deserialize_with = "ok_or_default")]
         settings: Settings,
         #[serde(deserialize_with = "ok_or_default", default)]
-        indicators: Vec<HeatmapIndicator>,
+        indicators: Vec<HeatmapIndicatorConfig>,
         #[serde(deserialize_with = "ok_or_default", default)]
         link_group: Option<LinkGroup>,
     },
@@ -52,7 +52,7 @@ pub enum Pane {
         #[serde(deserialize_with = "ok_or_default")]
         settings: Settings,
         #[serde(deserialize_with = "ok_or_default", default)]
-        indicators: Vec<HeatmapIndicator>,
+        indicators: Vec<HeatmapIndicatorConfig>,
         #[serde(deserialize_with = "ok_or_default", default)]
         link_group: Option<LinkGroup>,
     },
@@ -64,7 +64,7 @@ pub enum Pane {
         #[serde(deserialize_with = "ok_or_default")]
         settings: Settings,
         #[serde(deserialize_with = "ok_or_default", default)]
-        indicators: Vec<KlineIndicator>,
+        indicators: Vec<KlineIndicatorConfig>,
         #[serde(deserialize_with = "ok_or_default", default)]
         link_group: Option<LinkGroup>,
     },

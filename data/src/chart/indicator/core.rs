@@ -4,17 +4,23 @@ use enum_map::Enum;
 use exchange::adapter::MarketKind;
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize, Eq, Enum)]
+pub enum KlineIndicator {
+    Volume,
+    BarAnalysis,
+    CumulativeDelta,
+    OpenInterest,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize, Eq, Enum)]
+pub enum HeatmapIndicator {
+    Volume,
+}
+
 pub trait Indicator: PartialEq + Display + 'static {
     fn for_market(market: MarketKind) -> &'static [Self]
     where
         Self: Sized;
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize, Eq, Enum)]
-pub enum KlineIndicator {
-    Volume,
-    CumulativeDelta,
-    OpenInterest,
 }
 
 impl Indicator for KlineIndicator {
@@ -30,10 +36,15 @@ impl KlineIndicator {
     // Indicator togglers on UI menus depend on these arrays.
     // Every variant needs to be in either SPOT, PERPS or both.
     /// Indicators that can be used with spot market tickers
-    const FOR_SPOT: [KlineIndicator; 2] = [KlineIndicator::Volume, KlineIndicator::CumulativeDelta];
-    /// Indicators that can be used with perpetual swap market tickers
-    const FOR_PERPS: [KlineIndicator; 3] = [
+    const FOR_SPOT: [KlineIndicator; 3] = [
         KlineIndicator::Volume,
+        KlineIndicator::BarAnalysis,
+        KlineIndicator::CumulativeDelta,
+    ];
+    /// Indicators that can be used with perpetual swap market tickers
+    const FOR_PERPS: [KlineIndicator; 4] = [
+        KlineIndicator::Volume,
+        KlineIndicator::BarAnalysis,
         KlineIndicator::CumulativeDelta,
         KlineIndicator::OpenInterest,
     ];
@@ -43,15 +54,11 @@ impl Display for KlineIndicator {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             KlineIndicator::Volume => write!(f, "Volume"),
+            KlineIndicator::BarAnalysis => write!(f, "Bar Analysis"),
             KlineIndicator::CumulativeDelta => write!(f, "CVD"),
             KlineIndicator::OpenInterest => write!(f, "Open Interest"),
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize, Eq, Enum)]
-pub enum HeatmapIndicator {
-    Volume,
 }
 
 impl Indicator for HeatmapIndicator {
@@ -99,3 +106,15 @@ impl From<HeatmapIndicator> for UiIndicator {
         UiIndicator::Heatmap(h)
     }
 }
+
+impl PartialEq for UiIndicator {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (UiIndicator::Heatmap(a), UiIndicator::Heatmap(b)) => a == b,
+            (UiIndicator::Kline(a), UiIndicator::Kline(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for UiIndicator {}

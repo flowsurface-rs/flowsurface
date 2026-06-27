@@ -6,6 +6,7 @@ use iced::{
 pub mod indicators;
 pub mod mini_tickers_list;
 pub mod settings;
+mod settings_control;
 pub mod stream;
 
 #[derive(Debug, Clone, PartialEq)]

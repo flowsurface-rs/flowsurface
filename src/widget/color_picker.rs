@@ -9,19 +9,87 @@
 /// Used cursor.position() with manual bounds checking instead of cursor.position_over(bounds) inside `decorate::update`,
 /// to support correct mouse interactions when it's inside a Scrollable widget and prevent being offsetted by scrolling.
 ///  
-use iced::Length::{self, Fill, FillPortion};
+use iced::Length::{self, Fill};
 use iced::advanced::Layout;
 use iced::advanced::renderer::{Quad, Renderer as _};
-use iced::widget::{Container, Space, column, container, row};
-use iced::{Color, Element, Point, Rectangle, Renderer, Theme, advanced, border, mouse, touch};
+use iced::widget::{Container, Space, column, container, mouse_area, row, text};
+use iced::{
+    Alignment, Color, Element, Point, Rectangle, Renderer, Theme, advanced, border, mouse, touch,
+};
 
 use super::decorate::decorate;
 use palette::{Hsva, RgbHue};
 
-const HANDLE_RADIUS: f32 = 10.0;
-const SLIDER_HEIGHT: f32 = 15.0;
+const HANDLE_RADIUS: f32 = 6.0;
+const SLIDER_HEIGHT: f32 = 10.0;
+const GRID_HEIGHT: f32 = 96.0;
+const PREVIEW_SIZE: f32 = 24.0;
+const SWATCH_SIZE: f32 = 16.0;
 
-pub fn color_picker<'a, Message: 'a>(
+const PRESET_COLORS: [Color; 10] = [
+    Color {
+        r: 1.0,
+        g: 0.73,
+        b: 0.18,
+        a: 1.0,
+    },
+    Color {
+        r: 0.10,
+        g: 0.80,
+        b: 0.35,
+        a: 1.0,
+    },
+    Color {
+        r: 0.95,
+        g: 0.20,
+        b: 0.25,
+        a: 1.0,
+    },
+    Color {
+        r: 0.20,
+        g: 0.55,
+        b: 1.0,
+        a: 1.0,
+    },
+    Color {
+        r: 0.70,
+        g: 0.35,
+        b: 1.0,
+        a: 1.0,
+    },
+    Color {
+        r: 1.0,
+        g: 0.45,
+        b: 0.15,
+        a: 1.0,
+    },
+    Color {
+        r: 0.05,
+        g: 0.05,
+        b: 0.05,
+        a: 1.0,
+    },
+    Color {
+        r: 0.45,
+        g: 0.45,
+        b: 0.45,
+        a: 1.0,
+    },
+    Color {
+        r: 0.80,
+        g: 0.80,
+        b: 0.80,
+        a: 1.0,
+    },
+    Color {
+        r: 1.0,
+        g: 1.0,
+        b: 1.0,
+        a: 1.0,
+    },
+];
+
+pub fn color_picker<'a, Message: Clone + 'a>(
     hsva: Hsva,
     on_hsva: impl Fn(Hsva) -> Message + Clone + 'a,
 ) -> Element<'a, Message> {
@@ -29,28 +97,63 @@ pub fn color_picker<'a, Message: 'a>(
 
     column![
         row![
-            bordered(preview(color)).width(FillPortion(2)),
-            bordered(grid(
-                Component::Saturation,
-                Component::Value,
+            bordered(preview(color))
+                .width(PREVIEW_SIZE)
+                .height(PREVIEW_SIZE),
+            text(color_hex(color)).size(11).width(68),
+            bordered(slider(
+                Component::Hue,
                 hsva,
                 on_hsva.clone(),
-                HANDLE_RADIUS,
+                SLIDER_HEIGHT,
+                HANDLE_RADIUS
             ))
-            .width(FillPortion(8))
+            .height(SLIDER_HEIGHT + 2.0)
+            .width(Fill),
         ]
-        .spacing(4),
-        bordered(slider(
-            Component::Hue,
+        .spacing(6)
+        .align_y(Alignment::Center),
+        bordered(grid(
+            Component::Saturation,
+            Component::Value,
             hsva,
-            on_hsva,
-            SLIDER_HEIGHT,
-            HANDLE_RADIUS
-        )),
+            on_hsva.clone(),
+            HANDLE_RADIUS,
+        ))
+        .height(GRID_HEIGHT),
+        preset_swatches(on_hsva),
     ]
-    .height(280)
-    .spacing(4)
+    .spacing(6)
     .into()
+}
+
+fn color_hex(color: Color) -> String {
+    let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+
+    format!(
+        "#{:02X}{:02X}{:02X}",
+        channel(color.r),
+        channel(color.g),
+        channel(color.b)
+    )
+}
+
+fn preset_swatches<'a, Message: Clone + 'a>(
+    on_hsva: impl Fn(Hsva) -> Message + Clone + 'a,
+) -> Element<'a, Message> {
+    PRESET_COLORS
+        .into_iter()
+        .fold(row![].spacing(4), |row, color| {
+            row.push(
+                mouse_area(
+                    bordered(preview(color))
+                        .width(SWATCH_SIZE)
+                        .height(SWATCH_SIZE),
+                )
+                .on_press((on_hsva.clone())(data::config::theme::to_hsva(color))),
+            )
+        })
+        .into()
 }
 
 fn bordered<'a, Message: 'a>(element: impl Into<Element<'a, Message>>) -> Container<'a, Message> {

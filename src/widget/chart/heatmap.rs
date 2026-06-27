@@ -24,7 +24,7 @@ use data::aggr::time::TimeSeries;
 use data::chart::{
     Basis,
     heatmap::{HeatmapDataPoint, HeatmapStudy, HistoricalDepth},
-    indicator::HeatmapIndicator,
+    indicator::{HeatmapIndicator, HeatmapIndicatorConfig},
 };
 use exchange::depth::Depth;
 use exchange::unit::{Price, PriceStep};
@@ -103,7 +103,7 @@ pub struct HeatmapShader {
     data_gen: u64,
     qty_scale: f32,
     rebuild_policy: view::RebuildPolicy,
-    indicators: Vec<HeatmapIndicator>,
+    indicators: Vec<HeatmapIndicatorConfig>,
     pub studies: Vec<HeatmapStudy>,
     pub study_configurator: study::Configurator<HeatmapStudy>,
 }
@@ -114,7 +114,7 @@ impl HeatmapShader {
         step: PriceStep,
         ticker_info: TickerInfo,
         studies: Vec<HeatmapStudy>,
-        indicators: Vec<HeatmapIndicator>,
+        indicators: Vec<HeatmapIndicatorConfig>,
         config: Option<data::chart::heatmap::Config>,
     ) -> Self {
         let depth_history = HistoricalDepth::new(ticker_info.min_qty, step, basis);
@@ -570,13 +570,8 @@ impl HeatmapShader {
         }
     }
 
-    pub fn toggle_indicator(&mut self, indicator: HeatmapIndicator) {
-        if self.indicators.contains(&indicator) {
-            self.indicators.retain(|i| i != &indicator);
-        } else {
-            self.indicators.push(indicator);
-        }
-
+    pub fn sync_indicator_configs(&mut self, indicators: Vec<HeatmapIndicatorConfig>) {
+        self.indicators = indicators;
         self.canvas_invalidation.mark_overlay_tooltip();
         self.canvas_invalidation.mark_overlay_scale_labels();
         self.try_rebuild_instances();
@@ -689,7 +684,10 @@ impl HeatmapShader {
             )
             .map(|(price, run)| (*price, run.qty, run.is_bid));
 
-        let show_volume_indicator = self.indicators.contains(&HeatmapIndicator::Volume);
+        let show_volume_indicator = self
+            .indicators
+            .iter()
+            .any(|cfg| cfg.kind() == HeatmapIndicator::Volume);
 
         let built = self.instances.build_instances(
             &effective_window,
