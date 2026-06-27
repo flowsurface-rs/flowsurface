@@ -1,59 +1,26 @@
 mod client;
-mod connect;
+mod http;
 mod hub;
 mod limiter;
 pub mod proxy;
+mod ws;
 
+use super::Timeframe;
 pub use super::error::AdapterError;
-use super::{Ticker, Timeframe};
 use crate::{
     Kline, Price, PushFrequency, TickMultiplier, TickerInfo, Trade, UnixMs, depth::Depth, unit::Qty,
 };
 
 use enum_map::{Enum, EnumMap};
-use futures::SinkExt;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
-use std::{str::FromStr, sync::Arc, time::Duration};
+use std::{str::FromStr, sync::Arc};
 
 pub use client::{AdapterHandles, MAX_KLINE_STREAMS_PER_STREAM, MAX_TRADE_TICKERS_PER_STREAM};
 pub use proxy::Proxy;
 
-/// Buffer trades and flush in this interval
-const TRADE_BUCKET_INTERVAL: Duration = Duration::from_micros(33_333);
-
-async fn flush_trade_buffers<V>(
-    output: &mut futures::channel::mpsc::Sender<Event>,
-    ticker_info_map: &FxHashMap<Ticker, (TickerInfo, V)>,
-    trade_buffers_map: &mut FxHashMap<Ticker, Vec<Trade>>,
-) {
-    let interval_ms = TRADE_BUCKET_INTERVAL.as_millis() as u64;
-
-    for (ticker, trades_buffer) in trade_buffers_map.iter_mut() {
-        if trades_buffer.is_empty() {
-            continue;
-        }
-
-        let bucket_update_t = trades_buffer
-            .iter()
-            .map(|t| t.time.as_u64())
-            .max()
-            .map(|t| UnixMs::new((t / interval_ms) * interval_ms));
-
-        if let Some((ticker_info, _)) = ticker_info_map.get(ticker)
-            && let Some(update_t) = bucket_update_t
-        {
-            let _ = output
-                .send(Event::TradesReceived(
-                    StreamKind::Trades {
-                        ticker_info: *ticker_info,
-                    },
-                    update_t,
-                    std::mem::take(trades_buffer).into_boxed_slice(),
-                ))
-                .await;
-        }
-    }
+pub fn allowed_multipliers_for_min_tick(min_ticksize: crate::unit::MinTicksize) -> &'static [u16] {
+    hub::hyperliquid::allowed_multipliers_for_min_tick(min_ticksize)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
@@ -551,8 +518,8 @@ impl Exchange {
 
 #[derive(Debug, Clone)]
 pub enum Event {
-    Connected(Exchange),
-    Disconnected(Exchange, String),
+    Connected(Arc<[StreamKind]>),
+    Disconnected(Arc<[StreamKind]>, String),
     DepthReceived(StreamKind, UnixMs, Arc<Depth>),
     TradesReceived(StreamKind, UnixMs, Box<[Trade]>),
     KlineReceived(StreamKind, Kline),

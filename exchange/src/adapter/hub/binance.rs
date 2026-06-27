@@ -1,6 +1,6 @@
 use crate::{
     Event, Kline, OpenInterest, PushFrequency, Ticker, TickerInfo, Timeframe, Trade, UnixMs,
-    adapter::{Exchange, MarketKind, limiter::DynamicRateLimiterConfig},
+    adapter::{Exchange, MarketKind, StreamTicksize, limiter::DynamicRateLimiterConfig},
     depth::DepthPayload,
     unit::{ContractSize, qty::RawQtyUnit},
 };
@@ -201,10 +201,11 @@ impl BinanceHandle {
     pub fn connect_depth_stream(
         self,
         ticker_info: TickerInfo,
+        depth_aggr: StreamTicksize,
         push_freq: PushFrequency,
     ) -> impl futures::Stream<Item = Event> {
         let proxy_cfg = self.proxy_cfg.clone();
-        stream::connect_depth_stream(self, ticker_info, push_freq, proxy_cfg)
+        stream::connect_depth_stream(self, ticker_info, depth_aggr, push_freq, proxy_cfg)
     }
 
     pub fn connect_trade_stream(

@@ -73,7 +73,7 @@ pub(super) async fn fetch_depth_snapshot(
         ));
     }
 
-    let url = format!("{FETCH_DOMAIN}/v1/contract/depth/{symbol_str}");
+    let url = format!("{FETCH_DOMAIN}/v1/contract/depth/{symbol_str}?limit=1000");
     let response_text = hub.http_text_with_limiter(&url, 1, None, None).await?;
     let snapshot: DepthSnapshotResponse =
         sonic_rs::from_str(&response_text).map_err(|e| AdapterError::ParseError(e.to_string()))?;

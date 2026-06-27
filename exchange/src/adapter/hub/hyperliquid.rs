@@ -1,7 +1,7 @@
 use crate::{
-    Event, Kline, PushFrequency, TickMultiplier, TickerInfo, Timeframe, Trade, UnixMs,
+    Event, Kline, PushFrequency, TickerInfo, Timeframe, UnixMs,
     adapter::limiter::FixedWindowRateLimiterConfig,
-    adapter::{Exchange, MarketKind},
+    adapter::{MarketKind, StreamTicksize},
     depth::DepthPayload,
     unit::{MinTicksize, qty::RawQtyUnit},
 };
@@ -39,13 +39,6 @@ pub fn allowed_multipliers_for_min_tick(min_ticksize: MinTicksize) -> &'static [
     } else {
         // min tick == 1: could be exactly 5 digits or overflow (>=6).
         MULTS_SAFE
-    }
-}
-
-fn exchange_from_market_type(market: MarketKind) -> Exchange {
-    match market {
-        MarketKind::Spot => Exchange::HyperliquidSpot,
-        MarketKind::LinearPerps | MarketKind::InversePerps => Exchange::HyperliquidLinear,
     }
 }
 
@@ -144,22 +137,6 @@ impl HyperliquidHandle {
             .await
     }
 
-    pub async fn fetch_trades(
-        &self,
-        ticker: TickerInfo,
-        from_time: UnixMs,
-        data_path: Option<std::path::PathBuf>,
-    ) -> Result<Vec<Trade>, AdapterError> {
-        self.request_port
-            .request(move |reply| HyperliquidCommand::Trades {
-                ticker,
-                from_time,
-                data_path,
-                reply,
-            })
-            .await
-    }
-
     pub async fn fetch_depth_snapshot(
         &self,
         ticker: crate::Ticker,
@@ -172,11 +149,11 @@ impl HyperliquidHandle {
     pub fn connect_depth_stream(
         self,
         ticker_info: TickerInfo,
-        tick_multiplier: Option<TickMultiplier>,
+        depth_aggr: StreamTicksize,
         push_freq: PushFrequency,
     ) -> impl futures::Stream<Item = Event> {
         let proxy_cfg = self.proxy_cfg.clone();
-        stream::connect_depth_stream(self, ticker_info, tick_multiplier, push_freq, proxy_cfg)
+        stream::connect_depth_stream(self, ticker_info, depth_aggr, push_freq, proxy_cfg)
     }
 
     pub fn connect_trade_stream(

@@ -31,6 +31,7 @@ num-traits = "0.2.19"
 rustc-hash = "2.1.2"
 enum-map = "2.7.3"
 url = "2.5.8"
+rand = "0.10.1"
 uuid = { version = "1.23.1", features = ["v4"] }
 data = { version = "0.8.9", path = "data", package = "flowsurface-data" }
 exchange = { version = "0.8.9", path = "exchange", package = "flowsurface-exchange" }
@@ -63,7 +64,6 @@ fern = "0.7.1"
 rodio = { version = "0.22.2", default-features = false, features = [ "playback", "wav" ]}
 
 bytemuck = "1.25.0"
-rand = "0.10.1"
 iced_wgpu = "0.14.0"
 exchange.workspace = true
 data.workspace = true

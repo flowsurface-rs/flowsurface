@@ -202,9 +202,9 @@ impl Flowsurface {
                 let dashboard = self.active_dashboard_mut();
 
                 match event {
-                    exchange::Event::Connected(_exchange) => {}
-                    exchange::Event::Disconnected(exchange, reason) => {
-                        log::info!("a stream disconnected from {exchange} WS: {reason:?}");
+                    exchange::Event::Connected(_streams) => {}
+                    exchange::Event::Disconnected(_streams, reason) => {
+                        log::info!("a stream disconnected from WS: {reason:?}");
                     }
                     exchange::Event::DepthReceived(stream, update_t, depth) => {
                         let task = dashboard
