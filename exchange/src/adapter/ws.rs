@@ -20,10 +20,11 @@ use tokio_rustls::{
 };
 use url::Url;
 
+use futures::StreamExt;
+#[cfg(not(feature = "unbounded-channel"))]
 use futures::channel::mpsc::Sender;
 #[cfg(feature = "unbounded-channel")]
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender};
-use futures::{SinkExt, StreamExt};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
@@ -79,6 +80,35 @@ enum AnyReceiver<T> {
     Unbounded(UnboundedReceiver<T>),
 }
 
+impl<T> futures::Stream for AnyReceiver<T> {
+    type Item = T;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        match self.get_mut() {
+            #[cfg(not(feature = "unbounded-channel"))]
+            AnyReceiver::Bounded(rx) => std::pin::Pin::new(rx).poll_next(cx),
+            #[cfg(feature = "unbounded-channel")]
+            AnyReceiver::Unbounded(rx) => std::pin::Pin::new(rx).poll_next(cx),
+        }
+    }
+}
+
+fn channel<T>(_capacity: usize) -> (AnySender<T>, AnyReceiver<T>) {
+    #[cfg(not(feature = "unbounded-channel"))]
+    {
+        let (tx, rx) = futures::channel::mpsc::channel(_capacity);
+        (AnySender::Bounded(tx), AnyReceiver::Bounded(rx))
+    }
+    #[cfg(feature = "unbounded-channel")]
+    {
+        let (tx, rx) = futures::channel::mpsc::unbounded();
+        (AnySender::Unbounded(tx), AnyReceiver::Unbounded(rx))
+    }
+}
+
 pub(super) struct ChannelStream<T> {
     receiver: AnyReceiver<T>,
     task: tokio::task::JoinHandle<()>,
@@ -91,13 +121,7 @@ impl<T> futures::Stream for ChannelStream<T> {
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        let this = self.get_mut();
-        match &mut this.receiver {
-            #[cfg(not(feature = "unbounded-channel"))]
-            AnyReceiver::Bounded(rx) => std::pin::Pin::new(rx).poll_next(cx),
-            #[cfg(feature = "unbounded-channel")]
-            AnyReceiver::Unbounded(rx) => std::pin::Pin::new(rx).poll_next(cx),
-        }
+        std::pin::Pin::new(&mut self.get_mut().receiver).poll_next(cx)
     }
 }
 
@@ -185,16 +209,7 @@ impl WsSession {
     }
 
     pub(super) fn run<A: WsAdapter + Send + 'static>(self, mut adapter: A) -> ChannelStream<Event> {
-        #[cfg(not(feature = "unbounded-channel"))]
-        let (mut event_tx, event_rx) = {
-            let (tx, rx) = futures::channel::mpsc::channel(512);
-            (AnySender::Bounded(tx), AnyReceiver::Bounded(rx))
-        };
-        #[cfg(feature = "unbounded-channel")]
-        let (mut event_tx, event_rx) = {
-            let (tx, rx) = futures::channel::mpsc::unbounded();
-            (AnySender::Unbounded(tx), AnyReceiver::Unbounded(rx))
-        };
+        let (mut event_tx, event_rx) = channel(512);
 
         let ping_payload = self.ping_payload;
         let streams = Arc::clone(&self.streams);
@@ -221,8 +236,7 @@ impl WsSession {
                     }
                 };
 
-                let (frame_tx, mut frame_rx) =
-                    futures::channel::mpsc::channel::<Result<Vec<u8>, String>>(64);
+                let (frame_tx, mut frame_rx) = channel::<Result<Vec<u8>, String>>(64);
                 let io_handle = tokio::spawn(transport.read_frame(ping_payload, frame_tx));
 
                 for event in adapter.on_connected().await {
@@ -258,7 +272,7 @@ impl WsSession {
                                 }
                                 None => {
                                     break Some(
-                                        "I/O task closed channel unexpectedly".to_string(),
+                                        "I/O task exited".to_string(),
                                     );
                                 }
                             }
@@ -304,6 +318,88 @@ impl WsSession {
 pub(super) struct WsTransport(FragmentCollector<TokioIo<Upgraded>>);
 
 impl WsTransport {
+    /// Reads frames, handles heartbeat and Ping/Pong at transport level,
+    /// forwards text frames to the processor task.
+    async fn read_frame(
+        mut self,
+        ping_payload: PingPayload,
+        mut frame_tx: AnySender<Result<Vec<u8>, String>>,
+    ) {
+        let mut heartbeat = WsHeartbeat::default();
+
+        loop {
+            let read_timeout = heartbeat
+                .time_until_next_ping()
+                .max(Duration::from_millis(1));
+
+            match tokio::time::timeout(read_timeout, self.0.read_frame()).await {
+                Ok(Ok(msg)) => {
+                    heartbeat.mark_activity();
+
+                    match msg.opcode {
+                        OpCode::Text => {
+                            let payload = Vec::from(&msg.payload[..]);
+                            if frame_tx.send(Ok(payload)).is_err() {
+                                break;
+                            }
+                        }
+                        OpCode::Ping => {
+                            let payload = Vec::from(msg.payload);
+                            let _ = self.reply_pong(Payload::Owned(payload)).await;
+                        }
+                        OpCode::Close => {
+                            let _ = frame_tx.send(Err("Connection closed".into()));
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(Err(e)) => {
+                    let _ = frame_tx.send(Err(format!("Error reading frame: {e}")));
+                    break;
+                }
+                Err(_elapsed) => {
+                    if heartbeat.timed_out() {
+                        let _ =
+                            frame_tx.send(Err("Heartbeat timeout (no websocket activity)".into()));
+                        break;
+                    }
+
+                    if heartbeat.should_send_ping() {
+                        if self.send_heartbeat_ping(ping_payload).await.is_err() {
+                            let _ = frame_tx.send(Err(HEARTBEAT_SEND_FAILED_REASON.into()));
+                            break;
+                        }
+                        heartbeat.record_ping_sent();
+                    }
+                }
+            }
+        }
+    }
+
+    pub(super) async fn write_frame(&mut self, frame: Frame<'_>) -> Result<(), WebSocketError> {
+        self.0.write_frame(frame).await
+    }
+
+    async fn reply_pong(&mut self, payload: Payload<'_>) -> Result<(), &'static str> {
+        self.write_frame(Frame::pong(payload))
+            .await
+            .map_err(|_| HEARTBEAT_PONG_FAILED_REASON)
+    }
+
+    async fn send_heartbeat_ping(&mut self, ping_payload: PingPayload) -> Result<(), &'static str> {
+        let frame = match ping_payload {
+            PingPayload::Text(payload) => Frame::text(Payload::Borrowed(payload)),
+            PingPayload::OpCode(payload) => {
+                Frame::new(true, OpCode::Ping, None, Payload::Borrowed(payload))
+            }
+        };
+
+        self.write_frame(frame)
+            .await
+            .map_err(|_| HEARTBEAT_SEND_FAILED_REASON)
+    }
+
     pub(super) async fn establish(
         domain: &str,
         url: &str,
@@ -359,93 +455,6 @@ impl WsTransport {
                 "Invalid scheme for websocket URL".to_string(),
             )),
         }
-    }
-
-    pub(super) async fn write_frame(&mut self, frame: Frame<'_>) -> Result<(), WebSocketError> {
-        self.0.write_frame(frame).await
-    }
-
-    /// Reads frames, handles heartbeat and Ping/Pong at transport level,
-    /// forwards text frames to the processor task.
-    async fn read_frame(
-        mut self,
-        ping_payload: PingPayload,
-        mut frame_tx: Sender<Result<Vec<u8>, String>>,
-    ) {
-        let mut heartbeat = WsHeartbeat::default();
-
-        loop {
-            let read_timeout = heartbeat
-                .time_until_next_ping()
-                .max(Duration::from_millis(1));
-
-            match tokio::time::timeout(read_timeout, self.0.read_frame()).await {
-                Ok(Ok(msg)) => {
-                    heartbeat.mark_activity();
-
-                    match msg.opcode {
-                        OpCode::Text => {
-                            let payload = Vec::from(&msg.payload[..]);
-                            if frame_tx.send(Ok(payload)).await.is_err() {
-                                break;
-                            }
-                        }
-                        OpCode::Ping => {
-                            let payload = Vec::from(msg.payload);
-                            let _ = self.reply_pong(Payload::Owned(payload)).await;
-                        }
-                        OpCode::Close => {
-                            let _ = frame_tx.send(Err("Connection closed".into())).await;
-                            break;
-                        }
-                        _ => {}
-                    }
-                }
-                Ok(Err(e)) => {
-                    let _ = frame_tx
-                        .send(Err(format!("Error reading frame: {e}")))
-                        .await;
-                    break;
-                }
-                Err(_elapsed) => {
-                    if heartbeat.timed_out() {
-                        let _ = frame_tx
-                            .send(Err("Heartbeat timeout (no websocket activity)".into()))
-                            .await;
-                        break;
-                    }
-
-                    if heartbeat.should_send_ping() {
-                        if self.send_heartbeat_ping(ping_payload).await.is_err() {
-                            let _ = frame_tx
-                                .send(Err(HEARTBEAT_SEND_FAILED_REASON.into()))
-                                .await;
-                            break;
-                        }
-                        heartbeat.record_ping_sent();
-                    }
-                }
-            }
-        }
-    }
-
-    async fn reply_pong(&mut self, payload: Payload<'_>) -> Result<(), &'static str> {
-        self.write_frame(Frame::pong(payload))
-            .await
-            .map_err(|_| HEARTBEAT_PONG_FAILED_REASON)
-    }
-
-    async fn send_heartbeat_ping(&mut self, ping_payload: PingPayload) -> Result<(), &'static str> {
-        let frame = match ping_payload {
-            PingPayload::Text(payload) => Frame::text(Payload::Borrowed(payload)),
-            PingPayload::OpCode(payload) => {
-                Frame::new(true, OpCode::Ping, None, Payload::Borrowed(payload))
-            }
-        };
-
-        self.write_frame(frame)
-            .await
-            .map_err(|_| HEARTBEAT_SEND_FAILED_REASON)
     }
 
     async fn upgrade_to_tls(
