@@ -1038,6 +1038,21 @@ impl canvas::Program<Message> for KlineChart {
                         cell_width_unscaled,
                         footprint_cluster_min_width(*clusters),
                     );
+                    let draw_ctx = FootprintDrawCtx {
+                        price_to_y: &price_to_y,
+                        cell_width: chart.cell_width,
+                        cell_height: chart.cell_height,
+                        candle_width,
+                        palette,
+                        text_size,
+                        step: self.tick_size(),
+                        show_text,
+                        show_summary: self.visual_config.show_footprint_summary,
+                        show_table_candle: self.visual_config.show_footprint_table_candle,
+                        imbalance,
+                        cluster_kind: *clusters,
+                        spacing: content_spacing,
+                    };
 
                     if *clusters != ClusterKind::Table {
                         draw_all_npocs(
@@ -1070,23 +1085,11 @@ impl canvas::Program<Message> for KlineChart {
 
                             draw_clusters(
                                 frame,
-                                price_to_y,
+                                &draw_ctx,
                                 x_position,
-                                chart.cell_width,
-                                chart.cell_height,
-                                candle_width,
                                 cluster_scaling,
-                                palette,
-                                text_size,
-                                self.tick_size(),
-                                show_text,
-                                self.visual_config.show_footprint_summary,
-                                self.visual_config.show_footprint_table_candle,
-                                imbalance,
                                 kline,
                                 trades,
-                                *clusters,
-                                content_spacing,
                             );
                         },
                     );
@@ -1489,26 +1492,46 @@ fn effective_cluster_qty(
     }
 }
 
-fn draw_clusters(
-    frame: &mut canvas::Frame,
-    price_to_y: impl Fn(Price) -> f32,
-    x_position: f32,
+struct FootprintDrawCtx<'a, F>
+where
+    F: Fn(Price) -> f32,
+{
+    price_to_y: &'a F,
     cell_width: f32,
     cell_height: f32,
     candle_width: f32,
-    max_cluster_qty: f64,
-    palette: &Extended,
+    palette: &'a Extended,
     text_size: f32,
     step: PriceStep,
     show_text: bool,
     show_summary: bool,
     show_table_candle: bool,
     imbalance: Option<(usize, Option<usize>, bool)>,
-    kline: &Kline,
-    footprint: &KlineTrades,
     cluster_kind: ClusterKind,
     spacing: ContentGaps,
-) {
+}
+
+fn draw_clusters<F>(
+    frame: &mut canvas::Frame,
+    ctx: &FootprintDrawCtx<'_, F>,
+    x_position: f32,
+    max_cluster_qty: f64,
+    kline: &Kline,
+    footprint: &KlineTrades,
+) where
+    F: Fn(Price) -> f32,
+{
+    let price_to_y = ctx.price_to_y;
+    let cell_width = ctx.cell_width;
+    let cell_height = ctx.cell_height;
+    let candle_width = ctx.candle_width;
+    let palette = ctx.palette;
+    let text_size = ctx.text_size;
+    let step = ctx.step;
+    let show_text = ctx.show_text;
+    let imbalance = ctx.imbalance;
+    let cluster_kind = ctx.cluster_kind;
+    let spacing = ctx.spacing;
     let text_color = palette.background.weakest.text;
 
     let bar_width_factor: f32 = 0.9;
@@ -1623,7 +1646,7 @@ fn draw_clusters(
 
             draw_footprint_kline(
                 frame,
-                &price_to_y,
+                price_to_y,
                 area.candle_center_x,
                 candle_width,
                 kline,
@@ -1640,7 +1663,7 @@ fn draw_clusters(
                 kline,
                 palette,
                 spacing,
-                show_table_candle,
+                ctx.show_table_candle,
             );
             let table_width = area.width();
             let half_width = table_width / 2.0;
@@ -1857,7 +1880,7 @@ fn draw_clusters(
 
             draw_footprint_kline(
                 frame,
-                &price_to_y,
+                price_to_y,
                 area.candle_center_x,
                 candle_width,
                 kline,
@@ -1866,7 +1889,7 @@ fn draw_clusters(
         }
     }
 
-    if show_text && show_summary {
+    if show_text && ctx.show_summary {
         let Some(summary) = FootprintSummary::from_trades(footprint) else {
             return;
         };
