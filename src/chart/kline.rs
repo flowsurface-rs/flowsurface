@@ -9,8 +9,8 @@ use data::aggr::ticks::TickAggr;
 use data::aggr::time::TimeSeries;
 use data::chart::indicator::{Indicator, KlineIndicator};
 use data::chart::kline::{
-    ClusterKind, ClusterScaling, Config, FootprintStudy, KlineDataPoint, KlineTrades, NPoc,
-    PointOfControl,
+    ClusterKind, ClusterScaling, Config, FootprintStudy, FootprintSummary, KlineDataPoint,
+    KlineTrades, NPoc, PointOfControl,
 };
 use data::chart::{Autoscale, KlineChartKind, ViewConfig};
 
@@ -1685,24 +1685,16 @@ fn draw_clusters(
     }
 
     if show_text {
-        let mut total_buy = Qty::ZERO;
-        let mut total_sell = Qty::ZERO;
-        let mut total_delta = Qty::ZERO;
-
-        for group in footprint.trades.values() {
-            total_buy += group.buy_qty;
-            total_sell += group.sell_qty;
-            total_delta += group.delta_qty();
-        }
+        let Some(summary) = FootprintSummary::from_trades(footprint) else {
+            return;
+        };
 
         let summary_y = price_to_y(kline.low) + cell_height * 1.5;
         let line_spacing = text_size * 1.2;
 
-        let total_vol = total_buy + total_sell;
-
         draw_cluster_text(
             frame,
-            &format!("V: {}", abbr_large_numbers(total_vol.to_f64())),
+            &format!("V: {}", abbr_large_numbers(summary.total.to_f64())),
             Point::new(x_position, summary_y),
             text_size * 0.9,
             palette.background.weakest.text,
@@ -1710,7 +1702,7 @@ fn draw_clusters(
             Alignment::Start,
         );
 
-        let delta_color = if total_delta >= Qty::ZERO {
+        let delta_color = if summary.delta >= Qty::ZERO {
             palette.success.base.color
         } else {
             palette.danger.base.color
@@ -1718,7 +1710,7 @@ fn draw_clusters(
 
         draw_cluster_text(
             frame,
-            &format!("Δ: {}", abbr_large_numbers(total_delta.to_f64())),
+            &format!("Δ: {}", abbr_large_numbers(summary.delta.to_f64())),
             Point::new(x_position, summary_y + line_spacing),
             text_size * 0.9,
             delta_color,

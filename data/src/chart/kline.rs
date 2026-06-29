@@ -261,6 +261,51 @@ impl KlineTrades {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FootprintSummary {
+    pub buy: Qty,
+    pub sell: Qty,
+    pub total: Qty,
+    pub delta: Qty,
+    pub delta_pct: f64,
+}
+
+impl FootprintSummary {
+    pub fn new(buy: Qty, sell: Qty) -> Self {
+        let total = buy + sell;
+        let delta = buy - sell;
+        let total_f = total.to_f64();
+        let delta_pct = if total_f > 0.0 {
+            (delta.to_f64() / total_f) * 100.0
+        } else {
+            0.0
+        };
+
+        Self {
+            buy,
+            sell,
+            total,
+            delta,
+            delta_pct,
+        }
+    }
+
+    pub fn from_trades(footprint: &KlineTrades) -> Option<Self> {
+        if footprint.trades.is_empty() {
+            return None;
+        }
+
+        let (buy, sell) = footprint
+            .trades
+            .values()
+            .fold((Qty::ZERO, Qty::ZERO), |(buy, sell), group| {
+                (buy + group.buy_qty, sell + group.sell_qty)
+            });
+
+        Some(Self::new(buy, sell))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
 pub enum KlineChartKind {
     #[default]
