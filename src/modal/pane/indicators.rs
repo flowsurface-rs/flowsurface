@@ -19,7 +19,13 @@ where
 {
     let content_allows_dragging = matches!(state.content, pane::Content::Kline { .. });
     let content_row = if let Some(market) = market_type {
-        content_row(pane, selected, market, content_allows_dragging)
+        content_row(
+            pane,
+            &state.content,
+            selected,
+            market,
+            content_allows_dragging,
+        )
     } else {
         column![].spacing(4).into()
     };
@@ -110,6 +116,7 @@ where
 
 fn content_row<'a, I>(
     pane: pane_grid::Pane,
+    content: &pane::Content,
     selected: &[I],
     market: exchange::adapter::MarketKind,
     allows_drag: bool,
@@ -119,15 +126,24 @@ where
 {
     let reorderable = allows_drag && selected.len() >= 2;
 
+    let selected: Vec<I> = selected
+        .iter()
+        .copied()
+        .filter(|indicator| indicator_allowed_for_content(content, (*indicator).into()))
+        .collect();
+
     let selected_list = if !selected.is_empty() {
-        Some(selected_list(pane, selected, reorderable))
+        Some(selected_list(pane, &selected, reorderable))
     } else {
         None
     };
 
     let available: Vec<I> = I::for_market(market)
         .iter()
-        .filter(|indicator| !selected.contains(indicator))
+        .filter(|indicator| {
+            !selected.contains(indicator)
+                && indicator_allowed_for_content(content, (**indicator).into())
+        })
         .cloned()
         .collect();
     let available_list = if !available.is_empty() {
@@ -151,4 +167,17 @@ where
     ]
     .spacing(4)
     .into()
+}
+
+fn indicator_allowed_for_content(content: &pane::Content, indicator: UiIndicator) -> bool {
+    !matches!(
+        (content, indicator),
+        (
+            pane::Content::Kline {
+                kind: data::chart::KlineChartKind::Candles,
+                ..
+            },
+            UiIndicator::Kline(data::chart::indicator::KlineIndicator::BarAnalysis)
+        )
+    )
 }

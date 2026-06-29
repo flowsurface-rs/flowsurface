@@ -1959,7 +1959,10 @@ impl Content {
                 |indis| {
                     indis
                         .into_iter()
-                        .filter(|i| available.contains(i))
+                        .filter(|i| {
+                            available.contains(i)
+                                && kline_indicator_allowed(&determined_chart_kind, *i)
+                        })
                         .collect()
                 },
             )
@@ -2102,13 +2105,19 @@ impl Content {
             }
             (
                 Content::Kline {
-                    chart, indicators, ..
+                    chart,
+                    indicators,
+                    kind,
+                    ..
                 },
                 UiIndicator::Kline(ind),
             ) => {
                 let Some(chart) = chart else {
                     return;
                 };
+                if !kline_indicator_allowed(kind, ind) {
+                    return;
+                }
 
                 if indicators.contains(&ind) {
                     indicators.retain(|i| i != &ind);
@@ -2227,15 +2236,13 @@ impl Content {
                 *previous = studies;
             }
             (Content::Kline { chart, kind, .. }, data::chart::Study::Footprint(studies)) => {
-                chart
-                    .as_mut()
-                    .expect("kline chart not initialized")
-                    .set_studies(studies.clone());
+                let chart = chart.as_mut().expect("kline chart not initialized");
+                chart.set_studies(studies.clone());
                 if let data::chart::KlineChartKind::Footprint {
                     studies: k_studies, ..
                 } = kind
                 {
-                    *k_studies = studies;
+                    *k_studies = chart.studies().unwrap_or_default();
                 }
             }
             _ => {}
@@ -2274,6 +2281,16 @@ impl Content {
             Content::Starter => true,
         }
     }
+}
+
+fn kline_indicator_allowed(kind: &data::chart::KlineChartKind, indicator: KlineIndicator) -> bool {
+    !matches!(
+        (kind, indicator),
+        (
+            data::chart::KlineChartKind::Candles,
+            KlineIndicator::BarAnalysis
+        )
+    )
 }
 
 impl std::fmt::Display for Content {
