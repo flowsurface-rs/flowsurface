@@ -610,6 +610,7 @@ pub fn kline_cfg_view<'a>(
                         pane,
                         VisualConfig::Kline(data::chart::kline::Config {
                             data_labels_always_visible: value,
+                            ..cfg
                         }),
                         false,
                     )
@@ -645,6 +646,23 @@ pub fn kline_cfg_view<'a>(
                     Message::PaneEvent(pane, Event::ClusterKindSelected(new_cluster_kind))
                 });
 
+            let footprint_summary_checkbox = tooltip(
+                checkbox(cfg.show_footprint_summary)
+                    .label("Show footprint summary")
+                    .on_toggle(move |value| {
+                        Message::VisualConfigChanged(
+                            pane,
+                            VisualConfig::Kline(data::chart::kline::Config {
+                                show_footprint_summary: value,
+                                ..cfg
+                            }),
+                            false,
+                        )
+                    }),
+                Some("Show per-bar volume and delta below footprint candles"),
+                TooltipPosition::Top,
+            );
+
             let scaling = {
                 let picklist = pick_list(
                     data::chart::kline::ClusterScaling::ALL,
@@ -676,24 +694,62 @@ pub fn kline_cfg_view<'a>(
                 }
             };
 
-            let study_cfg = study_config.view(studies, basis).map(move |msg| {
-                Message::PaneEvent(
-                    pane,
-                    Event::StudyConfigurator(study::StudyMessage::Footprint(msg)),
-                )
-            });
+            let available_studies: Vec<_> = data::chart::kline::FootprintStudy::ALL
+                .iter()
+                .copied()
+                .filter(|study| clusters.allows_study(study))
+                .collect();
 
-            split_column![
+            let active_studies: Vec<_> = studies
+                .iter()
+                .copied()
+                .filter(|study| {
+                    available_studies
+                        .iter()
+                        .any(|available| available.is_same_type(study))
+                })
+                .collect();
+
+            let study_cfg = study_config
+                .view_available(&active_studies, basis, available_studies)
+                .map(move |msg| {
+                    Message::PaneEvent(
+                        pane,
+                        Event::StudyConfigurator(study::StudyMessage::Footprint(msg)),
+                    )
+                });
+
+            let mut content = split_column![
                 display_readout_section,
+                column![text("Footprint summary").size(crate::style::text_size::SECTION), footprint_summary_checkbox].spacing(8),
                 column![text("Cluster type").size(crate::style::text_size::SECTION), cluster_picklist].spacing(8),
-                column![text("Cluster scaling").size(crate::style::text_size::SECTION), scaling].spacing(8),
-                column![text("Studies").size(crate::style::text_size::SECTION), study_cfg].spacing(8),
-                row![
+                ; spacing = 12, align_x = Alignment::Start
+            ];
+
+            if *clusters != data::chart::kline::ClusterKind::Table {
+                content = content.push(
+                    column![
+                        text("Cluster scaling").size(crate::style::text_size::SECTION),
+                        scaling
+                    ]
+                    .spacing(8),
+                );
+            }
+
+            content = content
+                .push(
+                    column![
+                        text("Studies").size(crate::style::text_size::SECTION),
+                        study_cfg
+                    ]
+                    .spacing(8),
+                )
+                .push(row![
                     space::horizontal(),
                     sync_all_button(pane, VisualConfig::Kline(cfg))
-                ],
-                ; spacing = 12, align_x = Alignment::Start
-            ]
+                ]);
+
+            content
         }
     };
 
@@ -1082,12 +1138,21 @@ pub mod study {
 
         pub fn view<'a>(
             &self,
-            active_studies: &'a [S],
+            active_studies: &[S],
             basis: data::chart::Basis,
+        ) -> Element<'a, Message<S>> {
+            self.view_available(active_studies, basis, S::all())
+        }
+
+        pub fn view_available<'a>(
+            &self,
+            active_studies: &[S],
+            basis: data::chart::Basis,
+            available_studies: Vec<S>,
         ) -> Element<'a, Message<S>> {
             let mut content = column![].spacing(4);
 
-            for available_study in S::all() {
+            for available_study in available_studies {
                 content =
                     content.push(self.create_study_row(available_study, active_studies, basis));
             }
@@ -1098,7 +1163,7 @@ pub mod study {
         fn create_study_row<'a>(
             &self,
             study: S,
-            active_studies: &'a [S],
+            active_studies: &[S],
             basis: data::chart::Basis,
         ) -> Element<'a, Message<S>> {
             let (is_selected, study_config) = {

@@ -21,7 +21,7 @@ use exchange::{Kline, OpenInterest as OIData, TickerInfo, Trade, UnixMs};
 use iced::task::Handle;
 use iced::theme::palette::Extended;
 use iced::widget::canvas::{self, Event, Geometry, Path, Stroke};
-use iced::{Alignment, Element, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
+use iced::{Alignment, Color, Element, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
 
 use enum_map::EnumMap;
 use std::time::Instant;
@@ -63,7 +63,9 @@ impl Chart for KlineChart {
         let mut elements = vec![];
 
         for selected_indicator in enabled {
-            if !KlineIndicator::for_market(market).contains(selected_indicator) {
+            if !self.kind.allows_indicator(*selected_indicator)
+                || !KlineIndicator::for_market(market).contains(selected_indicator)
+            {
                 continue;
             }
             if let Some(indi) = self.indicators[*selected_indicator].as_ref() {
@@ -183,6 +185,7 @@ impl KlineChart {
         visual_config: Option<Config>,
     ) -> Self {
         let visual_config = visual_config.unwrap_or_default();
+        let kind = Self::sanitized_kind(kind.clone());
 
         match basis {
             Basis::Time(interval) => {
@@ -194,7 +197,7 @@ impl KlineChart {
                     .latest_timestamp()
                     .map_or(0, |timestamp| timestamp.as_u64());
                 let (scale_high, scale_low) = timeseries.price_scale({
-                    match kind {
+                    match &kind {
                         KlineChartKind::Footprint { .. } => 12,
                         KlineChartKind::Candles => 60,
                     }
@@ -208,11 +211,11 @@ impl KlineChart {
                     .unwrap_or(1)
                     .max(1) as f32;
 
-                let cell_width = match kind {
+                let cell_width = match &kind {
                     KlineChartKind::Footprint { .. } => 80.0,
                     KlineChartKind::Candles => 4.0,
                 };
-                let cell_height = match kind {
+                let cell_height = match &kind {
                     KlineChartKind::Footprint { .. } => 800.0 / y_ticks,
                     KlineChartKind::Candles => 200.0 / y_ticks,
                 };
@@ -248,6 +251,9 @@ impl KlineChart {
 
                 let mut indicators = EnumMap::default();
                 for &i in enabled_indicators {
+                    if !kind.allows_indicator(i) {
+                        continue;
+                    }
                     let mut indi = indicator::kline::make_empty(i);
                     indi.rebuild_from_source(&data_source);
                     indicators[i] = Some(indi);
@@ -267,11 +273,11 @@ impl KlineChart {
                 }
             }
             Basis::Tick(interval) => {
-                let cell_width = match kind {
+                let cell_width = match &kind {
                     KlineChartKind::Footprint { .. } => 80.0,
                     KlineChartKind::Candles => 4.0,
                 };
-                let cell_height = match kind {
+                let cell_height = match &kind {
                     KlineChartKind::Footprint { .. } => 90.0,
                     KlineChartKind::Candles => 8.0,
                 };
@@ -305,6 +311,9 @@ impl KlineChart {
 
                 let mut indicators = EnumMap::default();
                 for &i in enabled_indicators {
+                    if !kind.allows_indicator(i) {
+                        continue;
+                    }
                     let mut indi = indicator::kline::make_empty(i);
                     indi.rebuild_from_source(&data_source);
                     indicators[i] = Some(indi);
@@ -516,10 +525,13 @@ impl KlineChart {
 
     pub fn set_cluster_kind(&mut self, new_kind: ClusterKind) {
         if let KlineChartKind::Footprint {
-            ref mut clusters, ..
+            ref mut clusters,
+            ref mut studies,
+            ..
         } = self.kind
         {
             *clusters = new_kind;
+            studies.retain(|study| new_kind.allows_study(study));
         }
 
         self.invalidate(None);
@@ -598,10 +610,15 @@ impl KlineChart {
 
     pub fn set_studies(&mut self, new_studies: Vec<FootprintStudy>) {
         if let KlineChartKind::Footprint {
-            ref mut studies, ..
+            clusters,
+            ref mut studies,
+            ..
         } = self.kind
         {
-            *studies = new_studies;
+            *studies = new_studies
+                .into_iter()
+                .filter(|study| clusters.allows_study(study))
+                .collect();
         }
 
         self.invalidate(None);
@@ -843,13 +860,16 @@ impl KlineChart {
                                     top_padding += outer_padding;
                                     bottom_padding += outer_padding;
 
-                                    bottom_padding = bottom_padding.max(footprint_summary_padding(
-                                        provisional_cell_height,
-                                        chart.scaling,
-                                        chart.cell_width,
-                                        tick_size,
-                                        clusters,
-                                    ));
+                                    if self.visual_config.show_footprint_summary {
+                                        bottom_padding =
+                                            bottom_padding.max(footprint_summary_padding(
+                                                provisional_cell_height,
+                                                chart.scaling,
+                                                chart.cell_width,
+                                                tick_size,
+                                                clusters,
+                                            ));
+                                    }
                                 }
                             }
 
@@ -879,6 +899,10 @@ impl KlineChart {
     }
 
     pub fn toggle_indicator(&mut self, indicator: KlineIndicator) {
+        if !self.kind.allows_indicator(indicator) {
+            return;
+        }
+
         let prev_indi_count = self.indicators.values().filter(|v| v.is_some()).count();
 
         if self.indicators[indicator].is_some() {
@@ -897,6 +921,19 @@ impl KlineChart {
                 Some(prev_indi_count),
             );
         }
+    }
+}
+
+impl KlineChart {
+    fn sanitized_kind(mut kind: KlineChartKind) -> KlineChartKind {
+        if let KlineChartKind::Footprint {
+            clusters, studies, ..
+        } = &mut kind
+        {
+            studies.retain(|study| clusters.allows_study(study));
+        }
+
+        kind
     }
 }
 
@@ -987,23 +1024,39 @@ impl canvas::Program<Message> for KlineChart {
                         cell_width_unscaled,
                         footprint_cluster_min_width(*clusters),
                     );
-
-                    draw_all_npocs(
-                        &self.data_source,
-                        frame,
-                        price_to_y,
-                        interval_to_x,
+                    let draw_ctx = FootprintDrawCtx {
+                        price_to_y: &price_to_y,
+                        cell_width: chart.cell_width,
+                        cell_height: chart.cell_height,
                         candle_width,
-                        chart.cell_width,
-                        chart.cell_height,
                         palette,
-                        studies,
-                        earliest,
-                        latest,
-                        *clusters,
-                        content_spacing,
-                        imbalance.is_some(),
-                    );
+                        text_size,
+                        step: self.tick_size(),
+                        show_text,
+                        show_summary: self.visual_config.show_footprint_summary,
+                        imbalance,
+                        cluster_kind: *clusters,
+                        spacing: content_spacing,
+                    };
+
+                    if *clusters != ClusterKind::Table {
+                        draw_all_npocs(
+                            &self.data_source,
+                            frame,
+                            price_to_y,
+                            interval_to_x,
+                            candle_width,
+                            chart.cell_width,
+                            chart.cell_height,
+                            palette,
+                            studies,
+                            earliest,
+                            latest,
+                            *clusters,
+                            content_spacing,
+                            imbalance.is_some(),
+                        );
+                    }
 
                     render_data_source(
                         &self.data_source,
@@ -1017,21 +1070,11 @@ impl canvas::Program<Message> for KlineChart {
 
                             draw_clusters(
                                 frame,
-                                price_to_y,
+                                &draw_ctx,
                                 x_position,
-                                chart.cell_width,
-                                chart.cell_height,
-                                candle_width,
                                 cluster_scaling,
-                                palette,
-                                text_size,
-                                self.tick_size(),
-                                show_text,
-                                imbalance,
                                 kline,
                                 trades,
-                                *clusters,
-                                content_spacing,
                             );
                         },
                     );
@@ -1282,12 +1325,14 @@ fn draw_all_npocs(
 
     let candle_lane_factor: f32 = match cluster_kind {
         ClusterKind::VolumeProfile | ClusterKind::DeltaProfile => 0.25,
-        ClusterKind::BidAsk => 1.0,
+        ClusterKind::BidAsk | ClusterKind::Table => 1.0,
     };
 
     let start_x_for = |cell_center_x: f32| -> f32 {
         match cluster_kind {
-            ClusterKind::BidAsk => cell_center_x + (candle_width / 2.0) + spacing.candle_to_cluster,
+            ClusterKind::BidAsk | ClusterKind::Table => {
+                cell_center_x + (candle_width / 2.0) + spacing.candle_to_cluster
+            }
             ClusterKind::VolumeProfile | ClusterKind::DeltaProfile => {
                 let content_left = (cell_center_x - (cell_width / 2.0)) + inset;
                 let candle_lane_left = content_left
@@ -1303,7 +1348,7 @@ fn draw_all_npocs(
 
     let wick_x_for = |cell_center_x: f32| -> f32 {
         match cluster_kind {
-            ClusterKind::BidAsk => cell_center_x, // not used for BidAsk clustering
+            ClusterKind::BidAsk | ClusterKind::Table => cell_center_x,
             ClusterKind::VolumeProfile | ClusterKind::DeltaProfile => {
                 let content_left = (cell_center_x - (cell_width / 2.0)) + inset;
                 let candle_lane_left = content_left
@@ -1320,7 +1365,9 @@ fn draw_all_npocs(
 
     let end_x_for = |cell_center_x: f32| -> f32 {
         match cluster_kind {
-            ClusterKind::BidAsk => cell_center_x - (candle_width / 2.0) - spacing.candle_to_cluster,
+            ClusterKind::BidAsk | ClusterKind::Table => {
+                cell_center_x - (candle_width / 2.0) - spacing.candle_to_cluster
+            }
             ClusterKind::VolumeProfile | ClusterKind::DeltaProfile => wick_x_for(cell_center_x),
         }
     };
@@ -1400,7 +1447,7 @@ fn effective_cluster_qty(
     cluster_kind: ClusterKind,
 ) -> f64 {
     let individual_max = match cluster_kind {
-        ClusterKind::BidAsk => footprint
+        ClusterKind::BidAsk | ClusterKind::Table => footprint
             .trades
             .values()
             .map(|group| group.buy_qty.max(group.sell_qty))
@@ -1430,24 +1477,45 @@ fn effective_cluster_qty(
     }
 }
 
-fn draw_clusters(
-    frame: &mut canvas::Frame,
-    price_to_y: impl Fn(Price) -> f32,
-    x_position: f32,
+struct FootprintDrawCtx<'a, F>
+where
+    F: Fn(Price) -> f32,
+{
+    price_to_y: &'a F,
     cell_width: f32,
     cell_height: f32,
     candle_width: f32,
-    max_cluster_qty: f64,
-    palette: &Extended,
+    palette: &'a Extended,
     text_size: f32,
     step: PriceStep,
     show_text: bool,
+    show_summary: bool,
     imbalance: Option<(usize, Option<usize>, bool)>,
-    kline: &Kline,
-    footprint: &KlineTrades,
     cluster_kind: ClusterKind,
     spacing: ContentGaps,
-) {
+}
+
+fn draw_clusters<F>(
+    frame: &mut canvas::Frame,
+    ctx: &FootprintDrawCtx<'_, F>,
+    x_position: f32,
+    max_cluster_qty: f64,
+    kline: &Kline,
+    footprint: &KlineTrades,
+) where
+    F: Fn(Price) -> f32,
+{
+    let price_to_y = ctx.price_to_y;
+    let cell_width = ctx.cell_width;
+    let cell_height = ctx.cell_height;
+    let candle_width = ctx.candle_width;
+    let palette = ctx.palette;
+    let text_size = ctx.text_size;
+    let step = ctx.step;
+    let show_text = ctx.show_text;
+    let imbalance = ctx.imbalance;
+    let cluster_kind = ctx.cluster_kind;
+    let spacing = ctx.spacing;
     let text_color = palette.background.weakest.text;
 
     let bar_width_factor: f32 = 0.9;
@@ -1562,12 +1630,160 @@ fn draw_clusters(
 
             draw_footprint_kline(
                 frame,
-                &price_to_y,
+                price_to_y,
                 area.candle_center_x,
                 candle_width,
                 kline,
                 palette,
             );
+        }
+        ClusterKind::Table => {
+            let area = TableArea::new(
+                frame,
+                &price_to_y,
+                content_left,
+                content_right,
+                candle_width,
+                kline,
+                palette,
+                spacing,
+            );
+            let table_width = area.width();
+            let half_width = table_width / 2.0;
+            let cell_border = 1.0;
+            let grid_color = palette.background.weakest.text.scale_alpha(0.32);
+            let max_table_qty = footprint.trades.values().fold(0.0_f64, |max_qty, group| {
+                max_qty
+                    .max(group.buy_qty.to_f64())
+                    .max(group.sell_qty.to_f64())
+            });
+
+            for (price, group) in &footprint.trades {
+                let buy_qty = group.buy_qty.to_f64();
+                let sell_qty = group.sell_qty.to_f64();
+                let y = price_to_y(*price);
+                let row_top = y - (cell_height / 2.0);
+
+                frame.fill_rectangle(
+                    Point::new(area.table_left, row_top),
+                    Size::new(half_width, cell_height),
+                    volume_cell_background(palette, ImbalanceSide::Sell, sell_qty, max_table_qty),
+                );
+                frame.fill_rectangle(
+                    Point::new(area.table_left + half_width, row_top),
+                    Size::new(half_width, cell_height),
+                    volume_cell_background(palette, ImbalanceSide::Buy, buy_qty, max_table_qty),
+                );
+                let sell_text_color = volume_cell_text_color(
+                    palette,
+                    ImbalanceSide::Sell,
+                    sell_qty,
+                    max_table_qty,
+                    text_color,
+                );
+                let buy_text_color = volume_cell_text_color(
+                    palette,
+                    ImbalanceSide::Buy,
+                    buy_qty,
+                    max_table_qty,
+                    text_color,
+                );
+
+                if let Some((threshold, color_scale, ignore_zeros)) = imbalance {
+                    if let Some(alpha) = sell_imbalance_alpha(
+                        footprint,
+                        *price,
+                        sell_qty,
+                        step,
+                        threshold,
+                        color_scale,
+                        ignore_zeros,
+                    ) {
+                        draw_table_imbalance_marker(
+                            frame,
+                            palette,
+                            ImbalanceSide::Sell,
+                            alpha,
+                            sell_qty,
+                            max_table_qty,
+                            Rectangle::new(
+                                Point::new(area.table_left, row_top),
+                                Size::new(half_width, cell_height),
+                            ),
+                        );
+                    }
+
+                    if let Some(alpha) = buy_imbalance_alpha(
+                        footprint,
+                        *price,
+                        buy_qty,
+                        step,
+                        threshold,
+                        color_scale,
+                        ignore_zeros,
+                    ) {
+                        draw_table_imbalance_marker(
+                            frame,
+                            palette,
+                            ImbalanceSide::Buy,
+                            alpha,
+                            buy_qty,
+                            max_table_qty,
+                            Rectangle::new(
+                                Point::new(area.table_left + half_width, row_top),
+                                Size::new(half_width, cell_height),
+                            ),
+                        );
+                    }
+                }
+
+                frame.fill_rectangle(
+                    Point::new(area.table_left, row_top),
+                    Size::new(table_width, cell_border),
+                    grid_color,
+                );
+                frame.fill_rectangle(
+                    Point::new(area.table_left, row_top + cell_height - cell_border),
+                    Size::new(table_width, cell_border),
+                    grid_color,
+                );
+                frame.fill_rectangle(
+                    Point::new(area.table_left, row_top),
+                    Size::new(cell_border, cell_height),
+                    grid_color,
+                );
+                frame.fill_rectangle(
+                    Point::new(area.table_left + half_width, row_top),
+                    Size::new(cell_border, cell_height),
+                    grid_color,
+                );
+                frame.fill_rectangle(
+                    Point::new(area.table_right - cell_border, row_top),
+                    Size::new(cell_border, cell_height),
+                    grid_color,
+                );
+
+                if show_text {
+                    draw_cluster_text(
+                        frame,
+                        &abbr_large_numbers(sell_qty),
+                        Point::new(area.table_left + half_width - 3.0, y),
+                        text_size,
+                        sell_text_color,
+                        Alignment::End,
+                        Alignment::Center,
+                    );
+                    draw_cluster_text(
+                        frame,
+                        &abbr_large_numbers(buy_qty),
+                        Point::new(area.table_left + half_width + 3.0, y),
+                        text_size,
+                        buy_text_color,
+                        Alignment::Start,
+                        Alignment::Center,
+                    );
+                }
+            }
         }
         ClusterKind::BidAsk => {
             let area = BidAskArea::new(
@@ -1675,7 +1891,7 @@ fn draw_clusters(
 
             draw_footprint_kline(
                 frame,
-                &price_to_y,
+                price_to_y,
                 area.candle_center_x,
                 candle_width,
                 kline,
@@ -1684,7 +1900,7 @@ fn draw_clusters(
         }
     }
 
-    if show_text {
+    if show_text && ctx.show_summary {
         let Some(summary) = FootprintSummary::from_trades(footprint) else {
             return;
         };
@@ -1768,7 +1984,7 @@ fn draw_imbalance_markers(
                 frame.fill_rectangle(
                     Point::new(buyside_x, y - (rect_height / 2.0)),
                     Size::new(rect_width, rect_height),
-                    palette.success.weak.color.scale_alpha(alpha),
+                    imbalance_background(palette, ImbalanceSide::Buy, alpha),
                 );
             }
         } else {
@@ -1781,11 +1997,253 @@ fn draw_imbalance_markers(
                 frame.fill_rectangle(
                     Point::new(sellside_x, y - (rect_height / 2.0)),
                     Size::new(rect_width, rect_height),
-                    palette.danger.weak.color.scale_alpha(alpha),
+                    imbalance_background(palette, ImbalanceSide::Sell, alpha),
                 );
             }
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum ImbalanceSide {
+    Buy,
+    Sell,
+}
+
+fn volume_cell_background(
+    palette: &Extended,
+    side: ImbalanceSide,
+    qty: f64,
+    max_qty: f64,
+) -> Color {
+    const MIN_ALPHA: f32 = 0.10;
+    const MAX_ALPHA: f32 = 0.64;
+
+    let intensity = if max_qty > 0.0 {
+        (qty / max_qty).clamp(0.0, 1.0) as f32
+    } else {
+        0.0
+    };
+    let alpha = MIN_ALPHA + intensity * (MAX_ALPHA - MIN_ALPHA);
+
+    match side {
+        ImbalanceSide::Buy => palette.success.base.color.scale_alpha(alpha),
+        ImbalanceSide::Sell => palette.danger.base.color.scale_alpha(alpha),
+    }
+}
+
+fn volume_cell_text_color(
+    palette: &Extended,
+    side: ImbalanceSide,
+    qty: f64,
+    max_qty: f64,
+    default_color: Color,
+) -> Color {
+    let cell_color = volume_cell_background(palette, side, qty, max_qty);
+    let cell_background = composite_color(cell_color, palette.background.base.color);
+    let inverted_color = palette.background.base.color;
+
+    if contrast_ratio(cell_background, inverted_color)
+        > contrast_ratio(cell_background, default_color)
+    {
+        inverted_color
+    } else {
+        default_color
+    }
+}
+
+fn draw_table_imbalance_marker(
+    frame: &mut canvas::Frame,
+    palette: &Extended,
+    side: ImbalanceSide,
+    alpha: f32,
+    qty: f64,
+    max_qty: f64,
+    cell: Rectangle,
+) {
+    let marker_width = (cell.width * 0.24).clamp(5.0, 11.0).min(cell.width * 0.42);
+    let marker_height = (cell.height * 0.72)
+        .clamp(6.0, 13.0)
+        .min(cell.height.max(0.0));
+    if marker_width <= 0.0 || marker_height <= 0.0 {
+        return;
+    }
+
+    let inset = (cell.width * 0.04).clamp(1.0, 3.0);
+    let center_y = cell.y + (cell.height / 2.0);
+    let top = center_y - (marker_height / 2.0);
+    let bottom = center_y + (marker_height / 2.0);
+    let volume_intensity = if max_qty > 0.0 {
+        (qty / max_qty).clamp(0.0, 1.0) as f32
+    } else {
+        0.0
+    };
+    let imbalance_strength = alpha.clamp(0.0, 1.0);
+    let marker_alpha = 0.58 + (volume_intensity * 0.34) + (imbalance_strength * 0.08);
+    let marker_alpha = marker_alpha.clamp(0.58, 1.0);
+    let color = match side {
+        ImbalanceSide::Buy => palette.success.strong.color.scale_alpha(marker_alpha),
+        ImbalanceSide::Sell => palette.danger.strong.color.scale_alpha(marker_alpha),
+    };
+
+    let mut builder = canvas::path::Builder::new();
+    match side {
+        ImbalanceSide::Buy => {
+            let right = cell.x + cell.width - inset;
+            let left = right - marker_width;
+            builder.move_to(Point::new(right, top));
+            builder.line_to(Point::new(left, center_y));
+            builder.line_to(Point::new(right, bottom));
+        }
+        ImbalanceSide::Sell => {
+            let left = cell.x + inset;
+            let right = left + marker_width;
+            builder.move_to(Point::new(left, top));
+            builder.line_to(Point::new(right, center_y));
+            builder.line_to(Point::new(left, bottom));
+        }
+    }
+    builder.close();
+
+    frame.fill(&builder.build(), color);
+}
+
+fn composite_color(foreground: Color, background: Color) -> Color {
+    let alpha = foreground.a.clamp(0.0, 1.0);
+    Color {
+        r: foreground.r.mul_add(alpha, background.r * (1.0 - alpha)),
+        g: foreground.g.mul_add(alpha, background.g * (1.0 - alpha)),
+        b: foreground.b.mul_add(alpha, background.b * (1.0 - alpha)),
+        a: 1.0,
+    }
+}
+
+fn contrast_ratio(a: Color, b: Color) -> f32 {
+    let l1 = relative_luminance(a);
+    let l2 = relative_luminance(b);
+    let lighter = l1.max(l2);
+    let darker = l1.min(l2);
+
+    (lighter + 0.05) / (darker + 0.05)
+}
+
+fn relative_luminance(color: Color) -> f32 {
+    let channel = |value: f32| {
+        if value <= 0.03928 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    };
+
+    (0.2126 * channel(color.r)) + (0.7152 * channel(color.g)) + (0.0722 * channel(color.b))
+}
+
+fn imbalance_background(palette: &Extended, side: ImbalanceSide, alpha: f32) -> Color {
+    let accent = match side {
+        ImbalanceSide::Buy => palette.success.strong.color,
+        ImbalanceSide::Sell => palette.danger.strong.color,
+    };
+    let alpha = alpha.clamp(0.0, 1.0);
+
+    if palette.is_dark {
+        let tint = 0.28 + (alpha * 0.32);
+        mix_color(accent, palette.background.strongest.color, tint)
+    } else {
+        let tint = 0.18 + (alpha * 0.24);
+        mix_color(accent, palette.background.weak.color, tint)
+    }
+}
+
+fn mix_color(foreground: Color, background: Color, foreground_weight: f32) -> Color {
+    let foreground_weight = foreground_weight.clamp(0.0, 1.0);
+    let background_weight = 1.0 - foreground_weight;
+
+    Color {
+        r: foreground
+            .r
+            .mul_add(foreground_weight, background.r * background_weight),
+        g: foreground
+            .g
+            .mul_add(foreground_weight, background.g * background_weight),
+        b: foreground
+            .b
+            .mul_add(foreground_weight, background.b * background_weight),
+        a: foreground
+            .a
+            .mul_add(foreground_weight, background.a * background_weight),
+    }
+}
+
+fn buy_imbalance_alpha(
+    footprint: &KlineTrades,
+    price: Price,
+    buy_qty: f64,
+    step: PriceStep,
+    threshold: usize,
+    color_scale: Option<usize>,
+    ignore_zeros: bool,
+) -> Option<f32> {
+    let lower_price = price.add_steps(-1, step);
+    let diagonal_sell_qty = footprint
+        .trades
+        .get(&lower_price)
+        .map(|group| group.sell_qty.to_f64())
+        .unwrap_or_default();
+
+    if ignore_zeros && (buy_qty <= 0.0 || diagonal_sell_qty <= 0.0) {
+        return None;
+    }
+
+    imbalance_alpha(buy_qty, diagonal_sell_qty, threshold, color_scale)
+}
+
+fn sell_imbalance_alpha(
+    footprint: &KlineTrades,
+    price: Price,
+    sell_qty: f64,
+    step: PriceStep,
+    threshold: usize,
+    color_scale: Option<usize>,
+    ignore_zeros: bool,
+) -> Option<f32> {
+    let higher_price = price.add_steps(1, step);
+    let diagonal_buy_qty = footprint
+        .trades
+        .get(&higher_price)
+        .map(|group| group.buy_qty.to_f64())
+        .unwrap_or_default();
+
+    if ignore_zeros && (sell_qty <= 0.0 || diagonal_buy_qty <= 0.0) {
+        return None;
+    }
+
+    imbalance_alpha(sell_qty, diagonal_buy_qty, threshold, color_scale)
+}
+
+fn imbalance_alpha(
+    dominant_qty: f64,
+    opposite_qty: f64,
+    threshold: usize,
+    color_scale: Option<usize>,
+) -> Option<f32> {
+    let required_qty = opposite_qty * (100 + threshold) as f64 / 100.0;
+
+    if required_qty <= 0.0 {
+        return (dominant_qty > 0.0).then_some(1.0);
+    }
+
+    if dominant_qty <= required_qty {
+        return None;
+    }
+
+    let ratio = dominant_qty / required_qty;
+    Some(if let Some(scale) = color_scale {
+        let divisor = (scale as f64 / 10.0) - 1.0;
+        (0.2 + 0.8 * ((ratio - 1.0) / divisor).min(1.0)).min(1.0) as f32
+    } else {
+        1.0
+    })
 }
 
 impl ContentGaps {
@@ -2045,11 +2503,50 @@ impl BidAskArea {
     }
 }
 
+struct TableArea {
+    table_left: f32,
+    table_right: f32,
+}
+
+impl TableArea {
+    fn new(
+        frame: &mut canvas::Frame,
+        price_to_y: &impl Fn(Price) -> f32,
+        content_left: f32,
+        content_right: f32,
+        candle_width: f32,
+        kline: &Kline,
+        palette: &Extended,
+        spacing: ContentGaps,
+    ) -> Self {
+        let candle_center_x = content_left + candle_width / 2.0;
+        draw_footprint_kline(
+            frame,
+            price_to_y,
+            candle_center_x,
+            candle_width,
+            kline,
+            palette,
+        );
+
+        Self {
+            table_left: (content_left + candle_width + spacing.candle_to_cluster)
+                .min(content_right),
+            table_right: content_right,
+        }
+    }
+
+    fn width(&self) -> f32 {
+        (self.table_right - self.table_left).max(0.0)
+    }
+}
+
 #[inline]
 fn footprint_cluster_min_width(cluster_kind: ClusterKind) -> f32 {
     match cluster_kind {
         ClusterKind::VolumeProfile | ClusterKind::DeltaProfile => 80.0,
         ClusterKind::BidAsk => 120.0,
+        ClusterKind::Table => 100.0,
     }
 }
 

@@ -1,4 +1,4 @@
-use crate::aggr::time::DataPoint;
+use crate::{aggr::time::DataPoint, chart::indicator::KlineIndicator};
 use exchange::{
     Kline, Trade, UnixMs,
     unit::price::{Price, PriceStep},
@@ -152,7 +152,7 @@ impl GroupedTrades {
 
     pub fn max_cluster_qty(&self, cluster_kind: ClusterKind) -> Qty {
         match cluster_kind {
-            ClusterKind::BidAsk => self.buy_qty.max(self.sell_qty),
+            ClusterKind::BidAsk | ClusterKind::Table => self.buy_qty.max(self.sell_qty),
             ClusterKind::DeltaProfile => self.buy_qty.abs_diff(self.sell_qty),
             ClusterKind::VolumeProfile => self.total_qty(),
         }
@@ -319,6 +319,13 @@ pub enum KlineChartKind {
 }
 
 impl KlineChartKind {
+    pub fn allows_indicator(&self, indicator: KlineIndicator) -> bool {
+        !matches!(
+            (self, indicator),
+            (KlineChartKind::Candles, KlineIndicator::BarAnalysis)
+        )
+    }
+
     pub fn min_scaling(&self) -> f32 {
         match self {
             KlineChartKind::Footprint { .. } => 0.4,
@@ -375,14 +382,23 @@ pub enum ClusterKind {
     BidAsk,
     VolumeProfile,
     DeltaProfile,
+    Table,
 }
 
 impl ClusterKind {
-    pub const ALL: [ClusterKind; 3] = [
+    pub const ALL: [ClusterKind; 4] = [
         ClusterKind::BidAsk,
         ClusterKind::VolumeProfile,
         ClusterKind::DeltaProfile,
+        ClusterKind::Table,
     ];
+
+    pub fn allows_study(&self, study: &FootprintStudy) -> bool {
+        !matches!(
+            (self, study),
+            (ClusterKind::Table, FootprintStudy::NPoC { .. })
+        )
+    }
 }
 
 impl std::fmt::Display for ClusterKind {
@@ -391,16 +407,31 @@ impl std::fmt::Display for ClusterKind {
             ClusterKind::BidAsk => write!(f, "Bid/Ask"),
             ClusterKind::VolumeProfile => write!(f, "Volume Profile"),
             ClusterKind::DeltaProfile => write!(f, "Delta Profile"),
+            ClusterKind::Table => write!(f, "Table"),
         }
     }
 }
 
-#[derive(Debug, Default, Copy, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Config {
     // Whether to show last value labels on top right/left when not hovering
     // e.g. OHLC/bar change values for the main chart, or last value of an indicator series
     pub data_labels_always_visible: bool,
+    // Whether to show the footprint per-bar summary below each candle.
+    pub show_footprint_summary: bool,
+    // Whether to show a small candle next to footprint table clusters.
+    pub show_footprint_table_candle: bool,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            data_labels_always_visible: false,
+            show_footprint_summary: true,
+            show_footprint_table_candle: true,
+        }
+    }
 }
 
 #[derive(Default, Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]

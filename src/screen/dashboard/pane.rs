@@ -1959,7 +1959,9 @@ impl Content {
                 |indis| {
                     indis
                         .into_iter()
-                        .filter(|i| available.contains(i))
+                        .filter(|i| {
+                            available.contains(i) && determined_chart_kind.allows_indicator(*i)
+                        })
                         .collect()
                 },
             )
@@ -2102,13 +2104,19 @@ impl Content {
             }
             (
                 Content::Kline {
-                    chart, indicators, ..
+                    chart,
+                    indicators,
+                    kind,
+                    ..
                 },
                 UiIndicator::Kline(ind),
             ) => {
                 let Some(chart) = chart else {
                     return;
                 };
+                if !kind.allows_indicator(ind) {
+                    return;
+                }
 
                 if indicators.contains(&ind) {
                     indicators.retain(|i| i != &ind);
@@ -2227,15 +2235,13 @@ impl Content {
                 *previous = studies;
             }
             (Content::Kline { chart, kind, .. }, data::chart::Study::Footprint(studies)) => {
-                chart
-                    .as_mut()
-                    .expect("kline chart not initialized")
-                    .set_studies(studies.clone());
+                let chart = chart.as_mut().expect("kline chart not initialized");
+                chart.set_studies(studies.clone());
                 if let data::chart::KlineChartKind::Footprint {
                     studies: k_studies, ..
                 } = kind
                 {
-                    *k_studies = studies;
+                    *k_studies = chart.studies().unwrap_or_default();
                 }
             }
             _ => {}
@@ -2272,6 +2278,18 @@ impl Content {
             Content::Ladder(panel) => panel.is_some(),
             Content::Comparison(chart) => chart.is_some(),
             Content::Starter => true,
+        }
+    }
+
+    pub fn allows_indicator(&self, indicator: UiIndicator) -> bool {
+        match (self, indicator) {
+            (Content::Kline { kind, .. }, UiIndicator::Kline(indicator)) => {
+                kind.allows_indicator(indicator)
+            }
+            (Content::Heatmap { .. } | Content::ShaderHeatmap { .. }, UiIndicator::Heatmap(_)) => {
+                true
+            }
+            _ => false,
         }
     }
 }
