@@ -1960,8 +1960,7 @@ impl Content {
                     indis
                         .into_iter()
                         .filter(|i| {
-                            available.contains(i)
-                                && kline_indicator_allowed(&determined_chart_kind, *i)
+                            available.contains(i) && determined_chart_kind.allows_indicator(*i)
                         })
                         .collect()
                 },
@@ -2115,7 +2114,7 @@ impl Content {
                 let Some(chart) = chart else {
                     return;
                 };
-                if !kline_indicator_allowed(kind, ind) {
+                if !kind.allows_indicator(ind) {
                     return;
                 }
 
@@ -2281,16 +2280,18 @@ impl Content {
             Content::Starter => true,
         }
     }
-}
 
-fn kline_indicator_allowed(kind: &data::chart::KlineChartKind, indicator: KlineIndicator) -> bool {
-    !matches!(
-        (kind, indicator),
-        (
-            data::chart::KlineChartKind::Candles,
-            KlineIndicator::BarAnalysis
-        )
-    )
+    pub fn allows_indicator(&self, indicator: UiIndicator) -> bool {
+        match (self, indicator) {
+            (Content::Kline { kind, .. }, UiIndicator::Kline(indicator)) => {
+                kind.allows_indicator(indicator)
+            }
+            (Content::Heatmap { .. } | Content::ShaderHeatmap { .. }, UiIndicator::Heatmap(_)) => {
+                true
+            }
+            _ => false,
+        }
+    }
 }
 
 impl std::fmt::Display for Content {

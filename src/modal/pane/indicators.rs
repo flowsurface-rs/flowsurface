@@ -129,7 +129,7 @@ where
     let selected: Vec<I> = selected
         .iter()
         .copied()
-        .filter(|indicator| indicator_allowed_for_content(content, (*indicator).into()))
+        .filter(|indicator| content.allows_indicator((*indicator).into()))
         .collect();
 
     let selected_list = if !selected.is_empty() {
@@ -141,8 +141,7 @@ where
     let available: Vec<I> = I::for_market(market)
         .iter()
         .filter(|indicator| {
-            !selected.contains(indicator)
-                && indicator_allowed_for_content(content, (**indicator).into())
+            !selected.contains(indicator) && content.allows_indicator((**indicator).into())
         })
         .cloned()
         .collect();
@@ -167,17 +166,4 @@ where
     ]
     .spacing(4)
     .into()
-}
-
-fn indicator_allowed_for_content(content: &pane::Content, indicator: UiIndicator) -> bool {
-    !matches!(
-        (content, indicator),
-        (
-            pane::Content::Kline {
-                kind: data::chart::KlineChartKind::Candles,
-                ..
-            },
-            UiIndicator::Kline(data::chart::indicator::KlineIndicator::BarAnalysis)
-        )
-    )
 }

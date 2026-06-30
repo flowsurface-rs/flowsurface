@@ -63,7 +63,7 @@ impl Chart for KlineChart {
         let mut elements = vec![];
 
         for selected_indicator in enabled {
-            if !Self::allows_indicator_for_kind(&self.kind, *selected_indicator)
+            if !self.kind.allows_indicator(*selected_indicator)
                 || !KlineIndicator::for_market(market).contains(selected_indicator)
             {
                 continue;
@@ -251,7 +251,7 @@ impl KlineChart {
 
                 let mut indicators = EnumMap::default();
                 for &i in enabled_indicators {
-                    if !Self::allows_indicator_for_kind(&kind, i) {
+                    if !kind.allows_indicator(i) {
                         continue;
                     }
                     let mut indi = indicator::kline::make_empty(i);
@@ -311,7 +311,7 @@ impl KlineChart {
 
                 let mut indicators = EnumMap::default();
                 for &i in enabled_indicators {
-                    if !Self::allows_indicator_for_kind(&kind, i) {
+                    if !kind.allows_indicator(i) {
                         continue;
                     }
                     let mut indi = indicator::kline::make_empty(i);
@@ -531,9 +531,7 @@ impl KlineChart {
         } = self.kind
         {
             *clusters = new_kind;
-            if new_kind == ClusterKind::Table {
-                studies.retain(|study| !matches!(study, FootprintStudy::NPoC { .. }));
-            }
+            studies.retain(|study| new_kind.allows_study(study));
         }
 
         self.invalidate(None);
@@ -617,14 +615,10 @@ impl KlineChart {
             ..
         } = self.kind
         {
-            *studies = if clusters == ClusterKind::Table {
-                new_studies
-                    .into_iter()
-                    .filter(|study| !matches!(study, FootprintStudy::NPoC { .. }))
-                    .collect()
-            } else {
-                new_studies
-            };
+            *studies = new_studies
+                .into_iter()
+                .filter(|study| clusters.allows_study(study))
+                .collect();
         }
 
         self.invalidate(None);
@@ -905,7 +899,7 @@ impl KlineChart {
     }
 
     pub fn toggle_indicator(&mut self, indicator: KlineIndicator) {
-        if !Self::allows_indicator_for_kind(&self.kind, indicator) {
+        if !self.kind.allows_indicator(indicator) {
             return;
         }
 
@@ -935,19 +929,11 @@ impl KlineChart {
         if let KlineChartKind::Footprint {
             clusters, studies, ..
         } = &mut kind
-            && *clusters == ClusterKind::Table
         {
-            studies.retain(|study| !matches!(study, FootprintStudy::NPoC { .. }));
+            studies.retain(|study| clusters.allows_study(study));
         }
 
         kind
-    }
-
-    fn allows_indicator_for_kind(kind: &KlineChartKind, indicator: KlineIndicator) -> bool {
-        !matches!(
-            (kind, indicator),
-            (KlineChartKind::Candles, KlineIndicator::BarAnalysis)
-        )
     }
 }
 

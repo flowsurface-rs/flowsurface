@@ -1,4 +1,4 @@
-use crate::aggr::time::DataPoint;
+use crate::{aggr::time::DataPoint, chart::indicator::KlineIndicator};
 use exchange::{
     Kline, Trade, UnixMs,
     unit::price::{Price, PriceStep},
@@ -319,6 +319,13 @@ pub enum KlineChartKind {
 }
 
 impl KlineChartKind {
+    pub fn allows_indicator(&self, indicator: KlineIndicator) -> bool {
+        !matches!(
+            (self, indicator),
+            (KlineChartKind::Candles, KlineIndicator::BarAnalysis)
+        )
+    }
+
     pub fn min_scaling(&self) -> f32 {
         match self {
             KlineChartKind::Footprint { .. } => 0.4,
@@ -385,6 +392,13 @@ impl ClusterKind {
         ClusterKind::DeltaProfile,
         ClusterKind::Table,
     ];
+
+    pub fn allows_study(&self, study: &FootprintStudy) -> bool {
+        !matches!(
+            (self, study),
+            (ClusterKind::Table, FootprintStudy::NPoC { .. })
+        )
+    }
 }
 
 impl std::fmt::Display for ClusterKind {

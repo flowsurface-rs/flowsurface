@@ -697,15 +697,7 @@ pub fn kline_cfg_view<'a>(
             let available_studies: Vec<_> = data::chart::kline::FootprintStudy::ALL
                 .iter()
                 .copied()
-                .filter(|study| {
-                    !matches!(
-                        (clusters, study),
-                        (
-                            data::chart::kline::ClusterKind::Table,
-                            data::chart::kline::FootprintStudy::NPoC { .. }
-                        )
-                    )
-                })
+                .filter(|study| clusters.allows_study(study))
                 .collect();
 
             let active_studies: Vec<_> = studies
