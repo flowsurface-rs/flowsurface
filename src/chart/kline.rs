@@ -21,7 +21,7 @@ use exchange::{Kline, OpenInterest as OIData, TickerInfo, Trade, UnixMs};
 use iced::task::Handle;
 use iced::theme::palette::Extended;
 use iced::widget::canvas::{self, Event, Geometry, Path, Stroke};
-use iced::{Alignment, Element, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
+use iced::{Alignment, Color, Element, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
 
 use enum_map::EnumMap;
 use std::time::Instant;
@@ -1048,7 +1048,6 @@ impl canvas::Program<Message> for KlineChart {
                         step: self.tick_size(),
                         show_text,
                         show_summary: self.visual_config.show_footprint_summary,
-                        show_table_candle: self.visual_config.show_footprint_table_candle,
                         imbalance,
                         cluster_kind: *clusters,
                         spacing: content_spacing,
@@ -1505,7 +1504,6 @@ where
     step: PriceStep,
     show_text: bool,
     show_summary: bool,
-    show_table_candle: bool,
     imbalance: Option<(usize, Option<usize>, bool)>,
     cluster_kind: ClusterKind,
     spacing: ContentGaps,
@@ -1663,7 +1661,6 @@ fn draw_clusters<F>(
                 kline,
                 palette,
                 spacing,
-                ctx.show_table_candle,
             );
             let table_width = area.width();
             let half_width = table_width / 2.0;
@@ -1703,9 +1700,9 @@ fn draw_clusters<F>(
                         frame.fill_rectangle(
                             Point::new(area.table_left, row_top),
                             Size::new(half_width, cell_height),
-                            palette.danger.weak.color.scale_alpha(alpha.max(0.65)),
+                            imbalance_background(palette, ImbalanceSide::Sell, alpha),
                         );
-                        sell_text_color = palette.danger.base.color;
+                        sell_text_color = imbalance_text_color(palette);
                     }
 
                     if let Some(alpha) = buy_imbalance_alpha(
@@ -1720,9 +1717,9 @@ fn draw_clusters<F>(
                         frame.fill_rectangle(
                             Point::new(area.table_left + half_width, row_top),
                             Size::new(half_width, cell_height),
-                            palette.success.weak.color.scale_alpha(alpha.max(0.65)),
+                            imbalance_background(palette, ImbalanceSide::Buy, alpha),
                         );
-                        buy_text_color = palette.success.base.color;
+                        buy_text_color = imbalance_text_color(palette);
                     }
                 }
 
@@ -1973,7 +1970,7 @@ fn draw_imbalance_markers(
                 frame.fill_rectangle(
                     Point::new(buyside_x, y - (rect_height / 2.0)),
                     Size::new(rect_width, rect_height),
-                    palette.success.weak.color.scale_alpha(alpha),
+                    imbalance_background(palette, ImbalanceSide::Buy, alpha),
                 );
             }
         } else {
@@ -1986,10 +1983,56 @@ fn draw_imbalance_markers(
                 frame.fill_rectangle(
                     Point::new(sellside_x, y - (rect_height / 2.0)),
                     Size::new(rect_width, rect_height),
-                    palette.danger.weak.color.scale_alpha(alpha),
+                    imbalance_background(palette, ImbalanceSide::Sell, alpha),
                 );
             }
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ImbalanceSide {
+    Buy,
+    Sell,
+}
+
+fn imbalance_background(palette: &Extended, side: ImbalanceSide, alpha: f32) -> Color {
+    let accent = match side {
+        ImbalanceSide::Buy => palette.success.strong.color,
+        ImbalanceSide::Sell => palette.danger.strong.color,
+    };
+    let alpha = alpha.clamp(0.0, 1.0);
+
+    if palette.is_dark {
+        let tint = 0.28 + (alpha * 0.32);
+        mix_color(accent, palette.background.strongest.color, tint)
+    } else {
+        let tint = 0.18 + (alpha * 0.24);
+        mix_color(accent, palette.background.weak.color, tint)
+    }
+}
+
+fn imbalance_text_color(palette: &Extended) -> Color {
+    palette.background.base.text
+}
+
+fn mix_color(foreground: Color, background: Color, foreground_weight: f32) -> Color {
+    let foreground_weight = foreground_weight.clamp(0.0, 1.0);
+    let background_weight = 1.0 - foreground_weight;
+
+    Color {
+        r: foreground
+            .r
+            .mul_add(foreground_weight, background.r * background_weight),
+        g: foreground
+            .g
+            .mul_add(foreground_weight, background.g * background_weight),
+        b: foreground
+            .b
+            .mul_add(foreground_weight, background.b * background_weight),
+        a: foreground
+            .a
+            .mul_add(foreground_weight, background.a * background_weight),
     }
 }
 
@@ -2336,15 +2379,7 @@ impl TableArea {
         kline: &Kline,
         palette: &Extended,
         spacing: ContentGaps,
-        show_candle: bool,
     ) -> Self {
-        if !show_candle {
-            return Self {
-                table_left: content_left,
-                table_right: content_right,
-            };
-        }
-
         let candle_center_x = content_left + candle_width / 2.0;
         draw_footprint_kline(
             frame,

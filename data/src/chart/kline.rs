@@ -415,7 +415,7 @@ impl Default for Config {
         Self {
             data_labels_always_visible: false,
             show_footprint_summary: true,
-            show_footprint_table_candle: false,
+            show_footprint_table_candle: true,
         }
     }
 }

@@ -663,23 +663,6 @@ pub fn kline_cfg_view<'a>(
                 TooltipPosition::Top,
             );
 
-            let table_candle_checkbox = tooltip(
-                checkbox(cfg.show_footprint_table_candle)
-                    .label("Show table candle")
-                    .on_toggle(move |value| {
-                        Message::VisualConfigChanged(
-                            pane,
-                            VisualConfig::Kline(data::chart::kline::Config {
-                                show_footprint_table_candle: value,
-                                ..cfg
-                            }),
-                            false,
-                        )
-                    }),
-                Some("Show a small candle next to footprint table clusters"),
-                TooltipPosition::Top,
-            );
-
             let scaling = {
                 let picklist = pick_list(
                     data::chart::kline::ClusterScaling::ALL,
@@ -751,15 +734,7 @@ pub fn kline_cfg_view<'a>(
                 ; spacing = 12, align_x = Alignment::Start
             ];
 
-            if *clusters == data::chart::kline::ClusterKind::Table {
-                content = content.push(
-                    column![
-                        text("Table display").size(crate::style::text_size::SECTION),
-                        table_candle_checkbox
-                    ]
-                    .spacing(8),
-                );
-            } else {
+            if *clusters != data::chart::kline::ClusterKind::Table {
                 content = content.push(
                     column![
                         text("Cluster scaling").size(crate::style::text_size::SECTION),
