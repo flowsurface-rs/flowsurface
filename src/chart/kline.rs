@@ -1652,6 +1652,11 @@ fn draw_clusters<F>(
             let half_width = table_width / 2.0;
             let cell_border = 1.0;
             let grid_color = palette.background.weakest.text.scale_alpha(0.32);
+            let max_table_qty = footprint.trades.values().fold(0.0_f64, |max_qty, group| {
+                max_qty
+                    .max(group.buy_qty.to_f64())
+                    .max(group.sell_qty.to_f64())
+            });
 
             for (price, group) in &footprint.trades {
                 let buy_qty = group.buy_qty.to_f64();
@@ -1662,16 +1667,27 @@ fn draw_clusters<F>(
                 frame.fill_rectangle(
                     Point::new(area.table_left, row_top),
                     Size::new(half_width, cell_height),
-                    palette.danger.base.color.scale_alpha(0.14),
+                    volume_cell_background(palette, ImbalanceSide::Sell, sell_qty, max_table_qty),
                 );
                 frame.fill_rectangle(
                     Point::new(area.table_left + half_width, row_top),
                     Size::new(half_width, cell_height),
-                    palette.success.base.color.scale_alpha(0.14),
+                    volume_cell_background(palette, ImbalanceSide::Buy, buy_qty, max_table_qty),
                 );
-
-                let mut sell_text_color = text_color;
-                let mut buy_text_color = text_color;
+                let sell_text_color = volume_cell_text_color(
+                    palette,
+                    ImbalanceSide::Sell,
+                    sell_qty,
+                    max_table_qty,
+                    text_color,
+                );
+                let buy_text_color = volume_cell_text_color(
+                    palette,
+                    ImbalanceSide::Buy,
+                    buy_qty,
+                    max_table_qty,
+                    text_color,
+                );
 
                 if let Some((threshold, color_scale, ignore_zeros)) = imbalance {
                     if let Some(alpha) = sell_imbalance_alpha(
@@ -1683,12 +1699,18 @@ fn draw_clusters<F>(
                         color_scale,
                         ignore_zeros,
                     ) {
-                        frame.fill_rectangle(
-                            Point::new(area.table_left, row_top),
-                            Size::new(half_width, cell_height),
-                            imbalance_background(palette, ImbalanceSide::Sell, alpha),
+                        draw_table_imbalance_marker(
+                            frame,
+                            palette,
+                            ImbalanceSide::Sell,
+                            alpha,
+                            sell_qty,
+                            max_table_qty,
+                            Rectangle::new(
+                                Point::new(area.table_left, row_top),
+                                Size::new(half_width, cell_height),
+                            ),
                         );
-                        sell_text_color = imbalance_text_color(palette);
                     }
 
                     if let Some(alpha) = buy_imbalance_alpha(
@@ -1700,12 +1722,18 @@ fn draw_clusters<F>(
                         color_scale,
                         ignore_zeros,
                     ) {
-                        frame.fill_rectangle(
-                            Point::new(area.table_left + half_width, row_top),
-                            Size::new(half_width, cell_height),
-                            imbalance_background(palette, ImbalanceSide::Buy, alpha),
+                        draw_table_imbalance_marker(
+                            frame,
+                            palette,
+                            ImbalanceSide::Buy,
+                            alpha,
+                            buy_qty,
+                            max_table_qty,
+                            Rectangle::new(
+                                Point::new(area.table_left + half_width, row_top),
+                                Size::new(half_width, cell_height),
+                            ),
                         );
-                        buy_text_color = imbalance_text_color(palette);
                     }
                 }
 
@@ -1982,6 +2010,135 @@ enum ImbalanceSide {
     Sell,
 }
 
+fn volume_cell_background(
+    palette: &Extended,
+    side: ImbalanceSide,
+    qty: f64,
+    max_qty: f64,
+) -> Color {
+    const MIN_ALPHA: f32 = 0.10;
+    const MAX_ALPHA: f32 = 0.64;
+
+    let intensity = if max_qty > 0.0 {
+        (qty / max_qty).clamp(0.0, 1.0) as f32
+    } else {
+        0.0
+    };
+    let alpha = MIN_ALPHA + intensity * (MAX_ALPHA - MIN_ALPHA);
+
+    match side {
+        ImbalanceSide::Buy => palette.success.base.color.scale_alpha(alpha),
+        ImbalanceSide::Sell => palette.danger.base.color.scale_alpha(alpha),
+    }
+}
+
+fn volume_cell_text_color(
+    palette: &Extended,
+    side: ImbalanceSide,
+    qty: f64,
+    max_qty: f64,
+    default_color: Color,
+) -> Color {
+    let cell_color = volume_cell_background(palette, side, qty, max_qty);
+    let cell_background = composite_color(cell_color, palette.background.base.color);
+    let inverted_color = palette.background.base.color;
+
+    if contrast_ratio(cell_background, inverted_color)
+        > contrast_ratio(cell_background, default_color)
+    {
+        inverted_color
+    } else {
+        default_color
+    }
+}
+
+fn draw_table_imbalance_marker(
+    frame: &mut canvas::Frame,
+    palette: &Extended,
+    side: ImbalanceSide,
+    alpha: f32,
+    qty: f64,
+    max_qty: f64,
+    cell: Rectangle,
+) {
+    let marker_width = (cell.width * 0.24).clamp(5.0, 11.0).min(cell.width * 0.42);
+    let marker_height = (cell.height * 0.72)
+        .clamp(6.0, 13.0)
+        .min(cell.height.max(0.0));
+    if marker_width <= 0.0 || marker_height <= 0.0 {
+        return;
+    }
+
+    let inset = (cell.width * 0.04).clamp(1.0, 3.0);
+    let center_y = cell.y + (cell.height / 2.0);
+    let top = center_y - (marker_height / 2.0);
+    let bottom = center_y + (marker_height / 2.0);
+    let volume_intensity = if max_qty > 0.0 {
+        (qty / max_qty).clamp(0.0, 1.0) as f32
+    } else {
+        0.0
+    };
+    let imbalance_strength = alpha.clamp(0.0, 1.0);
+    let marker_alpha = 0.58 + (volume_intensity * 0.34) + (imbalance_strength * 0.08);
+    let marker_alpha = marker_alpha.clamp(0.58, 1.0);
+    let color = match side {
+        ImbalanceSide::Buy => palette.success.strong.color.scale_alpha(marker_alpha),
+        ImbalanceSide::Sell => palette.danger.strong.color.scale_alpha(marker_alpha),
+    };
+
+    let mut builder = canvas::path::Builder::new();
+    match side {
+        ImbalanceSide::Buy => {
+            let right = cell.x + cell.width - inset;
+            let left = right - marker_width;
+            builder.move_to(Point::new(right, top));
+            builder.line_to(Point::new(left, center_y));
+            builder.line_to(Point::new(right, bottom));
+        }
+        ImbalanceSide::Sell => {
+            let left = cell.x + inset;
+            let right = left + marker_width;
+            builder.move_to(Point::new(left, top));
+            builder.line_to(Point::new(right, center_y));
+            builder.line_to(Point::new(left, bottom));
+        }
+    }
+    builder.close();
+
+    frame.fill(&builder.build(), color);
+}
+
+fn composite_color(foreground: Color, background: Color) -> Color {
+    let alpha = foreground.a.clamp(0.0, 1.0);
+    Color {
+        r: foreground.r.mul_add(alpha, background.r * (1.0 - alpha)),
+        g: foreground.g.mul_add(alpha, background.g * (1.0 - alpha)),
+        b: foreground.b.mul_add(alpha, background.b * (1.0 - alpha)),
+        a: 1.0,
+    }
+}
+
+fn contrast_ratio(a: Color, b: Color) -> f32 {
+    let l1 = relative_luminance(a);
+    let l2 = relative_luminance(b);
+    let lighter = l1.max(l2);
+    let darker = l1.min(l2);
+
+    (lighter + 0.05) / (darker + 0.05)
+}
+
+fn relative_luminance(color: Color) -> f32 {
+    let channel = |value: f32| {
+        if value <= 0.03928 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    };
+
+    (0.2126 * channel(color.r)) + (0.7152 * channel(color.g)) + (0.0722 * channel(color.b))
+}
+
 fn imbalance_background(palette: &Extended, side: ImbalanceSide, alpha: f32) -> Color {
     let accent = match side {
         ImbalanceSide::Buy => palette.success.strong.color,
@@ -1996,10 +2153,6 @@ fn imbalance_background(palette: &Extended, side: ImbalanceSide, alpha: f32) -> 
         let tint = 0.18 + (alpha * 0.24);
         mix_color(accent, palette.background.weak.color, tint)
     }
-}
-
-fn imbalance_text_color(palette: &Extended) -> Color {
-    palette.background.base.text
 }
 
 fn mix_color(foreground: Color, background: Color, foreground_weight: f32) -> Color {
