@@ -630,10 +630,10 @@ impl State {
         let body = match &self.content {
             Content::Starter => {
                 let content_picklist =
-                    pick_list(Some(ContentKind::Starter), ContentKind::ALL, |k| k.to_string())
-                        .on_select(move |kind| {
-                            Message::PaneEvent(id, Event::ContentSelected(kind))
-                        });
+                    pick_list(Some(ContentKind::Starter), ContentKind::ALL, |k| {
+                        k.to_string()
+                    })
+                    .on_select(move |kind| Message::PaneEvent(id, Event::ContentSelected(kind)));
 
                 let base: Element<_> = widget::toast::Manager::new(
                     center(

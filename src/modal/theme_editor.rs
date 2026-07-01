@@ -181,11 +181,10 @@ impl ThemeEditor {
             }
         });
 
-        let focused_field = pick_list(
-            Some(&self.component),
-            Component::ALL.to_vec(),
-            |c| c.to_string(),
-        ).on_select(Message::ComponentChanged);
+        let focused_field = pick_list(Some(&self.component), Component::ALL.to_vec(), |c| {
+            c.to_string()
+        })
+        .on_select(Message::ComponentChanged);
 
         let content = column![
             row![

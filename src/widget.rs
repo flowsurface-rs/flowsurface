@@ -160,7 +160,13 @@ pub fn labeled_slider<'a, T, Message: Clone + 'static>(
     step: Option<T>,
 ) -> Element<'a, Message>
 where
-    T: 'static + Copy + PartialOrd + Into<f64> + From<u8> + num_traits::FromPrimitive + num_traits::AsPrimitive<f64>,
+    T: 'static
+        + Copy
+        + PartialOrd
+        + Into<f64>
+        + From<u8>
+        + num_traits::FromPrimitive
+        + num_traits::AsPrimitive<f64>,
 {
     let mut slider = iced::widget::slider(range, current, on_change)
         .width(Fill)

@@ -527,19 +527,19 @@ pub fn timesales_cfg_view<'a>(
 
             let metric_picklist = pick_list(Some(ratio), StackedBarRatio::ALL, |r| r.to_string())
                 .on_select(move |new_ratio| {
-                let new_hist = Some(match cfg.stacked_bar {
-                    Some(StackedBar::Full(_)) => StackedBar::Full(new_ratio),
-                    _ => StackedBar::Compact(new_ratio),
+                    let new_hist = Some(match cfg.stacked_bar {
+                        Some(StackedBar::Full(_)) => StackedBar::Full(new_ratio),
+                        _ => StackedBar::Compact(new_ratio),
+                    });
+                    Message::VisualConfigChanged(
+                        pane,
+                        VisualConfig::TimeAndSales(timeandsales::Config {
+                            stacked_bar: new_hist,
+                            ..cfg
+                        }),
+                        false,
+                    )
                 });
-                Message::VisualConfigChanged(
-                    pane,
-                    VisualConfig::TimeAndSales(timeandsales::Config {
-                        stacked_bar: new_hist,
-                        ..cfg
-                    }),
-                    false,
-                )
-            });
 
             column![
                 iced::widget::rule::horizontal(1),
@@ -641,20 +641,20 @@ pub fn kline_cfg_view<'a>(
             scaling,
             studies,
         } => {
-            let cluster_picklist =
-                pick_list(Some(clusters), ClusterKind::ALL, |k| k.to_string())
-                    .on_select(move |new_cluster_kind| {
-                        Message::PaneEvent(pane, Event::ClusterKindSelected(new_cluster_kind))
-                    });
+            let cluster_picklist = pick_list(Some(clusters), ClusterKind::ALL, |k| k.to_string())
+                .on_select(move |new_cluster_kind| {
+                    Message::PaneEvent(pane, Event::ClusterKindSelected(new_cluster_kind))
+                });
 
             let scaling = {
                 let picklist = pick_list(
                     Some(scaling),
                     data::chart::kline::ClusterScaling::ALL,
                     |s| s.to_string(),
-                ).on_select(move |new_scaling| {
-                        Message::PaneEvent(pane, Event::ClusterScalingSelected(new_scaling))
-                    });
+                )
+                .on_select(move |new_scaling| {
+                    Message::PaneEvent(pane, Event::ClusterScalingSelected(new_scaling))
+                });
 
                 if let data::chart::kline::ClusterScaling::Hybrid { weight } = scaling {
                     let hybrid_slider = slider(0.0..=1.0, *weight, move |new_weight| {

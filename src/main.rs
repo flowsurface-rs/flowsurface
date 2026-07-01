@@ -855,10 +855,10 @@ impl Flowsurface {
                             themes.push(custom_theme.clone());
                         }
 
-                        pick_list(Some(self.theme.0.clone()), themes, |theme: &iced::Theme| theme.to_string())
-                            .on_select(|theme| {
-                                Message::ThemeSelected(theme)
-                            })
+                        pick_list(Some(self.theme.0.clone()), themes, |theme: &iced::Theme| {
+                            theme.to_string()
+                        })
+                        .on_select(|theme| Message::ThemeSelected(theme))
                     };
 
                     let toggle_theme_editor = button(text("Theme editor")).on_press(
@@ -877,7 +877,8 @@ impl Flowsurface {
                         Some(self.timezone),
                         [data::UserTimezone::Utc, data::UserTimezone::Local],
                         |tz| tz.to_string(),
-                    ).on_select(Message::SetTimezone);
+                    )
+                    .on_select(Message::SetTimezone);
 
                     let size_in_quote_currency_checkbox = {
                         let is_active = match self.volume_size_unit {
@@ -917,7 +918,8 @@ impl Flowsurface {
                         Some(sidebar_pos),
                         [sidebar::Position::Left, sidebar::Position::Right],
                         |pos| pos.to_string(),
-                    ).on_select(|pos| {
+                    )
+                    .on_select(|pos| {
                         Message::Sidebar(dashboard::sidebar::Message::SetSidebarPosition(pos))
                     });
 

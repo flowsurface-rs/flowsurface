@@ -590,9 +590,7 @@ impl Modifier {
                                 text(format!("Step: {}", price_step.to_ui_string())).style(
                                     |theme: &iced::Theme| {
                                         iced::widget::text::Style {
-                                            color: Some(
-                                                theme.palette().background.strongest.color,
-                                            ),
+                                            color: Some(theme.palette().background.strongest.color),
                                         }
                                     }
                                 ),

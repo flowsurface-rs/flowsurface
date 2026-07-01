@@ -48,8 +48,11 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
 
                 // Double-click detection uses global cursor position + previous click.
                 if let Some(global_pos) = cursor.position() {
-                    let new_click =
-                        mouse::click::Click::new(global_pos, mouse::Button::Left, state.previous_click);
+                    let new_click = mouse::click::Click::new(
+                        global_pos,
+                        mouse::Button::Left,
+                        state.previous_click,
+                    );
                     let is_double = new_click.kind() == mouse::click::Kind::Double;
 
                     state.previous_click = Some(new_click);
