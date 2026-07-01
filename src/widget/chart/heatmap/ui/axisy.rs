@@ -111,7 +111,7 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
                 // Double-click detection needs global cursor position + previous click state.
                 if let Some(global_pos) = cursor.position() {
                     let new_click =
-                        mouse::Click::new(global_pos, mouse::Button::Left, state.previous_click);
+                        mouse::click::Click::new(global_pos, mouse::Button::Left, state.previous_click);
 
                     let is_double = new_click.kind() == mouse::click::Kind::Double;
 
@@ -187,7 +187,7 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
             return vec![];
         };
 
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
 
         let tick_labels = self.cache.draw(renderer, bounds.size(), |frame| {
             let row_h = self.row_h;

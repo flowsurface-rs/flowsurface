@@ -14,7 +14,7 @@ use exchange::unit::{Price, PriceStep};
 use scale::linear::PriceInfoLabel;
 use scale::{AxisLabelsX, AxisLabelsY};
 
-use iced::theme::palette::Extended;
+use iced::theme::palette::Palette;
 use iced::widget::canvas::{self, Cache, Canvas, Event, Frame, LineDash, Path, Stroke};
 use iced::{
     Alignment, Element, Length, Point, Rectangle, Size, Theme, Vector, keyboard, mouse, padding,
@@ -867,7 +867,7 @@ impl ViewState {
             let rect_w = (snapped_p1_x - snapped_p2_x).abs();
             let rect_h = (snapped_p1_y - snapped_p2_y).abs();
 
-            let palette = theme.extended_palette();
+            let palette = theme.palette();
 
             frame.fill_rectangle(
                 Point::new(rect_x, rect_y),
@@ -1034,7 +1034,7 @@ impl ViewState {
     fn draw_last_price_line(
         &self,
         frame: &mut canvas::Frame,
-        palette: &Extended,
+        palette: &Palette,
         region: Rectangle,
     ) {
         if let Some(price) = &self.last_price {

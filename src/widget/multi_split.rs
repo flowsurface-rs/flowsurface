@@ -1,7 +1,7 @@
 use iced::{
     Element, Event, Length, Point, Rectangle, Renderer, Size, Theme, Vector,
     advanced::{
-        Clipboard, Layout, Shell, Widget,
+        Layout, Shell, Widget,
         layout::{Limits, Node},
         overlay,
         renderer::Style,
@@ -71,10 +71,6 @@ where
 }
 
 impl<Message> Widget<Message, Theme, Renderer> for MultiSplit<'_, Message> {
-    fn children(&self) -> Vec<Tree> {
-        self.panels.iter().map(Tree::new).collect()
-    }
-
     fn size(&self) -> Size<Length> {
         Size::new(Length::Fill, Length::Fill)
     }
@@ -87,8 +83,8 @@ impl<Message> Widget<Message, Theme, Renderer> for MultiSplit<'_, Message> {
         tree::State::new(State::default())
     }
 
-    fn diff(&self, tree: &mut Tree) {
-        tree.diff_children(&self.panels);
+    fn diff(&mut self, tree: &mut Tree) {
+        tree.diff_children(&mut self.panels[..]);
     }
 
     fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &Limits) -> Node {
@@ -154,7 +150,6 @@ impl<Message> Widget<Message, Theme, Renderer> for MultiSplit<'_, Message> {
         layout: Layout<'_>,
         cursor: Cursor,
         renderer: &Renderer,
-        clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
@@ -163,9 +158,9 @@ impl<Message> Widget<Message, Theme, Renderer> for MultiSplit<'_, Message> {
             .zip(&mut tree.children)
             .zip(layout.children())
             .for_each(|((child, tree), layout)| {
-                child.as_widget_mut().update(
-                    tree, event, layout, cursor, renderer, clipboard, shell, viewport,
-                );
+                child
+                    .as_widget_mut()
+                    .update(tree, event, layout, cursor, renderer, shell, viewport);
             });
 
         if shell.is_event_captured() {

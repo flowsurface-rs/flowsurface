@@ -19,7 +19,7 @@ use exchange::unit::{Price, PriceStep, Qty};
 use exchange::{Kline, OpenInterest as OIData, TickerInfo, Trade, UnixMs};
 
 use iced::task::Handle;
-use iced::theme::palette::Extended;
+use iced::theme::palette::Palette;
 use iced::widget::canvas::{self, Event, Geometry, Path, Stroke};
 use iced::{Alignment, Element, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
 
@@ -928,7 +928,7 @@ impl canvas::Program<Message> for KlineChart {
         }
 
         let bounds_size = bounds.size();
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
 
         let klines = chart.cache.main.draw(renderer, bounds_size, |frame| {
             let center = Vector::new(bounds.width / 2.0, bounds.height / 2.0);
@@ -1121,7 +1121,7 @@ fn draw_footprint_kline(
     x_position: f32,
     candle_width: f32,
     kline: &Kline,
-    palette: &Extended,
+    palette: &Palette,
 ) {
     let y_open = price_to_y(kline.open);
     let y_high = price_to_y(kline.high);
@@ -1164,7 +1164,7 @@ fn draw_candle_dp(
     frame: &mut canvas::Frame,
     price_to_y: impl Fn(Price) -> f32,
     candle_width: f32,
-    palette: &Extended,
+    palette: &Palette,
     x_position: f32,
     kline: &Kline,
 ) {
@@ -1248,7 +1248,7 @@ fn draw_all_npocs(
     candle_width: f32,
     cell_width: f32,
     cell_height: f32,
-    palette: &Extended,
+    palette: &Palette,
     studies: &[FootprintStudy],
     visible_earliest: u64,
     visible_latest: u64,
@@ -1438,7 +1438,7 @@ fn draw_clusters(
     cell_height: f32,
     candle_width: f32,
     max_cluster_qty: f64,
-    palette: &Extended,
+    palette: &Palette,
     text_size: f32,
     step: PriceStep,
     show_text: bool,
@@ -1731,7 +1731,7 @@ fn draw_imbalance_markers(
     color_scale: Option<usize>,
     ignore_zeros: bool,
     cell_height: f32,
-    palette: &Extended,
+    palette: &Palette,
     buyside_x: f32,
     sellside_x: f32,
     rect_width: f32,
@@ -1835,7 +1835,7 @@ fn draw_crosshair_tooltip(
     data: &PlotData<KlineDataPoint>,
     ticker_info: &TickerInfo,
     frame: &mut canvas::Frame,
-    palette: &Extended,
+    palette: &Palette,
     basis: Basis,
     at_interval: Option<u64>,
     visible_range: (u64, u64),

@@ -6,7 +6,7 @@ use data::{
 
 use chrono::{DateTime, Datelike, Months};
 use exchange::UnixMs;
-use iced::theme::palette::Extended;
+use iced::theme::palette::Palette;
 use iced_core::Rectangle;
 
 pub const ONE_DAY_MS: u64 = 24 * 60 * 60 * 1000;
@@ -132,7 +132,7 @@ pub fn generate_time_labels(
     earliest: UnixMs,
     latest: UnixMs,
     x_labels_can_fit: i32,
-    palette: &Extended,
+    palette: &Palette,
 ) -> Vec<AxisLabel> {
     let (time_step, initial_rounded_earliest) =
         calc_time_step(earliest, latest, x_labels_can_fit, timeframe);
@@ -219,7 +219,7 @@ fn above_daily_labels_gen<Tz, Next, Format, Skip>(
     next: Next,
     format_label: Format,
     skip_label: Skip,
-    palette: &Extended,
+    palette: &Palette,
 ) where
     Tz: chrono::TimeZone,
     Next: Fn(&chrono::DateTime<Tz>) -> Option<chrono::DateTime<Tz>>,
@@ -265,7 +265,7 @@ fn daily_labels_gen(
     end_utc_dt: DateTime<chrono::Utc>,
     calc_x_pos: impl Fn(u64, UnixMs, UnixMs, f32) -> f64,
     is_drawable: impl Fn(f64, f32) -> bool,
-    palette: &Extended,
+    palette: &Palette,
 ) {
     let current = start_utc_dt
         .date_naive()
@@ -300,7 +300,7 @@ fn monthly_labels_gen(
     end_utc_dt: DateTime<chrono::Utc>,
     calc_x_pos: impl Fn(u64, UnixMs, UnixMs, f32) -> f64,
     is_drawable: impl Fn(f64, f32) -> bool,
-    palette: &Extended,
+    palette: &Palette,
 ) {
     let current = reset_to_start_of_month_utc(start_utc_dt);
 
@@ -332,7 +332,7 @@ fn yearly_labels_gen(
     end_utc_dt: DateTime<chrono::Utc>,
     calc_x_pos: impl Fn(u64, UnixMs, UnixMs, f32) -> f64,
     is_drawable: impl Fn(f64, f32) -> bool,
-    palette: &Extended,
+    palette: &Palette,
 ) {
     let current = reset_to_start_of_year_utc(start_utc_dt);
 
@@ -366,7 +366,7 @@ fn sub_daily_labels_gen(
     timeframe: exchange::Timeframe,
     calc_x_pos: impl Fn(u64, UnixMs, UnixMs, f32) -> f64,
     is_drawable: impl Fn(f64, f32) -> bool,
-    palette: &Extended,
+    palette: &Palette,
 ) {
     let mut current_time = initial_rounded_earliest;
 

@@ -278,7 +278,7 @@ impl shader::Program<Message> for Scene {
         interaction: &mut Interaction,
         event: &iced::Event,
         bounds: Rectangle,
-        cursor: iced_core::mouse::Cursor,
+        cursor: iced::mouse::Cursor,
     ) -> Option<shader::Action<Message>> {
         match event {
             iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
@@ -351,10 +351,10 @@ impl shader::Program<Message> for Scene {
         &self,
         _interaction: &Interaction,
         _bounds: Rectangle,
-        _cursor: iced_core::mouse::Cursor,
-    ) -> iced_core::mouse::Interaction {
+        _cursor: iced::mouse::Cursor,
+    ) -> iced::mouse::Interaction {
         // NOTE: this gets overridden by the overlay widget in heatmap/widget.rs
-        iced_core::mouse::Interaction::default()
+        iced::mouse::Interaction::default()
     }
 }
 

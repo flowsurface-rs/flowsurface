@@ -597,7 +597,7 @@ impl TickersTable {
             content = content.push(text(self.stats_fetch_state.loading_dots()));
         } else if unavailable {
             let unavailable_mark = text("!").style(move |theme: &Theme| {
-                let palette = theme.extended_palette();
+                let palette = theme.palette();
                 iced::widget::text::Style {
                     color: Some(palette.danger.base.color),
                 }
@@ -974,7 +974,7 @@ impl TickersTable {
                     row![
                         text(unchanged_part),
                         text(changed_part).style(move |theme: &Theme| {
-                            let palette = theme.extended_palette();
+                            let palette = theme.palette();
                             iced::widget::text::Style {
                                 color: Some(match display_data.price_change.as_ref() {
                                     Some(PriceChange::Increased) => palette.success.base.color,
@@ -1099,7 +1099,7 @@ impl TickersTable {
                 .spacing(2)
             )
             .style(|theme: &Theme| {
-                let palette = theme.extended_palette();
+                let palette = theme.palette();
                 iced::widget::container::Style {
                     text_color: Some(palette.background.base.text.scale_alpha(0.9)),
                     ..Default::default()

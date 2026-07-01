@@ -12,11 +12,14 @@
 // Copyright 2019 Héctor Ramón, Iced contributors
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::widget::{Operation, Tree, Widget, tree};
-use iced::advanced::{Clipboard, Shell, overlay, renderer};
+use iced::advanced::{Shell, overlay, renderer};
 use iced::alignment::{self, Alignment};
 use iced::event::Event;
 use iced::mouse;
 use iced::{Element, Length, Padding, Pixels, Point, Rectangle, Size, Theme, Vector};
+// Note: Defaults use `Length::Fit` (not `Shrink`) to match iced master's `Column`.
+// `Shrink` enables "compression" mode in master's flex layout, which breaks
+// `Fill`-width children. `Fit` gives the old 0.14 `Shrink` behavior.
 
 const DRAG_HANDLE_WIDTH: f32 = 14.0;
 
@@ -65,7 +68,6 @@ pub struct Column<'a, Message, Theme = iced::Theme, Renderer = iced::Renderer> {
     padding: Padding,
     width: Length,
     height: Length,
-    max_width: f32,
     align: Alignment,
     clip: bool,
     children: Vec<Element<'a, Message, Theme, Renderer>>,
@@ -106,9 +108,8 @@ where
         Self {
             spacing: 0.0,
             padding: Padding::ZERO,
-            width: Length::Shrink,
-            height: Length::Shrink,
-            max_width: f32::INFINITY,
+            width: Length::Fit,
+            height: Length::Fit,
             align: Alignment::Start,
             clip: false,
             children,
@@ -144,12 +145,6 @@ where
         self
     }
 
-    /// Sets the maximum width of the [`Column`].
-    pub fn max_width(mut self, max_width: impl Into<Pixels>) -> Self {
-        self.max_width = max_width.into().0;
-        self
-    }
-
     /// Sets the horizontal alignment of the contents of the [`Column`] .
     pub fn align_x(mut self, align: impl Into<alignment::Horizontal>) -> Self {
         self.align = Alignment::from(align.into());
@@ -166,11 +161,6 @@ where
     /// Adds an element to the [`Column`].
     pub fn push(mut self, child: impl Into<Element<'a, Message, Theme, Renderer>>) -> Self {
         let child = child.into();
-        let child_size = child.as_widget().size_hint();
-
-        self.width = self.width.enclose(child_size.width);
-        self.height = self.height.enclose(child_size.height);
-
         self.children.push(child);
         self
     }
@@ -279,12 +269,17 @@ where
         tree::State::new(Action::Idle)
     }
 
-    fn children(&self) -> Vec<Tree> {
-        self.children.iter().map(Tree::new).collect()
-    }
+    fn diff(&mut self, tree: &mut Tree) {
+        tree.diff_children(&mut self.children);
 
-    fn diff(&self, tree: &mut Tree) {
-        tree.diff_children(&self.children);
+        if self.width.is_fit() || self.height.is_fit() {
+            for child in &self.children {
+                let size = child.as_widget().size();
+
+                self.width = self.width.cross(size.width);
+                self.height = self.height.stack(size.height);
+            }
+        }
     }
 
     fn size(&self) -> Size<Length> {
@@ -300,12 +295,10 @@ where
         renderer: &Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
-        let limits = limits.max_width(self.max_width);
-
         layout::flex::resolve(
             layout::flex::Axis::Vertical,
             renderer,
-            &limits,
+            limits,
             self.width,
             self.height,
             self.padding,
@@ -318,12 +311,23 @@ where
 
     fn operate(
         &mut self,
-        _tree: &mut Tree,
+        tree: &mut Tree,
         layout: Layout<'_>,
-        _renderer: &Renderer,
+        renderer: &Renderer,
         operation: &mut dyn Operation,
     ) {
-        operation.container(None, layout.bounds())
+        operation.container(None, layout.bounds());
+        operation.traverse(&mut |operation| {
+            self.children
+                .iter_mut()
+                .zip(&mut tree.children)
+                .zip(layout.children())
+                .for_each(|((child, state), layout)| {
+                    child
+                        .as_widget_mut()
+                        .operate(state, layout, renderer, operation);
+                });
+        });
     }
 
     fn update(
@@ -333,7 +337,6 @@ where
         layout: Layout<'_>,
         cursor: mouse::Cursor,
         renderer: &Renderer,
-        clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
@@ -431,9 +434,9 @@ where
             .zip(&mut tree.children)
             .zip(layout.children())
             .for_each(|((child, tree), layout)| {
-                child.as_widget_mut().update(
-                    tree, event, layout, cursor, renderer, clipboard, shell, viewport,
-                );
+                child
+                    .as_widget_mut()
+                    .update(tree, event, layout, cursor, renderer, shell, viewport);
             });
     }
 
@@ -560,15 +563,24 @@ where
             }
             _ => {
                 // Draw all children normally when not dragging
-                for ((child, state), layout) in self
-                    .children
-                    .iter()
-                    .zip(&tree.children)
-                    .zip(layout.children())
-                {
-                    child
-                        .as_widget()
-                        .draw(state, renderer, theme, defaults, layout, cursor, viewport);
+                if let Some(clipped_viewport) = layout.bounds().intersection(viewport) {
+                    let viewport = if self.clip {
+                        &clipped_viewport
+                    } else {
+                        viewport
+                    };
+
+                    for ((child, state), layout) in self
+                        .children
+                        .iter()
+                        .zip(&tree.children)
+                        .zip(layout.children())
+                        .filter(|(_, layout)| layout.bounds().intersects(viewport))
+                    {
+                        child
+                            .as_widget()
+                            .draw(state, renderer, theme, defaults, layout, cursor, viewport);
+                    }
                 }
             }
         }

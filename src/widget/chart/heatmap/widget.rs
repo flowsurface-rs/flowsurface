@@ -6,7 +6,7 @@ use crate::widget::chart::heatmap::ui::overlay::OverlayCanvas;
 
 use super::Message;
 use iced::advanced::widget::tree::{self, Tree};
-use iced::advanced::{Clipboard, Layout, Shell, Widget, layout, renderer};
+use iced::advanced::{Layout, Shell, Widget, layout, renderer};
 use iced::widget::shader::Program;
 use iced::widget::{canvas, shader};
 use iced::{Element, Event, Length, Rectangle, Renderer, Size, Theme, Vector, mouse};
@@ -175,7 +175,6 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
         layout: Layout<'_>,
         cursor: mouse::Cursor,
         _renderer: &Renderer,
-        _clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Message>,
         _viewport: &Rectangle,
     ) {
@@ -312,8 +311,8 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
         }
 
         {
+            use iced::advanced::Renderer;
             use iced::widget::canvas::Program;
-            use iced_core::Renderer;
             use iced_wgpu::graphics::geometry::Renderer as _;
 
             // 2) Overlay canvas on top of shader (same bounds)
@@ -350,7 +349,7 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
             });
 
             // 4) Splitters
-            let palette = theme.extended_palette();
+            let palette = theme.palette();
             let splitter_color = palette.background.strong.color.scale_alpha(0.25);
 
             // Horizontal splitter between (plot+y_axis) and x_axis

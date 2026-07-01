@@ -2,7 +2,7 @@ use iced::advanced::layout::{self, Layout};
 use iced::advanced::overlay;
 use iced::advanced::renderer;
 use iced::advanced::widget::{self, Operation, Tree};
-use iced::advanced::{Clipboard, Shell, Widget};
+use iced::advanced::{Shell, Widget};
 use iced::time::{self, Duration, Instant};
 use iced::widget::{button, column, container, row, space, text};
 use iced::{
@@ -127,14 +127,14 @@ where
                         .width(Fill),
                 )
                 .width(Fill)
-                .max_height(MAX_TOAST_BODY_HEIGHT)
+                .height(MAX_TOAST_BODY_HEIGHT)
                 .clip(true)
                 .padding(4);
 
                 container(column![header, body])
                     .style(style::chart_modal)
                     .padding(4)
-                    .max_width(200)
+                    .width(200)
                     .into()
             })
             .collect();
@@ -181,13 +181,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Manager<'_, Message> {
         widget::tree::State::new(Vec::<Option<Instant>>::new())
     }
 
-    fn children(&self) -> Vec<Tree> {
-        std::iter::once(Tree::new(&self.content))
-            .chain(self.toasts.iter().map(Tree::new))
-            .collect()
-    }
-
-    fn diff(&self, tree: &mut Tree) {
+    fn diff(&mut self, tree: &mut Tree) {
         let instants = tree.state.downcast_mut::<Vec<Option<Instant>>>();
 
         // Invalidating removed instants to None allows us to remove
@@ -205,11 +199,10 @@ impl<Message> Widget<Message, Theme, Renderer> for Manager<'_, Message> {
             _ => {}
         }
 
-        tree.diff_children(
-            &std::iter::once(&self.content)
-                .chain(self.toasts.iter())
-                .collect::<Vec<_>>(),
-        );
+        let mut children: Vec<_> = std::iter::once(&mut self.content)
+            .chain(self.toasts.iter_mut())
+            .collect();
+        tree.diff_children(&mut children);
     }
 
     fn operate(
@@ -233,7 +226,6 @@ impl<Message> Widget<Message, Theme, Renderer> for Manager<'_, Message> {
         layout: Layout<'_>,
         cursor: mouse::Cursor,
         renderer: &Renderer,
-        clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
@@ -243,7 +235,6 @@ impl<Message> Widget<Message, Theme, Renderer> for Manager<'_, Message> {
             layout,
             cursor,
             renderer,
-            clipboard,
             shell,
             viewport,
         );
@@ -363,7 +354,6 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for Overlay<'_, '_, Mes
         layout: Layout<'_>,
         cursor: mouse::Cursor,
         renderer: &Renderer,
-        clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Message>,
     ) {
         if let Event::Window(window::Event::RedrawRequested(now)) = &event {
@@ -399,7 +389,7 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for Overlay<'_, '_, Mes
             }
 
             let mut local_messages = vec![];
-            let mut local_shell = Shell::new(&mut local_messages);
+            let mut local_shell = shell.local(&mut local_messages);
 
             child.as_widget_mut().update(
                 state,
@@ -407,7 +397,6 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for Overlay<'_, '_, Mes
                 child_layout,
                 cursor,
                 renderer,
-                clipboard,
                 &mut local_shell,
                 &viewport,
             );
@@ -542,7 +531,7 @@ fn styled(pair: theme::palette::Pair) -> container::Style {
 
 impl Status {
     pub fn style(&self, theme: &Theme) -> container::Style {
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
 
         match self {
             Status::Primary => styled(palette.primary.weak),

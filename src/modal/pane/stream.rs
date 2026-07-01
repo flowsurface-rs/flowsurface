@@ -521,7 +521,7 @@ impl Modifier {
                         scrollable::Scrollbar::new().width(4).scroller_width(4),
                     ),
                 ))
-                .max_width(240)
+                .width(240)
                 .padding(16)
                 .style(style::chart_modal)
                 .into()
@@ -591,7 +591,7 @@ impl Modifier {
                                     |theme: &iced::Theme| {
                                         iced::widget::text::Style {
                                             color: Some(
-                                                theme.extended_palette().background.strongest.color,
+                                                theme.palette().background.strongest.color,
                                             ),
                                         }
                                     }
@@ -607,7 +607,7 @@ impl Modifier {
                             scrollable::Scrollbar::new().width(4).scroller_width(4),
                         ),
                     ))
-                    .max_width(240)
+                    .width(240)
                     .padding(16)
                     .style(style::chart_modal)
                     .into()

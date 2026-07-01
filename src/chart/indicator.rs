@@ -138,7 +138,7 @@ impl canvas::Program<Message> for IndicatorLabel<'_> {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
 
         let (highest, lowest) = (self.max, self.min);
         let range = highest - lowest;

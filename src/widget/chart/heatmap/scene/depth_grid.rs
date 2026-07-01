@@ -935,8 +935,8 @@ pub struct HeatmapPalette {
 }
 
 impl HeatmapPalette {
-    pub fn from_theme(theme: &iced_core::Theme) -> Self {
-        let palette = theme.extended_palette();
+    pub fn from_theme(theme: &iced::Theme) -> Self {
+        let palette = theme.palette();
 
         let bid = palette.success.strong.color;
         let bid_linear = Self::srgb_to_linear([bid.r, bid.g, bid.b]);

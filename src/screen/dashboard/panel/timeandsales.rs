@@ -276,7 +276,7 @@ impl canvas::Program<Message> for TimeAndSales {
         _state: &mut Self::State,
         event: &iced::Event,
         bounds: iced::Rectangle,
-        cursor: iced_core::mouse::Cursor,
+        cursor: iced::mouse::Cursor,
     ) -> Option<canvas::Action<Message>> {
         let cursor_position = cursor.position_in(bounds)?;
 
@@ -335,7 +335,7 @@ impl canvas::Program<Message> for TimeAndSales {
     ) -> Vec<canvas::Geometry> {
         let market_type = self.ticker_info.market_type();
 
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
         let is_scroll_paused = self.is_paused;
         let stacked_bar_h = self.stacked_bar_height();
 
@@ -611,8 +611,8 @@ impl canvas::Program<Message> for TimeAndSales {
         &self,
         _state: &Self::State,
         bounds: iced::Rectangle,
-        cursor: iced_core::mouse::Cursor,
-    ) -> iced_core::mouse::Interaction {
+        cursor: iced::mouse::Cursor,
+    ) -> iced::mouse::Interaction {
         if self.is_paused {
             let stacked_bar_h = self.stacked_bar_height();
             let paused_box = Rectangle {

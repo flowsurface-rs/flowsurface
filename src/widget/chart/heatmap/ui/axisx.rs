@@ -49,8 +49,8 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
                 // Double-click detection uses global cursor position + previous click.
                 if let Some(global_pos) = cursor.position() {
                     let new_click =
-                        mouse::Click::new(global_pos, mouse::Button::Left, state.previous_click);
-                    let is_double = new_click.kind() == iced_core::mouse::click::Kind::Double;
+                        mouse::click::Click::new(global_pos, mouse::Button::Left, state.previous_click);
+                    let is_double = new_click.kind() == mouse::click::Kind::Double;
 
                     state.previous_click = Some(new_click);
 
@@ -159,7 +159,7 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
         if self.aggr_time == 0 || !self.column_world.is_finite() || self.column_world <= 0.0 {
             return vec![];
         }
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
 
         let labels = self.cache.draw(renderer, bounds.size(), |frame| {
             let vw = bounds.width;
@@ -367,15 +367,15 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
         &self,
         state: &Self::State,
         bounds: Rectangle,
-        cursor: iced_core::mouse::Cursor,
-    ) -> iced_core::mouse::Interaction {
+        cursor: iced::mouse::Cursor,
+    ) -> iced::mouse::Interaction {
         if cursor.position_over(bounds).is_some() {
             match state.interaction {
-                AxisInteraction::Panning { .. } => iced_core::mouse::Interaction::Grabbing,
-                _ => iced_core::mouse::Interaction::ResizingHorizontally,
+                AxisInteraction::Panning { .. } => iced::mouse::Interaction::Grabbing,
+                _ => iced::mouse::Interaction::ResizingHorizontally,
             }
         } else {
-            iced_core::mouse::Interaction::default()
+            iced::mouse::Interaction::default()
         }
     }
 }

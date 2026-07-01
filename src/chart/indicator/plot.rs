@@ -645,7 +645,7 @@ impl PlotTooltip {
 
     pub fn draw(&self, frame: &mut canvas::Frame, theme: &Theme, bounds: Rectangle, cursor_x: f32) {
         let (tooltip_w, tooltip_h) = self.guesstimate();
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
 
         // decide side to avoid covering hovered datapoint and fit in bounds
         let switch_sides = {
@@ -697,7 +697,7 @@ impl PlotTooltip {
 
     pub fn draw_static(&self, frame: &mut canvas::Frame, theme: &Theme, _bounds: Rectangle) {
         let (tooltip_w, tooltip_h) = self.guesstimate();
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
 
         frame.fill_rectangle(
             Point::new(TOOLTIP_MARGIN, 0.0),

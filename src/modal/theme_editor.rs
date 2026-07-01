@@ -2,6 +2,7 @@ use iced::{
     Alignment, Element,
     widget::{button, column, container, pick_list, row, space, text_input::default},
 };
+use iced_core::theme::Custom;
 
 use crate::{
     style::{self, Icon, icon_text},
@@ -68,14 +69,14 @@ impl ThemeEditor {
     }
 
     fn focused_color(&self, theme: &iced_core::Theme) -> iced_core::Color {
-        let palette = theme.palette();
+        let seed = theme.seed();
         match self.component {
-            Component::Background => palette.background,
-            Component::Text => palette.text,
-            Component::Primary => palette.primary,
-            Component::Success => palette.success,
-            Component::Danger => palette.danger,
-            Component::Warning => palette.warning,
+            Component::Background => seed.background,
+            Component::Text => seed.text,
+            Component::Primary => seed.primary,
+            Component::Success => seed.success,
+            Component::Danger => seed.danger,
+            Component::Warning => seed.warning,
         }
     }
 
@@ -85,19 +86,20 @@ impl ThemeEditor {
                 self.hex_input = None;
                 self.editing = Some(hsva);
 
-                let mut new_palette = theme.palette();
+                let mut seed = theme.seed();
                 let color = data::config::theme::from_hsva(hsva);
 
                 match self.component {
-                    Component::Background => new_palette.background = color,
-                    Component::Text => new_palette.text = color,
-                    Component::Primary => new_palette.primary = color,
-                    Component::Success => new_palette.success = color,
-                    Component::Danger => new_palette.danger = color,
-                    Component::Warning => new_palette.warning = color,
+                    Component::Background => seed.background = color,
+                    Component::Text => seed.text = color,
+                    Component::Primary => seed.primary = color,
+                    Component::Success => seed.success = color,
+                    Component::Danger => seed.danger = color,
+                    Component::Warning => seed.warning = color,
                 }
 
-                let new_theme = iced_core::Theme::custom("Custom".to_string(), new_palette);
+                let new_theme =
+                    iced_core::Theme::Custom(Custom::new("Custom".to_string(), seed).into());
                 self.custom_theme = Some(new_theme.clone());
 
                 Some(Action::UpdateTheme(new_theme))
@@ -112,20 +114,21 @@ impl ThemeEditor {
                 let mut action = None;
 
                 if let Some(color) = data::config::theme::hex_to_color(&input) {
-                    let mut new_palette = theme.palette();
+                    let mut seed = theme.seed();
 
                     match self.component {
-                        Component::Background => new_palette.background = color,
-                        Component::Text => new_palette.text = color,
-                        Component::Primary => new_palette.primary = color,
-                        Component::Success => new_palette.success = color,
-                        Component::Danger => new_palette.danger = color,
-                        Component::Warning => new_palette.warning = color,
+                        Component::Background => seed.background = color,
+                        Component::Text => seed.text = color,
+                        Component::Primary => seed.primary = color,
+                        Component::Success => seed.success = color,
+                        Component::Danger => seed.danger = color,
+                        Component::Warning => seed.warning = color,
                     }
 
                     self.editing = Some(data::config::theme::to_hsva(color));
 
-                    let new_theme = iced_core::Theme::custom("Custom".to_string(), new_palette);
+                    let new_theme =
+                        iced_core::Theme::Custom(Custom::new("Custom".to_string(), seed).into());
                     self.custom_theme = Some(new_theme.clone());
 
                     action = Some(Action::UpdateTheme(new_theme));
@@ -162,7 +165,7 @@ impl ThemeEditor {
         .on_input(Message::HexInput)
         .width(80)
         .style(move |theme: &iced::Theme, status| {
-            let palette = theme.extended_palette();
+            let palette = theme.palette();
 
             iced::widget::text_input::Style {
                 border: iced::Border {
@@ -179,10 +182,10 @@ impl ThemeEditor {
         });
 
         let focused_field = pick_list(
-            Component::ALL.to_vec(),
             Some(&self.component),
-            Message::ComponentChanged,
-        );
+            Component::ALL.to_vec(),
+            |c| c.to_string(),
+        ).on_select(Message::ComponentChanged);
 
         let content = column![
             row![
@@ -197,7 +200,7 @@ impl ThemeEditor {
         .spacing(10);
 
         container(content)
-            .max_width(380)
+            .width(380)
             .padding(24)
             .style(style::dashboard_modal)
             .into()

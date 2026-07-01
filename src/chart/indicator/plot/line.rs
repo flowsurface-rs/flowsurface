@@ -164,7 +164,7 @@ where
         range: RangeInclusive<u64>,
         scale: &YScale,
     ) {
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
         let color = palette.secondary.strong.color;
 
         let stroke = Stroke::with_color(

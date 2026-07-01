@@ -9,7 +9,7 @@ use data::config::timezone::TimeLabelKind;
 use data::util::round_to_tick;
 use iced::{
     Alignment, Color, Event, Point, Rectangle, Renderer, Size, Theme, mouse,
-    theme::palette::Extended,
+    theme::palette::Palette,
     widget::canvas::{self, Cache, Frame, Geometry},
 };
 
@@ -76,7 +76,7 @@ impl AxisLabel {
         text_content: String,
         axis_bounds: Rectangle,
         is_crosshair: bool,
-        palette: &Extended,
+        palette: &Palette,
     ) -> Self {
         let content_width = text_content.len() as f32 * (TEXT_SIZE / 2.6);
 
@@ -256,7 +256,7 @@ impl AxisLabelsX<'_> {
         cursor_pos: Point,
         region: Rectangle,
         bounds: Rectangle,
-        palette: &Extended,
+        palette: &Palette,
     ) -> Option<AxisLabel> {
         match self.basis {
             Basis::Tick(_) => {
@@ -461,7 +461,7 @@ impl canvas::Program<Message> for AxisLabelsX<'_> {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
 
         let labels = self.labels_cache.draw(renderer, bounds.size(), |frame| {
             let region = self.visible_region(frame.size());
@@ -674,7 +674,7 @@ impl canvas::Program<Message> for AxisLabelsY<'_> {
         cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
         let text_size = crate::style::text_size::BODY;
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
 
         let labels = self.labels_cache.draw(renderer, bounds.size(), |frame| {
             let region = self.visible_region(frame.size());

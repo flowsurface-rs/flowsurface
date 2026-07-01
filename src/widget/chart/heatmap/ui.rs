@@ -169,7 +169,7 @@ fn world_y_for_y_bin_center(y_bin: i64, steps_per_y_bin: i64, row_h: f32) -> f32
 fn paused_control_hovered(
     is_paused: bool,
     plot_bounds: Option<iced::Rectangle>,
-    cursor: iced_core::mouse::Cursor,
+    cursor: iced::mouse::Cursor,
 ) -> bool {
     if !is_paused {
         return false;

@@ -206,7 +206,7 @@ impl canvas::Program<Message> for Ladder {
         _state: &mut Self::State,
         event: &iced::Event,
         bounds: iced::Rectangle,
-        cursor: iced_core::mouse::Cursor,
+        cursor: iced::mouse::Cursor,
     ) -> Option<canvas::Action<Message>> {
         let _cursor_position = cursor.position_in(bounds)?;
 
@@ -232,9 +232,9 @@ impl canvas::Program<Message> for Ladder {
         renderer: &Renderer,
         theme: &Theme,
         bounds: Rectangle,
-        _cursor: iced_core::mouse::Cursor,
+        _cursor: iced::mouse::Cursor,
     ) -> Vec<iced::widget::canvas::Geometry<Renderer>> {
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
 
         let text_color = palette.background.base.text;
         let bid_color = palette.success.base.color;

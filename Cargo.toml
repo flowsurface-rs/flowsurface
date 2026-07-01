@@ -19,7 +19,7 @@ homepage = "https://flowsurface.com"
 members = [ "data", "exchange"]
 
 [workspace.dependencies]
-iced_core = { version = "0.14.0", features = ["serde"] }
+iced_core = { version = "0.15.0-dev", features = ["serde"] }
 chrono = { version = "0.4.44", default-features = false, features = ["serde", "now", "clock"] }
 serde = { version = "1.0.228", default-features = false, features = ["derive"] }
 serde_json = "1.0.149"
@@ -37,7 +37,7 @@ data = { version = "0.8.9", path = "data", package = "flowsurface-data" }
 exchange = { version = "0.8.9", path = "exchange", package = "flowsurface-exchange" }
 
 [dependencies]
-iced = { version = "0.14.0", default-features = false, features = [
+iced = { version = "0.15.0-dev", default-features = false, features = [
     "wgpu",
     "tokio",
     "canvas",
@@ -64,9 +64,14 @@ fern = "0.7.1"
 rodio = { version = "0.22.2", default-features = false, features = [ "playback", "wav" ]}
 
 bytemuck = "1.25.0"
-iced_wgpu = "0.14.0"
+iced_wgpu = { version = "0.15.0-dev", features = ["geometry"] }
 exchange.workspace = true
 data.workspace = true
 
 [features]
 debug = ["iced/hot"]
+
+[patch.crates-io]
+iced = { git = "https://github.com/iced-rs/iced", rev = "bb22add15fc5528b5eb319408d5e60992fdc8a90" }
+iced_core = { git = "https://github.com/iced-rs/iced", rev = "bb22add15fc5528b5eb319408d5e60992fdc8a90" }
+iced_wgpu = { git = "https://github.com/iced-rs/iced", rev = "bb22add15fc5528b5eb319408d5e60992fdc8a90" }

@@ -34,7 +34,7 @@ where
     container(scrollable_content(content))
         .width(Length::Shrink)
         .padding(28)
-        .max_width(max_width)
+        .width(max_width)
         .style(style::chart_modal)
         .into()
 }
@@ -525,7 +525,8 @@ pub fn timesales_cfg_view<'a>(
             })
             .spacing(4);
 
-            let metric_picklist = pick_list(StackedBarRatio::ALL, Some(ratio), move |new_ratio| {
+            let metric_picklist = pick_list(Some(ratio), StackedBarRatio::ALL, |r| r.to_string())
+                .on_select(move |new_ratio| {
                 let new_hist = Some(match cfg.stacked_bar {
                     Some(StackedBar::Full(_)) => StackedBar::Full(new_ratio),
                     _ => StackedBar::Compact(new_ratio),
@@ -641,18 +642,19 @@ pub fn kline_cfg_view<'a>(
             studies,
         } => {
             let cluster_picklist =
-                pick_list(ClusterKind::ALL, Some(clusters), move |new_cluster_kind| {
-                    Message::PaneEvent(pane, Event::ClusterKindSelected(new_cluster_kind))
-                });
+                pick_list(Some(clusters), ClusterKind::ALL, |k| k.to_string())
+                    .on_select(move |new_cluster_kind| {
+                        Message::PaneEvent(pane, Event::ClusterKindSelected(new_cluster_kind))
+                    });
 
             let scaling = {
                 let picklist = pick_list(
-                    data::chart::kline::ClusterScaling::ALL,
                     Some(scaling),
-                    move |new_scaling| {
+                    data::chart::kline::ClusterScaling::ALL,
+                    |s| s.to_string(),
+                ).on_select(move |new_scaling| {
                         Message::PaneEvent(pane, Event::ClusterScalingSelected(new_scaling))
-                    },
-                );
+                    });
 
                 if let data::chart::kline::ClusterScaling::Hybrid { weight } = scaling {
                     let hybrid_slider = slider(0.0..=1.0, *weight, move |new_weight| {

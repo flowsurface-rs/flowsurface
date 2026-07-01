@@ -25,7 +25,7 @@ where
     };
 
     container(content_row)
-        .max_width(200)
+        .width(200)
         .padding(16)
         .style(style::chart_modal)
         .into()

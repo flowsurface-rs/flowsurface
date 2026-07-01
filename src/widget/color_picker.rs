@@ -61,7 +61,7 @@ fn bordered<'a, Message: 'a>(element: impl Into<Element<'a, Message>>) -> Contai
             background: None,
             border: border::rounded(2)
                 .width(1)
-                .color(theme.extended_palette().background.strong.color),
+                .color(theme.palette().background.strong.color),
             shadow: iced::Shadow::default(),
             snap: true,
         })
@@ -307,7 +307,6 @@ fn picker_hsva<'a, Message: 'a>(
                   layout: advanced::Layout<'_>,
                   cursor: advanced::mouse::Cursor,
                   _renderer: &Renderer,
-                  _clipboard: &mut dyn advanced::Clipboard,
                   shell: &mut advanced::Shell<'_, Message>,
                   _viewport: &iced::Rectangle| {
                 let bounds = layout.bounds();

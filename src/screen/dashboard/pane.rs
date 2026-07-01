@@ -630,9 +630,10 @@ impl State {
         let body = match &self.content {
             Content::Starter => {
                 let content_picklist =
-                    pick_list(ContentKind::ALL, Some(ContentKind::Starter), move |kind| {
-                        Message::PaneEvent(id, Event::ContentSelected(kind))
-                    });
+                    pick_list(Some(ContentKind::Starter), ContentKind::ALL, |k| k.to_string())
+                        .on_select(move |kind| {
+                            Message::PaneEvent(id, Event::ContentSelected(kind))
+                        });
 
                 let base: Element<_> = widget::toast::Manager::new(
                     center(
@@ -1654,7 +1655,7 @@ impl State {
                     });
 
                 let content: Element<_> = container(mini_list)
-                    .max_width(260)
+                    .width(260)
                     .padding(16)
                     .style(style::chart_modal)
                     .into();
@@ -2331,7 +2332,7 @@ fn link_group_modal<'a>(
     }
 
     container(grid)
-        .max_width(240)
+        .width(240)
         .padding(16)
         .style(style::chart_modal)
         .into()

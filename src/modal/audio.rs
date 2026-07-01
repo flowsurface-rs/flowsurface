@@ -299,7 +299,7 @@ impl AudioStream {
         } else {
             column![volume_container, audio_contents,].spacing(20)
         })
-        .max_width(320)
+        .width(320)
         .padding(24)
         .style(style::dashboard_modal)
         .into()

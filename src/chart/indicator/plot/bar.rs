@@ -128,7 +128,7 @@ where
         range: RangeInclusive<u64>,
         scale: &YScale,
     ) {
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
         let bar_width = ctx.cell_width * self.bar_width_factor;
 
         let baseline_value = match self.baseline {

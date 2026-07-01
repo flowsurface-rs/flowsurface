@@ -7,8 +7,8 @@ use data::UserTimezone;
 use exchange::{TickerInfo, Timeframe};
 
 use iced::advanced::widget::tree::{self, Tree};
-use iced::advanced::{self, Clipboard, Layout, Shell, Widget, layout, renderer};
-use iced::theme::palette::Extended;
+use iced::advanced::{self, Layout, Shell, Widget, layout, renderer};
+use iced::theme::palette::Palette;
 use iced::widget::canvas;
 use iced::{
     Color, Element, Event, Length, Point, Rectangle, Renderer, Size, Theme, Vector, mouse, window,
@@ -779,7 +779,6 @@ where
         layout: Layout<'_>,
         cursor: mouse::Cursor,
         _renderer: &Renderer,
-        _clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, M>,
         _viewport: &Rectangle,
     ) {
@@ -932,7 +931,7 @@ where
         };
 
         let bounds = layout.bounds();
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
 
         renderer.with_translation(Vector::new(bounds.x, bounds.y), |r| {
             let plot_rect = scene.ctx.plot_rect();
@@ -1262,7 +1261,7 @@ where
         ctx: &PlotContext,
         ticks: &[f32],
         labels: &[String],
-        palette: &Extended,
+        palette: &Palette,
     ) {
         let plot = ctx.plot_rect();
         for (i, tick) in ticks.iter().enumerate() {
@@ -1284,7 +1283,7 @@ where
         }
     }
 
-    fn fill_x_axis_labels(&self, frame: &mut canvas::Frame, ctx: &PlotContext, palette: &Extended) {
+    fn fill_x_axis_labels(&self, frame: &mut canvas::Frame, ctx: &PlotContext, palette: &Palette) {
         let (ticks, step_ms) =
             super::time_ticks(ctx.min_x, ctx.max_x, ctx.px_per_ms, MIN_X_TICK_PX);
 
@@ -1328,7 +1327,7 @@ where
         frame: &mut canvas::Frame,
         ctx: &PlotContext,
         cursor_x: Option<u64>,
-        palette: &Extended,
+        palette: &Palette,
         step: f32,
         legend_layout: Option<&LegendLayout>,
         hovering_legend: bool,
@@ -1536,7 +1535,7 @@ where
         }
     }
 
-    fn fill_crosshair(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
+    fn fill_crosshair(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Palette) {
         let Some(ci) = scene.cursor else {
             return;
         };

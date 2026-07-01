@@ -213,8 +213,8 @@ impl Pipeline {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("heatmap pipeline layout"),
-            bind_group_layouts: &[&camera_bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&camera_bind_group_layout)],
+            immediate_size: 0,
         });
 
         // -- rect pipeline
@@ -304,7 +304,7 @@ impl Pipeline {
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -377,7 +377,7 @@ impl Pipeline {
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -411,8 +411,8 @@ impl Pipeline {
         let heatmap_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("heatmap texture pipeline layout"),
-                bind_group_layouts: &[&camera_bind_group_layout, &heatmap_tex_bind_group_layout],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[Some(&camera_bind_group_layout), Some(&heatmap_tex_bind_group_layout)],
+                immediate_size: 0,
             });
 
         let heatmap_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -445,7 +445,7 @@ impl Pipeline {
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -987,6 +987,7 @@ impl Pipeline {
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
+            multiview_mask: None,
         });
 
         pass.set_viewport(

@@ -166,7 +166,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
         interaction: &mut Interaction,
         event: &iced::Event,
         bounds: Rectangle,
-        cursor: iced_core::mouse::Cursor,
+        cursor: iced::mouse::Cursor,
     ) -> Option<canvas::Action<Message>> {
         match event {
             iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
@@ -204,7 +204,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
         let scale_labels = self
             .scale_labels_cache
             .draw(renderer, bounds.size(), |frame| {
-                let palette = theme.extended_palette();
+                let palette = theme.palette();
 
                 if self.is_paused {
                     self.draw_paused_control(frame, theme, bounds, cursor);
@@ -414,7 +414,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                 self.draw_full_crosshair(frame, theme, bounds, x, y);
             }
 
-            let palette = theme.extended_palette();
+            let palette = theme.palette();
             let bg = palette.background.weakest.color.scale_alpha(0.90);
             let mut layout = TooltipLayout::from_cursor(bounds, local_x, local_y);
 
@@ -528,7 +528,7 @@ impl<'a> OverlayCanvas<'a> {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) {
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
         let control_rect = self.paused_control_local_rect(bounds);
 
         let icon_size = ui::pause_icon_size(bounds);
@@ -669,7 +669,7 @@ impl<'a> OverlayCanvas<'a> {
             return;
         }
 
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
 
         let stroke = canvas::Stroke {
             style: canvas::Style::Solid(

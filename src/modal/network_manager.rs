@@ -254,7 +254,8 @@ impl NetworkManager {
                 row![
                     iced::widget::space::horizontal(),
                     text("Scheme:"),
-                    pick_list(ProxyScheme::ALL, Some(self.scheme), Message::SchemeChanged)
+                    pick_list(Some(self.scheme), ProxyScheme::ALL, |s| s.to_string())
+                        .on_select(Message::SchemeChanged)
                 ]
                 .spacing(8)
                 .align_y(iced::Alignment::Center)
@@ -405,7 +406,7 @@ impl NetworkManager {
                         .style(|theme: &iced::Theme| {
                             let palette = theme.palette();
                             iced::widget::text::Style {
-                                color: Some(palette.danger),
+                                color: Some(palette.danger.base.color),
                             }
                         });
                 body.push(
@@ -421,7 +422,7 @@ impl NetworkManager {
         };
 
         container(column![modal_header, proxy_settings].spacing(12))
-            .max_width(320)
+            .width(320)
             .padding(24)
             .style(style::dashboard_modal)
             .into()

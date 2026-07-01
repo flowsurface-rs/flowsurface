@@ -4,7 +4,7 @@
 /// All credits and thanks to the authors of [`Halloy`] and [`iced_core`]
 use iced_core::{
     Color,
-    theme::{Custom, Palette},
+    theme::{Custom, palette::Seed},
 };
 use palette::{
     FromColor, Hsva, RgbHue,
@@ -19,7 +19,7 @@ pub struct Theme(pub iced_core::Theme);
 struct SerTheme {
     name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    palette: Option<Palette>,
+    seed: Option<Seed>,
 }
 
 impl Default for Theme {
@@ -37,7 +37,7 @@ impl From<Theme> for iced_core::Theme {
 pub fn default_theme() -> Custom {
     Custom::new(
         "Flowsurface".to_string(),
-        Palette {
+        Seed {
             background: Color::from_rgb8(24, 22, 22),
             text: Color::from_rgb8(197, 201, 197),
             primary: Color::from_rgb8(200, 200, 200),
@@ -62,10 +62,10 @@ impl Serialize for Theme {
                     "custom"
                 }
                 .to_string(),
-                palette: if is_default_theme {
+                seed: if is_default_theme {
                     None
                 } else {
-                    Some(self.0.palette())
+                    Some(self.0.seed())
                 },
             };
             ser_theme.serialize(serializer)
@@ -145,8 +145,8 @@ impl<'de> Deserialize<'de> for Theme {
         let theme = match serialized.name.as_str() {
             "flowsurface" => Theme::default().0,
             "custom" => {
-                if let Some(palette) = serialized.palette {
-                    iced_core::Theme::Custom(Custom::new("Custom".to_string(), palette).into())
+                if let Some(seed) = serialized.seed {
+                    iced_core::Theme::Custom(Custom::new("Custom".to_string(), seed).into())
                 } else {
                     return Err(serde::de::Error::custom(
                         "Custom theme missing palette data",

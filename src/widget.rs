@@ -160,13 +160,13 @@ pub fn labeled_slider<'a, T, Message: Clone + 'static>(
     step: Option<T>,
 ) -> Element<'a, Message>
 where
-    T: 'static + Copy + PartialOrd + Into<f64> + From<u8> + num_traits::FromPrimitive,
+    T: 'static + Copy + PartialOrd + Into<f64> + From<u8> + num_traits::FromPrimitive + num_traits::AsPrimitive<f64>,
 {
     let mut slider = iced::widget::slider(range, current, on_change)
         .width(Fill)
         .height(24)
         .style(|theme: &Theme, status| {
-            let palette = theme.extended_palette();
+            let palette = theme.palette();
 
             slider::Style {
                 rail: slider::Rail {
