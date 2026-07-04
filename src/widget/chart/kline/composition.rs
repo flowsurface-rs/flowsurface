@@ -412,7 +412,7 @@ impl PanelValuePrecision {
                     let exp = Qty::QTY_SCALE + i32::from(min_qty.power);
 
                     if let Some(unit_size) = Self::pow10_i64(exp) {
-                        let qty_units = Qty::from_f32(value).round_to_min_qty(min_qty).units;
+                        let qty_units = Qty::from_f64(value as f64).round_to_min_qty(min_qty).units;
                         return YUnit(qty_units.div_euclid(unit_size));
                     }
                 }
@@ -447,7 +447,7 @@ impl PanelValuePrecision {
 
                     if let Some(unit_size) = Self::pow10_i64(exp) {
                         let units = y_unit.0.saturating_mul(unit_size);
-                        return Price::from_units(units).to_f32();
+                        return Price::from_units(units).to_f32_lossy();
                     }
                 }
             }
@@ -458,7 +458,7 @@ impl PanelValuePrecision {
 
                     if let Some(unit_size) = Self::pow10_i64(exp) {
                         let units = y_unit.0.saturating_mul(unit_size);
-                        return f32::from(Qty::from_units(units));
+                        return Qty::from_units(units).to_f32_lossy();
                     }
                 }
             }
@@ -525,8 +525,8 @@ impl PanelValueLabelMode {
     {
         match self {
             Self::Compact => compact_value(),
-            Self::Commas => data::util::format_with_commas(quantized_value()),
-            Self::Abbreviated => data::util::abbr_large_numbers(quantized_value()),
+            Self::Commas => data::util::format_with_commas(quantized_value().into()),
+            Self::Abbreviated => data::util::abbr_large_numbers(quantized_value().into()),
         }
     }
 }

@@ -23,7 +23,7 @@ impl OpenInterestState {
     pub fn insert_batch(&mut self, data: &[OpenInterest], basis: Basis, timeframe: Timeframe) {
         for oi in data {
             let time = Self::align_time(oi.time, basis, timeframe);
-            self.values.insert(time, oi.value);
+            self.values.insert(time, oi.value as f32);
         }
 
         self.trim();

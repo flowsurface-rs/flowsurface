@@ -58,7 +58,7 @@ impl CumulativeVolumeDeltaState {
         let mut cumulative = 0.0f32;
         for bar in bars {
             if let Some((buy, sell)) = bar.volume.buy_sell() {
-                cumulative += f32::from(buy - sell);
+                cumulative += (buy - sell).to_f32_lossy();
                 self.values.insert(bar.time, cumulative);
             }
         }

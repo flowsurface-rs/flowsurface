@@ -156,8 +156,8 @@ impl AudioStream {
         let audio_output_error = self.init_error.as_ref().map(|err| {
             container(
                 column![
-                    text("Audio output unavailable").size(14),
-                    text(err.to_string()).size(12),
+                    text("Audio output unavailable").size(crate::style::text_size::SECTION),
+                    text(err.to_string()).size(crate::style::text_size::BODY),
                     button(text("Retry")).on_press(Message::RetryInit),
                 ]
                 .spacing(8),
@@ -180,7 +180,11 @@ impl AudioStream {
                 )
             };
 
-            column![text("Sound").size(14), volume_slider,].spacing(8)
+            column![
+                text("Sound").size(crate::style::text_size::SECTION),
+                volume_slider,
+            ]
+            .spacing(8)
         };
 
         let audio_contents = {
@@ -267,9 +271,12 @@ impl AudioStream {
                             }
                             data::audio::Threshold::Qty(v) => {
                                 column = column.push(
-                                    row![text(format!("Any trade's size in buffer ≥ {}", v))]
-                                        .padding(8)
-                                        .spacing(4),
+                                    row![text(format!(
+                                        "Any trade's size in buffer ≥ {:.2}",
+                                        v.to_f64()
+                                    ))]
+                                    .padding(8)
+                                    .spacing(4),
                                 );
                             }
                         }
@@ -280,7 +287,11 @@ impl AudioStream {
                 }
             }
 
-            column![text("Audio streams").size(14), available_streams,].spacing(8)
+            column![
+                text("Audio streams").size(crate::style::text_size::SECTION),
+                available_streams,
+            ]
+            .spacing(8)
         };
 
         container(if let Some(output_error) = audio_output_error {

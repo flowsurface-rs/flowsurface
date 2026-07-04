@@ -1,13 +1,13 @@
 use std::{
+    backtrace::Backtrace,
     fs,
     io::{self, Write},
+    panic::PanicHookInfo,
     path::PathBuf,
     process,
-    sync::mpsc,
-    thread,
+    sync::{Once, mpsc},
+    thread::{self, JoinHandle},
 };
-
-pub use data::log::Error;
 
 const MAX_LOG_FILE_SIZE: u64 = 50 * 1024 * 1024; // 50 MB
 
@@ -17,7 +17,7 @@ enum LogMessage {
     Shutdown,
 }
 
-pub fn setup(is_debug: bool) -> Result<(), Error> {
+pub fn setup(is_debug: bool) -> Result<(), data::log::Error> {
     let default_level = if is_debug {
         log::Level::Debug
     } else {
@@ -66,26 +66,25 @@ pub fn setup(is_debug: bool) -> Result<(), Error> {
 }
 
 fn initial_rotation(log_path: &PathBuf) -> io::Result<()> {
-    let path = PathBuf::from(".");
+    let dir = log_path.parent().unwrap_or(std::path::Path::new("."));
+    let previous = dir.join("flowsurface-previous.log");
 
-    let dir = log_path.parent().unwrap_or(&path);
-
-    let previous_log_path = dir.join("flowsurface-previous.log");
-
-    if previous_log_path.exists() {
-        fs::remove_file(&previous_log_path)?;
+    if let Err(e) = fs::remove_file(&previous)
+        && e.kind() != io::ErrorKind::NotFound
+    {
+        return Err(e);
     }
-
-    if log_path.exists() {
-        fs::rename(log_path, &previous_log_path)?;
+    if let Err(e) = fs::rename(log_path, &previous)
+        && e.kind() != io::ErrorKind::NotFound
+    {
+        return Err(e);
     }
-
     Ok(())
 }
 
 struct BackgroundLogger {
     sender: mpsc::Sender<LogMessage>,
-    _thread_handle: thread::JoinHandle<()>,
+    thread_handle: Option<JoinHandle<()>>,
 }
 
 impl BackgroundLogger {
@@ -122,7 +121,7 @@ impl BackgroundLogger {
 
         Ok(BackgroundLogger {
             sender,
-            _thread_handle: thread_handle,
+            thread_handle: Some(thread_handle),
         })
     }
 }
@@ -147,6 +146,11 @@ impl Write for BackgroundLogger {
 impl Drop for BackgroundLogger {
     fn drop(&mut self) {
         let _ = self.sender.send(LogMessage::Shutdown);
+        if let Some(handle) = self.thread_handle.take()
+            && let Err(err) = handle.join()
+        {
+            eprintln!("Background logger thread panicked: {err:?}");
+        }
     }
 }
 
@@ -199,4 +203,69 @@ impl Write for Logger {
     fn flush(&mut self) -> io::Result<()> {
         self.file.flush()
     }
+}
+
+pub fn install_panic_hook() {
+    static PANIC_HOOK: Once = Once::new();
+
+    PANIC_HOOK.call_once(|| {
+        let previous = std::panic::take_hook();
+
+        std::panic::set_hook(Box::new(move |panic_info| {
+            let report = format_panic_report(panic_info);
+
+            log::error!(target: "panic", "{report}");
+            log::logger().flush();
+
+            if let Err(err) = append_stderr_log_line(&report) {
+                eprintln!("Failed to persist panic report: {err}");
+            }
+
+            previous(panic_info);
+        }));
+    });
+}
+
+pub fn report_stderr(message: &str) {
+    if let Err(err) = append_stderr_log_line(message) {
+        eprintln!("Failed to persist std log entry: {err}");
+    }
+
+    eprintln!("{message}");
+}
+
+fn format_panic_report(info: &PanicHookInfo<'_>) -> String {
+    let current_thread = thread::current();
+    let thread_name = current_thread.name().unwrap_or("unnamed");
+    let location = info
+        .location()
+        .map(|loc| format!("{}:{}:{}", loc.file(), loc.line(), loc.column()))
+        .unwrap_or_else(|| "unknown location".to_string());
+
+    let payload = info
+        .payload()
+        .downcast_ref::<&str>()
+        .map(|message| (*message).to_owned())
+        .or_else(|| info.payload().downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "non-string panic payload".to_string());
+
+    let backtrace = Backtrace::force_capture();
+
+    format!("panic in thread '{thread_name}' at {location}: {payload}\nBacktrace:\n{backtrace}")
+}
+
+fn append_stderr_log_line(message: &str) -> io::Result<()> {
+    let log_path = data::log::path().map_err(|err| io::Error::other(err.to_string()))?;
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)?;
+
+    writeln!(
+        file,
+        "{}:FATAL -- {message}",
+        chrono::Local::now().format("%H:%M:%S%.3f"),
+    )?;
+
+    file.flush()
 }

@@ -596,8 +596,8 @@ where
                 let primary_anchor = scene.series_percent_anchors.first().copied().flatten();
 
                 if matches!(scene.primary_mark, MarkKind::Candle | MarkKind::Bar(_)) {
-                    let open_f = base_bar.open.to_f32();
-                    let close_f = base_bar.close.to_f32();
+                    let open_f = base_bar.open.to_f32_lossy();
+                    let close_f = base_bar.close.to_f32_lossy();
                     let change_pct = if open_f.abs() > f32::EPSILON {
                         ((close_f - open_f) / open_f) * 100.0
                     } else {
@@ -892,9 +892,9 @@ where
                     Some(
                         self.bar_at_or_before_unit(series, scene.x_axis, scene.min_x_unit)
                             .and_then(|anchor_bar| {
-                                let anchor = anchor_bar.close.to_f32();
+                                let anchor = anchor_bar.close.to_f32_lossy();
                                 (anchor.abs() > f32::EPSILON)
-                                    .then_some(((bar.close.to_f32() / anchor) - 1.0) * 100.0)
+                                    .then_some(((bar.close.to_f32_lossy() / anchor) - 1.0) * 100.0)
                             })
                             .map(|pct| format!("{pct:+.2}%"))
                             .unwrap_or_else(|| "n/a".to_string()),

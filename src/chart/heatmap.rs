@@ -1,6 +1,4 @@
-use super::{
-    Chart, Interaction, Message, PlotConstants, TEXT_SIZE, ViewState, scale::linear::PriceInfoLabel,
-};
+use super::{Chart, Interaction, Message, PlotConstants, ViewState, scale::linear::PriceInfoLabel};
 use crate::{
     modal::pane::settings::study::{self, Study},
     style,
@@ -46,11 +44,15 @@ const MIN_CELL_HEIGHT: f32 = 1.0;
 
 const DEFAULT_CELL_WIDTH: f32 = 3.0;
 
-const TOOLTIP_WIDTH: f32 = 198.0;
+const TOOLTIP_WIDTH: f32 = 204.0;
 const TOOLTIP_HEIGHT: f32 = 66.0;
 const TOOLTIP_PADDING: f32 = 12.0;
+const TOOLTIP_COL_GAP_PX: f32 = 2.0;
 
 const MAX_CIRCLE_RADIUS: f32 = 16.0;
+const CURRENT_DEPTH_AREA_WIDTH_PX: f32 = 160.0;
+const CURRENT_DEPTH_AREA_RIGHT_PAD_PX: f32 = 8.0;
+const CURRENT_DEPTH_LABEL_TOP_PAD_PX: f32 = 6.0;
 
 impl Chart for HeatmapChart {
     type IndicatorKind = HeatmapIndicator;
@@ -183,7 +185,7 @@ impl HeatmapChart {
             step.decimal_places(),
             ticker_info,
             ViewConfig {
-                splits: layout.splits,
+                splits: layout.splits.clone(),
                 autoscale: Some(Autoscale::CenterLatest),
             },
             DEFAULT_CELL_WIDTH,
@@ -480,9 +482,9 @@ impl canvas::Program<Message> for HeatmapChart {
             let cell_height = chart.cell_height;
             let qty_scales = self.calc_qty_scales(earliest, latest, highest, lowest);
 
-            let max_depth_qty = qty_scales.max_depth_qty.to_f32_lossy();
-            let max_aggr_volume = qty_scales.max_aggr_volume.to_f32_lossy();
-            let max_trade_qty = qty_scales.max_trade_qty.to_f32_lossy();
+            let max_depth_qty = qty_scales.max_depth_qty.to_f64();
+            let max_aggr_volume = qty_scales.max_aggr_volume.to_f64();
+            let max_trade_qty = qty_scales.max_trade_qty.to_f64();
 
             let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
 
@@ -517,7 +519,7 @@ impl canvas::Program<Message> for HeatmapChart {
                     let width = end_x - start_x;
 
                     if width > 0.001 {
-                        let color_alpha = (visual_run.qty.to_f32_lossy() / max_depth_qty).min(1.0);
+                        let color_alpha = (visual_run.qty.to_f64() / max_depth_qty).min(1.0) as f32;
 
                         frame.fill_rectangle(
                             Point::new(start_x, y_position - (cell_height / 2.0)),
@@ -539,7 +541,7 @@ impl canvas::Program<Message> for HeatmapChart {
                                     *price,
                                     size_in_quote_ccy,
                                 );
-                                order_size > self.visual_config.order_size_filter
+                                order_size > f64::from(self.visual_config.order_size_filter)
                             })
                             .for_each(|run| {
                                 let start_x = chart.interval_to_x(
@@ -551,7 +553,8 @@ impl canvas::Program<Message> for HeatmapChart {
 
                                 let width = end_x - start_x;
 
-                                let color_alpha = (run.qty.to_f32_lossy() / max_depth_qty).min(1.0);
+                                let color_alpha =
+                                    (run.qty.to_f64() / max_depth_qty).min(1.0) as f32;
 
                                 frame.fill_rectangle(
                                     Point::new(start_x, y_position - (cell_height / 2.0)),
@@ -563,6 +566,16 @@ impl canvas::Program<Message> for HeatmapChart {
             }
 
             if let Some(latest_timestamp) = self.trades.latest_timestamp() {
+                let visible_space_right_of_zero = (region.x + region.width).max(0.0);
+                let desired_depth_area_width = CURRENT_DEPTH_AREA_WIDTH_PX / chart.scaling;
+                let current_depth_area_width =
+                    if desired_depth_area_width > visible_space_right_of_zero {
+                        let right_pad = CURRENT_DEPTH_AREA_RIGHT_PAD_PX / chart.scaling;
+                        (visible_space_right_of_zero - right_pad).max(0.0)
+                    } else {
+                        desired_depth_area_width
+                    };
+
                 let max_qty = self
                     .heatmap
                     .latest_order_runs(highest, lowest, latest_timestamp)
@@ -572,12 +585,13 @@ impl canvas::Program<Message> for HeatmapChart {
                     * 5.0
                     / 5.0;
 
-                if !max_qty.is_infinite() {
+                if max_qty.is_finite() && max_qty > 0.0 && current_depth_area_width > 0.0 {
                     self.heatmap
                         .latest_order_runs(highest, lowest, latest_timestamp)
                         .for_each(|(price, run)| {
                             let y_position = chart.price_to_y(*price);
-                            let bar_width = (run.qty.to_f32_lossy() / max_qty) * 50.0;
+                            let bar_width =
+                                (run.qty.to_f32_lossy() / max_qty) * current_depth_area_width;
 
                             frame.fill_rectangle(
                                 Point::new(0.0, y_position - (cell_height / 2.0)),
@@ -587,9 +601,13 @@ impl canvas::Program<Message> for HeatmapChart {
                         });
 
                     // max bid/ask quantity text
-                    let text_size = 9.0 / chart.scaling;
-                    let text_content = abbr_large_numbers(max_qty);
-                    let text_position = Point::new(50.0, region.y);
+                    let text_size = crate::style::text_size::TINY / chart.scaling;
+                    let text_content = abbr_large_numbers(max_qty as f64);
+
+                    let text_position = Point::new(
+                        current_depth_area_width,
+                        region.y + (CURRENT_DEPTH_LABEL_TOP_PAD_PX / chart.scaling),
+                    );
 
                     frame.fill_text(canvas::Text {
                         content: text_content,
@@ -597,6 +615,8 @@ impl canvas::Program<Message> for HeatmapChart {
                         size: iced::Pixels(text_size),
                         color: palette.background.base.text,
                         font: style::AZERET_MONO,
+                        align_x: Alignment::End.into(),
+                        align_y: Alignment::Start.into(),
                         ..canvas::Text::default()
                     });
                 }
@@ -610,7 +630,7 @@ impl canvas::Program<Message> for HeatmapChart {
 
                     dp.grouped_trades.iter().for_each(|trade| {
                         let y_position = chart.price_to_y(trade.price);
-                        let trade_qty = f32::from(trade.qty);
+                        let trade_qty = trade.qty.to_f64();
 
                         let trade_size = market_type.qty_in_quote_value(
                             trade.qty,
@@ -618,7 +638,7 @@ impl canvas::Program<Message> for HeatmapChart {
                             size_in_quote_ccy,
                         );
 
-                        if trade_size > self.visual_config.trade_size_filter {
+                        if trade_size > f64::from(self.visual_config.trade_size_filter) {
                             let color = if trade.is_sell {
                                 palette.danger.base.color
                             } else {
@@ -628,10 +648,12 @@ impl canvas::Program<Message> for HeatmapChart {
                             let radius = {
                                 if let Some(trade_size_scale) = self.visual_config.trade_size_scale
                                 {
-                                    let scale_factor = (trade_size_scale as f32) / 100.0;
-                                    1.0 + (trade_qty / max_trade_qty)
-                                        * (MAX_CIRCLE_RADIUS - 1.0)
-                                        * scale_factor
+                                    let scale_factor = (trade_size_scale as f64) / 100.0;
+                                    (1.0_f64
+                                        + (trade_qty / max_trade_qty)
+                                            * f64::from(MAX_CIRCLE_RADIUS - 1.0)
+                                            * scale_factor)
+                                        as f32
                                 } else {
                                     cell_height / 2.0
                                 }
@@ -654,8 +676,8 @@ impl canvas::Program<Message> for HeatmapChart {
                             frame,
                             x_position,
                             (region.y + region.height) - area_height,
-                            f32::from(buy_volume),
-                            f32::from(sell_volume),
+                            buy_volume.to_f64(),
+                            sell_volume.to_f64(),
                             max_aggr_volume,
                             area_height,
                             bar_width,
@@ -668,12 +690,11 @@ impl canvas::Program<Message> for HeatmapChart {
                 });
 
             if volume_indicator && max_aggr_volume > 0.0 {
-                let text_size = 9.0 / chart.scaling;
+                let text_size = crate::style::text_size::TINY / chart.scaling;
                 let text_content = abbr_large_numbers(max_aggr_volume);
-                let text_width = (text_content.len() as f32 * text_size) / 1.5;
 
                 let text_position = Point::new(
-                    (region.x + region.width) - text_width,
+                    region.x + region.width - 4.0,
                     (region.y + region.height) - (bounds.height / chart.scaling) * 0.1 - text_size,
                 );
 
@@ -683,6 +704,7 @@ impl canvas::Program<Message> for HeatmapChart {
                     size: text_size.into(),
                     color: palette.background.base.text,
                     font: style::AZERET_MONO,
+                    align_x: Alignment::End.into(),
                     ..canvas::Text::default()
                 });
             }
@@ -832,7 +854,9 @@ impl canvas::Program<Message> for HeatmapChart {
                         palette.background.weakest.color.scale_alpha(0.9),
                     );
 
-                    let cell_width_overlay = TOOLTIP_WIDTH / 4.0;
+                    let col_count = time_interval_offsets.len() as f32;
+                    let cell_width_overlay =
+                        (TOOLTIP_WIDTH - ((col_count - 1.0) * TOOLTIP_COL_GAP_PX)) / col_count;
                     let cell_height_overlay = TOOLTIP_HEIGHT / 3.0;
 
                     let palette = theme.extended_palette();
@@ -845,7 +869,7 @@ impl canvas::Program<Message> for HeatmapChart {
                             if let Some((qty, is_bid)) =
                                 display_grid_qtys.get(&(data_time_val, data_price_key))
                             {
-                                let text_content = abbr_large_numbers(qty.to_f32_lossy());
+                                let text_content = abbr_large_numbers(qty.to_f64());
                                 let color = if *is_bid {
                                     palette.success.strong.color
                                 } else {
@@ -853,7 +877,8 @@ impl canvas::Program<Message> for HeatmapChart {
                                 };
 
                                 let text_pos_x = overlay_top_left_x
-                                    + (display_col_idx as f32 * cell_width_overlay)
+                                    + (display_col_idx as f32
+                                        * (cell_width_overlay + TOOLTIP_COL_GAP_PX))
                                     + cell_width_overlay / 2.0;
                                 let text_pos_y = overlay_top_left_y
                                     + (display_row_idx as f32 * cell_height_overlay)
@@ -862,7 +887,7 @@ impl canvas::Program<Message> for HeatmapChart {
                                 frame.fill_text(canvas::Text {
                                     content: text_content,
                                     position: Point::new(text_pos_x, text_pos_y),
-                                    size: iced::Pixels(TEXT_SIZE - 2.0),
+                                    size: iced::Pixels(crate::style::text_size::TINY),
                                     color,
                                     font: style::AZERET_MONO,
                                     align_y: Alignment::Center.into(),
@@ -954,8 +979,8 @@ fn draw_volume_profile(
         return;
     }
 
-    let mut profile = vec![(0.0f32, 0.0f32); num_ticks];
-    let mut max_aggr_volume = 0.0f32;
+    let mut profile = vec![(0.0f64, 0.0f64); num_ticks];
+    let mut max_aggr_volume = 0.0f64;
 
     timeseries
         .datapoints
@@ -976,7 +1001,7 @@ fn draw_volume_profile(
                     let index = ((grouped_price.units - first_tick.units) / step.units) as usize;
 
                     if let Some(entry) = profile.get_mut(index) {
-                        let trade_qty = f32::from(trade.qty);
+                        let trade_qty = trade.qty.to_f64();
                         if trade.is_sell {
                             entry.1 += trade_qty;
                         } else {
@@ -1017,7 +1042,7 @@ fn draw_volume_profile(
         });
 
     if max_aggr_volume > 0.0 {
-        let text_size = 9.0 / chart.scaling;
+        let text_size = crate::style::text_size::TINY / chart.scaling;
         let text_content = abbr_large_numbers(max_aggr_volume);
 
         let text_position = Point::new(region.x + area_width, region.y);

@@ -69,7 +69,7 @@ pub fn confirm_dialog_container<'a, Message: 'a + Clone>(
 
     container(
         column![
-            text(dialog).size(14),
+            text(dialog).size(crate::style::text_size::SECTION),
             row![
                 button(text("Cancel"))
                     .style(|theme, status| style::button::transparent(theme, status, false))

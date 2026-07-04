@@ -2,7 +2,7 @@ use crate::chart::{
     Basis, Caches, Message, ViewState,
     indicator::{
         indicator_row,
-        kline::{FetchCtx, KlineIndicatorImpl},
+        kline::{AvailabilityCause, FetchCtx, IndicatorAvailability, KlineIndicatorImpl},
         plot::{AnySeries, PlotTooltip, line::LinePlot},
     },
 };
@@ -18,7 +18,7 @@ use std::{collections::BTreeMap, ops::RangeInclusive};
 
 pub struct OpenInterestIndicator {
     cache: Caches,
-    pub data: BTreeMap<UnixMs, f32>,
+    pub data: BTreeMap<UnixMs, f64>,
 }
 
 impl OpenInterestIndicator {
@@ -32,36 +32,19 @@ impl OpenInterestIndicator {
     fn indicator_elem<'a>(
         &'a self,
         main_chart: &'a ViewState,
+        data_labels_always_visible: bool,
         visible_range: RangeInclusive<u64>,
     ) -> iced::Element<'a, Message> {
-        match main_chart.basis {
-            Basis::Time(timeframe) => {
-                let exchange = main_chart.ticker_info.exchange();
-                if !Self::is_supported_exchange(exchange) {
-                    return center(text(format!(
-                        "WIP: Open Interest is not available for {exchange}"
-                    )))
-                    .into();
-                }
-
-                if !Self::is_supported_timeframe(timeframe) {
-                    return center(text(format!(
-                        "WIP: Open Interest is not available on {timeframe} timeframe"
-                    )))
-                    .into();
-                }
-
-                let (earliest, latest) = visible_range.clone().into_inner();
-                if latest < earliest {
-                    return row![].into();
-                }
-            }
-            Basis::Tick(_) => {
-                return center(text("WIP: Open Interest is not available for tick charts.")).into();
-            }
+        if let Some(message) = self.unavailable_message(main_chart, "Open Interest") {
+            return center(text(message)).into();
         }
 
-        let tooltip = |value: &f32, next: Option<&f32>| {
+        let (earliest, latest) = visible_range.clone().into_inner();
+        if latest < earliest {
+            return row![].into();
+        }
+
+        let tooltip = |value: &f64, next: Option<&f64>| {
             let value_text = format!("Open Interest: {}", format_with_commas(*value));
             let change_text = if let Some(next_value) = next {
                 let delta = next_value - *value;
@@ -73,18 +56,22 @@ impl OpenInterestIndicator {
             PlotTooltip::new(format!("{value_text}\n{change_text}"))
         };
 
-        let value_fn = |v: &f32| *v;
+        let value_fn = |v: &f64| *v as f32;
 
         let plot = LinePlot::new(value_fn)
             .stroke_width(1.0)
             .show_points(true)
             .point_radius_factor(0.2)
+            // Open interest is snapshotted at candle open, not computed from close like regular indicators.
+            // Shift left by 1 so each OI value aligns with the equivalent candle close.
+            .shift(-1)
             .padding(0.08)
             .with_tooltip(tooltip);
 
         indicator_row(
             main_chart,
             &self.cache,
+            data_labels_always_visible,
             plot,
             AnySeries::forward_unix_ms(&self.data),
             visible_range,
@@ -113,6 +100,21 @@ impl OpenInterestIndicator {
     pub fn is_supported_timeframe(timeframe: Timeframe) -> bool {
         timeframe >= Timeframe::M5 && timeframe <= Timeframe::H4 && timeframe != Timeframe::H2
     }
+
+    fn availability_for(basis: Basis, exchange: Exchange) -> IndicatorAvailability {
+        match basis {
+            Basis::Tick(_) => IndicatorAvailability::Unavailable(AvailabilityCause::Basis(basis)),
+            Basis::Time(timeframe) => {
+                if !Self::is_supported_exchange(exchange) {
+                    IndicatorAvailability::Unavailable(AvailabilityCause::Exchange(exchange))
+                } else if !Self::is_supported_timeframe(timeframe) {
+                    IndicatorAvailability::Unavailable(AvailabilityCause::Timeframe(timeframe))
+                } else {
+                    IndicatorAvailability::Available
+                }
+            }
+        }
+    }
 }
 
 impl KlineIndicatorImpl for OpenInterestIndicator {
@@ -127,17 +129,22 @@ impl KlineIndicatorImpl for OpenInterestIndicator {
     fn element<'a>(
         &'a self,
         chart: &'a ViewState,
+        data_labels_always_visible: bool,
         visible_range: RangeInclusive<u64>,
     ) -> iced::Element<'a, Message> {
-        self.indicator_elem(chart, visible_range)
+        self.indicator_elem(chart, data_labels_always_visible, visible_range)
+    }
+
+    fn availability(&self, chart: &ViewState) -> IndicatorAvailability {
+        Self::availability_for(chart.basis, chart.ticker_info.exchange())
     }
 
     fn fetch_range(&mut self, ctx: &FetchCtx) -> Option<FetchRange> {
-        let exchange = ctx.main_chart.ticker_info.exchange();
-        let is_supported =
-            Self::is_supported_exchange(exchange) && Self::is_supported_timeframe(ctx.timeframe);
-
-        if !is_supported {
+        let availability = Self::availability_for(
+            Basis::Time(ctx.timeframe),
+            ctx.main_chart.ticker_info.exchange(),
+        );
+        if !matches!(availability, IndicatorAvailability::Available) {
             return None;
         }
 
@@ -162,7 +169,7 @@ impl KlineIndicatorImpl for OpenInterestIndicator {
         self.clear_all_caches();
     }
 
-    fn on_insert_klines(&mut self, _klines: &[Kline]) {}
+    fn on_insert_klines(&mut self, _klines: &[Kline], _source: &PlotData<KlineDataPoint>) {}
 
     fn on_insert_trades(
         &mut self,

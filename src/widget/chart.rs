@@ -76,14 +76,6 @@ struct Regions {
     y_axis: Rectangle,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HitZone {
-    Plot,
-    XAxis,
-    YAxis,
-    Outside,
-}
-
 impl Regions {
     fn from_layout(root: iced_core::Layout<'_>) -> Self {
         let root_bounds = root.bounds();
@@ -129,18 +121,6 @@ impl Regions {
             && p.x <= self.y_axis.x + self.y_axis.width
             && p.y >= self.y_axis.y
             && p.y <= self.y_axis.y + self.y_axis.height
-    }
-
-    fn hit_test(&self, p: iced_core::Point) -> HitZone {
-        if self.is_in_plot(p) {
-            HitZone::Plot
-        } else if self.is_in_x_axis(p) {
-            HitZone::XAxis
-        } else if self.is_in_y_axis(p) {
-            HitZone::YAxis
-        } else {
-            HitZone::Outside
-        }
     }
 }
 

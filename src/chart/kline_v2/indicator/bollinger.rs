@@ -43,7 +43,7 @@ impl BollingerBandsState {
         let mut sum_sq = 0.0f32;
 
         for bar in bars {
-            let close = bar.close.to_f32();
+            let close = bar.close.to_f32_lossy();
             window.push_back(close);
             sum += close;
             sum_sq += close * close;

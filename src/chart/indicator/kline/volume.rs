@@ -2,9 +2,9 @@ use crate::chart::{
     Caches, Message, ViewState,
     indicator::{
         indicator_row,
-        kline::KlineIndicatorImpl,
+        kline::{BasisSeries, BasisSeriesExt, KlineIndicatorImpl},
         plot::{
-            AnySeries, PlotTooltip,
+            PlotTooltip,
             bar::{BarClass, BarPlot},
         },
     },
@@ -12,43 +12,38 @@ use crate::chart::{
 
 use data::chart::{PlotData, kline::KlineDataPoint};
 use data::util::format_with_commas;
-use exchange::{Kline, Trade, UnixMs, Volume};
+use exchange::{Kline, Trade, Volume};
 
-use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
-
-enum VolumeSeries {
-    Time(BTreeMap<UnixMs, Volume>),
-    Tick(BTreeMap<u64, Volume>),
-}
 
 pub struct VolumeIndicator {
     cache: Caches,
-    data: VolumeSeries,
+    data: BasisSeries<Volume>,
 }
 
 impl VolumeIndicator {
     pub fn new() -> Self {
         Self {
             cache: Caches::default(),
-            data: VolumeSeries::Time(BTreeMap::new()),
+            data: BasisSeries::default(),
         }
     }
 
     fn indicator_elem<'a>(
         &'a self,
         main_chart: &'a ViewState,
+        data_labels_always_visible: bool,
         visible_range: RangeInclusive<u64>,
     ) -> iced::Element<'a, Message> {
         let tooltip = |volume: &Volume, _next: Option<&Volume>| {
             if let Some((buy, sell)) = volume.buy_sell() {
-                let buy_t = format!("Buy Volume: {}", format_with_commas(f32::from(buy)));
-                let sell_t = format!("Sell Volume: {}", format_with_commas(f32::from(sell)));
+                let buy_t = format!("Buy Volume: {}", format_with_commas(f64::from(buy)));
+                let sell_t = format!("Sell Volume: {}", format_with_commas(f64::from(sell)));
                 PlotTooltip::new(format!("{buy_t}\n{sell_t}"))
             } else {
                 PlotTooltip::new(format!(
                     "Volume: {}",
-                    format_with_commas(f32::from(volume.total()))
+                    format_with_commas(f64::from(volume.total()))
                 ))
             }
         };
@@ -56,25 +51,27 @@ impl VolumeIndicator {
         let bar_kind = |volume: &Volume| {
             if let Some((buy, sell)) = volume.buy_sell() {
                 BarClass::Overlay {
-                    overlay: f32::from(buy) - f32::from(sell),
+                    overlay: buy.to_f32_lossy() - sell.to_f32_lossy(),
                 }
             } else {
                 BarClass::Single
             }
         };
 
-        let value_fn = |volume: &Volume| f32::from(volume.total());
+        let value_fn = |volume: &Volume| volume.total().to_f32_lossy();
 
         let plot = BarPlot::new(value_fn, bar_kind)
             .bar_width_factor(0.9)
             .with_tooltip(tooltip);
 
-        let series = match &self.data {
-            VolumeSeries::Time(data) => AnySeries::forward_unix_ms(data),
-            VolumeSeries::Tick(data) => AnySeries::reversed_u64(data),
-        };
-
-        indicator_row(main_chart, &self.cache, plot, series, visible_range)
+        indicator_row(
+            main_chart,
+            &self.cache,
+            data_labels_always_visible,
+            plot,
+            self.data.as_plot_series(),
+            visible_range,
+        )
     }
 }
 
@@ -90,21 +87,22 @@ impl KlineIndicatorImpl for VolumeIndicator {
     fn element<'a>(
         &'a self,
         chart: &'a ViewState,
+        data_labels_always_visible: bool,
         visible_range: RangeInclusive<u64>,
     ) -> iced::Element<'a, Message> {
-        self.indicator_elem(chart, visible_range)
+        self.indicator_elem(chart, data_labels_always_visible, visible_range)
     }
 
     fn rebuild_from_source(&mut self, source: &PlotData<KlineDataPoint>) {
-        self.data = match source {
-            PlotData::TimeBased(timeseries) => VolumeSeries::Time(timeseries.volume_data()),
-            PlotData::TickBased(tickseries) => VolumeSeries::Tick(tickseries.volume_data()),
-        };
+        self.data = source.map_basis_series(
+            |timeseries| timeseries.volume_data(),
+            |tickseries| tickseries.volume_data(),
+        );
         self.clear_all_caches();
     }
 
-    fn on_insert_klines(&mut self, klines: &[Kline]) {
-        let VolumeSeries::Time(data) = &mut self.data else {
+    fn on_insert_klines(&mut self, klines: &[Kline], _source: &PlotData<KlineDataPoint>) {
+        let Some(data) = self.data.time_mut() else {
             return;
         };
 
@@ -121,7 +119,7 @@ impl KlineIndicatorImpl for VolumeIndicator {
         old_dp_len: usize,
         source: &PlotData<KlineDataPoint>,
     ) {
-        let VolumeSeries::Tick(data) = &mut self.data else {
+        let Some(data) = self.data.tick_mut() else {
             return;
         };
 

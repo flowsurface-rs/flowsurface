@@ -1,9 +1,8 @@
 use crate::{
     Event, Kline, PushFrequency, Ticker, TickerInfo, Timeframe, UnixMs,
-    adapter::limiter::FixedWindowRateLimiterConfig,
-    adapter::{AdapterNetworkConfig, Exchange, MarketKind},
+    adapter::{Exchange, MarketKind, StreamTicksize, limiter::FixedWindowRateLimiterConfig},
     depth::DepthPayload,
-    unit::qty::RawQtyUnit,
+    unit::{ContractSize, qty::RawQtyUnit},
 };
 
 use super::{AdapterError, HttpHub, RequestPort};
@@ -15,11 +14,9 @@ pub mod stream;
 const FETCH_DOMAIN: &str = "https://api.mexc.com/api";
 const MEXC_FUTURES_WS_DOMAIN: &str = "contract.mexc.com";
 const MEXC_FUTURES_WS_PATH: &str = "/edge";
-const PING_INTERVAL: u64 = 15;
 const LIMIT: usize = 10;
 const REFILL_RATE: Duration = Duration::from_secs(2);
 const LIMITER_BUFFER_PCT: f32 = 0.0;
-const DEFAULT_COMMAND_BUFFER_CAPACITY: usize = 128;
 
 fn exchange_from_market_type(market: MarketKind) -> Exchange {
     match market {
@@ -40,11 +37,11 @@ fn contract_size_for_market(
     ticker_info: TickerInfo,
     market: MarketKind,
     context: &str,
-) -> Result<f32, AdapterError> {
+) -> Result<ContractSize, AdapterError> {
     match market {
-        MarketKind::Spot => Ok(1.0),
+        MarketKind::Spot => Ok(ContractSize::new(0)), // 10^0 = 1.0
         MarketKind::LinearPerps | MarketKind::InversePerps => {
-            ticker_info.contract_size.map(f32::from).ok_or_else(|| {
+            ticker_info.contract_size.ok_or_else(|| {
                 AdapterError::ParseError(format!(
                     "Missing contract size for {} in {context}",
                     ticker_info.ticker
@@ -56,7 +53,7 @@ fn contract_size_for_market(
 
 fn mexc_perps_market_from_symbol(
     symbol: &str,
-    contract_sizes: Option<&HashMap<Ticker, f32>>,
+    contract_sizes: Option<&HashMap<Ticker, ContractSize>>,
 ) -> Option<MarketKind> {
     if symbol.ends_with("USDT") {
         return Some(MarketKind::LinearPerps);
@@ -136,7 +133,7 @@ pub type MexcLimiter = crate::adapter::limiter::FixedWindowRateLimiter;
 #[derive(Debug, Clone, Default)]
 pub struct MexcMarketScope {
     pub markets: Vec<MarketKind>,
-    pub contract_sizes: Option<HashMap<Ticker, f32>>,
+    pub contract_sizes: Option<HashMap<Ticker, ContractSize>>,
 }
 
 impl MexcMarketScope {
@@ -147,7 +144,10 @@ impl MexcMarketScope {
         }
     }
 
-    pub fn stats(markets: &[MarketKind], contract_sizes: Option<HashMap<Ticker, f32>>) -> Self {
+    pub fn stats(
+        markets: &[MarketKind],
+        contract_sizes: Option<HashMap<Ticker, ContractSize>>,
+    ) -> Self {
         Self {
             markets: markets.to_vec(),
             contract_sizes,
@@ -164,11 +164,14 @@ pub struct MexcHandle {
 }
 
 impl MexcHandle {
-    fn new(request_port: RequestPort<MexcCommand>, proxy_cfg: Option<crate::proxy::Proxy>) -> Self {
-        Self {
+    pub fn new(proxy: Option<&crate::proxy::Proxy>) -> Result<Self, AdapterError> {
+        let worker = Worker::new_with_network(proxy)?;
+        let request_port = super::spawn_fetch_worker(worker);
+
+        Ok(Self {
             request_port,
-            proxy_cfg,
-        }
+            proxy_cfg: proxy.cloned(),
+        })
     }
 
     pub async fn fetch_ticker_metadata(
@@ -220,10 +223,11 @@ impl MexcHandle {
     pub fn connect_depth_stream(
         self,
         ticker_info: TickerInfo,
+        depth_aggr: StreamTicksize,
         push_freq: PushFrequency,
     ) -> impl futures::Stream<Item = Event> {
         let proxy_cfg = self.proxy_cfg.clone();
-        stream::connect_depth_stream(self, ticker_info, push_freq, proxy_cfg)
+        stream::connect_depth_stream(self, ticker_info, depth_aggr, push_freq, proxy_cfg)
     }
 
     pub fn connect_trade_stream(
@@ -248,11 +252,11 @@ struct Worker {
 }
 
 impl Worker {
-    fn new_with_network(network: AdapterNetworkConfig) -> Result<Self, AdapterError> {
+    fn new_with_network(proxy: Option<&crate::proxy::Proxy>) -> Result<Self, AdapterError> {
         let config = MexcConfig::default();
 
         let limiter = MexcLimiter::new(config.limiter_config());
-        let hub = HttpHub::new(limiter, network.proxy_cfg)?;
+        let hub = HttpHub::new(limiter, proxy)?;
 
         Ok(Self { hub })
     }
@@ -299,12 +303,4 @@ impl super::FetchCommandHandler<MexcMarketScope> for Worker {
     ) -> futures::future::BoxFuture<'_, Result<DepthPayload, AdapterError>> {
         Box::pin(async move { fetch::fetch_depth_snapshot(&mut self.hub, ticker).await })
     }
-}
-
-pub fn spawn_mexc_with_network(network: AdapterNetworkConfig) -> Result<MexcHandle, AdapterError> {
-    let proxy_cfg = network.proxy_cfg.clone();
-    let worker = Worker::new_with_network(network)?;
-    let request_port = super::spawn_fetch_worker(DEFAULT_COMMAND_BUFFER_CAPACITY, worker);
-
-    Ok(MexcHandle::new(request_port, proxy_cfg))
 }

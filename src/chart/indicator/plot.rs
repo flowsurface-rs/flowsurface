@@ -1,7 +1,6 @@
 use crate::chart::{Basis, Interaction, Message, ViewState};
 use crate::style::{self, dashed_line};
 use data::util::{guesstimate_ticks, round_to_tick};
-
 use exchange::UnixMs;
 use iced::widget::canvas::{self, Cache, Geometry, Path};
 use iced::{Alignment, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
@@ -20,6 +19,14 @@ pub trait Series {
     fn at(&self, x: u64) -> Option<&Self::Y>;
 
     fn next_after<'a>(&'a self, x: u64) -> Option<(u64, &'a Self::Y)>
+    where
+        Self: 'a;
+
+    fn first_in<'a>(&'a self, range: RangeInclusive<u64>) -> Option<(u64, &'a Self::Y)>
+    where
+        Self: 'a;
+
+    fn last_in<'a>(&'a self, range: RangeInclusive<u64>) -> Option<(u64, &'a Self::Y)>
     where
         Self: 'a;
 }
@@ -42,6 +49,20 @@ impl<Y> Series for &BTreeMap<u64, Y> {
         Self: 'a,
     {
         (**self).range((x + 1)..).next().map(|(k, v)| (*k, v))
+    }
+
+    fn first_in<'a>(&'a self, range: RangeInclusive<u64>) -> Option<(u64, &'a Self::Y)>
+    where
+        Self: 'a,
+    {
+        (**self).range(range).next().map(|(k, v)| (*k, v))
+    }
+
+    fn last_in<'a>(&'a self, range: RangeInclusive<u64>) -> Option<(u64, &'a Self::Y)>
+    where
+        Self: 'a,
+    {
+        (**self).range(range).next_back().map(|(k, v)| (*k, v))
     }
 }
 
@@ -67,6 +88,30 @@ impl<Y> Series for &BTreeMap<UnixMs, Y> {
     {
         let start = UnixMs::new(x.saturating_add(1));
         (**self).range(start..).next().map(|(k, v)| (k.as_u64(), v))
+    }
+
+    fn first_in<'a>(&'a self, range: RangeInclusive<u64>) -> Option<(u64, &'a Self::Y)>
+    where
+        Self: 'a,
+    {
+        let start = UnixMs::new(*range.start());
+        let end = UnixMs::new(*range.end());
+        (**self)
+            .range(start..=end)
+            .next()
+            .map(|(k, v)| (k.as_u64(), v))
+    }
+
+    fn last_in<'a>(&'a self, range: RangeInclusive<u64>) -> Option<(u64, &'a Self::Y)>
+    where
+        Self: 'a,
+    {
+        let start = UnixMs::new(*range.start());
+        let end = UnixMs::new(*range.end());
+        (**self)
+            .range(start..=end)
+            .next_back()
+            .map(|(k, v)| (k.as_u64(), v))
     }
 }
 
@@ -108,6 +153,30 @@ impl<'m, Y> Series for ReversedBTreeSeries<'m, Y> {
             .range(..k)
             .next_back()
             .map(|(kk, v)| (self.offset - *kk, v))
+    }
+
+    fn first_in<'a>(&'a self, range: RangeInclusive<u64>) -> Option<(u64, &'a Self::Y)>
+    where
+        Self: 'a,
+    {
+        let earliest = self.offset.saturating_sub(*range.end());
+        let latest = self.offset.saturating_sub(*range.start());
+        self.inner
+            .range(earliest..=latest)
+            .next_back()
+            .map(|(k, v)| (self.offset - *k, v))
+    }
+
+    fn last_in<'a>(&'a self, range: RangeInclusive<u64>) -> Option<(u64, &'a Self::Y)>
+    where
+        Self: 'a,
+    {
+        let earliest = self.offset.saturating_sub(*range.end());
+        let latest = self.offset.saturating_sub(*range.start());
+        self.inner
+            .range(earliest..=latest)
+            .next()
+            .map(|(k, v)| (self.offset - *k, v))
     }
 }
 
@@ -161,6 +230,40 @@ impl<'a, Y> Series for AnySeries<'a, Y> {
             AnySeries::Reversed(rv) => rv.next_after(x),
         }
     }
+
+    fn first_in<'b>(&'b self, range: RangeInclusive<u64>) -> Option<(u64, &'b Self::Y)>
+    where
+        Self: 'b,
+    {
+        match self {
+            AnySeries::ForwardUnixMs(map) => {
+                let start = UnixMs::new(*range.start());
+                let end = UnixMs::new(*range.end());
+                (**map)
+                    .range(start..=end)
+                    .next()
+                    .map(|(k, v)| (k.as_u64(), v))
+            }
+            AnySeries::Reversed(rv) => rv.first_in(range),
+        }
+    }
+
+    fn last_in<'b>(&'b self, range: RangeInclusive<u64>) -> Option<(u64, &'b Self::Y)>
+    where
+        Self: 'b,
+    {
+        match self {
+            AnySeries::ForwardUnixMs(map) => {
+                let start = UnixMs::new(*range.start());
+                let end = UnixMs::new(*range.end());
+                (**map)
+                    .range(start..=end)
+                    .next_back()
+                    .map(|(k, v)| (k.as_u64(), v))
+            }
+            AnySeries::Reversed(rv) => rv.last_in(range),
+        }
+    }
 }
 
 pub struct YScale {
@@ -186,6 +289,10 @@ pub trait Plot<S: Series> {
         (min, max)
     }
 
+    fn x_shift_buckets(&self) -> i32 {
+        0
+    }
+
     fn draw<'a>(
         &'a self,
         frame: &'a mut canvas::Frame,
@@ -201,6 +308,21 @@ pub trait Plot<S: Series> {
     fn tooltip(&self, y: &S::Y, next: Option<&S::Y>, _theme: &Theme) -> Option<PlotTooltip> {
         self.tooltip_fn().map(|tt| tt(y, next))
     }
+
+    /// Whether an individual datapoint should be considered "valid" for
+    /// always-visible data labels.  Returns `true` by default so that
+    /// existing plots are unaffected.  Override this when some points carry
+    /// unreliable / incomplete data (e.g. bars with no directional trades).
+    fn is_point_valid(&self, _y: &S::Y) -> bool {
+        true
+    }
+
+    /// Message shown in the tooltip area when the user hovers over (or the
+    /// always-visible label lands on) an *invalid* point.  Return `None`
+    /// (the default) to suppress the tooltip entirely.
+    fn invalid_point_message(&self) -> Option<&str> {
+        None
+    }
 }
 
 pub struct ChartCanvas<'a, P, S>
@@ -211,10 +333,12 @@ where
     pub indicator_cache: &'a Cache,
     pub crosshair_cache: &'a Cache,
     pub ctx: &'a ViewState,
+    pub data_labels_always_visible: bool,
     pub plot: P,
     pub series: S,
     pub max_for_labels: f32,
     pub min_for_labels: f32,
+    pub visible_range: RangeInclusive<u64>,
 }
 
 impl<P, S> canvas::Program<Message> for ChartCanvas<'_, P, S>
@@ -269,14 +393,7 @@ where
                 (-bounds.height / ctx.scaling) / 2.0,
             ));
 
-            let width = frame.width() / ctx.scaling;
-            let region = Rectangle {
-                x: -ctx.translation.x - width / 2.0,
-                y: 0.0,
-                width,
-                height: frame.height() / ctx.scaling,
-            };
-            let (earliest, latest) = ctx.interval_range(&region);
+            let (earliest, latest) = (*self.visible_range.start(), *self.visible_range.end());
             if latest < earliest {
                 return;
             }
@@ -287,36 +404,45 @@ where
                 px_height: frame.height() / ctx.scaling,
             };
 
-            self.plot
-                .draw(frame, ctx, theme, &self.series, earliest..=latest, &scale);
+            self.plot.draw(
+                frame,
+                ctx,
+                theme,
+                &self.series,
+                self.visible_range.clone(),
+                &scale,
+            );
         });
 
         let crosshair = self.crosshair_cache.draw(renderer, bounds.size(), |frame| {
             let dashed = dashed_line(theme);
-            if let Some(cursor_position) = cursor.position_in(ctx.bounds) {
-                // vertical snap by basis
-                let width = frame.width() / ctx.scaling;
-                let region = Rectangle {
-                    x: -ctx.translation.x - width / 2.0,
-                    y: 0.0,
-                    width,
-                    height: frame.height() / ctx.scaling,
-                };
-                let earliest = ctx.x_to_interval(region.x) as f64;
-                let latest = ctx.x_to_interval(region.x + region.width) as f64;
+            let width = frame.width() / ctx.scaling;
+            let region = Rectangle {
+                x: -ctx.translation.x - width / 2.0,
+                y: 0.0,
+                width,
+                height: frame.height() / ctx.scaling,
+            };
+            let (earliest, latest) = (*self.visible_range.start(), *self.visible_range.end());
+            if latest < earliest {
+                return;
+            }
 
+            if let Some(cursor_position) = cursor.position_in(ctx.bounds) {
+                let earliest_f = ctx.x_to_interval(region.x) as f64;
+                let latest_f = ctx.x_to_interval(region.x + region.width) as f64;
                 let crosshair_ratio = f64::from(cursor_position.x / bounds.width);
                 let (rounded_x, snap_ratio) = match ctx.basis {
                     Basis::Time(tf) => {
                         let step = tf.to_milliseconds() as f64;
-                        let rx = ((earliest + crosshair_ratio * (latest - earliest)) / step).round()
-                            as u64
+                        let rx = ((earliest_f + crosshair_ratio * (latest_f - earliest_f)) / step)
+                            .round() as u64
                             * step as u64;
 
-                        let sr = if latest <= earliest {
+                        let sr = if latest_f <= earliest_f {
                             0.5
                         } else {
-                            ((rx as f64 - earliest) / (latest - earliest)) as f32
+                            ((rx as f64 - earliest_f) / (latest_f - earliest_f)) as f32
                         };
                         (rx, sr)
                     }
@@ -339,11 +465,43 @@ where
                 );
 
                 // tooltip text
-                if let Some(y) = self.series.at(rounded_x) {
-                    let next = self.series.next_after(rounded_x).map(|(_, v)| v);
+                let visible = rounded_x >= earliest && rounded_x <= latest;
+                let hovered = visible
+                    .then(|| {
+                        self.series
+                            .at(rounded_x)
+                            .map(|y| (rounded_x, y))
+                            .or_else(|| match ctx.basis {
+                                Basis::Time(_) if rounded_x >= earliest => {
+                                    self.series.last_in(earliest..=rounded_x)
+                                }
+                                Basis::Time(_) | Basis::Tick(_) => None,
+                            })
+                    })
+                    .flatten()
+                    .or_else(|| {
+                        let right_of_latest = match ctx.basis {
+                            Basis::Time(_) => rounded_x > latest,
+                            Basis::Tick(_) => rounded_x < earliest,
+                        };
 
-                    if let Some(tooltip) = self.plot.tooltip(y, next, theme) {
-                        tooltip.draw(frame, theme, bounds, cursor_position.x);
+                        right_of_latest
+                            .then(|| match ctx.basis {
+                                Basis::Time(_) => self.series.last_in(earliest..=latest),
+                                Basis::Tick(_) => self.series.first_in(earliest..=latest),
+                            })
+                            .flatten()
+                    });
+
+                if let Some((x, y)) = hovered {
+                    let next = self.series.next_after(x).map(|(_, v)| v);
+
+                    if self.plot.is_point_valid(y) {
+                        if let Some(tooltip) = self.plot.tooltip(y, next, theme) {
+                            tooltip.draw(frame, theme, bounds, cursor_position.x);
+                        }
+                    } else if let Some(msg) = self.plot.invalid_point_message() {
+                        PlotTooltip::warning(msg).draw_static(frame, theme, bounds);
                     }
                 }
             } else if let Some(cursor_position) = cursor.position_in(bounds) {
@@ -355,7 +513,11 @@ where
                 let ratio = cursor_position.y / bounds.height;
                 let value = highest + ratio * (lowest - highest);
                 let rounded = round_to_tick(value, tick);
-                let snap_ratio = (rounded - highest) / (lowest - highest);
+                let snap_ratio = if lowest == highest {
+                    cursor_position.y / bounds.height
+                } else {
+                    (rounded - highest) / (lowest - highest)
+                };
 
                 frame.stroke(
                     &Path::line(
@@ -364,6 +526,21 @@ where
                     ),
                     dashed,
                 );
+            } else if self.data_labels_always_visible
+                && let Some((x, y)) = match ctx.basis {
+                    Basis::Time(_) => self.series.last_in(earliest..=latest),
+                    Basis::Tick(_) => self.series.first_in(earliest..=latest),
+                }
+            {
+                if self.plot.is_point_valid(y) {
+                    let next = self.series.next_after(x).map(|(_, v)| v);
+
+                    if let Some(tooltip) = self.plot.tooltip(y, next, theme) {
+                        tooltip.draw_static(frame, theme, bounds);
+                    }
+                } else if let Some(msg) = self.plot.invalid_point_message() {
+                    PlotTooltip::warning(msg).draw_static(frame, theme, bounds);
+                }
             }
         });
 
@@ -390,8 +567,31 @@ type TooltipFn<T> = Box<dyn Fn(&T, Option<&T>) -> PlotTooltip>;
 const TOOLTIP_MARGIN: f32 = 4.0; // px from edge of canvas
 const TOOLTIP_PADDING: f32 = 8.0; // px inside tooltip box
 
+/// The visual style of a tooltip: either normal data display or a warning.
+pub enum TooltipKind {
+    Info(String),
+    Warning(String),
+}
+
+impl TooltipKind {
+    fn text(&self) -> &str {
+        match self {
+            TooltipKind::Info(t) | TooltipKind::Warning(t) => t,
+        }
+    }
+
+    /// Return the segments that make up this tooltip's first line.
+    /// Each segment is `(text, is_danger_colored)`.
+    fn segments(&self) -> Vec<(&str, bool)> {
+        match self {
+            TooltipKind::Info(text) => vec![(text.as_str(), false)],
+            TooltipKind::Warning(text) => vec![("<!> ", true), (text.as_str(), false)],
+        }
+    }
+}
+
 pub struct PlotTooltip {
-    pub text: String,
+    pub kind: TooltipKind,
 }
 
 impl PlotTooltip {
@@ -401,16 +601,38 @@ impl PlotTooltip {
     const TOOLTIP_PAD_Y: f32 = 6.0; // top+bottom padding total
 
     pub fn new<T: Into<String>>(text: T) -> Self {
-        Self { text: text.into() }
+        Self {
+            kind: TooltipKind::Info(text.into()),
+        }
+    }
+
+    /// Convenience constructor that flags the tooltip as a warning.
+    /// Rendered with danger colours and a "<!> " prefix.
+    pub fn warning<T: Into<String>>(text: T) -> Self {
+        Self {
+            kind: TooltipKind::Warning(text.into()),
+        }
     }
 
     pub fn guesstimate(&self) -> (f32, f32) {
+        let segments = self.kind.segments();
+        let prefix_chars: usize = segments
+            .iter()
+            .filter(|(_, danger)| *danger)
+            .map(|(t, _)| t.chars().count())
+            .sum();
+
+        let body = self.kind.text();
         let mut max_cols: usize = 0;
         let mut lines: usize = 0;
 
-        for line in self.text.split('\n') {
+        for (i, line) in body.split('\n').enumerate() {
             lines += 1;
-            let cols = line.chars().count();
+            let cols = if i == 0 {
+                line.chars().count() + prefix_chars
+            } else {
+                line.chars().count()
+            };
             if cols > max_cols {
                 max_cols = cols;
             }
@@ -438,14 +660,10 @@ impl PlotTooltip {
             }
         };
 
-        let (rect_x, text_x, align_x) = if switch_sides {
-            let rx = bounds.width - tooltip_w - TOOLTIP_MARGIN;
-            let tx = rx + tooltip_w - TOOLTIP_PADDING;
-            (rx, tx, Alignment::End)
+        let rect_x = if switch_sides {
+            bounds.width - tooltip_w - TOOLTIP_MARGIN
         } else {
-            let rx = TOOLTIP_MARGIN;
-            let tx = rx + TOOLTIP_PADDING;
-            (rx, tx, Alignment::Start)
+            TOOLTIP_MARGIN
         };
 
         frame.fill_rectangle(
@@ -453,14 +671,58 @@ impl PlotTooltip {
             Size::new(tooltip_w, tooltip_h),
             palette.background.weakest.color.scale_alpha(0.9),
         );
-        frame.fill_text(canvas::Text {
-            content: self.text.clone(),
-            position: Point::new(text_x, 2.0),
-            size: iced::Pixels(10.0),
-            color: palette.background.base.text,
-            font: style::AZERET_MONO,
-            align_x: align_x.into(),
-            ..canvas::Text::default()
-        });
+
+        // All segments drawn left-to-right with Start alignment from the
+        // text area's left edge (box origin + padding).
+        let mut cursor = rect_x + TOOLTIP_PADDING;
+
+        for (text, is_danger) in self.kind.segments() {
+            let color = if is_danger {
+                palette.danger.base.color
+            } else {
+                palette.background.base.text
+            };
+            frame.fill_text(canvas::Text {
+                content: text.to_string(),
+                position: Point::new(cursor, 2.0),
+                size: iced::Pixels(crate::style::text_size::TINY),
+                color,
+                font: style::AZERET_MONO,
+                align_x: Alignment::Start.into(),
+                ..canvas::Text::default()
+            });
+            cursor += text.chars().count() as f32 * Self::TOOLTIP_CHAR_W;
+        }
+    }
+
+    pub fn draw_static(&self, frame: &mut canvas::Frame, theme: &Theme, _bounds: Rectangle) {
+        let (tooltip_w, tooltip_h) = self.guesstimate();
+        let palette = theme.extended_palette();
+
+        frame.fill_rectangle(
+            Point::new(TOOLTIP_MARGIN, 0.0),
+            Size::new(tooltip_w, tooltip_h),
+            palette.background.weakest.color.scale_alpha(0.9),
+        );
+
+        let mut cursor = TOOLTIP_MARGIN + TOOLTIP_PADDING;
+
+        for (text, is_danger) in self.kind.segments() {
+            let color = if is_danger {
+                palette.danger.base.color
+            } else {
+                palette.background.base.text
+            };
+            frame.fill_text(canvas::Text {
+                content: text.to_string(),
+                position: Point::new(cursor, 2.0),
+                size: iced::Pixels(crate::style::text_size::TINY),
+                color,
+                font: style::AZERET_MONO,
+                align_x: Alignment::Start.into(),
+                ..canvas::Text::default()
+            });
+            cursor += text.chars().count() as f32 * Self::TOOLTIP_CHAR_W;
+        }
     }
 }

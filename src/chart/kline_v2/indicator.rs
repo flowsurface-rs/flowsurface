@@ -218,7 +218,7 @@ impl SeriesIndicatorData {
             Some(KlineIndicator::CumulativeVolumeDelta) => {
                 self.cumulative_volume_delta.value_at(bar.time)
             }
-            Some(KlineIndicator::Volume) | None => Some(f32::from(bar.volume.total())),
+            Some(KlineIndicator::Volume) | None => Some(bar.volume.total().to_f32_lossy()),
         }
     }
 
@@ -239,6 +239,6 @@ impl SeriesIndicatorData {
 
         bar.volume
             .buy_sell()
-            .map(|(buy, sell)| f32::from(buy - sell))
+            .map(|(buy, sell)| (buy - sell).to_f32_lossy())
     }
 }

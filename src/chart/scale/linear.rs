@@ -46,7 +46,7 @@ pub fn generate_labels(
             content: if let Some(decimals) = decimals {
                 format!("{highest:.decimals$}")
             } else {
-                abbr_large_numbers(highest)
+                abbr_large_numbers(highest as f64)
             },
             background_color: None,
             text_color,
@@ -75,7 +75,7 @@ pub fn generate_labels(
             let content = if let Some(decimals) = decimals {
                 format!("{value:.decimals$}")
             } else {
-                abbr_large_numbers(value)
+                abbr_large_numbers(value as f64)
             };
 
             let label = LabelContent {

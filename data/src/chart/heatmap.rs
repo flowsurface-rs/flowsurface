@@ -329,7 +329,7 @@ impl HistoricalDepth {
                         *price_at_level,
                         size_in_quote_ccy,
                     );
-                    order_size > order_size_filter
+                    order_size as f32 > order_size_filter
                 })
                 .collect::<Vec<&OrderRun>>();
 
@@ -500,7 +500,7 @@ impl HistoricalDepth {
 
                 let order_size = market_type.qty_in_quote_value(run.qty, *price, size_in_quote_ccy);
 
-                if order_size > order_size_filter {
+                if order_size as f32 > order_size_filter {
                     max_depth_qty = max_depth_qty.max(run.qty);
                 }
             }

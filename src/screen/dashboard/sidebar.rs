@@ -242,4 +242,8 @@ impl Sidebar {
     pub fn tickers_info(&self) -> &FxHashMap<exchange::Ticker, Option<exchange::TickerInfo>> {
         &self.tickers_table.tickers_info
     }
+
+    pub fn is_metadata_loading(&self) -> bool {
+        self.tickers_table.is_metadata_loading()
+    }
 }

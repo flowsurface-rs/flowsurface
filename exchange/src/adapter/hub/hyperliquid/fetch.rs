@@ -41,17 +41,17 @@ struct HyperliquidSpotMeta {
 #[derive(Debug, Deserialize)]
 struct HyperliquidAssetContext {
     #[serde(rename = "dayNtlVlm", deserialize_with = "de_string_to_number")]
-    day_notional_volume: f32,
+    day_notional_volume: f64,
     #[serde(rename = "markPx", deserialize_with = "de_string_to_number")]
-    mark_price: f32,
+    mark_price: f64,
     #[serde(rename = "midPx", deserialize_with = "de_string_to_number")]
-    mid_price: f32,
+    mid_price: f64,
     #[serde(rename = "prevDayPx", deserialize_with = "de_string_to_number")]
-    prev_day_price: f32,
+    prev_day_price: f64,
 }
 
 impl HyperliquidAssetContext {
-    fn price(&self) -> f32 {
+    fn price(&self) -> f64 {
         if self.mid_price > 0.0 {
             self.mid_price
         } else {
@@ -72,15 +72,15 @@ struct HyperliquidKline {
     #[serde(rename = "i")]
     interval: String,
     #[serde(rename = "o", deserialize_with = "de_string_to_number")]
-    open: f32,
+    open: f64,
     #[serde(rename = "h", deserialize_with = "de_string_to_number")]
-    high: f32,
+    high: f64,
     #[serde(rename = "l", deserialize_with = "de_string_to_number")]
-    low: f32,
+    low: f64,
     #[serde(rename = "c", deserialize_with = "de_string_to_number")]
-    close: f32,
+    close: f64,
     #[serde(rename = "v", deserialize_with = "de_string_to_number")]
-    volume: f32,
+    volume: f64,
     #[serde(rename = "n")]
     trade_count: u64,
 }
@@ -94,9 +94,9 @@ struct HyperliquidDepth {
 #[derive(Debug, Deserialize)]
 struct HyperliquidLevel {
     #[serde(deserialize_with = "de_string_to_number")]
-    px: f32,
+    px: f64,
     #[serde(deserialize_with = "de_string_to_number")]
-    sz: f32,
+    sz: f64,
 }
 
 type TickerMetadata = (
@@ -132,6 +132,7 @@ async fn fetch_metadata(
 async fn fetch_meta_for_dex(
     hub: &mut HttpHub<HyperliquidLimiter>,
     dex_name: Option<&str>,
+    spot_token_names_by_index: Option<&HashMap<u32, String>>,
 ) -> Result<TickerMetadata, AdapterError> {
     let body = match dex_name {
         Some(name) => json!({ "type": "metaAndAssetCtxs", "dex": name }),
@@ -148,13 +149,29 @@ async fn fetch_meta_for_dex(
         .and_then(|arr| arr.as_array())
         .ok_or_else(|| AdapterError::ParseError("Missing asset contexts array".to_string()))?;
 
-    process_perp_assets(metadata, asset_contexts, Exchange::HyperliquidLinear)
+    process_perp_assets(
+        metadata,
+        asset_contexts,
+        Exchange::HyperliquidLinear,
+        spot_token_names_by_index,
+    )
 }
 
 async fn fetch_perps_metadata(
     hub: &mut HttpHub<HyperliquidLimiter>,
 ) -> Result<TickerMetadata, AdapterError> {
     let dexes_json: Value = post_info(hub, &json!({ "type": "perpDexs" })).await?;
+
+    let spot_token_names_by_index = match fetch_spot_token_names_by_index(hub).await {
+        Ok(map) => Some(map),
+        Err(error) => {
+            log::warn!(
+                "Failed to resolve Hyperliquid spot token names. Perp quote labels may be incomplete: {}",
+                error
+            );
+            None
+        }
+    };
 
     let dexes = dexes_json
         .as_array()
@@ -172,7 +189,8 @@ async fn fetch_perps_metadata(
     let mut combined_stats = HashMap::new();
 
     for dex_name in dex_names {
-        match fetch_meta_for_dex(hub, dex_name.as_deref()).await {
+        match fetch_meta_for_dex(hub, dex_name.as_deref(), spot_token_names_by_index.as_ref()).await
+        {
             Ok((info_map, stats_map)) => {
                 combined_info.extend(info_map);
                 combined_stats.extend(stats_map);
@@ -188,6 +206,26 @@ async fn fetch_perps_metadata(
     }
 
     Ok((combined_info, combined_stats))
+}
+
+async fn fetch_spot_token_names_by_index(
+    hub: &mut HttpHub<HyperliquidLimiter>,
+) -> Result<HashMap<u32, String>, AdapterError> {
+    let body = json!({"type": "spotMetaAndAssetCtxs"});
+    let response_json: Value = post_info(hub, &body).await?;
+
+    let metadata = response_json
+        .get(0)
+        .ok_or_else(|| AdapterError::ParseError("Missing spot metadata".to_string()))?;
+
+    let spot_meta: HyperliquidSpotMeta = serde_json::from_value(metadata.clone())
+        .map_err(|e| AdapterError::ParseError(format!("Failed to parse spot meta: {}", e)))?;
+
+    Ok(spot_meta
+        .tokens
+        .into_iter()
+        .map(|token| (token.index, token.name))
+        .collect())
 }
 
 async fn fetch_spot_metadata(
@@ -225,9 +263,9 @@ fn insert_ticker_from_ctx(
     ticker_stats_map.insert(
         ticker,
         TickerStats {
-            mark_price: Price::from_f32(ctx.mark_price),
+            mark_price: Price::from_f64(ctx.mark_price),
             daily_price_chg: daily_price_chg_pct(price, ctx.prev_day_price),
-            daily_volume: Qty::from_f32(ctx.day_notional_volume),
+            daily_volume: Qty::from_f64(ctx.day_notional_volume),
         },
     );
 }
@@ -236,11 +274,19 @@ fn process_perp_assets(
     metadata: &Value,
     asset_contexts: &[Value],
     exchange: Exchange,
+    spot_token_names_by_index: Option<&HashMap<u32, String>>,
 ) -> Result<TickerMetadata, AdapterError> {
     let universe = metadata
         .get("universe")
         .and_then(|u| u.as_array())
         .ok_or_else(|| AdapterError::ParseError("Missing universe in metadata".to_string()))?;
+
+    let collateral_token_name = metadata
+        .get("collateralToken")
+        .and_then(|token| token.as_u64())
+        .and_then(|token| u32::try_from(token).ok())
+        .and_then(|token| spot_token_names_by_index.and_then(|token_names| token_names.get(&token)))
+        .map(String::as_str);
 
     let mut ticker_info_map = HashMap::new();
     let mut ticker_stats_map = HashMap::new();
@@ -250,7 +296,7 @@ fn process_perp_assets(
             && let Some(asset_ctx) = asset_contexts.get(index)
             && let Ok(ctx) = serde_json::from_value::<HyperliquidAssetContext>(asset_ctx.clone())
         {
-            let ticker = Ticker::new(&asset_info.name, exchange);
+            let ticker = create_perp_ticker(&asset_info.name, exchange, collateral_token_name);
             insert_ticker_from_ctx(
                 ticker,
                 asset_info.sz_decimals,
@@ -262,6 +308,28 @@ fn process_perp_assets(
     }
 
     Ok((ticker_info_map, ticker_stats_map))
+}
+
+fn create_perp_ticker(symbol: &str, exchange: Exchange, quote_symbol: Option<&str>) -> Ticker {
+    let Some(quote_symbol) = quote_symbol else {
+        return Ticker::new(symbol, exchange);
+    };
+
+    if symbol.ends_with(quote_symbol) {
+        return Ticker::new(symbol, exchange);
+    }
+
+    let display_symbol = format!("{}{}", symbol, quote_symbol);
+    if display_symbol.len() > Ticker::MAX_LEN as usize {
+        log::warn!(
+            "Hyperliquid perp display symbol too long, keeping raw symbol: {} -> {}",
+            symbol,
+            display_symbol
+        );
+        return Ticker::new(symbol, exchange);
+    }
+
+    Ticker::new_with_display(symbol, exchange, Some(&display_symbol))
 }
 
 fn process_spot_assets(
@@ -296,7 +364,7 @@ fn process_spot_assets(
     Ok((ticker_info_map, ticker_stats_map))
 }
 
-fn create_ticker_info(ticker: Ticker, price: f32, sz_decimals: u32) -> TickerInfo {
+fn create_ticker_info(ticker: Ticker, price: f64, sz_decimals: u32) -> TickerInfo {
     let market = ticker.market_type();
 
     let tick_size = compute_tick_size(price, sz_decimals, market);
@@ -324,15 +392,15 @@ fn create_display_symbol(
     }
 }
 
-fn daily_price_chg_pct(price: f32, prev_day_price: f32) -> f32 {
+fn daily_price_chg_pct(price: f64, prev_day_price: f64) -> f32 {
     if prev_day_price > 0.0 {
-        ((price - prev_day_price) / prev_day_price) * 100.0
+        (((price - prev_day_price) / prev_day_price) * 100.0) as f32
     } else {
         0.0
     }
 }
 
-fn compute_tick_size(price: f32, sz_decimals: u32, market: MarketKind) -> f32 {
+fn compute_tick_size(price: f64, sz_decimals: u32, market: MarketKind) -> f32 {
     if price <= 0.0 {
         return 0.001;
     }

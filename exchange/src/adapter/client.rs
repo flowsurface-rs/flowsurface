@@ -1,23 +1,20 @@
 use super::{
-    AdapterError, Event, Exchange, MarketKind, StreamConfig, Venue,
+    AdapterError, Event, Exchange, MarketKind, StreamConfig, StreamKind, StreamTicksize, Venue,
     hub::{binance, bybit, hyperliquid, mexc, okex},
 };
-use crate::{Kline, OpenInterest, Ticker, TickerInfo, TickerStats, Timeframe, Trade, UnixMs};
+use crate::{
+    Kline, OpenInterest, TickMultiplier, Ticker, TickerInfo, TickerStats, Timeframe, Trade, UnixMs,
+};
 
 use futures::{StreamExt, stream, stream::BoxStream};
-use std::{collections::HashMap, collections::HashSet, path::PathBuf};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 // Keep topics per websocket conservative across venues
 // allow up to 100 tickers per websocket stream
 pub const MAX_TRADE_TICKERS_PER_STREAM: usize = 100;
 pub const MAX_KLINE_STREAMS_PER_STREAM: usize = 100;
 
-#[derive(Debug, Clone, Default)]
-pub struct AdapterNetworkConfig {
-    pub proxy_cfg: Option<super::proxy::Proxy>,
-}
-
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct AdapterHandles {
     binance: Option<binance::BinanceHandle>,
     bybit: Option<bybit::BybitHandle>,
@@ -27,110 +24,153 @@ pub struct AdapterHandles {
 }
 
 impl AdapterHandles {
-    pub fn spawn_all(config: AdapterNetworkConfig) -> Result<Self, AdapterError> {
-        Self::spawn_selected(config, Venue::ALL)
-    }
-
-    pub fn spawn_selected(
-        config: AdapterNetworkConfig,
-        venues: impl IntoIterator<Item = Venue>,
-    ) -> Result<Self, AdapterError> {
-        let mut out = Self::default();
-        let mut seen = HashSet::new();
-
-        for venue in venues {
-            if !seen.insert(venue) {
-                continue;
-            }
-
-            out.spawn_venue(venue, config.clone())?;
-        }
-
-        Ok(out)
-    }
-
-    pub fn configured_venues(&self) -> impl Iterator<Item = Venue> + '_ {
-        Venue::ALL
-            .into_iter()
-            .filter(|venue| self.has_venue(*venue))
-    }
-
-    pub fn has_venue(&self, venue: Venue) -> bool {
-        match venue {
-            Venue::Binance => self.binance.is_some(),
-            Venue::Bybit => self.bybit.is_some(),
-            Venue::Hyperliquid => self.hyperliquid.is_some(),
-            Venue::Okex => self.okex.is_some(),
-            Venue::Mexc => self.mexc.is_some(),
-        }
-    }
-
-    fn spawn_venue(
+    pub fn spawn_venue(
         &mut self,
         venue: Venue,
-        config: AdapterNetworkConfig,
+        proxy: Option<&super::proxy::Proxy>,
     ) -> Result<(), AdapterError> {
         match venue {
             Venue::Binance => {
-                self.binance = Some(binance::spawn_binance_with_network(config)?);
+                self.binance = Some(binance::BinanceHandle::new(proxy)?);
             }
             Venue::Bybit => {
-                self.bybit = Some(bybit::spawn_bybit_with_network(config)?);
+                self.bybit = Some(bybit::BybitHandle::new(proxy)?);
             }
             Venue::Hyperliquid => {
-                self.hyperliquid = Some(hyperliquid::spawn_hyperliquid_with_network(config)?);
+                self.hyperliquid = Some(hyperliquid::HyperliquidHandle::new(proxy)?);
             }
             Venue::Okex => {
-                self.okex = Some(okex::spawn_okex_with_network(config)?);
+                self.okex = Some(okex::OkexHandle::new(proxy)?);
             }
             Venue::Mexc => {
-                self.mexc = Some(mexc::spawn_mexc_with_network(config)?);
+                self.mexc = Some(mexc::MexcHandle::new(proxy)?);
             }
         }
 
         Ok(())
     }
 
-    fn missing_venue_stream(exchange: Exchange) -> BoxStream<'static, Event> {
-        let reason = format!(
-            "No adapter handle configured for venue {}",
-            exchange.venue()
-        );
-        stream::once(async move { Event::Disconnected(exchange, reason) }).boxed()
+    pub fn spawn_venues(
+        venues: impl IntoIterator<Item = Venue>,
+        proxy: Option<&super::proxy::Proxy>,
+    ) -> Self {
+        let mut out = Self {
+            binance: None,
+            bybit: None,
+            hyperliquid: None,
+            okex: None,
+            mexc: None,
+        };
+
+        for venue in venues {
+            if let Err(err) = out.spawn_venue(venue, proxy) {
+                log::error!("Failed to spawn {venue} adapter: {err}");
+            }
+        }
+
+        out
+    }
+
+    fn missing_venue_stream(
+        exchange: Exchange,
+        streams: Arc<[StreamKind]>,
+    ) -> BoxStream<'static, Event> {
+        let err = format!("Adapter unavailable for {}", exchange.venue());
+        stream::once(async move { Event::Disconnected(streams, err) }).boxed()
     }
 
     fn missing_venue_error(venue: Venue) -> AdapterError {
-        AdapterError::InvalidRequest(format!("No adapter handle configured for venue {venue}"))
+        let err = format!("Adapter unavailable for venue {venue}");
+        AdapterError::unavailable(venue, err)
+    }
+
+    fn depth_scope(config: &StreamConfig<TickerInfo>) -> Arc<[StreamKind]> {
+        let ticker_info = config.id;
+        let depth_aggr = if config.exchange.is_depth_client_aggr() {
+            StreamTicksize::Client
+        } else {
+            StreamTicksize::ServerSide(config.tick_mltp.unwrap_or(TickMultiplier(1)))
+        };
+
+        Arc::from(
+            vec![StreamKind::Depth {
+                ticker_info,
+                depth_aggr,
+                push_freq: config.push_freq,
+            }]
+            .into_boxed_slice(),
+        )
+    }
+
+    fn trade_scope(config: &StreamConfig<Vec<TickerInfo>>) -> Arc<[StreamKind]> {
+        Arc::from(
+            config
+                .id
+                .iter()
+                .map(|ticker_info| StreamKind::Trades {
+                    ticker_info: *ticker_info,
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        )
+    }
+
+    fn kline_scope(config: &StreamConfig<Vec<(TickerInfo, Timeframe)>>) -> Arc<[StreamKind]> {
+        Arc::from(
+            config
+                .id
+                .iter()
+                .map(|(ticker_info, timeframe)| StreamKind::Kline {
+                    ticker_info: *ticker_info,
+                    timeframe: *timeframe,
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        )
     }
 
     pub fn kline_stream(
         &self,
         config: &StreamConfig<Vec<(TickerInfo, Timeframe)>>,
     ) -> BoxStream<'static, Event> {
+        let stream_scope = Self::kline_scope(config);
         let streams = config.id.clone();
         let market_kind = config.exchange.market_type();
 
+        let missing_venue_stream =
+            || Self::missing_venue_stream(config.exchange, stream_scope.clone());
+
         match config.exchange.venue() {
-            Venue::Binance => self.binance.clone().map_or_else(
-                || Self::missing_venue_stream(config.exchange),
-                |handle| handle.connect_kline_stream(streams, market_kind).boxed(),
-            ),
-            Venue::Bybit => self.bybit.clone().map_or_else(
-                || Self::missing_venue_stream(config.exchange),
-                |handle| handle.connect_kline_stream(streams, market_kind).boxed(),
-            ),
-            Venue::Hyperliquid => self.hyperliquid.clone().map_or_else(
-                || Self::missing_venue_stream(config.exchange),
-                |handle| handle.connect_kline_stream(streams, market_kind).boxed(),
-            ),
-            Venue::Okex => self.okex.clone().map_or_else(
-                || Self::missing_venue_stream(config.exchange),
-                |handle| handle.connect_kline_stream(streams, market_kind).boxed(),
-            ),
-            Venue::Mexc => self.mexc.clone().map_or_else(
-                || Self::missing_venue_stream(config.exchange),
-                |handle| handle.connect_kline_stream(streams, market_kind).boxed(),
-            ),
+            Venue::Binance => self
+                .binance
+                .clone()
+                .map_or_else(missing_venue_stream, |handle| {
+                    handle.connect_kline_stream(streams, market_kind).boxed()
+                }),
+            Venue::Bybit => self
+                .bybit
+                .clone()
+                .map_or_else(missing_venue_stream, |handle| {
+                    handle.connect_kline_stream(streams, market_kind).boxed()
+                }),
+            Venue::Hyperliquid => self
+                .hyperliquid
+                .clone()
+                .map_or_else(missing_venue_stream, |handle| {
+                    handle.connect_kline_stream(streams, market_kind).boxed()
+                }),
+            Venue::Okex => self
+                .okex
+                .clone()
+                .map_or_else(missing_venue_stream, |handle| {
+                    handle.connect_kline_stream(streams, market_kind).boxed()
+                }),
+            Venue::Mexc => self
+                .mexc
+                .clone()
+                .map_or_else(missing_venue_stream, |handle| {
+                    handle.connect_kline_stream(streams, market_kind).boxed()
+                }),
         }
     }
 
@@ -138,62 +178,102 @@ impl AdapterHandles {
         &self,
         config: &StreamConfig<Vec<TickerInfo>>,
     ) -> BoxStream<'static, Event> {
+        let stream_scope = Self::trade_scope(config);
         let streams = config.id.clone();
         let market_kind = config.exchange.market_type();
 
+        let missing_venue_stream =
+            || Self::missing_venue_stream(config.exchange, stream_scope.clone());
+
         match config.exchange.venue() {
-            Venue::Binance => self.binance.clone().map_or_else(
-                || Self::missing_venue_stream(config.exchange),
-                |handle| handle.connect_trade_stream(streams, market_kind).boxed(),
-            ),
-            Venue::Bybit => self.bybit.clone().map_or_else(
-                || Self::missing_venue_stream(config.exchange),
-                |handle| handle.connect_trade_stream(streams, market_kind).boxed(),
-            ),
-            Venue::Hyperliquid => self.hyperliquid.clone().map_or_else(
-                || Self::missing_venue_stream(config.exchange),
-                |handle| handle.connect_trade_stream(streams, market_kind).boxed(),
-            ),
-            Venue::Okex => self.okex.clone().map_or_else(
-                || Self::missing_venue_stream(config.exchange),
-                |handle| handle.connect_trade_stream(streams, market_kind).boxed(),
-            ),
-            Venue::Mexc => self.mexc.clone().map_or_else(
-                || Self::missing_venue_stream(config.exchange),
-                |handle| handle.connect_trade_stream(streams, market_kind).boxed(),
-            ),
+            Venue::Binance => self
+                .binance
+                .clone()
+                .map_or_else(missing_venue_stream, |handle| {
+                    handle.connect_trade_stream(streams, market_kind).boxed()
+                }),
+            Venue::Bybit => self
+                .bybit
+                .clone()
+                .map_or_else(missing_venue_stream, |handle| {
+                    handle.connect_trade_stream(streams, market_kind).boxed()
+                }),
+            Venue::Hyperliquid => self
+                .hyperliquid
+                .clone()
+                .map_or_else(missing_venue_stream, |handle| {
+                    handle.connect_trade_stream(streams, market_kind).boxed()
+                }),
+            Venue::Okex => self
+                .okex
+                .clone()
+                .map_or_else(missing_venue_stream, |handle| {
+                    handle.connect_trade_stream(streams, market_kind).boxed()
+                }),
+            Venue::Mexc => self
+                .mexc
+                .clone()
+                .map_or_else(missing_venue_stream, |handle| {
+                    handle.connect_trade_stream(streams, market_kind).boxed()
+                }),
         }
     }
 
     pub fn depth_stream(&self, config: &StreamConfig<TickerInfo>) -> BoxStream<'static, Event> {
-        let ticker = config.id;
+        let stream_scope = Self::depth_scope(config);
+        let ticker_info = config.id;
         let push_freq = config.push_freq;
+        let depth_aggr = if config.exchange.is_depth_client_aggr() {
+            StreamTicksize::Client
+        } else {
+            StreamTicksize::ServerSide(config.tick_mltp.unwrap_or(TickMultiplier(1)))
+        };
+
+        let missing_venue_stream =
+            || Self::missing_venue_stream(config.exchange, stream_scope.clone());
 
         match config.exchange.venue() {
-            Venue::Binance => self.binance.clone().map_or_else(
-                || Self::missing_venue_stream(config.exchange),
-                |handle| handle.connect_depth_stream(ticker, push_freq).boxed(),
-            ),
-            Venue::Bybit => self.bybit.clone().map_or_else(
-                || Self::missing_venue_stream(config.exchange),
-                |handle| handle.connect_depth_stream(ticker, push_freq).boxed(),
-            ),
-            Venue::Hyperliquid => self.hyperliquid.clone().map_or_else(
-                || Self::missing_venue_stream(config.exchange),
-                |handle| {
+            Venue::Binance => self
+                .binance
+                .clone()
+                .map_or_else(missing_venue_stream, |handle| {
                     handle
-                        .connect_depth_stream(ticker, config.tick_mltp, push_freq)
+                        .connect_depth_stream(ticker_info, depth_aggr, push_freq)
                         .boxed()
-                },
-            ),
-            Venue::Okex => self.okex.clone().map_or_else(
-                || Self::missing_venue_stream(config.exchange),
-                |handle| handle.connect_depth_stream(ticker, push_freq).boxed(),
-            ),
-            Venue::Mexc => self.mexc.clone().map_or_else(
-                || Self::missing_venue_stream(config.exchange),
-                |handle| handle.connect_depth_stream(ticker, push_freq).boxed(),
-            ),
+                }),
+            Venue::Bybit => self
+                .bybit
+                .clone()
+                .map_or_else(missing_venue_stream, |handle| {
+                    handle
+                        .connect_depth_stream(ticker_info, depth_aggr, push_freq)
+                        .boxed()
+                }),
+            Venue::Hyperliquid => {
+                self.hyperliquid
+                    .clone()
+                    .map_or_else(missing_venue_stream, |handle| {
+                        handle
+                            .connect_depth_stream(ticker_info, depth_aggr, push_freq)
+                            .boxed()
+                    })
+            }
+            Venue::Okex => self
+                .okex
+                .clone()
+                .map_or_else(missing_venue_stream, |handle| {
+                    handle
+                        .connect_depth_stream(ticker_info, depth_aggr, push_freq)
+                        .boxed()
+                }),
+            Venue::Mexc => self
+                .mexc
+                .clone()
+                .map_or_else(missing_venue_stream, |handle| {
+                    handle
+                        .connect_depth_stream(ticker_info, depth_aggr, push_freq)
+                        .boxed()
+                }),
         }
     }
 
@@ -270,7 +350,7 @@ impl AdapterHandles {
         &self,
         venue: Venue,
         markets: &[MarketKind],
-        contract_sizes: Option<HashMap<Ticker, f32>>,
+        contract_sizes: Option<HashMap<Ticker, crate::unit::ContractSize>>,
     ) -> Result<HashMap<Ticker, TickerStats>, AdapterError> {
         match venue {
             Venue::Binance => {
@@ -426,16 +506,16 @@ impl AdapterHandles {
                 };
                 handle.fetch_trades(ticker_info, from_time, data_path).await
             }
-            Venue::Hyperliquid => {
-                let Some(handle) = self.hyperliquid.as_ref() else {
-                    return Err(Self::missing_venue_error(exchange.venue()));
-                };
-                handle.fetch_trades(ticker_info, from_time, data_path).await
-            }
             _ => Err(AdapterError::InvalidRequest(format!(
                 "Trade fetch not available for {exchange}"
             ))),
         }
+    }
+}
+
+impl Default for AdapterHandles {
+    fn default() -> Self {
+        Self::spawn_venues(Venue::ALL, None)
     }
 }
 

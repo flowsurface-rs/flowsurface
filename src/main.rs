@@ -40,30 +40,38 @@ use iced::{
 use std::{borrow::Cow, collections::HashMap, vec};
 
 fn main() {
-    logger::setup(cfg!(debug_assertions)).expect("Failed to initialize logger");
+    logger::install_panic_hook();
+
+    if let Err(err) = logger::setup(cfg!(debug_assertions)) {
+        logger::report_stderr(&format!("Failed to initialize logger: {err}"));
+    }
 
     std::thread::spawn(data::cleanup_old_market_data);
 
-    let _ = iced::daemon(Flowsurface::new, Flowsurface::update, Flowsurface::view)
+    let daemon = iced::daemon(Flowsurface::new, Flowsurface::update, Flowsurface::view)
         .settings(iced::Settings {
             antialiasing: true,
             fonts: vec![
                 Cow::Borrowed(style::AZERET_MONO_BYTES),
                 Cow::Borrowed(style::ICONS_BYTES),
             ],
-            default_text_size: iced::Pixels(12.0),
+            default_text_size: style::text_size::BODY.into(),
             ..Default::default()
         })
         .title(Flowsurface::title)
         .theme(Flowsurface::theme)
         .scale_factor(Flowsurface::scale_factor)
-        .subscription(Flowsurface::subscription)
-        .run();
+        .subscription(Flowsurface::subscription);
+
+    if let Err(err) = daemon.run() {
+        let message = format!("Runtime error: {err}");
+        log::error!("{message}");
+        logger::report_stderr(&message);
+    }
 }
 
 struct Flowsurface {
     main_window: window::Window,
-    window_scale_factors: HashMap<window::Id, f32>,
     sidebar: dashboard::Sidebar,
     handles: exchange::adapter::AdapterHandles,
     layout_manager: LayoutManager,
@@ -76,6 +84,7 @@ struct Flowsurface {
     timezone: data::UserTimezone,
     theme: data::Theme,
     notifications: Notifications,
+    window_scale_factors: HashMap<window::Id, f32>,
 }
 
 #[derive(Debug, Clone)]
@@ -89,10 +98,6 @@ enum Message {
     },
     Tick(std::time::Instant),
     WindowEvent(window::Event),
-    WindowScaleFactorUpdated {
-        window: window::Id,
-        scale_factor: f32,
-    },
     ExitRequested(HashMap<window::Id, WindowSpec>),
     RestartRequested(Option<HashMap<window::Id, WindowSpec>>),
     SaveStateRequested(HashMap<window::Id, WindowSpec>),
@@ -106,6 +111,10 @@ enum Message {
     ApplyVolumeSizeUnit(exchange::SizeUnit),
     RemoveNotification(usize),
     ToggleDialogModal(Option<screen::ConfirmDialog<Message>>),
+    WindowScaleFactorUpdated {
+        window: window::Id,
+        scale_factor: f32,
+    },
     ThemeEditor(modal::theme_editor::Message),
     NetworkManager(modal::network_manager::Message),
     Layouts(modal::layout_manager::Message),
@@ -115,11 +124,6 @@ enum Message {
 impl Flowsurface {
     fn new() -> (Self, Task<Message>) {
         let saved_state = layout::load_saved_state();
-        let handles =
-            exchange::adapter::AdapterHandles::spawn_all(exchange::adapter::AdapterNetworkConfig {
-                proxy_cfg: saved_state.proxy_cfg.clone(),
-            })
-            .expect("Failed to spawn adapter handles");
 
         let (main_window_id, open_main_window) = {
             let (position, size) = saved_state.window();
@@ -132,15 +136,20 @@ impl Flowsurface {
             window::open(config)
         };
 
+        let handles = exchange::adapter::AdapterHandles::spawn_venues(
+            exchange::adapter::Venue::ALL,
+            saved_state.proxy_cfg.as_ref(),
+        );
+
         let (sidebar, launch_sidebar) = dashboard::Sidebar::new(&saved_state, handles.clone());
 
         let (audio_stream, audio_init_err) = AudioStream::new(saved_state.audio_cfg);
 
         let mut state = Self {
             main_window: window::Window::new(main_window_id),
-            window_scale_factors: HashMap::from([(main_window_id, 1.0)]),
             layout_manager: saved_state.layout_manager,
             theme_editor: ThemeEditor::new(saved_state.custom_theme),
+            window_scale_factors: HashMap::from([(main_window_id, 1.0)]),
             audio_stream,
             sidebar,
             handles,
@@ -159,15 +168,29 @@ impl Flowsurface {
                 .push(Toast::error(format!("Audio disabled: {err}")));
         }
 
-        let active_layout_id = state.layout_manager.active_layout_id().unwrap_or(
-            &state
-                .layout_manager
-                .layouts
-                .first()
-                .expect("No layouts available")
-                .id,
-        );
-        let load_layout = state.load_layout(active_layout_id.unique, main_window_id);
+        if state.layout_manager.layouts.is_empty() {
+            log::error!("No layouts available after loading state; creating a default layout");
+            state.layout_manager = LayoutManager::new();
+        }
+
+        let active_layout_id = state
+            .layout_manager
+            .active_layout_id()
+            .or_else(|| {
+                state
+                    .layout_manager
+                    .layouts
+                    .first()
+                    .map(|layout| &layout.id)
+            })
+            .map(|layout| layout.unique);
+
+        let load_layout = active_layout_id
+            .map(|uid| state.load_layout(uid, main_window_id))
+            .unwrap_or_else(|| {
+                log::error!("No active layout could be selected at startup");
+                Task::none()
+            });
 
         let open_main_window = open_main_window.then(|window_id| {
             window::scale_factor(window_id, |window, scale_factor| {
@@ -193,9 +216,9 @@ impl Flowsurface {
                 let dashboard = self.active_dashboard_mut();
 
                 match event {
-                    exchange::Event::Connected(_exchange) => {}
-                    exchange::Event::Disconnected(exchange, reason) => {
-                        log::info!("a stream disconnected from {exchange} WS: {reason:?}");
+                    exchange::Event::Connected(_streams) => {}
+                    exchange::Event::Disconnected(_streams, reason) => {
+                        log::info!("a stream disconnected from WS: {reason:?}");
                     }
                     exchange::Event::DepthReceived(stream, update_t, depth) => {
                         let task = dashboard
@@ -374,15 +397,6 @@ impl Flowsurface {
                         Some(dashboard::Event::ResolveStreams { pane_id, streams }) => {
                             let tickers_info = self.sidebar.tickers_info();
 
-                            let has_any_ticker_info =
-                                tickers_info.values().any(|opt| opt.is_some());
-                            if !has_any_ticker_info {
-                                log::debug!(
-                                    "Deferring persisted stream resolution for pane {pane_id}: ticker metadata not loaded yet"
-                                );
-                                return Task::none();
-                            }
-
                             let resolved_streams =
                                 streams.into_iter().try_fold(vec![], |mut acc, persist| {
                                     let resolver = |t: &exchange::Ticker| {
@@ -394,9 +408,7 @@ impl Flowsurface {
                                             acc.append(&mut resolved);
                                             Ok(acc)
                                         }
-                                        Err(err) => Err(format!(
-                                            "Persisted stream still not resolvable: {err}"
-                                        )),
+                                        Err(err) => Err(err),
                                     }
                                 });
 
@@ -414,8 +426,19 @@ impl Flowsurface {
                                     }
                                 }
                                 Err(err) => {
-                                    // This is typically a transient state (e.g. partial metadata, stale symbol)
-                                    log::debug!("{err}");
+                                    if self.sidebar.is_metadata_loading() {
+                                        // Metadata fetches are still in flight
+                                        log::debug!(
+                                            "Deferring stream resolution for pane {pane_id}: metadata still loading ({err})"
+                                        );
+                                    } else {
+                                        log::debug!("Blocking streams for pane {pane_id}: {err}");
+                                        dashboard.block_streams(
+                                            main_window.id,
+                                            pane_id,
+                                            format!("Metadata not available: {err}"),
+                                        );
+                                    }
                                     Task::none()
                                 }
                             }
@@ -676,6 +699,7 @@ impl Flowsurface {
     fn view(&self, id: window::Id) -> Element<'_, Message> {
         let dashboard = self.active_dashboard();
         let sidebar_pos = self.sidebar.position();
+
         let horizontal_pixel_ratio = self.horizontal_pixel_ratio_for_window(id);
 
         let tickers_table = &self.sidebar.tickers_table;
@@ -707,7 +731,7 @@ impl Flowsurface {
                                 weight: iced::font::Weight::Bold,
                                 ..Default::default()
                             })
-                            .size(16)
+                            .size(crate::style::text_size::TITLE)
                             .style(style::title_text),
                     )
                     .height(20)
@@ -782,26 +806,6 @@ impl Flowsurface {
         self.ui_scale_factor.into()
     }
 
-    fn sanitize_positive_scale(value: f32) -> f32 {
-        if value.is_finite() && value > 0.0 {
-            value
-        } else {
-            1.0
-        }
-    }
-
-    fn horizontal_pixel_ratio_for_window(&self, window_id: window::Id) -> f32 {
-        let ui_scale: f32 = Self::sanitize_positive_scale(self.ui_scale_factor.into());
-        let os_scale = self
-            .window_scale_factors
-            .get(&window_id)
-            .copied()
-            .map(Self::sanitize_positive_scale)
-            .unwrap_or(1.0);
-
-        Self::sanitize_positive_scale(ui_scale * os_scale)
-    }
-
     fn subscription(&self) -> Subscription<Message> {
         let window_events = window::events().map(Message::WindowEvent);
         let sidebar = self.sidebar.subscription().map(Message::Sidebar);
@@ -852,6 +856,26 @@ impl Flowsurface {
             .get_mut(active_layout.unique)
             .map(|layout| &mut layout.dashboard)
             .expect("No active dashboard")
+    }
+
+    fn sanitize_positive_scale(value: f32) -> f32 {
+        if value.is_finite() && value > 0.0 {
+            value
+        } else {
+            1.0
+        }
+    }
+
+    fn horizontal_pixel_ratio_for_window(&self, window_id: window::Id) -> f32 {
+        let ui_scale: f32 = Self::sanitize_positive_scale(self.ui_scale_factor.into());
+        let os_scale = self
+            .window_scale_factors
+            .get(&window_id)
+            .copied()
+            .map(Self::sanitize_positive_scale)
+            .unwrap_or(1.0);
+
+        Self::sanitize_positive_scale(ui_scale * os_scale)
     }
 
     fn load_layout(&mut self, layout_uid: uuid::Uuid, main_window: window::Id) -> Task<Message> {
@@ -986,7 +1010,8 @@ impl Flowsurface {
                         container(
                             row![
                                 decrease_btn,
-                                text(format!("{:.0}%", current_value * 100.0)).size(14),
+                                text(format!("{:.0}%", current_value * 100.0))
+                                    .size(crate::style::text_size::SECTION),
                                 increase_btn,
                             ]
                             .align_y(Alignment::Center)
@@ -1035,12 +1060,13 @@ impl Flowsurface {
                     let version_info = {
                         let (version_label, commit_label) = version::app_build_version_parts();
 
-                        let github_link_button = button(text(version_label).size(13))
-                            .padding(0)
-                            .style(style::button::text_link)
-                            .on_press(Message::OpenUrlRequested(Cow::Borrowed(
-                                version::GITHUB_REPOSITORY_URL,
-                            )));
+                        let github_link_button =
+                            button(text(version_label).size(crate::style::text_size::EMPHASIS))
+                                .padding(0)
+                                .style(style::button::text_link)
+                                .on_press(Message::OpenUrlRequested(Cow::Borrowed(
+                                    version::GITHUB_REPOSITORY_URL,
+                                )));
 
                         let github_button: Element<'_, Message> = iced::widget::tooltip(
                             github_link_button,
@@ -1061,10 +1087,11 @@ impl Flowsurface {
                         if let (Some(commit_label), Some(commit_url)) =
                             (commit_label, version::build_commit_url())
                         {
-                            let commit_button = button(text(commit_label).size(11))
-                                .padding(0)
-                                .style(style::button::text_link_secondary)
-                                .on_press(Message::OpenUrlRequested(Cow::Owned(commit_url)));
+                            let commit_button =
+                                button(text(commit_label).size(crate::style::text_size::SMALL))
+                                    .padding(0)
+                                    .style(style::button::text_link_secondary)
+                                    .on_press(Message::OpenUrlRequested(Cow::Owned(commit_url)));
 
                             column![github_button, commit_button]
                                 .spacing(2)
@@ -1084,13 +1111,13 @@ impl Flowsurface {
 
                     let column_content = split_column![
                         column![open_data_folder,].spacing(8),
-                        column![text("Sidebar position").size(14), sidebar_pos_picklist,].spacing(12),
-                        column![text("Time zone").size(14), timezone_picklist,].spacing(12),
-                        column![text("Market data").size(14), size_in_quote_currency_checkbox,].spacing(12),
-                        column![text("Theme").size(14), theme_picklist,].spacing(12),
-                        column![text("Interface scale").size(14), scale_factor,].spacing(12),
+                        column![text("Sidebar position").size(crate::style::text_size::SECTION), sidebar_pos_picklist,].spacing(12),
+                        column![text("Time zone").size(crate::style::text_size::SECTION), timezone_picklist,].spacing(12),
+                        column![text("Market data").size(crate::style::text_size::SECTION), size_in_quote_currency_checkbox,].spacing(12),
+                        column![text("Theme").size(crate::style::text_size::SECTION), theme_picklist,].spacing(12),
+                        column![text("Interface scale").size(crate::style::text_size::SECTION), scale_factor,].spacing(12),
                         column![
-                            text("Experimental").size(14),
+                            text("Experimental").size(crate::style::text_size::SECTION),
                             column![trade_fetch_checkbox, toggle_theme_editor, toggle_network_editor].spacing(8),
                         ]
                         .spacing(12),
@@ -1220,7 +1247,20 @@ impl Flowsurface {
                     ]
                     .spacing(8)
                 } else {
-                    column![text("No pane selected"),].spacing(8)
+                    let reset_pane_button =
+                        button(text("Reset").align_x(Alignment::Center)).width(iced::Length::Fill);
+                    let split_pane_button =
+                        button(text("Split").align_x(Alignment::Center)).width(iced::Length::Fill);
+
+                    column![
+                        text("No pane selected"),
+                        row![
+                            tooltip(reset_pane_button, None, TooltipPosition::Top),
+                            tooltip(split_pane_button, None, TooltipPosition::Top),
+                        ]
+                        .spacing(8)
+                    ]
+                    .spacing(8)
                 };
 
                 let manage_layout_modal = {

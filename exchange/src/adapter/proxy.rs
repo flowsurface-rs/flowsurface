@@ -21,6 +21,27 @@ pub enum ProxyStream {
     TlsToProxy(Box<tokio_rustls::client::TlsStream<TcpStream>>),
 }
 
+impl ProxyStream {
+    pub async fn connect_tcp(
+        domain: &str,
+        port: u16,
+        proxy_cfg: Option<&Proxy>,
+    ) -> Result<Self, AdapterError> {
+        if let Some(proxy) = proxy_cfg {
+            log::info!("Using proxy for WS: {}", proxy);
+            return proxy.connect_tcp(domain, port).await;
+        }
+
+        let addr = format!("{domain}:{port}");
+        let tcp = tokio::time::timeout(super::ws::TCP_CONNECT_TIMEOUT, TcpStream::connect(&addr))
+            .await
+            .map_err(|_| AdapterError::WebsocketError(format!("TCP connect timeout: {addr}")))?
+            .map_err(|e| AdapterError::WebsocketError(e.to_string()))?;
+
+        Ok(Self::Plain(tcp))
+    }
+}
+
 impl AsyncRead for ProxyStream {
     fn poll_read(
         mut self: Pin<&mut Self>,
@@ -374,7 +395,7 @@ impl Proxy {
                         |_| AdapterError::ParseError("invalid proxy dnsname".to_string()),
                     )?;
 
-                let mut tls = super::connect::TLS_CONNECTOR
+                let mut tls = super::ws::TLS_CONNECTOR
                     .connect(server_name, tcp)
                     .await
                     .map_err(|e| AdapterError::WebsocketError(e.to_string()))?;

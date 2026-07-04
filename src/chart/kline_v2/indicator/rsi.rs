@@ -138,7 +138,7 @@ impl RsiState {
             return;
         }
 
-        let closes: Vec<f32> = bars.iter().map(|bar| bar.close.to_f32()).collect();
+        let closes: Vec<f32> = bars.iter().map(|bar| bar.close.to_f32_lossy()).collect();
         let mut initial_gains = 0.0f32;
         let mut initial_losses = 0.0f32;
 

@@ -1,9 +1,8 @@
 use crate::{
     Event, Kline, OpenInterest, PushFrequency, Ticker, TickerInfo, Timeframe, Trade, UnixMs,
-    adapter::limiter::DynamicRateLimiterConfig,
-    adapter::{AdapterNetworkConfig, Exchange, MarketKind},
+    adapter::{Exchange, MarketKind, StreamTicksize, limiter::DynamicRateLimiterConfig},
     depth::DepthPayload,
-    unit::qty::RawQtyUnit,
+    unit::{ContractSize, qty::RawQtyUnit},
 };
 
 use super::{AdapterError, HttpHub, RequestPort};
@@ -21,7 +20,6 @@ const PERPS_LIMIT: usize = 2400;
 const REFILL_RATE: Duration = Duration::from_secs(60);
 const LIMITER_BUFFER_PCT: f32 = 0.03;
 const USED_WEIGHT_HEADER: &str = "x-mbx-used-weight-1m";
-const DEFAULT_COMMAND_BUFFER_CAPACITY: usize = 128;
 const THIRTY_DAYS_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 
 fn exchange_from_market_type(market: MarketKind) -> Exchange {
@@ -81,7 +79,7 @@ pub type BinanceLimiter = crate::adapter::limiter::HeaderDynamicRateLimiter;
 #[derive(Debug, Clone)]
 pub struct BinanceMarketScope {
     pub market: MarketKind,
-    pub contract_sizes: Option<HashMap<Ticker, f32>>,
+    pub contract_sizes: Option<HashMap<Ticker, ContractSize>>,
 }
 
 impl BinanceMarketScope {
@@ -92,7 +90,10 @@ impl BinanceMarketScope {
         }
     }
 
-    pub fn stats(market: MarketKind, contract_sizes: Option<HashMap<Ticker, f32>>) -> Self {
+    pub fn stats(
+        market: MarketKind,
+        contract_sizes: Option<HashMap<Ticker, ContractSize>>,
+    ) -> Self {
         Self {
             market,
             contract_sizes,
@@ -109,14 +110,14 @@ pub struct BinanceHandle {
 }
 
 impl BinanceHandle {
-    fn new(
-        request_port: RequestPort<BinanceCommand>,
-        proxy_cfg: Option<crate::proxy::Proxy>,
-    ) -> Self {
-        Self {
+    pub fn new(proxy_cfg: Option<&crate::proxy::Proxy>) -> Result<Self, AdapterError> {
+        let worker = Worker::new_with_network(proxy_cfg)?;
+        let request_port = super::spawn_fetch_worker(worker);
+
+        Ok(Self {
             request_port,
-            proxy_cfg,
-        }
+            proxy_cfg: proxy_cfg.cloned(),
+        })
     }
 
     pub async fn fetch_ticker_metadata(
@@ -200,10 +201,11 @@ impl BinanceHandle {
     pub fn connect_depth_stream(
         self,
         ticker_info: TickerInfo,
+        depth_aggr: StreamTicksize,
         push_freq: PushFrequency,
     ) -> impl futures::Stream<Item = Event> {
         let proxy_cfg = self.proxy_cfg.clone();
-        stream::connect_depth_stream(self, ticker_info, push_freq, proxy_cfg)
+        stream::connect_depth_stream(self, ticker_info, depth_aggr, push_freq, proxy_cfg)
     }
 
     pub fn connect_trade_stream(
@@ -230,20 +232,20 @@ struct Worker {
 }
 
 impl Worker {
-    fn new_with_network(network: AdapterNetworkConfig) -> Result<Self, AdapterError> {
+    fn new_with_network(proxy_cfg: Option<&crate::proxy::Proxy>) -> Result<Self, AdapterError> {
         let config = BinanceConfig::default();
 
         let spot_hub = HttpHub::new(
             BinanceLimiter::new(config.limiter_config_for_market(MarketKind::Spot)),
-            network.proxy_cfg.clone(),
+            proxy_cfg,
         )?;
         let linear_hub = HttpHub::new(
             BinanceLimiter::new(config.limiter_config_for_market(MarketKind::LinearPerps)),
-            network.proxy_cfg.clone(),
+            proxy_cfg,
         )?;
         let inverse_hub = HttpHub::new(
             BinanceLimiter::new(config.limiter_config_for_market(MarketKind::InversePerps)),
-            network.proxy_cfg,
+            proxy_cfg,
         )?;
 
         Ok(Self {
@@ -340,14 +342,4 @@ impl super::FetchCommandHandler<BinanceMarketScope> for Worker {
             .await
         })
     }
-}
-
-pub fn spawn_binance_with_network(
-    network: AdapterNetworkConfig,
-) -> Result<BinanceHandle, AdapterError> {
-    let proxy_cfg = network.proxy_cfg.clone();
-    let worker = Worker::new_with_network(network)?;
-    let request_port = super::spawn_fetch_worker(DEFAULT_COMMAND_BUFFER_CAPACITY, worker);
-
-    Ok(BinanceHandle::new(request_port, proxy_cfg))
 }

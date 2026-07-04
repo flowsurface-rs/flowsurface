@@ -4,8 +4,8 @@ pub mod overlay;
 
 pub use super::Message;
 
-const AXIS_TEXT_SIZE: f32 = 12.0;
-const PAUSED_CTRL_LABEL_TEXT_SIZE: f32 = 11.0;
+const AXIS_TEXT_SIZE: f32 = crate::style::text_size::BODY;
+const PAUSED_CTRL_LABEL_TEXT_SIZE: f32 = crate::style::text_size::SMALL;
 
 const PAUSED_CTRL_TEXT: &str = "Paused";
 const PAUSED_CTRL_ICON_SIZE_FRAC: f32 = 0.032;

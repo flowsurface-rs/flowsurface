@@ -73,7 +73,14 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
                         screen: x0_screen,
                     })
                 } else {
-                    Some(AxisZoomAnchor::Cursor { screen: p.x })
+                    // When the live edge (x=0) is not visible, anchor drag-zoom to
+                    // the rightmost visible column (right edge of viewport) so
+                    // zooming expands/contracts from the right edge.
+                    let vw = self.plot_bounds.map(|r| r.width).unwrap_or(bounds.width);
+                    Some(AxisZoomAnchor::World {
+                        world: 0.0,
+                        screen: vw,
+                    })
                 };
 
                 state.interaction = AxisInteraction::Panning {

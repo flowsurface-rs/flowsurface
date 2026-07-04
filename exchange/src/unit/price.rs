@@ -3,7 +3,7 @@ use crate::serde_util;
 use serde::{Deserialize, Serialize};
 
 /// Fixed atomic unit scale: 10^-ATOMIC_SCALE is the smallest stored fraction.
-/// MinTicksize has range [-8, 2], e.g. ATOMIC_SCALE = 8 to represent 10^-8 atomic units.
+/// MinTicksize has range [-11, 2], e.g. ATOMIC_SCALE = 11 to represent 10^-11 atomic units.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd, Deserialize, Serialize)]
 pub struct Price {
     /// number of atomic units (atomic unit = 10^-ATOMIC_SCALE)
@@ -11,8 +11,8 @@ pub struct Price {
 }
 
 impl Price {
-    /// number of decimal places of the atomic unit (10^-8)
-    const ATOMIC_SCALE: i32 = 8;
+    /// number of decimal places of the atomic unit (10^-11)
+    const ATOMIC_SCALE: i32 = 11;
 
     #[inline]
     pub fn to_string<const MIN: i8, const MAX: i8>(self, precision: Power10<MIN, MAX>) -> String {
@@ -53,9 +53,9 @@ impl Price {
         if rounded_units < 0 {
             core::fmt::Write::write_char(out, '-')?;
         }
-        let abs_u = (rounded_units as i128).unsigned_abs();
+        let abs_u = rounded_units.unsigned_abs();
 
-        let scale_pow = 10u128.pow(scale_u);
+        let scale_pow = 10u64.pow(scale_u);
         let int_part = abs_u / scale_pow;
         write!(out, "{}", int_part)?;
 
@@ -63,30 +63,32 @@ impl Price {
             return Ok(());
         }
 
-        let frac_div = 10u128.pow(scale_u - decimals);
+        let frac_div = 10u64.pow(scale_u - decimals);
         let frac_part = (abs_u % scale_pow) / frac_div;
         write!(out, ".{:0width$}", frac_part, width = decimals as usize)
     }
 
     /// Lossy: convert price to f32, may lose precision if going beyond `ATOMIC_SCALE`
     pub fn to_f32_lossy(self) -> f32 {
-        let scale = 10f32.powi(Self::ATOMIC_SCALE);
-        (self.units as f32) / scale
+        self.to_f64() as f32
     }
 
-    /// Lossy: create Price from f32 (rounds to nearest atomic unit)
-    pub fn from_f32_lossy(v: f32) -> Self {
-        let scale = 10f32.powi(Self::ATOMIC_SCALE);
+    /// Create Price from f32 (widens to f64, then rounds to nearest atomic unit)
+    pub fn from_f32(v: f32) -> Self {
+        Self::from_f64(v as f64)
+    }
+
+    /// Convert price to f64.  f64 has ~15 significant digits.
+    pub fn to_f64(self) -> f64 {
+        let scale = 10f64.powi(Self::ATOMIC_SCALE);
+        (self.units as f64) / scale
+    }
+
+    /// Create Price from f64 (rounds to nearest atomic unit).
+    pub fn from_f64(v: f64) -> Self {
+        let scale = 10f64.powi(Self::ATOMIC_SCALE);
         let u = (v * scale).round() as i64;
         Self { units: u }
-    }
-
-    pub fn from_f32(v: f32) -> Self {
-        Self::from_f32_lossy(v)
-    }
-
-    pub fn to_f32(self) -> f32 {
-        self.to_f32_lossy()
     }
 
     pub fn round_to_step(self, step: PriceStep) -> Self {
@@ -202,6 +204,16 @@ impl std::ops::Div<i64> for Price {
     }
 }
 
+impl std::ops::Div for Price {
+    type Output = f64;
+
+    /// Ratio of two prices as a dimensionless f64.
+    /// Both sides share the same atomic scale so this is exact.
+    fn div(self, rhs: Self) -> f64 {
+        self.units as f64 / rhs.units as f64
+    }
+}
+
 impl std::ops::Sub for Price {
     type Output = Self;
 
@@ -219,7 +231,7 @@ pub fn de_price_from_number<'de, D>(deserializer: D) -> Result<Price, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    serde_util::de_number_like_or_object(deserializer, "price", Price::from_f32)
+    serde_util::de_number_like_or_object(deserializer, "price", Price::from_f64)
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
@@ -231,7 +243,7 @@ pub struct PriceStep {
 impl PriceStep {
     /// Decimal places needed to represent this step without trailing zeros.
     pub fn decimal_places(self) -> usize {
-        let mut units = (self.units as i128).unsigned_abs();
+        let mut units = self.units.unsigned_abs();
         if units == 0 {
             return 0;
         }
@@ -254,8 +266,8 @@ impl PriceStep {
             out.push('-');
         }
 
-        let abs_u = (self.units as i128).unsigned_abs();
-        let scale = 10u128.pow(Price::ATOMIC_SCALE as u32);
+        let abs_u = self.units.unsigned_abs();
+        let scale = 10u64.pow(Price::ATOMIC_SCALE as u32);
         let int_part = abs_u / scale;
         out.push_str(&int_part.to_string());
 
@@ -276,21 +288,13 @@ impl PriceStep {
 
     /// Lossy: f32 step for UI
     pub fn to_f32_lossy(self) -> f32 {
-        let scale = 10f32.powi(Price::ATOMIC_SCALE);
-        (self.units as f32) / scale
+        self.to_f64_lossy() as f32
     }
 
-    /// Lossy: from f32 step (rounds to nearest atomic unit)
-    pub fn from_f32_lossy(step: f32) -> Self {
-        assert!(step > 0.0, "step must be > 0");
-        let scale = 10f32.powi(Price::ATOMIC_SCALE);
-        let units = (step * scale).round() as i64;
-        assert!(units > 0, "step too small at given ATOMIC_SCALE");
-        Self { units }
-    }
-
-    pub fn from_f32(step: f32) -> Self {
-        Self::from_f32_lossy(step)
+    /// f64 step for UI
+    pub fn to_f64_lossy(self) -> f64 {
+        let scale = 10f64.powi(Price::ATOMIC_SCALE);
+        (self.units as f64) / scale
     }
 }
 

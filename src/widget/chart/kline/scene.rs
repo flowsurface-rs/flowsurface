@@ -823,7 +823,7 @@ where
 
             if unit < first_unit {
                 first_unit = unit;
-                base_close = Some(bar.close.to_f32());
+                base_close = Some(bar.close.to_f32_lossy());
             }
         });
 
@@ -846,7 +846,7 @@ where
 
             if unit < first_units[series_index] {
                 first_units[series_index] = unit;
-                anchors[series_index] = Some(bar.close.to_f32());
+                anchors[series_index] = Some(bar.close.to_f32_lossy());
             }
         });
 
@@ -890,10 +890,10 @@ where
             };
 
             if series_index == 0 && !matches!(primary_mark, MarkKind::Line) {
-                emit_pct(bar.low.to_f32());
-                emit_pct(bar.high.to_f32());
+                emit_pct(bar.low.to_f32_lossy());
+                emit_pct(bar.high.to_f32_lossy());
             } else {
-                emit_pct(bar.close.to_f32());
+                emit_pct(bar.close.to_f32_lossy());
             }
 
             if series_index == 0 {
@@ -1134,8 +1134,8 @@ where
                 return;
             }
 
-            let low = self.panel_value_to_unit(primary_value_precision, bar.low.to_f32());
-            let high = self.panel_value_to_unit(primary_value_precision, bar.high.to_f32());
+            let low = self.panel_value_to_unit(primary_value_precision, bar.low.to_f32_lossy());
+            let high = self.panel_value_to_unit(primary_value_precision, bar.high.to_f32_lossy());
 
             min_primary_unit =
                 Some(min_primary_unit.map_or(low, |value| YUnit(value.0.min(low.0))));

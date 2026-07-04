@@ -7,7 +7,7 @@ pub use qty::Qty;
 pub use time::{UnixMs, UnixMsRangeError};
 
 pub type ContractSize = Power10<-4, 6>;
-pub type MinTicksize = Power10<-8, 2>;
+pub type MinTicksize = Power10<-11, 2>;
 pub type MinQtySize = Power10<-6, 8>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Hash, Eq)]
@@ -27,6 +27,11 @@ impl<const MIN: i8, const MAX: i8> Power10<MIN, MAX> {
     pub fn as_f32(self) -> f32 {
         10f32.powi(self.power as i32)
     }
+
+    #[inline]
+    pub fn as_f64(self) -> f64 {
+        10f64.powi(self.power as i32)
+    }
 }
 
 impl<const MIN: i8, const MAX: i8> From<Power10<MIN, MAX>> for f32 {
@@ -37,6 +42,18 @@ impl<const MIN: i8, const MAX: i8> From<Power10<MIN, MAX>> for f32 {
 
 impl<const MIN: i8, const MAX: i8> From<f32> for Power10<MIN, MAX> {
     fn from(value: f32) -> Self {
+        if value <= 0.0 {
+            return Self { power: 0 };
+        }
+        let log10 = value.abs().log10();
+        let rounded = log10.round() as i8;
+        let power = rounded.clamp(MIN, MAX);
+        Self { power }
+    }
+}
+
+impl<const MIN: i8, const MAX: i8> From<f64> for Power10<MIN, MAX> {
+    fn from(value: f64) -> Self {
         if value <= 0.0 {
             return Self { power: 0 };
         }

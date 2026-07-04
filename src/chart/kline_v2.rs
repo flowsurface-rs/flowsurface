@@ -145,7 +145,7 @@ impl KlineSeriesLike for KlineSeries {
     }
 
     fn indicator_value(&self, bar: &Kline) -> f32 {
-        f32::from(bar.volume.total())
+        bar.volume.total().to_f32_lossy()
     }
 
     fn indicator_data_for_panel_value_opt(

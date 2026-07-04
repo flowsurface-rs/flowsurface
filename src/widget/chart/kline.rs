@@ -758,12 +758,13 @@ where
 
                     let series_anchor = scene.series_percent_anchors.first().copied().flatten();
                     let y_open =
-                        scene.map_primary_plot_with_anchor(bar.open.to_f32(), series_anchor);
+                        scene.map_primary_plot_with_anchor(bar.open.to_f32_lossy(), series_anchor);
                     let y_high =
-                        scene.map_primary_plot_with_anchor(bar.high.to_f32(), series_anchor);
-                    let y_low = scene.map_primary_plot_with_anchor(bar.low.to_f32(), series_anchor);
+                        scene.map_primary_plot_with_anchor(bar.high.to_f32_lossy(), series_anchor);
+                    let y_low =
+                        scene.map_primary_plot_with_anchor(bar.low.to_f32_lossy(), series_anchor);
                     let y_close =
-                        scene.map_primary_plot_with_anchor(bar.close.to_f32(), series_anchor);
+                        scene.map_primary_plot_with_anchor(bar.close.to_f32_lossy(), series_anchor);
 
                     let color = if bar.close >= bar.open {
                         palette.success.base.color
@@ -848,7 +849,7 @@ where
                                 ),
                                 Self::snap_stroke_center_with_origin(
                                     scene.map_primary_plot_with_anchor(
-                                        bar.close.to_f32(),
+                                        bar.close.to_f32_lossy(),
                                         series_anchor,
                                     ),
                                     horizontal_pixel_ratio,

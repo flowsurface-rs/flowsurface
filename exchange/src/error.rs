@@ -1,3 +1,4 @@
+use crate::adapter::Venue;
 use std::error::Error;
 
 #[derive(thiserror::Error, Debug)]
@@ -10,6 +11,8 @@ pub enum AdapterError {
     WebsocketError(String),
     #[error("Invalid request: {0}")]
     InvalidRequest(String),
+    #[error("Adapter unavailable for {venue}: {reason}")]
+    Unavailable { venue: Venue, reason: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -18,26 +21,24 @@ pub enum AdapterErrorKind {
     Parse,
     Websocket,
     InvalidRequest,
+    Unavailable,
 }
 
 #[derive(Debug)]
 pub struct FetchError {
     detail: String,
-    human_message: &'static str,
+    message: &'static str,
 }
 
 impl FetchError {
     fn from_reqwest_detail(error: &reqwest::Error, detail: String) -> Self {
-        let human_message = ReqwestErrorKind::from_error(error).ui_message();
+        let message = ReqwestErrorKind::from_error(error).ui_message();
 
-        Self {
-            detail,
-            human_message,
-        }
+        Self { detail, message }
     }
 
     fn from_status_detail(status: reqwest::StatusCode, detail: String) -> Self {
-        let human_message = if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        let message = if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
             "Rate limited. Check logs for details."
         } else if status.is_server_error() {
             "Server error. Check logs for details."
@@ -47,18 +48,11 @@ impl FetchError {
             "Request failed. Check logs for details."
         };
 
-        Self {
-            detail,
-            human_message,
-        }
-    }
-
-    pub fn human_message(&self) -> &'static str {
-        self.human_message
+        Self { detail, message }
     }
 
     pub fn ui_message(&self) -> &'static str {
-        self.human_message()
+        self.message
     }
 }
 
@@ -82,7 +76,12 @@ impl AdapterError {
             Self::ParseError(_) => AdapterErrorKind::Parse,
             Self::WebsocketError(_) => AdapterErrorKind::Websocket,
             Self::InvalidRequest(_) => AdapterErrorKind::InvalidRequest,
+            Self::Unavailable { .. } => AdapterErrorKind::Unavailable,
         }
+    }
+
+    pub fn unavailable(venue: Venue, reason: String) -> Self {
+        Self::Unavailable { venue, reason }
     }
 
     pub(crate) fn request_failed(
@@ -119,17 +118,14 @@ impl AdapterError {
         Self::FetchError(FetchError::from_status_detail(status, detail))
     }
 
-    pub fn human_message(&self) -> String {
+    pub fn ui_message(&self) -> String {
         match self {
-            Self::FetchError(error) => error.human_message().to_string(),
+            Self::FetchError(error) => error.ui_message().to_string(),
             Self::ParseError(_) => "Invalid server response. Check logs for details.".to_string(),
             Self::WebsocketError(_) => "Stream error. Check logs for details.".to_string(),
             Self::InvalidRequest(message) => message.clone(),
+            Self::Unavailable { reason, .. } => reason.clone(),
         }
-    }
-
-    pub fn ui_message(&self) -> String {
-        self.human_message()
     }
 }
 

@@ -12,12 +12,13 @@ use exchange::unit::{Price, PriceStep};
 use iced::widget::canvas::Path;
 use iced::{Alignment, Point, Rectangle, Renderer, Theme, mouse, widget::canvas};
 
-const TOOLTIP_WIDTH: f32 = 198.0;
+const TOOLTIP_WIDTH: f32 = 204.0;
 const TOOLTIP_HEIGHT: f32 = 66.0;
 const TOOLTIP_PADDING: f32 = 12.0;
+const TOOLTIP_COL_GAP_PX: f32 = 2.0;
 
 const OVERLAY_LABEL_PAD_PX: f32 = 6.0;
-const OVERLAY_LABEL_TEXT_SIZE: f32 = 11.0;
+const OVERLAY_SCALE_LABEL_TEXT_SIZE: f32 = style::text_size::TINY;
 
 const TOOLTIP_ROW_OFFSETS: [i64; 3] = [1, 0, -1];
 const TOOLTIP_COL_OFFSETS: [i64; 4] = [-2, -1, 0, 1];
@@ -28,7 +29,7 @@ const HIGHLIGHT_BORDER_ALPHA: f32 = 0.95;
 
 const PAUSED_CTRL_TEXT: &str = "Paused";
 const PAUSED_CTRL_ICON_GAP_PX: f32 = 6.0;
-const PAUSED_CTRL_LABEL_TEXT_SIZE: f32 = 11.0;
+const PAUSED_CTRL_LABEL_TEXT_SIZE: f32 = style::text_size::SMALL;
 const PAUSED_CTRL_BG_PAD_X: f32 = 6.0;
 
 #[derive(Debug, Default)]
@@ -45,6 +46,7 @@ struct TooltipLayout {
     rect: Rectangle,
     cell_w: f32,
     cell_h: f32,
+    col_gap: f32,
 }
 
 impl TooltipLayout {
@@ -71,18 +73,21 @@ impl TooltipLayout {
             height: TOOLTIP_HEIGHT,
         };
 
-        let cell_w = TOOLTIP_WIDTH / (TOOLTIP_COL_OFFSETS.len() as f32);
+        let col_count = TOOLTIP_COL_OFFSETS.len() as f32;
+        let col_gap = TOOLTIP_COL_GAP_PX;
+        let cell_w = (TOOLTIP_WIDTH - ((col_count - 1.0) * col_gap)) / col_count;
         let cell_h = TOOLTIP_HEIGHT / (TOOLTIP_ROW_OFFSETS.len() as f32);
 
         Self {
             rect,
             cell_w,
             cell_h,
+            col_gap,
         }
     }
 
     fn cell_center(&self, row_idx: usize, col_idx: usize) -> Point {
-        let x = self.rect.x + ((col_idx as f32) * self.cell_w) + self.cell_w / 2.0;
+        let x = self.rect.x + ((col_idx as f32) * (self.cell_w + self.col_gap)) + self.cell_w / 2.0;
         let y = self.rect.y + ((row_idx as f32) * self.cell_h) + self.cell_h / 2.0;
         Point::new(x, y)
     }
@@ -220,9 +225,9 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                     let x_pos = bounds.width - OVERLAY_LABEL_PAD_PX;
 
                     frame.fill_text(canvas::Text {
-                        content: abbr_large_numbers(qty.into()),
+                        content: abbr_large_numbers(f64::from(qty)),
                         position: Point::new(x_pos, strip_top_y),
-                        size: iced::Pixels(OVERLAY_LABEL_TEXT_SIZE - 1.),
+                        size: iced::Pixels(OVERLAY_SCALE_LABEL_TEXT_SIZE),
                         color: palette.background.base.text.scale_alpha(0.85),
                         font: style::AZERET_MONO,
                         align_x: Alignment::End.into(),
@@ -254,9 +259,9 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                             let ty = OVERLAY_LABEL_PAD_PX;
 
                             frame.fill_text(canvas::Text {
-                                content: abbr_large_numbers(qty.into()),
+                                content: abbr_large_numbers(f64::from(qty)),
                                 position: Point::new(tx, ty),
-                                size: iced::Pixels(OVERLAY_LABEL_TEXT_SIZE - 1.),
+                                size: iced::Pixels(OVERLAY_SCALE_LABEL_TEXT_SIZE),
                                 color: palette.background.base.text.scale_alpha(0.85),
                                 font: style::AZERET_MONO,
                                 align_x: Alignment::End.into(),
@@ -295,9 +300,9 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                             let ty = OVERLAY_LABEL_PAD_PX;
 
                             frame.fill_text(canvas::Text {
-                                content: abbr_large_numbers(qty.into()),
+                                content: abbr_large_numbers(f64::from(qty)),
                                 position: Point::new(tx, ty),
-                                size: iced::Pixels(OVERLAY_LABEL_TEXT_SIZE - 1.),
+                                size: iced::Pixels(OVERLAY_SCALE_LABEL_TEXT_SIZE),
                                 color: palette.background.base.text.scale_alpha(0.85),
                                 font: style::AZERET_MONO,
                                 align_x: Alignment::Start.into(),
@@ -350,8 +355,11 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
             let snapped_world_x = (x_bin_rel - origin0) * cell_width;
 
             let steps_per_y_bin = self.scene.params.steps_per_y_bin();
-            let steps_at_y = super::step_floor_from_world_y(world_y, cell_height);
-            let base_rel_y_bin = steps_at_y.div_euclid(steps_per_y_bin.max(1));
+            let base_rel_y_bin = {
+                let steps_at_y = super::step_floor_from_world_y(world_y, cell_height);
+                steps_at_y / steps_per_y_bin.max(1)
+            };
+
             let snapped_world_y =
                 super::world_y_for_y_bin_center(base_rel_y_bin, steps_per_y_bin, cell_height);
 
@@ -452,7 +460,6 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                     };
 
                     let qty: f32 = (qty_u32 as f32) / self.qty_scale;
-
                     let color = if is_bid {
                         palette.success.strong.color
                     } else {
@@ -460,9 +467,9 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                     };
 
                     frame.fill_text(canvas::Text {
-                        content: abbr_large_numbers(qty),
+                        content: abbr_large_numbers(qty as f64),
                         position: layout.cell_center(row_idx, col_idx),
-                        size: iced::Pixels(11.0),
+                        size: iced::Pixels(crate::style::text_size::TINY),
                         color: color.scale_alpha(0.95),
                         align_x: Alignment::Center.into(),
                         align_y: Alignment::Center.into(),

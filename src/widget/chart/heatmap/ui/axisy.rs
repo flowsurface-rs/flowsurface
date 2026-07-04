@@ -17,7 +17,6 @@ pub struct AxisYLabelCanvas<'a> {
     pub step: PriceStep,
     pub row_h: f32,
     /// Rounds/formats labels to a decade step (e.g. power=-2 => 0.01).
-    /// Type alias: MinTicksize = Power10<-8, 2>
     pub label_precision: MinTicksize,
 }
 
@@ -62,9 +61,10 @@ fn major_step_for_range(
 ) -> PriceStep {
     let step_units = step.units.max(1);
 
-    let range_units = (i128::from(highest_price.units) - i128::from(lowest_price.units))
-        .abs()
-        .max(i128::from(step_units));
+    let range_units = highest_price
+        .units
+        .abs_diff(lowest_price.units)
+        .max(step_units as u64);
     let target_labels = labels_can_fit.max(2) as f32;
     let raw_major = (range_units as f32) / target_labels;
     let nice_major = crate::widget::chart::nice_step(raw_major);

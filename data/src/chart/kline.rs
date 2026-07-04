@@ -47,6 +47,24 @@ impl KlineDataPoint {
     pub fn first_trade_time(&self) -> Option<UnixMs> {
         self.footprint.first_trade_t()
     }
+
+    pub fn volume_delta(&self) -> Qty {
+        if self.kline.volume.is_directional() {
+            self.kline.volume.delta()
+        } else if !self.footprint.trades.is_empty() {
+            self.footprint
+                .trades
+                .values()
+                .fold(Qty::ZERO, |acc, group| acc + group.delta_qty())
+        } else {
+            Qty::ZERO
+        }
+    }
+
+    /// Whether this datapoint has directional (buy vs sell) data.
+    pub fn is_directional(&self) -> bool {
+        !self.footprint.trades.is_empty() || self.kline.volume.is_directional()
+    }
 }
 
 impl DataPoint for KlineDataPoint {
@@ -209,11 +227,11 @@ impl KlineTrades {
             return;
         }
 
-        let mut max_volume = 0.0;
+        let mut max_volume = Qty::ZERO;
         let mut poc_price = Price::from_f32(0.0);
 
         for (price, group) in &self.trades {
-            let total_volume = f32::from(group.total_qty());
+            let total_volume = group.total_qty();
             if total_volume > max_volume {
                 max_volume = total_volume;
                 poc_price = *price;
@@ -240,6 +258,51 @@ impl KlineTrades {
     pub fn clear(&mut self) {
         self.trades.clear();
         self.poc = None;
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FootprintSummary {
+    pub buy: Qty,
+    pub sell: Qty,
+    pub total: Qty,
+    pub delta: Qty,
+    pub delta_pct: f64,
+}
+
+impl FootprintSummary {
+    pub fn new(buy: Qty, sell: Qty) -> Self {
+        let total = buy + sell;
+        let delta = buy - sell;
+        let total_f = total.to_f64();
+        let delta_pct = if total_f > 0.0 {
+            (delta.to_f64() / total_f) * 100.0
+        } else {
+            0.0
+        };
+
+        Self {
+            buy,
+            sell,
+            total,
+            delta,
+            delta_pct,
+        }
+    }
+
+    pub fn from_trades(footprint: &KlineTrades) -> Option<Self> {
+        if footprint.trades.is_empty() {
+            return None;
+        }
+
+        let (buy, sell) = footprint
+            .trades
+            .values()
+            .fold((Qty::ZERO, Qty::ZERO), |(buy, sell), group| {
+                (buy + group.buy_qty, sell + group.sell_qty)
+            });
+
+        Some(Self::new(buy, sell))
     }
 }
 
@@ -333,7 +396,12 @@ impl std::fmt::Display for ClusterKind {
 }
 
 #[derive(Debug, Default, Copy, Clone, PartialEq, Deserialize, Serialize)]
-pub struct Config {}
+#[serde(default)]
+pub struct Config {
+    // Whether to show last value labels on top right/left when not hovering
+    // e.g. OHLC/bar change values for the main chart, or last value of an indicator series
+    pub data_labels_always_visible: bool,
+}
 
 #[derive(Default, Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
 pub enum ClusterScaling {
@@ -415,7 +483,7 @@ impl std::fmt::Display for FootprintStudy {
 #[derive(Debug, Clone, Copy)]
 pub struct PointOfControl {
     pub price: Price,
-    pub volume: f32,
+    pub volume: Qty,
     pub status: NPoc,
 }
 
@@ -423,7 +491,7 @@ impl Default for PointOfControl {
     fn default() -> Self {
         Self {
             price: Price::from_f32(0.0),
-            volume: 0.0,
+            volume: Qty::ZERO,
             status: NPoc::default(),
         }
     }

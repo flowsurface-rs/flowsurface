@@ -12,7 +12,7 @@ use iced::{Alignment, Event, Point, Rectangle, Renderer, Size, Theme, mouse};
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-const TEXT_SIZE: f32 = 11.0;
+const TEXT_SIZE: f32 = style::text_size::SMALL;
 const ROW_HEIGHT: f32 = 16.0;
 
 // Total width ratios must sum to 1.0
@@ -194,7 +194,7 @@ impl Ladder {
     }
 
     fn format_quantity(&self, qty: Qty) -> String {
-        data::util::abbr_large_numbers(qty.to_f32_lossy())
+        data::util::abbr_large_numbers(qty.to_f64())
     }
 }
 
@@ -321,7 +321,7 @@ impl canvas::Program<Message> for Ladder {
                                         visible_row.y + ROW_HEIGHT / 2.0,
                                     ),
                                     color: palette.secondary.strong.color,
-                                    size: (TEXT_SIZE - 1.0).into(),
+                                    size: style::text_size::TINY.into(),
                                     font: style::AZERET_MONO,
                                     align_x: Alignment::Center.into(),
                                     align_y: Alignment::Center.into(),
@@ -561,9 +561,9 @@ impl Ladder {
         trade_sell_color: iced::Color,
         cols: &ColumnRanges,
     ) {
-        let order_qty_f32 = f32::from(order_qty);
-        let trade_buy_qty_f32 = f32::from(trade_buy_qty);
-        let trade_sell_qty_f32 = f32::from(trade_sell_qty);
+        let order_qty_f32 = order_qty.to_f32_lossy();
+        let trade_buy_qty_f32 = trade_buy_qty.to_f32_lossy();
+        let trade_sell_qty_f32 = trade_sell_qty.to_f32_lossy();
 
         if is_bid {
             Self::fill_bar(
@@ -831,11 +831,11 @@ impl Ladder {
                 continue;
             }
 
-            maxima.vis_max_order_qty = maxima.vis_max_order_qty.max(f32::from(order_qty));
+            maxima.vis_max_order_qty = maxima.vis_max_order_qty.max(order_qty.to_f32_lossy());
             let (buy_t, sell_t) = self.trade_qty_at(price);
             maxima.vis_max_trade_qty = maxima
                 .vis_max_trade_qty
-                .max(f32::from(buy_t).max(f32::from(sell_t)));
+                .max(buy_t.to_f32_lossy().max(sell_t.to_f32_lossy()));
 
             let row = if is_bid {
                 DomRow::Bid {

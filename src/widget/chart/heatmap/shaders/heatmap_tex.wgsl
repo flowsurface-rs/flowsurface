@@ -34,7 +34,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let col_w = max(params.grid.x, 1e-12);
     let row_h = max(params.grid.y, 1e-12);
     let steps_per = max(params.grid.z, 1.0);
-    let bin_h = row_h * steps_per;
+    let steps_per_i = max(i32(round(steps_per)), 1);
 
     let tex_w_u = u32(params.heatmap_tex.x);
     let tex_h_u = u32(params.heatmap_tex.y);
@@ -42,7 +42,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         return vec4<f32>(0.0);
     }
 
-    let y_bin_rel = i32(floor((-world.y) / max(bin_h, 1e-12)));
+    let steps_at_y = i32(floor((-world.y) / max(row_h, 1e-12)));
+    let y_bin_rel = steps_at_y / steps_per_i;
     let y_start_bin = i32(params.heatmap_map.y);
     let yi = y_bin_rel - y_start_bin;
     if (yi < 0 || u32(yi) >= tex_h_u) {

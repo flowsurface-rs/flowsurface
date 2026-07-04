@@ -6,7 +6,7 @@ use crate::{
 use data::chart::Basis;
 use exchange::{
     StreamPairKind, TickMultiplier, Timeframe,
-    adapter::{Exchange, allowed_multipliers_for_min_tick},
+    adapter::Exchange,
     unit::{MinTicksize, PriceStep},
 };
 use iced::{
@@ -449,7 +449,7 @@ impl Modifier {
                                 ModifierKind::Comparison(_) => "Timeframe",
                                 _ => "Aggregation",
                             };
-                            row![text(text_content).size(13)]
+                            row![text(text_content).size(crate::style::text_size::EMPHASIS)]
                         }
                     };
 
@@ -543,24 +543,16 @@ impl Modifier {
                         column![].padding(4).spacing(8).align_x(Horizontal::Center);
 
                     ticksizes_column = ticksizes_column
-                        .push(text("Tick size multiplier").size(13))
+                        .push(text("Tick size multiplier").size(crate::style::text_size::EMPHASIS))
                         .push(rule::horizontal(1).style(style::split_ruler));
 
                     let allows_custom_tsizes = exchange.is_depth_client_aggr()
                         || matches!(kind, ModifierKind::Footprint(_, _));
 
                     let allowed_tm = if allows_custom_tsizes {
-                        exchange::TickMultiplier::ALL.to_vec()
-                    } else if let Some(min_tick) = self.min_ticksize {
-                        let allow = allowed_multipliers_for_min_tick(min_tick);
-
-                        exchange::TickMultiplier::ALL
-                            .iter()
-                            .copied()
-                            .filter(|tm| allow.contains(&tm.0))
-                            .collect()
+                        TickMultiplier::ALL.to_vec()
                     } else {
-                        vec![]
+                        exchange.allowed_tick_multipliers(self.min_ticksize)
                     };
 
                     let tick_multiplier_grid = modifiers_grid(

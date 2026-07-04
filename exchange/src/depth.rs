@@ -11,8 +11,8 @@ use std::{collections::BTreeMap, sync::Arc};
 
 #[derive(Clone, Copy)]
 pub struct DeOrder {
-    pub price: f32,
-    pub qty: f32,
+    pub price: f64,
+    pub qty: f64,
 }
 
 impl<'de> serde::Deserialize<'de> for DeOrder {
@@ -24,15 +24,15 @@ impl<'de> serde::Deserialize<'de> for DeOrder {
         let value = Value::deserialize(deserializer)?;
 
         let price = match &value {
-            Value::Array(arr) => arr.first().and_then(serde_util::value_as_f32),
-            Value::Object(map) => map.get("0").and_then(serde_util::value_as_f32),
+            Value::Array(arr) => arr.first().and_then(serde_util::value_as_f64),
+            Value::Object(map) => map.get("0").and_then(serde_util::value_as_f64),
             _ => None,
         }
         .ok_or_else(|| SerdeError::custom("Order price not found or invalid"))?;
 
         let qty = match &value {
-            Value::Array(arr) => arr.get(1).and_then(serde_util::value_as_f32),
-            Value::Object(map) => map.get("1").and_then(serde_util::value_as_f32),
+            Value::Array(arr) => arr.get(1).and_then(serde_util::value_as_f64),
+            Value::Object(map) => map.get("1").and_then(serde_util::value_as_f64),
             _ => None,
         }
         .ok_or_else(|| SerdeError::custom("Order qty not found or invalid"))?;
@@ -90,8 +90,8 @@ impl Depth {
                 .map(|normalizer| normalizer.normalize(order.qty, order.price))
                 .unwrap_or(order.qty);
 
-            let price = Price::from_f32(order.price).round_to_min_tick(min_ticksize);
-            let qty = Qty::from_f32(normalized_qty);
+            let price = Price::from_f64(order.price).round_to_min_tick(min_ticksize);
+            let qty = Qty::from_f64(normalized_qty);
 
             if qty.is_zero() {
                 price_map.remove(&price);
@@ -116,8 +116,8 @@ impl Depth {
                     .unwrap_or(de_order.qty);
 
                 (
-                    Price::from_f32(de_order.price).round_to_min_tick(min_ticksize),
-                    Qty::from_f32(normalized_qty),
+                    Price::from_f64(de_order.price).round_to_min_tick(min_ticksize),
+                    Qty::from_f64(normalized_qty),
                 )
             })
             .collect::<BTreeMap<Price, Qty>>();
@@ -130,8 +130,8 @@ impl Depth {
                     .unwrap_or(de_order.qty);
 
                 (
-                    Price::from_f32(de_order.price).round_to_min_tick(min_ticksize),
-                    Qty::from_f32(normalized_qty),
+                    Price::from_f64(de_order.price).round_to_min_tick(min_ticksize),
+                    Qty::from_f64(normalized_qty),
                 )
             })
             .collect::<BTreeMap<Price, Qty>>();

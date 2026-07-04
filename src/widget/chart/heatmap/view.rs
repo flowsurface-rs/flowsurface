@@ -644,14 +644,17 @@ impl ViewWindow {
         // time range derived from buckets
         let latest_time_for_view: u64 = input.latest_time_render.max(input.latest_time_data);
 
-        let latest_t = latest_time_for_view as i128;
-        let aggr_i = input.aggr_time as i128;
+        let clamp_bucket_time = |bucket: i64| -> u64 {
+            if bucket >= 0 {
+                latest_time_for_view
+            } else {
+                latest_time_for_view
+                    .saturating_sub(bucket.unsigned_abs().saturating_mul(input.aggr_time))
+            }
+        };
 
-        let t_min_i = latest_t + (bucket_min as i128) * aggr_i;
-        let t_max_i = latest_t + (bucket_max as i128) * aggr_i;
-
-        let earliest = t_min_i.clamp(0, latest_t) as u64;
-        let latest_vis = t_max_i.clamp(0, latest_t) as u64;
+        let earliest = clamp_bucket_time(bucket_min);
+        let latest_vis = clamp_bucket_time(bucket_max);
 
         if earliest >= latest_vis {
             return None;
@@ -692,13 +695,44 @@ impl ViewWindow {
         })
     }
 
-    /// Shader-consistent mapping: price -> y-bin (using Euclidean division, matching `floor`).
-    pub fn y_bin_for_price(&self, price: Price, base_price: Price, step: PriceStep) -> i64 {
+    fn y_bin_for_price_against_anchor(
+        &self,
+        price: Price,
+        anchor_price: Price,
+        step_units: i64,
+        steps_per: i64,
+    ) -> i64 {
+        let delta_units = price.units - anchor_price.units;
+
+        let dy_steps: i64 = delta_units.div_euclid(step_units);
+        dy_steps / steps_per
+    }
+
+    /// Texture-aligned mapping: price -> y-bin in the same relative frame used by heatmap texture.
+    pub fn y_bin_for_price_texture_aligned(
+        &self,
+        price: Price,
+        base_price: Price,
+        step: PriceStep,
+        y_anchor: Option<Price>,
+    ) -> i64 {
         let step_units = step.units.max(1);
         let steps_per = self.steps_per_y_bin.max(1);
 
-        let dy_steps: i64 = (price.units - base_price.units).div_euclid(step_units);
-        dy_steps.div_euclid(steps_per)
+        if let Some(anchor_price) = y_anchor {
+            let price_vs_anchor =
+                self.y_bin_for_price_against_anchor(price, anchor_price, step_units, steps_per);
+            let base_vs_anchor = self.y_bin_for_price_against_anchor(
+                base_price,
+                anchor_price,
+                step_units,
+                steps_per,
+            );
+
+            return price_vs_anchor.saturating_sub(base_vs_anchor);
+        }
+
+        self.y_bin_for_price_against_anchor(price, base_price, step_units, steps_per)
     }
 
     /// Shader-consistent y-center for a y-bin (center of the bin).
@@ -706,9 +740,15 @@ impl ViewWindow {
         -((y_bin as f32 + 0.5) * self.y_bin_h_world)
     }
 
-    /// Convenience: price -> y-center in world coordinates (bin-centered).
-    pub fn y_center_for_price(&self, price: Price, base_price: Price, step: PriceStep) -> f32 {
-        let yb = self.y_bin_for_price(price, base_price, step);
+    /// Texture-aligned convenience: price -> y-center in world coordinates.
+    pub fn y_center_for_price_texture_aligned(
+        &self,
+        price: Price,
+        base_price: Price,
+        step: PriceStep,
+        y_anchor: Option<Price>,
+    ) -> f32 {
+        let yb = self.y_bin_for_price_texture_aligned(price, base_price, step, y_anchor);
         self.y_center_for_bin(yb)
     }
 }
@@ -844,7 +884,7 @@ impl DepthNormCache {
             )
         };
 
-        let max_qty = max_qty.to_scale_or_one();
+        let max_qty = max_qty.to_scale_or_one() as f32;
 
         self.key = Some(key);
         self.value = max_qty;

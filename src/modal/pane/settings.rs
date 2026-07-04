@@ -62,7 +62,7 @@ pub fn heatmap_cfg_view<'a>(
                     false,
                 )
             },
-            |value| format!(">${}", format_with_commas(*value)),
+            |value| format!(">${}", format_with_commas(*value as f64)),
             Some(500.0),
         )
     };
@@ -83,7 +83,7 @@ pub fn heatmap_cfg_view<'a>(
                     false,
                 )
             },
-            |value| format!(">${}", format_with_commas(*value)),
+            |value| format!(">${}", format_with_commas(*value as f64)),
             Some(5000.0),
         )
     };
@@ -103,7 +103,7 @@ pub fn heatmap_cfg_view<'a>(
             })
             .step(10)
             .into(),
-            Some(text(format!("{}%", radius_scale)).size(13)),
+            Some(text(format!("{}%", radius_scale)).size(crate::style::text_size::EMPHASIS)),
         )
     });
 
@@ -183,7 +183,10 @@ pub fn heatmap_cfg_view<'a>(
             })
             .step(0.05)
             .into(),
-            Some(text(format!("{:.0}%", threshold_pct * 100.0)).size(13)),
+            Some(
+                text(format!("{:.0}%", threshold_pct * 100.0))
+                    .size(crate::style::text_size::EMPHASIS),
+            ),
         );
 
         Some(
@@ -197,7 +200,7 @@ pub fn heatmap_cfg_view<'a>(
     };
 
     let size_filters_column = column![
-        text("Size filters").size(14),
+        text("Size filters").size(crate::style::text_size::SECTION),
         column![trade_size_slider, order_size_slider].spacing(8),
     ]
     .spacing(8);
@@ -220,7 +223,11 @@ pub fn heatmap_cfg_view<'a>(
                 )
             });
 
-        let mut col = column![text("Noise filters").size(14), merge_checkbox].spacing(8);
+        let mut col = column![
+            text("Noise filters").size(crate::style::text_size::SECTION),
+            merge_checkbox
+        ]
+        .spacing(8);
         if let Some(c) = coalescer_cfg {
             col = col.push(c);
         }
@@ -241,7 +248,11 @@ pub fn heatmap_cfg_view<'a>(
                 )
             });
 
-        let mut col = column![text("Trade visualization").size(14), dyn_checkbox].spacing(8);
+        let mut col = column![
+            text("Trade visualization").size(crate::style::text_size::SECTION),
+            dyn_checkbox
+        ]
+        .spacing(8);
         if let Some(slider) = circle_scaling_slider {
             col = col.push(slider);
         }
@@ -259,7 +270,7 @@ pub fn heatmap_cfg_view<'a>(
         size_filters_column,
         noise_filters_column,
         trade_viz_column,
-        column![text("Studies").size(14), study_cfg].spacing(8),
+        column![text("Studies").size(crate::style::text_size::SECTION), study_cfg].spacing(8),
         row![
             space::horizontal(),
             sync_all_button(pane, VisualConfig::Heatmap(cfg))
@@ -293,7 +304,7 @@ pub fn heatmap_shader_cfg_view<'a>(
                     false,
                 )
             },
-            |value| format!(">${}", format_with_commas(*value)),
+            |value| format!(">${}", format_with_commas(*value as f64)),
             Some(500.0),
         )
     };
@@ -314,7 +325,7 @@ pub fn heatmap_shader_cfg_view<'a>(
                     false,
                 )
             },
-            |value| format!(">${}", format_with_commas(*value)),
+            |value| format!(">${}", format_with_commas(*value as f64)),
             Some(5000.0),
         )
     };
@@ -334,12 +345,12 @@ pub fn heatmap_shader_cfg_view<'a>(
             })
             .step(10)
             .into(),
-            Some(text(format!("{}%", radius_scale)).size(13)),
+            Some(text(format!("{}%", radius_scale)).size(crate::style::text_size::EMPHASIS)),
         )
     });
 
     let size_filters_column = column![
-        text("Size filters").size(14),
+        text("Size filters").size(crate::style::text_size::SECTION),
         column![trade_size_slider, order_size_slider].spacing(8),
     ]
     .spacing(8);
@@ -358,7 +369,11 @@ pub fn heatmap_shader_cfg_view<'a>(
                 )
             });
 
-        let mut col = column![text("Trade visualization").size(14), dyn_checkbox].spacing(8);
+        let mut col = column![
+            text("Trade visualization").size(crate::style::text_size::SECTION),
+            dyn_checkbox
+        ]
+        .spacing(8);
         if let Some(slider) = circle_scaling_slider {
             col = col.push(slider);
         }
@@ -375,7 +390,7 @@ pub fn heatmap_shader_cfg_view<'a>(
     let content = split_column![
         size_filters_column,
         trade_viz_column,
-        column![text("Studies").size(14), study_cfg].spacing(8),
+        column![text("Studies").size(crate::style::text_size::SECTION), study_cfg].spacing(8),
         row![
             space::horizontal(),
             sync_all_button(pane, VisualConfig::Heatmap(cfg))
@@ -406,11 +421,15 @@ pub fn timesales_cfg_view<'a>(
                     false,
                 )
             },
-            |value| format!(">${}", format_with_commas(*value)),
+            |value| format!(">${}", format_with_commas(*value as f64)),
             Some(500.0),
         );
 
-        column![text("Size filter").size(14), slider].spacing(8)
+        column![
+            text("Size filter").size(crate::style::text_size::SECTION),
+            slider
+        ]
+        .spacing(8)
     };
 
     let retention_minutes = (cfg.trade_retention.as_secs_f32() / 60.0).max(1.0);
@@ -431,13 +450,16 @@ pub fn timesales_cfg_view<'a>(
         classic_slider_row(
             text("Keep trades for"),
             slider_ui.into(),
-            Some(text(format!("≈ {} min", retention_minutes.round() as u64)).size(13)),
+            Some(
+                text(format!("≈ {} min", retention_minutes.round() as u64))
+                    .size(crate::style::text_size::EMPHASIS),
+            ),
         )
     };
 
     let history_column = column![
         row![
-            text("History").size(14),
+            text("History").size(crate::style::text_size::SECTION),
             tooltip(
                 button("i").style(style::button::info),
                 Some("Affects the stacked bar, colors and how much you can scroll down"),
@@ -520,9 +542,9 @@ pub fn timesales_cfg_view<'a>(
 
             column![
                 iced::widget::rule::horizontal(1),
-                text("Mode").size(12),
+                text("Mode").size(crate::style::text_size::BODY),
                 row![compact, full].spacing(12),
-                text("Metric").size(12),
+                text("Metric").size(crate::style::text_size::BODY),
                 metric_picklist,
             ]
             .spacing(8)
@@ -579,10 +601,40 @@ pub fn kline_cfg_view<'a>(
     pane: pane_grid::Pane,
     basis: data::chart::Basis,
 ) -> Element<'a, Message> {
+    let display_readout_section = {
+        let data_labels_checkbox = tooltip(
+            checkbox(cfg.data_labels_always_visible)
+                .label("Keep latest label visible")
+                .on_toggle(move |value| {
+                    Message::VisualConfigChanged(
+                        pane,
+                        VisualConfig::Kline(data::chart::kline::Config {
+                            data_labels_always_visible: value,
+                        }),
+                        false,
+                    )
+                }),
+            Some("Show the latest datapoint label even when not hovering"),
+            TooltipPosition::Top,
+        );
+        column![
+            text("Data labels").size(crate::style::text_size::SECTION),
+            data_labels_checkbox,
+        ]
+        .spacing(8)
+    };
+
     let content = match kind {
-        KlineChartKind::Candles => column![text(
-            "This chart type doesn't have any configurations, WIP..."
-        )],
+        KlineChartKind::Candles => {
+            split_column![
+                display_readout_section,
+                row![
+                    space::horizontal(),
+                    sync_all_button(pane, VisualConfig::Kline(cfg))
+                ],
+                ; spacing = 12, align_x = Alignment::Start
+            ]
+        }
         KlineChartKind::Footprint {
             clusters,
             scaling,
@@ -632,9 +684,10 @@ pub fn kline_cfg_view<'a>(
             });
 
             split_column![
-                column![text("Cluster type").size(14), cluster_picklist].spacing(8),
-                column![text("Cluster scaling").size(14), scaling].spacing(8),
-                column![text("Studies").size(14), study_cfg].spacing(8),
+                display_readout_section,
+                column![text("Cluster type").size(crate::style::text_size::SECTION), cluster_picklist].spacing(8),
+                column![text("Cluster scaling").size(crate::style::text_size::SECTION), scaling].spacing(8),
+                column![text("Studies").size(crate::style::text_size::SECTION), study_cfg].spacing(8),
                 row![
                     space::horizontal(),
                     sync_all_button(pane, VisualConfig::Kline(cfg))
@@ -676,7 +729,7 @@ pub fn ladder_cfg_view<'a>(cfg: ladder::Config, pane: pane_grid::Pane) -> Elemen
             });
 
         column![
-            text("Display Options").size(14),
+            text("Display Options").size(crate::style::text_size::SECTION),
             column![
                 spread,
                 row![
@@ -714,11 +767,18 @@ pub fn ladder_cfg_view<'a>(cfg: ladder::Config, pane: pane_grid::Pane) -> Elemen
         classic_slider_row(
             text("Keep trades for"),
             slider_ui.into(),
-            Some(text(format!("≈ {} min", retention_minutes.round() as u64)).size(13)),
+            Some(
+                text(format!("≈ {} min", retention_minutes.round() as u64))
+                    .size(crate::style::text_size::EMPHASIS),
+            ),
         )
     };
 
-    let history_column = column![text("History").size(14), retention_slider].spacing(8);
+    let history_column = column![
+        text("History").size(crate::style::text_size::SECTION),
+        retention_slider
+    ]
+    .spacing(8);
 
     let content = split_column![
         display_options,

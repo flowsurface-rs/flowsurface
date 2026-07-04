@@ -122,7 +122,7 @@ impl<D: DataPoint> TimeSeries<D> {
 
     pub fn min_max_price_in_range(&self, earliest: UnixMs, latest: UnixMs) -> Option<(f32, f32)> {
         self.min_max_price_in_range_prices(earliest, latest)
-            .map(|(min_p, max_p)| (min_p.to_f32(), max_p.to_f32()))
+            .map(|(min_p, max_p)| (min_p.to_f32_lossy(), max_p.to_f32_lossy()))
     }
 
     /// Ensures a datapoint bucket exists at `rounded_t` and ingests all trades into it.
@@ -355,6 +355,46 @@ impl TimeSeries<KlineDataPoint> {
             if let Some(data_point) = self.datapoints.get_mut(&current_time) {
                 data_point.set_poc_status(npoc);
             }
+        }
+    }
+
+    pub fn min_max_footprint_price_in_range(
+        &self,
+        earliest: UnixMs,
+        latest: UnixMs,
+    ) -> Option<(Price, Price)> {
+        if latest < earliest {
+            return None;
+        }
+
+        let mut min_price: Option<Price> = None;
+        let mut max_price: Option<Price> = None;
+
+        let mut track_price = |price: Price| {
+            min_price = Some(match min_price {
+                Some(current) => current.min(price),
+                None => price,
+            });
+            max_price = Some(match max_price {
+                Some(current) => current.max(price),
+                None => price,
+            });
+        };
+
+        self.datapoints
+            .range(earliest..=latest)
+            .for_each(|(_, dp)| {
+                track_price(dp.kline.low);
+                track_price(dp.kline.high);
+
+                for price in dp.footprint.trades.keys() {
+                    track_price(*price);
+                }
+            });
+
+        match (min_price, max_price) {
+            (Some(low), Some(high)) => Some((low, high)),
+            _ => None,
         }
     }
 

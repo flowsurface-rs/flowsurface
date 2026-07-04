@@ -29,19 +29,19 @@ struct KlineSpot {
     #[serde()]
     open_ts: u64,
     #[serde(deserialize_with = "de_string_to_number")]
-    open: f32,
+    open: f64,
     #[serde(deserialize_with = "de_string_to_number")]
-    high: f32,
+    high: f64,
     #[serde(deserialize_with = "de_string_to_number")]
-    low: f32,
+    low: f64,
     #[serde(deserialize_with = "de_string_to_number")]
-    close: f32,
+    close: f64,
     #[serde(deserialize_with = "de_string_to_number")]
-    vol: f32,
+    vol: f64,
     #[serde()]
     close_ts: u64,
     #[serde(deserialize_with = "de_string_to_number")]
-    asset_vol: f32,
+    asset_vol: f64,
 }
 
 #[derive(Deserialize)]
@@ -53,21 +53,13 @@ struct DepthSnapshotResponse {
 #[derive(Deserialize)]
 struct DepthData {
     #[serde(rename = "asks")]
-    asks: Vec<FuturesDepthItem>,
+    asks: Vec<DeOrder>,
     #[serde(rename = "bids")]
-    bids: Vec<FuturesDepthItem>,
+    bids: Vec<DeOrder>,
     #[serde(rename = "version")]
     version: u64,
     #[serde(rename = "timestamp")]
     timestamp: u64,
-}
-
-#[derive(Deserialize)]
-struct FuturesDepthItem {
-    #[serde()]
-    pub price: f32,
-    #[serde()]
-    pub qty: f32,
 }
 
 pub(super) async fn fetch_depth_snapshot(
@@ -81,25 +73,16 @@ pub(super) async fn fetch_depth_snapshot(
         ));
     }
 
-    let url = format!("{FETCH_DOMAIN}/v1/contract/depth/{symbol_str}");
+    let url = format!("{FETCH_DOMAIN}/v1/contract/depth/{symbol_str}?limit=1000");
     let response_text = hub.http_text_with_limiter(&url, 1, None, None).await?;
     let snapshot: DepthSnapshotResponse =
         sonic_rs::from_str(&response_text).map_err(|e| AdapterError::ParseError(e.to_string()))?;
 
-    let parse_orders = |arr: &Vec<FuturesDepthItem>| -> Vec<DeOrder> {
-        arr.iter()
-            .map(|x| DeOrder {
-                price: x.price,
-                qty: x.qty,
-            })
-            .collect()
-    };
-
     Ok(DepthPayload {
         last_update_id: snapshot.data.version,
-        time: snapshot.data.timestamp.into(),
-        bids: parse_orders(&snapshot.data.bids),
-        asks: parse_orders(&snapshot.data.asks),
+        time: UnixMs(snapshot.data.timestamp),
+        bids: snapshot.data.bids,
+        asks: snapshot.data.asks,
     })
 }
 
@@ -146,6 +129,7 @@ pub(super) async fn fetch_ticker_metadata(
 
             if let Some(quote_asset) = item["quoteAsset"].as_str()
                 && quote_asset != "USDT"
+                && quote_asset != "USDC"
                 && quote_asset != "USD"
             {
                 continue;
@@ -193,7 +177,7 @@ pub(super) async fn fetch_ticker_metadata(
                 return Err(AdapterError::ParseError("Missing quoteCoin".to_string()));
             };
 
-            if quote_asset != "USDT" && quote_asset != "USD" {
+            if quote_asset != "USDT" && quote_asset != "USD" && quote_asset != "USDC" {
                 continue;
             }
 
@@ -225,19 +209,15 @@ pub(super) async fn fetch_ticker_metadata(
                 continue;
             }
 
-            let min_qty_contracts = item["minVol"]
-                .as_f64()
-                .ok_or_else(|| AdapterError::ParseError("Missing minVol (min_qty)".to_string()))?
-                as f32;
+            let min_qty_contracts = serde_util::value_as_f32(&item["minVol"])
+                .ok_or_else(|| AdapterError::ParseError("Missing minVol (min_qty)".to_string()))?;
 
-            let min_ticksize = item["priceUnit"].as_f64().ok_or_else(|| {
+            let min_ticksize = serde_util::value_as_f32(&item["priceUnit"]).ok_or_else(|| {
                 AdapterError::ParseError("Missing priceUnit (ticksize)".to_string())
-            })? as f32;
+            })?;
 
-            let contract_size = item["contractSize"]
-                .as_f64()
-                .ok_or_else(|| AdapterError::ParseError("Missing contractSize".to_string()))?
-                as f32;
+            let contract_size = serde_util::value_as_f32(&item["contractSize"])
+                .ok_or_else(|| AdapterError::ParseError("Missing contractSize".to_string()))?;
 
             let min_qty = min_qty_contracts * contract_size;
 
@@ -253,7 +233,7 @@ pub(super) async fn fetch_ticker_metadata(
 pub(super) async fn fetch_ticker_stats(
     hub: &mut HttpHub<MexcLimiter>,
     markets: &[MarketKind],
-    contract_sizes: Option<&HashMap<Ticker, f32>>,
+    contract_sizes: Option<&HashMap<Ticker, crate::unit::ContractSize>>,
 ) -> Result<super::super::TickerStatsMap, AdapterError> {
     let mut ticker_prices_map = HashMap::new();
 
@@ -283,11 +263,11 @@ pub(super) async fn fetch_ticker_stats(
                 continue;
             }
 
-            if !symbol.ends_with("USDT") {
+            if !symbol.ends_with("USDT") && !symbol.ends_with("USD") && !symbol.ends_with("USDC") {
                 continue;
             }
 
-            let last_price = serde_util::value_as_f32(&item["lastPrice"])
+            let last_price = serde_util::value_as_f64(&item["lastPrice"])
                 .ok_or_else(|| AdapterError::ParseError("Last price not found".to_string()))?;
 
             let price_change_percent = serde_util::value_as_f32(&item["priceChangePercent"])
@@ -295,10 +275,10 @@ pub(super) async fn fetch_ticker_stats(
                     AdapterError::ParseError("Price change percent not found".to_string())
                 })?;
 
-            let volume = serde_util::value_as_f32(&item["volume"])
+            let volume = serde_util::value_as_f64(&item["volume"])
                 .ok_or_else(|| AdapterError::ParseError("Volume not found".to_string()))?;
 
-            let volume_in_usd = if let Some(qv) = serde_util::value_as_f32(&item["quoteVolume"]) {
+            let volume_in_usd = if let Some(qv) = serde_util::value_as_f64(&item["quoteVolume"]) {
                 qv
             } else {
                 volume * last_price
@@ -307,9 +287,9 @@ pub(super) async fn fetch_ticker_stats(
             let daily_price_chg = price_change_percent * 100.0;
 
             let ticker_stats = TickerStats {
-                mark_price: Price::from_f32(last_price),
+                mark_price: Price::from_f64(last_price),
                 daily_price_chg,
-                daily_volume: Qty::from_f32(volume_in_usd),
+                daily_volume: Qty::from_f64(volume_in_usd),
             };
 
             ticker_prices_map.insert(Ticker::new(symbol, exchange), ticker_stats);
@@ -353,27 +333,27 @@ pub(super) async fn fetch_ticker_stats(
                 continue;
             };
 
-            let last_price = serde_util::value_as_f32(&item["lastPrice"])
+            let last_price = serde_util::value_as_f64(&item["lastPrice"])
                 .ok_or_else(|| AdapterError::ParseError("Last price not found".to_string()))?;
 
             let rise_fall_rate = serde_util::value_as_f32(&item["riseFallRate"])
                 .ok_or_else(|| AdapterError::ParseError("Missing riseFallRate".to_string()))?;
 
-            let volume_24 = serde_util::value_as_f32(&item["volume24"])
+            let volume_24 = serde_util::value_as_f64(&item["volume24"])
                 .ok_or_else(|| AdapterError::ParseError("Missing volume24".to_string()))?;
 
             let volume_in_usd = if perps_market == MarketKind::InversePerps {
-                volume_24 * cs
+                volume_24 * cs.as_f64()
             } else {
-                volume_24 * cs * last_price
+                volume_24 * cs.as_f64() * last_price
             };
 
             let daily_price_chg = rise_fall_rate * 100.0;
 
             let ticker_stats = TickerStats {
-                mark_price: Price::from_f32(last_price),
+                mark_price: Price::from_f64(last_price),
                 daily_price_chg,
-                daily_volume: Qty::from_f32(volume_in_usd),
+                daily_volume: Qty::from_f64(volume_in_usd),
             };
 
             ticker_prices_map.insert(ticker, ticker_stats);
@@ -490,22 +470,22 @@ pub(super) async fn fetch_klines(
 
                     let open = opens[i].as_f64().ok_or_else(|| {
                         AdapterError::ParseError("Open value not found".to_string())
-                    })? as f32;
+                    })?;
                     let high = highs[i].as_f64().ok_or_else(|| {
                         AdapterError::ParseError("High value not found".to_string())
-                    })? as f32;
+                    })?;
                     let low = lows[i].as_f64().ok_or_else(|| {
                         AdapterError::ParseError("Low value not found".to_string())
-                    })? as f32;
+                    })?;
                     let close = closes[i].as_f64().ok_or_else(|| {
                         AdapterError::ParseError("Close value not found".to_string())
-                    })? as f32;
+                    })?;
                     let _amount = amounts[i].as_f64().ok_or_else(|| {
                         AdapterError::ParseError("Amount value not found".to_string())
-                    })? as f32;
+                    })?;
                     let volume = volumes[i].as_f64().ok_or_else(|| {
                         AdapterError::ParseError("Vol value not found".to_string())
-                    })? as f32;
+                    })?;
 
                     let normalized_vol = qty_norm.normalize_qty(volume, close);
 

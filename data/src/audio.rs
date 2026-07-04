@@ -1,5 +1,6 @@
 use crate::util::ok_or_default;
 use exchange::SerTicker;
+use exchange::unit::qty::Qty;
 
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
@@ -7,14 +8,14 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 pub enum Threshold {
     Count(usize),
-    Qty(f32),
+    Qty(Qty),
 }
 
 impl std::fmt::Display for Threshold {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Threshold::Count(count) => write!(f, "Count based: {}", count),
-            Threshold::Qty(qty) => write!(f, "Qty based: {:.2}", qty),
+            Threshold::Qty(qty) => write!(f, "Qty based: {:.2}", qty.to_f64()),
         }
     }
 }

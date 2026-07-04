@@ -1,7 +1,7 @@
 use crate::{
-    Event, Kline, PushFrequency, TickMultiplier, TickerInfo, Timeframe, Trade, UnixMs,
+    Event, Kline, PushFrequency, TickerInfo, Timeframe, UnixMs,
     adapter::limiter::FixedWindowRateLimiterConfig,
-    adapter::{AdapterNetworkConfig, Exchange, MarketKind},
+    adapter::{MarketKind, StreamTicksize},
     depth::DepthPayload,
     unit::{MinTicksize, qty::RawQtyUnit},
 };
@@ -20,7 +20,6 @@ const SIG_FIG_LIMIT: i32 = 5;
 const LIMIT: usize = 1200;
 const REFILL_RATE: Duration = Duration::from_secs(60);
 const LIMITER_BUFFER_PCT: f32 = 0.05;
-const DEFAULT_COMMAND_BUFFER_CAPACITY: usize = 128;
 
 const _MAX_DECIMALS_SPOT: u8 = 8;
 
@@ -30,6 +29,7 @@ const MULTS_FRACTIONAL: &[u16] = &[1, 2, 5, 10, 100, 1000];
 // safe intersection when base tick is exactly 1 (cannot disambiguate boundary case)
 const MULTS_SAFE: &[u16] = &[1, 10, 100, 1000];
 
+/// Allowed multipliers based on observed Hyperliquid tick rules.
 pub fn allowed_multipliers_for_min_tick(min_ticksize: MinTicksize) -> &'static [u16] {
     if min_ticksize.power < 0 {
         // int_digits <= 4 (fractional/boundary region)
@@ -39,13 +39,6 @@ pub fn allowed_multipliers_for_min_tick(min_ticksize: MinTicksize) -> &'static [
     } else {
         // min tick == 1: could be exactly 5 digits or overflow (>=6).
         MULTS_SAFE
-    }
-}
-
-fn exchange_from_market_type(market: MarketKind) -> Exchange {
-    match market {
-        MarketKind::Spot => Exchange::HyperliquidSpot,
-        MarketKind::LinearPerps | MarketKind::InversePerps => Exchange::HyperliquidLinear,
     }
 }
 
@@ -94,14 +87,14 @@ pub struct HyperliquidHandle {
 }
 
 impl HyperliquidHandle {
-    fn new(
-        request_port: RequestPort<HyperliquidCommand>,
-        proxy_cfg: Option<crate::proxy::Proxy>,
-    ) -> Self {
-        Self {
+    pub fn new(proxy_cfg: Option<&crate::proxy::Proxy>) -> Result<Self, AdapterError> {
+        let worker = Worker::new_with_network(proxy_cfg)?;
+        let request_port = super::spawn_fetch_worker(worker);
+
+        Ok(Self {
             request_port,
-            proxy_cfg,
-        }
+            proxy_cfg: proxy_cfg.cloned(),
+        })
     }
 
     pub async fn fetch_ticker_metadata(
@@ -144,22 +137,6 @@ impl HyperliquidHandle {
             .await
     }
 
-    pub async fn fetch_trades(
-        &self,
-        ticker: TickerInfo,
-        from_time: UnixMs,
-        data_path: Option<std::path::PathBuf>,
-    ) -> Result<Vec<Trade>, AdapterError> {
-        self.request_port
-            .request(move |reply| HyperliquidCommand::Trades {
-                ticker,
-                from_time,
-                data_path,
-                reply,
-            })
-            .await
-    }
-
     pub async fn fetch_depth_snapshot(
         &self,
         ticker: crate::Ticker,
@@ -172,11 +149,11 @@ impl HyperliquidHandle {
     pub fn connect_depth_stream(
         self,
         ticker_info: TickerInfo,
-        tick_multiplier: Option<TickMultiplier>,
+        depth_aggr: StreamTicksize,
         push_freq: PushFrequency,
     ) -> impl futures::Stream<Item = Event> {
         let proxy_cfg = self.proxy_cfg.clone();
-        stream::connect_depth_stream(self, ticker_info, tick_multiplier, push_freq, proxy_cfg)
+        stream::connect_depth_stream(self, ticker_info, depth_aggr, push_freq, proxy_cfg)
     }
 
     pub fn connect_trade_stream(
@@ -201,11 +178,11 @@ struct Worker {
 }
 
 impl Worker {
-    pub fn new_with_network(network: AdapterNetworkConfig) -> Result<Self, AdapterError> {
+    pub fn new_with_network(proxy_cfg: Option<&crate::proxy::Proxy>) -> Result<Self, AdapterError> {
         let config = HyperliquidConfig::default();
 
         let limiter = HyperliquidLimiter::new(config.limiter_config());
-        let hub = HttpHub::new(limiter, network.proxy_cfg)?;
+        let hub = HttpHub::new(limiter, proxy_cfg)?;
 
         Ok(Self { hub })
     }
@@ -243,14 +220,4 @@ impl super::FetchCommandHandler<MarketKind> for Worker {
     ) -> futures::future::BoxFuture<'_, Result<DepthPayload, AdapterError>> {
         Box::pin(async move { fetch::fetch_depth_snapshot(&mut self.hub, ticker).await })
     }
-}
-
-pub fn spawn_hyperliquid_with_network(
-    network: AdapterNetworkConfig,
-) -> Result<HyperliquidHandle, AdapterError> {
-    let proxy_cfg = network.proxy_cfg.clone();
-    let worker = Worker::new_with_network(network)?;
-    let request_port = super::spawn_fetch_worker(DEFAULT_COMMAND_BUFFER_CAPACITY, worker);
-
-    Ok(HyperliquidHandle::new(request_port, proxy_cfg))
 }
