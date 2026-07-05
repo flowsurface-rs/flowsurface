@@ -95,7 +95,7 @@ impl Qty {
         Self::scale_or_one(self.to_f64())
     }
 
-    fn min_qty_units(min_qty: MinQtySize) -> i64 {
+    pub fn min_qty_units(min_qty: MinQtySize) -> i64 {
         let exp = Self::QTY_SCALE + (min_qty.power as i32);
         assert!(exp >= 0, "QTY_SCALE must be >= -min_qty.power");
         10i64

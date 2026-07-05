@@ -144,7 +144,7 @@ impl Price {
     }
 
     /// Returns the atomic-unit count that corresponds to one min tick (min_tick / atomic_unit)
-    fn min_tick_units(min_tick: MinTicksize) -> i64 {
+    pub fn min_tick_units(min_tick: MinTicksize) -> i64 {
         let exp = Self::ATOMIC_SCALE + (min_tick.power as i32);
         assert!(exp >= 0, "ATOMIC_SCALE must be >= -min_tick.power");
         10i64

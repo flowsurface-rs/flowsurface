@@ -398,23 +398,17 @@ impl PanelValuePrecision {
             Self::BaseTickerMinTick => {
                 if let Some(ticker) = base_ticker {
                     let min_tick = ticker.min_ticksize;
-                    let exp = 8 + i32::from(min_tick.power);
-
-                    if let Some(unit_size) = Self::pow10_i64(exp) {
-                        let price_units = Price::from_f32(value).round_to_min_tick(min_tick).units;
-                        return YUnit(price_units.div_euclid(unit_size));
-                    }
+                    let unit_size = Price::min_tick_units(min_tick);
+                    let price_units = Price::from_f32(value).round_to_min_tick(min_tick).units;
+                    return YUnit(price_units.div_euclid(unit_size));
                 }
             }
             Self::BaseTickerMinQty => {
                 if let Some(ticker) = base_ticker {
                     let min_qty = ticker.min_qty;
-                    let exp = Qty::QTY_SCALE + i32::from(min_qty.power);
-
-                    if let Some(unit_size) = Self::pow10_i64(exp) {
-                        let qty_units = Qty::from_f64(value as f64).round_to_min_qty(min_qty).units;
-                        return YUnit(qty_units.div_euclid(unit_size));
-                    }
+                    let unit_size = Qty::min_qty_units(min_qty);
+                    let qty_units = Qty::from_f64(value as f64).round_to_min_qty(min_qty).units;
+                    return YUnit(qty_units.div_euclid(unit_size));
                 }
             }
             Self::FixedPower10(step) => {
@@ -443,23 +437,17 @@ impl PanelValuePrecision {
             Self::BaseTickerMinTick => {
                 if let Some(ticker) = base_ticker {
                     let min_tick = ticker.min_ticksize;
-                    let exp = 8 + i32::from(min_tick.power);
-
-                    if let Some(unit_size) = Self::pow10_i64(exp) {
-                        let units = y_unit.0.saturating_mul(unit_size);
-                        return Price::from_units(units).to_f32_lossy();
-                    }
+                    let unit_size = Price::min_tick_units(min_tick);
+                    let units = y_unit.0.saturating_mul(unit_size);
+                    return Price::from_units(units).to_f32_lossy();
                 }
             }
             Self::BaseTickerMinQty => {
                 if let Some(ticker) = base_ticker {
                     let min_qty = ticker.min_qty;
-                    let exp = Qty::QTY_SCALE + i32::from(min_qty.power);
-
-                    if let Some(unit_size) = Self::pow10_i64(exp) {
-                        let units = y_unit.0.saturating_mul(unit_size);
-                        return Qty::from_units(units).to_f32_lossy();
-                    }
+                    let unit_size = Qty::min_qty_units(min_qty);
+                    let units = y_unit.0.saturating_mul(unit_size);
+                    return Qty::from_units(units).to_f32_lossy();
                 }
             }
             Self::FixedPower10(step) => {
