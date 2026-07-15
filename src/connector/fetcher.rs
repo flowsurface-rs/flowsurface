@@ -6,23 +6,62 @@ use iced::{
 };
 use rustc_hash::FxHashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::RwLock;
 use uuid::Uuid;
 
-static TRADE_FETCH_ENABLED: AtomicBool = AtomicBool::new(false);
+use crate::connector::client::ServerClient;
 
-pub fn toggle_trade_fetch(value: bool) {
-    TRADE_FETCH_ENABLED.store(value, Ordering::Relaxed);
+pub use data::TradeFetchMode;
+
+static TRADE_FETCH_MODE: RwLock<TradeFetchMode> = RwLock::new(TradeFetchMode::Off);
+
+pub fn set_trade_fetch_mode(mode: TradeFetchMode) {
+    if let Ok(mut guard) = TRADE_FETCH_MODE.write() {
+        *guard = mode;
+    } else {
+        log::error!("Trade fetch mode lock poisoned — resetting to Off");
+    }
 }
 
+pub fn trade_fetch_mode() -> TradeFetchMode {
+    TRADE_FETCH_MODE
+        .read()
+        .map(|g| g.clone())
+        .unwrap_or(TradeFetchMode::Off)
+}
+
+/// Convenience: whether any trade-fetch mode is active.
 pub fn is_trade_fetch_enabled() -> bool {
-    TRADE_FETCH_ENABLED.load(Ordering::Relaxed)
+    trade_fetch_mode() != TradeFetchMode::Off
+}
+
+/// Returns a clone of the global server client, if one was configured
+/// via the current [`TradeFetchMode::Server`] variant.
+///
+/// The client is lazily created/updated when the server URL changes.
+fn server_client() -> Option<ServerClient> {
+    let mode = trade_fetch_mode();
+    if let TradeFetchMode::Server {
+        url: Some(ref url),
+        auth_token,
+    } = mode
+    {
+        if url.is_empty() {
+            None
+        } else {
+            ServerClient::new(url, auth_token.clone())
+        }
+    } else {
+        None
+    }
 }
 
 #[derive(Debug, Clone)]
 pub enum FetchedData {
     Trades {
         batch: Vec<Trade>,
+        /// Upper bound of the fetch gap — trades beyond this timestamp
+        /// already exist on the chart and must be filtered out.
         until_time: UnixMs,
     },
     Klines {
@@ -131,6 +170,7 @@ impl FetchRequest {
             (FetchRange::OpenInterest(s1, e1), FetchRange::OpenInterest(s2, e2)) => {
                 e1 == e2 && s1 == s2
             }
+            (FetchRange::Trades(s1, e1), FetchRange::Trades(s2, e2)) => e1 == e2 && s1 == s2,
             _ => false,
         }
     }
@@ -276,51 +316,65 @@ pub fn request_fetch(
                     ticker_info.exchange(),
                     Exchange::BinanceSpot | Exchange::BinanceLinear | Exchange::BinanceInverse
                 );
+                let server = server_client();
+                let data_path = data::data_path(Some("market_data/binance/"));
 
-                if is_binance {
-                    let data_path = data::data_path(Some("market_data/binance/"));
-
-                    let (task, handle) = Task::sip(
-                        fetch_trades_batched(
-                            handles.clone(),
-                            ticker_info,
-                            from_time,
-                            to_time,
-                            data_path,
-                        ),
-                        move |batch| {
-                            let data = FetchedData::Trades {
-                                batch,
-                                until_time: to_time,
-                            };
-
-                            FetchUpdate::Data {
-                                layout_id,
-                                pane_id,
-                                data,
-                                stream,
-                            }
-                        },
-                        move |result| match result {
-                            Ok(()) => FetchUpdate::Status {
-                                pane_id,
-                                status: FetchTaskStatus::Completed,
-                            },
-                            Err(err) => {
-                                log::error!("Trade fetch failed: {err}");
-                                FetchUpdate::Error {
-                                    pane_id,
-                                    error: err.ui_message(),
-                                }
-                            }
-                        },
-                    )
-                    .abortable();
-
-                    on_trade_handle(handle.abort_on_drop());
-
-                    return task;
+                if let Some(ref client) = server {
+                    log::info!(
+                        "Trade fetch: using server at {} ({})",
+                        client.base_url(),
+                        ticker_info.exchange()
+                    );
+                } else if is_binance {
+                    log::info!(
+                        "Trade fetch: using direct exchange API for {}",
+                        ticker_info.exchange()
+                    );
+                } else {
+                    return Task::none();
                 }
+
+                let (task, handle) = Task::sip(
+                    fetch_trades_paged(
+                        server,
+                        handles.clone(),
+                        ticker_info,
+                        from_time,
+                        to_time,
+                        data_path,
+                    ),
+                    move |batch| {
+                        let data = FetchedData::Trades {
+                            batch,
+                            until_time: to_time,
+                        };
+
+                        FetchUpdate::Data {
+                            layout_id,
+                            pane_id,
+                            data,
+                            stream,
+                        }
+                    },
+                    move |result| match result {
+                        Ok(()) => FetchUpdate::Status {
+                            pane_id,
+                            status: FetchTaskStatus::Completed,
+                        },
+                        Err(err) => {
+                            log::error!("Trade fetch failed: {err}");
+                            FetchUpdate::Error {
+                                pane_id,
+                                error: err.ui_message(),
+                            }
+                        }
+                    },
+                )
+                .abortable();
+
+                on_trade_handle(handle.abort_on_drop());
+
+                return task;
             }
         }
     }
@@ -457,7 +511,14 @@ pub fn kline_fetch_task(
     update_status.chain(fetch_task)
 }
 
-pub fn fetch_trades_batched(
+/// Fetch trades from the configured source using a single forward-paging
+/// loop (oldest → newest).
+///
+/// When `server` is `Some`, queries the market-data server (10 000 trades
+/// per batch). When `server` is `None`, uses the exchange adapter directly.
+/// Each mode is self-contained — no cross-mode fallback occurs.
+pub fn fetch_trades_paged(
+    server: Option<ServerClient>,
     handles: AdapterHandles,
     ticker_info: TickerInfo,
     from_time: UnixMs,
@@ -465,24 +526,27 @@ pub fn fetch_trades_batched(
     data_path: PathBuf,
 ) -> impl Straw<(), Vec<Trade>, AdapterError> {
     sipper(async move |mut progress| {
-        let mut latest_trade_t = from_time;
+        const SERVER_LIMIT: usize = 10_000;
 
-        while latest_trade_t < to_time {
-            match handles
-                .fetch_trades(ticker_info, latest_trade_t, Some(data_path.clone()))
-                .await
-            {
-                Ok(batch) => {
-                    if batch.is_empty() {
-                        break;
-                    }
+        let mut cursor = from_time;
 
-                    latest_trade_t = batch.last().map_or(latest_trade_t, |trade| trade.time);
+        while cursor < to_time {
+            let batch = if let Some(ref client) = server {
+                client
+                    .fetch_trades(ticker_info, cursor, SERVER_LIMIT)
+                    .await?
+            } else {
+                handles
+                    .fetch_trades(ticker_info, cursor, Some(data_path.clone()))
+                    .await?
+            };
 
-                    let () = progress.send(batch).await;
-                }
-                Err(err) => return Err(err),
+            if batch.is_empty() {
+                break;
             }
+
+            cursor = batch.last().map_or(cursor, |t| t.time);
+            let () = progress.send(batch).await;
         }
 
         Ok(())

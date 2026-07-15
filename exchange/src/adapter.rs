@@ -6,7 +6,7 @@ pub mod proxy;
 mod ws;
 
 use super::Timeframe;
-pub use super::error::AdapterError;
+pub use super::error::{AdapterError, FetchError};
 use crate::{
     Kline, Price, PushFrequency, TickMultiplier, TickerInfo, Trade, UnixMs, depth::Depth, unit::Qty,
 };

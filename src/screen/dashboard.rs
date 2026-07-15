@@ -194,6 +194,9 @@ impl Dashboard {
             Message::ErrorOccurred(pane_id, err) => match pane_id {
                 Some(id) => {
                     if let Some(state) = self.get_mut_pane_state_by_uuid(main_window.id, id) {
+                        if let pane::Content::Kline { chart: Some(c), .. } = &mut state.content {
+                            c.reset_trade_fetch_state();
+                        }
                         state.status = pane::Status::Ready;
                         state.notifications.push(Toast::error(err.to_string()));
                     }
@@ -417,6 +420,11 @@ impl Dashboard {
             }
             Message::ChangePaneStatus(pane_id, status) => {
                 if let Some(pane_state) = self.get_mut_pane_state_by_uuid(main_window.id, pane_id) {
+                    if let pane::Status::Ready = status
+                        && let pane::Content::Kline { chart: Some(c), .. } = &mut pane_state.content
+                    {
+                        c.reset_trade_fetch_state();
+                    }
                     pane_state.status = status;
                 }
             }
@@ -853,8 +861,8 @@ impl Dashboard {
         }
     }
 
-    pub fn toggle_trade_fetch(&mut self, is_enabled: bool, main_window: &Window) {
-        fetcher::toggle_trade_fetch(is_enabled);
+    pub fn toggle_trade_fetch(&mut self, main_window: &Window) {
+        let enabled = fetcher::is_trade_fetch_enabled();
 
         self.iter_all_panes_mut(main_window.id)
             .for_each(|(_, _, state)| {
@@ -864,7 +872,7 @@ impl Dashboard {
                 {
                     c.reset_request_handler();
 
-                    if !is_enabled {
+                    if !enabled {
                         state.status = pane::Status::Ready;
                     }
                 }
@@ -890,9 +898,8 @@ impl Dashboard {
                     }
                 } else {
                     let filtered_batch = batch
-                        .iter()
+                        .into_iter()
                         .filter(|trade| trade.time <= until_time)
-                        .copied()
                         .collect::<Vec<_>>();
 
                     if let Err(reason) =

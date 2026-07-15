@@ -106,7 +106,6 @@ enum Message {
     ThemeSelected(iced_core::Theme),
     ScaleFactorChanged(data::ScaleFactor),
     SetTimezone(data::UserTimezone),
-    ToggleTradeFetch(bool),
     ApplyVolumeSizeUnit(exchange::SizeUnit),
     RemoveNotification(usize),
     ToggleDialogModal(Option<screen::ConfirmDialog<Message>>),
@@ -286,6 +285,12 @@ impl Flowsurface {
             Message::RestartRequested(None) => {
                 self.confirm_dialog = None;
 
+                // Apply the confirmed trade-fetch mode before the final
+                // save, so it is captured on disk for the restart.
+                if let Some(mode) = self.network.take_applied_draft() {
+                    connector::fetcher::set_trade_fetch_mode(mode);
+                }
+
                 let mut active_windows = self
                     .active_dashboard()
                     .popout
@@ -303,6 +308,8 @@ impl Flowsurface {
 
                 if self.confirm_dialog.is_some() {
                     self.confirm_dialog = None;
+                    self.network
+                        .update(network_manager::Message::RevertFetchDrafts);
                 } else if self.sidebar.active_menu().is_some() {
                     self.sidebar.set_menu(None);
                 } else {
@@ -434,17 +441,6 @@ impl Flowsurface {
             }
             Message::ScaleFactorChanged(value) => {
                 self.ui_scale_factor = value;
-            }
-            Message::ToggleTradeFetch(checked) => {
-                self.layout_manager
-                    .iter_dashboards_mut()
-                    .for_each(|dashboard| {
-                        dashboard.toggle_trade_fetch(checked, &self.main_window);
-                    });
-
-                if checked {
-                    self.confirm_dialog = None;
-                }
             }
             Message::ToggleDialogModal(dialog) => {
                 self.confirm_dialog = dialog;
@@ -579,6 +575,30 @@ impl Flowsurface {
                         self.confirm_dialog = Some(
                             screen::ConfirmDialog::new(
                                 "Proxy changes saved. Restart now to apply?".to_string(),
+                                Box::new(Message::RestartRequested(None)),
+                            )
+                            .with_confirm_btn_text("Restart now".to_string()),
+                        );
+
+                        let main_window = self.main_window.id;
+                        let dashboard = self.active_dashboard_mut();
+
+                        let mut active_windows = dashboard
+                            .popout
+                            .keys()
+                            .copied()
+                            .collect::<Vec<window::Id>>();
+                        active_windows.push(main_window);
+
+                        return window::collect_window_specs(
+                            active_windows,
+                            Message::SaveStateRequested,
+                        );
+                    }
+                    Some(network_manager::Action::TradeFetchModeChanged(_mode)) => {
+                        self.confirm_dialog = Some(
+                            screen::ConfirmDialog::new(
+                                "Trade fetch mode changed. Restart now to apply?".to_string(),
                                 Box::new(Message::RestartRequested(None)),
                             )
                             .with_confirm_btn_text("Restart now".to_string()),
@@ -951,31 +971,6 @@ impl Flowsurface {
                         .style(style::modal_container)
                     };
 
-                    let trade_fetch_checkbox = {
-                        let is_active = connector::fetcher::is_trade_fetch_enabled();
-
-                        let checkbox = iced::widget::checkbox(is_active)
-                            .label("Fetch trades (Binance)")
-                            .on_toggle(|checked| {
-                                if checked {
-                                    let confirm_dialog = screen::ConfirmDialog::new(
-                                        "This might be unreliable and take some time to complete. Proceed?"
-                                            .to_string(),
-                                        Box::new(Message::ToggleTradeFetch(true)),
-                                    );
-                                    Message::ToggleDialogModal(Some(confirm_dialog))
-                                } else {
-                                    Message::ToggleTradeFetch(false)
-                                }
-                            });
-
-                        tooltip(
-                            checkbox,
-                            Some("Try to fetch trades for footprint charts"),
-                            TooltipPosition::Top,
-                        )
-                    };
-
                     let open_data_folder = {
                         let button =
                             button(text("Open data folder")).on_press(Message::DataFolderRequested);
@@ -1048,7 +1043,7 @@ impl Flowsurface {
                         column![text("Interface scale").size(crate::style::text_size::SECTION), scale_factor,].spacing(12),
                         column![
                             text("Experimental").size(crate::style::text_size::SECTION),
-                            column![trade_fetch_checkbox, toggle_theme_editor, toggle_network_editor].spacing(8),
+                            column![toggle_theme_editor, toggle_network_editor].spacing(8),
                         ]
                         .spacing(12),
                         footer,
@@ -1337,7 +1332,7 @@ impl Flowsurface {
             self.sidebar.state.clone(),
             self.ui_scale_factor,
             audio_cfg,
-            connector::fetcher::is_trade_fetch_enabled(),
+            connector::fetcher::trade_fetch_mode(),
             self.volume_size_unit,
             proxy_cfg_persisted,
         );

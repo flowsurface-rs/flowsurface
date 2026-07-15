@@ -461,6 +461,10 @@ impl KlineChart {
         self.fetching_trades = (false, None);
     }
 
+    pub fn reset_trade_fetch_state(&mut self) {
+        self.fetching_trades = (false, None);
+    }
+
     pub fn raw_trades(&self) -> Vec<Trade> {
         self.raw_trades.clone()
     }

@@ -31,6 +31,11 @@ pub struct FetchError {
 }
 
 impl FetchError {
+    /// Create a `FetchError` with an arbitrary detail and user-facing message.
+    pub fn new(detail: String, message: &'static str) -> Self {
+        Self { detail, message }
+    }
+
     fn from_reqwest_detail(error: &reqwest::Error, detail: String) -> Self {
         let message = ReqwestErrorKind::from_error(error).ui_message();
 
@@ -114,7 +119,7 @@ impl AdapterError {
         Self::FetchError(FetchError::from_reqwest_detail(&error, detail))
     }
 
-    pub(crate) fn http_status_failed(status: reqwest::StatusCode, detail: String) -> Self {
+    pub fn http_status_failed(status: reqwest::StatusCode, detail: String) -> Self {
         Self::FetchError(FetchError::from_status_detail(status, detail))
     }
 
