@@ -35,6 +35,8 @@ rand = "0.10.1"
 uuid = { version = "1.23.1", features = ["v4"] }
 data = { version = "0.8.9", path = "data", package = "flowsurface-data" }
 exchange = { version = "0.8.9", path = "exchange", package = "flowsurface-exchange" }
+arrow-ipc = { version = "55.2", default-features = false }
+arrow-array = { version = "55.2", default-features = false }
 
 [dependencies]
 iced = { version = "0.14.0", default-features = false, features = [
@@ -67,6 +69,9 @@ rodio = { version = "0.22.2", default-features = false, features = [ "playback",
 bytemuck = "1.25.0"
 iced_wgpu = "0.14.0"
 exchange.workspace = true
+arrow-ipc.workspace = true
+arrow-array.workspace = true
+bytes = "1.11.1"
 data.workspace = true
 
 [features]

@@ -3,35 +3,17 @@ use exchange::unit::price::Price;
 use exchange::unit::qty::{QtyNormalization, RawQtyUnit, SizeUnit, volume_size_unit};
 use exchange::{TickerInfo, Trade, UnixMs};
 
-use serde::Deserialize;
+use arrow_array::{BooleanArray, Float64Array, Int64Array, RecordBatch};
+use arrow_ipc::reader::StreamReader;
 
-/// JSON shape returned by the server's `GET /trades` endpoint.
-///
-/// ```json
-/// { "exchange": "binance", "symbol": "btcusdt", "ts": 123, "price": 1.0, "qty": 2.0, "is_sell": false }
-/// ```
-#[derive(Debug, Deserialize)]
-struct ServerTrade {
-    #[allow(dead_code)]
-    exchange: String,
-    #[allow(dead_code)]
-    symbol: String,
-    ts: u64,
-    price: f64,
-    qty: f64,
-    is_sell: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct TradesResponse {
-    trades: Vec<ServerTrade>,
-}
+/// Maximum trades to request per Arrow IPC call.
+pub(super) const ARROW_LIMIT: usize = 400_000;
 
 /// A handle to a remote market-data HTTP server.
 ///
-/// The server is expected to expose a `GET /trades` endpoint that accepts
-/// `venue`, `market`, `symbol`, `from`, `to`, and `limit` query parameters
-/// and returns a JSON body matching [`TradesResponse`].
+/// The server is expected to expose a `GET /trades.arrow` endpoint that
+/// returns Arrow IPC streams of trade data.  Query parameters:
+/// `venue`, `market`, `symbol`, `from`, `limit`.
 #[derive(Clone)]
 pub struct ServerClient {
     base_url: String,
@@ -71,12 +53,8 @@ impl ServerClient {
         })
     }
 
-    /// Fetch a batch of trades from the server for the given ticker starting
-    /// from `from`, returning up to `limit` trades.
-    ///
-    /// Trades are returned in **ascending** order by timestamp (oldest first),
-    /// matching the convention of the direct exchange fetch path.
-    pub async fn fetch_trades(
+    /// Fetch trades from the server's **Arrow IPC** endpoint (`/trades.arrow`).
+    pub async fn fetch_trades_arrow(
         &self,
         ticker_info: TickerInfo,
         from: UnixMs,
@@ -85,10 +63,10 @@ impl ServerClient {
         let (venue, market) = venue_market_strings(ticker_info.exchange());
         let symbol = ticker_info.ticker.to_string().to_lowercase();
 
-        let url = format!("{}/trades", self.base_url);
+        let url = format!("{}/trades.arrow", self.base_url);
 
         log::debug!(
-            "Querying server: {url} | venue={venue} market={market} symbol={symbol} from={from} limit={limit}",
+            "Querying server (arrow): {url} | venue={venue} market={market} symbol={symbol} from={from} limit={limit}",
         );
 
         let mut request = self
@@ -107,9 +85,9 @@ impl ServerClient {
         }
 
         let response = request.send().await.map_err(|e| {
-            log::warn!("Server request failed: {e}");
+            log::warn!("Server arrow request failed: {e}");
             AdapterError::FetchError(FetchError::new(
-                "server request failed".to_string(),
+                "server arrow request failed".to_string(),
                 "External data source error. Check logs for details.",
             ))
         })?;
@@ -120,39 +98,16 @@ impl ServerClient {
             log::warn!("Server returned {status}: {body}");
             return Err(AdapterError::http_status_failed(
                 status,
-                format!("server: {body}"),
+                format!("server (arrow): {body}"),
             ));
         }
 
-        let parsed: TradesResponse = response.json().await.map_err(|e| {
-            log::warn!("Failed to parse server response: {e}");
-            AdapterError::ParseError(format!("server: {e}"))
+        let bytes = response.bytes().await.map_err(|e| {
+            log::warn!("Failed to read arrow response body: {e}");
+            AdapterError::ParseError(format!("server (arrow): {e}"))
         })?;
 
-        let market_kind = ticker_info.exchange().market_type();
-        let raw_qty_unit = match market_kind {
-            MarketKind::InversePerps => RawQtyUnit::Quote,
-            MarketKind::Spot | MarketKind::LinearPerps => RawQtyUnit::Base,
-        };
-
-        let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
-        let qty_norm =
-            QtyNormalization::with_raw_qty_unit(size_in_quote_ccy, ticker_info, raw_qty_unit);
-
-        let mut trades: Vec<Trade> = parsed
-            .trades
-            .into_iter()
-            .map(|ct| Trade {
-                time: UnixMs::new(ct.ts),
-                is_sell: ct.is_sell,
-                price: Price::from_f64(ct.price),
-                qty: qty_norm.normalize_qty(ct.qty, ct.price),
-            })
-            .collect();
-
-        trades.sort_by_key(|t| t.time);
-
-        Ok(trades)
+        parse_arrow_trades(bytes, &ticker_info)
     }
 
     pub fn base_url(&self) -> &str {
@@ -167,4 +122,67 @@ fn venue_market_strings(exchange: Exchange) -> (String, String) {
     let market = exchange.market_type().to_string().to_lowercase();
 
     (venue, market)
+}
+
+/// Parse raw Arrow IPC stream bytes into a sorted `Vec<Trade>`.
+///
+/// Expects the Arrow IPC streaming format with the schema:
+/// `ts (int64)`, `price (float64)`, `qty (float64)`, `is_sell (bool)`.
+fn parse_arrow_trades(
+    data: bytes::Bytes,
+    ticker_info: &TickerInfo,
+) -> Result<Vec<Trade>, AdapterError> {
+    use std::io::Cursor;
+
+    let reader = StreamReader::try_new(Cursor::new(data), None)
+        .map_err(|e| AdapterError::ParseError(format!("arrow stream open: {e}")))?;
+
+    let market_kind = ticker_info.exchange().market_type();
+    let raw_qty_unit = match market_kind {
+        MarketKind::InversePerps => RawQtyUnit::Quote,
+        MarketKind::Spot | MarketKind::LinearPerps => RawQtyUnit::Base,
+    };
+
+    let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
+    let qty_norm =
+        QtyNormalization::with_raw_qty_unit(size_in_quote_ccy, *ticker_info, raw_qty_unit);
+
+    let mut trades = Vec::new();
+    for result in reader {
+        let batch: RecordBatch =
+            result.map_err(|e| AdapterError::ParseError(format!("arrow batch: {e}")))?;
+
+        let ts_col = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .ok_or_else(|| AdapterError::ParseError("column 0 (ts) is not Int64".into()))?;
+        let price_col = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .ok_or_else(|| AdapterError::ParseError("column 1 (price) is not Float64".into()))?;
+        let qty_col = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .ok_or_else(|| AdapterError::ParseError("column 2 (qty) is not Float64".into()))?;
+        let is_sell_col = batch
+            .column(3)
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .ok_or_else(|| AdapterError::ParseError("column 3 (is_sell) is not Boolean".into()))?;
+
+        for i in 0..batch.num_rows() {
+            trades.push(Trade {
+                time: UnixMs::new(ts_col.value(i) as u64),
+                is_sell: is_sell_col.value(i),
+                price: Price::from_f64(price_col.value(i)),
+                qty: qty_norm.normalize_qty(qty_col.value(i), price_col.value(i)),
+            });
+        }
+    }
+
+    trades.sort_by_key(|t| t.time);
+    Ok(trades)
 }

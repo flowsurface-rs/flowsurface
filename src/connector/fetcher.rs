@@ -513,10 +513,6 @@ pub fn kline_fetch_task(
 
 /// Fetch trades from the configured source using a single forward-paging
 /// loop (oldest → newest).
-///
-/// When `server` is `Some`, queries the market-data server (10 000 trades
-/// per batch). When `server` is `None`, uses the exchange adapter directly.
-/// Each mode is self-contained — no cross-mode fallback occurs.
 pub fn fetch_trades_paged(
     server: Option<ServerClient>,
     handles: AdapterHandles,
@@ -526,14 +522,12 @@ pub fn fetch_trades_paged(
     data_path: PathBuf,
 ) -> impl Straw<(), Vec<Trade>, AdapterError> {
     sipper(async move |mut progress| {
-        const SERVER_LIMIT: usize = 10_000;
-
         let mut cursor = from_time;
 
         while cursor < to_time {
             let batch = if let Some(ref client) = server {
                 client
-                    .fetch_trades(ticker_info, cursor, SERVER_LIMIT)
+                    .fetch_trades_arrow(ticker_info, cursor, super::client::ARROW_LIMIT)
                     .await?
             } else {
                 handles
