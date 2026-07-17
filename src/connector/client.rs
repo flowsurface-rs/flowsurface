@@ -57,6 +57,7 @@ impl ServerClient {
         &self,
         ticker_info: TickerInfo,
         from: UnixMs,
+        to: UnixMs,
         limit: usize,
     ) -> Result<Vec<Trade>, AdapterError> {
         let (venue, market) = {
@@ -67,12 +68,16 @@ impl ServerClient {
 
             (venue, market)
         };
-        let symbol = ticker_info.ticker.to_string().to_lowercase();
+        let symbol = if let Some(display_symbol) = ticker_info.ticker.display_symbol() {
+            display_symbol.to_lowercase()
+        } else {
+            ticker_info.ticker.to_string().to_lowercase()
+        };
 
         let url = format!("{}/trades.arrow", self.base_url);
 
         log::debug!(
-            "Querying server (arrow): {url} | venue={venue} market={market} symbol={symbol} from={from} limit={limit}",
+            "Querying server (arrow): {url} | venue={venue} market={market} symbol={symbol} from={from} to={to} limit={limit}",
         );
 
         let mut request = self
@@ -84,6 +89,7 @@ impl ServerClient {
                 ("symbol", symbol.as_str()),
             ])
             .query(&[("from", from.as_u64().to_string())])
+            .query(&[("to", to.as_u64().to_string())])
             .query(&[("limit", limit.to_string())]);
 
         if let Some(ref token) = self.auth_token {

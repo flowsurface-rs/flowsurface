@@ -550,7 +550,7 @@ pub fn fetch_trades_paged(
         while cursor < to_time {
             let batch = if let Some(ref client) = server {
                 client
-                    .fetch_trades_arrow(ticker_info, cursor, super::client::ARROW_LIMIT)
+                    .fetch_trades_arrow(ticker_info, cursor, to_time, super::client::ARROW_LIMIT)
                     .await?
             } else {
                 handles
@@ -563,7 +563,17 @@ pub fn fetch_trades_paged(
             }
 
             cursor = batch.last().map_or(cursor, |t| t.time);
+
+            // Server path only: a batch smaller than the requested limit
+            // means the range [prev_cursor, to_time] is fully exhausted
+            // and there is nothing left to page through.
+            let is_exhausted = server.is_some() && batch.len() < super::client::ARROW_LIMIT;
+
             let () = progress.send(batch).await;
+
+            if is_exhausted {
+                break;
+            }
         }
 
         Ok(())
