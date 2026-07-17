@@ -33,7 +33,6 @@ impl ServerClient {
             return None;
         }
 
-        // Validate that it parses as a real URL.
         let _ = trimmed
             .parse::<url::Url>()
             .map_err(|e| log::warn!("Invalid server base URL '{trimmed}': {e}"))

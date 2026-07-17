@@ -569,7 +569,7 @@ impl Flowsurface {
                 match action {
                     Some(network_manager::Action::ApplyProxy) => {
                         if let Some(proxy) = self.network.proxy_cfg() {
-                            data::config::proxy::save_proxy_auth(&proxy);
+                            data::config::auth::save_proxy_auth(&proxy);
                         }
 
                         self.confirm_dialog = Some(
@@ -595,7 +595,15 @@ impl Flowsurface {
                             Message::SaveStateRequested,
                         );
                     }
-                    Some(network_manager::Action::TradeFetchModeChanged(_mode)) => {
+                    Some(network_manager::Action::TradeFetchModeChanged(mode)) => {
+                        if let data::TradeFetchMode::Server {
+                            url: Some(ref url),
+                            auth_token: Some(ref token),
+                        } = mode
+                        {
+                            data::config::auth::save_server_token(url, token);
+                        }
+
                         self.confirm_dialog = Some(
                             screen::ConfirmDialog::new(
                                 "Trade fetch mode changed. Restart now to apply?".to_string(),

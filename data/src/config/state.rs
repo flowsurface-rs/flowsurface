@@ -58,8 +58,8 @@ impl State {
     }
 }
 
-/// Controls how historical trade data is fetched for footprint charts.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type")]
 pub enum TradeFetchMode {
     #[default]
     Off,
@@ -70,6 +70,8 @@ pub enum TradeFetchMode {
         /// `None` means the server mode is selected but no URL is configured yet.
         url: Option<String>,
         /// Optional bearer token sent as `Authorization: Bearer <token>` on every request.
+        /// Stored in the system keychain, never persisted to JSON.
+        #[serde(skip)]
         auth_token: Option<String>,
     },
 }

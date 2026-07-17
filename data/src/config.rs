@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub mod proxy;
+pub mod auth;
 pub mod sidebar;
 pub mod state;
 pub mod theme;
