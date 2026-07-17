@@ -15,11 +15,20 @@ pub use data::TradeFetchMode;
 
 static TRADE_FETCH_MODE: RwLock<TradeFetchMode> = RwLock::new(TradeFetchMode::Off);
 
+/// Cached server client — created once and reused so the underlying
+/// `reqwest::Client` (connection pool, TLS state) is preserved across
+/// fetch calls.  Invalidated whenever [`set_trade_fetch_mode`] is called.
+static SERVER_CLIENT: RwLock<Option<ServerClient>> = RwLock::new(None);
+
 pub fn set_trade_fetch_mode(mode: TradeFetchMode) {
     if let Ok(mut guard) = TRADE_FETCH_MODE.write() {
         *guard = mode;
     } else {
         log::error!("Trade fetch mode lock poisoned — resetting to Off");
+    }
+
+    if let Ok(mut guard) = SERVER_CLIENT.write() {
+        *guard = None;
     }
 }
 
@@ -30,7 +39,6 @@ pub fn trade_fetch_mode() -> TradeFetchMode {
         .unwrap_or(TradeFetchMode::Off)
 }
 
-/// Convenience: whether any trade-fetch mode is active.
 pub fn is_trade_fetch_enabled() -> bool {
     trade_fetch_mode() != TradeFetchMode::Off
 }
@@ -38,10 +46,19 @@ pub fn is_trade_fetch_enabled() -> bool {
 /// Returns a clone of the global server client, if one was configured
 /// via the current [`TradeFetchMode::Server`] variant.
 ///
-/// The client is lazily created/updated when the server URL changes.
+/// The underlying `reqwest::Client` is **cached** after the first call
+/// so connection-pooling is preserved across fetch batches.  The cache
+/// is invalidated whenever [`set_trade_fetch_mode`] is
+/// called (e.g. after a restart with a new server URL).
 fn server_client() -> Option<ServerClient> {
+    if let Ok(guard) = SERVER_CLIENT.read()
+        && let Some(ref client) = *guard
+    {
+        return Some(client.clone());
+    }
+
     let mode = trade_fetch_mode();
-    if let TradeFetchMode::Server {
+    let client = if let TradeFetchMode::Server {
         url: Some(ref url),
         auth_token,
     } = mode
@@ -53,7 +70,13 @@ fn server_client() -> Option<ServerClient> {
         }
     } else {
         None
+    };
+
+    if let Ok(mut guard) = SERVER_CLIENT.write() {
+        *guard = client.clone();
     }
+
+    client
 }
 
 #[derive(Debug, Clone)]

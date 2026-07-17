@@ -861,24 +861,6 @@ impl Dashboard {
         }
     }
 
-    pub fn toggle_trade_fetch(&mut self, main_window: &Window) {
-        let enabled = fetcher::is_trade_fetch_enabled();
-
-        self.iter_all_panes_mut(main_window.id)
-            .for_each(|(_, _, state)| {
-                if let pane::Content::Kline { chart, kind, .. } = &mut state.content
-                    && matches!(kind, data::chart::KlineChartKind::Footprint { .. })
-                    && let Some(c) = chart
-                {
-                    c.reset_request_handler();
-
-                    if !enabled {
-                        state.status = pane::Status::Ready;
-                    }
-                }
-            });
-    }
-
     pub fn distribute_fetched_data(
         &mut self,
         main_window: window::Id,
