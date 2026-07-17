@@ -1,4 +1,4 @@
-use exchange::adapter::{AdapterError, Exchange, FetchError, MarketKind};
+use exchange::adapter::{AdapterError, FetchError, MarketKind};
 use exchange::unit::price::Price;
 use exchange::unit::qty::{QtyNormalization, RawQtyUnit, SizeUnit, volume_size_unit};
 use exchange::{TickerInfo, Trade, UnixMs};
@@ -60,7 +60,14 @@ impl ServerClient {
         from: UnixMs,
         limit: usize,
     ) -> Result<Vec<Trade>, AdapterError> {
-        let (venue, market) = venue_market_strings(ticker_info.exchange());
+        let (venue, market) = {
+            let exchange = ticker_info.exchange();
+
+            let venue = exchange.venue().to_string().to_lowercase();
+            let market = exchange.market_type().to_string().to_lowercase();
+
+            (venue, market)
+        };
         let symbol = ticker_info.ticker.to_string().to_lowercase();
 
         let url = format!("{}/trades.arrow", self.base_url);
@@ -115,15 +122,6 @@ impl ServerClient {
     }
 }
 
-/// Map `Exchange` to the `(venue, market)` strings expected by
-/// the server's query parameters.
-fn venue_market_strings(exchange: Exchange) -> (String, String) {
-    let venue = exchange.venue().to_string().to_lowercase();
-    let market = exchange.market_type().to_string().to_lowercase();
-
-    (venue, market)
-}
-
 /// Parse raw Arrow IPC stream bytes into a sorted `Vec<Trade>`.
 ///
 /// Expects the Arrow IPC streaming format with the schema:
@@ -132,9 +130,7 @@ fn parse_arrow_trades(
     data: bytes::Bytes,
     ticker_info: &TickerInfo,
 ) -> Result<Vec<Trade>, AdapterError> {
-    use std::io::Cursor;
-
-    let reader = StreamReader::try_new(Cursor::new(data), None)
+    let reader = StreamReader::try_new(std::io::Cursor::new(data), None)
         .map_err(|e| AdapterError::ParseError(format!("arrow stream open: {e}")))?;
 
     let market_kind = ticker_info.exchange().market_type();
@@ -183,6 +179,12 @@ fn parse_arrow_trades(
         }
     }
 
-    trades.sort_by_key(|t| t.time);
+    // The server should order via `ORDER BY ts ASC` as
+    // the cursor-based paging loop depends on it — verify in debug builds.
+    debug_assert!(
+        trades.windows(2).all(|w| w[0].time <= w[1].time),
+        "server returned trades out of order"
+    );
+
     Ok(trades)
 }
