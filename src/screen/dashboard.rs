@@ -19,7 +19,7 @@ use crate::{
 };
 use data::{
     UserTimezone,
-    layout::{WindowSpec, pane::ContentKind},
+    layout::{WindowSpec, pane::ContentKind, pane::VisualConfig},
     stream::PersistStreamKind,
 };
 use exchange::{
@@ -255,13 +255,7 @@ impl Dashboard {
                     if to_sync {
                         if let Some(state) = self.get_pane(main_window.id, window, pane) {
                             let studies_cfg = state.content.studies();
-                            let clusters_cfg = match &state.content {
-                                pane::Content::Kline {
-                                    kind: data::chart::KlineChartKind::Footprint { clusters, .. },
-                                    ..
-                                } => Some(*clusters),
-                                _ => None,
-                            };
+                            let clusters_cfg = state.content.clusters();
 
                             self.iter_all_panes_mut(main_window.id)
                                 .for_each(|(_, _, state)| {
@@ -293,18 +287,7 @@ impl Dashboard {
                                         state.settings.visual_config = Some(cfg.clone());
                                         state.content.change_visual_config(cfg.clone());
 
-                                        if let Some(studies) = &studies_cfg {
-                                            state.content.update_studies(studies.clone());
-                                        }
-
-                                        if let Some(cluster_kind) = &clusters_cfg
-                                            && let pane::Content::Kline { chart, kind, .. } =
-                                                &mut state.content
-                                            && let Some(c) = chart
-                                        {
-                                            c.set_cluster_kind(*cluster_kind);
-                                            *kind = c.kind.clone();
-                                        }
+                                        state.apply_synced_settings(&studies_cfg, &clusters_cfg);
                                     }
                                 });
                         }
@@ -720,6 +703,30 @@ impl Dashboard {
         }
     }
 
+    /// Borrow visual config, studies, and clusters from an existing pane of the same
+    /// content kind, so newly created panes inherit the full set of settings
+    /// that the manual "Sync all" button would apply.
+    fn borrow_synced_settings(
+        &self,
+        main_window: window::Id,
+        content_kind: ContentKind,
+    ) -> Option<(
+        VisualConfig,
+        Option<data::chart::Study>,
+        Option<data::chart::kline::ClusterKind>,
+    )> {
+        self.iter_all_panes(main_window).find_map(|(_, _, state)| {
+            if state.content.kind() == content_kind {
+                let visual_config = state.settings.visual_config.clone()?;
+                let studies = state.content.studies();
+                let clusters = state.content.clusters();
+                Some((visual_config, studies, clusters))
+            } else {
+                None
+            }
+        })
+    }
+
     fn init_pane(
         &mut self,
         handles: &AdapterHandles,
@@ -729,24 +736,39 @@ impl Dashboard {
         ticker_info: TickerInfo,
         content_kind: ContentKind,
     ) -> Task<Message> {
-        if let Some(state) = self.get_mut_pane(main_window, window, selected_pane) {
-            let pane_id = state.unique_id();
+        let synced = self.borrow_synced_settings(main_window, content_kind);
 
-            let streams = state.set_content_and_streams(vec![ticker_info], content_kind);
-            self.streams.extend(streams.iter());
+        let Some(state) = self.get_mut_pane(main_window, window, selected_pane) else {
+            return Task::none();
+        };
 
-            for stream in &streams {
-                if let StreamKind::Kline { .. } = stream {
-                    return fetcher::kline_fetch_task(
-                        handles.clone(),
-                        self.layout_id,
-                        pane_id,
-                        *stream,
-                        None,
-                        None,
-                    )
-                    .map(Message::from);
-                }
+        if state.settings.visual_config.is_none()
+            && let Some((cfg, _, _)) = &synced
+        {
+            state.settings.visual_config = Some(cfg.clone());
+        }
+
+        let pane_id = state.unique_id();
+        let streams = state.set_content_and_streams(vec![ticker_info], content_kind);
+
+        // Apply synced configs now that content is initialized
+        if let Some((_, studies, clusters)) = &synced {
+            state.apply_synced_settings(studies, clusters);
+        }
+
+        self.streams.extend(streams.iter());
+
+        for stream in &streams {
+            if let StreamKind::Kline { .. } = stream {
+                return fetcher::kline_fetch_task(
+                    handles.clone(),
+                    self.layout_id,
+                    pane_id,
+                    *stream,
+                    None,
+                    None,
+                )
+                .map(Message::from);
             }
         }
 
@@ -767,38 +789,57 @@ impl Dashboard {
             self.focus = Some((main_window, *pane_id));
         }
 
-        if let Some((window, selected_pane)) = self.focus
-            && let Some(state) = self.get_mut_pane(main_window, window, selected_pane)
+        // Inherit settings from an existing pane of the same type
+        // (mirrors what the manual "Sync all" button does)
+        let synced = self.borrow_synced_settings(main_window, content_kind);
+
+        let Some((window, selected_pane)) = self.focus else {
+            return Task::done(Message::Notification(Toast::warn(
+                "No focused pane found".to_string(),
+            )));
+        };
+
+        let Some(state) = self.get_mut_pane(main_window, window, selected_pane) else {
+            return Task::done(Message::Notification(Toast::warn(
+                "No focused pane found".to_string(),
+            )));
+        };
+
+        if state.settings.visual_config.is_none()
+            && let Some((cfg, _, _)) = &synced
         {
-            let previous_ticker = state.stream_pair();
-            if previous_ticker.is_some() && previous_ticker != Some(ticker_info) {
-                state.link_group = None;
-            }
-
-            let streams = state.set_content_and_streams(vec![ticker_info], content_kind);
-
-            let pane_id = state.unique_id();
-            self.streams.extend(streams.iter());
-
-            for stream in &streams {
-                if let StreamKind::Kline { .. } = stream {
-                    return fetcher::kline_fetch_task(
-                        handles.clone(),
-                        self.layout_id,
-                        pane_id,
-                        *stream,
-                        None,
-                        None,
-                    )
-                    .map(Message::from);
-                }
-            }
-            return Task::none();
+            state.settings.visual_config = Some(cfg.clone());
         }
 
-        Task::done(Message::Notification(Toast::warn(
-            "No focused pane found".to_string(),
-        )))
+        let previous_ticker = state.stream_pair();
+        if previous_ticker.is_some() && previous_ticker != Some(ticker_info) {
+            state.link_group = None;
+        }
+
+        let streams = state.set_content_and_streams(vec![ticker_info], content_kind);
+
+        if let Some((_, studies, clusters)) = &synced {
+            state.apply_synced_settings(studies, clusters);
+        }
+
+        let pane_id = state.unique_id();
+        self.streams.extend(streams.iter());
+
+        for stream in &streams {
+            if let StreamKind::Kline { .. } = stream {
+                return fetcher::kline_fetch_task(
+                    handles.clone(),
+                    self.layout_id,
+                    pane_id,
+                    *stream,
+                    None,
+                    None,
+                )
+                .map(Message::from);
+            }
+        }
+
+        Task::none()
     }
 
     pub fn switch_tickers_in_group(
