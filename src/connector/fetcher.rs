@@ -340,6 +340,7 @@ pub fn request_fetch(
                     Exchange::BinanceSpot | Exchange::BinanceLinear | Exchange::BinanceInverse
                 );
                 let server = server_client();
+                let mode = trade_fetch_mode();
                 let data_path = data::data_path(Some("market_data/binance/"));
 
                 if let Some(ref client) = server {
@@ -348,6 +349,14 @@ pub fn request_fetch(
                         client.base_url(),
                         ticker_info.exchange()
                     );
+                } else if matches!(mode, TradeFetchMode::Server { .. }) {
+                    log::error!(
+                        "Server mode selected but server URL is invalid, check Network Manager settings"
+                    );
+                    return Task::done(FetchUpdate::Error {
+                        pane_id,
+                        error: "Server mode selected but the server URL is invalid.".to_string(),
+                    });
                 } else if is_binance {
                     log::info!(
                         "Trade fetch: using direct exchange API for {}",
