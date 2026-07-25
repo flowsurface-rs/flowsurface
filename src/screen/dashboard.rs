@@ -298,11 +298,12 @@ impl Dashboard {
                                         }
 
                                         if let Some(cluster_kind) = &clusters_cfg
-                                            && let pane::Content::Kline { chart, .. } =
+                                            && let pane::Content::Kline { chart, kind, .. } =
                                                 &mut state.content
                                             && let Some(c) = chart
                                         {
                                             c.set_cluster_kind(*cluster_kind);
+                                            *kind = c.kind.clone();
                                         }
                                     }
                                 });
