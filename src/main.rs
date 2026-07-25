@@ -285,8 +285,6 @@ impl Flowsurface {
             Message::RestartRequested(None) => {
                 self.confirm_dialog = None;
 
-                // Apply the confirmed trade-fetch mode before the final
-                // save, so it is captured on disk for the restart.
                 if let Some(mode) = self.network.take_applied_draft() {
                     connector::fetcher::set_trade_fetch_mode(mode);
                 }
@@ -308,9 +306,9 @@ impl Flowsurface {
 
                 if self.confirm_dialog.is_some() {
                     self.confirm_dialog = None;
-                    self.network
-                        .update(network_manager::Message::RevertFetchDrafts);
+                    self.network.revert_fetch_drafts();
                 } else if self.sidebar.active_menu().is_some() {
+                    self.network.revert_fetch_drafts();
                     self.sidebar.set_menu(None);
                 } else {
                     let dashboard = self.active_dashboard_mut();
@@ -443,6 +441,9 @@ impl Flowsurface {
                 self.ui_scale_factor = value;
             }
             Message::ToggleDialogModal(dialog) => {
+                if dialog.is_none() {
+                    self.network.revert_fetch_drafts();
+                }
                 self.confirm_dialog = dialog;
             }
             Message::Layouts(message) => {
