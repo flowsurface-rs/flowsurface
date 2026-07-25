@@ -428,7 +428,7 @@ impl std::fmt::Display for ClusterKind {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Default, Debug, Copy, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Config {
     // Whether to show last value labels on top right/left when not hovering
@@ -436,18 +436,6 @@ pub struct Config {
     pub data_labels_always_visible: bool,
     // Whether to show the footprint per-bar summary below each candle.
     pub show_footprint_summary: bool,
-    // Whether to show a small candle next to footprint table clusters.
-    pub show_footprint_table_candle: bool,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            data_labels_always_visible: false,
-            show_footprint_summary: true,
-            show_footprint_table_candle: true,
-        }
-    }
 }
 
 #[derive(Default, Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
