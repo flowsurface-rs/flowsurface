@@ -24,8 +24,7 @@ pub enum Action {
 enum ConfirmState {
     Idle,
     ProxyClear,
-    ProxyApply,
-    FetchApply,
+    FetchClear,
 }
 
 #[derive(Debug, Clone)]
@@ -41,12 +40,18 @@ pub struct NetworkEditor {
     fetch: FetchForm,
     confirm: ConfirmState,
     error: Option<String>,
+    /// Snapshot of the effective config when the editor was opened or last
+    /// reset. Used to revert drafts when the user cancels a restart confirmation.
+    effective: data::Network,
+    /// The full network config that was applied (proxy or server) but needs
+    /// a restart to take effect. `None` when no pending restart is needed.
+    pending_apply: Option<data::Network>,
 }
 
 impl NetworkEditor {
     /// Create a new `NetworkEditor` with form fields pre-populated from
     /// the caller's effective network config.
-    pub fn new(network: &data::Network) -> Self {
+    pub fn new(network: &data::Network, pending_apply: Option<data::Network>) -> Self {
         let mut proxy = ProxyForm::new();
         proxy.populate_from(network.proxy.as_ref());
         Self {
@@ -58,6 +63,8 @@ impl NetworkEditor {
             ),
             confirm: ConfirmState::Idle,
             error: None,
+            effective: network.clone(),
+            pending_apply,
         }
     }
 
@@ -67,9 +74,57 @@ impl NetworkEditor {
                 self.confirm = ConfirmState::Idle;
                 Some(Action::Exit)
             }
-            Message::Proxy(msg) => self.proxy.update(msg, &mut self.confirm, &mut self.error),
-            Message::Fetch(msg) => self.fetch.update(msg, &mut self.confirm, &mut self.error),
+            Message::Proxy(msg) => {
+                let action = self.proxy.update(
+                    msg,
+                    &mut self.confirm,
+                    &mut self.error,
+                    self.effective.proxy.as_ref(),
+                );
+                if let Some(Action::ApplyProxy(ref cfg)) = action {
+                    self.pending_apply = Some(data::Network {
+                        proxy: cfg.clone(),
+                        ..self.effective.clone()
+                    });
+                }
+                action
+            }
+            Message::Fetch(msg) => {
+                let action = self.fetch.update(
+                    msg,
+                    &mut self.confirm,
+                    &mut self.error,
+                    &self.effective.trade_fetch_mode,
+                    self.effective.server_url.as_deref(),
+                    self.effective.server_auth_token.as_deref(),
+                );
+                if let Some(Action::ApplyServerConfig {
+                    mode,
+                    url,
+                    auth_token,
+                }) = &action
+                {
+                    self.pending_apply = Some(data::Network {
+                        trade_fetch_mode: mode.clone(),
+                        server_url: url.clone(),
+                        server_auth_token: auth_token.clone(),
+                        ..self.effective.clone()
+                    });
+                }
+                action
+            }
         }
+    }
+
+    /// Borrow the pending config that needs a restart to take effect, if any.
+    pub fn pending_apply(&self) -> Option<&data::Network> {
+        self.pending_apply.as_ref()
+    }
+
+    /// Take ownership of the pending config (used by the parent when
+    /// committing the config right before a restart).
+    pub fn take_pending_apply(&mut self) -> Option<data::Network> {
+        self.pending_apply.take()
     }
 
     pub fn view<'a>(&'a self, network: &'a data::Network) -> Element<'a, Message> {
@@ -92,7 +147,25 @@ impl NetworkEditor {
             )
             .map(Message::Fetch);
 
-        let content = column![modal_header, fetch_settings, proxy_settings].spacing(12);
+        let mut content = column![modal_header, fetch_settings, proxy_settings].spacing(12);
+
+        if self.pending_apply.is_some() {
+            let banner = container(
+                text("Restart required.\nChanges will take effect after restart")
+                    .size(crate::style::text_size::SMALL)
+                    .style(|theme: &iced::Theme| {
+                        let palette = theme.palette();
+                        iced::widget::text::Style {
+                            color: Some(palette.primary),
+                        }
+                    }),
+            )
+            .padding(6)
+            .width(iced::Length::Fill)
+            .align_x(iced::Alignment::Center)
+            .style(style::modal_container);
+            content = content.push(banner);
+        }
 
         let content = if let Some(err) = &self.error {
             let error_line =
@@ -140,7 +213,6 @@ pub enum ProxyMsg {
     UsernameChanged(String),
     PasswordChanged(String),
     RequestApply,
-    Apply,
     RequestClear,
     Clear,
     Cancel,
@@ -327,41 +399,19 @@ impl ProxyForm {
         .spacing(4)
         .align_y(iced::Alignment::Center);
 
-        let buttons: Element<'_, ProxyMsg> = match confirm {
-            ConfirmState::ProxyClear => confirm_row(
-                "Unset proxy and clear inputs?",
-                ProxyMsg::Clear,
-                ProxyMsg::Cancel,
-            ),
-            ConfirmState::ProxyApply => confirm_row(
-                "Changes will take effect after a restart",
-                ProxyMsg::Apply,
-                ProxyMsg::Cancel,
-            ),
-            _ => {
-                let proxy_draft_differs = self.proxy_config_pending(effective_cfg);
+        let buttons: Element<'_, ProxyMsg> = {
+            let msg = "Restore proxy settings to default";
 
-                let mut row_buttons = row![
-                    iced::widget::space::horizontal(),
-                    pending_info::<ProxyMsg>(is_pending),
-                ]
-                .spacing(8);
-
-                if proxy_draft_differs {
-                    row_buttons =
-                        row_buttons.push(button("Apply").on_press(ProxyMsg::RequestApply));
-                }
-
-                if effective_cfg.is_some() {
-                    row_buttons = row_buttons.push(tooltip(
-                        button(style::icon_text(style::Icon::TrashBin, 11))
-                            .on_press(ProxyMsg::RequestClear)
-                            .style(|theme, status| style::button::modifier(theme, status, true)),
-                        Some("Unset proxy settings"),
-                        iced::widget::tooltip::Position::Top,
-                    ));
-                }
-                row_buttons.into()
+            match confirm {
+                ConfirmState::ProxyClear => confirm_row(msg, ProxyMsg::Clear, ProxyMsg::Cancel),
+                _ => apply_action_row(
+                    is_pending,
+                    self.proxy_config_pending(effective_cfg),
+                    effective_cfg.is_some(),
+                    ProxyMsg::RequestApply,
+                    ProxyMsg::RequestClear,
+                    msg,
+                ),
             }
         };
 
@@ -392,6 +442,7 @@ impl ProxyForm {
         message: ProxyMsg,
         confirm: &mut ConfirmState,
         error: &mut Option<String>,
+        _effective_cfg: Option<&Proxy>,
     ) -> Option<Action> {
         match message {
             ProxyMsg::ToggleShowPassword(v) => {
@@ -425,20 +476,6 @@ impl ProxyForm {
                 *error = None;
             }
             ProxyMsg::RequestApply => {
-                *confirm = ConfirmState::Idle;
-                match self.build_from_parts() {
-                    Ok(_draft_cfg) => {
-                        // The Apply button is only visible when form != effective,
-                        // so we can unconditionally advance to the confirm step.
-                        *confirm = ConfirmState::ProxyApply;
-                        *error = None;
-                    }
-                    Err(e) => {
-                        *error = Some(e);
-                    }
-                }
-            }
-            ProxyMsg::Apply => {
                 *confirm = ConfirmState::Idle;
                 match self.build_from_parts() {
                     Ok(cfg) => {
@@ -497,8 +534,9 @@ pub enum FetchMsg {
     SelectFetchMode(FetchModeTag),
     ToggleServerConfig,
     RequestApplyFetch,
-    ApplyFetchSettings,
     Cancel,
+    RequestClearAuth,
+    ConfirmClearAuth,
 }
 
 impl FetchForm {
@@ -672,27 +710,26 @@ impl FetchForm {
         // Pending = draft differs from the effective (applied) config
         let pending = self.server_config_pending(effective_mode, effective_url, effective_auth);
         let draft_changed = pending;
+        let has_server_config = effective_auth.is_some()
+            || (*effective_mode == fetcher::TradeFetchMode::Server && effective_url.is_some());
 
-        if confirm == ConfirmState::FetchApply || draft_changed {
-            let buttons: Element<'_, FetchMsg> = if confirm == ConfirmState::FetchApply {
-                confirm_row(
-                    "Changes will take effect after a restart",
-                    FetchMsg::ApplyFetchSettings,
-                    FetchMsg::Cancel,
-                )
-            } else {
-                let row_buttons = row![
-                    iced::widget::space::horizontal(),
-                    pending_info::<FetchMsg>(pending),
-                    button("Apply").on_press(FetchMsg::RequestApplyFetch),
-                ]
-                .spacing(8);
+        let buttons: Element<'_, FetchMsg> = {
+            let msg = "Restore fetch settings to default";
 
-                row_buttons.into()
-            };
-
-            fetch_section = fetch_section.push(buttons);
-        }
+            match confirm {
+                ConfirmState::FetchClear => {
+                    confirm_row(msg, FetchMsg::ConfirmClearAuth, FetchMsg::Cancel)
+                }
+                _ => apply_action_row(
+                    pending,
+                    draft_changed,
+                    has_server_config,
+                    FetchMsg::RequestApplyFetch,
+                    FetchMsg::RequestClearAuth,
+                    msg,
+                ),
+            }
+        };
 
         column![
             row![
@@ -706,6 +743,7 @@ impl FetchForm {
                 .width(iced::Length::Fill)
                 .style(style::modal_container)
                 .padding(8),
+            buttons,
         ]
         .spacing(8)
         .into()
@@ -716,6 +754,9 @@ impl FetchForm {
         message: FetchMsg,
         confirm: &mut ConfirmState,
         error: &mut Option<String>,
+        _effective_mode: &fetcher::TradeFetchMode,
+        _effective_url: Option<&str>,
+        _effective_auth: Option<&str>,
     ) -> Option<Action> {
         match message {
             FetchMsg::ToggleShowToken(v) => {
@@ -761,10 +802,6 @@ impl FetchForm {
                     }
                 }
 
-                *confirm = ConfirmState::FetchApply;
-            }
-            FetchMsg::ApplyFetchSettings => {
-                *error = None;
                 let mode = self.build_mode();
                 let url = self.trimmed_url();
                 let auth_token = self.trimmed_auth();
@@ -777,6 +814,23 @@ impl FetchForm {
             FetchMsg::Cancel => {
                 *confirm = ConfirmState::Idle;
             }
+            FetchMsg::RequestClearAuth => {
+                *confirm = ConfirmState::FetchClear;
+                *error = None;
+            }
+            FetchMsg::ConfirmClearAuth => {
+                *confirm = ConfirmState::Idle;
+                *error = None;
+                self.server_url_input.clear();
+                self.server_auth_token_input.clear();
+                self.draft_active = false;
+                self.expanded_server = false;
+                return Some(Action::ApplyServerConfig {
+                    mode: fetcher::TradeFetchMode::Off,
+                    url: None,
+                    auth_token: None,
+                });
+            }
         }
         None
     }
@@ -787,19 +841,21 @@ fn confirm_row<'a, M: Clone + 'a>(label: &'a str, confirm_msg: M, cancel_msg: M)
         iced::widget::space::horizontal(),
         container(
             row![
-                text(label),
+                text(label).height(28).align_y(iced::Alignment::Center),
                 create_icon_button(
                     style::Icon::Checkmark,
                     12,
                     |theme, status| style::button::confirm(theme, *status, true),
                     Some(confirm_msg),
-                ),
+                )
+                .height(28),
                 create_icon_button(
                     style::Icon::Close,
                     12,
                     |theme, status| style::button::cancel(theme, *status, true),
                     Some(cancel_msg),
-                ),
+                )
+                .height(28),
             ]
             .padding(iced::padding::left(8))
             .align_y(iced::Alignment::Center)
@@ -810,11 +866,45 @@ fn confirm_row<'a, M: Clone + 'a>(label: &'a str, confirm_msg: M, cancel_msg: M)
     .into()
 }
 
+/// The common pattern shared by both proxy and fetch forms:
+/// Spacer, pending-info tooltip, Apply button and TrashBin button.
+fn apply_action_row<'a, M: Clone + 'a + 'static>(
+    pending: bool,
+    draft_differs: bool,
+    has_config: bool,
+    apply_msg: M,
+    clear_msg: M,
+    clear_tooltip: &'a str,
+) -> Element<'a, M> {
+    let mut row_buttons = row![
+        iced::widget::space::horizontal(),
+        pending_info::<M>(pending),
+    ]
+    .spacing(8);
+
+    if draft_differs {
+        row_buttons = row_buttons.push(button("Apply").on_press(apply_msg).height(28));
+    }
+
+    if has_config {
+        row_buttons = row_buttons.push(tooltip(
+            button(style::icon_text(style::Icon::TrashBin, 11))
+                .on_press(clear_msg)
+                .height(28)
+                .style(|theme, status| style::button::modifier(theme, status, true)),
+            Some(clear_tooltip),
+            iced::widget::tooltip::Position::Top,
+        ));
+    }
+
+    row_buttons.into()
+}
+
 /// Pending-restart tooltip, if applicable.
 fn pending_info<M: Clone + 'static>(is_pending: bool) -> Option<Element<'static, M>> {
     if is_pending {
         Some(tooltip(
-            button("i").style(style::button::info),
+            button("i").style(style::button::info).height(28),
             Some("Pending changes require a full restart"),
             iced::widget::tooltip::Position::Top,
         ))

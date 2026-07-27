@@ -160,7 +160,7 @@ impl Flowsurface {
             theme: saved_state.theme,
             notifications: Notifications::new(),
             network_config: saved_state.network.clone(),
-            network_editor: NetworkEditor::new(&saved_state.network),
+            network_editor: NetworkEditor::new(&saved_state.network, None),
         };
 
         if let Some(err) = audio_init_err {
@@ -287,6 +287,9 @@ impl Flowsurface {
                 self.save_state_to_disk(&windows);
             }
             Message::RestartRequested(Some(windows)) => {
+                if let Some(pending) = self.network_editor.take_pending_apply() {
+                    self.network_config = pending;
+                }
                 self.save_state_to_disk(&windows);
                 return self.restart();
             }
@@ -569,6 +572,8 @@ impl Flowsurface {
                     Some(network_editor::Action::ApplyProxy(ref proxy)) => {
                         if let Some(proxy) = proxy {
                             data::config::auth::save_proxy_auth(proxy);
+                        } else if let Some(ref old_proxy) = self.network_config.proxy {
+                            data::config::auth::delete_proxy_auth(old_proxy);
                         }
                         self.network_config.proxy = proxy.clone();
 
@@ -604,6 +609,8 @@ impl Flowsurface {
                             && let Some(ref token) = auth_token
                         {
                             data::config::auth::save_server_token(url, token);
+                        } else if let Some(ref old_url) = self.network_config.server_url {
+                            data::config::auth::delete_server_token(old_url);
                         }
                         self.network_config.server_url = url;
                         self.network_config.server_auth_token = auth_token;
@@ -643,7 +650,10 @@ impl Flowsurface {
 
                 match action {
                     Some(dashboard::sidebar::Action::MenuChanged(Some(sidebar::Menu::Network))) => {
-                        self.network_editor = NetworkEditor::new(&self.network_config);
+                        self.network_editor = NetworkEditor::new(
+                            &self.network_config,
+                            self.network_editor.pending_apply().cloned(),
+                        );
                     }
                     Some(dashboard::sidebar::Action::MenuChanged(_)) => {}
                     Some(dashboard::sidebar::Action::TickerSelected(ticker_info, content)) => {

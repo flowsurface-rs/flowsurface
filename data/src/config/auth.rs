@@ -109,6 +109,32 @@ pub fn save_proxy_auth(proxy: &Proxy) {
     }
 }
 
+/// Delete proxy credentials from the system keychain.
+///
+/// Uses the proxy's URL (without auth) to look up the stored credential.
+/// Silently succeeds if no credential exists.
+pub fn delete_proxy_auth(proxy: &Proxy) {
+    let key = proxy.to_url_string_no_auth();
+    let entry = match proxy_entry_for(proxy) {
+        Ok(e) => e,
+        Err(err) => {
+            log::warn!(
+                "Keychain entry init failed for service={PROXY_KEYCHAIN_SERVICE} key={key}: {err}"
+            );
+            return;
+        }
+    };
+    match entry.delete_credential() {
+        Ok(()) => log::info!(
+            "Deleted proxy auth from keychain (service={PROXY_KEYCHAIN_SERVICE} key={key})"
+        ),
+        Err(keyring::Error::NoEntry) => { /* nothing to delete */ }
+        Err(err) => log::warn!(
+            "Failed to delete proxy auth from keychain (service={PROXY_KEYCHAIN_SERVICE} key={key}): {err}"
+        ),
+    }
+}
+
 // ── Server auth (keychain) ──────────────────────────────────────────────
 
 const SERVER_KEYCHAIN_SERVICE: &str = "flowsurface.server";
@@ -157,7 +183,6 @@ pub fn load_server_token(url: &str) -> Option<String> {
 /// Save the server auth token to the system keychain.
 ///
 /// The token is stored as a plain UTF-8 string (not JSON-wrapped).
-/// An empty token clears the stored credential.
 pub fn save_server_token(url: &str, token: &str) {
     let entry = match server_entry_for(url) {
         Ok(e) => e,
@@ -169,26 +194,36 @@ pub fn save_server_token(url: &str, token: &str) {
         }
     };
 
-    if token.is_empty() {
-        // Empty token means "clear the stored credential"
-        match entry.delete_credential() {
-            Ok(()) => log::info!(
-                "Cleared server auth token from keychain (service={SERVER_KEYCHAIN_SERVICE} key={url})"
-            ),
-            Err(keyring::Error::NoEntry) => { /* nothing to delete */ }
-            Err(err) => log::warn!(
-                "Failed to clear server auth token from keychain (service={SERVER_KEYCHAIN_SERVICE} key={url}): {err}"
-            ),
-        }
-        return;
-    }
-
     match entry.set_password(token) {
         Ok(()) => log::info!(
             "Stored server auth token in keychain (service={SERVER_KEYCHAIN_SERVICE} key={url})"
         ),
         Err(err) => log::warn!(
             "Failed to store server auth token in keychain (service={SERVER_KEYCHAIN_SERVICE} key={url}): {err}"
+        ),
+    }
+}
+
+/// Delete the server auth token from the system keychain.
+///
+/// Silently succeeds if no credential exists.
+pub fn delete_server_token(url: &str) {
+    let entry = match server_entry_for(url) {
+        Ok(e) => e,
+        Err(err) => {
+            log::warn!(
+                "Keychain entry init failed for service={SERVER_KEYCHAIN_SERVICE} key={url}: {err}"
+            );
+            return;
+        }
+    };
+    match entry.delete_credential() {
+        Ok(()) => log::info!(
+            "Deleted server auth token from keychain (service={SERVER_KEYCHAIN_SERVICE} key={url})"
+        ),
+        Err(keyring::Error::NoEntry) => { /* nothing to delete */ }
+        Err(err) => log::warn!(
+            "Failed to delete server auth token from keychain (service={SERVER_KEYCHAIN_SERVICE} key={url}): {err}"
         ),
     }
 }
