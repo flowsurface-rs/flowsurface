@@ -402,7 +402,9 @@ impl KlineChart {
                         timeseries.suggest_trade_fetch_range(visible_earliest_ms, visible_latest_ms)
                 {
                     let range = FetchRange::Trades(fetch_from, fetch_to);
-                    if let Some(action) = request_fetch(&mut self.request_handler, range) {
+                    if self.request_handler.has_pending(&range) {
+                        self.fetching_trades = (true, None);
+                    } else if let Some(action) = request_fetch(&mut self.request_handler, range) {
                         self.fetching_trades = (true, None);
                         return Some(action);
                     }
@@ -670,7 +672,12 @@ impl KlineChart {
         }
     }
 
-    pub fn insert_raw_trades(&mut self, raw_trades: Vec<Trade>, is_batches_done: bool) {
+    pub fn insert_raw_trades(
+        &mut self,
+        raw_trades: Vec<Trade>,
+        is_batches_done: bool,
+        req_id: Option<uuid::Uuid>,
+    ) {
         if matches!(&self.data_source, PlotData::TickBased(_)) {
             if is_batches_done {
                 self.fetching_trades = (false, None);
@@ -691,6 +698,10 @@ impl KlineChart {
 
         if is_batches_done {
             self.fetching_trades = (false, None);
+
+            if let Some(req_id) = req_id {
+                self.request_handler.mark_completed(req_id);
+            }
         }
 
         self.invalidate(None);

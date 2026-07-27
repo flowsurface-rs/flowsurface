@@ -355,6 +355,14 @@ fn parse_arrow_trades(
         }
     }
 
+    if trades.is_empty() {
+        log::info!(
+            "Arrow stream contained no trades for {} ({})",
+            ticker_info.ticker,
+            ticker_info.exchange(),
+        );
+    }
+
     // The server should order via `ORDER BY ts ASC` as
     // the cursor-based paging loop depends on it — verify in debug builds.
     debug_assert!(

@@ -4,7 +4,7 @@ pub mod indicator;
 pub mod kline;
 mod scale;
 
-use crate::connector::fetcher::{FetchRange, FetchSpec, RequestHandler};
+use crate::connector::fetcher::{FetchRange, FetchSpec, ReqError, RequestHandler};
 use crate::style;
 use crate::widget::multi_split::{DRAG_SIZE, MultiSplit};
 use crate::widget::tooltip;
@@ -1135,9 +1135,9 @@ fn request_fetch(handler: &mut RequestHandler, range: FetchRange) -> Option<Acti
             Some(Action::RequestFetch(vec![fetch_spec]))
         }
         Ok(None) => None,
-        Err(reason) => {
+        Err(ReqError::Overlaps) => None,
+        Err(ReqError::Failed(reason)) => {
             log::error!("Failed to request {:?}: {}", range, reason);
-            // TODO: handle this more explicitly, maybe by returning Action::ErrorOccurred
             None
         }
     }

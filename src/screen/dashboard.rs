@@ -917,25 +917,39 @@ impl Dashboard {
         stream_type: StreamKind,
     ) -> Task<Message> {
         match data {
-            FetchedData::Trades { batch, until_time } => {
-                let last_trade_time = batch.last().map_or(UnixMs::ZERO, |trade| trade.time);
-
-                if last_trade_time < until_time {
-                    if let Err(reason) =
-                        self.insert_fetched_trades(main_window, pane_id, &batch, false)
-                    {
-                        return self.handle_error(Some(pane_id), &reason, main_window);
-                    }
+            FetchedData::Trades {
+                batch,
+                req_id,
+                until_time,
+            } => {
+                if batch.is_empty() {
+                    // Empty batch means the source has no data for this range,
+                    // treat as completed so the RequestHandler can move on.
+                    let _ = self.insert_fetched_trades(main_window, pane_id, &[], true, req_id);
                 } else {
-                    let filtered_batch = batch
-                        .into_iter()
-                        .filter(|trade| trade.time <= until_time)
-                        .collect::<Vec<_>>();
+                    let last_trade_time = batch.last().map_or(UnixMs::ZERO, |trade| trade.time);
 
-                    if let Err(reason) =
-                        self.insert_fetched_trades(main_window, pane_id, &filtered_batch, true)
-                    {
-                        return self.handle_error(Some(pane_id), &reason, main_window);
+                    if last_trade_time < until_time {
+                        if let Err(reason) =
+                            self.insert_fetched_trades(main_window, pane_id, &batch, false, req_id)
+                        {
+                            return self.handle_error(Some(pane_id), &reason, main_window);
+                        }
+                    } else {
+                        let filtered_batch = batch
+                            .into_iter()
+                            .filter(|trade| trade.time <= until_time)
+                            .collect::<Vec<_>>();
+
+                        if let Err(reason) = self.insert_fetched_trades(
+                            main_window,
+                            pane_id,
+                            &filtered_batch,
+                            true,
+                            req_id,
+                        ) {
+                            return self.handle_error(Some(pane_id), &reason, main_window);
+                        }
                     }
                 }
             }
@@ -972,6 +986,7 @@ impl Dashboard {
         pane_id: uuid::Uuid,
         trades: &[Trade],
         is_batches_done: bool,
+        req_id: Option<uuid::Uuid>,
     ) -> Result<(), DashboardError> {
         let pane_state = self
             .get_mut_pane_state_by_uuid(main_window, pane_id)
@@ -993,7 +1008,7 @@ impl Dashboard {
         match &mut pane_state.content {
             pane::Content::Kline { chart, .. } => {
                 if let Some(c) = chart {
-                    c.insert_raw_trades(trades.to_owned(), is_batches_done);
+                    c.insert_raw_trades(trades.to_owned(), is_batches_done, req_id);
 
                     if is_batches_done {
                         pane_state.status = pane::Status::Ready;

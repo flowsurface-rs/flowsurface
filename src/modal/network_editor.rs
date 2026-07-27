@@ -558,8 +558,8 @@ impl FetchForm {
         if draft_mode != *effective_mode {
             return true;
         }
-        if draft_mode == fetcher::TradeFetchMode::Server
-            && self.trimmed_url().as_deref() != effective_url
+        if (draft_mode == fetcher::TradeFetchMode::Server
+            && self.trimmed_url().as_deref() != effective_url)
             || self.trimmed_auth().as_deref() != effective_auth
         {
             return true;
@@ -681,16 +681,13 @@ impl FetchForm {
                     FetchMsg::Cancel,
                 )
             } else {
-                let mut row_buttons = row![
+                let row_buttons = row![
                     iced::widget::space::horizontal(),
                     pending_info::<FetchMsg>(pending),
+                    button("Apply").on_press(FetchMsg::RequestApplyFetch),
                 ]
                 .spacing(8);
 
-                if draft_changed {
-                    row_buttons =
-                        row_buttons.push(button("Apply").on_press(FetchMsg::RequestApplyFetch));
-                }
                 row_buttons.into()
             };
 

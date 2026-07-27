@@ -45,6 +45,9 @@ pub enum FetchedData {
         /// Upper bound of the fetch gap — trades beyond this timestamp
         /// already exist on the chart and must be filtered out.
         until_time: UnixMs,
+        /// Optional request ID to mark completion on the chart's
+        /// [`RequestHandler`] once the batch is processed.
+        req_id: Option<Uuid>,
     },
     Klines {
         data: Vec<Kline>,
@@ -107,6 +110,14 @@ impl RequestHandler {
         Ok(Some(id))
     }
 
+    /// Returns `true` when a request with the given range is currently
+    /// pending (in-flight and not yet completed or failed).
+    pub fn has_pending(&self, range: &FetchRange) -> bool {
+        self.requests
+            .values()
+            .any(|r| r.status == RequestStatus::Pending && r.same_with_range(range))
+    }
+
     pub fn mark_completed(&mut self, id: Uuid) {
         if let Some(request) = self.requests.get_mut(&id) {
             let timestamp = chrono::Utc::now().timestamp_millis() as u64;
@@ -147,7 +158,12 @@ impl FetchRequest {
     }
 
     fn same_with(&self, other: &FetchRequest) -> bool {
-        match (&self.fetch_type, &other.fetch_type) {
+        self.same_with_range(&other.fetch_type)
+    }
+
+    /// Check whether the stored [`FetchRange`] matches a given range.
+    fn same_with_range(&self, range: &FetchRange) -> bool {
+        match (&self.fetch_type, range) {
             (FetchRange::Kline(s1, e1), FetchRange::Kline(s2, e2)) => e1 == e2 && s1 == s2,
             (FetchRange::OpenInterest(s1, e1), FetchRange::OpenInterest(s2, e2)) => {
                 e1 == e2 && s1 == s2
@@ -305,7 +321,7 @@ pub fn request_fetch(
                 let data_path = data::data_path(Some("market_data/binance/"));
 
                 if let Some(ref client) = server {
-                    log::info!(
+                    log::debug!(
                         "Trade fetch: using server at {} ({})",
                         client.base_url(),
                         ticker_info.exchange()
@@ -319,12 +335,22 @@ pub fn request_fetch(
                         error: "Server mode selected but the server URL is invalid.".to_string(),
                     });
                 } else if is_binance {
-                    log::info!(
+                    log::debug!(
                         "Trade fetch: using direct exchange API for {}",
                         ticker_info.exchange()
                     );
                 } else {
-                    return Task::none();
+                    log::warn!(
+                        "Trade fetch via exchange API is only supported for Binance, got {}",
+                        ticker_info.exchange()
+                    );
+                    return Task::done(FetchUpdate::Error {
+                        pane_id,
+                        error: format!(
+                            "Trade fetch via exchange API is only supported for Binance, got {}",
+                            ticker_info.exchange()
+                        ),
+                    });
                 }
 
                 let (task, handle) = Task::sip(
@@ -332,6 +358,7 @@ pub fn request_fetch(
                     move |batch| {
                         let data = FetchedData::Trades {
                             batch,
+                            req_id: Some(req_id),
                             until_time: to_time,
                         };
 
@@ -521,20 +548,19 @@ pub fn fetch_trades_paged(
                     .await?
             };
 
-            if batch.is_empty() {
-                break;
+            let is_empty = batch.is_empty();
+
+            if !is_empty {
+                cursor = batch.last().map_or(cursor, |t| t.time);
             }
 
-            cursor = batch.last().map_or(cursor, |t| t.time);
-
             // Server path only: a batch smaller than the requested limit
-            // means the range [prev_cursor, to_time] is fully exhausted
-            // and there is nothing left to page through.
+            // means the range [prev_cursor, to_time] is fully exhausted.
             let is_exhausted = server.is_some() && batch.len() < super::client::ARROW_LIMIT;
 
             let () = progress.send(batch).await;
 
-            if is_exhausted {
+            if is_empty || is_exhausted {
                 break;
             }
         }
