@@ -13,6 +13,9 @@ mod version;
 mod widget;
 mod window;
 
+use std::sync::Arc;
+
+use connector::client::DataSources;
 use data::config::theme::default_theme;
 use data::{layout::WindowSpec, sidebar};
 use layout::{LayoutId, configuration};
@@ -73,12 +76,11 @@ fn main() {
 struct Flowsurface {
     main_window: window::Window,
     sidebar: dashboard::Sidebar,
-    handles: exchange::adapter::AdapterHandles,
-    server_client: Option<connector::client::ServerClient>,
     layout_manager: LayoutManager,
     theme_editor: ThemeEditor,
     network_modal: NetworkManager,
     network: data::Network,
+    data_sources: Arc<DataSources>,
     audio_stream: AudioStream,
     confirm_dialog: Option<screen::ConfirmDialog<Message>>,
     volume_size_unit: exchange::SizeUnit,
@@ -132,27 +134,15 @@ impl Flowsurface {
             window::open(config)
         };
 
-        let (exchange_http, server_http) =
-            connector::fetcher::build_http_clients(saved_state.network.proxy_cfg.as_ref());
-
-        let server_client = connector::client::build_server_client(
-            &server_http,
-            &saved_state.network.trade_fetch_mode,
-        );
-
-        let handles = exchange::adapter::AdapterHandles::spawn_venues(
-            &exchange_http,
-            exchange::adapter::Venue::ALL,
+        let data_sources = Arc::new(DataSources::new(
             saved_state.network.proxy_cfg.as_ref(),
-        );
+            &saved_state.network.trade_fetch_mode,
+        ));
 
-        let (sidebar, launch_sidebar) = dashboard::Sidebar::new(&saved_state, handles.clone());
+        let (sidebar, launch_sidebar) =
+            dashboard::Sidebar::new(&saved_state, data_sources.handles.clone());
 
         let (audio_stream, audio_init_err) = AudioStream::new(saved_state.audio_cfg);
-
-        let initial_network = saved_state.network.clone();
-
-        connector::fetcher::set_trade_fetch_mode(initial_network.trade_fetch_mode.clone());
 
         let mut state = Self {
             main_window: window::Window::new(main_window_id),
@@ -160,16 +150,15 @@ impl Flowsurface {
             theme_editor: ThemeEditor::new(saved_state.custom_theme),
             audio_stream,
             sidebar,
-            handles,
-            server_client,
+            data_sources,
             confirm_dialog: None,
             timezone: saved_state.timezone,
             ui_scale_factor: saved_state.scale_factor,
             volume_size_unit: saved_state.volume_size_unit,
             theme: saved_state.theme,
             notifications: Notifications::new(),
-            network: initial_network.clone(),
-            network_modal: NetworkManager::new(&initial_network),
+            network: saved_state.network.clone(),
+            network_modal: NetworkManager::new(&saved_state.network),
         };
 
         if let Some(err) = audio_init_err {
@@ -258,12 +247,11 @@ impl Flowsurface {
             }
             Message::Tick(now) => {
                 let main_window_id = self.main_window.id;
-                let handles = self.handles.clone();
-                let server_client = self.server_client.clone();
+                let sources = self.data_sources.clone();
 
                 return self
                     .active_dashboard_mut()
-                    .tick(&handles, server_client.as_ref(), now, main_window_id)
+                    .tick(&sources, now, main_window_id)
                     .map(move |msg| Message::Dashboard {
                         layout_id: None,
                         event: msg,
@@ -354,16 +342,10 @@ impl Flowsurface {
 
                 let main_window = self.main_window;
                 let layout_id = id.unwrap_or(active_layout.unique);
-                let handles = self.handles.clone();
 
                 if let Some(dashboard) = self.layout_manager.mut_dashboard(layout_id) {
-                    let (main_task, event) = dashboard.update(
-                        &handles,
-                        self.server_client.as_ref(),
-                        msg,
-                        &main_window,
-                        &layout_id,
-                    );
+                    let (main_task, event) =
+                        dashboard.update(&self.data_sources, msg, &main_window, &layout_id);
 
                     let additional_task = match event {
                         Some(dashboard::Event::DistributeFetchedData {
@@ -658,7 +640,7 @@ impl Flowsurface {
                 match action {
                     Some(dashboard::sidebar::Action::TickerSelected(ticker_info, content)) => {
                         let main_window_id = self.main_window.id;
-                        let handles = self.handles.clone();
+                        let handles = self.data_sources.handles.clone();
 
                         let task = {
                             if let Some(kind) = content {
@@ -809,7 +791,7 @@ impl Flowsurface {
 
         let exchange_streams = self
             .active_dashboard()
-            .market_subscriptions(&self.handles)
+            .market_subscriptions(&self.data_sources.handles)
             .map(Message::MarketWsEvent);
 
         let tick = iced::window::frames().map(Message::Tick);

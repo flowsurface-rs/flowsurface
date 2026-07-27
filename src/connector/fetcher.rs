@@ -9,42 +9,13 @@ use std::path::PathBuf;
 use std::sync::RwLock;
 use uuid::Uuid;
 
-use crate::connector::client::ServerClient;
+use crate::connector::client::{DataSources, ServerClient};
 
 pub use data::TradeFetchMode;
 
 static TRADE_FETCH_MODE: RwLock<TradeFetchMode> = RwLock::new(TradeFetchMode::Off);
 
-/// Build the two HTTP clients used by the application.
-///
-/// Returns `(exchange_client, server_client)`.
-///
-/// * `exchange_client` — for exchange adapters (proxy-aware, no TLS relaxation).
-/// * `server_client` — for the user-configured market-data server (proxy-aware,
-///   accepts invalid TLS certificates for self-signed server certs).
-pub fn build_http_clients(
-    proxy_cfg: Option<&exchange::adapter::Proxy>,
-) -> (reqwest::Client, reqwest::Client) {
-    let mut exchange_builder = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .connect_timeout(std::time::Duration::from_secs(10));
-    exchange_builder = exchange::adapter::proxy::try_apply_proxy(exchange_builder, proxy_cfg);
-    let exchange_client = exchange_builder
-        .build()
-        .expect("Failed to build exchange HTTP client");
-
-    let mut server_builder = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .connect_timeout(std::time::Duration::from_secs(10))
-        .danger_accept_invalid_certs(true);
-    server_builder = exchange::adapter::proxy::try_apply_proxy(server_builder, proxy_cfg);
-    let server_client = server_builder
-        .build()
-        .expect("Failed to build server HTTP client");
-
-    (exchange_client, server_client)
-}
-
+/// Override the global trade-fetch mode at runtime.
 pub fn set_trade_fetch_mode(mode: TradeFetchMode) {
     if let Ok(mut guard) = TRADE_FETCH_MODE.write() {
         *guard = mode;
@@ -53,6 +24,7 @@ pub fn set_trade_fetch_mode(mode: TradeFetchMode) {
     }
 }
 
+/// Return the current global trade-fetch mode.
 pub fn trade_fetch_mode() -> TradeFetchMode {
     TRADE_FETCH_MODE
         .read()
@@ -60,6 +32,8 @@ pub fn trade_fetch_mode() -> TradeFetchMode {
         .unwrap_or(TradeFetchMode::Off)
 }
 
+/// Returns `true` when a trade-fetch source (server or exchange API) is
+/// active.
 pub fn is_trade_fetch_enabled() -> bool {
     trade_fetch_mode() != TradeFetchMode::Off
 }
@@ -252,8 +226,7 @@ pub enum FetchUpdate {
 }
 
 pub fn request_fetch(
-    handles: AdapterHandles,
-    server_client: Option<&crate::connector::client::ServerClient>,
+    sources: &DataSources,
     pane_id: Uuid,
     ready_streams: &[StreamKind],
     layout_id: Uuid,
@@ -262,6 +235,8 @@ pub fn request_fetch(
     stream: Option<StreamKind>,
     on_trade_handle: &mut impl FnMut(Handle),
 ) -> Task<FetchUpdate> {
+    let handles = sources.handles.clone();
+
     match fetch {
         FetchRange::Kline(from, to) => {
             let kline_stream = if let Some(s) = stream {
@@ -278,7 +253,7 @@ pub fn request_fetch(
 
             if let Some((stream, pane_uid)) = kline_stream {
                 return kline_fetch_task(
-                    handles.clone(),
+                    handles,
                     layout_id,
                     pane_uid,
                     stream,
@@ -326,7 +301,7 @@ pub fn request_fetch(
                     Exchange::BinanceSpot | Exchange::BinanceLinear | Exchange::BinanceInverse
                 );
                 let mode = trade_fetch_mode();
-                let server = server_client.cloned();
+                let server = sources.server_client.clone();
                 let data_path = data::data_path(Some("market_data/binance/"));
 
                 if let Some(ref client) = server {
@@ -353,14 +328,7 @@ pub fn request_fetch(
                 }
 
                 let (task, handle) = Task::sip(
-                    fetch_trades_paged(
-                        server,
-                        handles.clone(),
-                        ticker_info,
-                        from_time,
-                        to_time,
-                        data_path,
-                    ),
+                    fetch_trades_paged(server, handles, ticker_info, from_time, to_time, data_path),
                     move |batch| {
                         let data = FetchedData::Trades {
                             batch,
@@ -401,8 +369,7 @@ pub fn request_fetch(
 }
 
 pub fn request_fetch_many(
-    handles: AdapterHandles,
-    server_client: Option<&crate::connector::client::ServerClient>,
+    sources: &DataSources,
     pane_id: Uuid,
     ready_streams: &[StreamKind],
     layout_id: Uuid,
@@ -413,8 +380,7 @@ pub fn request_fetch_many(
 
     for (req_id, fetch, stream) in reqs {
         tasks.push(request_fetch(
-            handles.clone(),
-            server_client,
+            sources,
             pane_id,
             ready_streams,
             layout_id,

@@ -6,24 +6,68 @@ use exchange::{TickerInfo, Trade, UnixMs};
 use arrow_array::{BooleanArray, Float64Array, Int64Array, RecordBatch};
 use arrow_ipc::reader::StreamReader;
 
-/// Maximum trades to request per Arrow IPC call.
-pub(super) const ARROW_LIMIT: usize = 400_000;
+use exchange::adapter::{AdapterHandles, Venue};
+use exchange::proxy::Proxy;
 
-/// Build a [`ServerClient`] from the shared HTTP client and the current
-/// trade-fetch mode configuration.
-///
-/// Returns `None` when the mode is not [`TradeFetchMode::Server`] or the
-/// URL is empty/invalid.
-pub fn build_server_client(
-    http_client: &reqwest::Client,
-    mode: &data::TradeFetchMode,
-) -> Option<ServerClient> {
-    match mode {
-        data::TradeFetchMode::Server {
-            url: Some(url),
-            auth_token,
-        } if !url.is_empty() => ServerClient::new(url, auth_token.clone(), http_client.clone()),
-        _ => None,
+/// Maximum trades to request per Arrow IPC call.
+pub const ARROW_LIMIT: usize = 400_000;
+
+#[derive(Clone)]
+pub struct DataSources {
+    pub handles: AdapterHandles,
+    pub server_client: Option<ServerClient>,
+}
+
+impl DataSources {
+    /// Build HTTP clients, spawn exchange adapter handles, and optionally
+    /// create a market-data server client from the persisted configuration.
+    pub fn new(proxy_cfg: Option<&Proxy>, mode: &data::TradeFetchMode) -> Self {
+        let (exchange_http, server_http) = Self::build_http_clients(proxy_cfg);
+        let server_client = ServerClient::from_mode(&server_http, mode);
+        let handles = AdapterHandles::spawn_venues(&exchange_http, Venue::ALL, proxy_cfg);
+        Self {
+            handles,
+            server_client,
+        }
+    }
+
+    /// Build the two HTTP clients used by the application.
+    ///
+    /// Returns `(exchange_client, server_client)`.
+    ///
+    /// * `exchange_client` — for exchange adapters (proxy-aware, no TLS
+    ///   relaxation).
+    /// * `server_client` — for the user-configured market-data server
+    ///   (proxy-aware, accepts invalid TLS certificates for self-signed
+    ///   server certs).
+    fn build_http_clients(proxy_cfg: Option<&Proxy>) -> (reqwest::Client, reqwest::Client) {
+        let mut exchange_builder = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .connect_timeout(std::time::Duration::from_secs(10));
+        exchange_builder = exchange::adapter::proxy::try_apply_proxy(exchange_builder, proxy_cfg);
+        let exchange_client = exchange_builder
+            .build()
+            .expect("Failed to build exchange HTTP client");
+
+        let mut server_builder = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .danger_accept_invalid_certs(true);
+        server_builder = exchange::adapter::proxy::try_apply_proxy(server_builder, proxy_cfg);
+        let server_client = server_builder
+            .build()
+            .expect("Failed to build server HTTP client");
+
+        (exchange_client, server_client)
+    }
+}
+
+impl std::fmt::Debug for DataSources {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DataSources")
+            .field("handles", &"…")
+            .field("server_client", &self.server_client.as_ref().map(|_| "…"))
+            .finish()
     }
 }
 
@@ -32,7 +76,7 @@ pub fn build_server_client(
 /// The server is expected to expose a `GET /trades.arrow` endpoint that
 /// returns Arrow IPC streams of trade data.  Query parameters:
 /// `venue`, `market`, `symbol`, `from`, `limit`.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct ServerClient {
     base_url: String,
     client: reqwest::Client,
@@ -40,13 +84,17 @@ pub struct ServerClient {
 }
 
 impl ServerClient {
-    /// Create a new client targeting the given base URL (e.g. `http://127.0.0.1:8080`).
+    /// Create a new client targeting the given base URL
+    /// (e.g. `http://127.0.0.1:8080`).
     ///
-    /// The `client` is a shared `reqwest::Client` that carries the application-wide
-    /// proxy and TLS configuration — it is **not** owned by this struct.
+    /// The `client` is a shared `reqwest::Client` that carries the
+    /// application-wide proxy and TLS configuration — it is **not** owned
+    /// by this struct.
     ///
-    /// An optional bearer token is sent as `Authorization: Bearer <token>` on every request.
-    /// Trailing slashes are stripped. Returns `None` if the URL is empty or invalid.
+    /// An optional bearer token is sent as
+    /// `Authorization: Bearer <token>` on every request.
+    /// Trailing slashes are stripped. Returns `None` if the URL is empty
+    /// or invalid.
     pub fn new(
         base_url: &str,
         auth_token: Option<String>,
@@ -68,6 +116,36 @@ impl ServerClient {
             client,
             auth_token,
         })
+    }
+
+    /// Base URL of the market-data server.
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    /// The shared `reqwest::Client` carrying proxy & TLS settings.
+    pub fn http_client(&self) -> &reqwest::Client {
+        &self.client
+    }
+
+    /// Optional bearer token sent as `Authorization: Bearer <token>`.
+    pub fn auth_token(&self) -> Option<&str> {
+        self.auth_token.as_deref()
+    }
+
+    /// Build a [`ServerClient`] from the shared HTTP client and the current
+    /// trade-fetch mode configuration.
+    ///
+    /// Returns `None` when the mode is not [`TradeFetchMode::Server`] or the
+    /// URL is empty/invalid.
+    pub fn from_mode(http_client: &reqwest::Client, mode: &data::TradeFetchMode) -> Option<Self> {
+        match mode {
+            data::TradeFetchMode::Server {
+                url: Some(url),
+                auth_token,
+            } => Self::new(url, auth_token.clone(), http_client.clone()),
+            _ => None,
+        }
     }
 
     /// Fetch trades from the server's **Arrow IPC** endpoint (`/trades.arrow`).
@@ -92,14 +170,14 @@ impl ServerClient {
             ticker_info.ticker.to_string().to_lowercase()
         };
 
-        let url = format!("{}/trades.arrow", self.base_url);
+        let url = format!("{}/trades.arrow", self.base_url());
 
         log::debug!(
             "Querying server (arrow): {url} | venue={venue} market={market} symbol={symbol} from={from} to={to} limit={limit}",
         );
 
         let mut request = self
-            .client
+            .http_client()
             .get(&url)
             .query(&[
                 ("venue", venue.as_str()),
@@ -110,7 +188,7 @@ impl ServerClient {
             .query(&[("to", to.as_u64().to_string())])
             .query(&[("limit", limit.to_string())]);
 
-        if let Some(ref token) = self.auth_token {
+        if let Some(token) = self.auth_token() {
             request = request.header("Authorization", &format!("Bearer {token}"));
         }
 
@@ -138,10 +216,6 @@ impl ServerClient {
         })?;
 
         parse_arrow_trades(bytes, &ticker_info)
-    }
-
-    pub fn base_url(&self) -> &str {
-        &self.base_url
     }
 }
 

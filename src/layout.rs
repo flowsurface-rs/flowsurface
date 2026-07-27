@@ -378,6 +378,7 @@ pub fn load_saved_state() -> SavedState {
                 *auth_token = data::config::auth::load_server_token(url);
             }
             exchange::unit::qty::set_preferred_currency(state.size_in_quote_ccy);
+            crate::connector::fetcher::set_trade_fetch_mode(state.network.trade_fetch_mode.clone());
 
             if let Some(proxy) = network.proxy_cfg.as_mut()
                 && proxy.auth().is_none()

@@ -3,7 +3,8 @@ use super::{
     indicator, request_fetch, scale::linear::PriceInfoLabel,
 };
 use crate::chart::indicator::kline::KlineIndicatorImpl;
-use crate::connector::fetcher::{FetchRange, RequestHandler, is_trade_fetch_enabled};
+use crate::connector::fetcher::is_trade_fetch_enabled;
+use crate::connector::fetcher::{FetchRange, RequestHandler};
 use crate::{modal::pane::settings::study, style};
 use data::aggr::ticks::TickAggr;
 use data::aggr::time::TimeSeries;

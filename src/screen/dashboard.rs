@@ -10,6 +10,7 @@ use crate::{
     chart,
     connector::{
         ResolvedStream,
+        client::DataSources,
         fetcher::{self, FetchedData, InfoKind},
     },
     screen::dashboard::tickers_table::TickersTable,
@@ -178,8 +179,7 @@ impl Dashboard {
 
     pub fn update(
         &mut self,
-        handles: &AdapterHandles,
-        server_client: Option<&crate::connector::client::ServerClient>,
+        sources: &DataSources,
         message: Message,
         main_window: &Window,
         layout_id: &uuid::Uuid,
@@ -317,6 +317,8 @@ impl Dashboard {
                         });
 
                     if let Some(state) = self.get_mut_pane(main_window.id, window, pane) {
+                        let handles = &sources.handles;
+
                         state.link_group = group;
                         state.modal = None;
 
@@ -372,8 +374,7 @@ impl Dashboard {
                                     .unwrap_or_default();
 
                                 fetcher::request_fetch_many(
-                                    handles.clone(),
-                                    server_client,
+                                    sources,
                                     pane_id,
                                     &ready_streams,
                                     *layout_id,
@@ -390,9 +391,12 @@ impl Dashboard {
                                 .map(Message::from)
                                 .chain(self.refresh_streams(main_window.id))
                             }
-                            pane::Effect::SwitchTickersInGroup(ticker_info) => {
-                                self.switch_tickers_in_group(handles, main_window.id, ticker_info)
-                            }
+                            pane::Effect::SwitchTickersInGroup(ticker_info) => self
+                                .switch_tickers_in_group(
+                                    &sources.handles,
+                                    main_window.id,
+                                    ticker_info,
+                                ),
                             pane::Effect::FocusWidget(id) => {
                                 return (iced::widget::operation::focus(id), None);
                             }
@@ -1149,8 +1153,7 @@ impl Dashboard {
 
     pub fn tick(
         &mut self,
-        handles: &AdapterHandles,
-        server_client: Option<&crate::connector::client::ServerClient>,
+        sources: &DataSources,
         now: Instant,
         _main_window: window::Id,
     ) -> Task<Message> {
@@ -1171,8 +1174,7 @@ impl Dashboard {
                         .unwrap_or_default();
 
                     let fetch_tasks = fetcher::request_fetch_many(
-                        handles.clone(),
-                        server_client,
+                        sources,
                         pane_id,
                         &ready_streams,
                         self.layout_id,
