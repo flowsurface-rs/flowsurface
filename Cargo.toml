@@ -35,8 +35,9 @@ rand = "0.10.1"
 uuid = { version = "1.23.1", features = ["v4"] }
 data = { version = "0.8.9", path = "data", package = "flowsurface-data" }
 exchange = { version = "0.8.9", path = "exchange", package = "flowsurface-exchange" }
-arrow-ipc = { version = "55.2", default-features = false }
-arrow-array = { version = "55.2", default-features = false }
+arrow-ipc = { version = "59.1", default-features = false }
+arrow-array = { version = "59.1", default-features = false }
+arrow-schema = { version = "59.1", default-features = false }
 reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls"] }
 
 [dependencies]
@@ -72,6 +73,7 @@ iced_wgpu = "0.14.0"
 exchange.workspace = true
 arrow-ipc.workspace = true
 arrow-array.workspace = true
+arrow-schema.workspace = true
 bytes = "1.11.1"
 data.workspace = true
 

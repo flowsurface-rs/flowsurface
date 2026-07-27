@@ -46,23 +46,35 @@ impl DataSources {
     /// * `server_client` — for the user-configured market-data server
     ///   (proxy-aware, accepts invalid TLS certificates for self-signed
     ///   server certs).
+    ///
+    /// # Panics
+    ///
+    /// Panics if either `reqwest::Client::builder().build()` fails.
     fn build_http_clients(proxy_cfg: Option<&Proxy>) -> (reqwest::Client, reqwest::Client) {
         let mut exchange_builder = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .connect_timeout(std::time::Duration::from_secs(10));
         exchange_builder = exchange::adapter::proxy::try_apply_proxy(exchange_builder, proxy_cfg);
-        let exchange_client = exchange_builder
-            .build()
-            .expect("Failed to build exchange HTTP client");
+        let exchange_client = exchange_builder.build().unwrap_or_else(|e| {
+            log::error!(
+                "Fatal: failed to build exchange HTTP client - TLS backend missing, \
+                 resource exhaustion, or invalid proxy config?\n  {e}"
+            );
+            panic!("Failed to build exchange HTTP client: {e}");
+        });
 
         let mut server_builder = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .connect_timeout(std::time::Duration::from_secs(10))
             .danger_accept_invalid_certs(true);
         server_builder = exchange::adapter::proxy::try_apply_proxy(server_builder, proxy_cfg);
-        let server_client = server_builder
-            .build()
-            .expect("Failed to build server HTTP client");
+        let server_client = server_builder.build().unwrap_or_else(|e| {
+            log::error!(
+                "Fatal: failed to build server HTTP client - TLS backend missing, \
+                 resource exhaustion, or invalid proxy config?\n  {e}"
+            );
+            panic!("Failed to build server HTTP client: {e}");
+        });
 
         (exchange_client, server_client)
     }
@@ -234,6 +246,46 @@ impl ServerClient {
     }
 }
 
+/// Expected Arrow column names in the IPC stream.
+const ARROW_TS_COL: &str = "ts";
+const ARROW_PRICE_COL: &str = "price";
+const ARROW_QTY_COL: &str = "qty";
+const ARROW_IS_SELL_COL: &str = "is_sell";
+
+/// Validate the Arrow stream schema up-front so that subsequent per-batch
+/// code can safely use positional [`RecordBatch::column`] access without
+/// panicking on index-out-of-range.
+///
+/// Type mismatches are caught later by the `downcast_ref` calls in
+/// [`parse_arrow_trades`] — we only check column count and field names here.
+fn validate_arrow_schema(schema: &arrow_schema::Schema) -> Result<(), AdapterError> {
+    let fields = schema.fields();
+    if fields.len() < 4 {
+        return Err(AdapterError::ParseError(format!(
+            "Arrow stream schema has {} fields, expected at least 4",
+            fields.len()
+        )));
+    }
+
+    let expected = [
+        ARROW_TS_COL,
+        ARROW_PRICE_COL,
+        ARROW_QTY_COL,
+        ARROW_IS_SELL_COL,
+    ];
+    for (idx, &name) in expected.iter().enumerate() {
+        let field = &fields[idx];
+        if field.name() != name {
+            return Err(AdapterError::ParseError(format!(
+                "Arrow stream schema column {idx}: expected name '{name}', got '{}'",
+                field.name()
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 /// Parse raw Arrow IPC stream bytes into a sorted `Vec<Trade>`.
 ///
 /// Expects the Arrow IPC streaming format with the schema:
@@ -244,6 +296,10 @@ fn parse_arrow_trades(
 ) -> Result<Vec<Trade>, AdapterError> {
     let reader = StreamReader::try_new(std::io::Cursor::new(data), None)
         .map_err(|e| AdapterError::ParseError(format!("arrow stream open: {e}")))?;
+
+    // Validate schema once up-front so the hot per-batch loop can safely
+    // use positional column access without panicking.
+    validate_arrow_schema(&reader.schema())?;
 
     let market_kind = ticker_info.exchange().market_type();
     let raw_qty_unit = match market_kind {
@@ -259,6 +315,14 @@ fn parse_arrow_trades(
     for result in reader {
         let batch: RecordBatch =
             result.map_err(|e| AdapterError::ParseError(format!("arrow batch: {e}")))?;
+
+        // Defensive: the schema says 4 fields, but guard against ill-formed batches.
+        if batch.num_columns() < 4 {
+            return Err(AdapterError::ParseError(format!(
+                "Arrow batch has {} columns, expected at least 4",
+                batch.num_columns()
+            )));
+        }
 
         let ts_col = batch
             .column(0)

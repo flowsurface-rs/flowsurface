@@ -80,7 +80,7 @@ impl NetworkEditor {
 
         let proxy_settings = self
             .proxy
-            .view(network.proxy.as_ref(), self.confirm, self.error.as_deref())
+            .view(network.proxy.as_ref(), self.confirm)
             .map(Message::Proxy);
         let fetch_settings = self
             .fetch
@@ -92,7 +92,28 @@ impl NetworkEditor {
             )
             .map(Message::Fetch);
 
-        container(column![modal_header, fetch_settings, proxy_settings].spacing(12))
+        let content = column![modal_header, fetch_settings, proxy_settings].spacing(12);
+
+        let content = if let Some(err) = &self.error {
+            let error_line =
+                text(err)
+                    .size(crate::style::text_size::BODY)
+                    .style(|theme: &iced::Theme| {
+                        let palette = theme.palette();
+                        iced::widget::text::Style {
+                            color: Some(palette.danger),
+                        }
+                    });
+            content.push(
+                container(error_line)
+                    .align_x(iced::Alignment::Center)
+                    .width(iced::Length::Fill),
+            )
+        } else {
+            content
+        };
+
+        container(content)
             .max_width(320)
             .padding(24)
             .style(style::dashboard_modal)
@@ -206,7 +227,6 @@ impl ProxyForm {
         &'a self,
         effective_cfg: Option<&'a Proxy>,
         confirm: ConfirmState,
-        error: Option<&'a str>,
     ) -> Element<'a, ProxyMsg> {
         let is_pending = self.is_pending(effective_cfg);
 
@@ -345,7 +365,7 @@ impl ProxyForm {
             }
         };
 
-        let mut body = column![
+        let body = column![
             row![
                 iced::widget::rule::horizontal(1),
                 text("Proxy").size(crate::style::text_size::SECTION),
@@ -363,23 +383,6 @@ impl ProxyForm {
             .spacing(8),
         ]
         .spacing(12);
-
-        if let Some(err) = error {
-            let error_line =
-                text(err)
-                    .size(crate::style::text_size::BODY)
-                    .style(|theme: &iced::Theme| {
-                        let palette = theme.palette();
-                        iced::widget::text::Style {
-                            color: Some(palette.danger),
-                        }
-                    });
-            body = body.push(
-                container(error_line)
-                    .align_x(iced::Alignment::Center)
-                    .width(iced::Length::Fill),
-            );
-        }
 
         body.push(buttons).into()
     }
@@ -564,13 +567,13 @@ impl FetchForm {
         false
     }
 
-    fn view(
-        &self,
+    fn view<'a>(
+        &'a self,
         confirm: ConfirmState,
-        effective_mode: &fetcher::TradeFetchMode,
-        effective_url: Option<&str>,
-        effective_auth: Option<&str>,
-    ) -> Element<'_, FetchMsg> {
+        effective_mode: &'a fetcher::TradeFetchMode,
+        effective_url: Option<&'a str>,
+        effective_auth: Option<&'a str>,
+    ) -> Element<'a, FetchMsg> {
         let selected_tag = if self.draft_active {
             Some(self.draft_tag)
         } else {
@@ -745,6 +748,22 @@ impl FetchForm {
             }
             FetchMsg::RequestApplyFetch => {
                 *error = None;
+
+                if self.draft_tag == FetchModeTag::Server && self.draft_active {
+                    let url = self.trimmed_url();
+                    if url.is_none() || url.as_deref().is_none_or(|u| u.trim().is_empty()) {
+                        *error =
+                            Some("Server URL is required when mode is set to Server".to_string());
+                        return None;
+                    }
+                    if let Some(ref u) = url
+                        && url::Url::parse(u).is_err()
+                    {
+                        *error = Some("Server URL is not a valid URL".to_string());
+                        return None;
+                    }
+                }
+
                 *confirm = ConfirmState::FetchApply;
             }
             FetchMsg::ApplyFetchSettings => {
