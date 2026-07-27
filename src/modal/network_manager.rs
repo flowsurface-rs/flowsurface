@@ -3,7 +3,7 @@ use crate::{
     style::{self, icon_text},
     widget::tooltip,
 };
-use exchange::proxy::{Proxy, ProxyAuth, ProxyScheme};
+use exchange::proxy::{Proxy, ProxyScheme};
 
 use iced::{
     Element, Theme,
@@ -11,15 +11,9 @@ use iced::{
 };
 
 pub enum Action {
-    ApplyProxy,
+    ApplyProxy(Option<exchange::proxy::Proxy>),
     TradeFetchModeChanged(fetcher::TradeFetchMode),
     Exit,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FetchModeTag {
-    Exchange,
-    Server,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,17 +33,21 @@ pub enum Message {
 
 #[derive(Debug, Clone)]
 pub struct NetworkManager {
-    proxy: ProxySection,
-    fetch: FetchSection,
+    proxy: ProxyForm,
+    fetch: FetchForm,
     confirm: ConfirmState,
     error: Option<String>,
 }
 
 impl NetworkManager {
-    pub fn new(proxy_cfg: Option<exchange::proxy::Proxy>) -> Self {
+    /// Create a new `NetworkManager` with form fields pre-populated from
+    /// the caller's effective network config.
+    pub fn new(network: &data::Network) -> Self {
+        let mut proxy = ProxyForm::new();
+        proxy.populate_from(network.proxy_cfg.as_ref());
         Self {
-            proxy: ProxySection::new(proxy_cfg),
-            fetch: FetchSection::new(),
+            proxy,
+            fetch: FetchForm::new(&network.trade_fetch_mode),
             confirm: ConfirmState::Idle,
             error: None,
         }
@@ -59,7 +57,6 @@ impl NetworkManager {
         match message {
             Message::GoBack => {
                 self.confirm = ConfirmState::Idle;
-                self.fetch.revert_to_runtime();
                 Some(Action::Exit)
             }
             Message::Proxy(msg) => self.proxy.update(msg, &mut self.confirm, &mut self.error),
@@ -67,7 +64,7 @@ impl NetworkManager {
         }
     }
 
-    pub fn view(&self) -> Element<'_, Message> {
+    pub fn view<'a>(&'a self, network: &'a data::Network) -> Element<'a, Message> {
         let modal_header = row![
             button(style::icon_text(style::Icon::Return, 11)).on_press(Message::GoBack),
             iced::widget::space::horizontal(),
@@ -75,9 +72,16 @@ impl NetworkManager {
 
         let proxy_settings = self
             .proxy
-            .view(self.confirm, self.error.as_deref())
+            .view(
+                network.proxy_cfg.as_ref(),
+                self.confirm,
+                self.error.as_deref(),
+            )
             .map(Message::Proxy);
-        let fetch_settings = self.fetch.view(self.confirm).map(Message::Fetch);
+        let fetch_settings = self
+            .fetch
+            .view(self.confirm, &network.trade_fetch_mode)
+            .map(Message::Fetch);
 
         container(column![modal_header, fetch_settings, proxy_settings].spacing(12))
             .max_width(320)
@@ -85,27 +89,10 @@ impl NetworkManager {
             .style(style::dashboard_modal)
             .into()
     }
-
-    pub fn take_applied_draft(&mut self) -> Option<fetcher::TradeFetchMode> {
-        self.fetch.take_applied()
-    }
-
-    pub fn proxy_cfg(&self) -> Option<exchange::proxy::Proxy> {
-        self.proxy.as_config()
-    }
-
-    pub fn revert_fetch_drafts(&mut self) {
-        self.confirm = ConfirmState::Idle;
-        self.fetch.revert_to_runtime();
-    }
 }
 
 #[derive(Debug, Clone)]
-struct ProxySection {
-    /// Saved/selected config (takes effect after restart).
-    saved_url: Option<String>,
-    /// Effective proxy at runtime (current process).
-    effective_cfg: Option<Proxy>,
+struct ProxyForm {
     scheme: ProxyScheme,
     host: String,
     port: String,
@@ -129,104 +116,80 @@ pub enum ProxyMsg {
     Cancel,
 }
 
-impl ProxySection {
-    fn new(proxy_cfg: Option<Proxy>) -> Self {
-        let (saved_url, scheme, host, port, username, password) = if let Some(ref cfg) = proxy_cfg {
-            (
-                Some(Proxy::to_url_string(cfg)),
-                cfg.scheme(),
-                cfg.host().to_string(),
-                cfg.port().to_string(),
-                cfg.auth()
-                    .map(|a| a.username().to_string())
-                    .unwrap_or_default(),
-                cfg.auth()
-                    .map(|a| a.password().to_string())
-                    .unwrap_or_default(),
-            )
-        } else {
-            (
-                None,
-                ProxyScheme::Http,
-                String::new(),
-                String::new(),
-                String::new(),
-                String::new(),
-            )
-        };
-
+impl ProxyForm {
+    fn new() -> Self {
         Self {
-            saved_url,
-            effective_cfg: proxy_cfg,
-            scheme,
-            host,
-            port,
-            username,
-            password,
+            scheme: ProxyScheme::Http,
+            host: String::new(),
+            port: String::new(),
+            username: String::new(),
+            password: String::new(),
             hide_password: true,
         }
     }
 
-    fn as_config(&self) -> Option<Proxy> {
-        Proxy::try_from_str_strict(self.saved_url.as_deref().unwrap_or("")).ok()
+    /// Fill form fields from a reference proxy config (used on init).
+    fn populate_from(&mut self, cfg: Option<&Proxy>) {
+        if let Some(cfg) = cfg {
+            self.scheme = cfg.scheme();
+            self.host = cfg.host().to_string();
+            self.port = cfg.port().to_string();
+            self.username = cfg
+                .auth()
+                .map(|a| a.username().to_string())
+                .unwrap_or_default();
+            self.password = cfg
+                .auth()
+                .map(|a| a.password().to_string())
+                .unwrap_or_default();
+        }
     }
 
-    fn is_pending(&self) -> bool {
-        self.as_config() != self.effective_cfg
+    /// Whether the form state differs from the effective (in-use) config.
+    fn is_pending(&self, effective_cfg: Option<&Proxy>) -> bool {
+        self.build_from_parts().ok().flatten().as_ref() != effective_cfg
     }
 
     /// Build a `Proxy` from the form inputs.
     /// - `Ok(None)` means "no proxy" (all fields empty).
     /// - `Err(...)` means invalid draft.
     fn build_from_parts(&self) -> Result<Option<Proxy>, String> {
-        let host = self.host.trim();
-        let port_s = self.port.trim();
-        let u = self.username.trim();
-        let p = self.password.trim();
+        let all_empty = [&self.host, &self.port, &self.username, &self.password]
+            .iter()
+            .all(|s| s.trim().is_empty());
 
-        if host.is_empty() && port_s.is_empty() && u.is_empty() && p.is_empty() {
-            return Ok(None);
-        }
-        if host.is_empty() {
-            return Err("Proxy host is required".to_string());
-        }
-
-        let port: u16 = port_s
-            .parse()
-            .map_err(|_| "Proxy port must be a number (1-65535)".to_string())?;
-        if port == 0 {
-            return Err("Proxy port must be a number (1-65535)".to_string());
-        }
-
-        let has_user = !u.is_empty();
-        let has_pass = !p.is_empty();
-        if has_user ^ has_pass {
-            return Err("Provide both username and password (or neither)".to_string());
-        }
-
-        let auth = if has_user && has_pass {
-            Some(ProxyAuth::try_new(u, p)?)
+        if all_empty {
+            Ok(None)
         } else {
-            None
-        };
-
-        Proxy::new(self.scheme, host.to_string(), port, auth).map(Some)
+            Proxy::from_raw_parts(
+                self.scheme,
+                &self.host,
+                &self.port,
+                &self.username,
+                &self.password,
+            )
+            .map(Some)
+        }
     }
 
-    fn view<'a>(&'a self, confirm: ConfirmState, error: Option<&'a str>) -> Element<'a, ProxyMsg> {
-        let saved_cfg = self.as_config();
-        let is_pending = self.is_pending();
+    fn view<'a>(
+        &'a self,
+        effective_cfg: Option<&'a Proxy>,
+        confirm: ConfirmState,
+        error: Option<&'a str>,
+    ) -> Element<'a, ProxyMsg> {
+        let is_pending = self.is_pending(effective_cfg);
 
         let applied_proxy = {
-            let effective = self
-                .effective_cfg
-                .as_ref()
+            let effective = effective_cfg
                 .map(|c| c.to_ui_string())
                 .unwrap_or_else(|| "None (direct connection)".to_string());
 
             let pending_url = if is_pending {
                 Some(
-                    saved_cfg
+                    self.build_from_parts()
+                        .ok()
+                        .flatten()
                         .as_ref()
                         .map(|c| c.to_ui_string())
                         .unwrap_or_else(|| "None (direct connection)".to_string()),
@@ -326,7 +289,8 @@ impl ProxySection {
                 ProxyMsg::Cancel,
             ),
             _ => {
-                let proxy_draft_differs = self.build_from_parts().ok() != Some(self.as_config());
+                let proxy_draft_differs =
+                    self.build_from_parts().ok().flatten().as_ref() != effective_cfg;
 
                 let mut row_buttons = row![
                     iced::widget::space::horizontal(),
@@ -339,7 +303,7 @@ impl ProxySection {
                         row_buttons.push(button("Apply").on_press(ProxyMsg::RequestApply));
                 }
 
-                if self.saved_url.is_some() {
+                if effective_cfg.is_some() {
                     row_buttons = row_buttons.push(tooltip(
                         button(style::icon_text(style::Icon::TrashBin, 11))
                             .on_press(ProxyMsg::RequestClear)
@@ -431,10 +395,10 @@ impl ProxySection {
             ProxyMsg::RequestApply => {
                 *confirm = ConfirmState::Idle;
                 match self.build_from_parts() {
-                    Ok(draft_cfg) => {
-                        if draft_cfg != self.as_config() {
-                            *confirm = ConfirmState::ProxyApply;
-                        }
+                    Ok(_draft_cfg) => {
+                        // The Apply button is only visible when form != effective,
+                        // so we can unconditionally advance to the confirm step.
+                        *confirm = ConfirmState::ProxyApply;
                         *error = None;
                     }
                     Err(e) => {
@@ -445,20 +409,9 @@ impl ProxySection {
             ProxyMsg::Apply => {
                 *confirm = ConfirmState::Idle;
                 match self.build_from_parts() {
-                    Ok(Some(cfg)) => match cfg.try_to_url_string() {
-                        Ok(url) => {
-                            self.saved_url = Some(url);
-                            *error = None;
-                            return Some(Action::ApplyProxy);
-                        }
-                        Err(e) => {
-                            *error = Some(e);
-                        }
-                    },
-                    Ok(None) => {
-                        self.saved_url = None;
+                    Ok(cfg) => {
                         *error = None;
-                        return Some(Action::ApplyProxy);
+                        return Some(Action::ApplyProxy(cfg));
                     }
                     Err(e) => {
                         *error = Some(e);
@@ -472,13 +425,12 @@ impl ProxySection {
             ProxyMsg::Clear => {
                 *confirm = ConfirmState::Idle;
                 *error = None;
-                self.saved_url = None;
                 self.host.clear();
                 self.port.clear();
                 self.username.clear();
                 self.password.clear();
                 self.scheme = ProxyScheme::Http;
-                return Some(Action::ApplyProxy);
+                return Some(Action::ApplyProxy(None));
             }
             ProxyMsg::Cancel => {
                 *confirm = ConfirmState::Idle;
@@ -489,15 +441,19 @@ impl ProxySection {
 }
 
 #[derive(Debug, Clone)]
-struct FetchSection {
+struct FetchForm {
     server_url_input: String,
     server_auth_token_input: String,
     expanded_server: bool,
     draft_active: bool,
     draft_tag: FetchModeTag,
-    /// The mode that was just applied, awaiting restart confirmation.
-    applied_mode: Option<fetcher::TradeFetchMode>,
     hide_token: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FetchModeTag {
+    Exchange,
+    Server,
 }
 
 #[derive(Debug, Clone)]
@@ -513,19 +469,17 @@ pub enum FetchMsg {
     Cancel,
 }
 
-impl FetchSection {
-    fn new() -> Self {
-        let runtime = fetcher::trade_fetch_mode();
+impl FetchForm {
+    fn new(effective: &fetcher::TradeFetchMode) -> Self {
         Self {
-            server_url_input: runtime.server_url().unwrap_or("").to_string(),
-            server_auth_token_input: runtime.server_auth_token().unwrap_or("").to_string(),
+            server_url_input: effective.server_url().unwrap_or("").to_string(),
+            server_auth_token_input: effective.server_auth_token().unwrap_or("").to_string(),
             expanded_server: false,
-            draft_active: runtime != fetcher::TradeFetchMode::Off,
-            draft_tag: match &runtime {
+            draft_active: *effective != fetcher::TradeFetchMode::Off,
+            draft_tag: match effective {
                 fetcher::TradeFetchMode::Server { .. } => FetchModeTag::Server,
                 _ => FetchModeTag::Exchange,
             },
-            applied_mode: None,
             hide_token: true,
         }
     }
@@ -536,42 +490,18 @@ impl FetchSection {
         }
         match self.draft_tag {
             FetchModeTag::Exchange => fetcher::TradeFetchMode::Exchange,
-            FetchModeTag::Server => {
-                let trimmed = self.server_url_input.trim().trim_end_matches('/');
-                let auth = self.server_auth_token_input.trim();
-                let url = if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(trimmed.to_string())
-                };
-                let auth_token = if auth.is_empty() {
-                    None
-                } else {
-                    Some(auth.to_string())
-                };
-                fetcher::TradeFetchMode::Server { url, auth_token }
-            }
+            FetchModeTag::Server => fetcher::TradeFetchMode::from_server_parts(
+                &self.server_url_input,
+                &self.server_auth_token_input,
+            ),
         }
     }
 
-    fn take_applied(&mut self) -> Option<fetcher::TradeFetchMode> {
-        self.applied_mode.take()
-    }
-
-    fn revert_to_runtime(&mut self) {
-        self.applied_mode = None;
-        let runtime = fetcher::trade_fetch_mode();
-        self.draft_active = runtime != fetcher::TradeFetchMode::Off;
-        self.draft_tag = match &runtime {
-            fetcher::TradeFetchMode::Server { .. } => FetchModeTag::Server,
-            _ => FetchModeTag::Exchange,
-        };
-        self.server_url_input = runtime.server_url().unwrap_or("").to_string();
-        self.server_auth_token_input = runtime.server_auth_token().unwrap_or("").to_string();
-    }
-
-    fn view(&self, confirm: ConfirmState) -> Element<'_, FetchMsg> {
-        let mode = fetcher::trade_fetch_mode();
+    fn view(
+        &self,
+        confirm: ConfirmState,
+        effective: &fetcher::TradeFetchMode,
+    ) -> Element<'_, FetchMsg> {
         let selected_tag = if self.draft_active {
             Some(self.draft_tag)
         } else {
@@ -667,7 +597,9 @@ impl FetchSection {
             );
         }
 
-        let draft_changed = self.build_mode() != mode;
+        // Pending = form build differs from the effective (applied) mode
+        let pending = self.build_mode() != *effective;
+        let draft_changed = pending;
 
         let buttons: Element<'_, FetchMsg> = if confirm == ConfirmState::FetchApply {
             confirm_row(
@@ -678,7 +610,7 @@ impl FetchSection {
         } else {
             let mut row_buttons = row![
                 iced::widget::space::horizontal(),
-                pending_info::<FetchMsg>(self.applied_mode.is_some()),
+                pending_info::<FetchMsg>(pending),
             ]
             .spacing(8);
 
@@ -747,7 +679,6 @@ impl FetchSection {
             FetchMsg::ApplyFetchSettings => {
                 *error = None;
                 let mode = self.build_mode();
-                self.applied_mode = Some(mode.clone());
                 return Some(Action::TradeFetchModeChanged(mode));
             }
             FetchMsg::Cancel => {

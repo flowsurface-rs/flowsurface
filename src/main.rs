@@ -76,7 +76,8 @@ struct Flowsurface {
     handles: exchange::adapter::AdapterHandles,
     layout_manager: LayoutManager,
     theme_editor: ThemeEditor,
-    network: NetworkManager,
+    network_modal: NetworkManager,
+    network: data::Network,
     audio_stream: AudioStream,
     confirm_dialog: Option<screen::ConfirmDialog<Message>>,
     volume_size_unit: exchange::SizeUnit,
@@ -132,12 +133,16 @@ impl Flowsurface {
 
         let handles = exchange::adapter::AdapterHandles::spawn_venues(
             exchange::adapter::Venue::ALL,
-            saved_state.proxy_cfg.as_ref(),
+            saved_state.network.proxy_cfg.as_ref(),
         );
 
         let (sidebar, launch_sidebar) = dashboard::Sidebar::new(&saved_state, handles.clone());
 
         let (audio_stream, audio_init_err) = AudioStream::new(saved_state.audio_cfg);
+
+        let initial_network = saved_state.network.clone();
+
+        connector::fetcher::set_trade_fetch_mode(initial_network.trade_fetch_mode.clone());
 
         let mut state = Self {
             main_window: window::Window::new(main_window_id),
@@ -152,7 +157,8 @@ impl Flowsurface {
             volume_size_unit: saved_state.volume_size_unit,
             theme: saved_state.theme,
             notifications: Notifications::new(),
-            network: NetworkManager::new(saved_state.proxy_cfg),
+            network: initial_network.clone(),
+            network_modal: NetworkManager::new(&initial_network),
         };
 
         if let Some(err) = audio_init_err {
@@ -285,9 +291,7 @@ impl Flowsurface {
             Message::RestartRequested(None) => {
                 self.confirm_dialog = None;
 
-                if let Some(mode) = self.network.take_applied_draft() {
-                    connector::fetcher::set_trade_fetch_mode(mode);
-                }
+                connector::fetcher::set_trade_fetch_mode(self.network.trade_fetch_mode.clone());
 
                 let mut active_windows = self
                     .active_dashboard()
@@ -306,9 +310,7 @@ impl Flowsurface {
 
                 if self.confirm_dialog.is_some() {
                     self.confirm_dialog = None;
-                    self.network.revert_fetch_drafts();
                 } else if self.sidebar.active_menu().is_some() {
-                    self.network.revert_fetch_drafts();
                     self.sidebar.set_menu(None);
                 } else {
                     let dashboard = self.active_dashboard_mut();
@@ -441,9 +443,6 @@ impl Flowsurface {
                 self.ui_scale_factor = value;
             }
             Message::ToggleDialogModal(dialog) => {
-                if dialog.is_none() {
-                    self.network.revert_fetch_drafts();
-                }
                 self.confirm_dialog = dialog;
             }
             Message::Layouts(message) => {
@@ -565,13 +564,14 @@ impl Flowsurface {
                 }
             }
             Message::NetworkManager(msg) => {
-                let action = self.network.update(msg);
+                let action = self.network_modal.update(msg);
 
                 match action {
-                    Some(network_manager::Action::ApplyProxy) => {
-                        if let Some(proxy) = self.network.proxy_cfg() {
-                            data::config::auth::save_proxy_auth(&proxy);
+                    Some(network_manager::Action::ApplyProxy(ref proxy)) => {
+                        if let Some(proxy) = proxy {
+                            data::config::auth::save_proxy_auth(proxy);
                         }
+                        self.network.proxy_cfg = proxy.clone();
 
                         self.confirm_dialog = Some(
                             screen::ConfirmDialog::new(
@@ -604,6 +604,7 @@ impl Flowsurface {
                         {
                             data::config::auth::save_server_token(url, token);
                         }
+                        self.network.trade_fetch_mode = mode;
 
                         self.confirm_dialog = Some(
                             screen::ConfirmDialog::new(
@@ -1268,7 +1269,9 @@ impl Flowsurface {
 
                 let base_content = dashboard_modal(
                     base,
-                    self.network.view().map(Message::NetworkManager),
+                    self.network_modal
+                        .view(&self.network)
+                        .map(Message::NetworkManager),
                     Message::Sidebar(dashboard::sidebar::Message::ToggleSidebarMenu(None)),
                     padding,
                     Alignment::End,
@@ -1330,7 +1333,10 @@ impl Flowsurface {
 
         let audio_cfg = data::AudioStream::from(&self.audio_stream);
 
-        let proxy_cfg_persisted = self.network.proxy_cfg().map(|p| p.without_auth());
+        let network_persisted = data::Network {
+            proxy_cfg: self.network.proxy_cfg.clone().map(|p| p.without_auth()),
+            trade_fetch_mode: self.network.trade_fetch_mode.clone(),
+        };
 
         let state = data::State::from_parts(
             layouts,
@@ -1341,9 +1347,8 @@ impl Flowsurface {
             self.sidebar.state.clone(),
             self.ui_scale_factor,
             audio_cfg,
-            connector::fetcher::trade_fetch_mode(),
+            network_persisted,
             self.volume_size_unit,
-            proxy_cfg_persisted,
         );
 
         match serde_json::to_string(&state) {

@@ -15,8 +15,9 @@ use std::path::PathBuf;
 
 pub use audio::AudioStream;
 pub use config::ScaleFactor;
+pub use config::network::{Network, TradeFetchMode};
 pub use config::sidebar::{self, Sidebar};
-pub use config::state::{Layouts, State, TradeFetchMode};
+pub use config::state::{Layouts, State};
 pub use config::theme::Theme;
 pub use config::timezone::UserTimezone;
 
