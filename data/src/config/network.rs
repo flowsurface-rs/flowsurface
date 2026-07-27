@@ -5,18 +5,36 @@ use serde::{Deserialize, Serialize};
 /// Both settings take effect after a restart of the application.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Network {
-    pub proxy_cfg: Option<exchange::proxy::Proxy>,
+    pub proxy: Option<exchange::proxy::Proxy>,
+    pub server_url: Option<String>,
+    /// Bearer token for the market-data server.
+    /// Stored in the system keychain, never persisted to JSON.
+    #[serde(skip)]
+    pub server_auth_token: Option<String>,
     pub trade_fetch_mode: TradeFetchMode,
 }
 
 impl Network {
     pub fn new(
-        proxy_cfg: Option<exchange::proxy::Proxy>,
+        proxy: Option<exchange::proxy::Proxy>,
+        server_url: Option<String>,
+        server_auth_token: Option<String>,
         trade_fetch_mode: TradeFetchMode,
     ) -> Self {
         Self {
-            proxy_cfg,
+            proxy,
+            server_url,
+            server_auth_token,
             trade_fetch_mode,
+        }
+    }
+
+    /// Return a copy suitable for disk persistence (proxy auth stripped).
+    /// Auth credentials are stored separately in the system keychain.
+    pub fn for_persistence(&self) -> Self {
+        Self {
+            proxy: self.proxy.clone().map(|p| p.without_auth()),
+            ..self.clone()
         }
     }
 }
@@ -28,15 +46,8 @@ pub enum TradeFetchMode {
     Off,
     /// Direct exchange API only (Binance spot/linear/inverse).
     Exchange,
-    Server {
-        /// Base URL of the market-data server (e.g. `http://127.0.0.1:8080`).
-        /// `None` means the server mode is selected but no URL is configured yet.
-        url: Option<String>,
-        /// Optional bearer token sent as `Authorization: Bearer <token>` on every request.
-        /// Stored in the system keychain, never persisted to JSON.
-        #[serde(skip)]
-        auth_token: Option<String>,
-    },
+    /// Remote Arrow IPC market-data server.
+    Server,
 }
 
 impl std::fmt::Display for TradeFetchMode {
@@ -44,46 +55,7 @@ impl std::fmt::Display for TradeFetchMode {
         match self {
             Self::Off => write!(f, "Off"),
             Self::Exchange => write!(f, "Exchange"),
-            Self::Server { .. } => write!(f, "Server"),
-        }
-    }
-}
-
-impl TradeFetchMode {
-    /// Returns the server URL if this is the `Server` variant.
-    pub fn server_url(&self) -> Option<&str> {
-        match self {
-            Self::Server { url, .. } => url.as_deref(),
-            _ => None,
-        }
-    }
-
-    /// Returns the server auth token if this is the `Server` variant.
-    pub fn server_auth_token(&self) -> Option<&str> {
-        match self {
-            Self::Server { auth_token, .. } => auth_token.as_deref(),
-            _ => None,
-        }
-    }
-
-    /// Build a `Server` variant from raw input strings.
-    ///
-    /// Trims whitespace and trailing slashes from the URL.
-    /// Empty strings are treated as `None`.
-    pub fn from_server_parts(url: &str, auth_token: &str) -> Self {
-        let trimmed = url.trim().trim_end_matches('/');
-        let auth = auth_token.trim();
-        Self::Server {
-            url: if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_string())
-            },
-            auth_token: if auth.is_empty() {
-                None
-            } else {
-                Some(auth.to_string())
-            },
+            Self::Server => write!(f, "Server"),
         }
     }
 }

@@ -310,7 +310,7 @@ pub fn request_fetch(
                         client.base_url(),
                         ticker_info.exchange()
                     );
-                } else if matches!(mode, TradeFetchMode::Server { .. }) {
+                } else if mode == TradeFetchMode::Server {
                     log::error!(
                         "Server mode selected but server URL is invalid, check Network Manager settings"
                     );

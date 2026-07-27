@@ -32,6 +32,7 @@ pub enum Action {
         Option<data::layout::pane::ContentKind>,
     ),
     ErrorOccurred(data::InternalError),
+    MenuChanged(Option<sidebar::Menu>),
 }
 
 impl Sidebar {
@@ -58,7 +59,9 @@ impl Sidebar {
     pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Action>) {
         match message {
             Message::ToggleSidebarMenu(menu) => {
-                self.set_menu(menu.filter(|&m| !self.is_menu_active(m)));
+                let new_menu = menu.filter(|&m| !self.is_menu_active(m));
+                self.set_menu(new_menu);
+                return (Task::none(), Some(Action::MenuChanged(new_menu)));
             }
             Message::SetSidebarPosition(position) => {
                 self.state.position = position;

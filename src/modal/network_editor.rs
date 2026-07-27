@@ -12,7 +12,11 @@ use iced::{
 
 pub enum Action {
     ApplyProxy(Option<exchange::proxy::Proxy>),
-    TradeFetchModeChanged(fetcher::TradeFetchMode),
+    ApplyServerConfig {
+        mode: fetcher::TradeFetchMode,
+        url: Option<String>,
+        auth_token: Option<String>,
+    },
     Exit,
 }
 
@@ -32,22 +36,26 @@ pub enum Message {
 }
 
 #[derive(Debug, Clone)]
-pub struct NetworkManager {
+pub struct NetworkEditor {
     proxy: ProxyForm,
     fetch: FetchForm,
     confirm: ConfirmState,
     error: Option<String>,
 }
 
-impl NetworkManager {
-    /// Create a new `NetworkManager` with form fields pre-populated from
+impl NetworkEditor {
+    /// Create a new `NetworkEditor` with form fields pre-populated from
     /// the caller's effective network config.
     pub fn new(network: &data::Network) -> Self {
         let mut proxy = ProxyForm::new();
-        proxy.populate_from(network.proxy_cfg.as_ref());
+        proxy.populate_from(network.proxy.as_ref());
         Self {
             proxy,
-            fetch: FetchForm::new(&network.trade_fetch_mode),
+            fetch: FetchForm::new(
+                &network.trade_fetch_mode,
+                network.server_url.as_deref(),
+                network.server_auth_token.as_deref(),
+            ),
             confirm: ConfirmState::Idle,
             error: None,
         }
@@ -72,15 +80,16 @@ impl NetworkManager {
 
         let proxy_settings = self
             .proxy
-            .view(
-                network.proxy_cfg.as_ref(),
-                self.confirm,
-                self.error.as_deref(),
-            )
+            .view(network.proxy.as_ref(), self.confirm, self.error.as_deref())
             .map(Message::Proxy);
         let fetch_settings = self
             .fetch
-            .view(self.confirm, &network.trade_fetch_mode)
+            .view(
+                self.confirm,
+                &network.trade_fetch_mode,
+                network.server_url.as_deref(),
+                network.server_auth_token.as_deref(),
+            )
             .map(Message::Fetch);
 
         container(column![modal_header, fetch_settings, proxy_settings].spacing(12))
@@ -147,7 +156,28 @@ impl ProxyForm {
 
     /// Whether the form state differs from the effective (in-use) config.
     fn is_pending(&self, effective_cfg: Option<&Proxy>) -> bool {
-        self.build_from_parts().ok().flatten().as_ref() != effective_cfg
+        self.proxy_config_pending(effective_cfg)
+    }
+
+    /// Check whether the form fields differ from the effective proxy.
+    fn proxy_config_pending(&self, effective_cfg: Option<&Proxy>) -> bool {
+        let draft_has_content = ![&self.host, &self.port, &self.username, &self.password]
+            .iter()
+            .all(|s| s.trim().is_empty());
+
+        match effective_cfg {
+            Some(effective) => {
+                draft_has_content
+                    && (self.scheme != effective.scheme()
+                        || self.host.trim() != effective.host()
+                        || self.port.trim() != effective.port().to_string()
+                        || self.username.trim()
+                            != effective.auth().map(|a| a.username()).unwrap_or("")
+                        || self.password.trim()
+                            != effective.auth().map(|a| a.password()).unwrap_or(""))
+            }
+            None => draft_has_content,
+        }
     }
 
     /// Build a `Proxy` from the form inputs.
@@ -289,8 +319,7 @@ impl ProxyForm {
                 ProxyMsg::Cancel,
             ),
             _ => {
-                let proxy_draft_differs =
-                    self.build_from_parts().ok().flatten().as_ref() != effective_cfg;
+                let proxy_draft_differs = self.proxy_config_pending(effective_cfg);
 
                 let mut row_buttons = row![
                     iced::widget::space::horizontal(),
@@ -470,14 +499,18 @@ pub enum FetchMsg {
 }
 
 impl FetchForm {
-    fn new(effective: &fetcher::TradeFetchMode) -> Self {
+    fn new(
+        effective_mode: &fetcher::TradeFetchMode,
+        effective_url: Option<&str>,
+        effective_auth_token: Option<&str>,
+    ) -> Self {
         Self {
-            server_url_input: effective.server_url().unwrap_or("").to_string(),
-            server_auth_token_input: effective.server_auth_token().unwrap_or("").to_string(),
+            server_url_input: effective_url.unwrap_or("").to_string(),
+            server_auth_token_input: effective_auth_token.unwrap_or("").to_string(),
             expanded_server: false,
-            draft_active: *effective != fetcher::TradeFetchMode::Off,
-            draft_tag: match effective {
-                fetcher::TradeFetchMode::Server { .. } => FetchModeTag::Server,
+            draft_active: *effective_mode != fetcher::TradeFetchMode::Off,
+            draft_tag: match effective_mode {
+                fetcher::TradeFetchMode::Server => FetchModeTag::Server,
                 _ => FetchModeTag::Exchange,
             },
             hide_token: true,
@@ -490,17 +523,53 @@ impl FetchForm {
         }
         match self.draft_tag {
             FetchModeTag::Exchange => fetcher::TradeFetchMode::Exchange,
-            FetchModeTag::Server => fetcher::TradeFetchMode::from_server_parts(
-                &self.server_url_input,
-                &self.server_auth_token_input,
-            ),
+            FetchModeTag::Server => fetcher::TradeFetchMode::Server,
         }
+    }
+
+    fn trimmed_url(&self) -> Option<String> {
+        let trimmed = self.server_url_input.trim().trim_end_matches('/');
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    }
+
+    fn trimmed_auth(&self) -> Option<String> {
+        let auth = self.server_auth_token_input.trim();
+        if auth.is_empty() {
+            None
+        } else {
+            Some(auth.to_string())
+        }
+    }
+
+    fn server_config_pending(
+        &self,
+        effective_mode: &fetcher::TradeFetchMode,
+        effective_url: Option<&str>,
+        effective_auth: Option<&str>,
+    ) -> bool {
+        let draft_mode = self.build_mode();
+        if draft_mode != *effective_mode {
+            return true;
+        }
+        if draft_mode == fetcher::TradeFetchMode::Server
+            && self.trimmed_url().as_deref() != effective_url
+            || self.trimmed_auth().as_deref() != effective_auth
+        {
+            return true;
+        }
+        false
     }
 
     fn view(
         &self,
         confirm: ConfirmState,
-        effective: &fetcher::TradeFetchMode,
+        effective_mode: &fetcher::TradeFetchMode,
+        effective_url: Option<&str>,
+        effective_auth: Option<&str>,
     ) -> Element<'_, FetchMsg> {
         let selected_tag = if self.draft_active {
             Some(self.draft_tag)
@@ -597,8 +666,8 @@ impl FetchForm {
             );
         }
 
-        // Pending = form build differs from the effective (applied) mode
-        let pending = self.build_mode() != *effective;
+        // Pending = draft differs from the effective (applied) config
+        let pending = self.server_config_pending(effective_mode, effective_url, effective_auth);
         let draft_changed = pending;
 
         if confirm == ConfirmState::FetchApply || draft_changed {
@@ -681,7 +750,13 @@ impl FetchForm {
             FetchMsg::ApplyFetchSettings => {
                 *error = None;
                 let mode = self.build_mode();
-                return Some(Action::TradeFetchModeChanged(mode));
+                let url = self.trimmed_url();
+                let auth_token = self.trimmed_auth();
+                return Some(Action::ApplyServerConfig {
+                    mode,
+                    url,
+                    auth_token,
+                });
             }
             FetchMsg::Cancel => {
                 *confirm = ConfirmState::Idle;

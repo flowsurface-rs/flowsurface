@@ -369,18 +369,15 @@ pub fn load_saved_state() -> SavedState {
 
             // Hydrate secrets from keychain into the network config
             let mut network = state.network.clone();
-            if let data::TradeFetchMode::Server {
-                url: Some(ref url),
-                ref mut auth_token,
-            } = network.trade_fetch_mode
-                && auth_token.is_none()
+            if network.server_auth_token.is_none()
+                && let Some(ref url) = network.server_url
             {
-                *auth_token = data::config::auth::load_server_token(url);
+                network.server_auth_token = data::config::auth::load_server_token(url);
             }
             exchange::unit::qty::set_preferred_currency(state.size_in_quote_ccy);
             crate::connector::fetcher::set_trade_fetch_mode(state.network.trade_fetch_mode.clone());
 
-            if let Some(proxy) = network.proxy_cfg.as_mut()
+            if let Some(proxy) = network.proxy.as_mut()
                 && proxy.auth().is_none()
                 && let Some(auth) = data::config::auth::load_proxy_auth(proxy)
             {

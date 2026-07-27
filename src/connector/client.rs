@@ -21,10 +21,16 @@ pub struct DataSources {
 impl DataSources {
     /// Build HTTP clients, spawn exchange adapter handles, and optionally
     /// create a market-data server client from the persisted configuration.
-    pub fn new(proxy_cfg: Option<&Proxy>, mode: &data::TradeFetchMode) -> Self {
-        let (exchange_http, server_http) = Self::build_http_clients(proxy_cfg);
-        let server_client = ServerClient::from_mode(&server_http, mode);
-        let handles = AdapterHandles::spawn_venues(&exchange_http, Venue::ALL, proxy_cfg);
+    pub fn new(
+        proxy: Option<&Proxy>,
+        mode: &data::TradeFetchMode,
+        server_url: Option<&str>,
+        server_auth_token: Option<&str>,
+    ) -> Self {
+        let (exchange_http, server_http) = Self::build_http_clients(proxy);
+        let server_client =
+            ServerClient::from_mode(&server_http, mode, server_url, server_auth_token);
+        let handles = AdapterHandles::spawn_venues(&exchange_http, Venue::ALL, proxy);
         Self {
             handles,
             server_client,
@@ -138,12 +144,21 @@ impl ServerClient {
     ///
     /// Returns `None` when the mode is not [`TradeFetchMode::Server`] or the
     /// URL is empty/invalid.
-    pub fn from_mode(http_client: &reqwest::Client, mode: &data::TradeFetchMode) -> Option<Self> {
+    pub fn from_mode(
+        http_client: &reqwest::Client,
+        mode: &data::TradeFetchMode,
+        server_url: Option<&str>,
+        server_auth_token: Option<&str>,
+    ) -> Option<Self> {
         match mode {
-            data::TradeFetchMode::Server {
-                url: Some(url),
-                auth_token,
-            } => Self::new(url, auth_token.clone(), http_client.clone()),
+            data::TradeFetchMode::Server => {
+                let url = server_url?;
+                Self::new(
+                    url,
+                    server_auth_token.map(String::from),
+                    http_client.clone(),
+                )
+            }
             _ => None,
         }
     }

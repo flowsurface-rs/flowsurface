@@ -22,7 +22,7 @@ use layout::{LayoutId, configuration};
 use modal::{
     LayoutManager, ThemeEditor,
     audio::AudioStream,
-    network_manager::{self, NetworkManager},
+    network_editor::{self, NetworkEditor},
 };
 use modal::{dashboard_modal, main_dialog_modal};
 use notify::Notifications;
@@ -78,8 +78,8 @@ struct Flowsurface {
     sidebar: dashboard::Sidebar,
     layout_manager: LayoutManager,
     theme_editor: ThemeEditor,
-    network_modal: NetworkManager,
-    network: data::Network,
+    network_editor: NetworkEditor,
+    network_config: data::Network,
     data_sources: Arc<DataSources>,
     audio_stream: AudioStream,
     confirm_dialog: Option<screen::ConfirmDialog<Message>>,
@@ -114,7 +114,7 @@ enum Message {
     RemoveNotification(usize),
     ToggleDialogModal(Option<screen::ConfirmDialog<Message>>),
     ThemeEditor(modal::theme_editor::Message),
-    NetworkManager(modal::network_manager::Message),
+    NetworkEditor(modal::network_editor::Message),
     Layouts(modal::layout_manager::Message),
     AudioStream(modal::audio::Message),
 }
@@ -135,8 +135,10 @@ impl Flowsurface {
         };
 
         let data_sources = Arc::new(DataSources::new(
-            saved_state.network.proxy_cfg.as_ref(),
+            saved_state.network.proxy.as_ref(),
             &saved_state.network.trade_fetch_mode,
+            saved_state.network.server_url.as_deref(),
+            saved_state.network.server_auth_token.as_deref(),
         ));
 
         let (sidebar, launch_sidebar) =
@@ -157,8 +159,8 @@ impl Flowsurface {
             volume_size_unit: saved_state.volume_size_unit,
             theme: saved_state.theme,
             notifications: Notifications::new(),
-            network: saved_state.network.clone(),
-            network_modal: NetworkManager::new(&saved_state.network),
+            network_config: saved_state.network.clone(),
+            network_editor: NetworkEditor::new(&saved_state.network),
         };
 
         if let Some(err) = audio_init_err {
@@ -290,8 +292,6 @@ impl Flowsurface {
             }
             Message::RestartRequested(None) => {
                 self.confirm_dialog = None;
-
-                connector::fetcher::set_trade_fetch_mode(self.network.trade_fetch_mode.clone());
 
                 let mut active_windows = self
                     .active_dashboard()
@@ -562,15 +562,15 @@ impl Flowsurface {
                     None => {}
                 }
             }
-            Message::NetworkManager(msg) => {
-                let action = self.network_modal.update(msg);
+            Message::NetworkEditor(msg) => {
+                let action = self.network_editor.update(msg);
 
                 match action {
-                    Some(network_manager::Action::ApplyProxy(ref proxy)) => {
+                    Some(network_editor::Action::ApplyProxy(ref proxy)) => {
                         if let Some(proxy) = proxy {
                             data::config::auth::save_proxy_auth(proxy);
                         }
-                        self.network.proxy_cfg = proxy.clone();
+                        self.network_config.proxy = proxy.clone();
 
                         self.confirm_dialog = Some(
                             screen::ConfirmDialog::new(
@@ -595,15 +595,19 @@ impl Flowsurface {
                             Message::SaveStateRequested,
                         );
                     }
-                    Some(network_manager::Action::TradeFetchModeChanged(mode)) => {
-                        if let data::TradeFetchMode::Server {
-                            url: Some(ref url),
-                            auth_token: Some(ref token),
-                        } = mode
+                    Some(network_editor::Action::ApplyServerConfig {
+                        mode,
+                        url,
+                        auth_token,
+                    }) => {
+                        if let Some(ref url) = url
+                            && let Some(ref token) = auth_token
                         {
                             data::config::auth::save_server_token(url, token);
                         }
-                        self.network.trade_fetch_mode = mode;
+                        self.network_config.server_url = url;
+                        self.network_config.server_auth_token = auth_token;
+                        self.network_config.trade_fetch_mode = mode;
 
                         self.confirm_dialog = Some(
                             screen::ConfirmDialog::new(
@@ -628,7 +632,7 @@ impl Flowsurface {
                             Message::SaveStateRequested,
                         );
                     }
-                    Some(network_manager::Action::Exit) => {
+                    Some(network_editor::Action::Exit) => {
                         self.sidebar.set_menu(Some(sidebar::Menu::Settings));
                     }
                     None => {}
@@ -638,6 +642,10 @@ impl Flowsurface {
                 let (task, action) = self.sidebar.update(message);
 
                 match action {
+                    Some(dashboard::sidebar::Action::MenuChanged(Some(sidebar::Menu::Network))) => {
+                        self.network_editor = NetworkEditor::new(&self.network_config);
+                    }
+                    Some(dashboard::sidebar::Action::MenuChanged(_)) => {}
                     Some(dashboard::sidebar::Action::TickerSelected(ticker_info, content)) => {
                         let main_window_id = self.main_window.id;
                         let handles = self.data_sources.handles.clone();
@@ -1268,9 +1276,9 @@ impl Flowsurface {
 
                 let base_content = dashboard_modal(
                     base,
-                    self.network_modal
-                        .view(&self.network)
-                        .map(Message::NetworkManager),
+                    self.network_editor
+                        .view(&self.network_config)
+                        .map(Message::NetworkEditor),
                     Message::Sidebar(dashboard::sidebar::Message::ToggleSidebarMenu(None)),
                     padding,
                     Alignment::End,
@@ -1332,11 +1340,6 @@ impl Flowsurface {
 
         let audio_cfg = data::AudioStream::from(&self.audio_stream);
 
-        let network_persisted = data::Network {
-            proxy_cfg: self.network.proxy_cfg.clone().map(|p| p.without_auth()),
-            trade_fetch_mode: self.network.trade_fetch_mode.clone(),
-        };
-
         let state = data::State::from_parts(
             layouts,
             self.theme.clone(),
@@ -1346,7 +1349,7 @@ impl Flowsurface {
             self.sidebar.state.clone(),
             self.ui_scale_factor,
             audio_cfg,
-            network_persisted,
+            self.network_config.for_persistence(),
             self.volume_size_unit,
         );
 
