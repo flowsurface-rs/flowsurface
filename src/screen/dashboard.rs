@@ -179,6 +179,7 @@ impl Dashboard {
     pub fn update(
         &mut self,
         handles: &AdapterHandles,
+        server_client: Option<&crate::connector::client::ServerClient>,
         message: Message,
         main_window: &Window,
         layout_id: &uuid::Uuid,
@@ -372,6 +373,7 @@ impl Dashboard {
 
                                 fetcher::request_fetch_many(
                                     handles.clone(),
+                                    server_client,
                                     pane_id,
                                     &ready_streams,
                                     *layout_id,
@@ -1148,6 +1150,7 @@ impl Dashboard {
     pub fn tick(
         &mut self,
         handles: &AdapterHandles,
+        server_client: Option<&crate::connector::client::ServerClient>,
         now: Instant,
         _main_window: window::Id,
     ) -> Task<Message> {
@@ -1169,6 +1172,7 @@ impl Dashboard {
 
                     let fetch_tasks = fetcher::request_fetch_many(
                         handles.clone(),
+                        server_client,
                         pane_id,
                         &ready_streams,
                         self.layout_id,

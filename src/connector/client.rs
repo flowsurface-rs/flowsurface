@@ -9,6 +9,24 @@ use arrow_ipc::reader::StreamReader;
 /// Maximum trades to request per Arrow IPC call.
 pub(super) const ARROW_LIMIT: usize = 400_000;
 
+/// Build a [`ServerClient`] from the shared HTTP client and the current
+/// trade-fetch mode configuration.
+///
+/// Returns `None` when the mode is not [`TradeFetchMode::Server`] or the
+/// URL is empty/invalid.
+pub fn build_server_client(
+    http_client: &reqwest::Client,
+    mode: &data::TradeFetchMode,
+) -> Option<ServerClient> {
+    match mode {
+        data::TradeFetchMode::Server {
+            url: Some(url),
+            auth_token,
+        } if !url.is_empty() => ServerClient::new(url, auth_token.clone(), http_client.clone()),
+        _ => None,
+    }
+}
+
 /// A handle to a remote market-data HTTP server.
 ///
 /// The server is expected to expose a `GET /trades.arrow` endpoint that
@@ -24,9 +42,16 @@ pub struct ServerClient {
 impl ServerClient {
     /// Create a new client targeting the given base URL (e.g. `http://127.0.0.1:8080`).
     ///
+    /// The `client` is a shared `reqwest::Client` that carries the application-wide
+    /// proxy and TLS configuration — it is **not** owned by this struct.
+    ///
     /// An optional bearer token is sent as `Authorization: Bearer <token>` on every request.
     /// Trailing slashes are stripped. Returns `None` if the URL is empty or invalid.
-    pub fn new(base_url: &str, auth_token: Option<String>) -> Option<Self> {
+    pub fn new(
+        base_url: &str,
+        auth_token: Option<String>,
+        client: reqwest::Client,
+    ) -> Option<Self> {
         let trimmed = base_url.trim().trim_end_matches('/');
 
         if trimmed.is_empty() {
@@ -36,13 +61,6 @@ impl ServerClient {
         let _ = trimmed
             .parse::<url::Url>()
             .map_err(|e| log::warn!("Invalid server base URL '{trimmed}': {e}"))
-            .ok()?;
-
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .danger_accept_invalid_certs(true)
-            .build()
-            .map_err(|e| log::warn!("Failed to build server HTTP client: {e}"))
             .ok()?;
 
         Some(Self {

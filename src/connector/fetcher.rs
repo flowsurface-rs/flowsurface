@@ -15,20 +15,41 @@ pub use data::TradeFetchMode;
 
 static TRADE_FETCH_MODE: RwLock<TradeFetchMode> = RwLock::new(TradeFetchMode::Off);
 
-/// Cached server client — created once and reused so the underlying
-/// `reqwest::Client` (connection pool, TLS state) is preserved across
-/// fetch calls.  Invalidated whenever [`set_trade_fetch_mode`] is called.
-static SERVER_CLIENT: RwLock<Option<ServerClient>> = RwLock::new(None);
+/// Build the two HTTP clients used by the application.
+///
+/// Returns `(exchange_client, server_client)`.
+///
+/// * `exchange_client` — for exchange adapters (proxy-aware, no TLS relaxation).
+/// * `server_client` — for the user-configured market-data server (proxy-aware,
+///   accepts invalid TLS certificates for self-signed server certs).
+pub fn build_http_clients(
+    proxy_cfg: Option<&exchange::adapter::Proxy>,
+) -> (reqwest::Client, reqwest::Client) {
+    let mut exchange_builder = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .connect_timeout(std::time::Duration::from_secs(10));
+    exchange_builder = exchange::adapter::proxy::try_apply_proxy(exchange_builder, proxy_cfg);
+    let exchange_client = exchange_builder
+        .build()
+        .expect("Failed to build exchange HTTP client");
+
+    let mut server_builder = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .danger_accept_invalid_certs(true);
+    server_builder = exchange::adapter::proxy::try_apply_proxy(server_builder, proxy_cfg);
+    let server_client = server_builder
+        .build()
+        .expect("Failed to build server HTTP client");
+
+    (exchange_client, server_client)
+}
 
 pub fn set_trade_fetch_mode(mode: TradeFetchMode) {
     if let Ok(mut guard) = TRADE_FETCH_MODE.write() {
         *guard = mode;
     } else {
         log::error!("Trade fetch mode lock poisoned — resetting to Off");
-    }
-
-    if let Ok(mut guard) = SERVER_CLIENT.write() {
-        *guard = None;
     }
 }
 
@@ -41,42 +62,6 @@ pub fn trade_fetch_mode() -> TradeFetchMode {
 
 pub fn is_trade_fetch_enabled() -> bool {
     trade_fetch_mode() != TradeFetchMode::Off
-}
-
-/// Returns a clone of the global server client, if one was configured
-/// via the current [`TradeFetchMode::Server`] variant.
-///
-/// The underlying `reqwest::Client` is **cached** after the first call
-/// so connection-pooling is preserved across fetch batches.  The cache
-/// is invalidated whenever [`set_trade_fetch_mode`] is
-/// called (e.g. after a restart with a new server URL).
-fn server_client() -> Option<ServerClient> {
-    if let Ok(guard) = SERVER_CLIENT.read()
-        && let Some(ref client) = *guard
-    {
-        return Some(client.clone());
-    }
-
-    let mode = trade_fetch_mode();
-    let client = if let TradeFetchMode::Server {
-        url: Some(ref url),
-        auth_token,
-    } = mode
-    {
-        if url.is_empty() {
-            None
-        } else {
-            ServerClient::new(url, auth_token.clone())
-        }
-    } else {
-        None
-    };
-
-    if let Ok(mut guard) = SERVER_CLIENT.write() {
-        *guard = client.clone();
-    }
-
-    client
 }
 
 #[derive(Debug, Clone)]
@@ -268,6 +253,7 @@ pub enum FetchUpdate {
 
 pub fn request_fetch(
     handles: AdapterHandles,
+    server_client: Option<&crate::connector::client::ServerClient>,
     pane_id: Uuid,
     ready_streams: &[StreamKind],
     layout_id: Uuid,
@@ -339,8 +325,8 @@ pub fn request_fetch(
                     ticker_info.exchange(),
                     Exchange::BinanceSpot | Exchange::BinanceLinear | Exchange::BinanceInverse
                 );
-                let server = server_client();
                 let mode = trade_fetch_mode();
+                let server = server_client.cloned();
                 let data_path = data::data_path(Some("market_data/binance/"));
 
                 if let Some(ref client) = server {
@@ -416,6 +402,7 @@ pub fn request_fetch(
 
 pub fn request_fetch_many(
     handles: AdapterHandles,
+    server_client: Option<&crate::connector::client::ServerClient>,
     pane_id: Uuid,
     ready_streams: &[StreamKind],
     layout_id: Uuid,
@@ -427,6 +414,7 @@ pub fn request_fetch_many(
     for (req_id, fetch, stream) in reqs {
         tasks.push(request_fetch(
             handles.clone(),
+            server_client,
             pane_id,
             ready_streams,
             layout_id,

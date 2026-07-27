@@ -74,6 +74,7 @@ struct Flowsurface {
     main_window: window::Window,
     sidebar: dashboard::Sidebar,
     handles: exchange::adapter::AdapterHandles,
+    server_client: Option<connector::client::ServerClient>,
     layout_manager: LayoutManager,
     theme_editor: ThemeEditor,
     network_modal: NetworkManager,
@@ -131,7 +132,16 @@ impl Flowsurface {
             window::open(config)
         };
 
+        let (exchange_http, server_http) =
+            connector::fetcher::build_http_clients(saved_state.network.proxy_cfg.as_ref());
+
+        let server_client = connector::client::build_server_client(
+            &server_http,
+            &saved_state.network.trade_fetch_mode,
+        );
+
         let handles = exchange::adapter::AdapterHandles::spawn_venues(
+            &exchange_http,
             exchange::adapter::Venue::ALL,
             saved_state.network.proxy_cfg.as_ref(),
         );
@@ -151,6 +161,7 @@ impl Flowsurface {
             audio_stream,
             sidebar,
             handles,
+            server_client,
             confirm_dialog: None,
             timezone: saved_state.timezone,
             ui_scale_factor: saved_state.scale_factor,
@@ -248,10 +259,11 @@ impl Flowsurface {
             Message::Tick(now) => {
                 let main_window_id = self.main_window.id;
                 let handles = self.handles.clone();
+                let server_client = self.server_client.clone();
 
                 return self
                     .active_dashboard_mut()
-                    .tick(&handles, now, main_window_id)
+                    .tick(&handles, server_client.as_ref(), now, main_window_id)
                     .map(move |msg| Message::Dashboard {
                         layout_id: None,
                         event: msg,
@@ -345,8 +357,13 @@ impl Flowsurface {
                 let handles = self.handles.clone();
 
                 if let Some(dashboard) = self.layout_manager.mut_dashboard(layout_id) {
-                    let (main_task, event) =
-                        dashboard.update(&handles, msg, &main_window, &layout_id);
+                    let (main_task, event) = dashboard.update(
+                        &handles,
+                        self.server_client.as_ref(),
+                        msg,
+                        &main_window,
+                        &layout_id,
+                    );
 
                     let additional_task = match event {
                         Some(dashboard::Event::DistributeFetchedData {

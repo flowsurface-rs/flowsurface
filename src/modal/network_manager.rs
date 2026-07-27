@@ -601,27 +601,29 @@ impl FetchForm {
         let pending = self.build_mode() != *effective;
         let draft_changed = pending;
 
-        let buttons: Element<'_, FetchMsg> = if confirm == ConfirmState::FetchApply {
-            confirm_row(
-                "Changes will take effect after a restart",
-                FetchMsg::ApplyFetchSettings,
-                FetchMsg::Cancel,
-            )
-        } else {
-            let mut row_buttons = row![
-                iced::widget::space::horizontal(),
-                pending_info::<FetchMsg>(pending),
-            ]
-            .spacing(8);
+        if confirm == ConfirmState::FetchApply || draft_changed {
+            let buttons: Element<'_, FetchMsg> = if confirm == ConfirmState::FetchApply {
+                confirm_row(
+                    "Changes will take effect after a restart",
+                    FetchMsg::ApplyFetchSettings,
+                    FetchMsg::Cancel,
+                )
+            } else {
+                let mut row_buttons = row![
+                    iced::widget::space::horizontal(),
+                    pending_info::<FetchMsg>(pending),
+                ]
+                .spacing(8);
 
-            if draft_changed {
-                row_buttons =
-                    row_buttons.push(button("Apply").on_press(FetchMsg::RequestApplyFetch));
-            }
-            row_buttons.into()
-        };
+                if draft_changed {
+                    row_buttons =
+                        row_buttons.push(button("Apply").on_press(FetchMsg::RequestApplyFetch));
+                }
+                row_buttons.into()
+            };
 
-        fetch_section = fetch_section.push(buttons);
+            fetch_section = fetch_section.push(buttons);
+        }
 
         column![
             row![
