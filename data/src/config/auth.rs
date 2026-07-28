@@ -89,23 +89,7 @@ pub fn save_proxy_auth(proxy: &Proxy) {
             log::warn!(
                 "Failed to store proxy auth in keychain (service={PROXY_KEYCHAIN_SERVICE} key={key}): {err}"
             );
-            return;
         }
-    }
-
-    match entry.get_password() {
-        Ok(roundtrip) => {
-            if roundtrip == secret {
-                log::info!("Keychain roundtrip OK (service={PROXY_KEYCHAIN_SERVICE} key={key})");
-            } else {
-                log::warn!(
-                    "Keychain roundtrip MISMATCH (service={PROXY_KEYCHAIN_SERVICE} key={key})"
-                );
-            }
-        }
-        Err(err) => log::warn!(
-            "Keychain roundtrip read FAILED (service={PROXY_KEYCHAIN_SERVICE} key={key}): {err}"
-        ),
     }
 }
 

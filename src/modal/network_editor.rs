@@ -249,11 +249,6 @@ impl ProxyForm {
 
     /// Whether the form state differs from the effective (in-use) config.
     fn is_pending(&self, effective_cfg: Option<&Proxy>) -> bool {
-        self.proxy_config_pending(effective_cfg)
-    }
-
-    /// Check whether the form fields differ from the effective proxy.
-    fn proxy_config_pending(&self, effective_cfg: Option<&Proxy>) -> bool {
         let draft_has_content = ![&self.host, &self.port, &self.username, &self.password]
             .iter()
             .all(|s| s.trim().is_empty());
@@ -406,7 +401,7 @@ impl ProxyForm {
                 ConfirmState::ProxyClear => confirm_row(msg, ProxyMsg::Clear, ProxyMsg::Cancel),
                 _ => apply_action_row(
                     is_pending,
-                    self.proxy_config_pending(effective_cfg),
+                    is_pending,
                     effective_cfg.is_some(),
                     ProxyMsg::RequestApply,
                     ProxyMsg::RequestClear,
