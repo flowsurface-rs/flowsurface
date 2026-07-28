@@ -15,6 +15,9 @@ pub use data::TradeFetchMode;
 
 static TRADE_FETCH_MODE: RwLock<TradeFetchMode> = RwLock::new(TradeFetchMode::Off);
 
+/// Maximum trades to request per Arrow IPC call to server.
+const ARROW_LIMIT: usize = 400_000;
+
 /// Override the global trade-fetch mode at runtime.
 pub fn set_trade_fetch_mode(mode: TradeFetchMode) {
     if let Ok(mut guard) = TRADE_FETCH_MODE.write() {
@@ -71,7 +74,7 @@ pub enum ReqError {
 enum RequestStatus {
     Pending,
     Completed(u64),
-    Failed(String),
+    Failed(String, u64),
 }
 
 #[derive(Default)]
@@ -80,6 +83,8 @@ pub struct RequestHandler {
 }
 
 impl RequestHandler {
+    const RETRY_AFTER_MS: u64 = 30_000;
+
     pub fn add_request(&mut self, fetch: FetchRange) -> Result<Option<Uuid>, ReqError> {
         let request = FetchRequest::new(fetch);
         let id = Uuid::new_v4();
@@ -91,12 +96,23 @@ impl RequestHandler {
                 None
             }
         }) {
+            let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+            let retry_after_ms = Self::RETRY_AFTER_MS;
+
             return match &existing_req.status {
-                RequestStatus::Failed(error_msg) => Err(ReqError::Failed(error_msg.clone())),
+                RequestStatus::Failed(error_msg, ts) => {
+                    // retry failed requests after a cooldown (e.g. transient
+                    // network errors may resolve on a subsequent attempt)
+                    if now_ms - ts > retry_after_ms {
+                        Ok(Some(existing_id))
+                    } else {
+                        Err(ReqError::Failed(error_msg.clone()))
+                    }
+                }
                 RequestStatus::Completed(ts) => {
                     // retry completed requests after a cooldown
                     // to handle data source failures or outdated results gracefully
-                    if chrono::Utc::now().timestamp_millis() as u64 - ts > 30_000 {
+                    if now_ms - ts > retry_after_ms {
                         Ok(Some(existing_id))
                     } else {
                         Ok(None)
@@ -129,7 +145,8 @@ impl RequestHandler {
 
     pub fn mark_failed(&mut self, id: Uuid, error: String) {
         if let Some(request) = self.requests.get_mut(&id) {
-            request.status = RequestStatus::Failed(error);
+            let timestamp = chrono::Utc::now().timestamp_millis() as u64;
+            request.status = RequestStatus::Failed(error, timestamp);
         } else {
             log::warn!("Request not found: {:?}", id);
         }
@@ -238,6 +255,7 @@ pub enum FetchUpdate {
     Error {
         pane_id: Uuid,
         error: String,
+        req_id: Option<Uuid>,
     },
 }
 
@@ -251,7 +269,7 @@ pub fn request_fetch(
     stream: Option<StreamKind>,
     on_trade_handle: &mut impl FnMut(Handle),
 ) -> Task<FetchUpdate> {
-    let handles = sources.handles.clone();
+    let handles = sources.exchange.clone();
 
     match fetch {
         FetchRange::Kline(from, to) => {
@@ -317,7 +335,7 @@ pub fn request_fetch(
                     Exchange::BinanceSpot | Exchange::BinanceLinear | Exchange::BinanceInverse
                 );
                 let mode = trade_fetch_mode();
-                let server = sources.server_client.clone();
+                let server = sources.server.clone();
                 let data_path = data::data_path(Some("market_data/binance/"));
 
                 if let Some(ref client) = server {
@@ -333,6 +351,7 @@ pub fn request_fetch(
                     return Task::done(FetchUpdate::Error {
                         pane_id,
                         error: "Server mode selected but the server URL is invalid.".to_string(),
+                        req_id: Some(req_id),
                     });
                 } else if is_binance {
                     log::debug!(
@@ -350,6 +369,7 @@ pub fn request_fetch(
                             "Trade fetch via exchange API is only supported for Binance, got {}",
                             ticker_info.exchange()
                         ),
+                        req_id: Some(req_id),
                     });
                 }
 
@@ -379,6 +399,7 @@ pub fn request_fetch(
                             FetchUpdate::Error {
                                 pane_id,
                                 error: err.ui_message(),
+                                req_id: Some(req_id),
                             }
                         }
                     },
@@ -463,6 +484,7 @@ pub fn oi_fetch_task(
                     Err(err) => FetchUpdate::Error {
                         pane_id,
                         error: err,
+                        req_id,
                     },
                 },
             )
@@ -514,6 +536,7 @@ pub fn kline_fetch_task(
                     Err(err) => FetchUpdate::Error {
                         pane_id,
                         error: err,
+                        req_id,
                     },
                 },
             )
@@ -540,7 +563,7 @@ pub fn fetch_trades_paged(
         while cursor < to_time {
             let batch = if let Some(ref client) = server {
                 client
-                    .fetch_trades_arrow(ticker_info, cursor, to_time, super::client::ARROW_LIMIT)
+                    .fetch_trades_arrow(ticker_info, cursor, to_time, ARROW_LIMIT)
                     .await?
             } else {
                 handles
@@ -556,7 +579,7 @@ pub fn fetch_trades_paged(
 
             // Server path only: a batch smaller than the requested limit
             // means the range [prev_cursor, to_time] is fully exhausted.
-            let is_exhausted = server.is_some() && batch.len() < super::client::ARROW_LIMIT;
+            let is_exhausted = server.is_some() && batch.len() < ARROW_LIMIT;
 
             let () = progress.send(batch).await;
 

@@ -134,15 +134,10 @@ impl Flowsurface {
             window::open(config)
         };
 
-        let data_sources = Arc::new(DataSources::new(
-            saved_state.network.proxy.as_ref(),
-            &saved_state.network.trade_fetch_mode,
-            saved_state.network.server_url.as_deref(),
-            saved_state.network.server_auth_token.as_deref(),
-        ));
+        let data_sources = Arc::new(DataSources::new(&saved_state.network));
 
         let (sidebar, launch_sidebar) =
-            dashboard::Sidebar::new(&saved_state, data_sources.handles.clone());
+            dashboard::Sidebar::new(&saved_state, data_sources.exchange.clone());
 
         let (audio_stream, audio_init_err) = AudioStream::new(saved_state.audio_cfg);
 
@@ -249,11 +244,11 @@ impl Flowsurface {
             }
             Message::Tick(now) => {
                 let main_window_id = self.main_window.id;
-                let sources = self.data_sources.clone();
+                let data_sources = Arc::clone(&self.data_sources);
 
                 return self
                     .active_dashboard_mut()
-                    .tick(&sources, now, main_window_id)
+                    .tick(now, &data_sources, main_window_id)
                     .map(move |msg| Message::Dashboard {
                         layout_id: None,
                         event: msg,
@@ -348,7 +343,7 @@ impl Flowsurface {
 
                 if let Some(dashboard) = self.layout_manager.mut_dashboard(layout_id) {
                     let (main_task, event) =
-                        dashboard.update(&self.data_sources, msg, &main_window, &layout_id);
+                        dashboard.update(msg, &main_window, &layout_id, &self.data_sources);
 
                     let additional_task = match event {
                         Some(dashboard::Event::DistributeFetchedData {
@@ -658,7 +653,7 @@ impl Flowsurface {
                     Some(dashboard::sidebar::Action::MenuChanged(_)) => {}
                     Some(dashboard::sidebar::Action::TickerSelected(ticker_info, content)) => {
                         let main_window_id = self.main_window.id;
-                        let handles = self.data_sources.handles.clone();
+                        let handles = self.data_sources.exchange.clone();
 
                         let task = {
                             if let Some(kind) = content {
@@ -809,7 +804,7 @@ impl Flowsurface {
 
         let exchange_streams = self
             .active_dashboard()
-            .market_subscriptions(&self.data_sources.handles)
+            .market_subscriptions(&self.data_sources.exchange)
             .map(Message::MarketWsEvent);
 
         let tick = iced::window::frames().map(Message::Tick);

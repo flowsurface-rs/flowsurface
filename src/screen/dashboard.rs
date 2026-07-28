@@ -179,10 +179,10 @@ impl Dashboard {
 
     pub fn update(
         &mut self,
-        sources: &DataSources,
         message: Message,
         main_window: &Window,
         layout_id: &uuid::Uuid,
+        data_sources: &DataSources,
     ) -> (Task<Message>, Option<Event>) {
         match message {
             Message::SavePopoutSpecs(specs) => {
@@ -197,6 +197,9 @@ impl Dashboard {
                     if let Some(state) = self.get_mut_pane_state_by_uuid(main_window.id, id) {
                         if let pane::Content::Kline { chart: Some(c), .. } = &mut state.content {
                             c.reset_trade_fetch_state();
+                            if let DashboardError::Fetch(ref msg, Some(req_id)) = err {
+                                c.mark_fetch_failed(req_id, msg);
+                            }
                         }
                         state.status = pane::Status::Ready;
                         state.notifications.push(Toast::error(err.to_string()));
@@ -317,7 +320,7 @@ impl Dashboard {
                         });
 
                     if let Some(state) = self.get_mut_pane(main_window.id, window, pane) {
-                        let handles = &sources.handles;
+                        let handles = &data_sources.exchange;
 
                         state.link_group = group;
                         state.modal = None;
@@ -374,7 +377,7 @@ impl Dashboard {
                                     .unwrap_or_default();
 
                                 fetcher::request_fetch_many(
-                                    sources,
+                                    data_sources,
                                     pane_id,
                                     &ready_streams,
                                     *layout_id,
@@ -393,7 +396,7 @@ impl Dashboard {
                             }
                             pane::Effect::SwitchTickersInGroup(ticker_info) => self
                                 .switch_tickers_in_group(
-                                    &sources.handles,
+                                    &data_sources.exchange,
                                     main_window.id,
                                     ticker_info,
                                 ),
@@ -1168,8 +1171,8 @@ impl Dashboard {
 
     pub fn tick(
         &mut self,
-        sources: &DataSources,
         now: Instant,
+        data_sources: &DataSources,
         _main_window: window::Id,
     ) -> Task<Message> {
         let mut tasks = vec![];
@@ -1189,7 +1192,7 @@ impl Dashboard {
                         .unwrap_or_default();
 
                     let fetch_tasks = fetcher::request_fetch_many(
-                        sources,
+                        data_sources,
                         pane_id,
                         &ready_streams,
                         self.layout_id,
@@ -1404,9 +1407,11 @@ impl From<fetcher::FetchUpdate> for Message {
                 stream,
                 data,
             },
-            fetcher::FetchUpdate::Error { pane_id, error } => {
-                Message::ErrorOccurred(Some(pane_id), DashboardError::Fetch(error))
-            }
+            fetcher::FetchUpdate::Error {
+                pane_id,
+                error,
+                req_id,
+            } => Message::ErrorOccurred(Some(pane_id), DashboardError::Fetch(error, req_id)),
         }
     }
 }

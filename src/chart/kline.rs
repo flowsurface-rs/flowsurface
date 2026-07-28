@@ -468,6 +468,11 @@ impl KlineChart {
         self.fetching_trades = (false, None);
     }
 
+    /// Mark a fetch request as failed to unblock re-fetches of the same range.
+    pub fn mark_fetch_failed(&mut self, req_id: uuid::Uuid, error: &str) {
+        self.request_handler.mark_failed(req_id, error.to_string());
+    }
+
     pub fn raw_trades(&self) -> Vec<Trade> {
         self.raw_trades.clone()
     }

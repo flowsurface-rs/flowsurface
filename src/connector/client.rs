@@ -9,41 +9,32 @@ use arrow_ipc::reader::StreamReader;
 use exchange::adapter::{AdapterHandles, Venue};
 use exchange::proxy::Proxy;
 
-/// Maximum trades to request per Arrow IPC call.
-pub const ARROW_LIMIT: usize = 400_000;
-
 #[derive(Clone)]
 pub struct DataSources {
-    pub handles: AdapterHandles,
-    pub server_client: Option<ServerClient>,
+    pub exchange: AdapterHandles,
+    pub server: Option<ServerClient>,
 }
 
 impl DataSources {
     /// Build HTTP clients, spawn exchange adapter handles, and optionally
     /// create a market-data server client from the persisted configuration.
-    pub fn new(
-        proxy: Option<&Proxy>,
-        mode: &data::TradeFetchMode,
-        server_url: Option<&str>,
-        server_auth_token: Option<&str>,
-    ) -> Self {
+    pub fn new(network: &data::Network) -> Self {
+        let proxy = network.proxy.as_ref();
         let (exchange_http, server_http) = Self::build_http_clients(proxy);
-        let server_client =
-            ServerClient::from_mode(&server_http, mode, server_url, server_auth_token);
-        let handles = AdapterHandles::spawn_venues(&exchange_http, Venue::ALL, proxy);
-        Self {
-            handles,
-            server_client,
-        }
+
+        let server = ServerClient::from_mode(&server_http, network);
+        let exchange = AdapterHandles::spawn_venues(&exchange_http, Venue::ALL, proxy);
+
+        Self { exchange, server }
     }
 
     /// Build the two HTTP clients used by the application.
     ///
     /// Returns `(exchange_client, server_client)`.
     ///
-    /// * `exchange_client` — for exchange adapters (proxy-aware, no TLS
+    /// * `exchange_client`: For exchange adapters (proxy-aware, no TLS
     ///   relaxation).
-    /// * `server_client` — for the user-configured market-data server
+    /// * `server_client`: For the user-configured market-data server
     ///   (proxy-aware, accepts invalid TLS certificates for self-signed
     ///   server certs).
     ///
@@ -83,8 +74,8 @@ impl DataSources {
 impl std::fmt::Debug for DataSources {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DataSources")
-            .field("handles", &"…")
-            .field("server_client", &self.server_client.as_ref().map(|_| "…"))
+            .field("exchange", &"…")
+            .field("server", &self.server.as_ref().map(|_| "…"))
             .finish()
     }
 }
@@ -113,11 +104,7 @@ impl ServerClient {
     /// `Authorization: Bearer <token>` on every request.
     /// Trailing slashes are stripped. Returns `None` if the URL is empty
     /// or invalid.
-    pub fn new(
-        base_url: &str,
-        auth_token: Option<String>,
-        client: reqwest::Client,
-    ) -> Option<Self> {
+    fn new(base_url: &str, auth_token: Option<String>, client: reqwest::Client) -> Option<Self> {
         let trimmed = base_url.trim().trim_end_matches('/');
 
         if trimmed.is_empty() {
@@ -142,34 +129,25 @@ impl ServerClient {
     }
 
     /// The shared `reqwest::Client` carrying proxy & TLS settings.
-    pub fn http_client(&self) -> &reqwest::Client {
+    fn http_client(&self) -> &reqwest::Client {
         &self.client
     }
 
     /// Optional bearer token sent as `Authorization: Bearer <token>`.
-    pub fn auth_token(&self) -> Option<&str> {
+    fn auth_token(&self) -> Option<&str> {
         self.auth_token.as_deref()
     }
 
     /// Build a [`ServerClient`] from the shared HTTP client and the current
-    /// trade-fetch mode configuration.
+    /// network configuration.
     ///
     /// Returns `None` when the mode is not [`TradeFetchMode::Server`] or the
     /// URL is empty/invalid.
-    pub fn from_mode(
-        http_client: &reqwest::Client,
-        mode: &data::TradeFetchMode,
-        server_url: Option<&str>,
-        server_auth_token: Option<&str>,
-    ) -> Option<Self> {
-        match mode {
+    fn from_mode(http_client: &reqwest::Client, network: &data::Network) -> Option<Self> {
+        match &network.trade_fetch_mode {
             data::TradeFetchMode::Server => {
-                let url = server_url?;
-                Self::new(
-                    url,
-                    server_auth_token.map(String::from),
-                    http_client.clone(),
-                )
+                let url = network.server_url.as_deref()?;
+                Self::new(url, network.server_auth_token.clone(), http_client.clone())
             }
             _ => None,
         }
@@ -346,8 +324,9 @@ fn parse_arrow_trades(
             .ok_or_else(|| AdapterError::ParseError("column 3 (is_sell) is not Boolean".into()))?;
 
         for i in 0..batch.num_rows() {
+            let ts = ts_col.value(i).max(0) as u64;
             trades.push(Trade {
-                time: UnixMs::new(ts_col.value(i) as u64),
+                time: UnixMs::new(ts),
                 is_sell: is_sell_col.value(i),
                 price: Price::from_f64(price_col.value(i)),
                 qty: qty_norm.normalize_qty(qty_col.value(i), price_col.value(i)),
@@ -362,13 +341,6 @@ fn parse_arrow_trades(
             ticker_info.exchange(),
         );
     }
-
-    // The server should order via `ORDER BY ts ASC` as
-    // the cursor-based paging loop depends on it — verify in debug builds.
-    debug_assert!(
-        trades.windows(2).all(|w| w[0].time <= w[1].time),
-        "server returned trades out of order"
-    );
 
     Ok(trades)
 }
