@@ -1180,6 +1180,7 @@ impl State {
             }
             Event::ContentSelected(kind) => {
                 self.content = Content::placeholder(kind);
+                self.settings.visual_config = None;
 
                 if !matches!(kind, ContentKind::Starter) {
                     self.streams = ResolvedStream::waiting(vec![]);
