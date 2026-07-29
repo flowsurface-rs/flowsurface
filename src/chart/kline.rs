@@ -469,8 +469,14 @@ impl KlineChart {
     }
 
     /// Mark a fetch request as failed to unblock re-fetches of the same range.
-    pub fn mark_fetch_failed(&mut self, req_id: uuid::Uuid, error: &str) {
-        self.request_handler.mark_failed(req_id, error.to_string());
+    pub fn mark_fetch_failed(&mut self, req_id: uuid::Uuid) {
+        self.request_handler.mark_failed(req_id);
+    }
+
+    /// Mark a fetch request as having no data. The source confirmed the
+    /// range is empty and it should never be retried.
+    pub fn mark_fetch_no_data(&mut self, req_id: uuid::Uuid) {
+        self.request_handler.mark_no_data(req_id);
     }
 
     pub fn raw_trades(&self) -> Vec<Trade> {
@@ -690,6 +696,20 @@ impl KlineChart {
             return;
         }
 
+        // Skip unnecessary work when the batch is empty (e.g. the final
+        // batch was completely filtered out by until_time).  The true
+        // "no data at all" case is handled separately via
+        // mark_fetch_no_data in the dashboard.
+        if raw_trades.is_empty() {
+            if is_batches_done {
+                self.fetching_trades = (false, None);
+                if let Some(req_id) = req_id {
+                    self.request_handler.mark_completed(req_id);
+                }
+            }
+            return;
+        }
+
         if let PlotData::TimeBased(ref mut timeseries) = self.data_source {
             timeseries.insert_trades_existing_buckets(&raw_trades);
         }
@@ -724,8 +744,7 @@ impl KlineChart {
                     .for_each(|indi| indi.on_insert_klines(klines_raw, &self.data_source));
 
                 if klines_raw.is_empty() {
-                    self.request_handler
-                        .mark_failed(req_id, "No data received".to_string());
+                    self.request_handler.mark_no_data(req_id);
                 } else {
                     self.request_handler.mark_completed(req_id);
                 }
@@ -738,8 +757,7 @@ impl KlineChart {
     pub fn insert_open_interest(&mut self, req_id: Option<uuid::Uuid>, oi_data: &[OIData]) {
         if let Some(req_id) = req_id {
             if oi_data.is_empty() {
-                self.request_handler
-                    .mark_failed(req_id, "No data received".to_string());
+                self.request_handler.mark_no_data(req_id);
             } else {
                 self.request_handler.mark_completed(req_id);
             }

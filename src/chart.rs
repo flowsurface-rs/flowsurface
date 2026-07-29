@@ -1136,10 +1136,8 @@ fn request_fetch(handler: &mut RequestHandler, range: FetchRange) -> Option<Acti
         }
         Ok(None) => None,
         Err(ReqError::Overlaps) => None,
-        Err(ReqError::Failed(reason)) => {
-            log::error!("Failed to request {:?}: {}", range, reason);
-            None
-        }
+        Err(ReqError::NoData) => None,
+        Err(ReqError::Failed) => None,
     }
 }
 

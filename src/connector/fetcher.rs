@@ -64,17 +64,30 @@ pub enum FetchedData {
 
 #[derive(thiserror::Error, Debug, Clone)]
 pub enum ReqError {
-    #[error("Request is already failed: {0}")]
-    Failed(String),
     #[error("Request overlaps with an existing request")]
     Overlaps,
+    #[error("Source has no data for the requested range")]
+    NoData,
+    /// A previous attempt for this range failed and the retry cooldown
+    /// has not yet elapsed.
+    #[error("Previous request failed, retry not yet allowed")]
+    Failed,
 }
 
+/// Lifecycle of a fetch request.
+///
+/// * `Failed` is retried after the cooldown (transient errors may resolve).
+/// * `Completed` and `NoData` are never retried — the data is either
+///   already present or the source confirmed the range is empty.
 #[derive(PartialEq, Clone, Debug)]
 enum RequestStatus {
     Pending,
-    Completed(u64),
-    Failed(String, u64),
+    /// Fetch succeeded and data was inserted.
+    Completed,
+    /// The source returned an empty result for this range.
+    NoData,
+    /// The fetch failed (network error, parse error, etc.).
+    Failed(u64),
 }
 
 #[derive(Default)]
@@ -89,43 +102,29 @@ impl RequestHandler {
         let request = FetchRequest::new(fetch);
         let id = Uuid::new_v4();
 
-        let existing_id = self.requests.iter().find_map(|(k, v)| {
+        if let Some((existing_id, existing_req)) = self.requests.iter_mut().find_map(|(k, v)| {
             if v.same_with(&request) {
-                Some(*k)
+                Some((*k, v))
             } else {
                 None
             }
-        });
-
-        if let Some(existing_id) = existing_id {
+        }) {
             let now_ms = chrono::Utc::now().timestamp_millis() as u64;
             let retry_after_ms = Self::RETRY_AFTER_MS;
-
-            let existing_req = self.requests.get_mut(&existing_id).unwrap();
             let status = existing_req.status.clone();
 
             return match status {
-                RequestStatus::Failed(error_msg, ts) => {
-                    // retry failed requests after a cooldown (e.g. transient
-                    // network errors may resolve on a subsequent attempt)
-                    if now_ms - ts > retry_after_ms {
-                        existing_req.status = RequestStatus::Pending;
-                        Ok(Some(existing_id))
-                    } else {
-                        Err(ReqError::Failed(error_msg))
-                    }
-                }
-                RequestStatus::Completed(ts) => {
-                    // retry completed requests after a cooldown
-                    // to handle data source failures or outdated results gracefully
-                    if now_ms - ts > retry_after_ms {
-                        existing_req.status = RequestStatus::Pending;
-                        Ok(Some(existing_id))
-                    } else {
-                        Ok(None)
-                    }
-                }
+                RequestStatus::Completed => Ok(None),
                 RequestStatus::Pending => Err(ReqError::Overlaps),
+                RequestStatus::NoData => Err(ReqError::NoData),
+                RequestStatus::Failed(ts) => {
+                    if now_ms - ts > retry_after_ms {
+                        existing_req.status = RequestStatus::Pending;
+                        Ok(Some(existing_id))
+                    } else {
+                        Err(ReqError::Failed)
+                    }
+                }
             };
         }
 
@@ -143,17 +142,26 @@ impl RequestHandler {
 
     pub fn mark_completed(&mut self, id: Uuid) {
         if let Some(request) = self.requests.get_mut(&id) {
-            let timestamp = chrono::Utc::now().timestamp_millis() as u64;
-            request.status = RequestStatus::Completed(timestamp);
+            request.status = RequestStatus::Completed;
         } else {
             log::warn!("Request not found: {:?}", id);
         }
     }
 
-    pub fn mark_failed(&mut self, id: Uuid, error: String) {
+    /// Mark a request as completed with no data — the source returned an
+    /// empty result.  The range will never be retried.
+    pub fn mark_no_data(&mut self, id: Uuid) {
+        if let Some(request) = self.requests.get_mut(&id) {
+            request.status = RequestStatus::NoData;
+        } else {
+            log::warn!("Request not found: {:?}", id);
+        }
+    }
+
+    pub fn mark_failed(&mut self, id: Uuid) {
         if let Some(request) = self.requests.get_mut(&id) {
             let timestamp = chrono::Utc::now().timestamp_millis() as u64;
-            request.status = RequestStatus::Failed(error, timestamp);
+            request.status = RequestStatus::Failed(timestamp);
         } else {
             log::warn!("Request not found: {:?}", id);
         }
@@ -235,16 +243,17 @@ impl Clone for FetchSpec {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+/// Used for showing updates in pane title bar.
+pub enum FetchTaskStatus {
+    Loading(InfoKind),
+    Completed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum InfoKind {
     FetchingKlines,
     FetchingTrades(usize),
     FetchingOI,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum FetchTaskStatus {
-    Loading(InfoKind),
-    Completed,
 }
 
 #[derive(Debug, Clone)]
@@ -397,10 +406,24 @@ pub fn request_fetch(
                         }
                     },
                     move |result| match result {
-                        Ok(()) => FetchUpdate::Status {
+                        Ok(true) => FetchUpdate::Status {
                             pane_id,
                             status: FetchTaskStatus::Completed,
                         },
+                        Ok(false) => {
+                            // Source returned no data for this range. Produce
+                            // an empty batch so the dashboard calls mark_no_data.
+                            FetchUpdate::Data {
+                                layout_id,
+                                pane_id,
+                                data: FetchedData::Trades {
+                                    batch: Vec::new(),
+                                    req_id: Some(req_id),
+                                    until_time: to_time,
+                                },
+                                stream,
+                            }
+                        }
                         Err(err) => {
                             log::error!("Trade fetch failed: {err}");
                             FetchUpdate::Error {
@@ -556,6 +579,9 @@ pub fn kline_fetch_task(
 
 /// Fetch trades from the configured source using a single forward-paging
 /// loop (oldest → newest).
+///
+/// Returns `Ok(true)` when at least one trade was received, `Ok(false)`
+/// when the source confirmed the range has no data.
 pub fn fetch_trades_paged(
     server: Option<ServerClient>,
     handles: AdapterHandles,
@@ -563,9 +589,10 @@ pub fn fetch_trades_paged(
     from_time: UnixMs,
     to_time: UnixMs,
     data_path: PathBuf,
-) -> impl Straw<(), Vec<Trade>, AdapterError> {
+) -> impl Straw<bool, Vec<Trade>, AdapterError> {
     sipper(async move |mut progress| {
         let mut cursor = from_time;
+        let mut had_data = false;
 
         while cursor < to_time {
             let batch = if let Some(ref client) = server {
@@ -581,6 +608,7 @@ pub fn fetch_trades_paged(
             let is_empty = batch.is_empty();
 
             if !is_empty {
+                had_data = true;
                 cursor = batch.last().map_or(cursor, |t| t.time);
             }
 
@@ -588,13 +616,15 @@ pub fn fetch_trades_paged(
             // means the range [prev_cursor, to_time] is fully exhausted.
             let is_exhausted = server.is_some() && batch.len() < ARROW_LIMIT;
 
-            let () = progress.send(batch).await;
+            if !is_empty {
+                progress.send(batch).await;
+            }
 
             if is_empty || is_exhausted {
                 break;
             }
         }
 
-        Ok(())
+        Ok(had_data)
     })
 }

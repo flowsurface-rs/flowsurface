@@ -198,7 +198,8 @@ impl Dashboard {
                         if let pane::Content::Kline { chart: Some(c), .. } = &mut state.content {
                             c.reset_trade_fetch_state();
                             if let DashboardError::Fetch(ref msg, Some(req_id)) = err {
-                                c.mark_fetch_failed(req_id, msg);
+                                log::error!("Fetch error: {msg}");
+                                c.mark_fetch_failed(req_id);
                             }
                         }
                         state.status = pane::Status::Ready;
@@ -926,9 +927,17 @@ impl Dashboard {
                 until_time,
             } => {
                 if batch.is_empty() {
-                    // Empty batch means the source has no data for this range,
-                    // treat as completed so the RequestHandler can move on.
-                    let _ = self.insert_fetched_trades(main_window, pane_id, &[], true, req_id);
+                    if let Some(pane_state) = self.get_mut_pane_state_by_uuid(main_window, pane_id)
+                    {
+                        pane_state.status = pane::Status::Ready;
+                        if let pane::Content::Kline { chart: Some(c), .. } = &mut pane_state.content
+                        {
+                            c.reset_trade_fetch_state();
+                            if let Some(req_id) = req_id {
+                                c.mark_fetch_no_data(req_id);
+                            }
+                        }
+                    }
                 } else {
                     let last_trade_time = batch.last().map_or(UnixMs::ZERO, |trade| trade.time);
 
