@@ -70,7 +70,7 @@ pub enum ReqError {
     Overlaps,
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Clone, Debug)]
 enum RequestStatus {
     Pending,
     Completed(u64),
@@ -89,30 +89,37 @@ impl RequestHandler {
         let request = FetchRequest::new(fetch);
         let id = Uuid::new_v4();
 
-        if let Some((existing_id, existing_req)) = self.requests.iter().find_map(|(k, v)| {
+        let existing_id = self.requests.iter().find_map(|(k, v)| {
             if v.same_with(&request) {
-                Some((*k, v))
+                Some(*k)
             } else {
                 None
             }
-        }) {
+        });
+
+        if let Some(existing_id) = existing_id {
             let now_ms = chrono::Utc::now().timestamp_millis() as u64;
             let retry_after_ms = Self::RETRY_AFTER_MS;
 
-            return match &existing_req.status {
+            let existing_req = self.requests.get_mut(&existing_id).unwrap();
+            let status = existing_req.status.clone();
+
+            return match status {
                 RequestStatus::Failed(error_msg, ts) => {
                     // retry failed requests after a cooldown (e.g. transient
                     // network errors may resolve on a subsequent attempt)
                     if now_ms - ts > retry_after_ms {
+                        existing_req.status = RequestStatus::Pending;
                         Ok(Some(existing_id))
                     } else {
-                        Err(ReqError::Failed(error_msg.clone()))
+                        Err(ReqError::Failed(error_msg))
                     }
                 }
                 RequestStatus::Completed(ts) => {
                     // retry completed requests after a cooldown
                     // to handle data source failures or outdated results gracefully
                     if now_ms - ts > retry_after_ms {
+                        existing_req.status = RequestStatus::Pending;
                         Ok(Some(existing_id))
                     } else {
                         Ok(None)

@@ -282,9 +282,6 @@ impl Flowsurface {
                 self.save_state_to_disk(&windows);
             }
             Message::RestartRequested(Some(windows)) => {
-                if let Some(pending) = self.network_editor.take_pending_apply() {
-                    self.network_config = pending;
-                }
                 self.save_state_to_disk(&windows);
                 return self.restart();
             }

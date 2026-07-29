@@ -15,20 +15,6 @@ pub struct Network {
 }
 
 impl Network {
-    pub fn new(
-        proxy: Option<exchange::proxy::Proxy>,
-        server_url: Option<String>,
-        server_auth_token: Option<String>,
-        trade_fetch_mode: TradeFetchMode,
-    ) -> Self {
-        Self {
-            proxy,
-            server_url,
-            server_auth_token,
-            trade_fetch_mode,
-        }
-    }
-
     /// Return a copy suitable for disk persistence (proxy auth stripped).
     /// Auth credentials are stored separately in the system keychain.
     pub fn for_persistence(&self) -> Self {

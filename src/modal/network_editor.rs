@@ -121,12 +121,6 @@ impl NetworkEditor {
         self.pending_apply.as_ref()
     }
 
-    /// Take ownership of the pending config (used by the parent when
-    /// committing the config right before a restart).
-    pub fn take_pending_apply(&mut self) -> Option<data::Network> {
-        self.pending_apply.take()
-    }
-
     pub fn view<'a>(&'a self, network: &'a data::Network) -> Element<'a, Message> {
         let modal_header = row![
             button(style::icon_text(style::Icon::Return, 11)).on_press(Message::GoBack),
