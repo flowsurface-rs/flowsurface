@@ -929,13 +929,16 @@ impl Dashboard {
                 if batch.is_empty() {
                     if let Some(pane_state) = self.get_mut_pane_state_by_uuid(main_window, pane_id)
                     {
-                        pane_state.status = pane::Status::Ready;
                         if let pane::Content::Kline { chart: Some(c), .. } = &mut pane_state.content
                         {
                             c.reset_trade_fetch_state();
                             if let Some(req_id) = req_id {
                                 c.mark_fetch_no_data(req_id);
                             }
+                        }
+
+                        if matches!(pane_state.status, pane::Status::Loading(..)) {
+                            pane_state.status = pane::Status::Ready;
                         }
                     }
                 } else {

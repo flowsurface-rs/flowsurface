@@ -609,7 +609,7 @@ pub fn fetch_trades_paged(
 
             if !is_empty {
                 had_data = true;
-                cursor = batch.last().map_or(cursor, |t| t.time);
+                cursor = batch.last().map_or(cursor, |t| t.time.saturating_add(1));
             }
 
             // Server path only: a batch smaller than the requested limit
