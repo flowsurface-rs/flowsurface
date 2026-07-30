@@ -40,7 +40,7 @@ use iced::{
         tooltip::Position as TooltipPosition,
     },
 };
-use std::{borrow::Cow, collections::HashMap, vec};
+use std::{borrow::Cow, collections::HashMap, time::Duration, vec};
 
 fn main() {
     logger::install_panic_hook();
@@ -804,7 +804,7 @@ impl Flowsurface {
             .market_subscriptions(&self.data_sources.exchange)
             .map(Message::MarketWsEvent);
 
-        let tick = iced::window::frames().map(Message::Tick);
+        let tick = iced::time::every(Duration::from_millis(16)).map(Message::Tick);
 
         let hotkeys = keyboard::listen().filter_map(|event| {
             let keyboard::Event::KeyPressed { key, .. } = event else {
