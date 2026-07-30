@@ -215,6 +215,18 @@ impl ServerClient {
             ));
         }
 
+        if let Some(content_type) = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            && content_type != "application/vnd.apache.arrow.stream"
+        {
+            log::warn!(
+                "Server returned unexpected Content-Type '{content_type}', \
+                     expected 'application/vnd.apache.arrow.stream'"
+            );
+        }
+
         let bytes = response.bytes().await.map_err(|e| {
             log::warn!("Failed to read arrow response body: {e}");
             AdapterError::ParseError(format!("server (arrow): {e}"))
