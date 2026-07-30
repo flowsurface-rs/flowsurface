@@ -31,6 +31,8 @@ An open-source native desktop charting application for crypto markets. Supports 
 - Pane linking for quickly switching tickers across multiple panes
 - Persistent layouts and customizable themes with editable color palettes
 
+#
+
 #### Historical Trades on Footprint Charts:
 
 By default, Flowsurface captures and plots live trades in real time via WebSocket.
@@ -43,7 +45,7 @@ in Settings → Network. Three modes are available:
   daily archives; paginated and rate-limited for intraday ranges. **Binance
   only** (spot, linear, inverse).
 
-- **Server**: Fetches from any HTTP server that exposes a
+- **[Server](https://github.com/flowsurface-rs/server)**: Fetches from any HTTP server that exposes a
   `GET /trades.arrow` endpoint returning an
   [Arrow IPC](https://arrow.apache.org/) stream with:
     - Response: `Content-Type: application/vnd.apache.arrow.stream`
