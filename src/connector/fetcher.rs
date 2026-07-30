@@ -605,24 +605,13 @@ pub fn fetch_trades_paged(
                     .await?
             };
 
-            let is_empty = batch.is_empty();
-
-            if !is_empty {
-                had_data = true;
-                cursor = batch.last().map_or(cursor, |t| t.time.saturating_add(1));
-            }
-
-            // Server path only: a batch smaller than the requested limit
-            // means the range [prev_cursor, to_time] is fully exhausted.
-            let is_exhausted = server.is_some() && batch.len() < ARROW_LIMIT;
-
-            if !is_empty {
-                progress.send(batch).await;
-            }
-
-            if is_empty || is_exhausted {
+            if batch.is_empty() {
                 break;
             }
+
+            had_data = true;
+            cursor = batch.last().map_or(cursor, |t| t.time.saturating_add(1));
+            progress.send(batch).await;
         }
 
         Ok(had_data)
