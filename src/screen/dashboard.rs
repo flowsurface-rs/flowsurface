@@ -716,25 +716,31 @@ impl Dashboard {
     /// Borrow visual config, studies, and clusters from an existing pane of the same
     /// content kind, so newly created panes inherit the full set of settings
     /// that the manual "Sync all" button would apply.
+    ///
+    /// `exclude` is the pane that is being initialized, it is skipped so that
+    /// a freshly-set placeholder (from `ContentSelected`) doesn't shadow an
+    /// already-configured pane of the same kind.
     fn borrow_synced_settings(
         &self,
         main_window: window::Id,
         content_kind: ContentKind,
+        exclude: Option<(window::Id, pane_grid::Pane)>,
     ) -> Option<(
-        VisualConfig,
+        Option<VisualConfig>,
         Option<data::chart::Study>,
         Option<data::chart::kline::ClusterKind>,
     )> {
-        self.iter_all_panes(main_window).find_map(|(_, _, state)| {
-            if state.content.kind() == content_kind {
-                let visual_config = state.settings.visual_config.clone()?;
-                let studies = state.content.studies();
-                let clusters = state.content.clusters();
-                Some((visual_config, studies, clusters))
-            } else {
-                None
-            }
-        })
+        self.iter_all_panes(main_window)
+            .find_map(|(win, pane, state)| {
+                if state.content.kind() == content_kind && (exclude != Some((win, pane))) {
+                    let visual_config = state.settings.visual_config.clone();
+                    let studies = state.content.studies();
+                    let clusters = state.content.clusters();
+                    Some((visual_config, studies, clusters))
+                } else {
+                    None
+                }
+            })
     }
 
     fn init_pane(
@@ -746,16 +752,19 @@ impl Dashboard {
         ticker_info: TickerInfo,
         content_kind: ContentKind,
     ) -> Task<Message> {
-        let synced = self.borrow_synced_settings(main_window, content_kind);
+        let synced =
+            self.borrow_synced_settings(main_window, content_kind, Some((window, selected_pane)));
 
         let Some(state) = self.get_mut_pane(main_window, window, selected_pane) else {
             return Task::none();
         };
 
-        if state.settings.visual_config.is_none()
-            && let Some((cfg, _, _)) = &synced
+        if let Some((Some(cfg), _, _)) = &synced
+            && (state.settings.visual_config.is_none() || state.content.kind() != content_kind)
         {
             state.settings.visual_config = Some(cfg.clone());
+        } else if state.content.kind() != content_kind {
+            state.settings.visual_config = None;
         }
 
         let pane_id = state.unique_id();
@@ -799,15 +808,16 @@ impl Dashboard {
             self.focus = Some((main_window, *pane_id));
         }
 
-        // Inherit settings from an existing pane of the same type
-        // (mirrors what the manual "Sync all" button does)
-        let synced = self.borrow_synced_settings(main_window, content_kind);
-
         let Some((window, selected_pane)) = self.focus else {
             return Task::done(Message::Notification(Toast::warn(
                 "No focused pane found".to_string(),
             )));
         };
+
+        // Inherit settings from an existing pane of the same type
+        // (mirrors what the manual "Sync all" button does)
+        let synced =
+            self.borrow_synced_settings(main_window, content_kind, Some((window, selected_pane)));
 
         let Some(state) = self.get_mut_pane(main_window, window, selected_pane) else {
             return Task::done(Message::Notification(Toast::warn(
@@ -815,10 +825,12 @@ impl Dashboard {
             )));
         };
 
-        if state.settings.visual_config.is_none()
-            && let Some((cfg, _, _)) = &synced
+        if let Some((Some(cfg), _, _)) = &synced
+            && (state.settings.visual_config.is_none() || state.content.kind() != content_kind)
         {
             state.settings.visual_config = Some(cfg.clone());
+        } else if state.content.kind() != content_kind {
+            state.settings.visual_config = None;
         }
 
         let previous_ticker = state.stream_pair();
