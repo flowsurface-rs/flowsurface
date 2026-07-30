@@ -47,8 +47,10 @@ in Settings → Network. Three modes are available:
   `GET /trades.arrow` endpoint returning an
   [Arrow IPC](https://arrow.apache.org/) stream with:
     - Response: `Content-Type: application/vnd.apache.arrow.stream`
-    - Schema:
-      `ts (int64)`, `price (float64)`, `qty (float64)`, `is_sell (bool)`
+    - Schema (columns matched by name, order not significant):
+
+        `ts (int64)`, `price (float64)`, `qty (float64)`, `is_sell (bool)`
+
     - Query parameters:
       `venue`, `market`, `symbol`, `from` (inclusive), `to` (inclusive), `limit`
     - Optional bearer-token auth: (`Authorization: Bearer <token>`)
@@ -64,7 +66,7 @@ in Settings → Network. Three modes are available:
 
 - **Off**: Live trades only; no historical backfill.
 
-##### Historical klines, open interest, and ticker metadata are always fetched from exchange REST APIs.
+##### Historical klines, open interest, and ticker metadata/stats are always fetched from exchange REST APIs.
 
 ##### Live trades, orderbook and kline updates are streamed from exchange WebSocket feeds.
 

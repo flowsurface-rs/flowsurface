@@ -595,23 +595,47 @@ pub fn fetch_trades_paged(
         let mut had_data = false;
 
         while cursor < to_time {
-            let batch = if let Some(ref client) = server {
-                client
-                    .fetch_trades_arrow(ticker_info, cursor, to_time, ARROW_LIMIT)
-                    .await?
-            } else {
-                handles
-                    .fetch_trades(ticker_info, cursor, Some(data_path.clone()))
-                    .await?
-            };
+            let prev_cursor = cursor;
 
-            if batch.is_empty() {
-                break;
+            if let Some(ref client) = server {
+                let parsed = client
+                    .fetch_trades_arrow(ticker_info, cursor, to_time, ARROW_LIMIT)
+                    .await?;
+
+                let is_empty = parsed.raw_row_count == 0;
+                if !is_empty {
+                    had_data = had_data || !parsed.trades.is_empty();
+                    cursor = parsed.last_ts.map_or(cursor, |t| t.saturating_add(1));
+                }
+                if !parsed.trades.is_empty() {
+                    progress.send(parsed.trades).await;
+                }
+                if is_empty {
+                    break;
+                }
+            } else {
+                let batch = handles
+                    .fetch_trades(ticker_info, cursor, Some(data_path.clone()))
+                    .await?;
+
+                if batch.is_empty() {
+                    break;
+                }
+
+                had_data = true;
+                cursor = batch.last().map_or(cursor, |t| t.time.saturating_add(1));
+                progress.send(batch).await;
             }
 
-            had_data = true;
-            cursor = batch.last().map_or(cursor, |t| t.time.saturating_add(1));
-            progress.send(batch).await;
+            if cursor <= prev_cursor {
+                log::error!(
+                    "paging cursor did not advance past {prev_cursor:?} despite a non-empty response; \
+             aborting to avoid an infinite loop (source may be malformed)"
+                );
+                return Err(AdapterError::ParseError(
+                    "Source may be malformed. Check logs for details.".to_string(),
+                ));
+            }
         }
 
         Ok(had_data)

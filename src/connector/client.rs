@@ -3,7 +3,7 @@ use exchange::unit::price::Price;
 use exchange::unit::qty::{QtyNormalization, RawQtyUnit, SizeUnit, volume_size_unit};
 use exchange::{TickerInfo, Trade, UnixMs};
 
-use arrow_array::{BooleanArray, Float64Array, Int64Array, RecordBatch};
+use arrow_array::{Array, BooleanArray, Float64Array, Int64Array, RecordBatch};
 use arrow_ipc::reader::StreamReader;
 
 use exchange::adapter::{AdapterHandles, Venue};
@@ -160,7 +160,7 @@ impl ServerClient {
         from: UnixMs,
         to: UnixMs,
         limit: usize,
-    ) -> Result<Vec<Trade>, AdapterError> {
+    ) -> Result<ParsedArrowBatch, AdapterError> {
         let (venue, market) = {
             let exchange = ticker_info.exchange();
 
@@ -242,54 +242,85 @@ const ARROW_PRICE_COL: &str = "price";
 const ARROW_QTY_COL: &str = "qty";
 const ARROW_IS_SELL_COL: &str = "is_sell";
 
-/// Validate the Arrow stream schema up-front so that subsequent per-batch
-/// code can safely use positional [`RecordBatch::column`] access without
-/// panicking on index-out-of-range.
-///
-/// Type mismatches are caught later by the `downcast_ref` calls in
-/// [`parse_arrow_trades`] — we only check column count and field names here.
-fn validate_arrow_schema(schema: &arrow_schema::Schema) -> Result<(), AdapterError> {
-    let fields = schema.fields();
-    if fields.len() < 4 {
-        return Err(AdapterError::ParseError(format!(
-            "Arrow stream schema has {} fields, expected at least 4",
-            fields.len()
-        )));
-    }
-
-    let expected = [
-        ARROW_TS_COL,
-        ARROW_PRICE_COL,
-        ARROW_QTY_COL,
-        ARROW_IS_SELL_COL,
-    ];
-    for (idx, &name) in expected.iter().enumerate() {
-        let field = &fields[idx];
-        if field.name() != name {
-            return Err(AdapterError::ParseError(format!(
-                "Arrow stream schema column {idx}: expected name '{name}', got '{}'",
-                field.name()
-            )));
-        }
-    }
-
-    Ok(())
+/// Resolved column indices for the four required Arrow fields.
+struct TradeColumns {
+    ts: usize,
+    price: usize,
+    qty: usize,
+    is_sell: usize,
 }
 
-/// Parse raw Arrow IPC stream bytes into a sorted `Vec<Trade>`.
+/// Validate the Arrow stream schema up-front: resolve column indices by
+/// name, verify the expected Arrow data types, and fail fast on any
+/// mismatch before a single row is parsed.
+fn validate_arrow_schema(schema: &arrow_schema::Schema) -> Result<TradeColumns, AdapterError> {
+    use arrow_schema::DataType;
+
+    let index_of = |name: &str| {
+        schema.index_of(name).map_err(|_| {
+            AdapterError::ParseError(format!(
+                "Arrow stream schema missing required column '{name}'"
+            ))
+        })
+    };
+
+    let cols = TradeColumns {
+        ts: index_of(ARROW_TS_COL)?,
+        price: index_of(ARROW_PRICE_COL)?,
+        qty: index_of(ARROW_QTY_COL)?,
+        is_sell: index_of(ARROW_IS_SELL_COL)?,
+    };
+
+    let check_type = |idx: usize, name: &str, expected: &DataType| -> Result<(), AdapterError> {
+        let field = schema.field(idx);
+        if field.data_type() != expected {
+            return Err(AdapterError::ParseError(format!(
+                "Arrow stream schema column '{name}': expected {expected:?}, got {:?}",
+                field.data_type()
+            )));
+        }
+        Ok(())
+    };
+
+    check_type(cols.ts, ARROW_TS_COL, &DataType::Int64)?;
+    check_type(cols.price, ARROW_PRICE_COL, &DataType::Float64)?;
+    check_type(cols.qty, ARROW_QTY_COL, &DataType::Float64)?;
+    check_type(cols.is_sell, ARROW_IS_SELL_COL, &DataType::Boolean)?;
+
+    Ok(cols)
+}
+
+/// Result of parsing an Arrow IPC trade stream.
 ///
-/// Expects the Arrow IPC streaming format with the schema:
-/// `ts (int64)`, `price (float64)`, `qty (float64)`, `is_sell (bool)`.
+/// Separates displayable trades from stream-level metadata so the
+/// paging loop can distinguish "server returned rows but all were
+/// null-filtered" from "server genuinely had no data for this range."
+#[derive(Debug)]
+pub struct ParsedArrowBatch {
+    /// Valid, non-null trades ready for display.
+    pub trades: Vec<Trade>,
+    /// Total rows received across all batches in the stream.
+    pub raw_row_count: usize,
+    /// Latest non-null `ts` seen across *all* rows (including rows
+    /// filtered out due to nulls in other columns).  Used for cursor
+    /// advancement in the paging loop.
+    pub last_ts: Option<UnixMs>,
+}
+
+/// Parse raw Arrow IPC stream bytes into a [`ParsedArrowBatch`].
+///
+/// Expects the Arrow IPC streaming format. The four required columns
+/// (`ts`, `price`, `qty`, `is_sell`) are looked up by name. Column order
+/// is not significant and extra columns are silently ignored.
 fn parse_arrow_trades(
     data: bytes::Bytes,
     ticker_info: &TickerInfo,
-) -> Result<Vec<Trade>, AdapterError> {
+) -> Result<ParsedArrowBatch, AdapterError> {
     let reader = StreamReader::try_new(std::io::Cursor::new(data), None)
         .map_err(|e| AdapterError::ParseError(format!("arrow stream open: {e}")))?;
 
-    // Validate schema once up-front so the hot per-batch loop can safely
-    // use positional column access without panicking.
-    validate_arrow_schema(&reader.schema())?;
+    // Resolve column positions by name and validate types once up-front.
+    let cols = validate_arrow_schema(&reader.schema())?;
 
     let market_kind = ticker_info.exchange().market_type();
     let raw_qty_unit = match market_kind {
@@ -302,57 +333,118 @@ fn parse_arrow_trades(
         QtyNormalization::with_raw_qty_unit(size_in_quote_ccy, *ticker_info, raw_qty_unit);
 
     let mut trades = Vec::new();
+    let mut raw_row_count: usize = 0;
+    let mut last_ts: Option<UnixMs> = None;
+    let mut skipped_total: u64 = 0;
+
     for result in reader {
         let batch: RecordBatch =
             result.map_err(|e| AdapterError::ParseError(format!("arrow batch: {e}")))?;
 
-        // Defensive: the schema says 4 fields, but guard against ill-formed batches.
-        if batch.num_columns() < 4 {
-            return Err(AdapterError::ParseError(format!(
-                "Arrow batch has {} columns, expected at least 4",
-                batch.num_columns()
-            )));
-        }
+        raw_row_count += batch.num_rows();
 
         let ts_col = batch
-            .column(0)
+            .column(cols.ts)
             .as_any()
             .downcast_ref::<Int64Array>()
-            .ok_or_else(|| AdapterError::ParseError("column 0 (ts) is not Int64".into()))?;
+            .ok_or_else(|| {
+                AdapterError::ParseError(format!("column '{ARROW_TS_COL}' is not Int64"))
+            })?;
         let price_col = batch
-            .column(1)
+            .column(cols.price)
             .as_any()
             .downcast_ref::<Float64Array>()
-            .ok_or_else(|| AdapterError::ParseError("column 1 (price) is not Float64".into()))?;
+            .ok_or_else(|| {
+                AdapterError::ParseError(format!("column '{ARROW_PRICE_COL}' is not Float64"))
+            })?;
         let qty_col = batch
-            .column(2)
+            .column(cols.qty)
             .as_any()
             .downcast_ref::<Float64Array>()
-            .ok_or_else(|| AdapterError::ParseError("column 2 (qty) is not Float64".into()))?;
+            .ok_or_else(|| {
+                AdapterError::ParseError(format!("column '{ARROW_QTY_COL}' is not Float64"))
+            })?;
         let is_sell_col = batch
-            .column(3)
+            .column(cols.is_sell)
             .as_any()
             .downcast_ref::<BooleanArray>()
-            .ok_or_else(|| AdapterError::ParseError("column 3 (is_sell) is not Boolean".into()))?;
+            .ok_or_else(|| {
+                AdapterError::ParseError(format!("column '{ARROW_IS_SELL_COL}' is not Boolean"))
+            })?;
 
-        for i in 0..batch.num_rows() {
-            let ts = ts_col.value(i).max(0) as u64;
-            trades.push(Trade {
-                time: UnixMs::new(ts),
-                is_sell: is_sell_col.value(i),
-                price: Price::from_f64(price_col.value(i)),
-                qty: qty_norm.normalize_qty(qty_col.value(i), price_col.value(i)),
-            });
+        let has_nulls = ts_col.null_count() > 0
+            || price_col.null_count() > 0
+            || qty_col.null_count() > 0
+            || is_sell_col.null_count() > 0;
+
+        if has_nulls {
+            let mut skipped_in_batch: u64 = 0;
+
+            for i in 0..batch.num_rows() {
+                // Track the latest non-null ts across *all* rows for
+                // cursor advancement, even if the row is filtered out.
+                if !ts_col.is_null(i) {
+                    let ts = ts_col.value(i).max(0) as u64;
+                    let candidate = UnixMs::new(ts);
+                    last_ts = Some(last_ts.map_or(candidate, |prev| prev.max(candidate)));
+                }
+
+                if ts_col.is_null(i)
+                    || price_col.is_null(i)
+                    || qty_col.is_null(i)
+                    || is_sell_col.is_null(i)
+                {
+                    skipped_in_batch += 1;
+                    continue;
+                }
+                let ts = ts_col.value(i).max(0) as u64;
+                trades.push(Trade {
+                    time: UnixMs::new(ts),
+                    is_sell: is_sell_col.value(i),
+                    price: Price::from_f64(price_col.value(i)),
+                    qty: qty_norm.normalize_qty(qty_col.value(i), price_col.value(i)),
+                });
+            }
+
+            skipped_total += skipped_in_batch;
+        } else {
+            for i in 0..batch.num_rows() {
+                let ts = ts_col.value(i).max(0) as u64;
+                trades.push(Trade {
+                    time: UnixMs::new(ts),
+                    is_sell: is_sell_col.value(i),
+                    price: Price::from_f64(price_col.value(i)),
+                    qty: qty_norm.normalize_qty(qty_col.value(i), price_col.value(i)),
+                });
+            }
         }
     }
 
-    if trades.is_empty() {
-        log::info!(
-            "Arrow stream contained no trades for {} ({})",
+    // Fast path: if no nulls were encountered, last_ts is simply the
+    // timestamp of the last valid trade.
+    if last_ts.is_none() {
+        last_ts = trades.last().map(|t| t.time);
+    }
+
+    if skipped_total > 0 {
+        log::warn!(
+            "Arrow stream for {} ({}): skipped {skipped_total} of {raw_row_count} row(s) with nulls in required fields",
             ticker_info.ticker,
             ticker_info.exchange(),
         );
     }
 
-    Ok(trades)
+    if trades.is_empty() {
+        log::info!(
+            "Arrow stream contained no valid trades for {} ({}) (raw rows: {raw_row_count})",
+            ticker_info.ticker,
+            ticker_info.exchange(),
+        );
+    }
+
+    Ok(ParsedArrowBatch {
+        trades,
+        raw_row_count,
+        last_ts,
+    })
 }
