@@ -3,7 +3,8 @@ use super::{
     indicator, request_fetch, scale::linear::PriceInfoLabel,
 };
 use crate::chart::indicator::kline::KlineIndicatorImpl;
-use crate::connector::fetcher::{FetchRange, RequestHandler, is_trade_fetch_enabled};
+use crate::connector::fetcher::is_trade_fetch_enabled;
+use crate::connector::fetcher::{FetchRange, RequestHandler};
 use crate::{modal::pane::settings::study, style};
 use data::aggr::ticks::TickAggr;
 use data::aggr::time::TimeSeries;
@@ -401,7 +402,9 @@ impl KlineChart {
                         timeseries.suggest_trade_fetch_range(visible_earliest_ms, visible_latest_ms)
                 {
                     let range = FetchRange::Trades(fetch_from, fetch_to);
-                    if let Some(action) = request_fetch(&mut self.request_handler, range) {
+                    if self.request_handler.has_pending(&range) {
+                        self.fetching_trades = (true, None);
+                    } else if let Some(action) = request_fetch(&mut self.request_handler, range) {
                         self.fetching_trades = (true, None);
                         return Some(action);
                     }
@@ -459,6 +462,21 @@ impl KlineChart {
     pub fn reset_request_handler(&mut self) {
         self.request_handler = RequestHandler::default();
         self.fetching_trades = (false, None);
+    }
+
+    pub fn reset_trade_fetch_state(&mut self) {
+        self.fetching_trades = (false, None);
+    }
+
+    /// Mark a fetch request as failed to unblock re-fetches of the same range.
+    pub fn mark_fetch_failed(&mut self, req_id: uuid::Uuid) {
+        self.request_handler.mark_failed(req_id);
+    }
+
+    /// Mark a fetch request as having no data. The source confirmed the
+    /// range is empty and it should never be retried.
+    pub fn mark_fetch_no_data(&mut self, req_id: uuid::Uuid) {
+        self.request_handler.mark_no_data(req_id);
     }
 
     pub fn raw_trades(&self) -> Vec<Trade> {
@@ -665,10 +683,29 @@ impl KlineChart {
         }
     }
 
-    pub fn insert_raw_trades(&mut self, raw_trades: Vec<Trade>, is_batches_done: bool) {
+    pub fn insert_raw_trades(
+        &mut self,
+        raw_trades: Vec<Trade>,
+        is_batches_done: bool,
+        req_id: Option<uuid::Uuid>,
+    ) {
         if matches!(&self.data_source, PlotData::TickBased(_)) {
             if is_batches_done {
                 self.fetching_trades = (false, None);
+            }
+            return;
+        }
+
+        // Skip unnecessary work when the batch is empty (e.g. the final
+        // batch was completely filtered out by until_time).  The true
+        // "no data at all" case is handled separately via
+        // mark_fetch_no_data in the dashboard.
+        if raw_trades.is_empty() {
+            if is_batches_done {
+                self.fetching_trades = (false, None);
+                if let Some(req_id) = req_id {
+                    self.request_handler.mark_completed(req_id);
+                }
             }
             return;
         }
@@ -686,6 +723,10 @@ impl KlineChart {
 
         if is_batches_done {
             self.fetching_trades = (false, None);
+
+            if let Some(req_id) = req_id {
+                self.request_handler.mark_completed(req_id);
+            }
         }
 
         self.invalidate(None);
@@ -703,8 +744,7 @@ impl KlineChart {
                     .for_each(|indi| indi.on_insert_klines(klines_raw, &self.data_source));
 
                 if klines_raw.is_empty() {
-                    self.request_handler
-                        .mark_failed(req_id, "No data received".to_string());
+                    self.request_handler.mark_no_data(req_id);
                 } else {
                     self.request_handler.mark_completed(req_id);
                 }
@@ -717,8 +757,7 @@ impl KlineChart {
     pub fn insert_open_interest(&mut self, req_id: Option<uuid::Uuid>, oi_data: &[OIData]) {
         if let Some(req_id) = req_id {
             if oi_data.is_empty() {
-                self.request_handler
-                    .mark_failed(req_id, "No data received".to_string());
+                self.request_handler.mark_no_data(req_id);
             } else {
                 self.request_handler.mark_completed(req_id);
             }

@@ -19,30 +19,58 @@ An open-source native desktop charting application for crypto markets. Supports 
 
 ### Key Features
 
--   Multiple chart/panel types:
-    -   **Heatmap (Historical DOM):** Uses live trades and L2 orderbook to create a time-series heatmap chart. Supports customizable price grouping, different time aggregations, fixed or visible range volume profiles.
-    -   **Candlestick:** Traditional kline chart supporting both time-based and custom tick-based intervals.
-    -   **Footprint:** Price grouped and interval aggregated views for trades on top of a candlestick chart. Supports different clustering methods, configurable imbalance and naked-POC studies.
-    -   **Time & Sales:** Scrollable list of live trades.
-    -   **DOM (Depth of Market) / Ladder:** Displays current L2 orderbook alongside recent trade volumes on grouped price levels.
-    -   **Comparison:** Line graph for comparing multiple data sources, normalized by kline `close` prices on a percentage scale
--   Real-time sound effects driven by trade streams
--   Multi window/monitor support
--   Pane linking for quickly switching tickers across multiple panes
--   Persistent layouts and customizable themes with editable color palettes
-
-##### Market data is received directly from exchanges' public REST APIs and WebSockets
+- Multiple chart/panel types:
+    - **Heatmap (Historical DOM):** Uses live trades and L2 orderbook to create a time-series heatmap chart. Supports customizable price grouping, different time aggregations, fixed or visible range volume profile.
+    - **Candlestick:** Traditional kline chart supporting both time-based and custom tick-based intervals.
+    - **Footprint:** Price grouped and interval aggregated views for trades on top of a candlestick chart. Supports different clustering methods, configurable imbalance and naked-POC studies.
+    - **Time & Sales:** Scrollable list of live trades.
+    - **DOM (Depth of Market) / Ladder:** Displays current L2 orderbook alongside recent trade volumes on grouped price levels.
+    - **Comparison:** Line graph for comparing multiple data sources, normalized by kline `close` prices on a percentage scale
+- Real-time sound effects driven by trade streams
+- Multi window/monitor support
+- Pane linking for quickly switching tickers across multiple panes
+- Persistent layouts and customizable themes with editable color palettes
 
 #
 
 #### Historical Trades on Footprint Charts:
 
--   By default, it captures and plots live trades in real time via WebSocket.
--   For Binance tickers, you can optionally backfill the visible time range by enabling trade fetching in the settings:
-    -   [data.binance.vision](https://data.binance.vision/): Fast daily bulk downloads (no intraday).
-    -   REST API (e.g., `/fapi/v1/aggTrades`): Slower, paginated intraday fetching (subject to rate limits).
-    -   The Binance connector can use either or both methods to retrieve historical data as needed.
--   Fetching trades for Bybit/Hyperliquid is not supported, as both lack a suitable REST API. OKX is WIP.
+By default, Flowsurface captures and plots live trades in real time via WebSocket.
+
+To backfill the visible time range on footprint charts, enable **trade fetching**
+in Settings → Network. Three modes are available:
+
+- **Exchange**: Fetches directly from Binance's public REST API and bulk data
+  mirrors ([data.binance.vision](https://data.binance.vision/)). Fast for
+  daily archives; paginated and rate-limited for intraday ranges. **Binance
+  only** (spot, linear, inverse).
+
+- **[Server](https://github.com/flowsurface-rs/server)**: Fetches from any HTTP server that exposes a
+  `GET /trades.arrow` endpoint returning an
+  [Arrow IPC](https://arrow.apache.org/) stream with:
+    - Response: `Content-Type: application/vnd.apache.arrow.stream`
+    - Schema (columns matched by name, order not significant):
+
+        `ts (int64)`, `price (float64)`, `qty (float64)`, `is_sell (bool)`
+
+    - Query parameters:
+      `venue`, `market`, `symbol`, `from` (inclusive), `to` (inclusive), `limit`
+    - Optional bearer-token auth: (`Authorization: Bearer <token>`)
+
+    Self-signed TLS certificates are
+    accepted. Works with **all exchanges** and has no exchange rate limits.
+    Bring your own data source.
+
+    A reference implementation is available at
+    [flowsurface-server](https://github.com/flowsurface-rs/server), a
+    self-contained collector that writes trades to DuckDB and serves
+    them over this protocol.
+
+- **Off**: Live trades only; no historical backfill.
+
+##### Historical klines, open interest, and ticker metadata/stats are always fetched from exchange REST APIs.
+
+##### Live trades, orderbook and kline updates are streamed from exchange WebSocket feeds.
 
 ## Installation
 
@@ -50,28 +78,26 @@ An open-source native desktop charting application for crypto markets. Supports 
 
 Standalone executables are available for Windows, macOS, and Linux on the [Releases page](https://github.com/flowsurface-rs/flowsurface/releases).
 
-<details>
-<summary><strong>Having trouble running the file? (Permission/Security warnings)</strong></summary>
+<details><summary><strong>Having trouble running the file? (Permission/Security warnings)</strong></summary>
  
 Since these binaries are currently unsigned they might get flagged.
 
--   **Windows**: If you see a "Windows protected your PC" pop-up, click **More info** -> **Run anyway**.
--   **macOS**: If you see "Developer cannot be verified", control-click (right-click) the app and select **Open**, or go to _System Settings > Privacy & Security_ to allow it.
-</details>
+- **Windows**: If you see a "Windows protected your PC" pop-up, click **More info** -> **Run anyway**.
+- **macOS**: If you see "Developer cannot be verified", control-click (right-click) the app and select **Open**, or go to _System Settings > Privacy & Security_ to allow it.</details>
 
 ### Method 2: Build from Source
 
 #### Requirements
 
--   [Rust toolchain](https://www.rust-lang.org/tools/install)
--   [Git version control system](https://git-scm.com/)
--   System dependencies:
-    -   **Linux**:
-        -   Debian/Ubuntu: `sudo apt install build-essential pkg-config libasound2-dev`
-        -   Arch: `sudo pacman -S base-devel alsa-lib`
-        -   Fedora: `sudo dnf install gcc make alsa-lib-devel`
-    -   **macOS**: Install Xcode Command Line Tools: `xcode-select --install`
-    -   **Windows**: No additional dependencies required
+- [Rust toolchain](https://www.rust-lang.org/tools/install)
+- [Git version control system](https://git-scm.com/)
+- System dependencies:
+    - **Linux**:
+        - Debian/Ubuntu: `sudo apt install build-essential pkg-config libasound2-dev`
+        - Arch: `sudo pacman -S base-devel alsa-lib`
+        - Fedora: `sudo dnf install gcc make alsa-lib-devel`
+    - **macOS**: Install Xcode Command Line Tools: `xcode-select --install`
+    - **Windows**: No additional dependencies required
 
 #### Option A: `cargo install`
 
@@ -98,15 +124,14 @@ cargo run --release
 
 ## Credits and thanks to
 
--   [Kraken Desktop](https://www.kraken.com/desktop) (formerly [Cryptowatch](https://blog.kraken.com/product/cryptowatch-to-sunset-kraken-pro-to-integrate-cryptowatch-features)), the main inspiration that sparked this project
--   [Halloy](https://github.com/squidowl/halloy), an excellent open-source reference for the foundational code design and the project architecture
--   And of course, [iced](https://github.com/iced-rs/iced), the GUI library that makes all of this possible
+- [Kraken Desktop](https://www.kraken.com/desktop) (formerly [Cryptowatch](https://blog.kraken.com/product/cryptowatch-to-sunset-kraken-pro-to-integrate-cryptowatch-features)), the main inspiration that sparked this project
+- [Halloy](https://github.com/squidowl/halloy), an excellent open-source reference for the foundational code design and the project architecture
+- And of course, [iced](https://github.com/iced-rs/iced), the GUI library that makes all of this possible
 
 ## Community
 
-For feedback, questions, or for more casual conversations about the project, join our community on Discord:  
-https://discord.gg/RN2XAF7ZuR
+Discord: https://discord.gg/RN2XAF7ZuR
 
 ## License
 
-Flowsurface is released under the [GPLv3](./LICENSE) license. Contributions to the project are shared under the same license.  
+Flowsurface is released under the [GPLv3](./LICENSE) license. Contributions to the project are shared under the same license.

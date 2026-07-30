@@ -156,7 +156,7 @@ impl ComparisonChart {
         if incoming.is_empty()
             && let Some(handler) = self.request_handler.get_mut(&ticker_info)
         {
-            handler.mark_failed(req_id, "No data received".to_string());
+            handler.mark_no_data(req_id);
             return;
         }
 
