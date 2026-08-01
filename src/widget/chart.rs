@@ -1,7 +1,6 @@
 pub mod comparison;
 pub mod heatmap;
 
-use chrono::{TimeZone, Utc};
 use exchange::TickerInfo;
 
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
@@ -68,51 +67,22 @@ impl SeriesLike for Series {
     }
 }
 
-/// Compute a "nice" step close to range/target using 1/2/5*10^k
-fn nice_step_multiplier_125(v: f32) -> f32 {
-    if v <= 1.0 {
-        1.0
-    } else if v <= 2.0 {
-        2.0
-    } else if v <= 5.0 {
-        5.0
-    } else {
-        10.0
-    }
-}
-
-fn nice_step(rough: f32) -> f32 {
-    if !rough.is_finite() || rough <= 0.0 {
-        return 1.0;
-    }
-
-    let base = 10.0f32.powf(rough.log10().floor());
-    let fraction = rough / base;
-
-    nice_step_multiplier_125(fraction) * base
-}
-
 fn ticks(min: f32, max: f32, target: usize) -> (Vec<f32>, f32) {
-    let span = (max - min).abs().max(1e-6);
-
-    let step = {
-        let target = target.max(2) as f32;
-        let raw = (span / target).max(f32::EPSILON);
-        nice_step(raw)
-    };
-
-    let start = (min / step).floor() * step;
-    let end = (max / step).ceil() * step;
-
-    let mut v = Vec::new();
-    let mut t = start;
-    for _ in 0..100 {
-        if t > end + step * 0.5 {
-            break;
-        }
-        v.push(t);
-        t += step;
-    }
+    // Universal Y-scale (percentage) in `data::chart::ticks::y`.
+    let yt = data::chart::ticks::y::YAxisScale::Percent.ticks(
+        f64::from(min),
+        f64::from(max),
+        target as i32,
+    );
+    let step = yt.step.unwrap_or(1.0) as f32;
+    let v = yt
+        .ticks
+        .into_iter()
+        .filter_map(|t| match t.value {
+            data::chart::ticks::y::TickValue::Float(v) => Some(v as f32),
+            _ => None,
+        })
+        .collect();
     (v, step)
 }
 
@@ -132,96 +102,6 @@ fn format_pct(val: f32, step: f32, show_decimals: bool) -> String {
     } else {
         format!("{:+.2}%", val)
     }
-}
-
-fn time_tick_candidates() -> &'static [u64] {
-    const S: u64 = 1_000;
-    const M: u64 = 60 * S;
-    const H: u64 = 60 * M;
-    const D: u64 = 24 * H;
-    &[
-        S,
-        2 * S,
-        5 * S,
-        10 * S,
-        15 * S,
-        30 * S, //
-        M,
-        2 * M,
-        5 * M,
-        10 * M,
-        15 * M,
-        30 * M, //
-        H,
-        2 * H,
-        4 * H,
-        6 * H,
-        12 * H, //
-        D,
-        2 * D,
-        7 * D,
-        14 * D, //
-        30 * D,
-        90 * D,
-        180 * D,
-        365 * D,
-    ]
-}
-
-fn format_time_label(ts_ms: u64, step_ms: u64) -> String {
-    let Some(dt) = Utc.timestamp_millis_opt(ts_ms as i64).single() else {
-        return String::new();
-    };
-
-    const S: u64 = 1_000;
-    const M: u64 = 60 * S;
-    const H: u64 = 60 * M;
-    const D: u64 = 24 * H;
-
-    if step_ms < M {
-        dt.format("%H:%M:%S").to_string()
-    } else if step_ms < D {
-        dt.format("%H:%M").to_string()
-    } else if step_ms < 7 * D {
-        dt.format("%b %d").to_string()
-    } else if step_ms < 365 * D {
-        dt.format("%Y-%m").to_string()
-    } else {
-        dt.format("%Y").to_string()
-    }
-}
-
-fn time_ticks(min_x: u64, max_x: u64, px_per_ms: f32, min_px: f32) -> (Vec<u64>, u64) {
-    let span = max_x.saturating_sub(min_x).max(1);
-    let mut step = *time_tick_candidates().first().unwrap_or(&1_000);
-    for &candidate in time_tick_candidates() {
-        let px = candidate as f32 * px_per_ms;
-        if px >= min_px {
-            step = candidate;
-            break;
-        } else {
-            step = candidate;
-        }
-    }
-    // Align first tick to the step boundary >= min_x
-    let first = if min_x.is_multiple_of(step) {
-        min_x
-    } else {
-        (min_x / step + 1) * step
-    };
-    let mut out = Vec::new();
-    let mut t = first;
-    for _ in 0..=2000 {
-        if t > max_x {
-            break;
-        }
-        out.push(t);
-        t = t.saturating_add(step);
-        if (t - first) > span + step {
-            break;
-        }
-    }
-    (out, step)
 }
 
 pub mod domain {

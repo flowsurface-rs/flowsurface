@@ -1,10 +1,12 @@
+use crate::chart::ticks::AxisLabel;
+use crate::chart::ticks::x;
 use crate::style;
 use crate::widget::chart::SeriesLike;
 use crate::widget::chart::Zoom;
 use crate::widget::chart::domain;
 
 use data::UserTimezone;
-use exchange::{TickerInfo, Timeframe};
+use exchange::{TickerInfo, Timeframe, UnixMs};
 
 use iced::advanced::widget::tree::{self, Tree};
 use iced::advanced::{self, Clipboard, Layout, Shell, Widget, layout, renderer};
@@ -691,24 +693,6 @@ where
             }
         }
     }
-
-    fn to_tz_ms(ts_ms: u64, tz: UserTimezone) -> u64 {
-        match tz {
-            UserTimezone::Utc => ts_ms,
-            UserTimezone::Local => {
-                if let Some(dt) = chrono::Local.timestamp_millis_opt(ts_ms as i64).single() {
-                    let off_ms = (dt.offset().local_minus_utc() as i64) * 1000;
-                    if off_ms >= 0 {
-                        ts_ms.saturating_add(off_ms as u64)
-                    } else {
-                        ts_ms.saturating_sub((-off_ms) as u64)
-                    }
-                } else {
-                    ts_ms
-                }
-            }
-        }
-    }
 }
 
 impl<'a, S, M> Widget<M, Theme, Renderer> for LineComparison<'a, S>
@@ -1285,42 +1269,29 @@ where
     }
 
     fn fill_x_axis_labels(&self, frame: &mut canvas::Frame, ctx: &PlotContext, palette: &Extended) {
-        let (ticks, step_ms) =
-            super::time_ticks(ctx.min_x, ctx.max_x, ctx.px_per_ms, MIN_X_TICK_PX);
-
-        let baseline_to_text = 4.0;
-        let y_center_local = baseline_to_text + 2.0 + TEXT_SIZE * 0.5;
-
+        // The time axis is universal: the same `TimeAxisGrid` as the kline
+        // chart, with automatic calendar labelling (day/month/year layers)
+        // once the grid step reaches a day. Labels are formatted in the
+        // user's timezone.
         let plot_rect = ctx.plot_rect();
+        let labels_can_fit = ((plot_rect.width / MIN_X_TICK_PX).floor() as i32).max(2);
 
-        let mut last_right = f32::NEG_INFINITY;
-        for t in ticks {
-            let x_local = ctx.map_x(t).clamp(0.0, plot_rect.width);
+        let labels = x::generate_time_labels(
+            self.timeframe,
+            self.timezone,
+            Rectangle {
+                x: 0.0,
+                y: 0.0,
+                width: plot_rect.width,
+                height: X_AXIS_HEIGHT,
+            },
+            UnixMs::new(ctx.min_x),
+            UnixMs::new(ctx.max_x),
+            labels_can_fit,
+            palette,
+        );
 
-            let label_ts = Self::to_tz_ms(t, self.timezone);
-            let label = super::format_time_label(label_ts, step_ms);
-
-            let est_w = (label.len() as f32) * CHAR_W + 8.0;
-            let left = x_local - est_w * 0.5;
-            let right = x_local + est_w * 0.5;
-
-            if left <= last_right {
-                continue;
-            }
-
-            frame.fill_text(canvas::Text {
-                content: label,
-                position: Point::new(x_local, y_center_local),
-                color: palette.background.base.text,
-                size: TEXT_SIZE.into(),
-                font: style::AZERET_MONO,
-                align_x: iced::Alignment::Center.into(),
-                align_y: iced::Alignment::Center.into(),
-                ..Default::default()
-            });
-
-            last_right = right;
-        }
+        AxisLabel::filter_and_draw(&labels, frame);
     }
 
     fn fill_top_left_legend(

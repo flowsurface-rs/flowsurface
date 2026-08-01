@@ -1,12 +1,12 @@
 pub mod kline;
 pub mod plot;
 
-use super::scale::linear;
+use super::ticks::y;
 use super::{Interaction, Message};
 use crate::chart::{
     Caches, TEXT_SIZE, ViewState,
     indicator::plot::{AnySeries, ChartCanvas, Plot},
-    scale::{AxisLabel, LabelContent, calc_label_rect},
+    ticks::{AxisLabel, LabelContent, calc_label_rect},
 };
 use data::chart::Basis;
 use data::util::{abbr_large_numbers, round_to_tick};
@@ -145,44 +145,45 @@ impl canvas::Program<Message> for IndicatorLabel<'_> {
 
         let tick_size = data::util::guesstimate_ticks(range);
 
-        let labels =
-            self.label_cache.draw(renderer, bounds.size(), |frame| {
-                let mut all_labels =
-                    linear::LabelLayout::new(bounds, TEXT_SIZE, palette.background.base.text)
-                        .generate(f64::from(self.min), f64::from(self.max), None, None);
+        let labels = self.label_cache.draw(renderer, bounds.size(), |frame| {
+            let mut all_labels = y::LabelLayout::new(
+                bounds,
+                TEXT_SIZE,
+                palette.background.base.text,
+            )
+            .generate(f64::from(self.min), f64::from(self.max), None);
 
-                let common_bounds = Rectangle {
-                    x: self.chart_bounds.x,
-                    y: bounds.y,
-                    width: self.chart_bounds.width,
-                    height: bounds.height,
+            let common_bounds = Rectangle {
+                x: self.chart_bounds.x,
+                y: bounds.y,
+                width: self.chart_bounds.width,
+                height: bounds.height,
+            };
+
+            if let Some(crosshair_pos) = cursor.position_in(common_bounds) {
+                let rounded_value = round_to_tick(
+                    lowest + (range * (bounds.height - crosshair_pos.y) / bounds.height),
+                    tick_size,
+                );
+
+                let label = LabelContent {
+                    content: abbr_large_numbers(rounded_value as f64),
+                    background_color: Some(palette.secondary.base.color),
+                    text_color: palette.secondary.base.text,
+                    text_size: TEXT_SIZE,
                 };
 
-                if let Some(crosshair_pos) = cursor.position_in(common_bounds) {
-                    let rounded_value = round_to_tick(
-                        lowest + (range * (bounds.height - crosshair_pos.y) / bounds.height),
-                        tick_size,
-                    );
+                let y_position = bounds.height - ((rounded_value - lowest) / range * bounds.height);
 
-                    let label = LabelContent {
-                        content: abbr_large_numbers(rounded_value as f64),
-                        background_color: Some(palette.secondary.base.color),
-                        text_color: palette.secondary.base.text,
-                        text_size: TEXT_SIZE,
-                    };
+                all_labels.push(AxisLabel::Y {
+                    bounds: calc_label_rect(y_position, 1, TEXT_SIZE, bounds),
+                    value_label: label,
+                    timer_label: None,
+                });
+            }
 
-                    let y_position =
-                        bounds.height - ((rounded_value - lowest) / range * bounds.height);
-
-                    all_labels.push(AxisLabel::Y {
-                        bounds: calc_label_rect(y_position, 1, TEXT_SIZE, bounds),
-                        value_label: label,
-                        timer_label: None,
-                    });
-                }
-
-                AxisLabel::filter_and_draw(&all_labels, frame);
-            });
+            AxisLabel::filter_and_draw(&all_labels, frame);
+        });
 
         vec![labels]
     }

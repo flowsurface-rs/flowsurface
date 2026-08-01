@@ -2,7 +2,7 @@ pub mod comparison;
 pub mod heatmap;
 pub mod indicator;
 pub mod kline;
-mod scale;
+pub mod ticks;
 
 use crate::connector::fetcher::{FetchRange, FetchSpec, ReqError, RequestHandler};
 use crate::style;
@@ -11,8 +11,8 @@ use crate::widget::tooltip;
 use data::chart::{Autoscale, Basis, PlotData, ViewConfig, indicator::Indicator};
 use exchange::TickerInfo;
 use exchange::unit::{Price, PriceStep};
-use scale::linear::PriceInfoLabel;
-use scale::{AxisLabelsX, AxisLabelsY};
+use ticks::y::PriceInfoLabel;
+use ticks::{AxisLabelsX, AxisLabelsY};
 
 use iced::theme::palette::Extended;
 use iced::widget::canvas::{self, Cache, Canvas, Event, Frame, LineDash, Path, Stroke};
@@ -555,10 +555,12 @@ pub fn view<'a, T: Chart>(
             labels_cache: &state.cache.y_labels,
             translation_y: state.translation.y,
             scaling: state.scaling,
-            min_tick: state.ticker_info.min_ticksize,
             min: state.base_price_y,
             last_price: state.last_price,
-            tick_size: state.effective_tick_size(),
+            axis: ticks::y::PriceAxis::new(
+                state.effective_tick_size(),
+                Some(state.ticker_info.min_ticksize),
+            ),
             cell_height: state.cell_height,
             basis: state.basis,
             chart_bounds: state.bounds,

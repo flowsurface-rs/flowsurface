@@ -1,12 +1,12 @@
-pub mod linear;
-pub mod timeseries;
+pub mod x;
+pub mod y;
 
 use crate::{chart::TEXT_SIZE, style::AZERET_MONO};
 
 use super::{Basis, Interaction, Message};
 use data::chart::Autoscale;
 use data::config::timezone::TimeLabelKind;
-use exchange::unit::{MinTicksize, Price, PriceStep};
+use exchange::unit::Price;
 use iced::{
     Alignment, Color, Event, Point, Rectangle, Renderer, Size, Theme, mouse,
     theme::palette::Extended,
@@ -14,6 +14,12 @@ use iced::{
 };
 
 const REGULAR_LABEL_WIDTH: f32 = TEXT_SIZE * 6.0;
+
+/// Approximate per-character advance of the axis monospace font (Azeret Mono
+/// digits are 0.65 em, measured from the font metrics). X-axis label collision
+/// boxes are sized from this so the overlap filter keeps adjacent labels at
+/// least one full label-width apart.
+const X_LABEL_CHAR_W: f32 = TEXT_SIZE * 0.65;
 
 /// Guard area on the edges of the axis
 /// to prevent conflicts with pane state interactions
@@ -78,7 +84,7 @@ impl AxisLabel {
         is_crosshair: bool,
         palette: &Extended,
     ) -> Self {
-        let content_width = text_content.len() as f32 * (TEXT_SIZE / 2.6);
+        let content_width = text_content.len() as f32 * X_LABEL_CHAR_W;
 
         let rect = Rectangle {
             x: center_x_position - content_width,
@@ -131,13 +137,17 @@ impl AxisLabel {
     }
 
     pub fn filter_and_draw(labels: &[AxisLabel], frame: &mut Frame) {
-        for i in (0..labels.len()).rev() {
-            let should_draw = labels[i + 1..]
-                .iter()
-                .all(|existing| !existing.intersects(&labels[i]));
-
-            if should_draw {
-                labels[i].draw(frame);
+        // Iterate from the end so later entries win (e.g. calendar layers are
+        // appended year > month > day, giving them priority). A label is only
+        // required to avoid labels that are actually drawn — comparing against
+        // every later entry would let a dense grid (e.g. 12h ticks across a
+        // long span, where the spacing is finer than the label width) collapse
+        // to a single label.
+        let mut drawn: Vec<&AxisLabel> = Vec::with_capacity(labels.len());
+        for label in labels.iter().rev() {
+            if drawn.iter().all(|existing| !existing.intersects(label)) {
+                label.draw(frame);
+                drawn.push(label);
             }
         }
     }
@@ -514,7 +524,7 @@ impl canvas::Program<Message> for AxisLabelsX<'_> {
                     let earliest = exchange::UnixMs(self.x_to_interval(region.x));
                     let latest = exchange::UnixMs(self.x_to_interval(region.x + region.width));
 
-                    let generated_labels = timeseries::generate_time_labels(
+                    let generated_labels = x::generate_time_labels(
                         timeframe,
                         self.timezone,
                         bounds,
@@ -563,9 +573,8 @@ pub struct AxisLabelsY<'a> {
     pub translation_y: f32,
     pub scaling: f32,
     pub min: Price,
-    pub last_price: Option<linear::PriceInfoLabel>,
-    pub tick_size: PriceStep,
-    pub min_tick: MinTicksize,
+    pub last_price: Option<y::PriceInfoLabel>,
+    pub axis: y::PriceAxis,
     pub cell_height: f32,
     pub basis: Basis,
     pub chart_bounds: Rectangle,
@@ -595,7 +604,7 @@ impl AxisLabelsY<'_> {
     /// grid once at the end.
     fn y_to_price(&self, y: f32) -> Price {
         let ticks = f64::from(y) / f64::from(self.cell_height);
-        let price = self.min.to_f64() - ticks * self.tick_size.to_f64_lossy();
+        let price = self.min.to_f64() - ticks * self.axis.row_step.to_f64_lossy();
         Price::from_f64(price)
     }
 }
@@ -691,13 +700,12 @@ impl canvas::Program<Message> for AxisLabelsY<'_> {
 
             let range = highest - lowest;
 
-            let mut all_labels =
-                linear::LabelLayout::new(bounds, text_size, palette.background.base.text).generate(
-                    lowest.to_f64(),
-                    highest.to_f64(),
-                    Some(self.tick_size),
-                    Some(self.min_tick),
-                );
+            let mut all_labels = y::LabelLayout::new(
+                bounds,
+                text_size,
+                palette.background.base.text,
+            )
+            .generate(lowest.to_f64(), highest.to_f64(), Some(self.axis));
 
             // Last price (priority 2)
             if let Some(label) = self.last_price {
@@ -741,7 +749,7 @@ impl canvas::Program<Message> for AxisLabelsY<'_> {
                 let (price, color) = label.get_with_color(palette);
 
                 let price_label = LabelContent {
-                    content: price.to_string(self.min_tick),
+                    content: price.to_string(self.axis.precision),
                     background_color: Some(color),
                     text_color: {
                         if candle_close_label.is_some() {
@@ -771,12 +779,12 @@ impl canvas::Program<Message> for AxisLabelsY<'_> {
             if let Some(crosshair_pos) = cursor.position_in(self.chart_bounds) {
                 let ratio = f64::from(bounds.height - crosshair_pos.y) / f64::from(bounds.height);
                 let rounded_price = Price::from_f64(lowest.to_f64() + ratio * range.to_f64())
-                    .round_to_step(self.tick_size);
+                    .round_to_step(self.axis.row_step);
                 let y_position =
                     bounds.height - ((rounded_price - lowest) / range) as f32 * bounds.height;
 
                 let label = LabelContent {
-                    content: rounded_price.to_string(self.min_tick),
+                    content: rounded_price.to_string(self.axis.precision),
                     background_color: Some(palette.secondary.base.color),
                     text_color: palette.secondary.base.text,
                     text_size: crate::style::text_size::BODY,

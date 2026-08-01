@@ -262,16 +262,11 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
             };
 
             let every = {
-                let px_per_bucket = (col_f * cam_sx_f).max(1e-9) as f32;
-                let rough = (TARGET_LABEL_SPACING_PX / px_per_bucket).ceil().max(1.) as i64;
-
-                let mut pow10 = 1i64;
-                while pow10.saturating_mul(10) <= rough {
-                    pow10 *= 10;
-                }
-                let m = (rough + pow10 - 1) / pow10;
-                let mult = crate::widget::chart::nice_step_multiplier_125(m as f32) as i64;
-                mult * pow10
+                let px_per_bucket = (col_f * cam_sx_f).max(1e-9);
+                let rough = (TARGET_LABEL_SPACING_PX as f64 / px_per_bucket)
+                    .ceil()
+                    .max(1.0);
+                data::chart::ticks::y::FloatGrid::round_125(rough) as i64
             };
 
             let mut b = (b_min.div_euclid(every)) * every;
