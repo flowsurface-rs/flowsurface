@@ -87,7 +87,7 @@ fn ticks(min: f32, max: f32, target: usize) -> (Vec<f32>, f32) {
 }
 
 fn format_pct(val: f32, step: f32, show_decimals: bool) -> String {
-    if show_decimals {
+    if show_decimals || step.fract() != 0.0 {
         if step >= 1.0 {
             format!("{:+.1}%", val)
         } else if step >= 0.1 {

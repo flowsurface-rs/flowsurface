@@ -12,7 +12,7 @@ use data::chart::{Autoscale, Basis, PlotData, ViewConfig, indicator::Indicator};
 use exchange::TickerInfo;
 use exchange::unit::{Price, PriceStep};
 use ticks::y::PriceInfoLabel;
-use ticks::{AxisLabelsX, AxisLabelsY};
+use ticks::{x::AxisLabelsX, y::AxisLabelsY};
 
 use iced::theme::palette::Extended;
 use iced::widget::canvas::{self, Cache, Canvas, Event, Frame, LineDash, Path, Stroke};

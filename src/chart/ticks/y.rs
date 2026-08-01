@@ -1,8 +1,13 @@
 use super::{AxisLabel, LabelContent, calc_label_rect};
 pub use data::chart::ticks::y::PriceAxis;
-use data::chart::ticks::y::{TickValue, YAxisScale};
-use data::util::abbr_large_numbers;
+use data::chart::ticks::y::YTickLabel;
 use exchange::unit::Price;
+
+use super::{Basis, Interaction, Message};
+use iced::{
+    Color, Event, Rectangle, Renderer, Size, Theme, mouse,
+    widget::canvas::{self, Cache, Geometry},
+};
 
 /// Shared layout context for building Y-axis labels on a single axis canvas.
 ///
@@ -18,7 +23,7 @@ pub struct LabelLayout {
 
 impl LabelLayout {
     pub fn new(bounds: iced::Rectangle, text_size: f32, text_color: iced::Color) -> Self {
-        let labels_can_fit = (bounds.height / (text_size * 3.0)) as i32;
+        let labels_can_fit = (bounds.height / (text_size * 2.5)) as i32;
         Self {
             bounds,
             text_size,
@@ -34,122 +39,276 @@ impl LabelLayout {
     /// formatted at its precision. When unset, a plain float grid is used and
     /// large numbers are abbreviated.
     pub fn generate(&self, lowest: f64, highest: f64, axis: Option<PriceAxis>) -> Vec<AxisLabel> {
-        if !lowest.is_finite() || !highest.is_finite() || highest - lowest <= 0.0 {
-            return Vec::new();
-        }
+        let labels = YTickLabel::for_range(
+            lowest,
+            highest,
+            self.bounds.height,
+            self.labels_can_fit,
+            axis,
+        );
 
-        if self.labels_can_fit <= 1 {
-            return match axis {
-                Some(axis) => self.single_row(highest, axis),
-                None => self.single_y(highest, None),
-            };
-        }
-
-        match axis {
-            Some(axis) => self.row_grid(lowest, highest, axis),
-            None => self.float_grid(lowest, highest),
-        }
-    }
-
-    /// A single label built from a ready-made content string.
-    fn single(&self, content: String) -> Vec<AxisLabel> {
-        let label = LabelContent {
-            content,
-            background_color: None,
-            text_color: self.text_color,
-            text_size: self.text_size,
-        };
-
-        vec![AxisLabel::Y {
-            bounds: calc_label_rect(0.0, 1, self.text_size, self.bounds),
-            value_label: label,
-            timer_label: None,
-        }]
-    }
-
-    /// A single label for `value` at `decimals` decimal places when available.
-    fn single_y(&self, value: f64, decimals: Option<usize>) -> Vec<AxisLabel> {
-        let content = if let Some(decimals) = decimals {
-            format!("{value:.decimals$}")
-        } else {
-            abbr_large_numbers(value)
-        };
-        self.single(content)
-    }
-
-    /// A single fallback label aligned down to the nearest price row,
-    /// formatted at the axis precision. Keeps the axis pointing at a real row
-    /// even when there is only room for one label.
-    fn single_row(&self, value: f64, axis: PriceAxis) -> Vec<AxisLabel> {
-        let aligned = axis.floor_to_row(value);
-        let content = axis.format_units(aligned);
-        self.single(content)
-    }
-
-    /// A grid of labels aligned exactly to the price row grid. Every label
-    /// lands on a real row; the grid math lives in `data::chart::ticks`
-    /// ([`PriceAxis::ticks`]).
-    fn row_grid(&self, lowest: f64, highest: f64, axis: PriceAxis) -> Vec<AxisLabel> {
-        let ticks = axis.ticks(lowest, highest, self.labels_can_fit);
-        if ticks.ticks.is_empty() {
-            return self.single_row(highest, axis);
-        }
-
-        let mut labels = Vec::with_capacity((self.labels_can_fit + 2) as usize);
-        for tick in ticks.ticks {
-            let TickValue::PriceUnits(units) = tick.value else {
-                continue;
-            };
-            let content = axis.format_units(units);
-
-            let label_pos = self.bounds.height - tick.ratio as f32 * self.bounds.height;
-
-            labels.push(AxisLabel::Y {
-                bounds: calc_label_rect(label_pos, 1, self.text_size, self.bounds),
+        labels
+            .into_iter()
+            .map(|label| AxisLabel::Y {
+                bounds: calc_label_rect(label.y_pos, 1, self.text_size, self.bounds),
                 value_label: LabelContent {
-                    content,
+                    content: label.content,
                     background_color: None,
                     text_color: self.text_color,
                     text_size: self.text_size,
                 },
                 timer_label: None,
-            });
-        }
+            })
+            .collect()
+    }
+}
 
-        labels
+// Y-AXIS LABELS
+pub struct AxisLabelsY<'a> {
+    pub labels_cache: &'a Cache,
+    pub translation_y: f32,
+    pub scaling: f32,
+    pub min: Price,
+    pub last_price: Option<PriceInfoLabel>,
+    pub axis: PriceAxis,
+    pub cell_height: f32,
+    pub basis: Basis,
+    pub chart_bounds: Rectangle,
+}
+
+impl AxisLabelsY<'_> {
+    fn drag_bounds(bounds: Rectangle) -> Rectangle {
+        bounds.shrink(super::AXIS_DRAG_EDGE_GUARD)
     }
 
-    /// A grid of labels from a plain f64 range (used for indicator axes that
-    /// have no row grid). Labels use abbreviated large-number formatting. The
-    /// grid values themselves are computed by `data::chart::ticks`
-    /// ([`YAxisScale::Linear`]).
-    fn float_grid(&self, lowest: f64, highest: f64) -> Vec<AxisLabel> {
-        let ticks = YAxisScale::Linear.ticks(lowest, highest, self.labels_can_fit);
-        if ticks.ticks.is_empty() {
-            return self.single_y(highest, None);
+    fn visible_region(&self, size: Size) -> Rectangle {
+        let width = size.width / self.scaling;
+        let height = size.height / self.scaling;
+
+        Rectangle {
+            x: 0.0,
+            y: -self.translation_y - height / 2.0,
+            width,
+            height,
+        }
+    }
+
+    /// Convert a canvas y position (pixels) to a price, exact to within one
+    /// atomic unit (1e-11). Only the pixel geometry (y, cell_height) is f32
+    /// here; the base price and aggregation step are exact atomic-unit values,
+    /// so the offset arithmetic runs in f64 and is quantized to the atomic
+    /// grid once at the end.
+    fn y_to_price(&self, y: f32) -> Price {
+        let ticks = f64::from(y) / f64::from(self.cell_height);
+        let price = self.min.to_f64() - ticks * self.axis.row_step.to_f64_lossy();
+        Price::from_f64(price)
+    }
+}
+
+impl canvas::Program<Message> for AxisLabelsY<'_> {
+    type State = Interaction;
+
+    fn update(
+        &self,
+        interaction: &mut Interaction,
+        event: &Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Option<canvas::Action<Message>> {
+        let drag_bounds = Self::drag_bounds(bounds);
+
+        if let Event::Mouse(mouse::Event::ButtonReleased(_)) = event {
+            *interaction = Interaction::None;
         }
 
-        let mut labels = Vec::with_capacity((self.labels_can_fit + 2) as usize);
-        for tick in ticks.ticks {
-            let TickValue::Float(value) = tick.value else {
-                continue;
-            };
-            let content = abbr_large_numbers(value);
-            let label_pos = self.bounds.height - tick.ratio as f32 * self.bounds.height;
+        if let Event::Mouse(mouse_event) = event {
+            match mouse_event {
+                mouse::Event::ButtonPressed(mouse::Button::Left) => {
+                    if cursor.position_in(drag_bounds).is_some()
+                        && let Some(cursor_position) = cursor.position()
+                    {
+                        *interaction = Interaction::Zoomin {
+                            last_position: cursor_position,
+                        };
+                    }
+                }
+                mouse::Event::CursorMoved { .. } => {
+                    if let Interaction::Zoomin {
+                        ref mut last_position,
+                    } = *interaction
+                        && let Some(cursor_position) = cursor.position()
+                    {
+                        let difference_y = last_position.y - cursor_position.y;
 
-            labels.push(AxisLabel::Y {
-                bounds: calc_label_rect(label_pos, 1, self.text_size, self.bounds),
-                value_label: LabelContent {
-                    content,
-                    background_color: None,
-                    text_color: self.text_color,
-                    text_size: self.text_size,
+                        if difference_y.abs() > 1.0 {
+                            *last_position = cursor_position;
+
+                            let message = Message::YScaling(difference_y * 0.4, 0.0, false);
+
+                            return Some(canvas::Action::publish(message).and_capture());
+                        }
+                    }
+                }
+                mouse::Event::WheelScrolled { delta } => match delta {
+                    mouse::ScrollDelta::Lines { y, .. } | mouse::ScrollDelta::Pixels { y, .. } => {
+                        cursor.position_in(drag_bounds)?;
+
+                        let message = Message::YScaling(
+                            *y,
+                            {
+                                if let Some(cursor_to_center) =
+                                    cursor.position_from(bounds.center())
+                                {
+                                    cursor_to_center.y
+                                } else {
+                                    0.0
+                                }
+                            },
+                            true,
+                        );
+
+                        return Some(canvas::Action::publish(message).and_capture());
+                    }
                 },
-                timer_label: None,
-            });
+                _ => {}
+            }
         }
 
-        labels
+        None
+    }
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let text_size = crate::style::text_size::BODY;
+        let palette = theme.extended_palette();
+
+        let labels = self.labels_cache.draw(renderer, bounds.size(), |frame| {
+            let region = self.visible_region(frame.size());
+
+            let highest = self.y_to_price(region.y);
+            let lowest = self.y_to_price(region.y + region.height);
+
+            let range = highest - lowest;
+
+            let mut all_labels = LabelLayout::new(bounds, text_size, palette.background.base.text)
+                .generate(lowest.to_f64(), highest.to_f64(), Some(self.axis));
+
+            // Last price (priority 2)
+            if let Some(label) = self.last_price {
+                let candle_close_label = match self.basis {
+                    Basis::Time(timeframe) => {
+                        let interval = timeframe.to_milliseconds();
+
+                        let current_time = chrono::Utc::now().timestamp_millis() as u64;
+                        let next_kline_open = (current_time / interval + 1) * interval;
+
+                        let remaining_seconds = (next_kline_open - current_time) / 1000;
+
+                        if remaining_seconds > 0 {
+                            let hours = remaining_seconds / 3600;
+                            let minutes = (remaining_seconds % 3600) / 60;
+                            let seconds = remaining_seconds % 60;
+
+                            let time_format = if hours > 0 {
+                                format!("{hours:02}:{minutes:02}:{seconds:02}")
+                            } else {
+                                format!("{minutes:02}:{seconds:02}")
+                            };
+
+                            Some(LabelContent {
+                                content: time_format,
+                                background_color: Some(palette.background.strong.color),
+                                text_color: if palette.is_dark {
+                                    Color::BLACK.scale_alpha(0.8)
+                                } else {
+                                    Color::WHITE.scale_alpha(0.8)
+                                },
+                                text_size: crate::style::text_size::SMALL,
+                            })
+                        } else {
+                            None
+                        }
+                    }
+                    Basis::Tick(_) => None,
+                };
+
+                let (price, color) = label.get_with_color(palette);
+
+                let price_label = LabelContent {
+                    content: price.to_string(self.axis.precision),
+                    background_color: Some(color),
+                    text_color: {
+                        if candle_close_label.is_some() {
+                            if palette.is_dark {
+                                Color::BLACK
+                            } else {
+                                Color::WHITE
+                            }
+                        } else {
+                            palette.primary.strong.text
+                        }
+                    },
+                    text_size: crate::style::text_size::BODY,
+                };
+
+                let y_pos = bounds.height - ((price - lowest) / range) as f32 * bounds.height;
+                let content_amt = if candle_close_label.is_some() { 2 } else { 1 };
+
+                all_labels.push(AxisLabel::Y {
+                    bounds: calc_label_rect(y_pos, content_amt, text_size, bounds),
+                    value_label: price_label,
+                    timer_label: candle_close_label,
+                });
+            }
+
+            // Crosshair price (priority 3)
+            if let Some(crosshair_pos) = cursor.position_in(self.chart_bounds) {
+                let ratio = f64::from(bounds.height - crosshair_pos.y) / f64::from(bounds.height);
+                let rounded_price = Price::from_f64(lowest.to_f64() + ratio * range.to_f64())
+                    .round_to_step(self.axis.row_step);
+                let y_position =
+                    bounds.height - ((rounded_price - lowest) / range) as f32 * bounds.height;
+
+                let label = LabelContent {
+                    content: rounded_price.to_string(self.axis.precision),
+                    background_color: Some(palette.secondary.base.color),
+                    text_color: palette.secondary.base.text,
+                    text_size: crate::style::text_size::BODY,
+                };
+
+                all_labels.push(AxisLabel::Y {
+                    bounds: calc_label_rect(y_position, 1, text_size, bounds),
+                    value_label: label,
+                    timer_label: None,
+                });
+            }
+
+            AxisLabel::filter_and_draw(&all_labels, frame);
+        });
+
+        vec![labels]
+    }
+
+    fn mouse_interaction(
+        &self,
+        interaction: &Interaction,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> mouse::Interaction {
+        match interaction {
+            Interaction::Zoomin { .. } => mouse::Interaction::ResizingVertically,
+            Interaction::Panning { .. } => mouse::Interaction::None,
+            Interaction::None if cursor.is_over(Self::drag_bounds(bounds)) => {
+                mouse::Interaction::ResizingVertically
+            }
+            _ => mouse::Interaction::default(),
+        }
     }
 }
 

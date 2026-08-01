@@ -4,21 +4,14 @@ pub mod y;
 use crate::{chart::TEXT_SIZE, style::AZERET_MONO};
 
 use super::{Basis, Interaction, Message};
-use data::chart::Autoscale;
-use data::config::timezone::TimeLabelKind;
-use exchange::unit::Price;
+use data::chart::ticks::x::TimeTickTier;
 use iced::{
-    Alignment, Color, Event, Point, Rectangle, Renderer, Size, Theme, mouse,
+    Alignment, Color, Point, Rectangle, Size,
     theme::palette::Extended,
-    widget::canvas::{self, Cache, Frame, Geometry},
+    widget::canvas::{self, Frame},
 };
 
 const REGULAR_LABEL_WIDTH: f32 = TEXT_SIZE * 6.0;
-
-/// Approximate per-character advance of the axis monospace font (Azeret Mono
-/// digits are 0.65 em, measured from the font metrics). X-axis label collision
-/// boxes are sized from this so the overlap filter keeps adjacent labels at
-/// least one full label-width apart.
 const X_LABEL_CHAR_W: f32 = TEXT_SIZE * 0.65;
 
 /// Guard area on the edges of the axis
@@ -26,42 +19,6 @@ const X_LABEL_CHAR_W: f32 = TEXT_SIZE * 0.65;
 ///
 /// (e.g. pane split dragging when trying to interact with labels)
 const AXIS_DRAG_EDGE_GUARD: f32 = 4.0;
-
-/// calculates `Rectangle` from given content, clamps it within bounds if needed
-pub fn calc_label_rect(
-    y_pos: f32,
-    content_amt: i16,
-    text_size: f32,
-    bounds: Rectangle,
-) -> Rectangle {
-    let content_amt = content_amt.max(1);
-    let label_height = text_size + (f32::from(content_amt) * (text_size / 2.0) + 4.0);
-
-    let rect = Rectangle {
-        x: 1.0,
-        y: y_pos - label_height / 2.0,
-        width: bounds.width - 1.0,
-        height: label_height,
-    };
-
-    // clamp when label is partially visible within bounds
-    if rect.y < bounds.height && rect.y + label_height > 0.0 {
-        Rectangle {
-            y: rect.y.clamp(0.0, (bounds.height - label_height).max(0.0)),
-            ..rect
-        }
-    } else {
-        rect
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct LabelContent {
-    pub content: String,
-    pub background_color: Option<Color>,
-    pub text_color: Color,
-    pub text_size: f32,
-}
 
 #[derive(Debug, Clone)]
 pub enum AxisLabel {
@@ -81,10 +38,16 @@ impl AxisLabel {
         center_x_position: f32,
         text_content: String,
         axis_bounds: Rectangle,
+        tier: TimeTickTier,
         is_crosshair: bool,
         palette: &Extended,
     ) -> Self {
-        let content_width = text_content.len() as f32 * X_LABEL_CHAR_W;
+        let content_width = text_content.len() as f32
+            * if is_crosshair {
+                TEXT_SIZE / 2.6
+            } else {
+                X_LABEL_CHAR_W
+            };
 
         let rect = Rectangle {
             x: center_x_position - content_width,
@@ -100,11 +63,7 @@ impl AxisLabel {
             } else {
                 None
             },
-            text_color: if is_crosshair {
-                palette.secondary.base.text
-            } else {
-                palette.background.base.text
-            },
+            text_color: x_label_text_color(palette, tier, is_crosshair),
             text_size: TEXT_SIZE,
         };
 
@@ -137,12 +96,6 @@ impl AxisLabel {
     }
 
     pub fn filter_and_draw(labels: &[AxisLabel], frame: &mut Frame) {
-        // Iterate from the end so later entries win (e.g. calendar layers are
-        // appended year > month > day, giving them priority). A label is only
-        // required to avoid labels that are actually drawn — comparing against
-        // every later entry would let a dense grid (e.g. 12h ticks across a
-        // long span, where the spacing is finer than the label width) collapse
-        // to a single label.
         let mut drawn: Vec<&AxisLabel> = Vec::with_capacity(labels.len());
         for label in labels.iter().rev() {
             if drawn.iter().all(|existing| !existing.intersects(label)) {
@@ -161,6 +114,8 @@ impl AxisLabel {
                 }
 
                 if let Some(background_color) = label.background_color {
+                    // `bounds` is already the snug crosshair box, so the pill
+                    // is drawn straight from it.
                     frame.fill_rectangle(
                         Point::new(bounds.x, bounds.y),
                         Size::new(bounds.width, bounds.height),
@@ -233,589 +188,54 @@ impl AxisLabel {
     }
 }
 
-// X-AXIS LABELS
-pub struct AxisLabelsX<'a> {
-    pub labels_cache: &'a Cache,
-    pub max: u64,
-    pub scaling: f32,
-    pub translation_x: f32,
-    pub basis: Basis,
-    pub cell_width: f32,
-    pub timezone: data::UserTimezone,
-    pub chart_bounds: Rectangle,
-    pub interval_keys: Option<Vec<u64>>,
-    pub autoscaling: Option<Autoscale>,
-}
+/// calculates `Rectangle` from given content, clamps it within bounds if needed
+pub fn calc_label_rect(
+    y_pos: f32,
+    content_amt: i16,
+    text_size: f32,
+    bounds: Rectangle,
+) -> Rectangle {
+    let content_amt = content_amt.max(1);
+    let label_height = text_size + (f32::from(content_amt) * (text_size / 2.0) + 4.0);
 
-impl AxisLabelsX<'_> {
-    fn drag_bounds(bounds: Rectangle) -> Rectangle {
-        bounds.shrink(AXIS_DRAG_EDGE_GUARD)
-    }
+    let rect = Rectangle {
+        x: 1.0,
+        y: y_pos - label_height / 2.0,
+        width: bounds.width - 1.0,
+        height: label_height,
+    };
 
-    fn calc_crosshair_pos(&self, cursor_pos: Point, region: Rectangle) -> (f32, f32, i32) {
-        let crosshair_ratio = f64::from(cursor_pos.x) / f64::from(self.chart_bounds.width);
-        let chart_x_min = region.x;
-        let crosshair_pos = chart_x_min + crosshair_ratio as f32 * region.width;
-        let cell_index = (crosshair_pos / self.cell_width).round();
-
-        (crosshair_pos, crosshair_ratio as f32, cell_index as i32)
-    }
-
-    fn generate_crosshair(
-        &self,
-        cursor_pos: Point,
-        region: Rectangle,
-        bounds: Rectangle,
-        palette: &Extended,
-    ) -> Option<AxisLabel> {
-        match self.basis {
-            Basis::Tick(_) => {
-                let Some(interval_keys) = &self.interval_keys else {
-                    return None;
-                };
-
-                let (crosshair_pos, _, cell_index) = self.calc_crosshair_pos(cursor_pos, region);
-
-                let chart_x_min = region.x;
-                let chart_x_max = region.x + region.width;
-
-                let snapped_position = (crosshair_pos / self.cell_width).round() * self.cell_width;
-                let snap_ratio = (snapped_position - chart_x_min) / (chart_x_max - chart_x_min);
-                let snap_x = snap_ratio * bounds.width;
-
-                if snap_x.is_nan() || snap_x < 0.0 || snap_x > bounds.width {
-                    return None;
-                }
-
-                let last_index = interval_keys.len() - 1;
-                let offset = i64::from(-cell_index) as usize;
-                if offset > last_index {
-                    return None;
-                }
-
-                let array_index = last_index - offset;
-
-                if let Some(timestamp) = interval_keys.get(array_index) {
-                    let label_content = self.timezone.format_with_kind(
-                        *timestamp as i64,
-                        TimeLabelKind::Crosshair { show_millis: true },
-                    );
-
-                    if let Some(content) = label_content {
-                        return Some(AxisLabel::new_x(snap_x, content, bounds, true, palette));
-                    }
-                }
-            }
-            Basis::Time(timeframe) => {
-                let (_, crosshair_ratio, _) = self.calc_crosshair_pos(cursor_pos, region);
-
-                let x_min = self.x_to_interval(region.x);
-                let x_max = self.x_to_interval(region.x + region.width);
-
-                let crosshair_millis =
-                    x_min as f64 + f64::from(crosshair_ratio) * (x_max as f64 - x_min as f64);
-
-                let interval = timeframe.to_milliseconds();
-
-                let crosshair_time =
-                    chrono::DateTime::from_timestamp_millis(crosshair_millis as i64)?;
-                let rounded_timestamp =
-                    (crosshair_time.timestamp_millis() as f64 / (interval as f64)).round() as u64
-                        * interval;
-
-                let snap_ratio =
-                    (rounded_timestamp as f64 - x_min as f64) / (x_max as f64 - x_min as f64);
-
-                let snap_x = snap_ratio * f64::from(bounds.width);
-                if snap_x.is_nan() || snap_x < 0.0 || snap_x > f64::from(bounds.width) {
-                    return None;
-                }
-
-                let label_content = self.timezone.format_with_kind(
-                    rounded_timestamp as i64,
-                    TimeLabelKind::Crosshair {
-                        show_millis: interval < 10_000,
-                    },
-                );
-
-                if let Some(content) = label_content {
-                    return Some(AxisLabel::new_x(
-                        snap_x as f32,
-                        content,
-                        bounds,
-                        true,
-                        palette,
-                    ));
-                }
-            }
-        }
-        None
-    }
-
-    fn visible_region(&self, size: Size) -> Rectangle {
-        let width = size.width / self.scaling;
-        let height = size.height / self.scaling;
-
+    // clamp when label is partially visible within bounds
+    if rect.y < bounds.height && rect.y + label_height > 0.0 {
         Rectangle {
-            x: -self.translation_x - width / 2.0,
-            y: 0.0,
-            width,
-            height,
+            y: rect.y.clamp(0.0, (bounds.height - label_height).max(0.0)),
+            ..rect
         }
-    }
-
-    fn x_to_interval(&self, x: f32) -> u64 {
-        match self.basis {
-            Basis::Time(timeframe) => {
-                let interval = timeframe.to_milliseconds() as f64;
-
-                if x <= 0.0 {
-                    let diff = (f64::from(-x / self.cell_width) * interval) as u64;
-                    self.max.saturating_sub(diff)
-                } else {
-                    let diff = (f64::from(x / self.cell_width) * interval) as u64;
-                    self.max.saturating_add(diff)
-                }
-            }
-            Basis::Tick(_) => {
-                let tick = -(x / self.cell_width);
-                tick.round() as u64
-            }
-        }
+    } else {
+        rect
     }
 }
 
-impl canvas::Program<Message> for AxisLabelsX<'_> {
-    type State = Interaction;
-
-    fn update(
-        &self,
-        interaction: &mut Interaction,
-        event: &Event,
-        bounds: Rectangle,
-        cursor: mouse::Cursor,
-    ) -> Option<canvas::Action<Message>> {
-        let drag_bounds = Self::drag_bounds(bounds);
-
-        if let Event::Mouse(mouse::Event::ButtonReleased(_)) = event {
-            *interaction = Interaction::None;
-        }
-
-        if let Event::Mouse(mouse_event) = event {
-            match mouse_event {
-                mouse::Event::ButtonPressed(mouse::Button::Left) => {
-                    if cursor.position_in(drag_bounds).is_some()
-                        && let Some(cursor_position) = cursor.position()
-                    {
-                        *interaction = Interaction::Zoomin {
-                            last_position: cursor_position,
-                        };
-                    }
-                }
-                mouse::Event::CursorMoved { .. } => {
-                    if let Interaction::Zoomin {
-                        ref mut last_position,
-                    } = *interaction
-                        && let Some(cursor_position) = cursor.position()
-                    {
-                        let difference_x = last_position.x - cursor_position.x;
-
-                        if difference_x.abs() > 1.0 {
-                            *last_position = cursor_position;
-
-                            let delta = if self.autoscaling == Some(Autoscale::FitToVisible) {
-                                difference_x * 0.05
-                            } else {
-                                difference_x * 0.2
-                            };
-
-                            let message = Message::XScaling(delta, 0.0, false);
-
-                            return Some(canvas::Action::publish(message).and_capture());
-                        }
-                    }
-                }
-                mouse::Event::WheelScrolled { delta } => match delta {
-                    mouse::ScrollDelta::Lines { y, .. } | mouse::ScrollDelta::Pixels { y, .. } => {
-                        cursor.position_in(drag_bounds)?;
-
-                        let message = Message::XScaling(
-                            *y,
-                            {
-                                if let Some(cursor_to_center) =
-                                    cursor.position_from(bounds.center())
-                                {
-                                    cursor_to_center.x
-                                } else {
-                                    0.0
-                                }
-                            },
-                            true,
-                        );
-
-                        return Some(canvas::Action::publish(message).and_capture());
-                    }
-                },
-                _ => {}
-            }
-        }
-
-        None
-    }
-
-    fn draw(
-        &self,
-        _state: &Self::State,
-        renderer: &Renderer,
-        theme: &Theme,
-        bounds: Rectangle,
-        cursor: mouse::Cursor,
-    ) -> Vec<Geometry> {
-        let palette = theme.extended_palette();
-
-        let labels = self.labels_cache.draw(renderer, bounds.size(), |frame| {
-            let region = self.visible_region(frame.size());
-
-            let target_spacing = REGULAR_LABEL_WIDTH * 2.0;
-            let target_count = (bounds.width / target_spacing).floor() as usize;
-
-            let label_count = target_count.max(2);
-
-            let mut labels: Vec<AxisLabel> = Vec::with_capacity(label_count + 1); // +1 for crosshair
-
-            match self.basis {
-                Basis::Tick(_) => {
-                    if let Some(interval_keys) = &self.interval_keys {
-                        let last_idx = interval_keys.len() - 1;
-                        let mut last_x: Option<f32> = None;
-                        for (i, timestamp) in interval_keys.iter().enumerate() {
-                            let cell_index = -(last_idx as i32) + i as i32;
-                            let x_position = cell_index as f32 * self.cell_width;
-
-                            let x_min_region = region.x;
-                            let x_max_region = region.x + region.width;
-                            let snap_ratio = if (x_max_region - x_min_region).abs() < f32::EPSILON {
-                                0.5
-                            } else {
-                                (x_position - x_min_region) / (x_max_region - x_min_region)
-                            };
-                            let snap_x = snap_ratio * bounds.width;
-
-                            if last_x.is_none_or(|lx| (snap_x - lx).abs() >= target_spacing) {
-                                let label_content = self.timezone.format_with_kind(
-                                    *timestamp as i64,
-                                    TimeLabelKind::Axis {
-                                        timeframe: exchange::Timeframe::MS100,
-                                    },
-                                );
-
-                                if let Some(content) = label_content {
-                                    labels.push(AxisLabel::new_x(
-                                        snap_x, content, bounds, false, palette,
-                                    ));
-
-                                    last_x = Some(snap_x);
-                                }
-                            }
-                        }
-                    }
-                }
-                Basis::Time(timeframe) => {
-                    let earliest = exchange::UnixMs(self.x_to_interval(region.x));
-                    let latest = exchange::UnixMs(self.x_to_interval(region.x + region.width));
-
-                    let generated_labels = x::generate_time_labels(
-                        timeframe,
-                        self.timezone,
-                        bounds,
-                        earliest,
-                        latest,
-                        label_count as i32,
-                        palette,
-                    );
-
-                    labels.extend(generated_labels);
-                }
-            }
-
-            if let Some(cursor_pos) = cursor.position_in(self.chart_bounds)
-                && let Some(label) = self.generate_crosshair(cursor_pos, region, bounds, palette)
-            {
-                labels.push(label);
-            }
-
-            AxisLabel::filter_and_draw(&labels, frame);
-        });
-
-        vec![labels]
-    }
-
-    fn mouse_interaction(
-        &self,
-        interaction: &Interaction,
-        bounds: Rectangle,
-        cursor: mouse::Cursor,
-    ) -> mouse::Interaction {
-        match interaction {
-            Interaction::Panning { .. } => mouse::Interaction::None,
-            Interaction::Zoomin { .. } => mouse::Interaction::ResizingHorizontally,
-            Interaction::None if cursor.is_over(Self::drag_bounds(bounds)) => {
-                mouse::Interaction::ResizingHorizontally
-            }
-            _ => mouse::Interaction::default(),
-        }
-    }
+#[derive(Debug, Clone)]
+pub struct LabelContent {
+    pub content: String,
+    pub background_color: Option<Color>,
+    pub text_color: Color,
+    pub text_size: f32,
 }
 
-// Y-AXIS LABELS
-pub struct AxisLabelsY<'a> {
-    pub labels_cache: &'a Cache,
-    pub translation_y: f32,
-    pub scaling: f32,
-    pub min: Price,
-    pub last_price: Option<y::PriceInfoLabel>,
-    pub axis: y::PriceAxis,
-    pub cell_height: f32,
-    pub basis: Basis,
-    pub chart_bounds: Rectangle,
-}
-
-impl AxisLabelsY<'_> {
-    fn drag_bounds(bounds: Rectangle) -> Rectangle {
-        bounds.shrink(AXIS_DRAG_EDGE_GUARD)
-    }
-
-    fn visible_region(&self, size: Size) -> Rectangle {
-        let width = size.width / self.scaling;
-        let height = size.height / self.scaling;
-
-        Rectangle {
-            x: 0.0,
-            y: -self.translation_y - height / 2.0,
-            width,
-            height,
-        }
-    }
-
-    /// Convert a canvas y position (pixels) to a price, exact to within one
-    /// atomic unit (1e-11). Only the pixel geometry (y, cell_height) is f32
-    /// here; the base price and aggregation step are exact atomic-unit values,
-    /// so the offset arithmetic runs in f64 and is quantized to the atomic
-    /// grid once at the end.
-    fn y_to_price(&self, y: f32) -> Price {
-        let ticks = f64::from(y) / f64::from(self.cell_height);
-        let price = self.min.to_f64() - ticks * self.axis.row_step.to_f64_lossy();
-        Price::from_f64(price)
-    }
-}
-
-impl canvas::Program<Message> for AxisLabelsY<'_> {
-    type State = Interaction;
-
-    fn update(
-        &self,
-        interaction: &mut Interaction,
-        event: &Event,
-        bounds: Rectangle,
-        cursor: mouse::Cursor,
-    ) -> Option<canvas::Action<Message>> {
-        let drag_bounds = Self::drag_bounds(bounds);
-
-        if let Event::Mouse(mouse::Event::ButtonReleased(_)) = event {
-            *interaction = Interaction::None;
-        }
-
-        if let Event::Mouse(mouse_event) = event {
-            match mouse_event {
-                mouse::Event::ButtonPressed(mouse::Button::Left) => {
-                    if cursor.position_in(drag_bounds).is_some()
-                        && let Some(cursor_position) = cursor.position()
-                    {
-                        *interaction = Interaction::Zoomin {
-                            last_position: cursor_position,
-                        };
-                    }
-                }
-                mouse::Event::CursorMoved { .. } => {
-                    if let Interaction::Zoomin {
-                        ref mut last_position,
-                    } = *interaction
-                        && let Some(cursor_position) = cursor.position()
-                    {
-                        let difference_y = last_position.y - cursor_position.y;
-
-                        if difference_y.abs() > 1.0 {
-                            *last_position = cursor_position;
-
-                            let message = Message::YScaling(difference_y * 0.4, 0.0, false);
-
-                            return Some(canvas::Action::publish(message).and_capture());
-                        }
-                    }
-                }
-                mouse::Event::WheelScrolled { delta } => match delta {
-                    mouse::ScrollDelta::Lines { y, .. } | mouse::ScrollDelta::Pixels { y, .. } => {
-                        cursor.position_in(drag_bounds)?;
-
-                        let message = Message::YScaling(
-                            *y,
-                            {
-                                if let Some(cursor_to_center) =
-                                    cursor.position_from(bounds.center())
-                                {
-                                    cursor_to_center.y
-                                } else {
-                                    0.0
-                                }
-                            },
-                            true,
-                        );
-
-                        return Some(canvas::Action::publish(message).and_capture());
-                    }
-                },
-                _ => {}
-            }
-        }
-
-        None
-    }
-
-    fn draw(
-        &self,
-        _state: &Self::State,
-        renderer: &Renderer,
-        theme: &Theme,
-        bounds: Rectangle,
-        cursor: mouse::Cursor,
-    ) -> Vec<Geometry> {
-        let text_size = crate::style::text_size::BODY;
-        let palette = theme.extended_palette();
-
-        let labels = self.labels_cache.draw(renderer, bounds.size(), |frame| {
-            let region = self.visible_region(frame.size());
-
-            let highest = self.y_to_price(region.y);
-            let lowest = self.y_to_price(region.y + region.height);
-
-            let range = highest - lowest;
-
-            let mut all_labels = y::LabelLayout::new(
-                bounds,
-                text_size,
-                palette.background.base.text,
-            )
-            .generate(lowest.to_f64(), highest.to_f64(), Some(self.axis));
-
-            // Last price (priority 2)
-            if let Some(label) = self.last_price {
-                let candle_close_label = match self.basis {
-                    Basis::Time(timeframe) => {
-                        let interval = timeframe.to_milliseconds();
-
-                        let current_time = chrono::Utc::now().timestamp_millis() as u64;
-                        let next_kline_open = (current_time / interval + 1) * interval;
-
-                        let remaining_seconds = (next_kline_open - current_time) / 1000;
-
-                        if remaining_seconds > 0 {
-                            let hours = remaining_seconds / 3600;
-                            let minutes = (remaining_seconds % 3600) / 60;
-                            let seconds = remaining_seconds % 60;
-
-                            let time_format = if hours > 0 {
-                                format!("{hours:02}:{minutes:02}:{seconds:02}")
-                            } else {
-                                format!("{minutes:02}:{seconds:02}")
-                            };
-
-                            Some(LabelContent {
-                                content: time_format,
-                                background_color: Some(palette.background.strong.color),
-                                text_color: if palette.is_dark {
-                                    Color::BLACK.scale_alpha(0.8)
-                                } else {
-                                    Color::WHITE.scale_alpha(0.8)
-                                },
-                                text_size: crate::style::text_size::SMALL,
-                            })
-                        } else {
-                            None
-                        }
-                    }
-                    Basis::Tick(_) => None,
-                };
-
-                let (price, color) = label.get_with_color(palette);
-
-                let price_label = LabelContent {
-                    content: price.to_string(self.axis.precision),
-                    background_color: Some(color),
-                    text_color: {
-                        if candle_close_label.is_some() {
-                            if palette.is_dark {
-                                Color::BLACK
-                            } else {
-                                Color::WHITE
-                            }
-                        } else {
-                            palette.primary.strong.text
-                        }
-                    },
-                    text_size: crate::style::text_size::BODY,
-                };
-
-                let y_pos = bounds.height - ((price - lowest) / range) as f32 * bounds.height;
-                let content_amt = if candle_close_label.is_some() { 2 } else { 1 };
-
-                all_labels.push(AxisLabel::Y {
-                    bounds: calc_label_rect(y_pos, content_amt, text_size, bounds),
-                    value_label: price_label,
-                    timer_label: candle_close_label,
-                });
-            }
-
-            // Crosshair price (priority 3)
-            if let Some(crosshair_pos) = cursor.position_in(self.chart_bounds) {
-                let ratio = f64::from(bounds.height - crosshair_pos.y) / f64::from(bounds.height);
-                let rounded_price = Price::from_f64(lowest.to_f64() + ratio * range.to_f64())
-                    .round_to_step(self.axis.row_step);
-                let y_position =
-                    bounds.height - ((rounded_price - lowest) / range) as f32 * bounds.height;
-
-                let label = LabelContent {
-                    content: rounded_price.to_string(self.axis.precision),
-                    background_color: Some(palette.secondary.base.color),
-                    text_color: palette.secondary.base.text,
-                    text_size: crate::style::text_size::BODY,
-                };
-
-                all_labels.push(AxisLabel::Y {
-                    bounds: calc_label_rect(y_position, 1, text_size, bounds),
-                    value_label: label,
-                    timer_label: None,
-                });
-            }
-
-            AxisLabel::filter_and_draw(&all_labels, frame);
-        });
-
-        vec![labels]
-    }
-
-    fn mouse_interaction(
-        &self,
-        interaction: &Interaction,
-        bounds: Rectangle,
-        cursor: mouse::Cursor,
-    ) -> mouse::Interaction {
-        match interaction {
-            Interaction::Zoomin { .. } => mouse::Interaction::ResizingVertically,
-            Interaction::Panning { .. } => mouse::Interaction::None,
-            Interaction::None if cursor.is_over(Self::drag_bounds(bounds)) => {
-                mouse::Interaction::ResizingVertically
-            }
-            _ => mouse::Interaction::default(),
+/// Text color for an X-axis tick label.
+///
+/// `Main` labels use the standard readable text color; `Secondary` (coarse
+/// calendar boundaries) use the strongest text color so they stand out and
+/// stay readable on the chart background.
+fn x_label_text_color(palette: &Extended, tier: TimeTickTier, is_crosshair: bool) -> Color {
+    if is_crosshair {
+        palette.secondary.base.text
+    } else {
+        match tier {
+            TimeTickTier::Secondary => palette.background.strongest.text,
+            TimeTickTier::Main => palette.background.base.text,
         }
     }
 }

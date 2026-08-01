@@ -1,14 +1,34 @@
 use super::MAX_GRID_LINES;
+use crate::util::abbr_large_numbers;
 use exchange::unit::{MinTicksize, Price, PriceStep};
+
+/// The family of Y-axis scales.
+///
+/// A scale owns both how tick *values* are chosen and how values map to
+/// normalized positions.
+#[derive(Debug, Clone, Copy)]
+pub enum YAxisScale {
+    /// Row-aligned price scale: grid steps are snapped to multiples of
+    /// `row_step` so every label lands on a real price row. Values are exact
+    /// atomic units; positions are linear in price.
+    Price { row_step: PriceStep },
+    /// Plain continuous linear scale (indicator values, etc.). Steps are
+    /// "nice"; positions are linear.
+    Linear,
+    /// Percentage scale (comparison chart). Shares the linear grid with
+    /// [`YAxisScale::Linear`] for now, kept distinct so percent-specific step or
+    /// formatting policy has a home.
+    Percent,
+}
 
 /// A concrete grid over a visible range, unified across scale kinds.
 ///
 /// Two concrete grids exist: a row-aligned price grid (exact atomic units)
 /// and a plain float grid (continuous values). [`Grid`] exposes the interface
-/// they share ([`Grid::step`], [`Grid::ticks`], [`Grid::ratio_of`]) and is
-/// what [`YAxisScale`] hands to [`YTicks::from_grid`] to produce tick lists.
+/// they share ([`Grid::ticks`]) and is what [`YAxisScale`] hands to
+/// [`YTicks::from_grid`] to produce tick lists.
 #[derive(Debug, Clone)]
-pub enum Grid {
+enum Grid {
     /// Row-aligned price grid.
     Row(RowGrid),
     /// Plain float grid.
@@ -16,40 +36,9 @@ pub enum Grid {
 }
 
 impl Grid {
-    /// A row-aligned price grid over a range ("nice" step snapped to rows).
-    /// Returns `None` when no grid fits the range.
-    pub fn row(
-        lowest: f64,
-        highest: f64,
-        row_step: PriceStep,
-        labels_can_fit: i32,
-    ) -> Option<Self> {
-        RowGrid::new(lowest, highest, row_step, labels_can_fit).map(Grid::Row)
-    }
-
-    /// A dense price grid at exactly the row step (fallback for charts that
-    /// always want to show rows).
-    pub fn rows(lowest: f64, highest: f64, row_step: PriceStep) -> Option<Self> {
-        RowGrid::from_row(lowest, highest, row_step).map(Grid::Row)
-    }
-
-    /// A plain float grid over a continuous range.
-    pub fn float(lowest: f64, highest: f64, labels_can_fit: i32) -> Self {
-        Grid::Float(FloatGrid::new(lowest, highest, labels_can_fit))
-    }
-
-    /// The grid step in the scale's natural representation: atomic units for
-    /// [`Grid::Row`], continuous value for [`Grid::Float`].
-    pub fn step(&self) -> TickValue {
-        match self {
-            Grid::Row(g) => TickValue::PriceUnits(g.step()),
-            Grid::Float(g) => TickValue::Float(g.step),
-        }
-    }
-
     /// Every grid line as `(value, normalized position)`, ascending by value
     /// (`0.0` = bottom of the range, `1.0` = top).
-    pub fn ticks(&self) -> Vec<(TickValue, f64)> {
+    fn ticks(&self) -> Vec<(TickValue, f64)> {
         match self {
             Grid::Row(g) => {
                 let mut out: Vec<_> = g
@@ -67,32 +56,11 @@ impl Grid {
                 .collect(),
         }
     }
-
-    /// Normalized position of a grid value within the range (`0.0` = bottom,
-    /// `1.0` = top), or `0.0` when the value is not on the grid.
-    pub fn ratio_of(&self, value: TickValue) -> f64 {
-        match (self, value) {
-            (Grid::Row(g), TickValue::PriceUnits(units)) => g.ratio_of(units),
-            (Grid::Float(g), TickValue::Float(v)) => g
-                .ticks
-                .iter()
-                .find(|(tv, _)| (*tv - v).abs() < 1e-9)
-                .map(|(_, r)| *r)
-                .unwrap_or(0.0),
-            _ => 0.0,
-        }
-    }
 }
 
 /// A row-aligned tick grid over a price range.
-///
-/// Construction snaps the "nice" grid step up to a multiple of the chart's
-/// effective tick size (`row_step`), so every yielded value lands on a real
-/// price row. All grid arithmetic is widened to `i128` so extreme (saturating)
-/// price magnitudes can never overflow or underflow `i64`. Returns `None` when
-/// no real grid fits the range (callers fall back to a single row label).
 #[derive(Debug, Clone)]
-pub struct RowGrid {
+struct RowGrid {
     /// Grid step in atomic units, always a positive multiple of `row_step`.
     step: i64,
     /// Bottom of the range in atomic units.
@@ -104,17 +72,8 @@ pub struct RowGrid {
 }
 
 impl RowGrid {
-    pub fn new(
-        lowest: f64,
-        highest: f64,
-        row_step: PriceStep,
-        labels_can_fit: i32,
-    ) -> Option<Self> {
-        let raw_units = Price::from_f64(FloatGrid::nice_step(lowest, highest, labels_can_fit))
-            .units
-            .max(1);
+    fn new(lowest: f64, highest: f64, row_step: PriceStep, labels_can_fit: i32) -> Option<Self> {
         let row = row_step.units.max(1);
-
         let low = Price::from_f64(lowest).units;
         let high = Price::from_f64(highest).units;
 
@@ -127,23 +86,18 @@ impl RowGrid {
         let high = i128::from(high);
         let low = i128::from(low);
 
-        // Round the "nice" step up to a multiple of the row so every label
-        // lands on a real row. Since `step >= row >= 1`, the product below can
-        // never overflow (in i128).
-        let raw = i128::from(raw_units);
-        let row = i128::from(row);
-        let mut step = (raw / row) * row;
-        if step < raw {
-            step += row;
-        }
+        let range_rows = (high as f64 - low as f64) / row as f64;
+        let budget = labels_can_fit.max(1) as f64;
+        let span_rows = tick_span_min(0.0, range_rows, range_rows / budget, 1.0);
+        let step = (span_rows.ceil() as i64).max(1).saturating_mul(row);
 
-        Self::from_units(low, high, step)
+        Self::from_units(low, high, i128::from(step))
     }
 
     /// A grid whose step is exactly `row_step`. Used as a fallback when no
     /// coarser "nice" grid fits the range (e.g. the visible range is narrower
-    /// than one [`FloatGrid::nice_step`]). Returns `None` when the range is empty.
-    pub fn from_row(lowest: f64, highest: f64, row_step: PriceStep) -> Option<Self> {
+    /// than one row step). Returns `None` when the range is empty.
+    fn from_row(lowest: f64, highest: f64, row_step: PriceStep) -> Option<Self> {
         let row = row_step.units.max(1);
         let low = Price::from_f64(lowest).units;
         let high = Price::from_f64(highest).units;
@@ -177,11 +131,6 @@ impl RowGrid {
         })
     }
 
-    /// The grid step in atomic units (always a positive multiple of `row_step`).
-    pub fn step(&self) -> i64 {
-        self.step
-    }
-
     /// The topmost grid value: the largest multiple of `step` not above
     /// `high`, computed in `i128` to stay exact at the i64 extremes.
     fn top(&self) -> i128 {
@@ -189,15 +138,17 @@ impl RowGrid {
         self.high.div_euclid(step) * step
     }
 
-    /// Grid values from the top down to `low` (inclusive), in atomic units.
+    /// Grid values from the top down, in atomic units. The topmost value is
+    /// the largest multiple of `step` at or below `high`; iteration stops
+    /// strictly above `low`.
     ///
     /// Always terminates: values strictly decrease by `step >= 1`, stop at
     /// `low`, and the total count is capped at [`MAX_GRID_LINES`].
-    pub fn values(&self) -> impl Iterator<Item = i64> + '_ {
+    fn values(&self) -> impl Iterator<Item = i64> + '_ {
         let step = i128::from(self.step);
         let low = self.low as i128;
         std::iter::successors(Some(self.top()), move |&v| {
-            (v - step >= low).then_some(v - step)
+            (v - step > low).then_some(v - step)
         })
         .map(|v| v as i64)
         .take(MAX_GRID_LINES)
@@ -205,35 +156,19 @@ impl RowGrid {
 
     /// Normalized position of a grid value within `[low, high]`, where `0.0`
     /// is the bottom of the range and `1.0` the top. Computed in `i128`.
-    pub fn ratio_of(&self, units: i64) -> f64 {
+    fn ratio_of(&self, units: i64) -> f64 {
         (i128::from(units) - self.low as i128) as f64 / self.range as f64
-    }
-
-    /// Align `value` down to the nearest multiple of `row_step` (floor), in
-    /// atomic units. Never overflows: `div_euclid` floors and the product's
-    /// magnitude cannot exceed the input's.
-    pub fn floor_to_row(value: f64, row_step: PriceStep) -> i64 {
-        let row = row_step.units.max(1);
-        let units = Price::from_f64(value).units;
-        units.div_euclid(row) * row
     }
 }
 
 /// A plain f64 grid over a range with no row alignment (indicator axes,
 /// non-price scales such as percent change).
-///
-/// [`FloatGrid::step`] is the selected "nice" step and [`FloatGrid::ticks`]
-/// holds `(value, ratio)` pairs, where `ratio` is the normalized position
-/// within `[lowest, highest]` (`0.0` = bottom, `1.0` = top). Edge ticks may
-/// extend up to half a step outside the range. The tick list is empty when the
-/// range is too narrow for even a single step (callers fall back to a single
-/// label). Terminates within [`MAX_GRID_LINES`] iterations.
 #[derive(Debug, Clone)]
 pub struct FloatGrid {
     /// The selected grid step.
-    pub step: f64,
+    step: f64,
     /// `(value, ratio)` pairs, ascending by value.
-    pub ticks: Vec<(f64, f64)>,
+    ticks: Vec<(f64, f64)>,
 }
 
 impl FloatGrid {
@@ -242,41 +177,32 @@ impl FloatGrid {
     /// Universal across charts: used for indicator axes and for non-price scales
     /// (e.g. the comparison chart's percent domain), where there is no price row
     /// to align to.
-    pub fn new(lowest: f64, highest: f64, labels_can_fit: i32) -> Self {
-        let step = Self::nice_step(lowest, highest, labels_can_fit);
+    fn new(lowest: f64, highest: f64, labels_can_fit: i32) -> Self {
         let span = highest - lowest;
+        if !span.is_finite() || span <= 0.0 {
+            return FloatGrid {
+                step: 0.0,
+                ticks: Vec::new(),
+            };
+        }
 
-        if !step.is_finite() || step <= 0.0 || span <= 0.0 || step > span {
+        let budget = labels_can_fit.max(1) as f64;
+        let step = tick_span_min(0.0, span, span / budget, 0.0);
+
+        if !step.is_finite() || step <= 0.0 || step > span {
             return FloatGrid {
                 step,
                 ticks: Vec::new(),
             };
         }
 
-        // `max` is at most one step above `highest`, but the multiplication
-        // overflows to infinity when `highest` sits within a step of f64::MAX;
-        // in that case the walk below could never terminate, so bail out with
-        // an empty grid.
-        let max = (highest / step).ceil() * step;
-        if !max.is_finite() {
-            return FloatGrid {
-                step,
-                ticks: Vec::new(),
-            };
-        }
-        let mut value = max;
-        while value > highest {
-            value -= step;
-        }
+        let mut value = (highest / step).floor() * step;
 
-        let mut ticks = Vec::with_capacity((labels_can_fit.max(1) + 2) as usize);
+        let mut ticks = Vec::with_capacity((budget + 2.0) as usize);
         let mut safety_counter = 0;
-        while value >= lowest && safety_counter < MAX_GRID_LINES {
-            if value <= highest + step * 0.5 && value >= lowest - step * 0.5 {
-                let clamped_value = value.max(lowest).min(highest);
-                let ratio = (clamped_value - lowest) / span;
-                ticks.push((value, ratio));
-            }
+        while value > lowest && safety_counter < MAX_GRID_LINES {
+            let ratio = (value - lowest) / span;
+            ticks.push((value, ratio));
             value -= step;
             safety_counter += 1;
         }
@@ -288,32 +214,7 @@ impl FloatGrid {
         FloatGrid { step, ticks }
     }
 
-    /// A "nice" grid step for a numeric range that keeps ~`labels_can_fit` lines.
-    ///
-    /// The range is floored at the smallest positive f64 rather than f32::EPSILON:
-    /// the machine epsilon (~1.19e-7) is a huge absolute price span for sub-penny
-    /// markets and would force a far-too-coarse grid (or no grid at all).
-    pub fn nice_step(lowest: f64, highest: f64, labels_can_fit: i32) -> f64 {
-        let range = (highest - lowest).abs().max(f64::MIN_POSITIVE);
-        let labels = labels_can_fit.max(1) as f64;
-
-        let base = 10.0f64.powf(range.log10().floor());
-
-        match range / base {
-            r if r <= labels * 0.1 => 0.1 * base,
-            r if r <= labels * 0.2 => 0.2 * base,
-            r if r <= labels * 0.5 => 0.5 * base,
-            r if r <= labels => base,
-            r if r <= labels * 2.0 => 2.0 * base,
-            _ => (range / labels).min(5.0 * base),
-        }
-    }
-
     /// Round a positive target up to the nearest "nice" `1/2/5 * 10^k` value.
-    ///
-    /// This is the generic "nice number" rounder (e.g. for bucket steps and
-    /// target-derived steps); it is distinct from [`Self::nice_step`], which
-    /// sizes a grid to a label budget over a range.
     pub fn round_125(v: f64) -> f64 {
         if !v.is_finite() || v <= 0.0 {
             return 1.0;
@@ -334,35 +235,12 @@ impl FloatGrid {
     }
 }
 
-/// The family of Y-axis scales.
-///
-/// A scale owns both how tick *values* are chosen and how values map to
-/// normalized positions.
-#[derive(Debug, Clone, Copy)]
-pub enum YAxisScale {
-    /// Row-aligned price scale: grid steps are snapped to multiples of
-    /// `row_step` so every label lands on a real price row. Values are exact
-    /// atomic units; positions are linear in price.
-    Price { row_step: PriceStep },
-    /// Plain continuous linear scale (indicator values, etc.). Steps are
-    /// "nice"; positions are linear.
-    Linear,
-    /// Percentage scale (comparison chart). Shares the linear grid with
-    /// [`YAxisScale::Linear`] for now, kept distinct so percent-specific step or
-    /// formatting policy has a home.
-    Percent,
-    /// Logarithmic scale over a positive domain: ticks at `1/2/5 * 10^k`
-    /// values; positions are logarithmic (non-equal screen distance per unit).
-    Log,
-}
-
 /// A tick value in the scale's natural representation.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TickValue {
     /// Exact atomic price units (for [`YAxisScale::Price`]).
     PriceUnits(i64),
-    /// Continuous float value (for [`YAxisScale::Linear`], [`YAxisScale::Percent`]
-    /// and [`YAxisScale::Log`]).
+    /// Continuous float value (for [`YAxisScale::Linear`] and [`YAxisScale::Percent`])
     Float(f64),
 }
 
@@ -378,7 +256,7 @@ pub struct YTick {
 #[derive(Debug, Clone, Default)]
 pub struct YTicks {
     /// The chosen grid step for float scales (`Linear`/`Percent`); `None` for
-    /// [`YAxisScale::Price`] and [`YAxisScale::Log`].
+    /// [`YAxisScale::Price`].
     pub step: Option<f64>,
     /// Ticks ascending by value (bottom-first).
     pub ticks: Vec<YTick>,
@@ -386,7 +264,7 @@ pub struct YTicks {
 
 impl YTicks {
     /// Convert any [`Grid`] into ascending ticks.
-    pub fn from_grid(grid: Grid) -> YTicks {
+    fn from_grid(grid: Grid) -> YTicks {
         let ticks = grid
             .ticks()
             .into_iter()
@@ -398,78 +276,6 @@ impl YTicks {
         };
         YTicks { step, ticks }
     }
-
-    /// Row-aligned price ticks over a range, ascending by value.
-    ///
-    /// Every value is an exact atomic price unit on the row grid; positions
-    /// are linear in price.
-    pub fn price(lowest: f64, highest: f64, row_step: PriceStep, labels_can_fit: i32) -> YTicks {
-        Grid::row(lowest, highest, row_step, labels_can_fit)
-            .map(YTicks::from_grid)
-            .unwrap_or_default()
-    }
-
-    /// Plain linear ticks over a continuous domain (indicator values, percent
-    /// change, ...).
-    pub fn linear(lowest: f64, highest: f64, labels_can_fit: i32) -> YTicks {
-        YTicks::from_grid(Grid::float(lowest, highest, labels_can_fit))
-    }
-
-    /// Logarithmic ticks over a positive domain: values at `1/2/5 * 10^k`
-    /// inside the range, thinned to the label budget, positioned
-    /// logarithmically.
-    pub fn log(lowest: f64, highest: f64, labels_can_fit: i32) -> YTicks {
-        let labels = labels_can_fit.max(1) as usize;
-        if !lowest.is_finite()
-            || !highest.is_finite()
-            || lowest <= 0.0
-            || highest <= 0.0
-            || highest <= lowest
-        {
-            return YTicks::default();
-        }
-
-        // Candidate values: m * 10^d for m in {1, 2, 5} within [lowest, highest].
-        let mut values: Vec<f64> = Vec::new();
-        let d_min = lowest.log10().floor() as i32;
-        let d_max = highest.log10().ceil() as i32;
-        for d in d_min..=d_max {
-            for m in [1.0, 2.0, 5.0] {
-                let v = m * 10f64.powi(d);
-                if v >= lowest && v <= highest {
-                    values.push(v);
-                }
-            }
-        }
-
-        // Thin to the label budget: keep 1&5 mantissas, then powers of ten only.
-        let mantissa = |v: f64| -> f64 {
-            let d = v.log10().floor() as i32;
-            v / 10f64.powi(d)
-        };
-        if values.len() > labels {
-            values.retain(|v| {
-                let m = mantissa(*v);
-                (m - 1.0).abs() < 1e-9 || (m - 5.0).abs() < 1e-9
-            });
-        }
-        if values.len() > labels {
-            values.retain(|v| (mantissa(*v) - 1.0).abs() < 1e-9);
-        }
-
-        values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-
-        YTicks {
-            step: None,
-            ticks: values
-                .into_iter()
-                .map(|v| YTick {
-                    value: TickValue::Float(v),
-                    ratio: YAxisScale::Log.ratio(v, lowest, highest),
-                })
-                .collect(),
-        }
-    }
 }
 
 impl YAxisScale {
@@ -478,71 +284,29 @@ impl YAxisScale {
     pub fn ticks(&self, lowest: f64, highest: f64, labels_can_fit: i32) -> YTicks {
         match self {
             YAxisScale::Price { row_step } => {
-                YTicks::price(lowest, highest, *row_step, labels_can_fit)
+                let row = RowGrid::new(lowest, highest, *row_step, labels_can_fit).map(Grid::Row);
+                row.map(YTicks::from_grid).unwrap_or_default()
             }
             YAxisScale::Linear | YAxisScale::Percent => {
-                YTicks::linear(lowest, highest, labels_can_fit)
+                let grid = Grid::Float(FloatGrid::new(lowest, highest, labels_can_fit));
+                YTicks::from_grid(grid)
             }
-            YAxisScale::Log => YTicks::log(lowest, highest, labels_can_fit),
         }
     }
 
     /// A `Price` grid at exactly the row step: a dense fallback used when no
     /// coarser grid fits (e.g. a heatmap that always wants to show rows).
     /// Returns an empty list for non-`Price` scales or an empty range.
-    pub fn ticks_from_row(&self, lowest: f64, highest: f64) -> YTicks {
+    fn ticks_from_row(&self, lowest: f64, highest: f64) -> YTicks {
         let YAxisScale::Price { row_step } = self else {
             return YTicks::default();
         };
-        Grid::rows(lowest, highest, *row_step)
-            .map(YTicks::from_grid)
-            .unwrap_or_default()
-    }
 
-    /// Map a value to its normalized position within `[lowest, highest]`
-    /// (`0.0` = bottom, `1.0` = top), using the scale's mapping (logarithmic
-    /// for [`YAxisScale::Log`]). Used to position crosshairs and arbitrary values
-    /// consistently with the ticks.
-    pub fn position(&self, value: f64, lowest: f64, highest: f64) -> f64 {
-        self.ratio(value, lowest, highest)
-    }
-
-    /// Scale-aware value -> normalized position (`0.0` = bottom, `1.0` = top),
-    /// `0.0` for invalid ranges. Shared by [`Self::position`] and
-    /// [`YTicks::log`].
-    fn ratio(&self, value: f64, lowest: f64, highest: f64) -> f64 {
-        match self {
-            YAxisScale::Price { .. } | YAxisScale::Linear | YAxisScale::Percent => {
-                let span = highest - lowest;
-                if span <= 0.0 {
-                    0.0
-                } else {
-                    (value - lowest) / span
-                }
-            }
-            YAxisScale::Log => {
-                if lowest <= 0.0 || highest <= 0.0 || value <= 0.0 {
-                    return 0.0;
-                }
-                let lo = lowest.log10();
-                let hi = highest.log10();
-                let span = hi - lo;
-                if span <= 0.0 {
-                    0.0
-                } else {
-                    (value.log10() - lo) / span
-                }
-            }
-        }
+        let row = RowGrid::from_row(lowest, highest, *row_step).map(Grid::Row);
+        row.map(YTicks::from_grid).unwrap_or_default()
     }
 }
 
-/// The row step and label precision of a price axis, bundled into one value.
-///
-/// Every price grid in the app (kline, footprint, heatmap) shares this shape:
-/// labels are aligned to `row_step` multiples and formatted at `precision`
-/// (the market's min tick). Bundling the pair keeps the two consistent and
-/// gives the common "ticks + format" idiom a single home.
 #[derive(Debug, Clone, Copy)]
 pub struct PriceAxis {
     /// Effective tick size the grid rows are aligned to.
@@ -562,13 +326,6 @@ impl PriceAxis {
         }
     }
 
-    /// The row-aligned price scale over this axis.
-    pub fn scale(&self) -> YAxisScale {
-        YAxisScale::Price {
-            row_step: self.row_step,
-        }
-    }
-
     /// Row-aligned ticks over a range; empty when no coarser "nice" grid fits.
     pub fn ticks(&self, lowest: f64, highest: f64, labels_can_fit: i32) -> YTicks {
         self.scale().ticks(lowest, highest, labels_can_fit)
@@ -580,11 +337,6 @@ impl PriceAxis {
         self.scale().ticks_from_row(lowest, highest)
     }
 
-    /// Align `value` down to the nearest row multiple, in atomic units.
-    pub fn floor_to_row(&self, value: f64) -> i64 {
-        RowGrid::floor_to_row(value, self.row_step)
-    }
-
     /// Format a row value (atomic units) at this axis's precision.
     pub fn format_units(&self, units: i64) -> String {
         Price::from_units(units).to_string(self.precision)
@@ -593,5 +345,178 @@ impl PriceAxis {
     /// Format a price at this axis's precision.
     pub fn format(&self, price: Price) -> String {
         price.to_string(self.precision)
+    }
+
+    /// The row-aligned price scale over this axis.
+    fn scale(&self) -> YAxisScale {
+        YAxisScale::Price {
+            row_step: self.row_step,
+        }
+    }
+
+    /// Align `value` down to the nearest row multiple, in atomic units.
+    fn floor_to_row(&self, value: f64) -> i64 {
+        let row = self.row_step.units.max(1);
+        let units = Price::from_f64(value).units;
+        units.div_euclid(row) * row
+    }
+}
+
+/// Computes a "nice" span for a range `[low, high]` (both in the same units):
+/// starting from the power of ten at/above the range, it repeatedly divides by
+/// the `dividers` pattern while the span still fits the pixel budget
+/// (`max_span` — the largest span that yields the target label count) and stays
+/// above `min_span`. The final span is always `>= min_span`.
+fn tick_span(low: f64, high: f64, max_span: f64, min_span: f64, dividers: [f64; 3]) -> f64 {
+    const EPS: f64 = 1e-14;
+
+    // The starting power of ten is clamped so extreme ranges can never turn
+    // the walk below into an infinite loop (`10^309` overflows to infinity).
+    let mut span = 10f64.powf((high - low).log10().ceil().clamp(0.0, 308.0));
+    let mut i = 0;
+    loop {
+        let c = dividers[i % dividers.len()];
+        let above_min = span >= min_span - EPS && span > min_span + EPS;
+        let above_budget = span >= max_span * c - EPS;
+        if !(above_min && above_budget) {
+            break;
+        }
+        span /= c;
+        i += 1;
+    }
+    span.max(min_span)
+}
+
+/// The minimum span over three divider patterns, which yields steps from
+/// the `{1, 2, 2.5, 4, 5} * 10^k` family.
+fn tick_span_min(low: f64, high: f64, max_span: f64, min_span: f64) -> f64 {
+    [
+        tick_span(low, high, max_span, min_span, [2.0, 2.5, 2.0]),
+        tick_span(low, high, max_span, min_span, [2.0, 2.0, 2.5]),
+        tick_span(low, high, max_span, min_span, [2.5, 2.0, 2.0]),
+    ]
+    .into_iter()
+    .fold(f64::INFINITY, f64::min)
+}
+
+/// A fully positioned, formatted Y-axis label, ready to be drawn.
+///
+/// UI-agnostic: carries the vertical position and label text, so callers can
+/// map it onto their own rendering primitives.
+#[derive(Debug, Clone, PartialEq)]
+pub struct YTickLabel {
+    /// Vertical position in pixels within the axis height (`0.0` = top).
+    pub y_pos: f32,
+    /// Rendered label text.
+    pub content: String,
+}
+
+impl YTickLabel {
+    /// Compute the Y-axis labels for a price range.
+    ///
+    /// `axis` bundles the chart's effective tick size with the label precision;
+    /// when set, labels are aligned to its rows and formatted at its precision.
+    /// When unset, a plain float grid is used and large numbers are abbreviated.
+    /// Positions are pixels from the top of an axis `height` pixels tall.
+    pub fn for_range(
+        lowest: f64,
+        highest: f64,
+        height: f32,
+        labels_can_fit: i32,
+        axis: Option<PriceAxis>,
+    ) -> Vec<Self> {
+        if !lowest.is_finite() || !highest.is_finite() || highest - lowest <= 0.0 {
+            return Vec::new();
+        }
+
+        if labels_can_fit <= 1 {
+            return match axis {
+                Some(axis) => Self::single_row(highest, axis),
+                None => Self::single_y(highest, None),
+            };
+        }
+
+        match axis {
+            Some(axis) => Self::row_grid(lowest, highest, height, labels_can_fit, axis),
+            None => Self::float_grid(lowest, highest, height, labels_can_fit),
+        }
+    }
+
+    /// A single label built from a ready-made content string, at the top of the
+    /// axis.
+    fn single(content: String) -> Vec<Self> {
+        vec![Self {
+            y_pos: 0.0,
+            content,
+        }]
+    }
+
+    /// A single label for `value` at `decimals` decimal places when available.
+    fn single_y(value: f64, decimals: Option<usize>) -> Vec<Self> {
+        let content = if let Some(decimals) = decimals {
+            format!("{value:.decimals$}")
+        } else {
+            abbr_large_numbers(value)
+        };
+        Self::single(content)
+    }
+
+    /// A single fallback label aligned down to the nearest price row, formatted
+    /// at the axis precision. Keeps the axis pointing at a real row even when
+    /// there is only room for one label.
+    fn single_row(value: f64, axis: PriceAxis) -> Vec<Self> {
+        let aligned = axis.floor_to_row(value);
+        Self::single(axis.format_units(aligned))
+    }
+
+    /// A grid of labels aligned exactly to the price row grid. Every label
+    /// lands on a real row; the grid math lives in [`PriceAxis::ticks`].
+    fn row_grid(
+        lowest: f64,
+        highest: f64,
+        height: f32,
+        labels_can_fit: i32,
+        axis: PriceAxis,
+    ) -> Vec<Self> {
+        let ticks = axis.ticks(lowest, highest, labels_can_fit);
+        if ticks.ticks.is_empty() {
+            return Self::single_row(highest, axis);
+        }
+
+        let mut labels = Vec::with_capacity((labels_can_fit + 2) as usize);
+        for tick in ticks.ticks {
+            let TickValue::PriceUnits(units) = tick.value else {
+                continue;
+            };
+            labels.push(Self {
+                y_pos: height - tick.ratio as f32 * height,
+                content: axis.format_units(units),
+            });
+        }
+
+        labels
+    }
+
+    /// A grid of labels from a plain f64 range (used for indicator axes that
+    /// have no row grid). Labels use abbreviated large-number formatting. The
+    /// grid values themselves are computed by [`YAxisScale::Linear`].
+    fn float_grid(lowest: f64, highest: f64, height: f32, labels_can_fit: i32) -> Vec<Self> {
+        let ticks = YAxisScale::Linear.ticks(lowest, highest, labels_can_fit);
+        if ticks.ticks.is_empty() {
+            return Self::single_y(highest, None);
+        }
+
+        let mut labels = Vec::with_capacity((labels_can_fit + 2) as usize);
+        for tick in ticks.ticks {
+            let TickValue::Float(value) = tick.value else {
+                continue;
+            };
+            labels.push(Self {
+                y_pos: height - tick.ratio as f32 * height,
+                content: abbr_large_numbers(value),
+            });
+        }
+
+        labels
     }
 }

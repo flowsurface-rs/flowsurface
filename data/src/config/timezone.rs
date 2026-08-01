@@ -68,9 +68,9 @@ impl UserTimezone {
 
     /// Formats an already timezone-adjusted timestamp for axis labels.
     ///
-    /// `timeframe` controls whether output is second-level (`MM:SS`) or minute-level (`HH:MM`).
-    /// At exact midnight for non-sub-10s intervals, this returns the day-of-month (`D`) to
-    /// emphasize date boundaries on the chart.
+    /// `timeframe` controls whether output is second-level (`MM:SS`) or
+    /// minute-level (`HH:MM`); calendar boundaries are rendered separately in
+    /// `data::chart::ticks::x`.
     fn format_by_timeframe(
         datetime: &DateTime<chrono::FixedOffset>,
         timeframe: exchange::Timeframe,
@@ -79,8 +79,6 @@ impl UserTimezone {
 
         if interval < 10_000 {
             datetime.format("%M:%S").to_string()
-        } else if datetime.format("%H:%M").to_string() == "00:00" {
-            datetime.format("%-d").to_string()
         } else {
             datetime.format("%H:%M").to_string()
         }

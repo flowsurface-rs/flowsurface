@@ -250,7 +250,7 @@ where
             px_per_ms,
         };
 
-        let total_ticks = (plot.height / TEXT_SIZE / 3.).floor() as usize;
+        let total_ticks = (plot.height / (TEXT_SIZE * 2.5)).floor() as usize;
         let (all_ticks, step) = super::ticks(min_pct, max_pct, total_ticks);
         let mut ticks: Vec<f32> = all_ticks
             .into_iter()
