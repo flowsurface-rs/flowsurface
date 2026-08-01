@@ -225,7 +225,6 @@ impl KlineChart {
                 let mut chart = ViewState::new(
                     basis,
                     step,
-                    step.decimal_places(),
                     ticker_info,
                     ViewConfig {
                         splits: layout.splits.clone(),
@@ -287,7 +286,6 @@ impl KlineChart {
                 let mut chart = ViewState::new(
                     basis,
                     step,
-                    step.decimal_places(),
                     ticker_info,
                     ViewConfig {
                         splits: layout.splits.clone(),

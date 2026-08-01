@@ -6,7 +6,7 @@ use crate::{chart::TEXT_SIZE, style::AZERET_MONO};
 use super::{Basis, Interaction, Message};
 use data::chart::Autoscale;
 use data::config::timezone::TimeLabelKind;
-use data::util::round_to_tick;
+use exchange::unit::{MinTicksize, Price, PriceStep};
 use iced::{
     Alignment, Color, Event, Point, Rectangle, Renderer, Size, Theme, mouse,
     theme::palette::Extended,
@@ -562,10 +562,10 @@ pub struct AxisLabelsY<'a> {
     pub labels_cache: &'a Cache,
     pub translation_y: f32,
     pub scaling: f32,
-    pub min: f32,
+    pub min: Price,
     pub last_price: Option<linear::PriceInfoLabel>,
-    pub tick_size: f32,
-    pub decimals: usize,
+    pub tick_size: PriceStep,
+    pub min_tick: MinTicksize,
     pub cell_height: f32,
     pub basis: Basis,
     pub chart_bounds: Rectangle,
@@ -588,8 +588,15 @@ impl AxisLabelsY<'_> {
         }
     }
 
-    fn y_to_price(&self, y: f32) -> f32 {
-        self.min - (y / self.cell_height) * self.tick_size
+    /// Convert a canvas y position (pixels) to a price, exact to within one
+    /// atomic unit (1e-11). Only the pixel geometry (y, cell_height) is f32
+    /// here; the base price and aggregation step are exact atomic-unit values,
+    /// so the offset arithmetic runs in f64 and is quantized to the atomic
+    /// grid once at the end.
+    fn y_to_price(&self, y: f32) -> Price {
+        let ticks = f64::from(y) / f64::from(self.cell_height);
+        let price = self.min.to_f64() - ticks * self.tick_size.to_f64_lossy();
+        Price::from_f64(price)
     }
 }
 
@@ -684,14 +691,13 @@ impl canvas::Program<Message> for AxisLabelsY<'_> {
 
             let range = highest - lowest;
 
-            let mut all_labels = linear::generate_labels(
-                bounds,
-                lowest,
-                highest,
-                text_size,
-                palette.background.base.text,
-                Some(self.decimals),
-            );
+            let mut all_labels =
+                linear::LabelLayout::new(bounds, text_size, palette.background.base.text).generate(
+                    lowest.to_f64(),
+                    highest.to_f64(),
+                    Some(self.tick_size),
+                    Some(self.min_tick),
+                );
 
             // Last price (priority 2)
             if let Some(label) = self.last_price {
@@ -733,10 +739,9 @@ impl canvas::Program<Message> for AxisLabelsY<'_> {
                 };
 
                 let (price, color) = label.get_with_color(palette);
-                let price = price.to_f32_lossy();
 
                 let price_label = LabelContent {
-                    content: format!("{:.*}", self.decimals, price),
+                    content: price.to_string(self.min_tick),
                     background_color: Some(color),
                     text_color: {
                         if candle_close_label.is_some() {
@@ -752,7 +757,7 @@ impl canvas::Program<Message> for AxisLabelsY<'_> {
                     text_size: crate::style::text_size::BODY,
                 };
 
-                let y_pos = bounds.height - ((price - lowest) / range * bounds.height);
+                let y_pos = bounds.height - ((price - lowest) / range) as f32 * bounds.height;
                 let content_amt = if candle_close_label.is_some() { 2 } else { 1 };
 
                 all_labels.push(AxisLabel::Y {
@@ -764,14 +769,14 @@ impl canvas::Program<Message> for AxisLabelsY<'_> {
 
             // Crosshair price (priority 3)
             if let Some(crosshair_pos) = cursor.position_in(self.chart_bounds) {
-                let rounded_price = round_to_tick(
-                    lowest + (range * (bounds.height - crosshair_pos.y) / bounds.height),
-                    self.tick_size,
-                );
-                let y_position = bounds.height - ((rounded_price - lowest) / range * bounds.height);
+                let ratio = f64::from(bounds.height - crosshair_pos.y) / f64::from(bounds.height);
+                let rounded_price = Price::from_f64(lowest.to_f64() + ratio * range.to_f64())
+                    .round_to_step(self.tick_size);
+                let y_position =
+                    bounds.height - ((rounded_price - lowest) / range) as f32 * bounds.height;
 
                 let label = LabelContent {
-                    content: format!("{:.*}", self.decimals, rounded_price),
+                    content: rounded_price.to_string(self.min_tick),
                     background_color: Some(palette.secondary.base.color),
                     text_color: palette.secondary.base.text,
                     text_size: crate::style::text_size::BODY,

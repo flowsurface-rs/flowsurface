@@ -41,7 +41,9 @@ impl Price {
         let rounded_units = if u >= 0 {
             ((u + half).div_euclid(unit)) * unit
         } else {
-            ((u - half).div_euclid(unit)) * unit
+            // Round the magnitude half-away-from-zero, then re-apply the sign.
+            let rounded_mag = ((u.unsigned_abs() + half as u64) / unit as u64) * unit as u64;
+            rounded_mag.wrapping_neg() as i64
         };
 
         let decimals: u32 = if precision.power < 0 {
@@ -138,7 +140,7 @@ impl Price {
         }
     }
 
-    /// Create Price from raw atomic units (no rounding) — internal only
+    /// Create Price from raw atomic units (no rounding)
     pub fn from_units(units: i64) -> Self {
         Self { units }
     }
