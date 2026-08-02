@@ -65,10 +65,12 @@ struct RowGrid {
     step: i64,
     /// Bottom of the range in atomic units.
     low: i64,
-    /// Top of the range in atomic units (kept in `i128` for exact extremes).
-    high: i128,
-    /// `high - low` in atomic units, always positive.
-    range: i128,
+    /// Top of the range in atomic units.
+    high: i64,
+    /// `high - low` in atomic units, always positive. Saturates to
+    /// `i64::MAX` when the true range exceeds `i64` (only reachable with
+    /// extreme, saturating prices); exact for every real range.
+    range: i64,
 }
 
 impl RowGrid {
@@ -81,17 +83,12 @@ impl RowGrid {
             return None;
         }
 
-        // Widen to i128: `high - low` can overflow i64 when both ends are
-        // saturating (extreme) prices.
-        let high = i128::from(high);
-        let low = i128::from(low);
-
         let range_rows = (high as f64 - low as f64) / row as f64;
         let budget = labels_can_fit.max(1) as f64;
         let span_rows = tick_span_min(0.0, range_rows, range_rows / budget, 1.0);
         let step = (span_rows.ceil() as i64).max(1).saturating_mul(row);
 
-        Self::from_units(low, high, i128::from(step))
+        Self::from_units(low, high, step)
     }
 
     /// A grid whose step is exactly `row_step`. Used as a fallback when no
@@ -104,38 +101,33 @@ impl RowGrid {
         if high <= low {
             return None;
         }
-        Self::from_units(i128::from(low), i128::from(high), i128::from(row))
+        Self::from_units(low, high, row)
     }
 
-    /// Build a grid from widened bounds and an `i128` step, narrowing the step
-    /// back to `i64`. Returns `None` when no grid can fit the range.
-    fn from_units(low: i128, high: i128, step: i128) -> Option<Self> {
-        let range = high - low;
+    /// Build a grid from raw bounds and an `i64` step. Returns `None` when no
+    /// grid line can fit the range.
+    fn from_units(low: i64, high: i64, step: i64) -> Option<Self> {
+        let range = high.saturating_sub(low);
 
         // No grid can fit a range narrower than a single step.
         if step > range {
             return None;
         }
 
-        // Narrow back to i64. Whenever the range itself fits in i64 this is
-        // guaranteed to succeed; an i128-only range (absurd inputs) bails out.
-        let Ok(step) = i64::try_from(step) else {
-            return None;
-        };
-
         Some(Self {
             step,
-            low: low as i64,
+            low,
             high,
             range,
         })
     }
 
     /// The topmost grid value: the largest multiple of `step` not above
-    /// `high`, computed in `i128` to stay exact at the i64 extremes.
-    fn top(&self) -> i128 {
-        let step = i128::from(self.step);
-        self.high.div_euclid(step) * step
+    /// `high`. `high - (high % step)` cannot overflow for `high >= 0` (all
+    /// real prices); the saturating form keeps pathological inputs from
+    /// panicking.
+    fn top(&self) -> i64 {
+        self.high.saturating_sub(self.high.rem_euclid(self.step))
     }
 
     /// Grid values from the top down, in atomic units. The topmost value is
@@ -145,19 +137,17 @@ impl RowGrid {
     /// Always terminates: values strictly decrease by `step >= 1`, stop at
     /// `low`, and the total count is capped at [`MAX_GRID_LINES`].
     fn values(&self) -> impl Iterator<Item = i64> + '_ {
-        let step = i128::from(self.step);
-        let low = self.low as i128;
         std::iter::successors(Some(self.top()), move |&v| {
-            (v - step > low).then_some(v - step)
+            v.checked_sub(self.step).filter(|&n| n > self.low)
         })
-        .map(|v| v as i64)
         .take(MAX_GRID_LINES)
     }
 
     /// Normalized position of a grid value within `[low, high]`, where `0.0`
-    /// is the bottom of the range and `1.0` the top. Computed in `i128`.
+    /// is the bottom of the range and `1.0` the top. Exact for every range
+    /// that fits in `i64`; the saturating fallback only kicks in past it.
     fn ratio_of(&self, units: i64) -> f64 {
-        (i128::from(units) - self.low as i128) as f64 / self.range as f64
+        units.saturating_sub(self.low) as f64 / self.range as f64
     }
 }
 

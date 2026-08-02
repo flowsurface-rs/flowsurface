@@ -1,4 +1,4 @@
-use chrono::DateTime;
+use chrono::{DateTime, Datelike, Months, TimeZone};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -82,6 +82,71 @@ impl UserTimezone {
         } else {
             datetime.format("%H:%M").to_string()
         }
+    }
+
+    /// The calendar date of `datetime` in the user's timezone.
+    fn local_date(&self, datetime: DateTime<chrono::Utc>) -> chrono::NaiveDate {
+        match self {
+            UserTimezone::Utc => datetime.date_naive(),
+            UserTimezone::Local => datetime.with_timezone(&chrono::Local).date_naive(),
+        }
+    }
+
+    /// The UTC timestamp of local midnight (00:00 in the user's timezone) on
+    /// `date`. Uses the earliest candidate for ambiguous local times (DST
+    /// fall-back); midnight is never in a spring-forward gap in practice.
+    pub(crate) fn local_midnight_utc_ms(&self, date: chrono::NaiveDate) -> Option<u64> {
+        let midnight = date.and_hms_opt(0, 0, 0)?;
+        let utc = match self {
+            UserTimezone::Utc => midnight.and_utc(),
+            UserTimezone::Local => chrono::Local
+                .from_local_datetime(&midnight)
+                .earliest()?
+                .with_timezone(&chrono::Utc),
+        };
+        utc.timestamp_millis().try_into().ok()
+    }
+
+    /// Start of the user's local day containing `timestamp_ms`, as UTC ms.
+    pub(crate) fn start_of_local_day_utc_ms(&self, timestamp_ms: u64) -> Option<u64> {
+        let datetime = DateTime::from_timestamp_millis(timestamp_ms as i64)?;
+        self.local_midnight_utc_ms(self.local_date(datetime))
+    }
+
+    /// Start of the user's local month containing `timestamp_ms`, as UTC ms.
+    pub(crate) fn start_of_local_month_utc_ms(&self, timestamp_ms: u64) -> Option<u64> {
+        let datetime = DateTime::from_timestamp_millis(timestamp_ms as i64)?;
+        self.local_midnight_utc_ms(self.local_date(datetime).with_day(1)?)
+    }
+
+    /// Start of the user's local year containing `timestamp_ms`, as UTC ms.
+    pub(crate) fn start_of_local_year_utc_ms(&self, timestamp_ms: u64) -> Option<u64> {
+        let datetime = DateTime::from_timestamp_millis(timestamp_ms as i64)?;
+        self.local_midnight_utc_ms(self.local_date(datetime).with_month(1)?.with_day(1)?)
+    }
+
+    /// Start of the user's local day after `timestamp_ms`, as UTC ms.
+    pub(crate) fn next_local_day_utc_ms(&self, timestamp_ms: u64) -> Option<u64> {
+        let datetime = DateTime::from_timestamp_millis(timestamp_ms as i64)?;
+        self.local_midnight_utc_ms(self.local_date(datetime).succ_opt()?)
+    }
+
+    /// Start of the user's local month after `timestamp_ms`, as UTC ms.
+    pub(crate) fn next_local_month_utc_ms(&self, timestamp_ms: u64) -> Option<u64> {
+        let datetime = DateTime::from_timestamp_millis(timestamp_ms as i64)?;
+        self.local_midnight_utc_ms(
+            self.local_date(datetime)
+                .checked_add_months(Months::new(1))?,
+        )
+    }
+
+    /// Start of the user's local year after `timestamp_ms`, as UTC ms.
+    pub(crate) fn next_local_year_utc_ms(&self, timestamp_ms: u64) -> Option<u64> {
+        let datetime = DateTime::from_timestamp_millis(timestamp_ms as i64)?;
+        self.local_midnight_utc_ms(
+            self.local_date(datetime)
+                .checked_add_months(Months::new(12))?,
+        )
     }
 }
 

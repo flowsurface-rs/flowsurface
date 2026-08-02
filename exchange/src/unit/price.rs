@@ -153,6 +153,25 @@ impl Price {
         Self { units }
     }
 
+    /// Difference of two prices, saturating instead of panicking on overflow
+    /// (mirrors `i64::saturating_sub`).
+    pub fn saturating_sub(self, rhs: Self) -> Self {
+        Self {
+            units: self.units.saturating_sub(rhs.units),
+        }
+    }
+
+    /// Normalized position of `self` within `[low, high]`: `0.0` at `low`,
+    /// `1.0` at `high`. Returns `0.0` for an empty range.
+    pub fn ratio_in_range(self, low: Self, high: Self) -> f64 {
+        let range = high.units.saturating_sub(low.units);
+        if range == 0 {
+            0.0
+        } else {
+            self.units.saturating_sub(low.units) as f64 / range as f64
+        }
+    }
+
     /// Returns the atomic-unit count that corresponds to one min tick (min_tick / atomic_unit)
     fn min_tick_units(min_tick: MinTicksize) -> i64 {
         let exp = Self::ATOMIC_SCALE + (min_tick.power as i32);

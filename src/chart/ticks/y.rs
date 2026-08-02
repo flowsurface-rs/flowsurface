@@ -1,6 +1,6 @@
 use super::{AxisLabel, LabelContent, calc_label_rect};
 pub use data::chart::ticks::y::PriceAxis;
-use data::chart::ticks::y::YTickLabel;
+use data::chart::ticks::{Y_LABEL_DENSITY, y::YTickLabel, y_labels_that_fit};
 use exchange::unit::Price;
 
 use super::{Basis, Interaction, Message};
@@ -22,8 +22,13 @@ pub struct LabelLayout {
 }
 
 impl LabelLayout {
-    pub fn new(bounds: iced::Rectangle, text_size: f32, text_color: iced::Color) -> Self {
-        let labels_can_fit = (bounds.height / (text_size * 2.5)) as i32;
+    pub fn new(
+        bounds: iced::Rectangle,
+        text_size: f32,
+        text_color: iced::Color,
+        density: f32,
+    ) -> Self {
+        let labels_can_fit = y_labels_that_fit(bounds.height, text_size, density) as i32;
         Self {
             bounds,
             text_size,
@@ -63,7 +68,6 @@ impl LabelLayout {
     }
 }
 
-// Y-AXIS LABELS
 pub struct AxisLabelsY<'a> {
     pub labels_cache: &'a Cache,
     pub translation_y: f32,
@@ -194,10 +198,16 @@ impl canvas::Program<Message> for AxisLabelsY<'_> {
             let highest = self.y_to_price(region.y);
             let lowest = self.y_to_price(region.y + region.height);
 
-            let range = highest - lowest;
+            let range = highest.saturating_sub(lowest);
+            let ratio_of = |price: Price| price.ratio_in_range(lowest, highest);
 
-            let mut all_labels = LabelLayout::new(bounds, text_size, palette.background.base.text)
-                .generate(lowest.to_f64(), highest.to_f64(), Some(self.axis));
+            let mut all_labels = LabelLayout::new(
+                bounds,
+                text_size,
+                palette.background.base.text,
+                Y_LABEL_DENSITY,
+            )
+            .generate(lowest.to_f64(), highest.to_f64(), Some(self.axis));
 
             // Last price (priority 2)
             if let Some(label) = self.last_price {
@@ -257,7 +267,7 @@ impl canvas::Program<Message> for AxisLabelsY<'_> {
                     text_size: crate::style::text_size::BODY,
                 };
 
-                let y_pos = bounds.height - ((price - lowest) / range) as f32 * bounds.height;
+                let y_pos = bounds.height - ratio_of(price) as f32 * bounds.height;
                 let content_amt = if candle_close_label.is_some() { 2 } else { 1 };
 
                 all_labels.push(AxisLabel::Y {
@@ -272,8 +282,7 @@ impl canvas::Program<Message> for AxisLabelsY<'_> {
                 let ratio = f64::from(bounds.height - crosshair_pos.y) / f64::from(bounds.height);
                 let rounded_price = Price::from_f64(lowest.to_f64() + ratio * range.to_f64())
                     .round_to_step(self.axis.row_step);
-                let y_position =
-                    bounds.height - ((rounded_price - lowest) / range) as f32 * bounds.height;
+                let y_position = bounds.height - ratio_of(rounded_price) as f32 * bounds.height;
 
                 let label = LabelContent {
                     content: rounded_price.to_string(self.axis.precision),

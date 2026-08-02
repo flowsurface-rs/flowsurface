@@ -1,11 +1,11 @@
-use crate::chart::ticks::AxisLabel;
-use crate::chart::ticks::x;
+use crate::chart::ticks::{AxisLabel, x};
 use crate::style;
 use crate::widget::chart::SeriesLike;
 use crate::widget::chart::Zoom;
 use crate::widget::chart::domain;
 
 use data::UserTimezone;
+use data::chart::ticks::{Y_LABEL_DENSITY, x_labels_that_fit, y_labels_that_fit};
 use exchange::{TickerInfo, Timeframe, UnixMs};
 
 use iced::advanced::widget::tree::{self, Tree};
@@ -22,7 +22,6 @@ use chrono::TimeZone;
 const Y_AXIS_GUTTER: f32 = 66.0; // px
 const X_AXIS_HEIGHT: f32 = 24.0;
 
-const MIN_X_TICK_PX: f32 = 80.0;
 const TEXT_SIZE: f32 = style::text_size::BODY;
 
 const ZOOM_STEP_PCT: f32 = 0.05; // 5% per scroll "line"
@@ -250,7 +249,7 @@ where
             px_per_ms,
         };
 
-        let total_ticks = (plot.height / (TEXT_SIZE * 2.5)).floor() as usize;
+        let total_ticks = y_labels_that_fit(plot.height, TEXT_SIZE, Y_LABEL_DENSITY);
         let (all_ticks, step) = super::ticks(min_pct, max_pct, total_ticks);
         let mut ticks: Vec<f32> = all_ticks
             .into_iter()
@@ -1274,7 +1273,7 @@ where
         // once the grid step reaches a day. Labels are formatted in the
         // user's timezone.
         let plot_rect = ctx.plot_rect();
-        let labels_can_fit = ((plot_rect.width / MIN_X_TICK_PX).floor() as i32).max(2);
+        let labels_can_fit = x_labels_that_fit(plot_rect.width, TEXT_SIZE) as i32;
 
         let labels = x::generate_time_labels(
             self.timeframe,

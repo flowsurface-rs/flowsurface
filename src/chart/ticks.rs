@@ -11,7 +11,6 @@ use iced::{
     widget::canvas::{self, Frame},
 };
 
-const REGULAR_LABEL_WIDTH: f32 = TEXT_SIZE * 6.0;
 const X_LABEL_CHAR_W: f32 = TEXT_SIZE * 0.65;
 
 /// Guard area on the edges of the axis
@@ -95,13 +94,21 @@ impl AxisLabel {
         }
     }
 
-    pub fn filter_and_draw(labels: &[AxisLabel], frame: &mut Frame) {
+    pub fn filter(labels: &[AxisLabel]) -> Vec<&AxisLabel> {
         let mut drawn: Vec<&AxisLabel> = Vec::with_capacity(labels.len());
+        let mut kept: Vec<&AxisLabel> = Vec::with_capacity(labels.len());
         for label in labels.iter().rev() {
             if drawn.iter().all(|existing| !existing.intersects(label)) {
-                label.draw(frame);
                 drawn.push(label);
+                kept.push(label);
             }
+        }
+        kept
+    }
+
+    pub fn filter_and_draw(labels: &[AxisLabel], frame: &mut Frame) {
+        for label in Self::filter(labels) {
+            label.draw(frame);
         }
     }
 

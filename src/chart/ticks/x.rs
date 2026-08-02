@@ -3,6 +3,7 @@ use data::UserTimezone;
 use data::chart::Autoscale;
 use data::chart::ticks::x::{TimeTickLabel, TimeTickTier};
 
+use data::chart::ticks::{x_label_spacing_px, x_labels_that_fit};
 use data::config::timezone::TimeLabelKind;
 use exchange::UnixMs;
 use iced::Point;
@@ -19,8 +20,8 @@ fn is_drawable(x_pos: f32, width: f32) -> bool {
 }
 
 /// Minimum pixel spacing between tick labels, sized so the widest label
-/// (`HH:MM` / `MM:SS`, 5 chars) never touches a neighbour.
-const MIN_TICK_SPACING: f32 = X_LABEL_CHAR_W * 11.0;
+/// (`HH:MM` / `MM:SS`, 5 chars) keeps a small gap.
+const MIN_TICK_SPACING: f32 = X_LABEL_CHAR_W * 6.0;
 
 pub fn generate_time_labels(
     timeframe: exchange::Timeframe,
@@ -61,7 +62,6 @@ pub fn generate_time_labels(
     labels
 }
 
-// X-AXIS LABELS
 pub struct AxisLabelsX<'a> {
     pub labels_cache: &'a Cache,
     pub max: u64,
@@ -312,12 +312,10 @@ impl canvas::Program<Message> for AxisLabelsX<'_> {
         let labels = self.labels_cache.draw(renderer, bounds.size(), |frame| {
             let region = self.visible_region(frame.size());
 
-            let target_spacing = super::REGULAR_LABEL_WIDTH * 2.0;
-            let target_count = (bounds.width / target_spacing).floor() as usize;
+            let target_spacing = x_label_spacing_px(TEXT_SIZE);
+            let label_count = x_labels_that_fit(bounds.width, TEXT_SIZE);
 
-            let label_count = target_count.max(2);
-
-            let mut labels: Vec<AxisLabel> = Vec::with_capacity(label_count + 1); // +1 for crosshair
+            let mut labels: Vec<AxisLabel> = Vec::with_capacity(label_count);
 
             match self.basis {
                 Basis::Tick(_) => {
@@ -379,13 +377,23 @@ impl canvas::Program<Message> for AxisLabelsX<'_> {
                 }
             }
 
-            if let Some(cursor_pos) = cursor.position_in(self.chart_bounds)
-                && let Some(label) = self.generate_crosshair(cursor_pos, region, bounds, palette)
-            {
-                labels.push(label);
-            }
+            let kept = AxisLabel::filter(&labels);
 
-            AxisLabel::filter_and_draw(&labels, frame);
+            if let Some(cursor_pos) = cursor.position_in(self.chart_bounds)
+                && let Some(crosshair) =
+                    self.generate_crosshair(cursor_pos, region, bounds, palette)
+            {
+                for label in kept {
+                    if !label.intersects(&crosshair) {
+                        label.draw(frame);
+                    }
+                }
+                crosshair.draw(frame);
+            } else {
+                for label in kept {
+                    label.draw(frame);
+                }
+            }
         });
 
         vec![labels]

@@ -779,7 +779,7 @@ impl ViewState {
     }
 
     fn price_to_y(&self, price: Price) -> f32 {
-        let delta_units = self.base_price_y.units - price.units;
+        let delta_units = self.base_price_y.saturating_sub(price).units;
         let ticks = delta_units as f64 / self.effective_tick_units() as f64;
         (ticks * f64::from(self.cell_height)) as f32
     }
@@ -818,7 +818,7 @@ impl ViewState {
                 let price = highest + ratio * (lowest - highest);
 
                 let p = Price::from_f64(price).round_to_step(effective_step);
-                let snap_ratio = (p.to_f64() - highest) / (lowest - highest);
+                let snap_ratio = 1.0 - p.ratio_in_range(lowest_p, highest_p);
                 (snap_ratio * f64::from(bounds.height)) as f32
             };
 
@@ -835,10 +835,10 @@ impl ViewState {
             let price1 = self.y_to_price(snapped_p1_y);
             let price2 = self.y_to_price(snapped_p2_y);
 
-            let pct = if price1.to_f64() == 0.0 {
+            let pct = if price1.units == 0 {
                 0.0
             } else {
-                ((price2.to_f64() - price1.to_f64()) / price1.to_f64()) * 100.0
+                (price2.saturating_sub(price1) / price1) * 100.0
             };
             let pct_text = format!("{:.2}%", pct);
 
@@ -978,7 +978,7 @@ impl ViewState {
         let crosshair_price = highest + crosshair_ratio * (lowest - highest);
 
         let rounded_price = Price::from_f64(crosshair_price).round_to_step(effective_step);
-        let snap_ratio = (rounded_price.to_f64() - highest) / (lowest - highest);
+        let snap_ratio = 1.0 - rounded_price.ratio_in_range(lowest_p, highest_p);
         let line_y = (snap_ratio * f64::from(bounds.height)) as f32;
 
         frame.stroke(

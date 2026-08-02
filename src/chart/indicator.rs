@@ -9,6 +9,7 @@ use crate::chart::{
     ticks::{AxisLabel, LabelContent, calc_label_rect},
 };
 use data::chart::Basis;
+use data::chart::ticks::Y_LABEL_DENSITY_INDICATOR;
 use data::util::{abbr_large_numbers, round_to_tick};
 
 use iced::{
@@ -150,6 +151,7 @@ impl canvas::Program<Message> for IndicatorLabel<'_> {
                 bounds,
                 TEXT_SIZE,
                 palette.background.base.text,
+                Y_LABEL_DENSITY_INDICATOR,
             )
             .generate(f64::from(self.min), f64::from(self.max), None);
 

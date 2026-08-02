@@ -1,13 +1,13 @@
 use super::MAX_GRID_LINES;
-use crate::{
-    config::timezone::TimeLabelKind,
-    util::{reset_to_start_of_month_utc, reset_to_start_of_year_utc},
-};
+use crate::{UserTimezone, config::timezone::TimeLabelKind};
 use exchange::{Timeframe, UnixMs};
 
-use chrono::{DateTime, Months};
+use chrono::DateTime;
 
-const ONE_DAY_MS: u64 = 24 * 60 * 60 * 1000;
+/// Nominal local day length in ms (DST days vary slightly around this).
+const DAY_MS: u64 = 86_400_000;
+/// Upper bound on a local day's length in ms (25h, covers DST fall-back).
+const MAX_LOCAL_DAY_MS: u64 = 90_000_000;
 
 const MS_TIME_STEPS: [u64; 12] = [
     1000 * 120,
@@ -24,9 +24,11 @@ const MS_TIME_STEPS: [u64; 12] = [
     100,
 ];
 
-const M1_TIME_STEPS: [u64; 11] = [
+const M1_TIME_STEPS: [u64; 13] = [
     1000 * 60 * 720, // 12 hour
+    1000 * 60 * 480, // 8 hour
     1000 * 60 * 360, // 6 hour
+    1000 * 60 * 240, // 4 hour
     1000 * 60 * 180, // 3 hour
     1000 * 60 * 120, // 2 hour
     1000 * 60 * 60,  // 1 hour
@@ -244,7 +246,15 @@ struct TimeAxisGrid {
 
 impl TimeAxisGrid {
     /// Compute the X-axis time grid for a visible range. Pure and deterministic.
-    fn new(earliest: UnixMs, latest: UnixMs, labels_can_fit: i32, timeframe: Timeframe) -> Self {
+    fn new(
+        earliest: UnixMs,
+        latest: UnixMs,
+        labels_can_fit: i32,
+        timeframe: Timeframe,
+        timezone: UserTimezone,
+        width: f32,
+        min_spacing_px: f32,
+    ) -> Self {
         let step_ms = Self::calc_step(earliest, latest, labels_can_fit, timeframe);
 
         if step_ms == 0 {
@@ -261,24 +271,33 @@ impl TimeAxisGrid {
             return TimeAxisGrid {
                 earliest,
                 latest,
-                marks: Self::step_marks(earliest, latest, step_ms),
+                marks: Self::step_marks(earliest, latest, step_ms, timezone, width, min_spacing_px),
             };
         };
 
-        let mut marks = Self::step_marks(earliest, latest, step_ms);
+        let mut marks =
+            Self::step_marks(earliest, latest, step_ms, timezone, width, min_spacing_px);
 
         // Calendar boundaries guarantee coarse anchors even when the intraday
         // step is too coarse to land on every one of them.
         marks.extend(
-            Self::collect_daily(earliest, latest, start, end)
-                .into_iter()
-                .map(|t| TickMark {
-                    time_ms: t,
-                    weight: TickWeight::Day,
-                }),
+            Self::collect_daily(
+                earliest,
+                latest,
+                start,
+                end,
+                timezone,
+                width,
+                min_spacing_px,
+            )
+            .into_iter()
+            .map(|t| TickMark {
+                time_ms: t,
+                weight: TickWeight::Day,
+            }),
         );
         marks.extend(
-            Self::collect_monthly(earliest, latest, start, end)
+            Self::collect_monthly(earliest, latest, start, end, timezone)
                 .into_iter()
                 .map(|t| TickMark {
                     time_ms: t,
@@ -286,7 +305,7 @@ impl TimeAxisGrid {
                 }),
         );
         marks.extend(
-            Self::collect_yearly(earliest, latest, start, end)
+            Self::collect_yearly(earliest, latest, start, end, timezone)
                 .into_iter()
                 .map(|t| TickMark {
                     time_ms: t,
@@ -313,11 +332,19 @@ impl TimeAxisGrid {
         }
     }
 
-    /// Intraday step ticks (every `step_ms`) with their nominal intraday
-    /// weight; day/month/year boundaries are layered on top separately.
-    fn step_marks(earliest: UnixMs, latest: UnixMs, step_ms: u64) -> Vec<TickMark> {
+    /// Intraday step ticks (every `step_ms` within each local day, starting at
+    /// local midnight) with their nominal intraday weight; day/month/year
+    /// boundaries are layered on top separately.
+    fn step_marks(
+        earliest: UnixMs,
+        latest: UnixMs,
+        step_ms: u64,
+        timezone: UserTimezone,
+        width: f32,
+        min_spacing_px: f32,
+    ) -> Vec<TickMark> {
         let weight = TickWeight::for_intraday_step(step_ms);
-        Self::flat_ticks(earliest, latest, step_ms)
+        Self::day_anchored_ticks(earliest, latest, step_ms, timezone, width, min_spacing_px)
             .into_iter()
             .map(|t| TickMark { time_ms: t, weight })
             .collect()
@@ -390,12 +417,16 @@ impl TimeAxisGrid {
 
     /// Advance `current` by `next` while it stays within `[0, end_ms]`,
     /// collecting every value that lands inside `[earliest, latest]`.
-    /// Terminates even when `next` does not advance.
+    /// `skip_ms` thins the series: boundaries closer than `skip_ms` to the
+    /// last collected one are skipped, so dense series (e.g. daily on a
+    /// multi-year range) stay bounded. Terminates even when `next` does not
+    /// advance.
     fn collect_boundaries(
         mut current: u64,
         end_ms: u64,
         earliest: UnixMs,
         latest: UnixMs,
+        skip_ms: u64,
         next: impl Fn(u64) -> Option<u64>,
     ) -> Vec<u64> {
         let mut out = Vec::with_capacity(MAX_GRID_LINES.min(64));
@@ -405,76 +436,133 @@ impl TimeAxisGrid {
                 out.push(current);
             }
             guard += 1;
-            let Some(next_val) = next(current) else {
+
+            let Some(mut next_val) = next(current) else {
                 break;
             };
             if next_val <= current {
                 break;
+            }
+
+            // Skip boundaries that would sit closer than `skip_ms` to the one
+            // just collected (pixel-based thinning for long ranges;
+            // `select_marks` re-checks the real spacing afterwards).
+            let target = current.saturating_add(skip_ms);
+            while next_val < target {
+                let Some(after) = next(next_val) else {
+                    break;
+                };
+                if after <= next_val {
+                    break;
+                }
+                next_val = after;
             }
             current = next_val;
         }
         out
     }
 
-    /// Start-of-day (00:00 UTC) boundaries within `[earliest, latest]`.
+    /// Pixel-based thinning for a boundary series whose nominal spacing is
+    /// `nominal_ms` (e.g. one day): the smallest skip, in ms, such that
+    /// consecutive collected boundaries are at least `min_spacing_px` apart.
+    fn boundary_skip_ms(
+        nominal_ms: u64,
+        earliest: UnixMs,
+        latest: UnixMs,
+        width: f32,
+        min_spacing_px: f32,
+    ) -> u64 {
+        if width <= 0.0 || min_spacing_px <= 0.0 {
+            return 0;
+        }
+        let span = latest.as_u64().saturating_sub(earliest.as_u64()).max(1);
+        let px_per_boundary = (nominal_ms as f64 / span as f64) * f64::from(width);
+        let count = (f64::from(min_spacing_px) / px_per_boundary).ceil() as u64;
+        nominal_ms.saturating_mul(count.max(1))
+    }
+
+    /// Start-of-local-day (00:00 in the user's timezone) boundaries within
+    /// `[earliest, latest]`, thinned to the pixel budget so multi-year ranges
+    /// stay bounded (`select_marks` re-checks the real spacing).
     fn collect_daily(
         earliest: UnixMs,
         latest: UnixMs,
         start: DateTime<chrono::Utc>,
         end: DateTime<chrono::Utc>,
+        timezone: UserTimezone,
+        width: f32,
+        min_spacing_px: f32,
     ) -> Vec<u64> {
-        let start_ms = Self::start_of_day_ms(start.timestamp_millis() as u64);
+        let start_ms = timezone
+            .start_of_local_day_utc_ms(start.timestamp_millis() as u64)
+            .unwrap_or(0);
         let end_ms = end.timestamp_millis() as u64;
-        Self::collect_boundaries(start_ms, end_ms, earliest, latest, |ts| {
-            ts.checked_add(ONE_DAY_MS)
+        let skip_ms = Self::boundary_skip_ms(DAY_MS, earliest, latest, width, min_spacing_px);
+        Self::collect_boundaries(start_ms, end_ms, earliest, latest, skip_ms, |ts| {
+            timezone.next_local_day_utc_ms(ts)
         })
     }
 
-    /// Start-of-month UTC boundaries within `[earliest, latest]`.
+    /// Start-of-local-month boundaries within `[earliest, latest]`.
     fn collect_monthly(
         earliest: UnixMs,
         latest: UnixMs,
         start: DateTime<chrono::Utc>,
         end: DateTime<chrono::Utc>,
+        timezone: UserTimezone,
     ) -> Vec<u64> {
-        let start_ms = reset_to_start_of_month_utc(start).timestamp_millis() as u64;
+        let start_ms = timezone
+            .start_of_local_month_utc_ms(start.timestamp_millis() as u64)
+            .unwrap_or(0);
         let end_ms = end.timestamp_millis() as u64;
-        Self::collect_boundaries(start_ms, end_ms, earliest, latest, |ts| {
-            let dt = UnixMs::new(ts).as_datetime_utc()?;
-            dt.checked_add_months(Months::new(1))
-                .map(reset_to_start_of_month_utc)
-                .map(|d| d.timestamp_millis() as u64)
+        Self::collect_boundaries(start_ms, end_ms, earliest, latest, 0, |ts| {
+            timezone.next_local_month_utc_ms(ts)
         })
     }
 
-    /// Start-of-year UTC boundaries within `[earliest, latest]`.
+    /// Start-of-local-year boundaries within `[earliest, latest]`.
     fn collect_yearly(
         earliest: UnixMs,
         latest: UnixMs,
         start: DateTime<chrono::Utc>,
         end: DateTime<chrono::Utc>,
+        timezone: UserTimezone,
     ) -> Vec<u64> {
-        let start_ms = reset_to_start_of_year_utc(start).timestamp_millis() as u64;
+        let start_ms = timezone
+            .start_of_local_year_utc_ms(start.timestamp_millis() as u64)
+            .unwrap_or(0);
         let end_ms = end.timestamp_millis() as u64;
-        Self::collect_boundaries(start_ms, end_ms, earliest, latest, |ts| {
-            let dt = UnixMs::new(ts).as_datetime_utc()?;
-            dt.checked_add_months(Months::new(12))
-                .map(reset_to_start_of_year_utc)
-                .map(|d| d.timestamp_millis() as u64)
+        Self::collect_boundaries(start_ms, end_ms, earliest, latest, 0, |ts| {
+            timezone.next_local_year_utc_ms(ts)
         })
     }
 
-    /// Floor a millisecond timestamp to its UTC day boundary.
-    fn start_of_day_ms(ts: u64) -> u64 {
-        ts - (ts % ONE_DAY_MS)
-    }
-
-    /// All multiples of `step_ms` within `[earliest, latest]`, ascending.
+    /// Multiples of `step_ms` anchored to the user's local midnight, within
+    /// `[earliest, latest]`, ascending.
     ///
-    /// Guaranteed to terminate: values strictly increase and the count is
-    /// capped at [`MAX_GRID_LINES`]. Returns an empty vec for a zero step or
-    /// an empty/inverted range.
-    fn flat_ticks(earliest: UnixMs, latest: UnixMs, step_ms: u64) -> Vec<u64> {
+    /// Each local day starts a fresh grid at its midnight, so midnight is
+    /// always a tick and the grid is uniform in the user's timezone — matching
+    /// the calendar marks layered on top, which never get crowded or leave
+    /// lopsided gaps.
+    ///
+    /// Marks are pre-thinned to the pixel budget so a long range can never
+    /// blow up the mark list or truncate the tail: generation starts at the
+    /// first mark at or after `earliest` and walks at `stride = k * step`,
+    /// where `k` is the smallest integer whose pixel width is at least
+    /// `min_spacing_px`. When the stride reaches a full local day, the
+    /// intraday grid degrades to plain stride multiples (the day-boundary
+    /// layer already anchors every midnight), keeping the count around
+    /// `width / min_spacing_px` regardless of the range. Guaranteed to
+    /// terminate: values strictly increase and the walk is bounded. Returns an
+    /// empty vec for a zero step or an empty/inverted range.
+    fn day_anchored_ticks(
+        earliest: UnixMs,
+        latest: UnixMs,
+        step_ms: u64,
+        timezone: UserTimezone,
+        width: f32,
+        min_spacing_px: f32,
+    ) -> Vec<u64> {
         if step_ms == 0 {
             return Vec::new();
         }
@@ -484,17 +572,59 @@ impl TimeAxisGrid {
         if l < e {
             return Vec::new();
         }
+        let span = l - e;
+
+        // Thinning stride: the smallest multiple of `step` whose pixel width
+        // is at least `min_spacing_px`, so at most ~`width / min_spacing_px`
+        // marks are materialized for selection to refine.
+        let stride_ms = if width > 0.0 && min_spacing_px > 0.0 {
+            let px_per_step = (step_ms as f64 / span as f64) * f64::from(width);
+            let k = ((f64::from(min_spacing_px) / px_per_step).ceil() as u64).max(1);
+            step_ms.saturating_mul(k).max(1)
+        } else {
+            step_ms
+        };
+
+        // Once the stride spans a full local day, day-anchoring would only
+        // repeat the midnight anchor the day layer already provides, so fall
+        // back to plain stride multiples: uniformly spaced and bounded by the
+        // pixel budget.
+        if stride_ms >= MAX_LOCAL_DAY_MS {
+            let first = e.div_ceil(stride_ms).saturating_mul(stride_ms);
+            let mut out = Vec::new();
+            let mut t = first;
+            while t <= l {
+                out.push(t);
+                let Some(next) = t.checked_add(stride_ms) else {
+                    break;
+                };
+                t = next;
+            }
+            return out;
+        }
 
         let mut out = Vec::new();
-        let mut t = e.div_ceil(step_ms).saturating_mul(step_ms);
-        let mut guard = 0;
-        while t <= l && guard < MAX_GRID_LINES {
-            out.push(t);
-            guard += 1;
-            let Some(next) = t.checked_add(step_ms) else {
+        let mut day_start = timezone.start_of_local_day_utc_ms(e).unwrap_or(e);
+        while day_start <= l {
+            let Some(next_day) = timezone.next_local_day_utc_ms(day_start) else {
                 break;
             };
-            t = next;
+
+            // First mark of this day at or after `earliest`, aligned to the
+            // day's midnight grid (a multiple of `step` from midnight).
+            let first = day_start.max(e);
+            let k = first.saturating_sub(day_start).div_ceil(stride_ms);
+            let mut t = day_start.saturating_add(k.saturating_mul(stride_ms));
+
+            while t < next_day && t <= l {
+                out.push(t);
+                let Some(next) = t.checked_add(stride_ms) else {
+                    break;
+                };
+                t = next;
+            }
+
+            day_start = next_day;
         }
         out
     }
@@ -555,7 +685,15 @@ impl TimeTickLabel {
         timeframe: Timeframe,
         timezone: crate::UserTimezone,
     ) -> Vec<TimeTickLabel> {
-        let grid = TimeAxisGrid::new(earliest, latest, labels_can_fit, timeframe);
+        let grid = TimeAxisGrid::new(
+            earliest,
+            latest,
+            labels_can_fit,
+            timeframe,
+            timezone,
+            width,
+            min_spacing_px,
+        );
 
         if grid.marks.is_empty() {
             return Vec::new();
