@@ -266,7 +266,7 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
                 let rough = (TARGET_LABEL_SPACING_PX as f64 / px_per_bucket)
                     .ceil()
                     .max(1.0);
-                data::chart::ticks::y::FloatGrid::round_125(rough) as i64
+                data::util::round_125(rough) as i64
             };
 
             let mut b = (b_min.div_euclid(every)) * every;

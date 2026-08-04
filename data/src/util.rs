@@ -181,6 +181,26 @@ pub fn format_duration_ms(diff_ms: u64) -> String {
     }
 }
 
+/// Round a positive value up to the nearest "nice" `1/2/5 * 10^k`.
+pub fn round_125(v: f64) -> f64 {
+    if !v.is_finite() || v <= 0.0 {
+        return 1.0;
+    }
+
+    let base = 10.0f64.powf(v.log10().floor());
+    let fraction = v / base;
+    let mult = if fraction <= 1.0 {
+        1.0
+    } else if fraction <= 2.0 {
+        2.0
+    } else if fraction <= 5.0 {
+        5.0
+    } else {
+        10.0
+    };
+    mult * base
+}
+
 /// Shrinks main panel if needed when adding a new panel.
 /// Ensures indicators never shrink below `MIN_PANEL_HEIGHT`
 pub fn calc_panel_splits(

@@ -657,8 +657,12 @@ pub struct ViewState {
     cell_width: f32,
     cell_height: f32,
     basis: Basis,
-    last_price: Option<PriceInfoLabel>,
+    /// Used for y-scale anchor.
     base_price_y: Price,
+    /// Used for last-price badge.
+    last_price: Option<PriceInfoLabel>,
+    /// Session-highest price, for sizing y-axis gutter width.
+    max_price: Price,
     latest_x: u64,
     tick_size: PriceStep,
     ticker_info: TickerInfo,
@@ -684,6 +688,7 @@ impl ViewState {
             basis,
             last_price: None,
             base_price_y: Price::from_f32(0.0),
+            max_price: Price::from_f32(0.0),
             latest_x: 0,
             tick_size,
             ticker_info,
@@ -1067,7 +1072,8 @@ impl ViewState {
     fn y_labels_width(&self) -> Length {
         let precision = self.ticker_info.min_ticksize;
 
-        let value = self.base_price_y.to_string(precision);
+        let max_label = Price::from_f64(self.max_price.to_f64() * 1.05);
+        let value = max_label.to_string(precision);
         let width = (value.len() as f32 * TEXT_SIZE * 0.8).max(72.0);
 
         Length::Fixed(width.ceil())

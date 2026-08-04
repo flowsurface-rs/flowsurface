@@ -4,11 +4,9 @@ pub mod y;
 /// Safety cap on the number of grid lines produced by any strategy.
 pub const MAX_GRID_LINES: usize = 1000;
 
-/// Vertical budget per Y-axis label, as a multiple of the text size. Used by
-/// the kline price axis and the comparison percent axis.
+/// Vertical budget per Y-axis label, as a multiple of the text size.
 pub const Y_LABEL_DENSITY: f32 = 3.0;
-/// Denser vertical budget for indicator labels (legacy value, kept because
-/// indicator panes are shorter and their labels are narrower).
+/// Denser budget for the shorter indicator panes (legacy value).
 pub const Y_LABEL_DENSITY_INDICATOR: f32 = 2.5;
 
 /// Number of Y-axis labels that fit in `height` pixels at `text_size` for a

@@ -203,26 +203,6 @@ impl FloatGrid {
 
         FloatGrid { step, ticks }
     }
-
-    /// Round a positive target up to the nearest "nice" `1/2/5 * 10^k` value.
-    pub fn round_125(v: f64) -> f64 {
-        if !v.is_finite() || v <= 0.0 {
-            return 1.0;
-        }
-
-        let base = 10.0f64.powf(v.log10().floor());
-        let fraction = v / base;
-        let mult = if fraction <= 1.0 {
-            1.0
-        } else if fraction <= 2.0 {
-            2.0
-        } else if fraction <= 5.0 {
-            5.0
-        } else {
-            10.0
-        };
-        mult * base
-    }
 }
 
 /// A tick value in the scale's natural representation.
@@ -344,6 +324,16 @@ impl PriceAxis {
         }
     }
 
+    /// Convert a canvas y position (pixels) to a price, exact to within one
+    /// atomic unit (1e-11). Only the pixel geometry (`y`, `cell_height`) is
+    /// f32; the base price and row step are exact atomic-unit values, so the
+    /// offset arithmetic runs in f64 and is quantized once at the end.
+    pub fn y_to_price(&self, y: f32, cell_height: f32, min: Price) -> Price {
+        let ticks = f64::from(y) / f64::from(cell_height);
+        let price = min.to_f64() - ticks * self.row_step.to_f64_lossy();
+        Price::from_f64(price)
+    }
+
     /// Align `value` down to the nearest row multiple, in atomic units.
     fn floor_to_row(&self, value: f64) -> i64 {
         let row = self.row_step.units.max(1);
@@ -422,7 +412,7 @@ impl YTickLabel {
         if labels_can_fit <= 1 {
             return match axis {
                 Some(axis) => Self::single_row(highest, axis),
-                None => Self::single_y(highest, None),
+                None => Self::single_y(highest),
             };
         }
 
@@ -441,14 +431,10 @@ impl YTickLabel {
         }]
     }
 
-    /// A single label for `value` at `decimals` decimal places when available.
-    fn single_y(value: f64, decimals: Option<usize>) -> Vec<Self> {
-        let content = if let Some(decimals) = decimals {
-            format!("{value:.decimals$}")
-        } else {
-            abbr_large_numbers(value)
-        };
-        Self::single(content)
+    /// A single fallback label for `value` with abbreviated large-number
+    /// formatting.
+    fn single_y(value: f64) -> Vec<Self> {
+        Self::single(abbr_large_numbers(value))
     }
 
     /// A single fallback label aligned down to the nearest price row, formatted
@@ -493,7 +479,7 @@ impl YTickLabel {
     fn float_grid(lowest: f64, highest: f64, height: f32, labels_can_fit: i32) -> Vec<Self> {
         let ticks = YAxisScale::Linear.ticks(lowest, highest, labels_can_fit);
         if ticks.ticks.is_empty() {
-            return Self::single_y(highest, None);
+            return Self::single_y(highest);
         }
 
         let mut labels = Vec::with_capacity((labels_can_fit + 2) as usize);

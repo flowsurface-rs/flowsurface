@@ -254,6 +254,7 @@ impl HeatmapChart {
         let chart = &mut self.chart;
         let mid_price = depth.mid_price().unwrap_or(chart.base_price_y);
         chart.base_price_y = mid_price.round_to_step(chart.tick_size);
+        chart.max_price = chart.max_price.max(chart.base_price_y);
         chart.latest_x = chart.latest_x.max(rounded_update.as_u64());
     }
 
@@ -295,6 +296,8 @@ impl HeatmapChart {
 
     pub fn set_basis(&mut self, basis: Basis) {
         self.chart.basis = basis;
+        self.chart.last_price = None;
+        self.chart.max_price = Price::from_f32(0.0);
 
         self.trades.datapoints.clear();
         self.heatmap =

@@ -2,6 +2,8 @@ use chrono::{DateTime, Datelike, Months, TimeZone};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+const ORIGIN_YEAR: i32 = 2000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum UserTimezone {
     #[default]
@@ -148,6 +150,53 @@ impl UserTimezone {
                 .checked_add_months(Months::new(12))?,
         )
     }
+
+    /// Advance `timestamp_ms` to the first local midnight whose date lies on
+    /// the `skip_days`-period grid anchored at a fixed origin date
+    /// (2000-01-01). Used to phase-align thinned boundary series (e.g. daily
+    /// marks) to *absolute* dates so the collected set stays fixed while the
+    /// view pans; without this, the thinning re-anchors to the sliding visible
+    /// edge and the whole day-label set shifts by one day whenever the edge
+    /// crosses a midnight.
+    pub(crate) fn align_to_skip_grid(&self, timestamp_ms: u64, skip_days: u64) -> Option<u64> {
+        let origin = chrono::NaiveDate::from_ymd_opt(ORIGIN_YEAR, 1, 1)?;
+        let datetime = DateTime::from_timestamp_millis(timestamp_ms as i64)?;
+        let date = self.local_date(datetime);
+        let days = date.signed_duration_since(origin).num_days();
+        let advance = advance_to_grid(skip_days, days);
+        self.local_midnight_utc_ms(date.checked_add_days(chrono::Days::new(advance))?)
+    }
+
+    /// Advance `timestamp_ms` to the first month-start that lies on the
+    /// `step_months`-period grid anchored at 2000-01, in the user's timezone.
+    pub(crate) fn align_to_month_grid(&self, timestamp_ms: u64, step_months: u64) -> Option<u64> {
+        let datetime = DateTime::from_timestamp_millis(timestamp_ms as i64)?;
+        let date = self.local_date(datetime);
+        let months = (date.year() - ORIGIN_YEAR) as i64 * 12 + i64::from(date.month0());
+        let first = date.with_day(1)?;
+        self.local_midnight_utc_ms(
+            first.checked_add_months(Months::new(advance_to_grid(step_months, months) as u32))?,
+        )
+    }
+
+    /// Advance `timestamp_ms` to the first year-start that lies on the
+    /// `step_years`-period grid anchored at 2000-01-01, in the user's timezone.
+    pub(crate) fn align_to_year_grid(&self, timestamp_ms: u64, step_years: u64) -> Option<u64> {
+        let datetime = DateTime::from_timestamp_millis(timestamp_ms as i64)?;
+        let date = self.local_date(datetime);
+        let years = (date.year() - ORIGIN_YEAR) as i64;
+        let first = date.with_month(1)?.with_day(1)?;
+        self.local_midnight_utc_ms(first.checked_add_months(Months::new(
+            (advance_to_grid(step_years, years) * 12) as u32,
+        ))?)
+    }
+}
+
+/// Forward distance from `offset` to the next multiple of `step` (0 when
+/// already aligned).
+fn advance_to_grid(step: u64, offset: i64) -> u64 {
+    let step = step.max(1) as i64;
+    ((step - offset.rem_euclid(step)) % step) as u64
 }
 
 impl fmt::Display for UserTimezone {

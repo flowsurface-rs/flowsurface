@@ -1275,6 +1275,8 @@ where
         let plot_rect = ctx.plot_rect();
         let labels_can_fit = x_labels_that_fit(plot_rect.width, TEXT_SIZE) as i32;
 
+        let span_ms = (f64::from(plot_rect.width) / f64::from(ctx.px_per_ms)).round() as u64;
+
         let labels = x::generate_time_labels(
             self.timeframe,
             self.timezone,
@@ -1286,6 +1288,7 @@ where
             },
             UnixMs::new(ctx.min_x),
             UnixMs::new(ctx.max_x),
+            span_ms,
             labels_can_fit,
             palette,
         );

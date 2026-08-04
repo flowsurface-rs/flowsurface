@@ -8,6 +8,10 @@ use chrono::DateTime;
 const DAY_MS: u64 = 86_400_000;
 /// Upper bound on a local day's length in ms (25h, covers DST fall-back).
 const MAX_LOCAL_DAY_MS: u64 = 90_000_000;
+/// Nominal month length in ms, used only to estimate per-month pixel widths.
+const MONTH_MS: u64 = 30 * DAY_MS;
+/// Nominal year length in ms, used only to estimate per-year pixel widths.
+const YEAR_MS: u64 = 365 * DAY_MS;
 
 const MS_TIME_STEPS: [u64; 12] = [
     1000 * 120,
@@ -92,6 +96,36 @@ const INTRADAY_DIVISORS: [(u64, TickWeight); 8] = [
     (1_000, TickWeight::Second),
 ];
 
+/// Intraday thinning stride: the smallest multiple of `step_ms` keeping marks
+/// at least a full label width (`10 * label_char_w`) apart, rounded up to
+/// divide the local day so the day-anchored walk stays uniform (a 16h stride
+/// would alternate 8h/16h gaps). Full-day strides pass through unchanged:
+/// the caller falls back to plain multiples there.
+fn intraday_stride(step_ms: u64, span_ms: u64, width: f32, label_char_w: f32) -> u64 {
+    if step_ms == 0 {
+        return 0;
+    }
+
+    let stride = if width > 0.0 && label_char_w > 0.0 {
+        let span = span_ms.max(1) as f64;
+        let px_per_step = (step_ms as f64 / span) * f64::from(width);
+        let k = ((f64::from(10.0 * label_char_w) / px_per_step).ceil() as u64).max(1);
+        step_ms.saturating_mul(k).max(1)
+    } else {
+        step_ms
+    };
+
+    if stride >= MAX_LOCAL_DAY_MS {
+        return stride;
+    }
+
+    let mut s = stride;
+    while s < DAY_MS && !DAY_MS.is_multiple_of(s) {
+        s = s.saturating_add(step_ms);
+    }
+    s.min(DAY_MS)
+}
+
 /// A typed table of candidate time steps used to pick the X-axis grid step
 /// for a visible span. Owns both the candidate list and the selection rules,
 /// so callers never touch raw step tables.
@@ -99,18 +133,24 @@ const INTRADAY_DIVISORS: [(u64, TickWeight); 8] = [
 struct TimeSteps(&'static [u64]);
 
 impl TimeSteps {
-    /// Pick the step closest to `span / budget`, keeping label density roughly
-    /// constant as the user pans or zooms. Falls back to the first table entry
-    /// when the table is empty.
-    fn pick_closest(&self, span_ms: u64, budget: u32) -> u64 {
-        let target = span_ms as f64 / budget.max(1) as f64;
+    /// Pick the step whose *rendered* grid comes closest to `budget` labels:
+    /// rank each candidate by the pixel spacing of its thinned stride
+    /// ([`intraday_stride`]) against the ideal `width / budget`, since
+    /// thinning can push a step past a longer one (an 8h step thinned past
+    /// 12h renders sparser than 12h). Falls back to the first entry when
+    /// empty.
+    fn pick_closest(&self, span_ms: u64, budget: u32, width: f32, label_char_w: f32) -> u64 {
+        let ideal_spacing_px = f64::from(width) / f64::from(budget.max(1));
+        let span = span_ms.max(1) as f64;
 
         let mut best: Option<(u64, f64)> = None;
         for &step in self.0 {
             if step == 0 {
                 continue;
             }
-            let dist = (step as f64 - target).abs();
+            let stride = intraday_stride(step, span_ms, width, label_char_w);
+            let spacing = stride as f64 / span * f64::from(width);
+            let dist = (spacing - ideal_spacing_px).abs();
             if best.is_none_or(|(_, d)| dist < d) {
                 best = Some((step, dist));
             }
@@ -178,6 +218,20 @@ impl TickWeight {
             .unwrap_or(Self::Second)
     }
 
+    /// Rendered character count of the widest label for this weight
+    /// (`HH:MM` / `MM:SS` = 5, `%Y` = 4, `%b` = 3, `%-d` = 2). Used to size
+    /// each label's rect so selection never keeps overlapping labels: if two
+    /// labels overlapped, the every-other drop pattern would re-anchor to the
+    /// moving window edge and flip the whole label set while panning.
+    fn chars(self) -> u32 {
+        match self {
+            TickWeight::Year => 4,
+            TickWeight::Month => 3,
+            TickWeight::Day => 2,
+            _ => 5,
+        }
+    }
+
     /// Placement priority: coarser units come first.
     fn priority(self) -> u8 {
         match self {
@@ -239,8 +293,10 @@ struct TimeAxisGrid {
     earliest: UnixMs,
     /// Visible range end (ms); used by [`Self::x_position`].
     latest: UnixMs,
-    /// Candidate ticks within `[earliest, latest]`, deduplicated (a timestamp
-    /// keeps its coarsest weight) and sorted by time.
+    /// Candidate ticks spanning the visible range plus a one-step margin on
+    /// each side, deduplicated (a timestamp keeps its coarsest weight) and
+    /// sorted by time. The margin keeps off-screen ticks alive so they slide
+    /// in/out smoothly while the view pans.
     marks: Vec<TickMark>,
 }
 
@@ -249,13 +305,14 @@ impl TimeAxisGrid {
     fn new(
         earliest: UnixMs,
         latest: UnixMs,
+        span_ms: u64,
         labels_can_fit: i32,
         timeframe: Timeframe,
         timezone: UserTimezone,
         width: f32,
-        min_spacing_px: f32,
+        label_char_w: f32,
     ) -> Self {
-        let step_ms = Self::calc_step(earliest, latest, labels_can_fit, timeframe);
+        let step_ms = calc_step(span_ms, labels_can_fit, timeframe, width, label_char_w);
 
         if step_ms == 0 {
             return TimeAxisGrid {
@@ -265,30 +322,63 @@ impl TimeAxisGrid {
             };
         }
 
-        let (Some(start), Some(end)) = (earliest.as_datetime_utc(), latest.as_datetime_utc())
+        // Generate over a window that extends at least one step past each
+        // visible edge, and enough pixels to hold the widest label's full
+        // width off-screen (the largest center-to-center gap between two
+        // labels): ticks then already exist just off-screen, so as the view
+        // pans the leading tick slides in (and the trailing one slides out)
+        // from off-screen instead of popping at the axis edge, and a mark
+        // entering the window is always off-screen so it can never flip which
+        // finer marks are kept on-screen. Positions are still mapped from the
+        // *visible* range, so off-screen marks get negative / beyond-width
+        // positions that callers cull.
+        let min_margin_ms =
+            (f64::from(10.0 * label_char_w) / f64::from(width) * span_ms as f64) as u64;
+        let margin_ms = step_ms.max(min_margin_ms);
+        let gen_earliest = earliest.saturating_sub(margin_ms);
+        let gen_latest = latest.saturating_add(margin_ms);
+
+        let (Some(start), Some(end)) =
+            (gen_earliest.as_datetime_utc(), gen_latest.as_datetime_utc())
         else {
             // Extreme timestamps: fall back to step multiples only.
             return TimeAxisGrid {
                 earliest,
                 latest,
-                marks: Self::step_marks(earliest, latest, step_ms, timezone, width, min_spacing_px),
+                marks: Self::step_marks(
+                    gen_earliest,
+                    gen_latest,
+                    span_ms,
+                    step_ms,
+                    timezone,
+                    width,
+                    label_char_w,
+                ),
             };
         };
 
-        let mut marks =
-            Self::step_marks(earliest, latest, step_ms, timezone, width, min_spacing_px);
+        let mut marks = Self::step_marks(
+            gen_earliest,
+            gen_latest,
+            span_ms,
+            step_ms,
+            timezone,
+            width,
+            label_char_w,
+        );
 
         // Calendar boundaries guarantee coarse anchors even when the intraday
         // step is too coarse to land on every one of them.
         marks.extend(
             Self::collect_daily(
-                earliest,
-                latest,
+                gen_earliest,
+                gen_latest,
+                span_ms,
                 start,
                 end,
                 timezone,
                 width,
-                min_spacing_px,
+                label_char_w,
             )
             .into_iter()
             .map(|t| TickMark {
@@ -297,20 +387,38 @@ impl TimeAxisGrid {
             }),
         );
         marks.extend(
-            Self::collect_monthly(earliest, latest, start, end, timezone)
-                .into_iter()
-                .map(|t| TickMark {
-                    time_ms: t,
-                    weight: TickWeight::Month,
-                }),
+            Self::collect_monthly(
+                gen_earliest,
+                gen_latest,
+                span_ms,
+                start,
+                end,
+                timezone,
+                width,
+                label_char_w,
+            )
+            .into_iter()
+            .map(|t| TickMark {
+                time_ms: t,
+                weight: TickWeight::Month,
+            }),
         );
         marks.extend(
-            Self::collect_yearly(earliest, latest, start, end, timezone)
-                .into_iter()
-                .map(|t| TickMark {
-                    time_ms: t,
-                    weight: TickWeight::Year,
-                }),
+            Self::collect_yearly(
+                gen_earliest,
+                gen_latest,
+                span_ms,
+                start,
+                end,
+                timezone,
+                width,
+                label_char_w,
+            )
+            .into_iter()
+            .map(|t| TickMark {
+                time_ms: t,
+                weight: TickWeight::Year,
+            }),
         );
 
         marks.sort_by_key(|m| m.time_ms);
@@ -332,29 +440,36 @@ impl TimeAxisGrid {
         }
     }
 
-    /// Intraday step ticks (every `step_ms` within each local day, starting at
-    /// local midnight) with their nominal intraday weight; day/month/year
-    /// boundaries are layered on top separately.
+    /// Intraday step ticks (every `step_ms` from each local midnight), weighted
+    /// by the divisor the step covers; calendar boundaries are layered on top.
     fn step_marks(
         earliest: UnixMs,
         latest: UnixMs,
+        span_ms: u64,
         step_ms: u64,
         timezone: UserTimezone,
         width: f32,
-        min_spacing_px: f32,
+        label_char_w: f32,
     ) -> Vec<TickMark> {
         let weight = TickWeight::for_intraday_step(step_ms);
-        Self::day_anchored_ticks(earliest, latest, step_ms, timezone, width, min_spacing_px)
-            .into_iter()
-            .map(|t| TickMark { time_ms: t, weight })
-            .collect()
+        Self::day_anchored_ticks(
+            earliest,
+            latest,
+            span_ms,
+            step_ms,
+            timezone,
+            width,
+            label_char_w,
+        )
+        .into_iter()
+        .map(|t| TickMark { time_ms: t, weight })
+        .collect()
     }
 
-    /// Select the marks to draw: place coarsest marks first, keeping each only
-    /// when it is at least `min_spacing_px` from already-kept marks on both
-    /// sides. Returns the kept marks sorted by time.
-    fn select_marks(&self, width: f32, min_spacing_px: f32) -> Vec<TickMark> {
-        if self.marks.is_empty() || width <= 0.0 || min_spacing_px <= 0.0 {
+    /// Place coarsest marks first, keeping each only when both neighbors sit
+    /// far enough that their labels cannot overlap.
+    fn select_marks(&self, width: f32, label_char_w: f32) -> Vec<TickMark> {
+        if self.marks.is_empty() || width <= 0.0 || label_char_w <= 0.0 {
             return self.marks.clone();
         }
 
@@ -365,10 +480,17 @@ impl TimeAxisGrid {
         }
         let span = latest - earliest;
 
-        let x = |t: u64| -> f64 {
-            (t.saturating_sub(earliest) as f64 / span as f64) * f64::from(width)
-        };
-        let min_spacing = f64::from(min_spacing_px);
+        // Signed mapping: marks inside the margin before `earliest` get
+        // negative positions so they slide in from off-screen while panning.
+        let x = |t: u64| -> f64 { (t as f64 - earliest as f64) / span as f64 * f64::from(width) };
+
+        // Required center-to-center gap so two labels never overlap: the sum
+        // of their half-widths `(chars(a) + chars(b)) * char_w`. Sizing each
+        // pair keeps short day/month marks dense while guaranteeing kept
+        // labels never overlap — overlap is what made the drop pattern
+        // re-anchor to the moving window edge and flip the whole set on pan.
+        let gap =
+            |a: TickWeight, b: TickWeight| f64::from((a.chars() + b.chars()) as f32 * label_char_w);
 
         let mut kept: Vec<TickMark> = Vec::new(); // sorted by time
 
@@ -388,9 +510,11 @@ impl TimeAxisGrid {
             // `marks` is time-sorted, so filtering preserves order: no sort needed.
             for mark in self.marks.iter().filter(|m| m.weight == weight) {
                 let idx = kept.partition_point(|k| k.time_ms < mark.time_ms);
-                let left_ok = idx == 0 || x(mark.time_ms) - x(kept[idx - 1].time_ms) >= min_spacing;
-                let right_ok =
-                    idx >= kept.len() || x(kept[idx].time_ms) - x(mark.time_ms) >= min_spacing;
+                let left_ok = idx == 0
+                    || x(mark.time_ms) - x(kept[idx - 1].time_ms)
+                        >= gap(mark.weight, kept[idx - 1].weight);
+                let right_ok = idx >= kept.len()
+                    || x(kept[idx].time_ms) - x(mark.time_ms) >= gap(mark.weight, kept[idx].weight);
                 if left_ok && right_ok {
                     kept.insert(idx, *mark);
                 }
@@ -401,84 +525,20 @@ impl TimeAxisGrid {
     }
 
     /// Map a timestamp to a horizontal position within this grid's visible
-    /// range (`[earliest, latest]`) scaled to `width`. Returns `0.0` when the
-    /// range is empty or the timestamp precedes `earliest` (callers drop
-    /// non-drawable positions).
+    /// range (`[earliest, latest]`) scaled to `width`. Marks inside the
+    /// generation margin get positions slightly outside `[0, width]` (negative
+    /// before `earliest`, beyond `width` after `latest`) so they can slide in
+    /// from off-screen while panning; callers cull non-drawable positions.
+    /// Returns `0.0` when the range is empty.
     fn x_position(&self, time_ms: u64, width: f32) -> f64 {
         let earliest = self.earliest.as_u64();
         let latest = self.latest.as_u64();
         if latest > earliest {
             let span = latest - earliest;
-            (time_ms.saturating_sub(earliest) as f64 / span as f64) * f64::from(width)
+            (time_ms as f64 - earliest as f64) / span as f64 * f64::from(width)
         } else {
             0.0
         }
-    }
-
-    /// Advance `current` by `next` while it stays within `[0, end_ms]`,
-    /// collecting every value that lands inside `[earliest, latest]`.
-    /// `skip_ms` thins the series: boundaries closer than `skip_ms` to the
-    /// last collected one are skipped, so dense series (e.g. daily on a
-    /// multi-year range) stay bounded. Terminates even when `next` does not
-    /// advance.
-    fn collect_boundaries(
-        mut current: u64,
-        end_ms: u64,
-        earliest: UnixMs,
-        latest: UnixMs,
-        skip_ms: u64,
-        next: impl Fn(u64) -> Option<u64>,
-    ) -> Vec<u64> {
-        let mut out = Vec::with_capacity(MAX_GRID_LINES.min(64));
-        let mut guard = 0;
-        while current <= end_ms && guard < MAX_GRID_LINES {
-            if current >= earliest.as_u64() && current <= latest.as_u64() {
-                out.push(current);
-            }
-            guard += 1;
-
-            let Some(mut next_val) = next(current) else {
-                break;
-            };
-            if next_val <= current {
-                break;
-            }
-
-            // Skip boundaries that would sit closer than `skip_ms` to the one
-            // just collected (pixel-based thinning for long ranges;
-            // `select_marks` re-checks the real spacing afterwards).
-            let target = current.saturating_add(skip_ms);
-            while next_val < target {
-                let Some(after) = next(next_val) else {
-                    break;
-                };
-                if after <= next_val {
-                    break;
-                }
-                next_val = after;
-            }
-            current = next_val;
-        }
-        out
-    }
-
-    /// Pixel-based thinning for a boundary series whose nominal spacing is
-    /// `nominal_ms` (e.g. one day): the smallest skip, in ms, such that
-    /// consecutive collected boundaries are at least `min_spacing_px` apart.
-    fn boundary_skip_ms(
-        nominal_ms: u64,
-        earliest: UnixMs,
-        latest: UnixMs,
-        width: f32,
-        min_spacing_px: f32,
-    ) -> u64 {
-        if width <= 0.0 || min_spacing_px <= 0.0 {
-            return 0;
-        }
-        let span = latest.as_u64().saturating_sub(earliest.as_u64()).max(1);
-        let px_per_boundary = (nominal_ms as f64 / span as f64) * f64::from(width);
-        let count = (f64::from(min_spacing_px) / px_per_boundary).ceil() as u64;
-        nominal_ms.saturating_mul(count.max(1))
     }
 
     /// Start-of-local-day (00:00 in the user's timezone) boundaries within
@@ -487,81 +547,109 @@ impl TimeAxisGrid {
     fn collect_daily(
         earliest: UnixMs,
         latest: UnixMs,
+        span_ms: u64,
         start: DateTime<chrono::Utc>,
         end: DateTime<chrono::Utc>,
         timezone: UserTimezone,
         width: f32,
-        min_spacing_px: f32,
+        label_char_w: f32,
     ) -> Vec<u64> {
         let start_ms = timezone
             .start_of_local_day_utc_ms(start.timestamp_millis() as u64)
             .unwrap_or(0);
         let end_ms = end.timestamp_millis() as u64;
-        let skip_ms = Self::boundary_skip_ms(DAY_MS, earliest, latest, width, min_spacing_px);
-        Self::collect_boundaries(start_ms, end_ms, earliest, latest, skip_ms, |ts| {
+        // Day labels are `%-d` (2 chars, full width `4 * char_w`); the
+        // thinning keeps the established ~`6 * char_w` density so day marks
+        // stay comfortably apart on zoomed-out views.
+        let skip_ms = boundary_skip_ms(DAY_MS, span_ms, width, 6.0 * label_char_w);
+        // Phase-align the walk start to an absolute skip grid so the thinned
+        // day set is anchored to fixed dates — otherwise it re-anchors to the
+        // sliding visible edge and the whole day-label set shifts by one day
+        // whenever the edge crosses a midnight while panning.
+        let start_ms = timezone
+            .align_to_skip_grid(start_ms, skip_ms / DAY_MS)
+            .unwrap_or(start_ms);
+        collect_boundaries(start_ms, end_ms, earliest, latest, skip_ms, |ts| {
             timezone.next_local_day_utc_ms(ts)
         })
     }
 
-    /// Start-of-local-month boundaries within `[earliest, latest]`.
+    /// Start-of-local-month boundaries within `[earliest, latest]`, thinned to
+    /// the pixel budget so they never overlap one another at extreme zoom-out
+    /// (`select_marks` re-checks the real spacing).
     fn collect_monthly(
         earliest: UnixMs,
         latest: UnixMs,
+        span_ms: u64,
         start: DateTime<chrono::Utc>,
         end: DateTime<chrono::Utc>,
         timezone: UserTimezone,
+        width: f32,
+        label_char_w: f32,
     ) -> Vec<u64> {
         let start_ms = timezone
             .start_of_local_month_utc_ms(start.timestamp_millis() as u64)
             .unwrap_or(0);
         let end_ms = end.timestamp_millis() as u64;
-        Self::collect_boundaries(start_ms, end_ms, earliest, latest, 0, |ts| {
+        // Month labels are `%b` (3 chars → full width `6 * char_w`); thinning
+        // only engages where month marks would collide (extreme zoom-out) and
+        // is phase-aligned to a fixed month grid so the set stays stable
+        // while panning.
+        let skip_ms = boundary_skip_ms(MONTH_MS, span_ms, width, 6.0 * label_char_w);
+        let start_ms = timezone
+            .align_to_month_grid(start_ms, skip_ms / MONTH_MS)
+            .unwrap_or(start_ms);
+        collect_boundaries(start_ms, end_ms, earliest, latest, skip_ms, |ts| {
             timezone.next_local_month_utc_ms(ts)
         })
     }
 
-    /// Start-of-local-year boundaries within `[earliest, latest]`.
+    /// Start-of-local-year boundaries within `[earliest, latest]`, thinned to
+    /// the pixel budget so they never overlap one another at extreme zoom-out
+    /// (`select_marks` re-checks the real spacing).
     fn collect_yearly(
         earliest: UnixMs,
         latest: UnixMs,
+        span_ms: u64,
         start: DateTime<chrono::Utc>,
         end: DateTime<chrono::Utc>,
         timezone: UserTimezone,
+        width: f32,
+        label_char_w: f32,
     ) -> Vec<u64> {
         let start_ms = timezone
             .start_of_local_year_utc_ms(start.timestamp_millis() as u64)
             .unwrap_or(0);
         let end_ms = end.timestamp_millis() as u64;
-        Self::collect_boundaries(start_ms, end_ms, earliest, latest, 0, |ts| {
+        // Year labels are `%Y` (4 chars → full width `8 * char_w`); thinning
+        // is phase-aligned to a fixed year grid for the same stability reason
+        // as days/months.
+        let skip_ms = boundary_skip_ms(YEAR_MS, span_ms, width, 8.0 * label_char_w);
+        let start_ms = timezone
+            .align_to_year_grid(start_ms, skip_ms / YEAR_MS)
+            .unwrap_or(start_ms);
+        collect_boundaries(start_ms, end_ms, earliest, latest, skip_ms, |ts| {
             timezone.next_local_year_utc_ms(ts)
         })
     }
 
-    /// Multiples of `step_ms` anchored to the user's local midnight, within
-    /// `[earliest, latest]`, ascending.
+    /// Multiples of `step_ms` anchored to the user's local midnight,
+    /// ascending: each day starts a fresh grid at its midnight, so the walk
+    /// is uniform in the user's timezone and matches the calendar layer.
     ///
-    /// Each local day starts a fresh grid at its midnight, so midnight is
-    /// always a tick and the grid is uniform in the user's timezone — matching
-    /// the calendar marks layered on top, which never get crowded or leave
-    /// lopsided gaps.
-    ///
-    /// Marks are pre-thinned to the pixel budget so a long range can never
-    /// blow up the mark list or truncate the tail: generation starts at the
-    /// first mark at or after `earliest` and walks at `stride = k * step`,
-    /// where `k` is the smallest integer whose pixel width is at least
-    /// `min_spacing_px`. When the stride reaches a full local day, the
-    /// intraday grid degrades to plain stride multiples (the day-boundary
-    /// layer already anchors every midnight), keeping the count around
-    /// `width / min_spacing_px` regardless of the range. Guaranteed to
-    /// terminate: values strictly increase and the walk is bounded. Returns an
-    /// empty vec for a zero step or an empty/inverted range.
+    /// Pre-thinned via [`intraday_stride`]; once the stride spans a full
+    /// local day it degrades to plain multiples (the day layer already
+    /// anchors every midnight), keeping long ranges bounded. Guaranteed to
+    /// terminate. Returns an empty vec for a zero step or an
+    /// empty/inverted range.
     fn day_anchored_ticks(
         earliest: UnixMs,
         latest: UnixMs,
+        span_ms: u64,
         step_ms: u64,
         timezone: UserTimezone,
         width: f32,
-        min_spacing_px: f32,
+        label_char_w: f32,
     ) -> Vec<u64> {
         if step_ms == 0 {
             return Vec::new();
@@ -572,18 +660,10 @@ impl TimeAxisGrid {
         if l < e {
             return Vec::new();
         }
-        let span = l - e;
 
-        // Thinning stride: the smallest multiple of `step` whose pixel width
-        // is at least `min_spacing_px`, so at most ~`width / min_spacing_px`
-        // marks are materialized for selection to refine.
-        let stride_ms = if width > 0.0 && min_spacing_px > 0.0 {
-            let px_per_step = (step_ms as f64 / span as f64) * f64::from(width);
-            let k = ((f64::from(min_spacing_px) / px_per_step).ceil() as u64).max(1);
-            step_ms.saturating_mul(k).max(1)
-        } else {
-            step_ms
-        };
+        // Pre-sized to the label width so selection keeps every mark:
+        // overlapped marks would flip the whole label set while panning.
+        let stride_ms = intraday_stride(step_ms, span_ms, width, label_char_w);
 
         // Once the stride spans a full local day, day-anchoring would only
         // repeat the midnight anchor the day layer already provides, so fall
@@ -628,22 +708,87 @@ impl TimeAxisGrid {
         }
         out
     }
+}
 
-    /// Select the grid step (in milliseconds) for a visible range.
-    ///
-    /// `step_ms` is always one of the timeframe's table values and non-zero.
-    fn calc_step(
-        earliest: UnixMs,
-        latest: UnixMs,
-        labels_can_fit: i32,
-        timeframe: Timeframe,
-    ) -> u64 {
-        let duration = latest
-            .duration_since(earliest)
-            .map_or(0, |d| d.as_millis() as u64);
+/// Advance `current` by `next` while it stays within `[0, end_ms]`,
+/// collecting every value that lands inside `[earliest, latest]`.
+/// `skip_ms` thins the series: boundaries closer than `skip_ms` to the
+/// last collected one are skipped, so dense series (e.g. daily on a
+/// multi-year range) stay bounded. Terminates even when `next` does not
+/// advance.
+fn collect_boundaries(
+    mut current: u64,
+    end_ms: u64,
+    earliest: UnixMs,
+    latest: UnixMs,
+    skip_ms: u64,
+    next: impl Fn(u64) -> Option<u64>,
+) -> Vec<u64> {
+    let mut out = Vec::with_capacity(MAX_GRID_LINES.min(64));
+    let mut guard = 0;
+    while current <= end_ms && guard < MAX_GRID_LINES {
+        if current >= earliest.as_u64() && current <= latest.as_u64() {
+            out.push(current);
+        }
+        guard += 1;
 
-        TimeSteps::from(timeframe).pick_closest(duration, labels_can_fit.max(1) as u32)
+        let Some(mut next_val) = next(current) else {
+            break;
+        };
+        if next_val <= current {
+            break;
+        }
+
+        // Skip boundaries that would sit closer than `skip_ms` to the one
+        // just collected (pixel-based thinning for long ranges;
+        // `select_marks` re-checks the real spacing afterwards).
+        let target = current.saturating_add(skip_ms);
+        while next_val < target {
+            let Some(after) = next(next_val) else {
+                break;
+            };
+            if after <= next_val {
+                break;
+            }
+            next_val = after;
+        }
+        current = next_val;
     }
+    out
+}
+
+/// Pixel-based thinning for a boundary series whose nominal spacing is
+/// `nominal_ms` (e.g. one day): the smallest skip, in ms, such that
+/// consecutive collected boundaries are at least `spacing_px` apart.
+/// `spacing_px` is the full width of the labels in this layer (e.g. day
+/// marks are 2 chars → `4 * char_w`), so short marks stay dense while
+/// kept labels never overlap.
+fn boundary_skip_ms(nominal_ms: u64, span_ms: u64, width: f32, spacing_px: f32) -> u64 {
+    if width <= 0.0 || spacing_px <= 0.0 {
+        return 0;
+    }
+    let span = span_ms.max(1) as f64;
+    let px_per_boundary = (nominal_ms as f64 / span) * f64::from(width);
+    let count = (f64::from(spacing_px) / px_per_boundary).ceil() as u64;
+    nominal_ms.saturating_mul(count.max(1))
+}
+
+/// Select the grid step (in milliseconds) for a visible range.
+///
+/// `step_ms` is always one of the timeframe's table values and non-zero.
+fn calc_step(
+    span_ms: u64,
+    labels_can_fit: i32,
+    timeframe: Timeframe,
+    width: f32,
+    label_char_w: f32,
+) -> u64 {
+    TimeSteps::from(timeframe).pick_closest(
+        span_ms,
+        labels_can_fit.max(1) as u32,
+        width,
+        label_char_w,
+    )
 }
 
 /// Visual emphasis tier for a time-axis tick.
@@ -673,14 +818,19 @@ pub struct TimeTickLabel {
 }
 
 impl TimeTickLabel {
-    /// Compute the X-axis labels to draw for a visible range: build the grid,
-    /// select marks under `min_spacing_px`, then format and position each one
-    /// within `width` pixels. Pure and deterministic.
+    /// Build the grid, select marks under a per-label-width spacing, then
+    /// format and position each one within `width` pixels.
+    ///
+    /// `span_ms` is the exact visible span from the axis geometry: bit-stable
+    /// while panning, unlike `latest - earliest` which the edge conversion
+    /// quantizes and could flip step selection mid-pan. `label_char_w` is the
+    /// per-character label width each label's rect is sized from.
     pub fn for_range(
         earliest: UnixMs,
         latest: UnixMs,
+        span_ms: u64,
         width: f32,
-        min_spacing_px: f32,
+        label_char_w: f32,
         labels_can_fit: i32,
         timeframe: Timeframe,
         timezone: crate::UserTimezone,
@@ -688,18 +838,19 @@ impl TimeTickLabel {
         let grid = TimeAxisGrid::new(
             earliest,
             latest,
+            span_ms,
             labels_can_fit,
             timeframe,
             timezone,
             width,
-            min_spacing_px,
+            label_char_w,
         );
 
         if grid.marks.is_empty() {
             return Vec::new();
         }
 
-        let selected = grid.select_marks(width, min_spacing_px);
+        let selected = grid.select_marks(width, label_char_w);
         let max_weight = selected.iter().map(|m| m.weight).max();
         let has_finer_tier = max_weight.is_some_and(|max| selected.iter().any(|m| m.weight < max));
 

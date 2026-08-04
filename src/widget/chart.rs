@@ -75,7 +75,7 @@ fn ticks(min: f32, max: f32, target: usize) -> (Vec<f32>, f32) {
         target as i32,
     );
     let step = yt.step.unwrap_or(1.0) as f32;
-    let v = yt
+    let mut v: Vec<f32> = yt
         .ticks
         .into_iter()
         .filter_map(|t| match t.value {
@@ -83,6 +83,9 @@ fn ticks(min: f32, max: f32, target: usize) -> (Vec<f32>, f32) {
             _ => None,
         })
         .collect();
+    if v.is_empty() && min.is_finite() && max.is_finite() {
+        v.push((min + max) / 2.0);
+    }
     (v, step)
 }
 

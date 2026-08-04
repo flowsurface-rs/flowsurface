@@ -9,11 +9,7 @@ use iced::{
     widget::canvas::{self, Cache, Geometry},
 };
 
-/// Shared layout context for building Y-axis labels on a single axis canvas.
-///
-/// Holds the layout parameters every label shares (canvas bounds, text size
-/// and color) and offers one method per label strategy: a single fallback
-/// label, a row-aligned grid, or a plain float grid.
+/// Layout context for the Y-axis labels of a single axis canvas.
 pub struct LabelLayout {
     bounds: iced::Rectangle,
     text_size: f32,
@@ -97,15 +93,9 @@ impl AxisLabelsY<'_> {
         }
     }
 
-    /// Convert a canvas y position (pixels) to a price, exact to within one
-    /// atomic unit (1e-11). Only the pixel geometry (y, cell_height) is f32
-    /// here; the base price and aggregation step are exact atomic-unit values,
-    /// so the offset arithmetic runs in f64 and is quantized to the atomic
-    /// grid once at the end.
+    /// Convert a canvas y position (pixels) to a price on this axis.
     fn y_to_price(&self, y: f32) -> Price {
-        let ticks = f64::from(y) / f64::from(self.cell_height);
-        let price = self.min.to_f64() - ticks * self.axis.row_step.to_f64_lossy();
-        Price::from_f64(price)
+        self.axis.y_to_price(y, self.cell_height, self.min)
     }
 }
 

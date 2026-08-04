@@ -19,16 +19,13 @@ fn is_drawable(x_pos: f32, width: f32) -> bool {
     x_pos >= -TEXT_SIZE * 5.0 && x_pos <= width + TEXT_SIZE * 5.0
 }
 
-/// Minimum pixel spacing between tick labels, sized so the widest label
-/// (`HH:MM` / `MM:SS`, 5 chars) keeps a small gap.
-const MIN_TICK_SPACING: f32 = X_LABEL_CHAR_W * 6.0;
-
 pub fn generate_time_labels(
     timeframe: exchange::Timeframe,
     timezone: UserTimezone,
     axis_bounds: iced_core::Rectangle,
     earliest: UnixMs,
     latest: UnixMs,
+    span_ms: u64,
     x_labels_can_fit: i32,
     palette: &Extended,
 ) -> Vec<AxisLabel> {
@@ -37,8 +34,9 @@ pub fn generate_time_labels(
     let raw = TimeTickLabel::for_range(
         earliest,
         latest,
+        span_ms,
         width,
-        MIN_TICK_SPACING,
+        X_LABEL_CHAR_W,
         x_labels_can_fit,
         timeframe,
         timezone,
@@ -363,12 +361,22 @@ impl canvas::Program<Message> for AxisLabelsX<'_> {
                     let earliest = exchange::UnixMs(self.x_to_interval(region.x));
                     let latest = exchange::UnixMs(self.x_to_interval(region.x + region.width));
 
+                    // Exact visible span from the axis geometry: bit-stable
+                    // while panning, unlike `latest - earliest`, which the
+                    // `x_to_interval` truncation quantizes by a ms or two and
+                    // could flip the chosen step/thinning mid-pan.
+                    let interval_ms = timeframe.to_milliseconds();
+                    let span_ms = (f64::from(region.width) / f64::from(self.cell_width)
+                        * interval_ms as f64)
+                        .round() as u64;
+
                     let generated_labels = generate_time_labels(
                         timeframe,
                         self.timezone,
                         bounds,
                         earliest,
                         latest,
+                        span_ms,
                         label_count as i32,
                         palette,
                     );
