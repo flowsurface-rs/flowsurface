@@ -4,6 +4,7 @@ pub mod chart;
 pub mod config;
 pub mod layout;
 pub mod log;
+pub mod metadata;
 pub mod panel;
 pub mod stream;
 pub mod tickers_table;
@@ -23,6 +24,7 @@ pub use config::timezone::UserTimezone;
 
 use ::log::{error, info, warn};
 pub use layout::{Dashboard, Layout, Pane};
+pub use metadata::{MarketMetadata, MetadataSource};
 
 pub const SAVED_STATE_PATH: &str = "saved-state.json";
 

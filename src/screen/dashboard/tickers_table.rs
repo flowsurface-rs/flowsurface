@@ -4,7 +4,7 @@ use crate::{
     widget::tooltip_with_delay,
 };
 use data::{
-    InternalError,
+    InternalError, MarketMetadata, MetadataSource,
     layout::pane::ContentKind,
     tickers_table::{
         PriceChange, Settings, SortOptions, TickerDisplayData, TickerRowData, calc_search_rank,
@@ -89,7 +89,12 @@ pub enum Message {
     ToggleTable,
     ToggleFavorites,
     FetchStats,
-    UpdateMetadata(Venue, HashMap<Ticker, Option<TickerInfo>>),
+    /// Metadata for a venue, tagged with its origin. A fresh network result
+    /// is always applied; a cache seed carries the venue's on-disk freshness
+    /// stamp and is applied only if nothing newer has landed. A stale seed is
+    /// served immediately; the queued background refresh replaces it when it
+    /// lands.
+    UpdateMetadata(Venue, HashMap<Ticker, Option<TickerInfo>>, MetadataSource),
     UpdateStats(Venue, HashMap<Ticker, TickerStats>),
     RetryMetadataFetch(Venue),
     MetadataFetchFailed(Venue, data::InternalError),
@@ -97,13 +102,13 @@ pub enum Message {
 }
 
 pub struct TickersTable {
+    pub metadata: MarketMetadata,
     ticker_rows: Vec<TickerRowData>,
     pub favorited_tickers: FxHashSet<Ticker>,
     display_cache: FxHashMap<Ticker, TickerDisplayData>,
     pub expand_ticker_card: Option<Ticker>,
     scroll_offset: AbsoluteOffset,
     pub is_shown: bool,
-    pub tickers_info: FxHashMap<Ticker, Option<TickerInfo>>,
     unavailable_exchanges: FxHashSet<Venue>,
     selected_exchanges: FxHashSet<Venue>,
     selected_markets: FxHashSet<MarketKind>,
@@ -118,23 +123,28 @@ pub struct TickersTable {
 }
 
 impl TickersTable {
-    pub fn new(handles: AdapterHandles) -> (Self, Task<Message>) {
-        Self::new_with_settings(&Settings::default(), handles)
+    pub fn new(handles: AdapterHandles, metadata: MarketMetadata) -> (Self, Task<Message>) {
+        Self::new_with_settings(&Settings::default(), handles, metadata)
     }
 
     pub fn new_with_settings(
         settings: &Settings,
         handles: AdapterHandles,
+        mut metadata: MarketMetadata,
     ) -> (Self, Task<Message>) {
         let selected_exchanges = settings.selected_exchanges.to_vec();
 
         let fetch_metadata = selected_exchanges
             .iter()
-            .map(|venue: &Venue| fetch_metadata_task(&handles, *venue))
+            .map(|venue: &Venue| {
+                metadata.begin_fetch(*venue);
+                fetch_metadata_task_with_cache(&handles, &metadata, *venue)
+            })
             .collect::<Vec<_>>();
 
         (
             Self {
+                metadata,
                 ticker_rows: Vec::new(),
                 display_cache: FxHashMap::default(),
                 favorited_tickers: settings.favorited_tickers.iter().cloned().collect(),
@@ -144,13 +154,12 @@ impl TickersTable {
                 expand_ticker_card: None,
                 scroll_offset: AbsoluteOffset::default(),
                 is_shown: false,
-                tickers_info: FxHashMap::default(),
                 unavailable_exchanges: FxHashSet::default(),
                 selected_exchanges: settings.selected_exchanges.iter().cloned().collect(),
                 selected_markets: settings.selected_markets.iter().cloned().collect(),
                 show_favorites: settings.show_favorites,
                 row_index: FxHashMap::default(),
-                metadata_fetch_state: MetadataFetchState::with_pending(selected_exchanges),
+                metadata_fetch_state: MetadataFetchState::default(),
                 stats_fetch_state: StatsFetchState::default(),
                 handles,
             },
@@ -208,9 +217,13 @@ impl TickersTable {
                 } else {
                     self.selected_exchanges.insert(exch);
 
-                    if !self.metadata_fetch_state.has_fetched(exch) {
-                        if self.metadata_fetch_state.begin_venue(exch) {
-                            return Some(Action::Fetch(fetch_metadata_task(&self.handles, exch)));
+                    if self.metadata.needs_fetch(exch) {
+                        if self.metadata.begin_fetch(exch) {
+                            return Some(Action::Fetch(fetch_metadata_task_with_cache(
+                                &self.handles,
+                                &self.metadata,
+                                exch,
+                            )));
                         }
 
                         return None;
@@ -221,7 +234,8 @@ impl TickersTable {
                 }
             }
             Message::DebounceExchangeFetchTick => {
-                self.metadata_fetch_state.tick_loading_phase();
+                self.metadata_fetch_state
+                    .tick_loading_phase(self.metadata.any_in_flight());
                 self.stats_fetch_state.tick_loading_phase();
 
                 if !self.stats_fetch_state.debounce_is_ready(Instant::now()) {
@@ -238,7 +252,7 @@ impl TickersTable {
                 self.show_favorites = !self.show_favorites;
             }
             Message::TickerSelected(ticker, content) => {
-                let ticker_info = self.tickers_info.get(&ticker).cloned().flatten();
+                let ticker_info = self.metadata.tickers().get(&ticker).cloned().flatten();
 
                 if let Some(ticker_info) = ticker_info {
                     return Some(Action::TickerSelected(ticker_info, content));
@@ -257,7 +271,8 @@ impl TickersTable {
                     for row in self.ticker_rows.iter_mut() {
                         row.previous_stats = None;
                         let precision = self
-                            .tickers_info
+                            .metadata
+                            .tickers()
                             .get(&row.ticker)
                             .and_then(|info| info.as_ref().map(|ti| ti.min_ticksize));
                         self.display_cache.insert(
@@ -275,9 +290,7 @@ impl TickersTable {
                 }
             }
             Message::RetryMetadataFetch(venue) => {
-                if self.unavailable_exchanges.contains(&venue)
-                    && self.metadata_fetch_state.begin_venue(venue)
-                {
+                if self.unavailable_exchanges.contains(&venue) && self.metadata.begin_fetch(venue) {
                     self.selected_exchanges.insert(venue);
                     return Some(Action::Fetch(fetch_metadata_task(&self.handles, venue)));
                 }
@@ -299,13 +312,17 @@ impl TickersTable {
 
                 return Some(Action::ErrorOccurred(err));
             }
-            Message::UpdateMetadata(venue, info) => {
-                self.metadata_fetch_state.complete_venue(venue);
-                self.metadata_fetch_state.mark_fetched(venue);
-                self.unavailable_exchanges.remove(&venue);
+            Message::UpdateMetadata(venue, info, source) => {
+                self.metadata.ingest(venue, &info, source);
 
-                for (ticker, ticker_info) in info.into_iter() {
-                    self.tickers_info.insert(ticker, ticker_info);
+                if !matches!(
+                    source,
+                    MetadataSource::Cached {
+                        refresh_pending: true,
+                        ..
+                    }
+                ) {
+                    self.complete_metadata_fetch(venue);
                 }
 
                 if self.selected_exchanges.contains(&venue) {
@@ -316,10 +333,17 @@ impl TickersTable {
                 }
             }
             Message::MetadataFetchFailed(venue, err) => {
-                self.metadata_fetch_state.complete_venue(venue);
-                self.unavailable_exchanges.insert(venue);
-                self.stats_fetch_state.on_exchange_disabled(venue);
-                return Some(Action::ErrorOccurred(err));
+                self.metadata.complete_fetch(venue);
+
+                if self.metadata.usable_entries_for(venue).is_empty() {
+                    self.unavailable_exchanges.insert(venue);
+                    self.stats_fetch_state.on_exchange_disabled(venue);
+                    return Some(Action::ErrorOccurred(err));
+                }
+
+                log::warn!(
+                    "Ticker metadata refresh failed for {venue:?}, continuing with cached data: {err}"
+                );
             }
         }
         None
@@ -341,12 +365,38 @@ impl TickersTable {
     }
 
     pub fn is_metadata_loading(&self) -> bool {
-        self.metadata_fetch_state.has_any_in_flight()
+        self.metadata.any_in_flight()
+    }
+
+    /// The most recent metadata freshness stamp across the selected venues.
+    pub fn last_metadata_update(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.metadata.latest_update_for(&self.selected_exchanges)
+    }
+
+    /// Refetch metadata for all selected venues now, bypassing the cache.
+    /// Venues already being fetched are skipped; results merge in and stamp
+    /// freshness, so the on-disk cache is refreshed on shutdown.
+    pub fn force_refresh_metadata(&mut self) -> Option<Task<Message>> {
+        let tasks = self
+            .selected_exchanges
+            .iter()
+            .copied()
+            .filter(|venue| self.metadata.begin_fetch(*venue))
+            .map(|venue| fetch_metadata_task(&self.handles, venue))
+            .collect::<Vec<_>>();
+
+        (!tasks.is_empty()).then(|| Task::batch(tasks))
+    }
+
+    fn complete_metadata_fetch(&mut self, venue: Venue) {
+        self.metadata.complete_fetch(venue);
+        self.unavailable_exchanges.remove(&venue);
     }
 
     fn selected_stats_fetch_task(&mut self) -> Option<Task<Message>> {
         let selected_venues = self
-            .tickers_info
+            .metadata
+            .tickers()
             .keys()
             .map(|t| t.exchange.venue())
             .filter(|venue| {
@@ -376,7 +426,7 @@ impl TickersTable {
 
         let fetch_tasks = scheduled
             .into_iter()
-            .map(|venue| fetch_ticker_stats_task(&self.handles, venue, &self.tickers_info))
+            .map(|venue| fetch_ticker_stats_task(&self.handles, venue, self.metadata.tickers()))
             .collect::<Vec<Task<Message>>>();
 
         Some(Task::batch(fetch_tasks))
@@ -411,13 +461,14 @@ impl TickersTable {
     }
 
     fn update_ticker_rows(&mut self, venue: Venue, stats: HashMap<Ticker, TickerStats>) {
-        let iter = stats
-            .into_iter()
-            .filter(|(t, _)| self.tickers_info.contains_key(t) && t.exchange.venue() == venue);
+        let iter = stats.into_iter().filter(|(t, _)| {
+            self.metadata.tickers().contains_key(t) && t.exchange.venue() == venue
+        });
 
         for (ticker, new_stats) in iter {
             let precision = self
-                .tickers_info
+                .metadata
+                .tickers()
                 .get(&ticker)
                 .and_then(|info| info.as_ref().map(|ti| ti.min_ticksize));
 
@@ -585,7 +636,7 @@ impl TickersTable {
         let unavailable = self.unavailable_exchanges.contains(&venue);
         let selected = self.selected_exchanges.contains(&venue);
         let stats_loading = self.stats_fetch_state.is_in_flight(venue);
-        let metadata_loading = self.metadata_fetch_state.is_in_flight(venue);
+        let metadata_loading = self.metadata.is_in_flight(venue);
 
         let mut content = row![
             icon_text(style::venue_icon(venue), 12).align_x(Alignment::Center),
@@ -1251,8 +1302,12 @@ impl TickersTable {
             };
 
             let label = self.label_with_suffix(row_ref.ticker);
-            let info_opt: Option<TickerInfo> =
-                self.tickers_info.get(&row_ref.ticker).cloned().flatten();
+            let info_opt: Option<TickerInfo> = self
+                .metadata
+                .tickers()
+                .get(&row_ref.ticker)
+                .cloned()
+                .flatten();
 
             let (left_action, right_action) = if selection_enabled {
                 (
@@ -1582,51 +1637,16 @@ enum DebounceState {
     Waiting { deadline: Instant },
 }
 
+/// Tracks only the loading-dot animation; in-flight state lives in
+/// [`MarketMetadata`], so fetch tracking has a single owner.
 #[derive(Debug, Default)]
 struct MetadataFetchState {
-    in_flight_venues: FxHashSet<Venue>,
-    fetched_venues: FxHashSet<Venue>,
     loading_phase: u8,
 }
 
 impl MetadataFetchState {
-    fn with_pending(venues: impl IntoIterator<Item = Venue>) -> Self {
-        Self {
-            in_flight_venues: venues.into_iter().collect(),
-            fetched_venues: FxHashSet::default(),
-            loading_phase: 0,
-        }
-    }
-
-    fn begin_venue(&mut self, venue: Venue) -> bool {
-        self.in_flight_venues.insert(venue)
-    }
-
-    fn mark_fetched(&mut self, venue: Venue) {
-        self.fetched_venues.insert(venue);
-    }
-
-    fn has_fetched(&self, venue: Venue) -> bool {
-        self.fetched_venues.contains(&venue)
-    }
-
-    fn complete_venue(&mut self, venue: Venue) {
-        self.in_flight_venues.remove(&venue);
-        if self.in_flight_venues.is_empty() {
-            self.loading_phase = 0;
-        }
-    }
-
-    fn is_in_flight(&self, venue: Venue) -> bool {
-        self.in_flight_venues.contains(&venue)
-    }
-
-    fn has_any_in_flight(&self) -> bool {
-        !self.in_flight_venues.is_empty()
-    }
-
-    fn tick_loading_phase(&mut self) {
-        if self.in_flight_venues.is_empty() {
+    fn tick_loading_phase(&mut self, any_in_flight: bool) {
+        if !any_in_flight {
             self.loading_phase = 0;
             return;
         }
@@ -1681,13 +1701,39 @@ fn fetch_ticker_stats_task(
     })
 }
 
+/// Metadata for a venue: served from the on-disk cache when it is enabled and
+/// populated, with a background network refresh queued when the cache is
+/// stale. Without a cache, the metadata is fetched from the network.
+fn fetch_metadata_task_with_cache(
+    handles: &AdapterHandles,
+    metadata: &MarketMetadata,
+    venue: Venue,
+) -> Task<Message> {
+    if metadata.cache_enabled() {
+        let cached = metadata.usable_entries_for(venue);
+        if !cached.is_empty() {
+            let refresh_pending = metadata.needs_fetch(venue);
+            let source = MetadataSource::Cached {
+                fetched_at: metadata.last_updated_for(venue).unwrap_or_default(),
+                refresh_pending,
+            };
+            let seed = Task::done(Message::UpdateMetadata(venue, cached, source));
+            if refresh_pending {
+                return Task::batch([seed, fetch_metadata_task(handles, venue)]);
+            }
+            return seed;
+        }
+    }
+    fetch_metadata_task(handles, venue)
+}
+
 fn fetch_metadata_task(handles: &AdapterHandles, venue: Venue) -> Task<Message> {
     let markets_to_fetch = available_markets(venue);
     let handles = handles.clone();
     let fetch = async move { handles.fetch_ticker_metadata(venue, markets_to_fetch).await };
 
     Task::perform(fetch, move |result| match result {
-        Ok(ticker_info) => Message::UpdateMetadata(venue, ticker_info),
+        Ok(ticker_info) => Message::UpdateMetadata(venue, ticker_info, MetadataSource::Fresh),
         Err(err) => {
             log::error!("Ticker metadata fetch failed for {venue:?}: {err}");
             Message::MetadataFetchFailed(
