@@ -1268,10 +1268,6 @@ where
     }
 
     fn fill_x_axis_labels(&self, frame: &mut canvas::Frame, ctx: &PlotContext, palette: &Extended) {
-        // The time axis is universal: the same `TimeAxisGrid` as the kline
-        // chart, with automatic calendar labelling (day/month/year layers)
-        // once the grid step reaches a day. Labels are formatted in the
-        // user's timezone.
         let plot_rect = ctx.plot_rect();
         let labels_can_fit = x_labels_that_fit(plot_rect.width, TEXT_SIZE) as i32;
 
@@ -1292,6 +1288,17 @@ where
             labels_can_fit,
             palette,
         );
+
+        let labels: Vec<AxisLabel> = labels
+            .into_iter()
+            .filter(|l| {
+                let AxisLabel::X { bounds, .. } = l else {
+                    return true;
+                };
+                let center = bounds.x + bounds.width / 2.0;
+                (0.0..=plot_rect.width).contains(&center)
+            })
+            .collect();
 
         AxisLabel::filter_and_draw(&labels, frame);
     }

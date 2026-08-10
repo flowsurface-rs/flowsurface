@@ -97,10 +97,9 @@ const INTRADAY_DIVISORS: [(u64, TickWeight); 8] = [
 ];
 
 /// Intraday thinning stride: the smallest multiple of `step_ms` keeping marks
-/// at least a full label width (`10 * label_char_w`) apart, rounded up to
-/// divide the local day so the day-anchored walk stays uniform (a 16h stride
-/// would alternate 8h/16h gaps). Full-day strides pass through unchanged:
-/// the caller falls back to plain multiples there.
+/// at least a label width apart, rounded up to divide the local day so the
+/// day-anchored walk stays uniform (a 16h stride would alternate 8h/16h gaps).
+/// Non-dividing steps fall back to a full-day stride.
 fn intraday_stride(step_ms: u64, span_ms: u64, width: f32, label_char_w: f32) -> u64 {
     if step_ms == 0 {
         return 0;
@@ -119,11 +118,18 @@ fn intraday_stride(step_ms: u64, span_ms: u64, width: f32, label_char_w: f32) ->
         return stride;
     }
 
-    let mut s = stride;
-    while s < DAY_MS && !DAY_MS.is_multiple_of(s) {
-        s = s.saturating_add(step_ms);
+    if !DAY_MS.is_multiple_of(step_ms) {
+        return DAY_MS;
     }
-    s.min(DAY_MS)
+
+    let mut s = stride;
+    for _ in 0..DAY_MS / step_ms {
+        if DAY_MS.is_multiple_of(s) {
+            return s.min(DAY_MS);
+        }
+        s += step_ms;
+    }
+    DAY_MS
 }
 
 /// A typed table of candidate time steps used to pick the X-axis grid step

@@ -159,10 +159,14 @@ impl<D: DataPoint> TimeSeries<D> {
         latest: UnixMs,
         interval: u64,
     ) -> Option<Vec<UnixMs>> {
+        const MAX_INTEGRITY_SCAN: u64 = 1_000_000;
         let mut time = earliest;
         let mut missing_count = 0;
 
-        while time < latest {
+        for _ in 0..MAX_INTEGRITY_SCAN {
+            if time >= latest {
+                break;
+            }
             if !self.datapoints.contains_key(&time) {
                 missing_count += 1;
                 break;
@@ -171,11 +175,13 @@ impl<D: DataPoint> TimeSeries<D> {
         }
 
         if missing_count > 0 {
-            let mut missing_keys =
-                Vec::with_capacity(((latest.as_u64() - earliest.as_u64()) / interval) as usize);
+            let mut missing_keys = Vec::new();
             let mut time = earliest;
 
-            while time < latest {
+            for _ in 0..MAX_INTEGRITY_SCAN {
+                if time >= latest {
+                    break;
+                }
                 if !self.datapoints.contains_key(&time) {
                     missing_keys.push(time);
                 }
