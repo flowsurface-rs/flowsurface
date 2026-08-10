@@ -249,3 +249,20 @@ pub fn calc_panel_splits(
     }
     splits
 }
+
+/// Compact relative timestamp for the metadata freshness label.
+/// Future-dated stamps clamp to "just now".
+pub fn relative_time_label(updated: chrono::DateTime<chrono::Utc>) -> String {
+    let elapsed = chrono::Utc::now()
+        .signed_duration_since(updated)
+        .to_std()
+        .unwrap_or_default();
+    let secs = elapsed.as_secs();
+
+    match secs {
+        0..=59 => "just now".to_string(),
+        60..=3_599 => format!("{} min ago", secs / 60),
+        3_600..=86_399 => format!("{} h ago", secs / 3_600),
+        _ => format!("{} d ago", secs / 86_400),
+    }
+}

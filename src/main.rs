@@ -13,8 +13,6 @@ mod version;
 mod widget;
 mod window;
 
-use std::sync::Arc;
-
 use connector::client::DataSources;
 use data::config::theme::default_theme;
 use data::{layout::WindowSpec, sidebar};
@@ -40,7 +38,9 @@ use iced::{
         tooltip::Position as TooltipPosition,
     },
 };
-use std::{borrow::Cow, collections::HashMap, vec};
+use std::borrow::Cow;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 fn main() {
     logger::install_panic_hook();
@@ -110,6 +110,8 @@ enum Message {
     ThemeSelected(iced_core::Theme),
     ScaleFactorChanged(data::ScaleFactor),
     SetTimezone(data::UserTimezone),
+    SetMetadataCaching(bool),
+    RefreshMetadata,
     ApplyVolumeSizeUnit(exchange::SizeUnit),
     RemoveNotification(usize),
     ToggleDialogModal(Option<screen::ConfirmDialog<Message>>),
@@ -432,6 +434,14 @@ impl Flowsurface {
             }
             Message::SetTimezone(tz) => {
                 self.timezone = tz;
+            }
+            Message::SetMetadataCaching(enabled) => {
+                self.sidebar.set_cache_enabled(enabled);
+            }
+            Message::RefreshMetadata => {
+                if let Some(task) = self.sidebar.force_refresh_metadata() {
+                    return task.map(Message::Sidebar);
+                }
             }
             Message::ScaleFactorChanged(value) => {
                 self.ui_scale_factor = value;
@@ -917,7 +927,7 @@ impl Flowsurface {
                         Message::SetTimezone,
                     );
 
-                    let size_in_quote_currency_checkbox = {
+                    let size_in_quote_ccy_checkbox = {
                         let is_active = match self.volume_size_unit {
                             exchange::SizeUnit::Quote => true,
                             exchange::SizeUnit::Base => false,
@@ -945,10 +955,79 @@ impl Flowsurface {
                         tooltip(
                             checkbox,
                             Some(
-                                "Display sizes/volumes in quote currency (USD)\nHas no effect on inverse perps or open interest",
+                                "Display sizes/volumes in quote currency (USD).\n- Has no effect on inverse perps or open interest",
                             ),
                             TooltipPosition::Top,
                         )
+                    };
+
+                    let cache_metadata_checkbox = {
+                        let cache_enabled = self.sidebar.cache_enabled();
+
+                        let checkbox = tooltip(
+                            iced::widget::checkbox(cache_enabled)
+                                .label("Cache ticker metadata")
+                                .on_toggle(Message::SetMetadataCaching),
+                            Some("Cache ticker metadata for faster startup."),
+                            TooltipPosition::Top,
+                        );
+
+                        if !cache_enabled {
+                            column![row![checkbox].height(24).align_y(iced::Alignment::Center)]
+                        } else {
+                            let loading = self.sidebar.is_metadata_loading();
+
+                            let refresh_btn = {
+                                let btn = button(crate::style::icon_text(
+                                    crate::style::Icon::Refresh,
+                                    12,
+                                ))
+                                .style(move |theme, status| {
+                                    style::button::modifier(theme, status, loading)
+                                });
+                                let btn = if loading {
+                                    btn
+                                } else {
+                                    btn.on_press(Message::RefreshMetadata)
+                                };
+
+                                tooltip(
+                                    btn,
+                                    if loading { None } else { Some("Refresh now") },
+                                    TooltipPosition::Top,
+                                )
+                            };
+
+                            let last_updated = {
+                                let last_update = self.sidebar.last_metadata_update();
+
+                                let label = if loading {
+                                    "Refreshing metadata…".to_string()
+                                } else {
+                                    match last_update {
+                                        Some(at) => {
+                                            format!(
+                                                "Metadata last update: {}",
+                                                data::util::relative_time_label(at)
+                                            )
+                                        }
+                                        None => "Metadata not fetched yet".to_string(),
+                                    }
+                                };
+
+                                text(label)
+                                    .size(crate::style::text_size::SMALL)
+                                    .style(style::secondary_text)
+                            };
+
+                            column![
+                                row![checkbox, refresh_btn]
+                                    .align_y(iced::Alignment::Center)
+                                    .spacing(8),
+                                last_updated,
+                            ]
+                            .spacing(4)
+                        }
                     };
 
                     let sidebar_pos_picklist = pick_list(
@@ -1057,7 +1136,7 @@ impl Flowsurface {
                         column![open_data_folder,].spacing(8),
                         column![text("Sidebar position").size(crate::style::text_size::SECTION), sidebar_pos_picklist,].spacing(12),
                         column![text("Time zone").size(crate::style::text_size::SECTION), timezone_picklist,].spacing(12),
-                        column![text("Market data").size(crate::style::text_size::SECTION), size_in_quote_currency_checkbox,].spacing(12),
+                        column![text("Market data").size(crate::style::text_size::SECTION), size_in_quote_ccy_checkbox, cache_metadata_checkbox].spacing(12),
                         column![text("Theme").size(crate::style::text_size::SECTION), theme_picklist,].spacing(12),
                         column![text("Interface scale").size(crate::style::text_size::SECTION), scale_factor,].spacing(12),
                         column![
@@ -1353,6 +1432,7 @@ impl Flowsurface {
             audio_cfg,
             self.network_config.for_persistence(),
             self.volume_size_unit,
+            self.sidebar.cache_enabled(),
         );
 
         match serde_json::to_string(&state) {
@@ -1366,6 +1446,8 @@ impl Flowsurface {
             }
             Err(e) => log::error!("Failed to serialize layout: {}", e),
         }
+
+        self.sidebar.persist_metadata_cache();
     }
 
     fn restart(&mut self) -> Task<Message> {

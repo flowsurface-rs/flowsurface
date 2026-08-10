@@ -26,6 +26,7 @@ pub struct State {
     pub audio_cfg: AudioStream,
     pub network: Network,
     pub size_in_quote_ccy: exchange::SizeUnit,
+    pub cache_market_metadata: bool,
 }
 
 impl State {
@@ -40,6 +41,7 @@ impl State {
         audio_cfg: AudioStream,
         network: Network,
         volume_size_unit: exchange::SizeUnit,
+        cache_market_metadata: bool,
     ) -> Self {
         State {
             layout_manager,
@@ -52,6 +54,7 @@ impl State {
             audio_cfg,
             network,
             size_in_quote_ccy: volume_size_unit,
+            cache_market_metadata,
         }
     }
 }
