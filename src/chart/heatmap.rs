@@ -1,4 +1,4 @@
-use super::{Chart, Interaction, Message, PlotConstants, ViewState, scale::linear::PriceInfoLabel};
+use super::{Chart, Interaction, Message, PlotConstants, ViewState, ticks::y::PriceInfoLabel};
 use crate::{
     modal::pane::settings::study::{self, Study},
     style,
@@ -182,7 +182,6 @@ impl HeatmapChart {
         let view_state = ViewState::new(
             basis,
             step,
-            step.decimal_places(),
             ticker_info,
             ViewConfig {
                 splits: layout.splits.clone(),
@@ -255,6 +254,7 @@ impl HeatmapChart {
         let chart = &mut self.chart;
         let mid_price = depth.mid_price().unwrap_or(chart.base_price_y);
         chart.base_price_y = mid_price.round_to_step(chart.tick_size);
+        chart.max_price = chart.max_price.max(chart.base_price_y);
         chart.latest_x = chart.latest_x.max(rounded_update.as_u64());
     }
 
@@ -296,6 +296,8 @@ impl HeatmapChart {
 
     pub fn set_basis(&mut self, basis: Basis) {
         self.chart.basis = basis;
+        self.chart.last_price = None;
+        self.chart.max_price = Price::from_f32(0.0);
 
         self.trades.datapoints.clear();
         self.heatmap =
@@ -357,7 +359,6 @@ impl HeatmapChart {
 
         chart_state.cell_height = 4.0;
         chart_state.tick_size = step;
-        chart_state.decimals = step.decimal_places();
 
         self.trades.datapoints.clear();
         self.heatmap = HistoricalDepth::new(self.chart.ticker_info.min_qty, step, basis);
@@ -799,7 +800,7 @@ impl canvas::Program<Message> for HeatmapChart {
                     };
                     let step = chart.tick_size;
 
-                    let base_data_price = Price::from_f32(cursor_at_price).round_to_step(step);
+                    let base_data_price = cursor_at_price.round_to_step(step);
                     let base_data_time = UnixMs::new(cursor_at_time).floor_to(interval);
 
                     let price_tick_offsets = [1i64, 0, -1];

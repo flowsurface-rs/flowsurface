@@ -1,6 +1,6 @@
 use super::{
     Action, Basis, Chart, Interaction, Message, PlotConstants, PlotData, TEXT_SIZE, ViewState,
-    indicator, request_fetch, scale::linear::PriceInfoLabel,
+    indicator, request_fetch, ticks::y::PriceInfoLabel,
 };
 use crate::chart::indicator::kline::KlineIndicatorImpl;
 use crate::connector::fetcher::is_trade_fetch_enabled;
@@ -225,7 +225,6 @@ impl KlineChart {
                 let mut chart = ViewState::new(
                     basis,
                     step,
-                    step.decimal_places(),
                     ticker_info,
                     ViewConfig {
                         splits: layout.splits.clone(),
@@ -235,6 +234,11 @@ impl KlineChart {
                     cell_height,
                 );
                 chart.base_price_y = base_price_y;
+                chart.max_price = klines_raw
+                    .iter()
+                    .map(|k| k.high)
+                    .max()
+                    .unwrap_or(Price::from_f32(0.0));
                 chart.latest_x = latest_x;
 
                 let x_translation = match &kind {
@@ -287,7 +291,6 @@ impl KlineChart {
                 let mut chart = ViewState::new(
                     basis,
                     step,
-                    step.decimal_places(),
                     ticker_info,
                     ViewConfig {
                         splits: layout.splits.clone(),
@@ -354,6 +357,7 @@ impl KlineChart {
                 }
 
                 chart.last_price = Some(PriceInfoLabel::new(kline.close, kline.open));
+                chart.max_price = chart.max_price.max(kline.high);
             }
             PlotData::TickBased(_) => {}
         }
@@ -595,6 +599,7 @@ impl KlineChart {
         let previous_basis = self.chart.basis;
 
         self.chart.last_price = None;
+        self.chart.max_price = Price::from_f32(0.0);
         self.chart.basis = new_basis;
 
         match new_basis {
@@ -618,6 +623,8 @@ impl KlineChart {
                 let step = self.chart.tick_size;
                 let tick_aggr = TickAggr::new(tick_count, step, trades);
                 self.data_source = PlotData::TickBased(tick_aggr);
+                let max_price = trades.iter().map(|t| t.price).max();
+                self.chart.max_price = max_price.unwrap_or(Price::from_f32(0.0));
             }
         }
 
@@ -662,6 +669,12 @@ impl KlineChart {
                 } else {
                     self.chart.last_price = None;
                 }
+
+                let max_price = buffer.iter().map(|t| t.price).max();
+                self.chart.max_price = self
+                    .chart
+                    .max_price
+                    .max(max_price.unwrap_or(Price::from_f32(0.0)));
 
                 self.indicators
                     .values_mut()
@@ -737,6 +750,11 @@ impl KlineChart {
             PlotData::TimeBased(ref mut timeseries) => {
                 timeseries.insert_klines(klines_raw);
                 timeseries.insert_trades_existing_buckets(&self.raw_trades);
+                let max_high = klines_raw.iter().map(|k| k.high).max();
+                self.chart.max_price = self
+                    .chart
+                    .max_price
+                    .max(max_high.unwrap_or(Price::from_f32(0.0)));
 
                 self.indicators
                     .values_mut()
