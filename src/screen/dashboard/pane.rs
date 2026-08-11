@@ -380,6 +380,12 @@ impl State {
                         )
                     };
 
+                    let config = self
+                        .settings
+                        .visual_config
+                        .clone()
+                        .and_then(|cfg| cfg.heatmap());
+
                     let content = Content::ShaderHeatmap {
                         chart: Some(Box::new(HeatmapShader::new(
                             basis,
@@ -387,6 +393,7 @@ impl State {
                             base_ticker,
                             studies.clone(),
                             indicators.clone(),
+                            config,
                         ))),
                         studies,
                         indicators,
@@ -496,6 +503,7 @@ impl State {
         match &self.streams {
             ResolvedStream::Ready(streams) => !streams.is_empty(),
             ResolvedStream::Waiting { streams, .. } => !streams.is_empty(),
+            ResolvedStream::Blocked { streams, .. } => !streams.is_empty(),
         }
     }
 
@@ -606,17 +614,52 @@ impl State {
         };
 
         let uninitialized_base = |kind: ContentKind| -> Element<'a, Message> {
-            if self.has_stream() {
-                center(text("Loading…").size(crate::style::text_size::TITLE)).into()
-            } else {
-                let content = column![
-                    text(kind.to_string()).size(crate::style::text_size::TITLE),
-                    text("No ticker selected").size(crate::style::text_size::SECTION)
-                ]
-                .spacing(8)
-                .align_x(Alignment::Center);
+            match &self.streams {
+                ResolvedStream::Waiting { streams, .. } if !streams.is_empty() => {
+                    center(text("Waiting for metadata…").size(crate::style::text_size::TITLE))
+                        .into()
+                }
+                ResolvedStream::Ready(streams) if !streams.is_empty() => center(
+                    text("Waiting for pane initialization...").size(crate::style::text_size::TITLE),
+                )
+                .into(),
+                ResolvedStream::Blocked {
+                    streams, reason, ..
+                } => {
+                    let blocked_exchanges = streams
+                        .iter()
+                        .map(|s| s.exchange())
+                        .collect::<std::collections::BTreeSet<_>>();
 
-                center(content).into()
+                    center(
+                        column![
+                            text(format!(
+                                "Couldn't resolve streams for {}",
+                                blocked_exchanges
+                                    .iter()
+                                    .map(|v| v.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ))
+                            .size(crate::style::text_size::SECTION),
+                            text((if reason.is_empty() { "" } else { reason }).to_string())
+                                .size(crate::style::text_size::BODY),
+                        ]
+                        .spacing(8)
+                        .align_x(Alignment::Center),
+                    )
+                    .into()
+                }
+                _ => {
+                    let content = column![
+                        text(kind.to_string()).size(crate::style::text_size::TITLE),
+                        text("No ticker selected").size(crate::style::text_size::SECTION)
+                    ]
+                    .spacing(8)
+                    .align_x(Alignment::Center);
+
+                    center(content).into()
+                }
             }
         };
 
@@ -1137,6 +1180,7 @@ impl State {
             }
             Event::ContentSelected(kind) => {
                 self.content = Content::placeholder(kind);
+                self.settings.visual_config = None;
 
                 if !matches!(kind, ContentKind::Starter) {
                     self.streams = ResolvedStream::waiting(vec![]);
@@ -1248,12 +1292,14 @@ impl State {
                                             studies,
                                             ..
                                         } => {
+                                            let saved_config = c.config;
                                             **c = HeatmapShader::new(
                                                 c.basis,
                                                 tm.multiply_with_min_tick_step(ticker),
                                                 c.ticker_info,
                                                 studies.clone(),
                                                 indicators.clone(),
+                                                Some(saved_config),
                                             );
                                         }
                                         _ => {}
@@ -1319,12 +1365,15 @@ impl State {
                                         indicators,
                                         ..
                                     } => {
+                                        let saved_config = c.config;
+                                        let saved_studies = c.studies.clone();
                                         **c = HeatmapShader::new(
                                             new_basis,
                                             c.tick_size(),
                                             c.ticker_info,
-                                            c.studies.clone(),
+                                            saved_studies,
                                             indicators.clone(),
+                                            Some(saved_config),
                                         );
 
                                         if let Some(stream_type) =
@@ -1365,23 +1414,6 @@ impl State {
                                                         c.kind,
                                                         data::chart::KlineChartKind::Footprint { .. }
                                                     ) {
-                                                        let depth_aggr = if base_ticker
-                                                            .exchange()
-                                                            .is_depth_client_aggr()
-                                                        {
-                                                            StreamTicksize::Client
-                                                        } else {
-                                                            StreamTicksize::ServerSide(
-                                                                self.settings
-                                                                    .tick_multiply
-                                                                    .unwrap_or(TickMultiplier(1)),
-                                                            )
-                                                        };
-                                                        streams.push(StreamKind::Depth {
-                                                            ticker_info: base_ticker,
-                                                            depth_aggr,
-                                                            push_freq: exchange::PushFrequency::ServerDefault,
-                                                        });
                                                         streams.push(StreamKind::Trades {
                                                             ticker_info: base_ticker,
                                                         });
@@ -1398,30 +1430,14 @@ impl State {
                                                     }
                                                 }
                                                 Basis::Tick(_) => {
-                                                    let depth_aggr = if base_ticker
-                                                        .exchange()
-                                                        .is_depth_client_aggr()
-                                                    {
-                                                        StreamTicksize::Client
-                                                    } else {
-                                                        StreamTicksize::ServerSide(
-                                                            self.settings
-                                                                .tick_multiply
-                                                                .unwrap_or(TickMultiplier(1)),
-                                                        )
-                                                    };
-
                                                     self.streams = ResolvedStream::Ready(vec![
-                                                        StreamKind::Depth {
-                                                            ticker_info: base_ticker,
-                                                            depth_aggr,
-                                                            push_freq: exchange::PushFrequency::ServerDefault,
-                                                        },
                                                         StreamKind::Trades {
                                                             ticker_info: base_ticker,
                                                         },
                                                     ]);
                                                     c.set_basis(new_basis);
+
+                                                    self.status = Status::Ready;
                                                     effect = Some(Effect::RefreshStreams);
                                                 }
                                             }
@@ -1834,6 +1850,23 @@ impl State {
     pub fn unique_id(&self) -> uuid::Uuid {
         self.id
     }
+
+    pub fn apply_synced_settings(
+        &mut self,
+        studies: &Option<data::chart::Study>,
+        clusters: &Option<data::chart::kline::ClusterKind>,
+    ) {
+        if let Some(studies) = studies {
+            self.content.update_studies(studies.clone());
+        }
+        if let Some(cluster_kind) = clusters
+            && let Content::Kline { chart, kind, .. } = &mut self.content
+            && let Some(c) = chart
+        {
+            c.set_cluster_kind(*cluster_kind);
+            *kind = c.kind.clone();
+        }
+    }
 }
 
 impl Default for State {
@@ -1982,7 +2015,9 @@ impl Content {
                 |indis| {
                     indis
                         .into_iter()
-                        .filter(|i| available.contains(i))
+                        .filter(|i| {
+                            available.contains(i) && determined_chart_kind.allows_indicator(*i)
+                        })
                         .collect()
                 },
             )
@@ -2125,13 +2160,19 @@ impl Content {
             }
             (
                 Content::Kline {
-                    chart, indicators, ..
+                    chart,
+                    indicators,
+                    kind,
+                    ..
                 },
                 UiIndicator::Kline(ind),
             ) => {
                 let Some(chart) = chart else {
                     return;
                 };
+                if !kind.allows_indicator(ind) {
+                    return;
+                }
 
                 if indicators.contains(&ind) {
                     indicators.retain(|i| i != &ind);
@@ -2219,6 +2260,16 @@ impl Content {
         }
     }
 
+    pub fn clusters(&self) -> Option<data::chart::kline::ClusterKind> {
+        match self {
+            Content::Kline {
+                kind: data::chart::KlineChartKind::Footprint { clusters, .. },
+                ..
+            } => Some(*clusters),
+            _ => None,
+        }
+    }
+
     pub fn update_studies(&mut self, studies: data::chart::Study) {
         match (self, studies) {
             (
@@ -2250,15 +2301,13 @@ impl Content {
                 *previous = studies;
             }
             (Content::Kline { chart, kind, .. }, data::chart::Study::Footprint(studies)) => {
-                chart
-                    .as_mut()
-                    .expect("kline chart not initialized")
-                    .set_studies(studies.clone());
+                let chart = chart.as_mut().expect("kline chart not initialized");
+                chart.set_studies(studies.clone());
                 if let data::chart::KlineChartKind::Footprint {
                     studies: k_studies, ..
                 } = kind
                 {
-                    *k_studies = studies;
+                    *k_studies = chart.studies().unwrap_or_default();
                 }
             }
             _ => {}
@@ -2295,6 +2344,18 @@ impl Content {
             Content::Ladder(panel) => panel.is_some(),
             Content::Comparison(chart) => chart.is_some(),
             Content::Starter => true,
+        }
+    }
+
+    pub fn allows_indicator(&self, indicator: UiIndicator) -> bool {
+        match (self, indicator) {
+            (Content::Kline { kind, .. }, UiIndicator::Kline(indicator)) => {
+                kind.allows_indicator(indicator)
+            }
+            (Content::Heatmap { .. } | Content::ShaderHeatmap { .. }, UiIndicator::Heatmap(_)) => {
+                true
+            }
+            _ => false,
         }
     }
 }

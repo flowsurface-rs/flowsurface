@@ -157,9 +157,9 @@ pub(super) async fn fetch_ticker_stats(
                 continue;
             }
 
-            let last_trade_price = serde_util::value_as_f32(&item["last"]);
-            let open24h = serde_util::value_as_f32(&item["open24h"]);
-            let Some(vol24h) = serde_util::value_as_f32(&item["volCcy24h"]) else {
+            let last_trade_price = serde_util::value_as_f64(&item["last"]);
+            let open24h = serde_util::value_as_f64(&item["open24h"]);
+            let Some(vol24h) = serde_util::value_as_f64(&item["volCcy24h"]) else {
                 continue;
             };
 
@@ -171,7 +171,7 @@ pub(super) async fn fetch_ticker_stats(
                 };
 
             let daily_price_chg = if previous_daily_open > 0.0 {
-                (last_price - previous_daily_open) / previous_daily_open * 100.0
+                ((last_price - previous_daily_open) / previous_daily_open * 100.0) as f32
             } else {
                 0.0
             };
@@ -179,9 +179,9 @@ pub(super) async fn fetch_ticker_stats(
             map.insert(
                 Ticker::new(symbol, exchange),
                 TickerStats {
-                    mark_price: Price::from_f32(last_price),
+                    mark_price: Price::from_f64(last_price),
                     daily_price_chg,
-                    daily_volume: Qty::from_f32(vol24h),
+                    daily_volume: Qty::from_f64(vol24h),
                 },
             );
         }
@@ -224,10 +224,10 @@ pub(super) async fn fetch_ticker_stats(
                 continue;
             }
 
-            let last_trade_price = serde_util::value_as_f32(&item["last"]);
-            let open24h = serde_util::value_as_f32(&item["open24h"]);
+            let last_trade_price = serde_util::value_as_f64(&item["last"]);
+            let open24h = serde_util::value_as_f64(&item["open24h"]);
 
-            let Some(vol24h) = serde_util::value_as_f32(&item["volCcy24h"]) else {
+            let Some(vol24h) = serde_util::value_as_f64(&item["volCcy24h"]) else {
                 continue;
             };
 
@@ -238,7 +238,7 @@ pub(super) async fn fetch_ticker_stats(
                     continue;
                 };
             let daily_price_chg = if previous_daily_open > 0.0 {
-                (last_price - previous_daily_open) / previous_daily_open * 100.0
+                ((last_price - previous_daily_open) / previous_daily_open * 100.0) as f32
             } else {
                 0.0
             };
@@ -246,9 +246,9 @@ pub(super) async fn fetch_ticker_stats(
             map.insert(
                 Ticker::new(symbol, exchange),
                 TickerStats {
-                    mark_price: Price::from_f32(last_price),
+                    mark_price: Price::from_f64(last_price),
                     daily_price_chg,
-                    daily_volume: Qty::from_f32(vol24h * last_price),
+                    daily_volume: Qty::from_f64(vol24h * last_price),
                 },
             );
         }
@@ -308,11 +308,11 @@ pub(super) async fn fetch_klines(
 
     for row in list {
         let time = row.get(0).and_then(serde_util::value_as_u64);
-        let open = row.get(1).and_then(serde_util::value_as_f32);
-        let high = row.get(2).and_then(serde_util::value_as_f32);
-        let low = row.get(3).and_then(serde_util::value_as_f32);
-        let close = row.get(4).and_then(serde_util::value_as_f32);
-        let volume = row.get(5).and_then(serde_util::value_as_f32);
+        let open = row.get(1).and_then(serde_util::value_as_f64);
+        let high = row.get(2).and_then(serde_util::value_as_f64);
+        let low = row.get(3).and_then(serde_util::value_as_f64);
+        let close = row.get(4).and_then(serde_util::value_as_f64);
+        let volume = row.get(5).and_then(serde_util::value_as_f64);
 
         let (ts, open, high, low, close) = match (time, open, high, low, close) {
             (Some(ts), Some(o), Some(h), Some(l), Some(c)) => (ts, o, h, l, c),
@@ -374,7 +374,7 @@ pub(super) async fn fetch_historical_oi(
         .filter_map(|row| {
             let arr = row.as_array()?;
             let ts = serde_util::value_as_u64(arr.first()?)?;
-            let oi_ccy = serde_util::value_as_f32(arr.get(2)?)?;
+            let oi_ccy = serde_util::value_as_f64(arr.get(2)?)?;
             Some(OpenInterest {
                 time: ts.into(),
                 value: oi_ccy,

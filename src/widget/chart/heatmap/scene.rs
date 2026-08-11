@@ -233,16 +233,14 @@ impl Scene {
         }
     }
 
-    pub fn zoom_column_world_keep_anchor(
+    pub fn zoom_column_world_keep_screen_anchor(
         &mut self,
         factor: f32,
-        anchor_world_x: f32,
         anchor_screen_x: f32,
         vw_px: f32,
     ) {
-        self.camera.zoom_column_world_keep_anchor(
+        self.camera.zoom_column_world_keep_screen_anchor(
             factor,
-            anchor_world_x,
             anchor_screen_x,
             vw_px,
             &mut self.cell,

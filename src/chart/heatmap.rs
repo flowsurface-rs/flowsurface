@@ -1,4 +1,4 @@
-use super::{Chart, Interaction, Message, PlotConstants, ViewState, scale::linear::PriceInfoLabel};
+use super::{Chart, Interaction, Message, PlotConstants, ViewState, ticks::y::PriceInfoLabel};
 use crate::{
     modal::pane::settings::study::{self, Study},
     style,
@@ -182,7 +182,6 @@ impl HeatmapChart {
         let view_state = ViewState::new(
             basis,
             step,
-            step.decimal_places(),
             ticker_info,
             ViewConfig {
                 splits: layout.splits.clone(),
@@ -255,6 +254,7 @@ impl HeatmapChart {
         let chart = &mut self.chart;
         let mid_price = depth.mid_price().unwrap_or(chart.base_price_y);
         chart.base_price_y = mid_price.round_to_step(chart.tick_size);
+        chart.max_price = chart.max_price.max(chart.base_price_y);
         chart.latest_x = chart.latest_x.max(rounded_update.as_u64());
     }
 
@@ -296,6 +296,8 @@ impl HeatmapChart {
 
     pub fn set_basis(&mut self, basis: Basis) {
         self.chart.basis = basis;
+        self.chart.last_price = None;
+        self.chart.max_price = Price::from_f32(0.0);
 
         self.trades.datapoints.clear();
         self.heatmap =
@@ -357,7 +359,6 @@ impl HeatmapChart {
 
         chart_state.cell_height = 4.0;
         chart_state.tick_size = step;
-        chart_state.decimals = step.decimal_places();
 
         self.trades.datapoints.clear();
         self.heatmap = HistoricalDepth::new(self.chart.ticker_info.min_qty, step, basis);
@@ -482,9 +483,9 @@ impl canvas::Program<Message> for HeatmapChart {
             let cell_height = chart.cell_height;
             let qty_scales = self.calc_qty_scales(earliest, latest, highest, lowest);
 
-            let max_depth_qty = qty_scales.max_depth_qty.to_f32_lossy();
-            let max_aggr_volume = qty_scales.max_aggr_volume.to_f32_lossy();
-            let max_trade_qty = qty_scales.max_trade_qty.to_f32_lossy();
+            let max_depth_qty = qty_scales.max_depth_qty.to_f64();
+            let max_aggr_volume = qty_scales.max_aggr_volume.to_f64();
+            let max_trade_qty = qty_scales.max_trade_qty.to_f64();
 
             let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
 
@@ -519,7 +520,7 @@ impl canvas::Program<Message> for HeatmapChart {
                     let width = end_x - start_x;
 
                     if width > 0.001 {
-                        let color_alpha = (visual_run.qty.to_f32_lossy() / max_depth_qty).min(1.0);
+                        let color_alpha = (visual_run.qty.to_f64() / max_depth_qty).min(1.0) as f32;
 
                         frame.fill_rectangle(
                             Point::new(start_x, y_position - (cell_height / 2.0)),
@@ -541,7 +542,7 @@ impl canvas::Program<Message> for HeatmapChart {
                                     *price,
                                     size_in_quote_ccy,
                                 );
-                                order_size > self.visual_config.order_size_filter
+                                order_size > f64::from(self.visual_config.order_size_filter)
                             })
                             .for_each(|run| {
                                 let start_x = chart.interval_to_x(
@@ -553,7 +554,8 @@ impl canvas::Program<Message> for HeatmapChart {
 
                                 let width = end_x - start_x;
 
-                                let color_alpha = (run.qty.to_f32_lossy() / max_depth_qty).min(1.0);
+                                let color_alpha =
+                                    (run.qty.to_f64() / max_depth_qty).min(1.0) as f32;
 
                                 frame.fill_rectangle(
                                     Point::new(start_x, y_position - (cell_height / 2.0)),
@@ -601,7 +603,7 @@ impl canvas::Program<Message> for HeatmapChart {
 
                     // max bid/ask quantity text
                     let text_size = crate::style::text_size::TINY / chart.scaling;
-                    let text_content = abbr_large_numbers(max_qty);
+                    let text_content = abbr_large_numbers(max_qty as f64);
 
                     let text_position = Point::new(
                         current_depth_area_width,
@@ -629,7 +631,7 @@ impl canvas::Program<Message> for HeatmapChart {
 
                     dp.grouped_trades.iter().for_each(|trade| {
                         let y_position = chart.price_to_y(trade.price);
-                        let trade_qty = f32::from(trade.qty);
+                        let trade_qty = trade.qty.to_f64();
 
                         let trade_size = market_type.qty_in_quote_value(
                             trade.qty,
@@ -637,7 +639,7 @@ impl canvas::Program<Message> for HeatmapChart {
                             size_in_quote_ccy,
                         );
 
-                        if trade_size > self.visual_config.trade_size_filter {
+                        if trade_size > f64::from(self.visual_config.trade_size_filter) {
                             let color = if trade.is_sell {
                                 palette.danger.base.color
                             } else {
@@ -647,10 +649,12 @@ impl canvas::Program<Message> for HeatmapChart {
                             let radius = {
                                 if let Some(trade_size_scale) = self.visual_config.trade_size_scale
                                 {
-                                    let scale_factor = (trade_size_scale as f32) / 100.0;
-                                    1.0 + (trade_qty / max_trade_qty)
-                                        * (MAX_CIRCLE_RADIUS - 1.0)
-                                        * scale_factor
+                                    let scale_factor = (trade_size_scale as f64) / 100.0;
+                                    (1.0_f64
+                                        + (trade_qty / max_trade_qty)
+                                            * f64::from(MAX_CIRCLE_RADIUS - 1.0)
+                                            * scale_factor)
+                                        as f32
                                 } else {
                                     cell_height / 2.0
                                 }
@@ -673,8 +677,8 @@ impl canvas::Program<Message> for HeatmapChart {
                             frame,
                             x_position,
                             (region.y + region.height) - area_height,
-                            f32::from(buy_volume),
-                            f32::from(sell_volume),
+                            buy_volume.to_f64(),
+                            sell_volume.to_f64(),
                             max_aggr_volume,
                             area_height,
                             bar_width,
@@ -796,7 +800,7 @@ impl canvas::Program<Message> for HeatmapChart {
                     };
                     let step = chart.tick_size;
 
-                    let base_data_price = Price::from_f32(cursor_at_price).round_to_step(step);
+                    let base_data_price = cursor_at_price.round_to_step(step);
                     let base_data_time = UnixMs::new(cursor_at_time).floor_to(interval);
 
                     let price_tick_offsets = [1i64, 0, -1];
@@ -866,7 +870,7 @@ impl canvas::Program<Message> for HeatmapChart {
                             if let Some((qty, is_bid)) =
                                 display_grid_qtys.get(&(data_time_val, data_price_key))
                             {
-                                let text_content = abbr_large_numbers(qty.to_f32_lossy());
+                                let text_content = abbr_large_numbers(qty.to_f64());
                                 let color = if *is_bid {
                                     palette.success.strong.color
                                 } else {
@@ -976,8 +980,8 @@ fn draw_volume_profile(
         return;
     }
 
-    let mut profile = vec![(0.0f32, 0.0f32); num_ticks];
-    let mut max_aggr_volume = 0.0f32;
+    let mut profile = vec![(0.0f64, 0.0f64); num_ticks];
+    let mut max_aggr_volume = 0.0f64;
 
     timeseries
         .datapoints
@@ -998,7 +1002,7 @@ fn draw_volume_profile(
                     let index = ((grouped_price.units - first_tick.units) / step.units) as usize;
 
                     if let Some(entry) = profile.get_mut(index) {
-                        let trade_qty = f32::from(trade.qty);
+                        let trade_qty = trade.qty.to_f64();
                         if trade.is_sell {
                             entry.1 += trade_qty;
                         } else {

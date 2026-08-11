@@ -7,6 +7,14 @@ edition.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[features]
+default = []
+# Use an unbounded mpsc channel for event delivery instead of the default
+# bounded-512.  When enabled, events are never dropped under load — the
+# channel grows to whatever heap the device has.  Useful for database
+# ingestion or audit trails where every tick matters.
+unbounded-channel = []
+
 [dependencies]
 chrono.workspace = true
 serde.workspace = true
@@ -16,6 +24,7 @@ thiserror.workspace = true
 enum-map.workspace = true
 rustc-hash.workspace = true
 url.workspace = true
+rand.workspace = true
 
 tokio = { version = "1.52", default-features = false, features = ["rt", "macros"] }
 reqwest = { version = "0.12.28", default-features = false, features = ["json", "brotli", "rustls-tls", "socks"] }

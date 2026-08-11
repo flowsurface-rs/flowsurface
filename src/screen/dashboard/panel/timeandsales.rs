@@ -127,7 +127,7 @@ impl TimeAndSales {
                     size_in_quote_ccy,
                 );
 
-                if trade_size_value >= size_filter {
+                if trade_size_value as f32 >= size_filter {
                     self.max_filtered_qty = self.max_filtered_qty.max(trade_display.qty);
                 }
 
@@ -225,7 +225,7 @@ impl TimeAndSales {
                         t.display.price,
                         size_in_quote_ccy,
                     );
-                    trade_size >= size_filter
+                    trade_size as f32 >= size_filter
                 })
                 .map(|e| e.display.qty)
                 .fold(Qty::ZERO, Qty::max);
@@ -389,8 +389,8 @@ impl canvas::Program<Message> for TimeAndSales {
 
                             (
                                 buy_ratio,
-                                data::util::abbr_large_numbers(buy_val),
-                                data::util::abbr_large_numbers(sell_val),
+                                data::util::abbr_large_numbers(buy_val as f64),
+                                data::util::abbr_large_numbers(sell_val as f64),
                             )
                         }
                     };
@@ -456,7 +456,7 @@ impl canvas::Program<Message> for TimeAndSales {
                         t.display.price,
                         size_in_quote_ccy,
                     );
-                    trade_size >= self.config.trade_size_filter
+                    trade_size as f32 >= self.config.trade_size_filter
                 })
                 .rev()
                 .skip(start_index)
@@ -542,7 +542,7 @@ impl canvas::Program<Message> for TimeAndSales {
                 frame.fill_text(trade_price);
 
                 let trade_qty = create_text(
-                    data::util::abbr_large_numbers(trade.qty.to_f32_lossy()),
+                    data::util::abbr_large_numbers(trade.qty.to_f64()),
                     Point {
                         x: row_width * 0.9,
                         y: y_position,

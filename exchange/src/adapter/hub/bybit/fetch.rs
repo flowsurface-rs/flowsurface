@@ -21,7 +21,7 @@ struct DeOpenInterest {
         rename = "openInterest",
         deserialize_with = "serde_util::de_string_to_number"
     )]
-    pub value: f32,
+    pub value: f64,
     #[serde(deserialize_with = "serde_util::de_string_to_number")]
     pub timestamp: u64,
 }
@@ -154,13 +154,13 @@ pub(super) async fn fetch_ticker_stats(
             continue;
         }
 
-        let mark_price = serde_util::value_as_f32(&item["lastPrice"])
+        let mark_price = serde_util::value_as_f64(&item["lastPrice"])
             .ok_or_else(|| AdapterError::ParseError("Mark price not found".to_string()))?;
 
         let daily_price_chg = serde_util::value_as_f32(&item["price24hPcnt"])
             .ok_or_else(|| AdapterError::ParseError("Daily price change not found".to_string()))?;
 
-        let daily_volume = serde_util::value_as_f32(&item["volume24h"])
+        let daily_volume = serde_util::value_as_f64(&item["volume24h"])
             .ok_or_else(|| AdapterError::ParseError("Daily volume not found".to_string()))?;
 
         let volume_in_usd = if market_type == MarketKind::InversePerps {
@@ -170,9 +170,9 @@ pub(super) async fn fetch_ticker_stats(
         };
 
         let ticker_stats = TickerStats {
-            mark_price: Price::from_f32(mark_price),
+            mark_price: Price::from_f64(mark_price),
             daily_price_chg: daily_price_chg * 100.0,
-            daily_volume: Qty::from_f32(volume_in_usd),
+            daily_volume: Qty::from_f64(volume_in_usd),
         };
 
         ticker_prices_map.insert(Ticker::new(symbol, exchange), ticker_stats);
@@ -236,12 +236,12 @@ pub(super) async fn fetch_klines(
         .map(|kline| {
             let time = parse_kline_field::<u64>(kline[0].as_str())?;
 
-            let open = parse_kline_field::<f32>(kline[1].as_str())?;
-            let high = parse_kline_field::<f32>(kline[2].as_str())?;
-            let low = parse_kline_field::<f32>(kline[3].as_str())?;
-            let close = parse_kline_field::<f32>(kline[4].as_str())?;
+            let open = parse_kline_field::<f64>(kline[1].as_str())?;
+            let high = parse_kline_field::<f64>(kline[2].as_str())?;
+            let low = parse_kline_field::<f64>(kline[3].as_str())?;
+            let close = parse_kline_field::<f64>(kline[4].as_str())?;
 
-            let volume = parse_kline_field::<f32>(kline[5].as_str())?;
+            let volume = parse_kline_field::<f64>(kline[5].as_str())?;
             let volume = qty_norm.normalize_qty(volume, close);
 
             let kline = Kline::new(

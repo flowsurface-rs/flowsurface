@@ -2,17 +2,17 @@ pub mod comparison;
 pub mod heatmap;
 pub mod indicator;
 pub mod kline;
-mod scale;
+pub mod ticks;
 
-use crate::connector::fetcher::{FetchRange, FetchSpec, RequestHandler};
+use crate::connector::fetcher::{FetchRange, FetchSpec, ReqError, RequestHandler};
 use crate::style;
 use crate::widget::multi_split::{DRAG_SIZE, MultiSplit};
 use crate::widget::tooltip;
 use data::chart::{Autoscale, Basis, PlotData, ViewConfig, indicator::Indicator};
 use exchange::TickerInfo;
 use exchange::unit::{Price, PriceStep};
-use scale::linear::PriceInfoLabel;
-use scale::{AxisLabelsX, AxisLabelsY};
+use ticks::y::PriceInfoLabel;
+use ticks::{x::AxisLabelsX, y::AxisLabelsY};
 
 use iced::theme::palette::Extended;
 use iced::widget::canvas::{self, Cache, Canvas, Event, Frame, LineDash, Path, Stroke};
@@ -283,17 +283,19 @@ pub fn update<T: Chart>(chart: &mut T, message: &Message) {
     match message {
         Message::DoubleClick(scale) => {
             let default_chart_width = T::default_cell_width(chart);
-            let autoscaled_coords = chart.autoscaled_coords();
             let supports_fit_autoscaling = chart.supports_fit_autoscaling();
-
-            let state = chart.mut_state();
 
             match scale {
                 AxisScaleClicked::X => {
-                    state.cell_width = default_chart_width;
-                    state.translation = autoscaled_coords;
+                    {
+                        let state = chart.mut_state();
+                        state.cell_width = default_chart_width;
+                    }
+                    let autoscaled_coords = chart.autoscaled_coords();
+                    chart.mut_state().translation = autoscaled_coords;
                 }
                 AxisScaleClicked::Y => {
+                    let state = chart.mut_state();
                     if supports_fit_autoscaling {
                         state.layout.autoscale = Some(Autoscale::FitToVisible);
                         state.scaling = 1.0;
@@ -553,10 +555,12 @@ pub fn view<'a, T: Chart>(
             labels_cache: &state.cache.y_labels,
             translation_y: state.translation.y,
             scaling: state.scaling,
-            decimals: state.decimals,
-            min: state.base_price_y.to_f32_lossy(),
+            min: state.base_price_y,
             last_price: state.last_price,
-            tick_size: state.tick_size.to_f32_lossy(),
+            axis: ticks::y::PriceAxis::new(
+                state.effective_tick_size(),
+                Some(state.ticker_info.min_ticksize),
+            ),
             cell_height: state.cell_height,
             basis: state.basis,
             chart_bounds: state.bounds,
@@ -653,11 +657,14 @@ pub struct ViewState {
     cell_width: f32,
     cell_height: f32,
     basis: Basis,
-    last_price: Option<PriceInfoLabel>,
+    /// Used for y-scale anchor.
     base_price_y: Price,
+    /// Used for last-price badge.
+    last_price: Option<PriceInfoLabel>,
+    /// Session-highest price, for sizing y-axis gutter width.
+    max_price: Price,
     latest_x: u64,
     tick_size: PriceStep,
-    decimals: usize,
     ticker_info: TickerInfo,
     layout: ViewConfig,
 }
@@ -666,7 +673,6 @@ impl ViewState {
     pub fn new(
         basis: Basis,
         tick_size: PriceStep,
-        decimals: usize,
         ticker_info: TickerInfo,
         layout: ViewConfig,
         cell_width: f32,
@@ -681,22 +687,25 @@ impl ViewState {
             cell_height,
             basis,
             last_price: None,
-            base_price_y: Price::from_f32_lossy(0.0),
+            base_price_y: Price::from_f32(0.0),
+            max_price: Price::from_f32(0.0),
             latest_x: 0,
             tick_size,
-            decimals,
             ticker_info,
             layout,
         }
     }
 
-    fn effective_tick_units(&self) -> i64 {
+    fn effective_tick_size(&self) -> PriceStep {
         if self.tick_size.units > 0 {
-            self.tick_size.units
+            self.tick_size
         } else {
-            let min_step: PriceStep = self.ticker_info.min_ticksize.into();
-            min_step.units.max(1)
+            self.ticker_info.min_ticksize.into()
         }
+    }
+
+    fn effective_tick_units(&self) -> i64 {
+        self.effective_tick_size().units.max(1)
     }
 
     fn visible_region(&self, size: Size) -> Rectangle {
@@ -775,15 +784,15 @@ impl ViewState {
     }
 
     fn price_to_y(&self, price: Price) -> f32 {
-        let delta_units = self.base_price_y.units - price.units;
-        let ticks = (delta_units as f32) / (self.effective_tick_units() as f32);
-        ticks * self.cell_height
+        let delta_units = self.base_price_y.saturating_sub(price).units;
+        let ticks = delta_units as f64 / self.effective_tick_units() as f64;
+        (ticks * f64::from(self.cell_height)) as f32
     }
 
     fn y_to_price(&self, y: f32) -> Price {
-        let ticks = y / self.cell_height;
-        let delta_units = (ticks * self.effective_tick_units() as f32).round() as i64;
-        Price::from_units(self.base_price_y.units - delta_units)
+        let ticks = f64::from(y) / f64::from(self.cell_height);
+        let price = self.base_price_y.to_f64() - ticks * self.effective_tick_size().to_f64_lossy();
+        Price::from_f64(price)
     }
 
     fn draw_crosshair(
@@ -793,36 +802,29 @@ impl ViewState {
         bounds: Size,
         cursor_position: Point,
         interaction: &Interaction,
-    ) -> (f32, u64) {
+    ) -> (Price, u64) {
         let region = self.visible_region(bounds);
         let dashed_line = style::dashed_line(theme);
 
         let highest_p: Price = self.y_to_price(region.y);
         let lowest_p: Price = self.y_to_price(region.y + region.height);
-        let highest: f32 = highest_p.to_f32_lossy();
-        let lowest: f32 = lowest_p.to_f32_lossy();
 
-        let effective_step = if self.tick_size.units > 0 {
-            self.tick_size
-        } else {
-            self.ticker_info.min_ticksize.into()
-        };
+        let highest: f64 = highest_p.to_f64();
+        let lowest: f64 = lowest_p.to_f64();
+
+        let effective_step = self.effective_tick_size();
 
         if let Interaction::Ruler { start: Some(start) } = interaction {
             let p1 = *start;
             let p2 = cursor_position;
 
             let snap_y = |y: f32| {
-                let ratio = y / bounds.height;
+                let ratio = f64::from(y) / f64::from(bounds.height);
                 let price = highest + ratio * (lowest - highest);
 
-                let p = Price::from_f32_lossy(price);
-                let tick_units = effective_step.units;
-                let tick_index = p.units.div_euclid(tick_units);
-                let rounded_price_p = Price::from_units(tick_index * tick_units);
-                let rounded_price = rounded_price_p.to_f32_lossy();
-                let snap_ratio = (rounded_price - highest) / (lowest - highest);
-                snap_ratio * bounds.height
+                let p = Price::from_f64(price).round_to_step(effective_step);
+                let snap_ratio = 1.0 - p.ratio_in_range(lowest_p, highest_p);
+                (snap_ratio * f64::from(bounds.height)) as f32
             };
 
             let snap_x = |x: f32| {
@@ -838,10 +840,10 @@ impl ViewState {
             let price1 = self.y_to_price(snapped_p1_y);
             let price2 = self.y_to_price(snapped_p2_y);
 
-            let pct = if price1.to_f32_lossy() == 0.0 {
+            let pct = if price1.units == 0 {
                 0.0
             } else {
-                ((price2.to_f32_lossy() - price1.to_f32_lossy()) / price1.to_f32_lossy()) * 100.0
+                (price2.saturating_sub(price1) / price1) * 100.0
             };
             let pct_text = format!("{:.2}%", pct);
 
@@ -977,19 +979,15 @@ impl ViewState {
         }
 
         // Horizontal price line
-        let crosshair_ratio = cursor_position.y / bounds.height;
+        let crosshair_ratio = f64::from(cursor_position.y) / f64::from(bounds.height);
         let crosshair_price = highest + crosshair_ratio * (lowest - highest);
 
-        let rounded_price = Price::from_f32_lossy(crosshair_price)
-            .round_to_step(effective_step)
-            .to_f32_lossy();
-        let snap_ratio = (rounded_price - highest) / (lowest - highest);
+        let rounded_price = Price::from_f64(crosshair_price).round_to_step(effective_step);
+        let snap_ratio = 1.0 - rounded_price.ratio_in_range(lowest_p, highest_p);
+        let line_y = (snap_ratio * f64::from(bounds.height)) as f32;
 
         frame.stroke(
-            &Path::line(
-                Point::new(0.0, snap_ratio * bounds.height),
-                Point::new(bounds.width, snap_ratio * bounds.height),
-            ),
+            &Path::line(Point::new(0.0, line_y), Point::new(bounds.width, line_y)),
             dashed_line,
         );
 
@@ -1074,7 +1072,8 @@ impl ViewState {
     fn y_labels_width(&self) -> Length {
         let precision = self.ticker_info.min_ticksize;
 
-        let value = self.base_price_y.to_string(precision);
+        let max_label = Price::from_f64(self.max_price.to_f64() * 1.05);
+        let value = max_label.to_string(precision);
         let width = (value.len() as f32 * TEXT_SIZE * 0.8).max(72.0);
 
         Length::Fixed(width.ceil())
@@ -1133,11 +1132,9 @@ fn request_fetch(handler: &mut RequestHandler, range: FetchRange) -> Option<Acti
             Some(Action::RequestFetch(vec![fetch_spec]))
         }
         Ok(None) => None,
-        Err(reason) => {
-            log::error!("Failed to request {:?}: {}", range, reason);
-            // TODO: handle this more explicitly, maybe by returning Action::ErrorOccurred
-            None
-        }
+        Err(ReqError::Overlaps) => None,
+        Err(ReqError::NoData) => None,
+        Err(ReqError::Failed) => None,
     }
 }
 
@@ -1145,9 +1142,9 @@ fn draw_volume_bar(
     frame: &mut canvas::Frame,
     start_x: f32,
     start_y: f32,
-    buy_qty: f32,
-    sell_qty: f32,
-    max_qty: f32,
+    buy_qty: f64,
+    sell_qty: f64,
+    max_qty: f64,
     bar_length: f32,
     thickness: f32,
     buy_color: iced::Color,
@@ -1160,10 +1157,10 @@ fn draw_volume_bar(
         return;
     }
 
-    let total_bar_length = (total_qty / max_qty) * bar_length;
+    let total_bar_length = (total_qty / max_qty) as f32 * bar_length;
 
-    let buy_proportion = buy_qty / total_qty;
-    let sell_proportion = sell_qty / total_qty;
+    let buy_proportion = (buy_qty / total_qty) as f32;
+    let sell_proportion = (sell_qty / total_qty) as f32;
 
     let buy_bar_length = buy_proportion * total_bar_length;
     let sell_bar_length = sell_proportion * total_bar_length;

@@ -122,7 +122,7 @@ impl<D: DataPoint> TimeSeries<D> {
 
     pub fn min_max_price_in_range(&self, earliest: UnixMs, latest: UnixMs) -> Option<(f32, f32)> {
         self.min_max_price_in_range_prices(earliest, latest)
-            .map(|(min_p, max_p)| (min_p.to_f32(), max_p.to_f32()))
+            .map(|(min_p, max_p)| (min_p.to_f32_lossy(), max_p.to_f32_lossy()))
     }
 
     /// Ensures a datapoint bucket exists at `rounded_t` and ingests all trades into it.
@@ -159,10 +159,14 @@ impl<D: DataPoint> TimeSeries<D> {
         latest: UnixMs,
         interval: u64,
     ) -> Option<Vec<UnixMs>> {
+        const MAX_INTEGRITY_SCAN: u64 = 1_000_000;
         let mut time = earliest;
         let mut missing_count = 0;
 
-        while time < latest {
+        for _ in 0..MAX_INTEGRITY_SCAN {
+            if time >= latest {
+                break;
+            }
             if !self.datapoints.contains_key(&time) {
                 missing_count += 1;
                 break;
@@ -171,11 +175,13 @@ impl<D: DataPoint> TimeSeries<D> {
         }
 
         if missing_count > 0 {
-            let mut missing_keys =
-                Vec::with_capacity(((latest.as_u64() - earliest.as_u64()) / interval) as usize);
+            let mut missing_keys = Vec::new();
             let mut time = earliest;
 
-            while time < latest {
+            for _ in 0..MAX_INTEGRITY_SCAN {
+                if time >= latest {
+                    break;
+                }
                 if !self.datapoints.contains_key(&time) {
                     missing_keys.push(time);
                 }
@@ -414,14 +420,39 @@ impl TimeSeries<KlineDataPoint> {
                 }
                 let (data_earliest, data_latest) = self.timerange();
 
-                let fetch_from = last_t_before_gap
-                    .map_or(data_earliest, |t| t.saturating_add(1))
-                    .max(visible_earliest);
-                let fetch_to = first_t_after_gap
-                    .map_or(data_latest, |t| t.saturating_sub(1))
-                    .min(visible_latest);
+                let gap_start = last_t_before_gap.map_or(data_earliest, |t| t.saturating_add(1));
+
+                // Round down to the nearest kline boundary so the first
+                // bucket is fully covered.
+                let fetch_from = gap_start
+                    .max(visible_earliest)
+                    .floor_to(self.interval)
+                    .max(gap_start);
+
+                // When we know where the next trade sits, fetch the entire
+                // gap in one shot instead of truncating at `visible_latest`
+                // - otherwise fast scrolling leaves a trailing gap that
+                // must be back-filled on the next scroll.  When there is no
+                // trade after the gap (`None`) we still stop at the visible
+                // edge to avoid an unbounded fetch.
+                let fetch_to = match first_t_after_gap {
+                    Some(t) => t.saturating_sub(1),
+                    None => data_latest.min(visible_latest),
+                };
 
                 if fetch_from < fetch_to {
+                    // When the gap originates before the visible window,
+                    // clamping `fetch_from` to `visible_earliest` can
+                    // collapse the range into a sub-interval sliver (e.g.
+                    // the first few seconds of a kline bucket that already
+                    // has trades).  Skip fetches that cover less than one
+                    // full interval.
+                    if gap_start < visible_earliest {
+                        let interval_ms = self.interval.to_milliseconds();
+                        if fetch_to.as_u64().saturating_sub(fetch_from.as_u64()) < interval_ms {
+                            return None;
+                        }
+                    }
                     Some((fetch_from, fetch_to))
                 } else {
                     None

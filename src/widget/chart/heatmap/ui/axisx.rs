@@ -73,7 +73,14 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
                         screen: x0_screen,
                     })
                 } else {
-                    Some(AxisZoomAnchor::Cursor { screen: p.x })
+                    // When the live edge (x=0) is not visible, anchor drag-zoom to
+                    // the rightmost visible column (right edge of viewport) so
+                    // zooming expands/contracts from the right edge.
+                    let vw = self.plot_bounds.map(|r| r.width).unwrap_or(bounds.width);
+                    Some(AxisZoomAnchor::World {
+                        world: 0.0,
+                        screen: vw,
+                    })
                 };
 
                 state.interaction = AxisInteraction::Panning {
@@ -255,16 +262,11 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
             };
 
             let every = {
-                let px_per_bucket = (col_f * cam_sx_f).max(1e-9) as f32;
-                let rough = (TARGET_LABEL_SPACING_PX / px_per_bucket).ceil().max(1.) as i64;
-
-                let mut pow10 = 1i64;
-                while pow10.saturating_mul(10) <= rough {
-                    pow10 *= 10;
-                }
-                let m = (rough + pow10 - 1) / pow10;
-                let mult = crate::widget::chart::nice_step_multiplier_125(m as f32) as i64;
-                mult * pow10
+                let px_per_bucket = (col_f * cam_sx_f).max(1e-9);
+                let rough = (TARGET_LABEL_SPACING_PX as f64 / px_per_bucket)
+                    .ceil()
+                    .max(1.0);
+                data::util::round_125(rough) as i64
             };
 
             let mut b = (b_min.div_euclid(every)) * every;

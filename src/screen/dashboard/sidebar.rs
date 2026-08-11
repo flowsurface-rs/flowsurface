@@ -32,6 +32,7 @@ pub enum Action {
         Option<data::layout::pane::ContentKind>,
     ),
     ErrorOccurred(data::InternalError),
+    MenuChanged(Option<sidebar::Menu>),
 }
 
 impl Sidebar {
@@ -39,11 +40,13 @@ impl Sidebar {
         state: &SavedState,
         handles: exchange::adapter::AdapterHandles,
     ) -> (Self, Task<Message>) {
+        let metadata = data::MarketMetadata::with_cache_enabled(state.cache_market_metadata);
+
         let (tickers_table, initial_fetch) =
             if let Some(settings) = state.sidebar.tickers_table.as_ref() {
-                TickersTable::new_with_settings(settings, handles.clone())
+                TickersTable::new_with_settings(settings, handles.clone(), metadata)
             } else {
-                TickersTable::new(handles)
+                TickersTable::new(handles, metadata)
             };
 
         (
@@ -58,7 +61,9 @@ impl Sidebar {
     pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Action>) {
         match message {
             Message::ToggleSidebarMenu(menu) => {
-                self.set_menu(menu.filter(|&m| !self.is_menu_active(m)));
+                let new_menu = menu.filter(|&m| !self.is_menu_active(m));
+                self.set_menu(new_menu);
+                return (Task::none(), Some(Action::MenuChanged(new_menu)));
             }
             Message::SetSidebarPosition(position) => {
                 self.state.position = position;
@@ -240,6 +245,34 @@ impl Sidebar {
     }
 
     pub fn tickers_info(&self) -> &FxHashMap<exchange::Ticker, Option<exchange::TickerInfo>> {
-        &self.tickers_table.tickers_info
+        self.tickers_table.metadata.tickers()
+    }
+
+    pub fn cache_enabled(&self) -> bool {
+        self.tickers_table.metadata.cache_enabled()
+    }
+
+    pub fn set_cache_enabled(&mut self, enabled: bool) {
+        self.tickers_table.metadata.set_cache_enabled(enabled);
+    }
+
+    pub fn force_refresh_metadata(&mut self) -> Option<Task<Message>> {
+        self.tickers_table
+            .force_refresh_metadata()
+            .map(|task| task.map(Message::TickersTable))
+    }
+
+    pub fn persist_metadata_cache(&self) {
+        if self.tickers_table.metadata.cache_enabled() {
+            self.tickers_table.metadata.save_to_file();
+        }
+    }
+
+    pub fn last_metadata_update(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.tickers_table.last_metadata_update()
+    }
+
+    pub fn is_metadata_loading(&self) -> bool {
+        self.tickers_table.is_metadata_loading()
     }
 }

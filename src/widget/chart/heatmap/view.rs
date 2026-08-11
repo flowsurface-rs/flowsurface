@@ -884,7 +884,7 @@ impl DepthNormCache {
             )
         };
 
-        let max_qty = max_qty.to_scale_or_one();
+        let max_qty = max_qty.to_scale_or_one() as f32;
 
         self.key = Some(key);
         self.value = max_qty;

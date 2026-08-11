@@ -18,7 +18,7 @@ use std::{collections::BTreeMap, ops::RangeInclusive};
 
 pub struct OpenInterestIndicator {
     cache: Caches,
-    pub data: BTreeMap<UnixMs, f32>,
+    pub data: BTreeMap<UnixMs, f64>,
 }
 
 impl OpenInterestIndicator {
@@ -44,7 +44,7 @@ impl OpenInterestIndicator {
             return row![].into();
         }
 
-        let tooltip = |value: &f32, next: Option<&f32>| {
+        let tooltip = |value: &f64, next: Option<&f64>| {
             let value_text = format!("Open Interest: {}", format_with_commas(*value));
             let change_text = if let Some(next_value) = next {
                 let delta = next_value - *value;
@@ -56,7 +56,7 @@ impl OpenInterestIndicator {
             PlotTooltip::new(format!("{value_text}\n{change_text}"))
         };
 
-        let value_fn = |v: &f32| *v;
+        let value_fn = |v: &f64| *v as f32;
 
         let plot = LinePlot::new(value_fn)
             .stroke_width(1.0)

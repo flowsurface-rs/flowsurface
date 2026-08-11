@@ -69,6 +69,24 @@ impl TickAccumulation {
     pub fn calculate_poc(&mut self) {
         self.footprint.calculate_poc();
     }
+
+    pub fn volume_delta(&self) -> Qty {
+        if self.kline.volume.is_directional() {
+            self.kline.volume.delta()
+        } else if !self.footprint.trades.is_empty() {
+            self.footprint
+                .trades
+                .values()
+                .fold(Qty::ZERO, |acc, group| acc + group.delta_qty())
+        } else {
+            Qty::ZERO
+        }
+    }
+
+    /// Whether this tick accumulation has directional (buy vs sell) data.
+    pub fn is_directional(&self) -> bool {
+        !self.footprint.trades.is_empty() || self.kline.volume.is_directional()
+    }
 }
 
 pub struct TickAggr {
@@ -222,7 +240,7 @@ impl TickAggr {
 
     pub fn min_max_price_in_range(&self, earliest: usize, latest: usize) -> Option<(f32, f32)> {
         self.min_max_price_in_range_prices(earliest, latest)
-            .map(|(min_p, max_p)| (min_p.to_f32(), max_p.to_f32()))
+            .map(|(min_p, max_p)| (min_p.to_f32_lossy(), max_p.to_f32_lossy()))
     }
 
     pub fn min_max_footprint_price_in_range(

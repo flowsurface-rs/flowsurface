@@ -36,13 +36,7 @@ impl Price {
             .checked_pow(exp)
             .expect("Price::to_string unit overflow");
 
-        let u = self.units;
-        let half = unit / 2;
-        let rounded_units = if u >= 0 {
-            ((u + half).div_euclid(unit)) * unit
-        } else {
-            ((u - half).div_euclid(unit)) * unit
-        };
+        let rounded_units = Self::round_units_half_away(self.units, unit);
 
         let decimals: u32 = if precision.power < 0 {
             ((-precision.power) as u32).min(scale_u)
@@ -70,23 +64,41 @@ impl Price {
 
     /// Lossy: convert price to f32, may lose precision if going beyond `ATOMIC_SCALE`
     pub fn to_f32_lossy(self) -> f32 {
-        let scale = 10f32.powi(Self::ATOMIC_SCALE);
-        (self.units as f32) / scale
+        self.to_f64() as f32
     }
 
-    /// Lossy: create Price from f32 (rounds to nearest atomic unit)
-    pub fn from_f32_lossy(v: f32) -> Self {
-        let scale = 10f32.powi(Self::ATOMIC_SCALE);
+    /// Create Price from f32 (widens to f64, then rounds to nearest atomic unit)
+    pub fn from_f32(v: f32) -> Self {
+        Self::from_f64(v as f64)
+    }
+
+    /// Convert price to f64.  f64 has ~15 significant digits.
+    pub fn to_f64(self) -> f64 {
+        let scale = 10f64.powi(Self::ATOMIC_SCALE);
+        (self.units as f64) / scale
+    }
+
+    /// Create Price from f64 (rounds to nearest atomic unit).
+    pub fn from_f64(v: f64) -> Self {
+        let scale = 10f64.powi(Self::ATOMIC_SCALE);
         let u = (v * scale).round() as i64;
         Self { units: u }
     }
 
-    pub fn from_f32(v: f32) -> Self {
-        Self::from_f32_lossy(v)
-    }
-
-    pub fn to_f32(self) -> f32 {
-        self.to_f32_lossy()
+    /// Round `units` to the nearest multiple of `unit`, half away from zero,
+    /// saturating to the i64 range instead of wrapping at the extremes. Runs
+    /// in u64 so extreme (saturating) magnitudes can never overflow.
+    fn round_units_half_away(units: i64, unit: i64) -> i64 {
+        let half = unit / 2;
+        let mag = units.unsigned_abs();
+        let rounded_mag = ((mag + half as u64) / unit as u64) * unit as u64;
+        if units >= 0 {
+            rounded_mag.min(i64::MAX as u64) as i64
+        } else if rounded_mag > (i64::MAX as u64) + 1 {
+            i64::MIN
+        } else {
+            (rounded_mag as i64).wrapping_neg()
+        }
     }
 
     pub fn round_to_step(self, step: PriceStep) -> Self {
@@ -94,9 +106,9 @@ impl Price {
         if unit <= 1 {
             return self;
         }
-        let half = unit / 2;
-        let rounded = ((self.units + half).div_euclid(unit)) * unit;
-        Self { units: rounded }
+        Self {
+            units: Self::round_units_half_away(self.units, unit),
+        }
     }
 
     /// Floor to multiple of an arbitrary step
@@ -136,9 +148,28 @@ impl Price {
         }
     }
 
-    /// Create Price from raw atomic units (no rounding) — internal only
+    /// Create Price from raw atomic units (no rounding)
     pub fn from_units(units: i64) -> Self {
         Self { units }
+    }
+
+    /// Difference of two prices, saturating instead of panicking on overflow
+    /// (mirrors `i64::saturating_sub`).
+    pub fn saturating_sub(self, rhs: Self) -> Self {
+        Self {
+            units: self.units.saturating_sub(rhs.units),
+        }
+    }
+
+    /// Normalized position of `self` within `[low, high]`: `0.0` at `low`,
+    /// `1.0` at `high`. Returns `0.0` for an empty range.
+    pub fn ratio_in_range(self, low: Self, high: Self) -> f64 {
+        let range = high.units.saturating_sub(low.units);
+        if range == 0 {
+            0.0
+        } else {
+            self.units.saturating_sub(low.units) as f64 / range as f64
+        }
     }
 
     /// Returns the atomic-unit count that corresponds to one min tick (min_tick / atomic_unit)
@@ -156,9 +187,9 @@ impl Price {
         if unit <= 1 {
             return self;
         }
-        let half = unit / 2;
-        let rounded = ((self.units + half).div_euclid(unit)) * unit;
-        Self { units: rounded }
+        Self {
+            units: Self::round_units_half_away(self.units, unit),
+        }
     }
 
     pub fn add_steps(self, steps: i64, step: PriceStep) -> Self {
@@ -202,6 +233,16 @@ impl std::ops::Div<i64> for Price {
     }
 }
 
+impl std::ops::Div for Price {
+    type Output = f64;
+
+    /// Ratio of two prices as a dimensionless f64.
+    /// Both sides share the same atomic scale so this is exact.
+    fn div(self, rhs: Self) -> f64 {
+        self.units as f64 / rhs.units as f64
+    }
+}
+
 impl std::ops::Sub for Price {
     type Output = Self;
 
@@ -219,7 +260,7 @@ pub fn de_price_from_number<'de, D>(deserializer: D) -> Result<Price, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    serde_util::de_number_like_or_object(deserializer, "price", Price::from_f32)
+    serde_util::de_number_like_or_object(deserializer, "price", Price::from_f64)
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
@@ -276,21 +317,13 @@ impl PriceStep {
 
     /// Lossy: f32 step for UI
     pub fn to_f32_lossy(self) -> f32 {
-        let scale = 10f32.powi(Price::ATOMIC_SCALE);
-        (self.units as f32) / scale
+        self.to_f64_lossy() as f32
     }
 
-    /// Lossy: from f32 step (rounds to nearest atomic unit)
-    pub fn from_f32_lossy(step: f32) -> Self {
-        assert!(step > 0.0, "step must be > 0");
-        let scale = 10f32.powi(Price::ATOMIC_SCALE);
-        let units = (step * scale).round() as i64;
-        assert!(units > 0, "step too small at given ATOMIC_SCALE");
-        Self { units }
-    }
-
-    pub fn from_f32(step: f32) -> Self {
-        Self::from_f32_lossy(step)
+    /// f64 step for UI
+    pub fn to_f64_lossy(self) -> f64 {
+        let scale = 10f64.powi(Price::ATOMIC_SCALE);
+        (self.units as f64) / scale
     }
 }
 

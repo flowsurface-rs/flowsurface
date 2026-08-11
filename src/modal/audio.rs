@@ -271,9 +271,12 @@ impl AudioStream {
                             }
                             data::audio::Threshold::Qty(v) => {
                                 column = column.push(
-                                    row![text(format!("Any trade's size in buffer ≥ {}", v))]
-                                        .padding(8)
-                                        .spacing(4),
+                                    row![text(format!(
+                                        "Any trade's size in buffer ≥ {:.2}",
+                                        v.to_f64()
+                                    ))]
+                                    .padding(8)
+                                    .spacing(4),
                                 );
                             }
                         }

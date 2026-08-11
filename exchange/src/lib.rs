@@ -298,7 +298,6 @@ impl Ticker {
         display_symbol: Option<&str>,
     ) -> Self {
         assert!(ticker.len() <= Self::MAX_LEN as usize, "Ticker too long");
-        assert!(ticker.is_ascii(), "Ticker must be ASCII");
         assert!(!ticker.contains('|'), "Ticker cannot contain '|'");
 
         let mut bytes = [0u8; Self::MAX_LEN as usize];
@@ -571,10 +570,10 @@ pub struct Kline {
 impl Kline {
     pub fn new(
         time: impl Into<UnixMs>,
-        open: f32,
-        high: f32,
-        low: f32,
-        close: f32,
+        open: f64,
+        high: f64,
+        low: f64,
+        close: f64,
         volume: Volume,
         min_ticksize: MinTicksize,
     ) -> Self {
@@ -582,10 +581,10 @@ impl Kline {
 
         Self {
             time,
-            open: Price::from_f32(open).round_to_min_tick(min_ticksize),
-            high: Price::from_f32(high).round_to_min_tick(min_ticksize),
-            low: Price::from_f32(low).round_to_min_tick(min_ticksize),
-            close: Price::from_f32(close).round_to_min_tick(min_ticksize),
+            open: Price::from_f64(open).round_to_min_tick(min_ticksize),
+            high: Price::from_f64(high).round_to_min_tick(min_ticksize),
+            low: Price::from_f64(low).round_to_min_tick(min_ticksize),
+            close: Price::from_f64(close).round_to_min_tick(min_ticksize),
             volume,
         }
     }
@@ -654,6 +653,18 @@ impl Volume {
             Volume::TotalOnly(total) => Volume::TotalOnly(total + qty),
         }
     }
+
+    /// Net buy minus sell volume. Returns zero when directional data is unavailable.
+    pub fn delta(&self) -> Qty {
+        self.buy_sell()
+            .map(|(buy, sell)| buy - sell)
+            .unwrap_or(Qty::ZERO)
+    }
+
+    /// Whether this volume breaks down into buy vs sell (directional).
+    pub fn is_directional(&self) -> bool {
+        self.buy_sell().is_some()
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -670,7 +681,7 @@ pub struct TickerStats {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OpenInterest {
     pub time: UnixMs,
-    pub value: f32,
+    pub value: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Hash)]

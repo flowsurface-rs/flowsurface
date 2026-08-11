@@ -225,7 +225,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                     let x_pos = bounds.width - OVERLAY_LABEL_PAD_PX;
 
                     frame.fill_text(canvas::Text {
-                        content: abbr_large_numbers(qty.into()),
+                        content: abbr_large_numbers(f64::from(qty)),
                         position: Point::new(x_pos, strip_top_y),
                         size: iced::Pixels(OVERLAY_SCALE_LABEL_TEXT_SIZE),
                         color: palette.background.base.text.scale_alpha(0.85),
@@ -259,7 +259,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                             let ty = OVERLAY_LABEL_PAD_PX;
 
                             frame.fill_text(canvas::Text {
-                                content: abbr_large_numbers(qty.into()),
+                                content: abbr_large_numbers(f64::from(qty)),
                                 position: Point::new(tx, ty),
                                 size: iced::Pixels(OVERLAY_SCALE_LABEL_TEXT_SIZE),
                                 color: palette.background.base.text.scale_alpha(0.85),
@@ -300,7 +300,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                             let ty = OVERLAY_LABEL_PAD_PX;
 
                             frame.fill_text(canvas::Text {
-                                content: abbr_large_numbers(qty.into()),
+                                content: abbr_large_numbers(f64::from(qty)),
                                 position: Point::new(tx, ty),
                                 size: iced::Pixels(OVERLAY_SCALE_LABEL_TEXT_SIZE),
                                 color: palette.background.base.text.scale_alpha(0.85),
@@ -467,7 +467,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                     };
 
                     frame.fill_text(canvas::Text {
-                        content: abbr_large_numbers(qty),
+                        content: abbr_large_numbers(qty as f64),
                         position: layout.cell_center(row_idx, col_idx),
                         size: iced::Pixels(crate::style::text_size::TINY),
                         color: color.scale_alpha(0.95),

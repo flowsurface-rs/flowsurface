@@ -1,63 +1,26 @@
 mod client;
-mod connect;
+mod http;
 mod hub;
 mod limiter;
 pub mod proxy;
+mod ws;
 
-pub use super::error::AdapterError;
-use super::{Ticker, Timeframe};
+use super::Timeframe;
+pub use super::error::{AdapterError, FetchError};
 use crate::{
     Kline, Price, PushFrequency, TickMultiplier, TickerInfo, Trade, UnixMs, depth::Depth, unit::Qty,
 };
 
 use enum_map::{Enum, EnumMap};
-use futures::SinkExt;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
-use std::{str::FromStr, sync::Arc, time::Duration};
+use std::{str::FromStr, sync::Arc};
 
 pub use client::{AdapterHandles, MAX_KLINE_STREAMS_PER_STREAM, MAX_TRADE_TICKERS_PER_STREAM};
 pub use proxy::Proxy;
 
-/// Buffer trades and flush in this interval
-const TRADE_BUCKET_INTERVAL: Duration = Duration::from_micros(33_333);
-
 pub fn allowed_multipliers_for_min_tick(min_ticksize: crate::unit::MinTicksize) -> &'static [u16] {
     hub::hyperliquid::allowed_multipliers_for_min_tick(min_ticksize)
-}
-
-async fn flush_trade_buffers<V>(
-    output: &mut futures::channel::mpsc::Sender<Event>,
-    ticker_info_map: &FxHashMap<Ticker, (TickerInfo, V)>,
-    trade_buffers_map: &mut FxHashMap<Ticker, Vec<Trade>>,
-) {
-    let interval_ms = TRADE_BUCKET_INTERVAL.as_millis() as u64;
-
-    for (ticker, trades_buffer) in trade_buffers_map.iter_mut() {
-        if trades_buffer.is_empty() {
-            continue;
-        }
-
-        let bucket_update_t = trades_buffer
-            .iter()
-            .map(|t| t.time.as_u64())
-            .max()
-            .map(|t| UnixMs::new((t / interval_ms) * interval_ms));
-
-        if let Some((ticker_info, _)) = ticker_info_map.get(ticker)
-            && let Some(update_t) = bucket_update_t
-        {
-            let _ = output
-                .send(Event::TradesReceived(
-                    StreamKind::Trades {
-                        ticker_info: *ticker_info,
-                    },
-                    update_t,
-                    std::mem::take(trades_buffer).into_boxed_slice(),
-                ))
-                .await;
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
@@ -74,8 +37,8 @@ impl MarketKind {
         MarketKind::InversePerps,
     ];
 
-    pub fn qty_in_quote_value(&self, qty: Qty, price: Price, size_in_quote_ccy: bool) -> f32 {
-        let qty = qty.to_f32_lossy();
+    pub fn qty_in_quote_value(&self, qty: Qty, price: Price, size_in_quote_ccy: bool) -> f64 {
+        let qty = qty.to_f64();
 
         match self {
             MarketKind::InversePerps => qty,
@@ -83,7 +46,7 @@ impl MarketKind {
                 if size_in_quote_ccy {
                     qty
                 } else {
-                    price.to_f32() * qty
+                    price.to_f64() * qty
                 }
             }
         }
@@ -343,7 +306,9 @@ impl FromStr for Venue {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize, Enum)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize, Enum, Ord, PartialOrd,
+)]
 pub enum Exchange {
     BinanceLinear,
     BinanceInverse,
@@ -515,10 +480,34 @@ impl Exchange {
         }
     }
 
+    pub fn allowed_tick_multipliers(
+        &self,
+        min_ticksize: Option<super::unit::MinTicksize>,
+    ) -> Vec<TickMultiplier> {
+        if self.is_depth_client_aggr() {
+            return TickMultiplier::ALL.to_vec();
+        }
+
+        let Some(min_tick) = min_ticksize else {
+            return vec![];
+        };
+
+        let allowed = match self.venue() {
+            Venue::Hyperliquid => hub::hyperliquid::allowed_multipliers_for_min_tick(min_tick),
+            _ => return TickMultiplier::ALL.to_vec(),
+        };
+
+        TickMultiplier::ALL
+            .iter()
+            .copied()
+            .filter(|tm| allowed.contains(&tm.0))
+            .collect()
+    }
+
     pub fn is_symbol_supported(&self, symbol: &str, log: bool) -> bool {
         let valid_symbol = symbol
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '-');
 
         if valid_symbol {
             return true;
@@ -531,8 +520,8 @@ impl Exchange {
 
 #[derive(Debug, Clone)]
 pub enum Event {
-    Connected(Exchange),
-    Disconnected(Exchange, String),
+    Connected(Arc<[StreamKind]>),
+    Disconnected(Arc<[StreamKind]>, String),
     DepthReceived(StreamKind, UnixMs, Arc<Depth>),
     TradesReceived(StreamKind, UnixMs, Box<[Trade]>),
     KlineReceived(StreamKind, Kline),

@@ -1,6 +1,7 @@
 use super::ScaleFactor;
 use super::sidebar::Sidebar;
 use super::timezone::UserTimezone;
+use crate::config::network::Network;
 use crate::layout::WindowSpec;
 use crate::{AudioStream, Layout, Theme};
 
@@ -23,9 +24,9 @@ pub struct State {
     pub sidebar: Sidebar,
     pub scale_factor: ScaleFactor,
     pub audio_cfg: AudioStream,
-    pub trade_fetch_enabled: bool,
+    pub network: Network,
     pub size_in_quote_ccy: exchange::SizeUnit,
-    pub proxy_cfg: Option<exchange::proxy::Proxy>,
+    pub cache_market_metadata: bool,
 }
 
 impl State {
@@ -38,9 +39,9 @@ impl State {
         sidebar: Sidebar,
         scale_factor: ScaleFactor,
         audio_cfg: AudioStream,
-        trade_fetch_enabled: bool,
+        network: Network,
         volume_size_unit: exchange::SizeUnit,
-        proxy_cfg: Option<exchange::proxy::Proxy>,
+        cache_market_metadata: bool,
     ) -> Self {
         State {
             layout_manager,
@@ -51,9 +52,9 @@ impl State {
             sidebar,
             scale_factor,
             audio_cfg,
-            trade_fetch_enabled,
+            network,
             size_in_quote_ccy: volume_size_unit,
-            proxy_cfg,
+            cache_market_metadata,
         }
     }
 }

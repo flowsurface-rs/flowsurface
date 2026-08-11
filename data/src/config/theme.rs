@@ -345,3 +345,58 @@ pub fn from_hsv_degrees(h_deg: f32, s: f32, v: f32) -> Color {
     let hue = RgbHue::from_degrees(h_deg);
     from_hsva(Hsva::new(hue, s, v, 1.0))
 }
+
+/// Alpha-composite a foreground color over a background.
+pub fn composite_color(foreground: Color, background: Color) -> Color {
+    let alpha = foreground.a.clamp(0.0, 1.0);
+    Color {
+        r: foreground.r.mul_add(alpha, background.r * (1.0 - alpha)),
+        g: foreground.g.mul_add(alpha, background.g * (1.0 - alpha)),
+        b: foreground.b.mul_add(alpha, background.b * (1.0 - alpha)),
+        a: 1.0,
+    }
+}
+
+/// Compute the WCAG contrast ratio between two colors.
+pub fn contrast_ratio(a: Color, b: Color) -> f32 {
+    let l1 = relative_luminance(a);
+    let l2 = relative_luminance(b);
+    let lighter = l1.max(l2);
+    let darker = l1.min(l2);
+
+    (lighter + 0.05) / (darker + 0.05)
+}
+
+/// Compute the relative luminance of a color per the WCAG specification.
+pub fn relative_luminance(color: Color) -> f32 {
+    let channel = |value: f32| {
+        if value <= 0.03928 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    };
+
+    (0.2126 * channel(color.r)) + (0.7152 * channel(color.g)) + (0.0722 * channel(color.b))
+}
+
+/// Linearly interpolate (mix) two colors by a foreground-weight factor.
+pub fn mix_color(foreground: Color, background: Color, foreground_weight: f32) -> Color {
+    let foreground_weight = foreground_weight.clamp(0.0, 1.0);
+    let background_weight = 1.0 - foreground_weight;
+
+    Color {
+        r: foreground
+            .r
+            .mul_add(foreground_weight, background.r * background_weight),
+        g: foreground
+            .g
+            .mul_add(foreground_weight, background.g * background_weight),
+        b: foreground
+            .b
+            .mul_add(foreground_weight, background.b * background_weight),
+        a: foreground
+            .a
+            .mul_add(foreground_weight, background.a * background_weight),
+    }
+}

@@ -10,6 +10,7 @@ use crate::{
     chart,
     connector::{
         ResolvedStream,
+        client::DataSources,
         fetcher::{self, FetchedData, InfoKind},
     },
     screen::dashboard::tickers_table::TickersTable,
@@ -19,7 +20,7 @@ use crate::{
 };
 use data::{
     UserTimezone,
-    layout::{WindowSpec, pane::ContentKind},
+    layout::{WindowSpec, pane::ContentKind, pane::VisualConfig},
     stream::PersistStreamKind,
 };
 use exchange::{
@@ -178,10 +179,10 @@ impl Dashboard {
 
     pub fn update(
         &mut self,
-        handles: &AdapterHandles,
         message: Message,
         main_window: &Window,
         layout_id: &uuid::Uuid,
+        data_sources: &DataSources,
     ) -> (Task<Message>, Option<Event>) {
         match message {
             Message::SavePopoutSpecs(specs) => {
@@ -194,6 +195,13 @@ impl Dashboard {
             Message::ErrorOccurred(pane_id, err) => match pane_id {
                 Some(id) => {
                     if let Some(state) = self.get_mut_pane_state_by_uuid(main_window.id, id) {
+                        if let pane::Content::Kline { chart: Some(c), .. } = &mut state.content {
+                            c.reset_trade_fetch_state();
+                            if let DashboardError::Fetch(ref msg, Some(req_id)) = err {
+                                log::error!("Fetch error: {msg}");
+                                c.mark_fetch_failed(req_id);
+                            }
+                        }
                         state.status = pane::Status::Ready;
                         state.notifications.push(Toast::error(err.to_string()));
                     }
@@ -252,13 +260,7 @@ impl Dashboard {
                     if to_sync {
                         if let Some(state) = self.get_pane(main_window.id, window, pane) {
                             let studies_cfg = state.content.studies();
-                            let clusters_cfg = match &state.content {
-                                pane::Content::Kline {
-                                    kind: data::chart::KlineChartKind::Footprint { clusters, .. },
-                                    ..
-                                } => Some(*clusters),
-                                _ => None,
-                            };
+                            let clusters_cfg = state.content.clusters();
 
                             self.iter_all_panes_mut(main_window.id)
                                 .for_each(|(_, _, state)| {
@@ -290,17 +292,7 @@ impl Dashboard {
                                         state.settings.visual_config = Some(cfg.clone());
                                         state.content.change_visual_config(cfg.clone());
 
-                                        if let Some(studies) = &studies_cfg {
-                                            state.content.update_studies(studies.clone());
-                                        }
-
-                                        if let Some(cluster_kind) = &clusters_cfg
-                                            && let pane::Content::Kline { chart, .. } =
-                                                &mut state.content
-                                            && let Some(c) = chart
-                                        {
-                                            c.set_cluster_kind(*cluster_kind);
-                                        }
+                                        state.apply_synced_settings(&studies_cfg, &clusters_cfg);
                                     }
                                 });
                         }
@@ -329,6 +321,8 @@ impl Dashboard {
                         });
 
                     if let Some(state) = self.get_mut_pane(main_window.id, window, pane) {
+                        let handles = &data_sources.exchange;
+
                         state.link_group = group;
                         state.modal = None;
 
@@ -384,7 +378,7 @@ impl Dashboard {
                                     .unwrap_or_default();
 
                                 fetcher::request_fetch_many(
-                                    handles.clone(),
+                                    data_sources,
                                     pane_id,
                                     &ready_streams,
                                     *layout_id,
@@ -401,9 +395,12 @@ impl Dashboard {
                                 .map(Message::from)
                                 .chain(self.refresh_streams(main_window.id))
                             }
-                            pane::Effect::SwitchTickersInGroup(ticker_info) => {
-                                self.switch_tickers_in_group(handles, main_window.id, ticker_info)
-                            }
+                            pane::Effect::SwitchTickersInGroup(ticker_info) => self
+                                .switch_tickers_in_group(
+                                    &data_sources.exchange,
+                                    main_window.id,
+                                    ticker_info,
+                                ),
                             pane::Effect::FocusWidget(id) => {
                                 return (iced::widget::operation::focus(id), None);
                             }
@@ -417,6 +414,11 @@ impl Dashboard {
             }
             Message::ChangePaneStatus(pane_id, status) => {
                 if let Some(pane_state) = self.get_mut_pane_state_by_uuid(main_window.id, pane_id) {
+                    if let pane::Status::Ready = status
+                        && let pane::Content::Kline { chart: Some(c), .. } = &mut pane_state.content
+                    {
+                        c.reset_trade_fetch_state();
+                    }
                     pane_state.status = status;
                 }
             }
@@ -711,6 +713,36 @@ impl Dashboard {
         }
     }
 
+    /// Borrow visual config, studies, and clusters from an existing pane of the same
+    /// content kind, so newly created panes inherit the full set of settings
+    /// that the manual "Sync all" button would apply.
+    ///
+    /// `exclude` is the pane that is being initialized, it is skipped so that
+    /// a freshly-set placeholder (from `ContentSelected`) doesn't shadow an
+    /// already-configured pane of the same kind.
+    fn borrow_synced_settings(
+        &self,
+        main_window: window::Id,
+        content_kind: ContentKind,
+        exclude: Option<(window::Id, pane_grid::Pane)>,
+    ) -> Option<(
+        Option<VisualConfig>,
+        Option<data::chart::Study>,
+        Option<data::chart::kline::ClusterKind>,
+    )> {
+        self.iter_all_panes(main_window)
+            .find_map(|(win, pane, state)| {
+                if state.content.kind() == content_kind && (exclude != Some((win, pane))) {
+                    let visual_config = state.settings.visual_config.clone();
+                    let studies = state.content.studies();
+                    let clusters = state.content.clusters();
+                    Some((visual_config, studies, clusters))
+                } else {
+                    None
+                }
+            })
+    }
+
     fn init_pane(
         &mut self,
         handles: &AdapterHandles,
@@ -720,24 +752,42 @@ impl Dashboard {
         ticker_info: TickerInfo,
         content_kind: ContentKind,
     ) -> Task<Message> {
-        if let Some(state) = self.get_mut_pane(main_window, window, selected_pane) {
-            let pane_id = state.unique_id();
+        let synced =
+            self.borrow_synced_settings(main_window, content_kind, Some((window, selected_pane)));
 
-            let streams = state.set_content_and_streams(vec![ticker_info], content_kind);
-            self.streams.extend(streams.iter());
+        let Some(state) = self.get_mut_pane(main_window, window, selected_pane) else {
+            return Task::none();
+        };
 
-            for stream in &streams {
-                if let StreamKind::Kline { .. } = stream {
-                    return fetcher::kline_fetch_task(
-                        handles.clone(),
-                        self.layout_id,
-                        pane_id,
-                        *stream,
-                        None,
-                        None,
-                    )
-                    .map(Message::from);
-                }
+        if let Some((Some(cfg), _, _)) = &synced
+            && (state.settings.visual_config.is_none() || state.content.kind() != content_kind)
+        {
+            state.settings.visual_config = Some(cfg.clone());
+        } else if state.content.kind() != content_kind {
+            state.settings.visual_config = None;
+        }
+
+        let pane_id = state.unique_id();
+        let streams = state.set_content_and_streams(vec![ticker_info], content_kind);
+
+        // Apply synced configs now that content is initialized
+        if let Some((_, studies, clusters)) = &synced {
+            state.apply_synced_settings(studies, clusters);
+        }
+
+        self.streams.extend(streams.iter());
+
+        for stream in &streams {
+            if let StreamKind::Kline { .. } = stream {
+                return fetcher::kline_fetch_task(
+                    handles.clone(),
+                    self.layout_id,
+                    pane_id,
+                    *stream,
+                    None,
+                    None,
+                )
+                .map(Message::from);
             }
         }
 
@@ -758,38 +808,60 @@ impl Dashboard {
             self.focus = Some((main_window, *pane_id));
         }
 
-        if let Some((window, selected_pane)) = self.focus
-            && let Some(state) = self.get_mut_pane(main_window, window, selected_pane)
+        let Some((window, selected_pane)) = self.focus else {
+            return Task::done(Message::Notification(Toast::warn(
+                "No focused pane found".to_string(),
+            )));
+        };
+
+        // Inherit settings from an existing pane of the same type
+        // (mirrors what the manual "Sync all" button does)
+        let synced =
+            self.borrow_synced_settings(main_window, content_kind, Some((window, selected_pane)));
+
+        let Some(state) = self.get_mut_pane(main_window, window, selected_pane) else {
+            return Task::done(Message::Notification(Toast::warn(
+                "No focused pane found".to_string(),
+            )));
+        };
+
+        if let Some((Some(cfg), _, _)) = &synced
+            && (state.settings.visual_config.is_none() || state.content.kind() != content_kind)
         {
-            let previous_ticker = state.stream_pair();
-            if previous_ticker.is_some() && previous_ticker != Some(ticker_info) {
-                state.link_group = None;
-            }
-
-            let streams = state.set_content_and_streams(vec![ticker_info], content_kind);
-
-            let pane_id = state.unique_id();
-            self.streams.extend(streams.iter());
-
-            for stream in &streams {
-                if let StreamKind::Kline { .. } = stream {
-                    return fetcher::kline_fetch_task(
-                        handles.clone(),
-                        self.layout_id,
-                        pane_id,
-                        *stream,
-                        None,
-                        None,
-                    )
-                    .map(Message::from);
-                }
-            }
-            return Task::none();
+            state.settings.visual_config = Some(cfg.clone());
+        } else if state.content.kind() != content_kind {
+            state.settings.visual_config = None;
         }
 
-        Task::done(Message::Notification(Toast::warn(
-            "No focused pane found".to_string(),
-        )))
+        let previous_ticker = state.stream_pair();
+        if previous_ticker.is_some() && previous_ticker != Some(ticker_info) {
+            state.link_group = None;
+        }
+
+        let streams = state.set_content_and_streams(vec![ticker_info], content_kind);
+
+        if let Some((_, studies, clusters)) = &synced {
+            state.apply_synced_settings(studies, clusters);
+        }
+
+        let pane_id = state.unique_id();
+        self.streams.extend(streams.iter());
+
+        for stream in &streams {
+            if let StreamKind::Kline { .. } = stream {
+                return fetcher::kline_fetch_task(
+                    handles.clone(),
+                    self.layout_id,
+                    pane_id,
+                    *stream,
+                    None,
+                    None,
+                )
+                .map(Message::from);
+            }
+        }
+
+        Task::none()
     }
 
     pub fn switch_tickers_in_group(
@@ -853,24 +925,6 @@ impl Dashboard {
         }
     }
 
-    pub fn toggle_trade_fetch(&mut self, is_enabled: bool, main_window: &Window) {
-        fetcher::toggle_trade_fetch(is_enabled);
-
-        self.iter_all_panes_mut(main_window.id)
-            .for_each(|(_, _, state)| {
-                if let pane::Content::Kline { chart, kind, .. } = &mut state.content
-                    && matches!(kind, data::chart::KlineChartKind::Footprint { .. })
-                    && let Some(c) = chart
-                {
-                    c.reset_request_handler();
-
-                    if !is_enabled {
-                        state.status = pane::Status::Ready;
-                    }
-                }
-            });
-    }
-
     pub fn distribute_fetched_data(
         &mut self,
         main_window: window::Id,
@@ -879,26 +933,50 @@ impl Dashboard {
         stream_type: StreamKind,
     ) -> Task<Message> {
         match data {
-            FetchedData::Trades { batch, until_time } => {
-                let last_trade_time = batch.last().map_or(UnixMs::ZERO, |trade| trade.time);
-
-                if last_trade_time < until_time {
-                    if let Err(reason) =
-                        self.insert_fetched_trades(main_window, pane_id, &batch, false)
+            FetchedData::Trades {
+                batch,
+                req_id,
+                until_time,
+            } => {
+                if batch.is_empty() {
+                    if let Some(pane_state) = self.get_mut_pane_state_by_uuid(main_window, pane_id)
                     {
-                        return self.handle_error(Some(pane_id), &reason, main_window);
+                        if let pane::Content::Kline { chart: Some(c), .. } = &mut pane_state.content
+                        {
+                            c.reset_trade_fetch_state();
+                            if let Some(req_id) = req_id {
+                                c.mark_fetch_no_data(req_id);
+                            }
+                        }
+
+                        if matches!(pane_state.status, pane::Status::Loading(..)) {
+                            pane_state.status = pane::Status::Ready;
+                        }
                     }
                 } else {
-                    let filtered_batch = batch
-                        .iter()
-                        .filter(|trade| trade.time <= until_time)
-                        .copied()
-                        .collect::<Vec<_>>();
+                    let last_trade_time = batch.last().map_or(UnixMs::ZERO, |trade| trade.time);
 
-                    if let Err(reason) =
-                        self.insert_fetched_trades(main_window, pane_id, &filtered_batch, true)
-                    {
-                        return self.handle_error(Some(pane_id), &reason, main_window);
+                    if last_trade_time < until_time {
+                        if let Err(reason) =
+                            self.insert_fetched_trades(main_window, pane_id, &batch, false, req_id)
+                        {
+                            return self.handle_error(Some(pane_id), &reason, main_window);
+                        }
+                    } else {
+                        let filtered_batch = batch
+                            .into_iter()
+                            .filter(|trade| trade.time <= until_time)
+                            .collect::<Vec<_>>();
+
+                        if let Err(reason) = self.insert_fetched_trades(
+                            main_window,
+                            pane_id,
+                            &filtered_batch,
+                            true,
+                            req_id,
+                        ) {
+                            return self.handle_error(Some(pane_id), &reason, main_window);
+                        }
                     }
                 }
             }
@@ -935,6 +1013,7 @@ impl Dashboard {
         pane_id: uuid::Uuid,
         trades: &[Trade],
         is_batches_done: bool,
+        req_id: Option<uuid::Uuid>,
     ) -> Result<(), DashboardError> {
         let pane_state = self
             .get_mut_pane_state_by_uuid(main_window, pane_id)
@@ -956,7 +1035,7 @@ impl Dashboard {
         match &mut pane_state.content {
             pane::Content::Kline { chart, .. } => {
                 if let Some(c) = chart {
-                    c.insert_raw_trades(trades.to_owned(), is_batches_done);
+                    c.insert_raw_trades(trades.to_owned(), is_batches_done, req_id);
 
                     if is_batches_done {
                         pane_state.status = pane::Status::Ready;
@@ -1116,8 +1195,8 @@ impl Dashboard {
 
     pub fn tick(
         &mut self,
-        handles: &AdapterHandles,
         now: Instant,
+        data_sources: &DataSources,
         _main_window: window::Id,
     ) -> Task<Message> {
         let mut tasks = vec![];
@@ -1137,7 +1216,7 @@ impl Dashboard {
                         .unwrap_or_default();
 
                     let fetch_tasks = fetcher::request_fetch_many(
-                        handles.clone(),
+                        data_sources,
                         pane_id,
                         &ready_streams,
                         self.layout_id,
@@ -1206,6 +1285,26 @@ impl Dashboard {
             state.streams = ResolvedStream::Ready(streams.clone());
         }
         self.refresh_streams(main_window)
+    }
+
+    pub fn block_streams(&mut self, main_window: window::Id, pane_id: uuid::Uuid, reason: String) {
+        if let Some(state) = self.get_mut_pane_state_by_uuid(main_window, pane_id) {
+            match &mut state.streams {
+                ResolvedStream::Waiting { streams, .. } => {
+                    state.streams = ResolvedStream::Blocked {
+                        streams: streams.clone(),
+                        reason,
+                        last_attempt: None,
+                    };
+                }
+                ResolvedStream::Blocked {
+                    reason: old_reason, ..
+                } => {
+                    *old_reason = reason;
+                }
+                _ => {}
+            }
+        }
     }
 
     pub fn market_subscriptions(&self, handles: &AdapterHandles) -> Subscription<exchange::Event> {
@@ -1332,9 +1431,11 @@ impl From<fetcher::FetchUpdate> for Message {
                 stream,
                 data,
             },
-            fetcher::FetchUpdate::Error { pane_id, error } => {
-                Message::ErrorOccurred(Some(pane_id), DashboardError::Fetch(error))
-            }
+            fetcher::FetchUpdate::Error {
+                pane_id,
+                error,
+                req_id,
+            } => Message::ErrorOccurred(Some(pane_id), DashboardError::Fetch(error, req_id)),
         }
     }
 }

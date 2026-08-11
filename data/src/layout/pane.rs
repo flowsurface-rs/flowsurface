@@ -262,7 +262,7 @@ impl PaneSetup {
 
         let basis =
             match content_kind {
-                ContentKind::HeatmapChart => {
+                ContentKind::HeatmapChart | ContentKind::ShaderHeatmap => {
                     let current = current_basis.and_then(|b| match b {
                         Basis::Time(tf) if exchange.supports_heatmap_timeframe(tf) => Some(b),
                         _ => None,
@@ -271,9 +271,6 @@ impl PaneSetup {
                     Some(current.unwrap_or_else(|| Basis::default_heatmap_time(Some(base_ticker))))
                 }
                 ContentKind::Ladder => Some(
-                    current_basis.unwrap_or_else(|| Basis::default_heatmap_time(Some(base_ticker))),
-                ),
-                ContentKind::ShaderHeatmap => Some(
                     current_basis.unwrap_or_else(|| Basis::default_heatmap_time(Some(base_ticker))),
                 ),
                 ContentKind::FootprintChart => {

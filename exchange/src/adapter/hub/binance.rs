@@ -1,9 +1,8 @@
 use crate::{
     Event, Kline, OpenInterest, PushFrequency, Ticker, TickerInfo, Timeframe, Trade, UnixMs,
-    adapter::limiter::DynamicRateLimiterConfig,
-    adapter::{Exchange, MarketKind},
+    adapter::{Exchange, MarketKind, StreamTicksize, limiter::DynamicRateLimiterConfig},
     depth::DepthPayload,
-    unit::qty::RawQtyUnit,
+    unit::{ContractSize, qty::RawQtyUnit},
 };
 
 use super::{AdapterError, HttpHub, RequestPort};
@@ -80,7 +79,7 @@ pub type BinanceLimiter = crate::adapter::limiter::HeaderDynamicRateLimiter;
 #[derive(Debug, Clone)]
 pub struct BinanceMarketScope {
     pub market: MarketKind,
-    pub contract_sizes: Option<HashMap<Ticker, f32>>,
+    pub contract_sizes: Option<HashMap<Ticker, ContractSize>>,
 }
 
 impl BinanceMarketScope {
@@ -91,7 +90,10 @@ impl BinanceMarketScope {
         }
     }
 
-    pub fn stats(market: MarketKind, contract_sizes: Option<HashMap<Ticker, f32>>) -> Self {
+    pub fn stats(
+        market: MarketKind,
+        contract_sizes: Option<HashMap<Ticker, ContractSize>>,
+    ) -> Self {
         Self {
             market,
             contract_sizes,
@@ -108,8 +110,11 @@ pub struct BinanceHandle {
 }
 
 impl BinanceHandle {
-    pub fn new(proxy_cfg: Option<&crate::proxy::Proxy>) -> Result<Self, AdapterError> {
-        let worker = Worker::new_with_network(proxy_cfg)?;
+    pub fn new(
+        client: reqwest::Client,
+        proxy_cfg: Option<&crate::proxy::Proxy>,
+    ) -> Result<Self, AdapterError> {
+        let worker = Worker::new(client)?;
         let request_port = super::spawn_fetch_worker(worker);
 
         Ok(Self {
@@ -199,10 +204,11 @@ impl BinanceHandle {
     pub fn connect_depth_stream(
         self,
         ticker_info: TickerInfo,
+        depth_aggr: StreamTicksize,
         push_freq: PushFrequency,
     ) -> impl futures::Stream<Item = Event> {
         let proxy_cfg = self.proxy_cfg.clone();
-        stream::connect_depth_stream(self, ticker_info, push_freq, proxy_cfg)
+        stream::connect_depth_stream(self, ticker_info, depth_aggr, push_freq, proxy_cfg)
     }
 
     pub fn connect_trade_stream(
@@ -229,21 +235,21 @@ struct Worker {
 }
 
 impl Worker {
-    fn new_with_network(proxy_cfg: Option<&crate::proxy::Proxy>) -> Result<Self, AdapterError> {
+    fn new(client: reqwest::Client) -> Result<Self, AdapterError> {
         let config = BinanceConfig::default();
 
-        let spot_hub = HttpHub::new(
+        let spot_hub = HttpHub::with_client(
+            client.clone(),
             BinanceLimiter::new(config.limiter_config_for_market(MarketKind::Spot)),
-            proxy_cfg,
-        )?;
-        let linear_hub = HttpHub::new(
+        );
+        let linear_hub = HttpHub::with_client(
+            client.clone(),
             BinanceLimiter::new(config.limiter_config_for_market(MarketKind::LinearPerps)),
-            proxy_cfg,
-        )?;
-        let inverse_hub = HttpHub::new(
+        );
+        let inverse_hub = HttpHub::with_client(
+            client,
             BinanceLimiter::new(config.limiter_config_for_market(MarketKind::InversePerps)),
-            proxy_cfg,
-        )?;
+        );
 
         Ok(Self {
             spot_hub,

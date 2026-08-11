@@ -15,6 +15,11 @@ pub enum ResolvedStream {
     },
     /// Streams that are active and ready to use, but can't persist
     Ready(Vec<StreamKind>),
+    Blocked {
+        streams: Vec<PersistStreamKind>,
+        reason: String,
+        last_attempt: Option<Instant>,
+    },
 }
 
 impl ResolvedStream {
@@ -25,14 +30,19 @@ impl ResolvedStream {
         }
     }
 
-    /// Returns streams to resolve only if the retry interval has elapsed
+    /// Returns streams to resolve only if the retry interval has elapsed.
     pub fn due_streams_to_resolve(&mut self, now: Instant) -> Option<Vec<PersistStreamKind>> {
-        let ResolvedStream::Waiting {
-            streams,
-            last_attempt,
-        } = self
-        else {
-            return None;
+        let (streams, last_attempt) = match self {
+            ResolvedStream::Waiting {
+                streams,
+                last_attempt,
+            } => (streams, last_attempt),
+            ResolvedStream::Blocked {
+                streams,
+                last_attempt,
+                ..
+            } => (streams, last_attempt),
+            _ => return None,
         };
 
         if streams.is_empty() {
@@ -88,6 +98,7 @@ impl ResolvedStream {
             ResolvedStream::Ready(streams) => {
                 streams.into_iter().map(PersistStreamKind::from).collect()
             }
+            ResolvedStream::Blocked { streams, .. } => streams,
         }
     }
 }

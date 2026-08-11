@@ -1,13 +1,15 @@
 pub mod kline;
 pub mod plot;
 
-use super::scale::linear;
+use super::ticks::y;
 use super::{Interaction, Message};
 use crate::chart::{
     Caches, TEXT_SIZE, ViewState,
     indicator::plot::{AnySeries, ChartCanvas, Plot},
-    scale::{AxisLabel, LabelContent, calc_label_rect},
+    ticks::{AxisLabel, LabelContent, calc_label_rect},
 };
+use data::chart::Basis;
+use data::chart::ticks::Y_LABEL_DENSITY_INDICATOR;
 use data::util::{abbr_large_numbers, round_to_tick};
 
 use iced::{
@@ -32,8 +34,49 @@ pub fn indicator_row<'a, P, Y>(
 where
     P: Plot<AnySeries<'a, Y>> + 'a,
 {
+    let (visible_earliest, visible_latest) = (*visible_range.start(), *visible_range.end());
+    let x_shift = plot.x_shift_buckets();
+
+    // Pad the visible range by one bucket on each side so that
+    // off-screen anchor points are included in both Y-scale
+    // calculation and line drawing - preventing edge clipping.
+    let earliest = match main_chart.basis {
+        Basis::Time(tf) => {
+            let tf_ms = tf.to_milliseconds();
+            let mut e = visible_earliest.saturating_sub(tf_ms);
+            if x_shift > 0 {
+                e = e.saturating_sub((x_shift as u64).saturating_mul(tf_ms));
+            }
+            e
+        }
+        Basis::Tick(_) => {
+            if x_shift > 0 {
+                visible_earliest.saturating_sub(x_shift as u64)
+            } else {
+                visible_earliest
+            }
+        }
+    };
+    let latest = match main_chart.basis {
+        Basis::Time(tf) => {
+            let tf_ms = tf.to_milliseconds();
+            let mut l = visible_latest;
+            if x_shift < 0 {
+                l = l.saturating_add((-x_shift as u64).saturating_mul(tf_ms));
+            }
+            l
+        }
+        Basis::Tick(_) => {
+            let mut l = visible_latest.saturating_add(1);
+            if x_shift < 0 {
+                l = l.saturating_add((-x_shift) as u64);
+            }
+            l
+        }
+    };
+
     let (min, max) = plot
-        .y_extents(&series, visible_range)
+        .y_extents(&series, earliest..=latest)
         .map(|(min, max)| plot.adjust_extents(min, max))
         .unwrap_or((0.0, 0.0));
 
@@ -46,6 +89,7 @@ where
         series,
         max_for_labels: max,
         min_for_labels: min,
+        visible_range: earliest..=latest,
     })
     .height(Length::Fill)
     .width(Length::Fill);
@@ -103,14 +147,13 @@ impl canvas::Program<Message> for IndicatorLabel<'_> {
         let tick_size = data::util::guesstimate_ticks(range);
 
         let labels = self.label_cache.draw(renderer, bounds.size(), |frame| {
-            let mut all_labels = linear::generate_labels(
+            let mut all_labels = y::LabelLayout::new(
                 bounds,
-                self.min,
-                self.max,
                 TEXT_SIZE,
                 palette.background.base.text,
-                None,
-            );
+                Y_LABEL_DENSITY_INDICATOR,
+            )
+            .generate(f64::from(self.min), f64::from(self.max), None);
 
             let common_bounds = Rectangle {
                 x: self.chart_bounds.x,
@@ -126,7 +169,7 @@ impl canvas::Program<Message> for IndicatorLabel<'_> {
                 );
 
                 let label = LabelContent {
-                    content: abbr_large_numbers(rounded_value),
+                    content: abbr_large_numbers(rounded_value as f64),
                     background_color: Some(palette.secondary.base.color),
                     text_color: palette.secondary.base.text,
                     text_size: TEXT_SIZE,

@@ -1,9 +1,8 @@
 use crate::{
     Event, Kline, PushFrequency, Ticker, TickerInfo, Timeframe, UnixMs,
-    adapter::limiter::FixedWindowRateLimiterConfig,
-    adapter::{Exchange, MarketKind},
+    adapter::{Exchange, MarketKind, StreamTicksize, limiter::FixedWindowRateLimiterConfig},
     depth::DepthPayload,
-    unit::qty::RawQtyUnit,
+    unit::{ContractSize, qty::RawQtyUnit},
 };
 
 use super::{AdapterError, HttpHub, RequestPort};
@@ -15,7 +14,6 @@ pub mod stream;
 const FETCH_DOMAIN: &str = "https://api.mexc.com/api";
 const MEXC_FUTURES_WS_DOMAIN: &str = "contract.mexc.com";
 const MEXC_FUTURES_WS_PATH: &str = "/edge";
-const PING_INTERVAL: u64 = 15;
 const LIMIT: usize = 10;
 const REFILL_RATE: Duration = Duration::from_secs(2);
 const LIMITER_BUFFER_PCT: f32 = 0.0;
@@ -39,11 +37,11 @@ fn contract_size_for_market(
     ticker_info: TickerInfo,
     market: MarketKind,
     context: &str,
-) -> Result<f32, AdapterError> {
+) -> Result<ContractSize, AdapterError> {
     match market {
-        MarketKind::Spot => Ok(1.0),
+        MarketKind::Spot => Ok(ContractSize::new(0)), // 10^0 = 1.0
         MarketKind::LinearPerps | MarketKind::InversePerps => {
-            ticker_info.contract_size.map(f32::from).ok_or_else(|| {
+            ticker_info.contract_size.ok_or_else(|| {
                 AdapterError::ParseError(format!(
                     "Missing contract size for {} in {context}",
                     ticker_info.ticker
@@ -55,7 +53,7 @@ fn contract_size_for_market(
 
 fn mexc_perps_market_from_symbol(
     symbol: &str,
-    contract_sizes: Option<&HashMap<Ticker, f32>>,
+    contract_sizes: Option<&HashMap<Ticker, ContractSize>>,
 ) -> Option<MarketKind> {
     if symbol.ends_with("USDT") {
         return Some(MarketKind::LinearPerps);
@@ -135,7 +133,7 @@ pub type MexcLimiter = crate::adapter::limiter::FixedWindowRateLimiter;
 #[derive(Debug, Clone, Default)]
 pub struct MexcMarketScope {
     pub markets: Vec<MarketKind>,
-    pub contract_sizes: Option<HashMap<Ticker, f32>>,
+    pub contract_sizes: Option<HashMap<Ticker, ContractSize>>,
 }
 
 impl MexcMarketScope {
@@ -146,7 +144,10 @@ impl MexcMarketScope {
         }
     }
 
-    pub fn stats(markets: &[MarketKind], contract_sizes: Option<HashMap<Ticker, f32>>) -> Self {
+    pub fn stats(
+        markets: &[MarketKind],
+        contract_sizes: Option<HashMap<Ticker, ContractSize>>,
+    ) -> Self {
         Self {
             markets: markets.to_vec(),
             contract_sizes,
@@ -163,8 +164,11 @@ pub struct MexcHandle {
 }
 
 impl MexcHandle {
-    pub fn new(proxy: Option<&crate::proxy::Proxy>) -> Result<Self, AdapterError> {
-        let worker = Worker::new_with_network(proxy)?;
+    pub fn new(
+        client: reqwest::Client,
+        proxy: Option<&crate::proxy::Proxy>,
+    ) -> Result<Self, AdapterError> {
+        let worker = Worker::new(client)?;
         let request_port = super::spawn_fetch_worker(worker);
 
         Ok(Self {
@@ -222,10 +226,11 @@ impl MexcHandle {
     pub fn connect_depth_stream(
         self,
         ticker_info: TickerInfo,
+        depth_aggr: StreamTicksize,
         push_freq: PushFrequency,
     ) -> impl futures::Stream<Item = Event> {
         let proxy_cfg = self.proxy_cfg.clone();
-        stream::connect_depth_stream(self, ticker_info, push_freq, proxy_cfg)
+        stream::connect_depth_stream(self, ticker_info, depth_aggr, push_freq, proxy_cfg)
     }
 
     pub fn connect_trade_stream(
@@ -250,11 +255,11 @@ struct Worker {
 }
 
 impl Worker {
-    fn new_with_network(proxy: Option<&crate::proxy::Proxy>) -> Result<Self, AdapterError> {
+    fn new(client: reqwest::Client) -> Result<Self, AdapterError> {
         let config = MexcConfig::default();
 
         let limiter = MexcLimiter::new(config.limiter_config());
-        let hub = HttpHub::new(limiter, proxy)?;
+        let hub = HttpHub::with_client(client, limiter);
 
         Ok(Self { hub })
     }

@@ -1,7 +1,7 @@
 use crate::{
     Event, Kline, OpenInterest, PushFrequency, TickerInfo, Timeframe, UnixMs,
     adapter::limiter::FixedWindowRateLimiterConfig,
-    adapter::{Exchange, MarketKind},
+    adapter::{Exchange, MarketKind, StreamTicksize},
     unit::qty::RawQtyUnit,
 };
 
@@ -87,8 +87,11 @@ pub struct OkexHandle {
 }
 
 impl OkexHandle {
-    pub fn new(proxy_cfg: Option<&crate::proxy::Proxy>) -> Result<Self, AdapterError> {
-        let worker = Worker::new_with_network(proxy_cfg)?;
+    pub fn new(
+        client: reqwest::Client,
+        proxy_cfg: Option<&crate::proxy::Proxy>,
+    ) -> Result<Self, AdapterError> {
+        let worker = Worker::new(client)?;
         let request_port = super::spawn_fetch_worker(worker);
 
         Ok(Self {
@@ -156,9 +159,10 @@ impl OkexHandle {
     pub fn connect_depth_stream(
         self,
         ticker_info: TickerInfo,
+        depth_aggr: StreamTicksize,
         push_freq: PushFrequency,
     ) -> impl futures::Stream<Item = Event> {
-        stream::connect_depth_stream(ticker_info, push_freq, self.proxy_cfg)
+        stream::connect_depth_stream(ticker_info, depth_aggr, push_freq, self.proxy_cfg)
     }
 
     pub fn connect_trade_stream(
@@ -183,11 +187,11 @@ struct Worker {
 }
 
 impl Worker {
-    fn new_with_network(proxy_cfg: Option<&crate::proxy::Proxy>) -> Result<Self, AdapterError> {
+    fn new(client: reqwest::Client) -> Result<Self, AdapterError> {
         let config = OkexConfig::default();
 
         let limiter = OkexLimiter::new(config.limiter_config());
-        let hub = HttpHub::new(limiter, proxy_cfg)?;
+        let hub = HttpHub::with_client(client, limiter);
 
         Ok(Self { hub })
     }

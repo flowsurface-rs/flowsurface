@@ -48,25 +48,21 @@ impl Qty {
     pub const QTY_SCALE: i32 = 8;
     pub const ZERO: Self = Self { units: 0 };
 
-    pub const fn zero() -> Self {
-        Self::ZERO
-    }
-
     /// Lossy: convert qty to f32, may lose precision beyond `QTY_SCALE`
     pub fn to_f32_lossy(self) -> f32 {
-        let scale = 10f32.powi(Self::QTY_SCALE);
-        (self.units as f32) / scale
+        self.to_f64() as f32
     }
 
-    /// Lossy: create Qty from f32 (rounds to nearest atomic unit)
-    pub fn from_f32_lossy(v: f32) -> Self {
-        let scale = 10f32.powi(Self::QTY_SCALE);
+    pub fn to_f64(self) -> f64 {
+        let scale = 10f64.powi(Self::QTY_SCALE);
+        (self.units as f64) / scale
+    }
+
+    /// Create Qty from f64 (rounds to nearest atomic unit).
+    pub fn from_f64(v: f64) -> Self {
+        let scale = 10f64.powi(Self::QTY_SCALE);
         let units = (v * scale).round() as i64;
         Self { units }
-    }
-
-    pub fn from_f32(v: f32) -> Self {
-        Self::from_f32_lossy(v)
     }
 
     pub const fn from_units(units: i64) -> Self {
@@ -90,13 +86,13 @@ impl Qty {
     }
 
     /// Guards scale/denominator values against zero-ish inputs.
-    pub fn scale_or_one(v: f32) -> f32 {
-        if v <= f32::EPSILON { 1.0 } else { v }
+    pub fn scale_or_one(v: f64) -> f64 {
+        if v <= f64::EPSILON { 1.0 } else { v }
     }
 
-    /// Converts to f32 and applies `scale_or_one`.
-    pub fn to_scale_or_one(self) -> f32 {
-        Self::scale_or_one(self.to_f32_lossy())
+    /// Converts to f64 and applies `scale_or_one`.
+    pub fn to_scale_or_one(self) -> f64 {
+        Self::scale_or_one(self.to_f64())
     }
 
     fn min_qty_units(min_qty: MinQtySize) -> i64 {
@@ -142,15 +138,15 @@ impl Qty {
     }
 }
 
-impl From<Qty> for f32 {
+impl From<Qty> for f64 {
     fn from(value: Qty) -> Self {
-        value.to_f32_lossy()
+        value.to_f64()
     }
 }
 
-impl From<f32> for Qty {
-    fn from(value: f32) -> Self {
-        Qty::from_f32(value)
+impl From<f64> for Qty {
+    fn from(value: f64) -> Self {
+        Qty::from_f64(value)
     }
 }
 
@@ -201,7 +197,7 @@ impl std::ops::SubAssign for Qty {
 #[derive(Debug, Clone, Copy)]
 pub struct QtyNormalization {
     size_in_quote_ccy: bool,
-    contract_size: Option<f32>,
+    contract_size: Option<f64>,
     market_kind: MarketKind,
     raw_qty_unit: Option<RawQtyUnit>,
 }
@@ -221,7 +217,7 @@ impl QtyNormalization {
     pub fn new(size_in_quote_ccy: bool, ticker: TickerInfo) -> Self {
         let market_kind = ticker.exchange().market_type();
 
-        let contract_size = ticker.contract_size.map(|cs| cs.as_f32()).or({
+        let contract_size = ticker.contract_size.map(|cs| cs.as_f64()).or({
             if matches!(market_kind, MarketKind::InversePerps) {
                 Some(1.0)
             } else {
@@ -247,7 +243,7 @@ impl QtyNormalization {
         normalizer
     }
 
-    fn normalize_with_raw_unit(self, qty: f32, price: f32, raw_qty_unit: RawQtyUnit) -> f32 {
+    fn normalize_with_raw_unit(self, qty: f64, price: f64, raw_qty_unit: RawQtyUnit) -> f64 {
         let safe_price = Qty::scale_or_one(price);
 
         let (base_qty, quote_qty) = match raw_qty_unit {
@@ -273,7 +269,7 @@ impl QtyNormalization {
         }
     }
 
-    pub fn normalize(self, qty: f32, price: f32) -> f32 {
+    pub fn normalize(self, qty: f64, price: f64) -> f64 {
         if let Some(raw_qty_unit) = self.raw_qty_unit {
             return self.normalize_with_raw_unit(qty, price, raw_qty_unit);
         }
@@ -304,8 +300,8 @@ impl QtyNormalization {
         }
     }
 
-    pub fn normalize_qty(self, qty: f32, price: f32) -> Qty {
-        Qty::from_f32(self.normalize(qty, price))
+    pub fn normalize_qty(self, qty: f64, price: f64) -> Qty {
+        Qty::from_f64(self.normalize(qty, price))
     }
 }
 
@@ -313,5 +309,5 @@ pub fn de_qty_from_number<'de, D>(deserializer: D) -> Result<Qty, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    serde_util::de_number_like_or_object(deserializer, "qty", Qty::from_f32)
+    serde_util::de_number_like_or_object(deserializer, "qty", Qty::from_f64)
 }

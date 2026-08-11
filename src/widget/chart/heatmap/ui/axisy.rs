@@ -1,5 +1,6 @@
 use super::{AxisInteraction, Message};
 use crate::widget::chart::heatmap::{scene::camera::Camera, ui::AXIS_TEXT_SIZE};
+use data::chart::ticks::y::{PriceAxis, TickValue};
 use exchange::unit::{MinTicksize, Price, PriceStep};
 use iced::{Rectangle, Renderer, Theme, widget::canvas};
 use iced_core::mouse;
@@ -42,37 +43,6 @@ impl LabelKind {
 /// Checks if two ranges overlap.
 fn ranges_overlap(a: (f32, f32), b: (f32, f32)) -> bool {
     a.1 >= b.0 && a.0 <= b.1
-}
-
-fn div_ceil_i64(value: i64, divisor: i64) -> i64 {
-    let q = value.div_euclid(divisor);
-    if value.rem_euclid(divisor) == 0 {
-        q
-    } else {
-        q.saturating_add(1)
-    }
-}
-
-fn major_step_for_range(
-    lowest_price: Price,
-    highest_price: Price,
-    labels_can_fit: i32,
-    step: PriceStep,
-) -> PriceStep {
-    let step_units = step.units.max(1);
-
-    let range_units = highest_price
-        .units
-        .abs_diff(lowest_price.units)
-        .max(step_units as u64);
-    let target_labels = labels_can_fit.max(2) as f32;
-    let raw_major = (range_units as f32) / target_labels;
-    let nice_major = crate::widget::chart::nice_step(raw_major);
-
-    let major_multiple = (nice_major / step_units as f32).ceil().max(1.0) as i64;
-    PriceStep {
-        units: step_units.saturating_mul(major_multiple),
-    }
 }
 
 impl AxisYLabelCanvas<'_> {
@@ -209,9 +179,19 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
             let highest_price = base_price.add_steps(highest_step, step);
 
             let labels_can_fit = (bounds.height / LABEL_TARGET_PX).floor() as i32;
-            let major_step =
-                major_step_for_range(lowest_price, highest_price, labels_can_fit, step);
-            let major_step_units = major_step.units.max(step.units);
+
+            // Universal row-aligned price grid (same machinery as the kline
+            // chart); lives in `data::chart::ticks`. Fall back to a grid of
+            // exactly the row step when no coarser "nice" grid fits.
+            let axis = PriceAxis::new(step, Some(self.label_precision));
+            let mut ticks = axis.ticks(
+                lowest_price.to_f64(),
+                highest_price.to_f64(),
+                labels_can_fit,
+            );
+            if ticks.ticks.is_empty() {
+                ticks = axis.ticks_from_row(lowest_price.to_f64(), highest_price.to_f64());
+            }
 
             let x = bounds.width / 2.0;
             let cursor_label_padding = 6.0f32;
@@ -243,7 +223,7 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
                         let y_px = self.world_to_px_y(y_world_for_step, bounds);
 
                         let price_at_cursor = base_price.add_steps(step_at_cursor, step);
-                        let label_at_cursor = price_at_cursor.to_string(self.label_precision);
+                        let label_at_cursor = axis.format(price_at_cursor);
 
                         LabelKind::Cursor {
                             y_px,
@@ -258,20 +238,18 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
             let y_px_base = self.world_to_px_y(y_world_base, bounds);
 
             let price_base = base_price.add_steps(base_step, step);
-            let label_base = price_base.to_string(self.label_precision);
+            let label_base = axis.format(price_base);
 
             let base_label = LabelKind::Base {
                 y_px: y_px_base,
                 label: label_base,
             };
 
-            // Tick labels (absolute price-domain majors, then projected to row grid)
-            let mut tick_units =
-                div_ceil_i64(lowest_price.units, major_step_units).saturating_mul(major_step_units);
-            let mut safety_counter = 0usize;
-            let tick_limit = highest_price.units.saturating_add(major_step_units / 2);
-
-            while tick_units <= tick_limit && safety_counter < 2_048 {
+            // Tick labels (absolute price-domain majors from the row grid)
+            for tick in ticks.ticks {
+                let TickValue::PriceUnits(tick_units) = tick.value else {
+                    continue;
+                };
                 let rel_units = tick_units.saturating_sub(base_price.units);
 
                 if rel_units % step.units == 0 {
@@ -280,18 +258,10 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
                     let y_px = self.world_to_px_y(y_world, bounds);
 
                     if (0.0..=bounds.height).contains(&y_px) {
-                        let price = Price::from_units(tick_units);
-                        let label = price.to_string(self.label_precision);
+                        let label = axis.format_units(tick_units);
                         labels.push(LabelKind::Tick { y_px, label });
                     }
                 }
-
-                let next_tick = tick_units.saturating_add(major_step_units);
-                if next_tick == tick_units {
-                    break;
-                }
-                tick_units = next_tick;
-                safety_counter += 1;
             }
 
             // --- Render labels with overlap filtering ---
