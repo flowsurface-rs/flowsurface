@@ -122,15 +122,16 @@ cargo build --release
 cargo run --release
 ```
 
-## Credits and thanks to
-
-- [Kraken Desktop](https://www.kraken.com/desktop) (formerly [Cryptowatch](https://blog.kraken.com/product/cryptowatch-to-sunset-kraken-pro-to-integrate-cryptowatch-features)), the main inspiration that sparked this project
-- [Halloy](https://github.com/squidowl/halloy), an excellent open-source reference for the foundational code design and the project architecture
-- And of course, [iced](https://github.com/iced-rs/iced), the GUI library that makes all of this possible
-
 ## Community
 
 Discord: https://discord.gg/RN2XAF7ZuR
+
+## Acknowledgments
+
+- Free code signing for Windows releases is provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/)
+- [Kraken Desktop](https://www.kraken.com/desktop) (formerly [Cryptowatch](https://blog.kraken.com/product/cryptowatch-to-sunset-kraken-pro-to-integrate-cryptowatch-features)), the main inspiration that sparked this project
+- [Halloy](https://github.com/squidowl/halloy), an excellent open-source IRC client, the main reference for the foundational code design
+- And of course, [iced](https://github.com/iced-rs/iced), the GUI library that makes this possible
 
 ## License
 
