@@ -199,7 +199,7 @@ jobs:
                   api-token: "${{ secrets.SIGNPATH_API_TOKEN }}"
                   organization-id: "${{ secrets.SIGNPATH_ORG_ID }}"
                   project-slug: "flowsurface"
-                  signing-policy-slug: "test-signing"
+                  signing-policy-slug: "release-signing"
                   github-artifact-id: "${{ steps.upload-unsigned-windows.outputs.artifact-id }}"
                   wait-for-completion: true
                   output-artifact-directory: "target/release/win-signed"
