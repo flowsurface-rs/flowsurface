@@ -19,6 +19,27 @@ jobs:
               with:
                   fetch-depth: 0
 
+            - name: Verify Cargo.toml version matches tag
+              env:
+                  TAG: ${{ github.event.inputs.tag }}
+              run: |
+                  if git rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
+                      VERSION_SOURCE="refs/tags/$TAG"
+                  else
+                      VERSION_SOURCE="HEAD"
+                  fi
+                  VERSION=$(git show "$VERSION_SOURCE:Cargo.toml" | grep '^version = ' | head -1 | cut -d'"' -f2)
+                  if [ -z "$VERSION" ]; then
+                      echo "Could not read a version from Cargo.toml at $VERSION_SOURCE." >&2
+                      exit 1
+                  fi
+                  if [ "$TAG" != "$VERSION" ] && [ "$TAG" != "v$VERSION" ]; then
+                      echo "Tag $TAG does not match Cargo.toml version $VERSION at $VERSION_SOURCE." >&2
+                      echo "Bump the version under [workspace.package] in Cargo.toml to match the release tag first." >&2
+                      exit 1
+                  fi
+                  echo "Cargo.toml version $VERSION matches tag $TAG."
+
             - name: Import GPG key and configure Git
               env:
                   GPG_NAME: ${{ secrets.GPG_NAME }}
