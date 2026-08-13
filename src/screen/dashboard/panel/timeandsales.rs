@@ -1,13 +1,14 @@
 use super::Message;
 use crate::style;
 use data::config::theme::{darken, lighten};
+use data::config::timezone::TimeLabelKind;
 pub use data::panel::timeandsales::Config;
-use data::panel::timeandsales::{HistAgg, HistAggValues, StackedBar, TradeDisplay, TradeEntry};
+use data::panel::timeandsales::{HistAgg, HistAggValues, StackedBar};
 use exchange::unit::Qty;
 use exchange::{SizeUnit, TickerInfo, Trade, UnixMs, unit::qty::volume_size_unit};
 
-use iced::widget::canvas::{self, Text};
-use iced::{Alignment, Event, Point, Rectangle, Renderer, Size, Theme, mouse};
+use iced::widget::canvas::{self, Canvas, Text};
+use iced::{Alignment, Element, Event, Point, Rectangle, Renderer, Size, Theme, mouse};
 use std::collections::VecDeque;
 use std::time::Instant;
 
@@ -33,7 +34,7 @@ impl super::Panel for TimeAndSales {
             self.is_paused = false;
 
             for trade in self.paused_trades_buffer.iter() {
-                self.hist_agg.add(&trade.display);
+                self.hist_agg.add(trade);
             }
 
             self.recent_trades
@@ -50,7 +51,7 @@ impl super::Panel for TimeAndSales {
         self.is_paused = false;
 
         for trade in self.paused_trades_buffer.iter() {
-            self.hist_agg.add(&trade.display);
+            self.hist_agg.add(trade);
         }
 
         self.recent_trades
@@ -68,11 +69,21 @@ impl super::Panel for TimeAndSales {
     fn is_empty(&self) -> bool {
         self.recent_trades.is_empty() && self.paused_trades_buffer.is_empty()
     }
+
+    fn view<'a>(&'a self, timezone: data::UserTimezone) -> Element<'a, Message> {
+        Canvas::new(TimeAndSalesView {
+            timezone,
+            panel: self,
+        })
+        .width(iced::Length::Fill)
+        .height(iced::Length::Fill)
+        .into()
+    }
 }
 
 pub struct TimeAndSales {
-    recent_trades: VecDeque<TradeEntry>,
-    paused_trades_buffer: VecDeque<TradeEntry>,
+    recent_trades: VecDeque<Trade>,
+    paused_trades_buffer: VecDeque<Trade>,
     hist_agg: HistAgg,
     is_paused: bool,
     max_filtered_qty: Qty,
@@ -112,35 +123,19 @@ impl TimeAndSales {
         let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
 
         for trade in trades_buffer {
-            let trade_time = trade.time;
-            if let Some(time_str) = trade_time.format_utc("%M:%S.%3f") {
-                let trade_display = TradeDisplay {
-                    time_str,
-                    price: trade.price,
-                    qty: trade.qty,
-                    is_sell: trade.is_sell,
-                };
+            let trade_size_value =
+                market_type.qty_in_quote_value(trade.qty, trade.price, size_in_quote_ccy);
 
-                let trade_size_value = market_type.qty_in_quote_value(
-                    trade_display.qty,
-                    trade.price,
-                    size_in_quote_ccy,
-                );
+            if trade_size_value as f32 >= size_filter {
+                self.max_filtered_qty = self.max_filtered_qty.max(trade.qty);
+            }
 
-                if trade_size_value as f32 >= size_filter {
-                    self.max_filtered_qty = self.max_filtered_qty.max(trade_display.qty);
-                }
+            target_trades.push_back(*trade);
 
-                target_trades.push_back(TradeEntry {
-                    ts_ms: trade_time,
-                    display: trade_display,
-                });
-
-                if !self.is_paused
-                    && let Some(last) = target_trades.back()
-                {
-                    self.hist_agg.add(&last.display);
-                }
+            if !self.is_paused
+                && let Some(last) = target_trades.back()
+            {
+                self.hist_agg.add(last);
             }
         }
 
@@ -193,7 +188,7 @@ impl TimeAndSales {
         let high_cutoff = now_ms.saturating_sub(trade_retention_ms.saturating_add(prune_slack_ms));
 
         if let Some(oldest) = self.recent_trades.front() {
-            if oldest.ts_ms >= high_cutoff {
+            if oldest.time >= high_cutoff {
                 return;
             }
         } else {
@@ -204,11 +199,11 @@ impl TimeAndSales {
 
         let mut popped_any = false;
         while let Some(front) = self.recent_trades.front() {
-            if front.ts_ms >= low_cutoff {
+            if front.time >= low_cutoff {
                 break;
             }
             let old = self.recent_trades.pop_front().unwrap();
-            self.hist_agg.remove(&old.display);
+            self.hist_agg.remove(&old);
             popped_any = true;
         }
 
@@ -220,14 +215,11 @@ impl TimeAndSales {
                 .recent_trades
                 .iter()
                 .filter(|t| {
-                    let trade_size = market_type.qty_in_quote_value(
-                        t.display.qty,
-                        t.display.price,
-                        size_in_quote_ccy,
-                    );
+                    let trade_size =
+                        market_type.qty_in_quote_value(t.qty, t.price, size_in_quote_ccy);
                     trade_size as f32 >= size_filter
                 })
-                .map(|e| e.display.qty)
+                .map(|e| e.qty)
                 .fold(Qty::ZERO, Qty::max);
 
             let stacked_bar_h = self.stacked_bar_height();
@@ -252,7 +244,7 @@ impl TimeAndSales {
         let high_cutoff = now_ms.saturating_sub(trade_retention_ms.saturating_add(prune_slack_ms));
 
         if let Some(oldest) = self.paused_trades_buffer.front() {
-            if oldest.ts_ms >= high_cutoff {
+            if oldest.time >= high_cutoff {
                 return;
             }
         } else {
@@ -260,7 +252,7 @@ impl TimeAndSales {
         }
 
         while let Some(front) = self.paused_trades_buffer.front() {
-            if front.ts_ms >= low_cutoff {
+            if front.time >= low_cutoff {
                 break;
             }
             self.paused_trades_buffer.pop_front();
@@ -268,7 +260,12 @@ impl TimeAndSales {
     }
 }
 
-impl canvas::Program<Message> for TimeAndSales {
+struct TimeAndSalesView<'a> {
+    timezone: data::UserTimezone,
+    panel: &'a TimeAndSales,
+}
+
+impl canvas::Program<Message> for TimeAndSalesView<'_> {
     type State = ();
 
     fn update(
@@ -287,7 +284,7 @@ impl canvas::Program<Message> for TimeAndSales {
                         Some(canvas::Action::publish(Message::ResetScroll).and_capture())
                     }
                     mouse::Button::Left => {
-                        let paused_box_height = self.pause_overlay_height();
+                        let paused_box_height = self.panel.pause_overlay_height();
                         let paused_box = Rectangle {
                             x: 0.0,
                             y: 0.0,
@@ -295,7 +292,7 @@ impl canvas::Program<Message> for TimeAndSales {
                             height: paused_box_height,
                         };
 
-                        if self.is_paused && paused_box.contains(cursor_position) {
+                        if self.panel.is_paused && paused_box.contains(cursor_position) {
                             Some(canvas::Action::publish(Message::ResetScroll).and_capture())
                         } else {
                             None
@@ -312,7 +309,7 @@ impl canvas::Program<Message> for TimeAndSales {
                     Some(canvas::Action::publish(Message::Scrolled(scroll_amount)).and_capture())
                 }
                 mouse::Event::CursorMoved { .. } => {
-                    if self.is_paused {
+                    if self.panel.is_paused {
                         let now = Some(Instant::now());
                         Some(canvas::Action::publish(Message::Invalidate(now)).and_capture())
                     } else {
@@ -333,21 +330,21 @@ impl canvas::Program<Message> for TimeAndSales {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
-        let market_type = self.ticker_info.market_type();
+        let market_type = self.panel.ticker_info.market_type();
 
         let palette = theme.extended_palette();
-        let is_scroll_paused = self.is_paused;
-        let stacked_bar_h = self.stacked_bar_height();
+        let is_scroll_paused = self.panel.is_paused;
+        let stacked_bar_h = self.panel.stacked_bar_height();
 
-        let content = self.cache.draw(renderer, bounds.size(), |frame| {
-            let content_top_y = -self.scroll_offset;
+        let content = self.panel.cache.draw(renderer, bounds.size(), |frame| {
+            let content_top_y = -self.panel.scroll_offset;
 
-            if let Some(hist) = &self.config.stacked_bar {
+            if let Some(hist) = &self.panel.config.stacked_bar {
                 let ratio_kind = match hist {
                     StackedBar::Compact(r) | StackedBar::Full(r) => *r,
                 };
 
-                if let Some(values) = self.hist_agg.values_for(ratio_kind) {
+                if let Some(values) = self.panel.hist_agg.values_for(ratio_kind) {
                     let draw_stacked_bar =
                         |frame: &mut canvas::Frame, buy_bar_width: f32, sell_bar_width: f32| {
                             frame.fill_rectangle(
@@ -440,23 +437,21 @@ impl canvas::Program<Message> for TimeAndSales {
             let row_height = TRADE_ROW_HEIGHT;
             let row_width = bounds.width;
 
-            let row_scroll_offset = (self.scroll_offset - stacked_bar_h).max(0.0);
+            let row_scroll_offset = (self.panel.scroll_offset - stacked_bar_h).max(0.0);
             let start_index = (row_scroll_offset / row_height).floor() as usize;
             let visible_rows = (bounds.height / row_height).ceil() as usize;
 
             let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
-            let max_filtered_qty_f32 = self.max_filtered_qty.to_f32_lossy();
+            let max_filtered_qty_f32 = self.panel.max_filtered_qty.to_f32_lossy();
 
             let trades_to_draw = self
+                .panel
                 .recent_trades
                 .iter()
                 .filter(|t| {
-                    let trade_size = market_type.qty_in_quote_value(
-                        t.display.qty,
-                        t.display.price,
-                        size_in_quote_ccy,
-                    );
-                    trade_size as f32 >= self.config.trade_size_filter
+                    let trade_size =
+                        market_type.qty_in_quote_value(t.qty, t.price, size_in_quote_ccy);
+                    trade_size as f32 >= self.panel.config.trade_size_filter
                 })
                 .rev()
                 .skip(start_index)
@@ -474,7 +469,6 @@ impl canvas::Program<Message> for TimeAndSales {
                 };
 
             for (i, entry) in trades_to_draw.enumerate() {
-                let trade = &entry.display;
                 let y_position =
                     content_top_y + stacked_bar_h + ((start_index + i) as f32 * row_height);
 
@@ -482,14 +476,14 @@ impl canvas::Program<Message> for TimeAndSales {
                     continue;
                 }
 
-                let bg_color = if trade.is_sell {
+                let bg_color = if entry.is_sell {
                     palette.danger.weak.color
                 } else {
                     palette.success.weak.color
                 };
 
                 let bg_color_alpha = if max_filtered_qty_f32 > 0.0 {
-                    (trade.qty.to_f32_lossy() / max_filtered_qty_f32).clamp(0.02, 1.0)
+                    (entry.qty.to_f32_lossy() / max_filtered_qty_f32).clamp(0.02, 1.0)
                 } else {
                     0.02
                 };
@@ -520,7 +514,12 @@ impl canvas::Program<Message> for TimeAndSales {
                 );
 
                 let trade_time = create_text(
-                    trade.time_str.clone(),
+                    self.timezone
+                        .format_with_kind(
+                            entry.time.as_u64() as i64,
+                            TimeLabelKind::Custom("%M:%S.%3f"),
+                        )
+                        .unwrap_or_default(),
                     Point {
                         x: row_width * 0.1,
                         y: y_position,
@@ -531,7 +530,7 @@ impl canvas::Program<Message> for TimeAndSales {
                 frame.fill_text(trade_time);
 
                 let trade_price = create_text(
-                    trade.price.to_string(self.ticker_info.min_ticksize),
+                    entry.price.to_string(self.panel.ticker_info.min_ticksize),
                     Point {
                         x: row_width * 0.67,
                         y: y_position,
@@ -542,7 +541,7 @@ impl canvas::Program<Message> for TimeAndSales {
                 frame.fill_text(trade_price);
 
                 let trade_qty = create_text(
-                    data::util::abbr_large_numbers(trade.qty.to_f64()),
+                    data::util::abbr_large_numbers(entry.qty.to_f64()),
                     Point {
                         x: row_width * 0.9,
                         y: y_position,
@@ -554,7 +553,7 @@ impl canvas::Program<Message> for TimeAndSales {
             }
 
             if is_scroll_paused {
-                let pause_overlay_height = self.pause_overlay_height();
+                let pause_overlay_height = self.panel.pause_overlay_height();
                 let pause_overlay_y = 0.0;
 
                 let cursor_position = cursor.position_in(bounds);
@@ -613,8 +612,8 @@ impl canvas::Program<Message> for TimeAndSales {
         bounds: iced::Rectangle,
         cursor: iced_core::mouse::Cursor,
     ) -> iced_core::mouse::Interaction {
-        if self.is_paused {
-            let stacked_bar_h = self.stacked_bar_height();
+        if self.panel.is_paused {
+            let stacked_bar_h = self.panel.stacked_bar_height();
             let paused_box = Rectangle {
                 x: bounds.x,
                 y: bounds.y,
