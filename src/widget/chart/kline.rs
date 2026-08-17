@@ -410,6 +410,14 @@ enum DragMode {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct GutterCacheKey {
+    version: u64,
+    width: f32,
+    height: f32,
+    panel_count: usize,
+}
+
 struct State {
     plot_cache: canvas::Cache,
     y_axis_cache: canvas::Cache,
@@ -419,6 +427,8 @@ struct State {
     horizontal_zoom_scroll_accum: f32,
     drag_mode: DragMode,
     last_cursor: Option<Point>,
+    y_axis_gutter_width: f32,
+    gutter_cache_key: Option<GutterCacheKey>,
     last_cache_rev: u64,
     previous_click: Option<iced_core::mouse::Click>,
 }
@@ -434,6 +444,8 @@ impl Default for State {
             horizontal_zoom_scroll_accum: 0.0,
             drag_mode: DragMode::None,
             last_cursor: None,
+            y_axis_gutter_width: Y_AXIS_GUTTER,
+            gutter_cache_key: None,
             last_cache_rev: 0,
             previous_click: None,
         }
@@ -1076,12 +1088,10 @@ where
         }
     }
 
-    fn fill_y_axis_labels(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
+    fn y_axis_label_specs(&self, scene: &Scene) -> Vec<(usize, String, f32)> {
         let labels_for_height =
             |height: f32| y_labels_that_fit(height, TEXT_SIZE, Y_LABEL_DENSITY).max(2) as i32;
-        let Some(primary_axis) = scene.layout.panel(scene.primary_panel) else {
-            return;
-        };
+        let mut labels = Vec::new();
         let uses_display_space_ticks = matches!(
             scene.primary_scale_mode,
             PanelScaleMode::PercentFromBase | PanelScaleMode::Logarithmic
@@ -1097,11 +1107,10 @@ where
                 let max_price = scene.primary_unit_to_value(scene.max_primary_unit) as f64;
                 let labels_can_fit = labels_for_height(scene.primary_plot().height);
                 let primary_precision = self.panel_value_precision(scene.primary_panel);
-
                 let y_ticks = price_axis.ticks(min_price, max_price, labels_can_fit);
                 let step_value = y_ticks.step.unwrap_or(1.0) as f32;
 
-                for tick in &y_ticks.ticks {
+                for tick in y_ticks.ticks {
                     let TickValue::PriceUnits(units) = tick.value else {
                         continue;
                     };
@@ -1112,15 +1121,11 @@ where
                         scene.primary_plot().y,
                         scene.primary_plot().y + scene.primary_plot().height,
                     );
-                    let text = scene.format_primary_axis_label(value, step_value);
-
-                    self.draw_y_axis_label(
-                        frame,
-                        primary_axis,
-                        text,
+                    labels.push((
+                        scene.primary_panel,
+                        scene.format_primary_axis_label(value, step_value),
                         y,
-                        palette.background.base.text,
-                    );
+                    ));
                 }
             } else {
                 let primary_precision = self.panel_value_precision(scene.primary_panel);
@@ -1145,15 +1150,11 @@ where
                         scene.primary_plot().y,
                         scene.primary_plot().y + scene.primary_plot().height,
                     );
-                    let text = scene.format_primary_axis_label(value, step_value);
-
-                    self.draw_y_axis_label(
-                        frame,
-                        primary_axis,
-                        text,
+                    labels.push((
+                        scene.primary_panel,
+                        scene.format_primary_axis_label(value, step_value),
                         y,
-                        palette.background.base.text,
-                    );
+                    ));
                 }
             }
         } else {
@@ -1175,12 +1176,12 @@ where
                 let TickValue::Float(tick) = tick.value else {
                     continue;
                 };
-                let tick = tick as f32;
-
                 let y = scene.primary_plot().y + (1.0 - ratio) * scene.primary_plot().height;
-                let text = scene.format_primary_axis_label(tick, step);
-
-                self.draw_y_axis_label(frame, primary_axis, text, y, palette.background.base.text);
+                labels.push((
+                    scene.primary_panel,
+                    scene.format_primary_axis_label(tick as f32, step),
+                    y,
+                ));
             }
         }
 
@@ -1189,9 +1190,7 @@ where
             let Some(panel) = scene.layout.panel(panel_index) else {
                 continue;
             };
-            let indicator_axis = panel;
             let panel_precision = self.panel_value_precision(panel_index);
-
             let min_value = self.panel_unit_to_value(panel_precision, indicator.min_unit) as f64;
             let max_value = self.panel_unit_to_value(panel_precision, indicator.max_unit) as f64;
             let y_ticks = YAxisScale::Linear.ticks(
@@ -1199,7 +1198,6 @@ where
                 max_value,
                 labels_for_height(panel.plot.height),
             );
-
             let step_value = y_ticks.step.unwrap_or(1.0) as f32;
 
             for tick in y_ticks.ticks {
@@ -1212,18 +1210,53 @@ where
                     continue;
                 };
                 let y = y.clamp(panel.plot.y, panel.plot.y + panel.plot.height);
-
-                let text =
-                    self.format_panel_axis_value(panel_index, panel_precision, value, step_value);
-
-                self.draw_y_axis_label(
-                    frame,
-                    indicator_axis,
-                    text,
+                labels.push((
+                    panel_index,
+                    self.format_panel_axis_value(panel_index, panel_precision, value, step_value),
                     y,
-                    palette.background.base.text,
-                );
+                ));
             }
+        }
+
+        labels
+    }
+
+    fn required_y_axis_gutter(&self, scene: &Scene) -> f32 {
+        let label_width = |label: &str| label.chars().count() as f32 * CHAR_W;
+        let mut widest_label = self
+            .y_axis_label_specs(scene)
+            .into_iter()
+            .map(|(_, label, _)| label_width(&label))
+            .fold(0.0, f32::max);
+
+        for unit in [scene.min_primary_unit, scene.max_primary_unit] {
+            let value = scene.primary_unit_to_value(unit);
+            widest_label = widest_label.max(label_width(&scene.format_primary_cursor_label(value)));
+        }
+
+        for indicator in &scene.indicator_panels {
+            let panel_precision = self.panel_value_precision(indicator.panel_index);
+            for unit in [indicator.min_unit, indicator.max_unit] {
+                let value = self.panel_unit_to_value(panel_precision, unit);
+                widest_label = widest_label.max(label_width(&self.format_panel_axis_value(
+                    indicator.panel_index,
+                    panel_precision,
+                    value,
+                    0.01,
+                )));
+            }
+        }
+
+        (widest_label + Y_AXIS_LABEL_LEFT_INSET * 2.0).max(Y_AXIS_GUTTER)
+    }
+
+    fn fill_y_axis_labels(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
+        for (panel_index, text, y) in self.y_axis_label_specs(scene) {
+            let Some(axis) = scene.layout.panel(panel_index) else {
+                continue;
+            };
+
+            self.draw_y_axis_label(frame, axis, text, y, palette.background.base.text);
         }
     }
 
@@ -1623,90 +1656,137 @@ where
 
     fn layout(
         &mut self,
-        _tree: &mut Tree,
+        tree: &mut Tree,
         _renderer: &Renderer,
         limits: &iced_layout::Limits,
     ) -> iced_layout::Node {
         let panel_count = self.panel_count();
 
-        let build_panel_stack = |stack_size: Size| {
-            let plot_heights = self.panel_plot_heights(stack_size.height, panel_count);
-            let mut children = Vec::with_capacity(panel_count.saturating_mul(3).saturating_sub(1));
+        let build_layout = |y_axis_gutter: f32| {
+            let build_panel_stack = |stack_size: Size| {
+                let plot_heights = self.panel_plot_heights(stack_size.height, panel_count);
+                let mut children =
+                    Vec::with_capacity(panel_count.saturating_mul(3).saturating_sub(1));
 
-            let mut y = 0.0;
+                let mut y = 0.0;
 
-            for panel_index in 0..panel_count {
-                let plot_h = plot_heights.get(panel_index).copied().unwrap_or_default();
+                for panel_index in 0..panel_count {
+                    let plot_h = plot_heights.get(panel_index).copied().unwrap_or_default();
 
-                children.push(
-                    iced_layout::Node::new(Size::new(stack_size.width, plot_h))
-                        .move_to(Point::new(0.0, y)),
-                );
-                y += plot_h;
-
-                let axis_h = if panel_index + 1 == panel_count {
-                    (stack_size.height - y).max(0.0)
-                } else {
-                    0.0
-                };
-
-                children.push(
-                    iced_layout::Node::new(Size::new(stack_size.width, axis_h))
-                        .move_to(Point::new(0.0, y)),
-                );
-                y += axis_h;
-
-                if panel_index + 1 < panel_count {
                     children.push(
-                        iced_layout::Node::new(Size::new(stack_size.width, PANEL_SPLITTER_HEIGHT))
+                        iced_layout::Node::new(Size::new(stack_size.width, plot_h))
                             .move_to(Point::new(0.0, y)),
                     );
-                    y += PANEL_SPLITTER_HEIGHT;
-                }
-            }
+                    y += plot_h;
 
-            iced_layout::Node::with_children(stack_size, children)
+                    let axis_h = if panel_index + 1 == panel_count {
+                        (stack_size.height - y).max(0.0)
+                    } else {
+                        0.0
+                    };
+
+                    children.push(
+                        iced_layout::Node::new(Size::new(stack_size.width, axis_h))
+                            .move_to(Point::new(0.0, y)),
+                    );
+                    y += axis_h;
+
+                    if panel_index + 1 < panel_count {
+                        children.push(
+                            iced_layout::Node::new(Size::new(
+                                stack_size.width,
+                                PANEL_SPLITTER_HEIGHT,
+                            ))
+                            .move_to(Point::new(0.0, y)),
+                        );
+                        y += PANEL_SPLITTER_HEIGHT;
+                    }
+                }
+
+                iced_layout::Node::with_children(stack_size, children)
+            };
+
+            let row_node = iced_layout::next_to_each_other(
+                &limits.shrink(Size::new(0.0, X_AXIS_HEIGHT)),
+                0.0,
+                |l| {
+                    let stack_node = iced_layout::atomic(
+                        &l.shrink(Size::new(y_axis_gutter, 0.0)),
+                        Length::Fill,
+                        Length::Fill,
+                    );
+
+                    build_panel_stack(stack_node.size())
+                },
+                |l| iced_layout::atomic(l, y_axis_gutter, Length::Fill),
+            );
+
+            let x_axis_node = iced_layout::next_to_each_other(
+                limits,
+                0.0,
+                |l| {
+                    iced_layout::atomic(
+                        &l.shrink(Size::new(y_axis_gutter, 0.0)),
+                        Length::Fill,
+                        X_AXIS_HEIGHT,
+                    )
+                },
+                |l| iced_layout::atomic(l, y_axis_gutter, X_AXIS_HEIGHT),
+            );
+
+            let row_h = row_node.size().height;
+            let total_w = row_node.size().width;
+            let total_h = row_h + X_AXIS_HEIGHT;
+
+            iced_layout::Node::with_children(
+                Size::new(total_w, total_h),
+                vec![
+                    row_node.move_to(Point::new(0.0, 0.0)),
+                    x_axis_node.move_to(Point::new(0.0, row_h)),
+                ],
+            )
         };
 
-        let row_node = iced_layout::next_to_each_other(
-            &limits.shrink(Size::new(0.0, X_AXIS_HEIGHT)),
-            0.0,
-            |l| {
-                let stack_node = iced_layout::atomic(
-                    &l.shrink(Size::new(Y_AXIS_GUTTER, 0.0)),
-                    Length::Fill,
-                    Length::Fill,
-                );
+        let layout_size = limits.max();
+        let gutter_cache_key = GutterCacheKey {
+            version: self.version,
+            width: layout_size.width,
+            height: layout_size.height,
+            panel_count,
+        };
+        let state = tree.state.downcast_mut::<State>();
 
-                build_panel_stack(stack_node.size())
-            },
-            |l| iced_layout::atomic(l, Y_AXIS_GUTTER, Length::Fill),
-        );
+        let y_axis_gutter = if state.gutter_cache_key == Some(gutter_cache_key) {
+            state.y_axis_gutter_width
+        } else {
+            let mut gutter = Y_AXIS_GUTTER;
+            let mut node = build_layout(gutter);
 
-        let x_axis_node = iced_layout::next_to_each_other(
-            limits,
-            0.0,
-            |l| {
-                iced_layout::atomic(
-                    &l.shrink(Size::new(Y_AXIS_GUTTER, 0.0)),
-                    Length::Fill,
-                    X_AXIS_HEIGHT,
-                )
-            },
-            |l| iced_layout::atomic(l, Y_AXIS_GUTTER, X_AXIS_HEIGHT),
-        );
+            for _ in 0..2 {
+                let required = {
+                    let provisional_layout = iced_layout::Layout::new(&node);
+                    self.compute_scene(provisional_layout, mouse::Cursor::Unavailable)
+                        .map(|scene| self.required_y_axis_gutter(&scene))
+                };
 
-        let row_h = row_node.size().height;
-        let total_w = row_node.size().width;
-        let total_h = row_h + X_AXIS_HEIGHT;
+                let Some(required) = required else {
+                    break;
+                };
 
-        iced_layout::Node::with_children(
-            Size::new(total_w, total_h),
-            vec![
-                row_node.move_to(Point::new(0.0, 0.0)),
-                x_axis_node.move_to(Point::new(0.0, row_h)),
-            ],
-        )
+                if required <= gutter + f32::EPSILON {
+                    break;
+                }
+
+                gutter = required;
+                node = build_layout(gutter);
+            }
+
+            state.y_axis_gutter_width = gutter;
+            state.gutter_cache_key = Some(gutter_cache_key);
+            gutter
+        };
+
+        build_layout(y_axis_gutter)
     }
 
     fn update(
