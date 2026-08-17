@@ -1579,4 +1579,21 @@ where
                 .map_or_else(|| unit.to_string(), |index| index.as_u64().to_string()),
         }
     }
+
+    pub(super) fn format_x_crosshair_label(&self, x_axis: XAxis, unit: i64) -> String {
+        match x_axis {
+            XAxis::Time { .. } => x_axis.time_from_unit(unit).map_or_else(
+                || unit.to_string(),
+                |ts| {
+                    self.timezone
+                        .format_with_kind(
+                            ts.as_u64() as i64,
+                            data::config::timezone::TimeLabelKind::Crosshair { show_millis: false },
+                        )
+                        .unwrap_or_else(|| ts.as_u64().to_string())
+                },
+            ),
+            XAxis::Tick { .. } => self.format_x_label(x_axis, unit, 1),
+        }
+    }
 }
