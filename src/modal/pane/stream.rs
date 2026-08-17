@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 const NUMERIC_INPUT_BUF_SIZE: usize = 5; // Max 5 digits for u16 (65535)
 
 const TICK_COUNT_MIN: u16 = 4;
-const TICK_COUNT_MAX: u16 = 1000;
+const TICK_COUNT_MAX: u16 = 10000;
 
 const TICK_MULTIPLIER_MIN: u16 = 1;
 const TICK_MULTIPLIER_MAX: u16 = 2000;

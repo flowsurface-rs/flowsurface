@@ -1,10 +1,16 @@
+use crate::chart::ticks::{AxisLabel, x};
 use crate::style;
 use crate::widget::chart::SeriesLike;
 use crate::widget::chart::Zoom;
 use crate::widget::chart::domain;
 
 use data::UserTimezone;
-use exchange::{TickerInfo, Timeframe};
+use data::chart::ticks::{
+    Y_LABEL_DENSITY, x_labels_that_fit,
+    y::{TickValue, YAxisScale},
+    y_labels_that_fit,
+};
+use exchange::{TickerInfo, Timeframe, UnixMs};
 
 use iced::advanced::widget::tree::{self, Tree};
 use iced::advanced::{self, Clipboard, Layout, Shell, Widget, layout, renderer};
@@ -20,7 +26,6 @@ use chrono::TimeZone;
 const Y_AXIS_GUTTER: f32 = 66.0; // px
 const X_AXIS_HEIGHT: f32 = 24.0;
 
-const MIN_X_TICK_PX: f32 = 80.0;
 const TEXT_SIZE: f32 = style::text_size::BODY;
 
 const ZOOM_STEP_PCT: f32 = 0.05; // 5% per scroll "line"
@@ -248,10 +253,17 @@ where
             px_per_ms,
         };
 
-        let total_ticks = (plot.height / TEXT_SIZE / 3.).floor() as usize;
-        let (all_ticks, step) = super::ticks(min_pct, max_pct, total_ticks);
-        let mut ticks: Vec<f32> = all_ticks
+        let total_ticks = y_labels_that_fit(plot.height, TEXT_SIZE, Y_LABEL_DENSITY);
+        let y_ticks =
+            YAxisScale::Percent.ticks(f64::from(min_pct), f64::from(max_pct), total_ticks as i32);
+        let step = y_ticks.step.unwrap_or(1.0) as f32;
+        let mut ticks: Vec<f32> = y_ticks
+            .ticks
             .into_iter()
+            .filter_map(|tick| match tick.value {
+                TickValue::Float(value) => Some(value as f32),
+                TickValue::PriceUnits(_) => None,
+            })
             .filter(|t| (*t >= min_pct - f32::EPSILON) && (*t <= max_pct + f32::EPSILON))
             .collect();
         if ticks.is_empty() {
@@ -1267,41 +1279,39 @@ where
     }
 
     fn fill_x_axis_labels(&self, frame: &mut canvas::Frame, ctx: &PlotContext, palette: &Extended) {
-        let (ticks, step_ms) =
-            super::time_ticks(ctx.min_x, ctx.max_x, ctx.px_per_ms, MIN_X_TICK_PX);
-
-        let baseline_to_text = 4.0;
-        let y_center_local = baseline_to_text + 2.0 + TEXT_SIZE * 0.5;
-
         let plot_rect = ctx.plot_rect();
+        let labels_can_fit = x_labels_that_fit(plot_rect.width, TEXT_SIZE) as i32;
 
-        let mut last_right = f32::NEG_INFINITY;
-        for t in ticks {
-            let x_local = ctx.map_x(t).clamp(0.0, plot_rect.width);
+        let span_ms = (f64::from(plot_rect.width) / f64::from(ctx.px_per_ms)).round() as u64;
 
-            let label = super::format_time_label(t, step_ms, self.timezone);
+        let labels = x::generate_time_labels(
+            self.timeframe,
+            self.timezone,
+            Rectangle {
+                x: 0.0,
+                y: 0.0,
+                width: plot_rect.width,
+                height: X_AXIS_HEIGHT,
+            },
+            UnixMs::new(ctx.min_x),
+            UnixMs::new(ctx.max_x),
+            span_ms,
+            labels_can_fit,
+            palette,
+        );
 
-            let est_w = (label.len() as f32) * CHAR_W + 8.0;
-            let left = x_local - est_w * 0.5;
-            let right = x_local + est_w * 0.5;
+        let labels: Vec<AxisLabel> = labels
+            .into_iter()
+            .filter(|l| {
+                let AxisLabel::X { bounds, .. } = l else {
+                    return true;
+                };
+                let center = bounds.x + bounds.width / 2.0;
+                (0.0..=plot_rect.width).contains(&center)
+            })
+            .collect();
 
-            if left <= last_right {
-                continue;
-            }
-
-            frame.fill_text(canvas::Text {
-                content: label,
-                position: Point::new(x_local, y_center_local),
-                color: palette.background.base.text,
-                size: TEXT_SIZE.into(),
-                font: style::AZERET_MONO,
-                align_x: iced::Alignment::Center.into(),
-                align_y: iced::Alignment::Center.into(),
-                ..Default::default()
-            });
-
-            last_right = right;
-        }
+        AxisLabel::filter_and_draw(&labels, frame);
     }
 
     fn fill_top_left_legend(

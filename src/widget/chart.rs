@@ -5,6 +5,59 @@ pub mod kline;
 use exchange::TickerInfo;
 use iced::Rectangle;
 
+#[derive(Debug, Clone, Copy)]
+pub struct Regions {
+    pub plot: Rectangle,
+    pub x_axis: Rectangle,
+    pub y_axis: Rectangle,
+}
+
+impl Regions {
+    pub fn from_layout(root: iced_core::Layout<'_>) -> Self {
+        let root_bounds = root.bounds();
+
+        let row = root.child(0);
+        let x_abs = root.child(1).bounds();
+
+        let plot_abs = row.child(0).bounds();
+        let y_abs = row.child(1).bounds();
+
+        let to_local = |r: Rectangle| Rectangle {
+            x: r.x - root_bounds.x,
+            y: r.y - root_bounds.y,
+            width: r.width,
+            height: r.height,
+        };
+
+        Regions {
+            plot: to_local(plot_abs),
+            y_axis: to_local(y_abs),
+            x_axis: to_local(x_abs),
+        }
+    }
+
+    pub fn is_in_plot(&self, p: iced_core::Point) -> bool {
+        p.x >= self.plot.x
+            && p.x <= self.plot.x + self.plot.width
+            && p.y >= self.plot.y
+            && p.y <= self.plot.y + self.plot.height
+    }
+
+    pub fn is_in_x_axis(&self, p: iced_core::Point) -> bool {
+        p.x >= self.x_axis.x
+            && p.x <= self.x_axis.x + self.x_axis.width
+            && p.y >= self.x_axis.y
+            && p.y <= self.x_axis.y + self.x_axis.height
+    }
+
+    pub fn is_in_y_axis(&self, p: iced_core::Point) -> bool {
+        p.x >= self.y_axis.x
+            && p.x <= self.y_axis.x + self.y_axis.width
+            && p.y >= self.y_axis.y
+            && p.y <= self.y_axis.y + self.y_axis.height
+    }
+}
+
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub struct Zoom(pub usize);
 
@@ -69,111 +122,8 @@ impl SeriesLike for Series {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct Regions {
-    plot: Rectangle,
-    x_axis: Rectangle,
-    y_axis: Rectangle,
-}
-
-impl Regions {
-    fn from_layout(root: iced_core::Layout<'_>) -> Self {
-        let root_bounds = root.bounds();
-
-        // root.children = [ row, x_axis ]
-        let row = root.child(0);
-        let x_abs = root.child(1).bounds();
-
-        // row.children  = [ plot, y_axis ]
-        let plot_abs = row.child(0).bounds();
-        let y_abs = row.child(1).bounds();
-
-        let to_local = |r: Rectangle| Rectangle {
-            x: r.x - root_bounds.x,
-            y: r.y - root_bounds.y,
-            width: r.width,
-            height: r.height,
-        };
-
-        Regions {
-            plot: to_local(plot_abs),
-            y_axis: to_local(y_abs),
-            x_axis: to_local(x_abs),
-        }
-    }
-
-    fn is_in_plot(&self, p: iced_core::Point) -> bool {
-        p.x >= self.plot.x
-            && p.x <= self.plot.x + self.plot.width
-            && p.y >= self.plot.y
-            && p.y <= self.plot.y + self.plot.height
-    }
-
-    fn is_in_x_axis(&self, p: iced_core::Point) -> bool {
-        p.x >= self.x_axis.x
-            && p.x <= self.x_axis.x + self.x_axis.width
-            && p.y >= self.x_axis.y
-            && p.y <= self.x_axis.y + self.x_axis.height
-    }
-
-    fn is_in_y_axis(&self, p: iced_core::Point) -> bool {
-        p.x >= self.y_axis.x
-            && p.x <= self.y_axis.x + self.y_axis.width
-            && p.y >= self.y_axis.y
-            && p.y <= self.y_axis.y + self.y_axis.height
-    }
-}
-
-/// Compute a "nice" step close to range/target using 1/2/5*10^k
-fn nice_step_multiplier_125(v: f32) -> f32 {
-    if v <= 1.0 {
-        1.0
-    } else if v <= 2.0 {
-        2.0
-    } else if v <= 5.0 {
-        5.0
-    } else {
-        10.0
-    }
-}
-
-fn nice_step(rough: f32) -> f32 {
-    if !rough.is_finite() || rough <= 0.0 {
-        return 1.0;
-    }
-
-    let base = 10.0f32.powf(rough.log10().floor());
-    let fraction = rough / base;
-
-    nice_step_multiplier_125(fraction) * base
-}
-
-fn ticks(min: f32, max: f32, target: usize) -> (Vec<f32>, f32) {
-    let span = (max - min).abs().max(1e-6);
-
-    let step = {
-        let target = target.max(2) as f32;
-        let raw = (span / target).max(f32::EPSILON);
-        nice_step(raw)
-    };
-
-    let start = (min / step).floor() * step;
-    let end = (max / step).ceil() * step;
-
-    let mut v = Vec::new();
-    let mut t = start;
-    for _ in 0..100 {
-        if t > end + step * 0.5 {
-            break;
-        }
-        v.push(t);
-        t += step;
-    }
-    (v, step)
-}
-
 fn format_pct(val: f32, step: f32, show_decimals: bool) -> String {
-    if show_decimals {
+    if show_decimals || step.fract() != 0.0 {
         if step >= 1.0 {
             format!("{:+.1}%", val)
         } else if step >= 0.1 {
@@ -202,79 +152,12 @@ fn format_value(value: f32, step: f32) -> String {
     }
 }
 
-fn time_tick_candidates() -> &'static [u64] {
-    const S: u64 = 1_000;
-    const M: u64 = 60 * S;
-    const H: u64 = 60 * M;
-    const D: u64 = 24 * H;
-    &[
-        S,
-        2 * S,
-        5 * S,
-        10 * S,
-        15 * S,
-        30 * S, //
-        M,
-        2 * M,
-        5 * M,
-        10 * M,
-        15 * M,
-        30 * M, //
-        H,
-        2 * H,
-        4 * H,
-        6 * H,
-        12 * H, //
-        D,
-        2 * D,
-        7 * D,
-        14 * D, //
-        30 * D,
-        90 * D,
-        180 * D,
-        365 * D,
-    ]
-}
-
 fn format_time_label(ts_ms: u64, step_ms: u64, tz: data::UserTimezone) -> String {
     tz.format_with_kind(
         ts_ms as i64,
         data::config::timezone::TimeLabelKind::AxisStepMs { step_ms },
     )
     .unwrap_or_else(|| ts_ms.to_string())
-}
-
-fn time_ticks(min_x: u64, max_x: u64, px_per_ms: f32, min_px: f32) -> (Vec<u64>, u64) {
-    let span = max_x.saturating_sub(min_x).max(1);
-    let mut step = *time_tick_candidates().first().unwrap_or(&1_000);
-    for &candidate in time_tick_candidates() {
-        let px = candidate as f32 * px_per_ms;
-        if px >= min_px {
-            step = candidate;
-            break;
-        } else {
-            step = candidate;
-        }
-    }
-    // Align first tick to the step boundary >= min_x
-    let first = if min_x.is_multiple_of(step) {
-        min_x
-    } else {
-        (min_x / step + 1) * step
-    };
-    let mut out = Vec::new();
-    let mut t = first;
-    for _ in 0..=2000 {
-        if t > max_x {
-            break;
-        }
-        out.push(t);
-        t = t.saturating_add(step);
-        if (t - first) > span + step {
-            break;
-        }
-    }
-    (out, step)
 }
 
 fn div_ceil(value: i64, divisor: i64) -> i64 {

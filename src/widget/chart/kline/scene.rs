@@ -203,7 +203,7 @@ impl Scene {
         Self::value_to_unit_with_step(value, self.primary_unit_step)
     }
 
-    fn primary_unit_to_value(&self, y_unit: YUnit) -> f32 {
+    pub(super) fn primary_unit_to_value(&self, y_unit: YUnit) -> f32 {
         Self::unit_to_value_with_step(y_unit, self.primary_unit_step)
     }
 
@@ -490,7 +490,7 @@ impl<'a, S> KlineWidget<'a, S>
 where
     S: KlineSeriesLike,
 {
-    fn base_ticker_info(&self) -> Option<exchange::TickerInfo> {
+    pub(super) fn base_ticker_info(&self) -> Option<exchange::TickerInfo> {
         self.series.first().map(|series| *series.ticker_info())
     }
 

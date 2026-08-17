@@ -1300,6 +1300,7 @@ impl State {
             }
             Event::ContentSelected(kind) => {
                 self.content = Content::placeholder(kind);
+                self.settings.visual_config = None;
 
                 if !matches!(kind, ContentKind::Starter) {
                     self.streams = ResolvedStream::waiting(vec![]);
@@ -1578,6 +1579,8 @@ impl State {
                                                         },
                                                     ]);
                                                     c.set_basis(new_basis);
+
+                                                    self.status = Status::Ready;
                                                     effect = Some(Effect::RefreshStreams);
                                                 }
                                             }
@@ -2029,6 +2032,23 @@ impl State {
     pub fn unique_id(&self) -> uuid::Uuid {
         self.id
     }
+
+    pub fn apply_synced_settings(
+        &mut self,
+        studies: &Option<data::chart::Study>,
+        clusters: &Option<data::chart::kline::ClusterKind>,
+    ) {
+        if let Some(studies) = studies {
+            self.content.update_studies(studies.clone());
+        }
+        if let Some(cluster_kind) = clusters
+            && let Content::Kline { chart, kind, .. } = &mut self.content
+            && let Some(c) = chart
+        {
+            c.set_cluster_kind(*cluster_kind);
+            *kind = c.kind.clone();
+        }
+    }
 }
 
 impl Default for State {
@@ -2180,7 +2200,9 @@ impl Content {
                 |indis| {
                     indis
                         .into_iter()
-                        .filter(|i| available.contains(i))
+                        .filter(|i| {
+                            available.contains(i) && determined_chart_kind.allows_indicator(*i)
+                        })
                         .collect()
                 },
             )
@@ -2347,13 +2369,19 @@ impl Content {
             }
             (
                 Content::Kline {
-                    chart, indicators, ..
+                    chart,
+                    indicators,
+                    kind,
+                    ..
                 },
                 UiIndicator::Kline(ind),
             ) => {
                 let Some(chart) = chart else {
                     return;
                 };
+                if !kind.allows_indicator(ind) {
+                    return;
+                }
 
                 if indicators.contains(&ind) {
                     indicators.retain(|i| i != &ind);
@@ -2443,6 +2471,16 @@ impl Content {
         }
     }
 
+    pub fn clusters(&self) -> Option<data::chart::kline::ClusterKind> {
+        match self {
+            Content::Kline {
+                kind: data::chart::KlineChartKind::Footprint { clusters, .. },
+                ..
+            } => Some(*clusters),
+            _ => None,
+        }
+    }
+
     pub fn update_studies(&mut self, studies: data::chart::Study) {
         match (self, studies) {
             (
@@ -2474,15 +2512,13 @@ impl Content {
                 *previous = studies;
             }
             (Content::Kline { chart, kind, .. }, data::chart::Study::Footprint(studies)) => {
-                chart
-                    .as_mut()
-                    .expect("kline chart not initialized")
-                    .set_studies(studies.clone());
+                let chart = chart.as_mut().expect("kline chart not initialized");
+                chart.set_studies(studies.clone());
                 if let data::chart::KlineChartKind::Footprint {
                     studies: k_studies, ..
                 } = kind
                 {
-                    *k_studies = studies;
+                    *k_studies = chart.studies().unwrap_or_default();
                 }
             }
             _ => {}
@@ -2521,6 +2557,18 @@ impl Content {
             Content::Ladder(panel) => panel.is_some(),
             Content::Comparison(chart) => chart.is_some(),
             Content::Starter => true,
+        }
+    }
+
+    pub fn allows_indicator(&self, indicator: UiIndicator) -> bool {
+        match (self, indicator) {
+            (Content::Kline { kind, .. }, UiIndicator::Kline(indicator)) => {
+                kind.allows_indicator(indicator)
+            }
+            (Content::Heatmap { .. } | Content::ShaderHeatmap { .. }, UiIndicator::Heatmap(_)) => {
+                true
+            }
+            _ => false,
         }
     }
 }

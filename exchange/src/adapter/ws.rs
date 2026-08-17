@@ -23,7 +23,6 @@ use url::Url;
 use futures::StreamExt;
 #[cfg(not(feature = "unbounded-channel"))]
 use futures::channel::mpsc::Sender;
-#[cfg(feature = "unbounded-channel")]
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
@@ -35,6 +34,8 @@ const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const WS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub(super) const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+const MAX_DRAIN_PER_TICK: usize = 256;
 
 pub(super) static TLS_CONNECTOR: LazyLock<TlsConnector> = LazyLock::new(|| {
     let mut root_store = tokio_rustls::rustls::RootCertStore::empty();
@@ -58,7 +59,6 @@ pub(super) static TLS_CONNECTOR: LazyLock<TlsConnector> = LazyLock::new(|| {
 enum AnySender<T> {
     #[cfg(not(feature = "unbounded-channel"))]
     Bounded(Sender<T>),
-    #[cfg(feature = "unbounded-channel")]
     Unbounded(UnboundedSender<T>),
 }
 
@@ -67,7 +67,6 @@ impl<T> AnySender<T> {
         match self {
             #[cfg(not(feature = "unbounded-channel"))]
             AnySender::Bounded(tx) => tx.try_send(item),
-            #[cfg(feature = "unbounded-channel")]
             AnySender::Unbounded(tx) => tx.unbounded_send(item),
         }
     }
@@ -76,7 +75,6 @@ impl<T> AnySender<T> {
 enum AnyReceiver<T> {
     #[cfg(not(feature = "unbounded-channel"))]
     Bounded(futures::channel::mpsc::Receiver<T>),
-    #[cfg(feature = "unbounded-channel")]
     Unbounded(UnboundedReceiver<T>),
 }
 
@@ -90,8 +88,17 @@ impl<T> futures::Stream for AnyReceiver<T> {
         match self.get_mut() {
             #[cfg(not(feature = "unbounded-channel"))]
             AnyReceiver::Bounded(rx) => std::pin::Pin::new(rx).poll_next(cx),
-            #[cfg(feature = "unbounded-channel")]
             AnyReceiver::Unbounded(rx) => std::pin::Pin::new(rx).poll_next(cx),
+        }
+    }
+}
+
+impl<T> AnyReceiver<T> {
+    fn try_recv(&mut self) -> Option<T> {
+        match self {
+            #[cfg(not(feature = "unbounded-channel"))]
+            AnyReceiver::Bounded(rx) => rx.try_recv().ok(),
+            AnyReceiver::Unbounded(rx) => rx.try_recv().ok(),
         }
     }
 }
@@ -236,7 +243,10 @@ impl WsSession {
                     }
                 };
 
-                let (frame_tx, mut frame_rx) = channel::<Result<Vec<u8>, String>>(64);
+                let (frame_tx, mut frame_rx) = {
+                    let (tx, rx) = futures::channel::mpsc::unbounded();
+                    (AnySender::Unbounded(tx), AnyReceiver::Unbounded(rx))
+                };
                 let io_handle = tokio::spawn(transport.read_frame(ping_payload, frame_tx));
 
                 for event in adapter.on_connected().await {
@@ -252,29 +262,64 @@ impl WsSession {
                     tokio::select! {
                         biased;
                         frame = frame_rx.next() => {
+                            let mut disconnect_reason: Option<String> = None;
+
                             match frame {
                                 Some(Ok(payload)) => {
-                                    match adapter.on_text(&payload).await {
-                                        Ok(events) => {
-                                            let had_events = !events.is_empty();
-                                            for event in events {
-                                                let _ = event_tx.send(event);
+                                    backoff.record_success();
+
+                                    if !payload.is_empty() {
+                                        match adapter.on_text(&payload).await {
+                                            Ok(events) => {
+                                                for event in events {
+                                                    let _ = event_tx.send(event);
+                                                }
                                             }
-                                            if had_events {
-                                                backoff.record_success();
+                                            Err(reason) => {
+                                                disconnect_reason = Some(reason);
                                             }
                                         }
-                                        Err(reason) => break Some(reason),
+                                    }
+
+                                    if disconnect_reason.is_none() {
+                                       let mut drained = 0;
+                                        while drained < MAX_DRAIN_PER_TICK {
+                                            let Some(drain) = frame_rx.try_recv() else { break };
+                                            drained += 1;
+                                            match drain {
+                                                Ok(payload) => {
+                                                    match adapter.on_text(&payload).await {
+                                                        Ok(events) => {
+                                                            for event in events {
+                                                                let _ = event_tx.send(event);
+                                                            }
+                                                        }
+                                                        Err(reason) => {
+                                                            disconnect_reason = Some(reason);
+                                                            break;
+                                                        }
+                                                    }
+                                                }
+                                                Err(reason) => {
+                                                    disconnect_reason = Some(reason);
+                                                    break;
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                                 Some(Err(reason)) => {
-                                    break Some(reason);
+                                    disconnect_reason = Some(reason);
                                 }
                                 None => {
-                                    break Some(
+                                    disconnect_reason = Some(
                                         "I/O task exited".to_string(),
                                     );
                                 }
+                            }
+
+                            if let Some(reason) = disconnect_reason {
+                                break Some(reason);
                             }
                         }
                         _ = &mut tick_sleep => {
@@ -346,6 +391,7 @@ impl WsTransport {
                         OpCode::Ping => {
                             let payload = Vec::from(msg.payload);
                             let _ = self.reply_pong(Payload::Owned(payload)).await;
+                            let _ = frame_tx.send(Ok(Vec::new()));
                         }
                         OpCode::Close => {
                             let _ = frame_tx.send(Err("Connection closed".into()));

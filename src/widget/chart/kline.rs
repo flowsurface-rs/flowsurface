@@ -16,11 +16,16 @@ use composition::{
     PanelId, PanelScaleMode, PanelValueId,
 };
 use layout::{LayoutHitZone, PanelLayoutTree};
-use scene::Scene;
+use scene::{Scene, XAxis};
 
 use data::UserTimezone;
 use data::chart::Basis;
-use exchange::{Kline, TickerInfo, Timeframe};
+use data::chart::ticks::{
+    x::{TimeTickLabel, TimeTickTier},
+    x_labels_that_fit,
+    y::{TickValue, YAxisScale},
+};
+use exchange::{Kline, TickerInfo, Timeframe, unit::Price};
 
 use iced::advanced::widget::tree::{self, Tree};
 use iced::advanced::{self, Clipboard, Layout, Shell, Widget, layout as iced_layout, renderer};
@@ -1005,58 +1010,108 @@ where
 
     fn fill_y_axis_labels(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
         let min_tick_px = (TEXT_SIZE * 2.5).max(20.0);
+        let labels_for_height = |height: f32| (height / min_tick_px).floor().max(2.0) as i32;
         let uses_display_space_ticks = matches!(
             scene.primary_scale_mode,
             PanelScaleMode::PercentFromBase | PanelScaleMode::Logarithmic
         ) || scene.primary_domain_display_override.is_some();
 
         if !uses_display_space_ticks {
-            let (ticks, step_units) = super::unit_ticks(
-                scene.min_primary_unit.0,
-                scene.max_primary_unit.0,
-                scene.primary_plot().height,
-                min_tick_px,
-            );
+            if let Some(ticker) = self.base_ticker_info() {
+                use data::chart::ticks::y::PriceAxis;
 
-            let primary_precision = self.panel_value_precision(scene.primary_panel);
-            let zero_value = self.panel_unit_to_value(primary_precision, YUnit(0));
-            let step_value = (self.panel_unit_to_value(primary_precision, YUnit(step_units))
-                - zero_value)
-                .abs()
-                .max(1e-8);
+                let price_axis =
+                    PriceAxis::new(ticker.min_ticksize.into(), Some(ticker.min_ticksize));
+                let min_price = scene.primary_unit_to_value(scene.min_primary_unit) as f64;
+                let max_price = scene.primary_unit_to_value(scene.max_primary_unit) as f64;
+                let labels_can_fit = labels_for_height(scene.primary_plot().height);
+                let primary_precision = self.panel_value_precision(scene.primary_panel);
 
-            for tick in ticks {
-                let tick_unit = YUnit(tick);
-                let value = self.panel_unit_to_value(primary_precision, tick_unit);
-                let y = scene.map_primary_plot_unit(tick_unit).clamp(
-                    scene.primary_plot().y,
-                    scene.primary_plot().y + scene.primary_plot().height,
+                let y_ticks = price_axis.ticks(min_price, max_price, labels_can_fit);
+                let step_value = y_ticks.step.unwrap_or(1.0) as f32;
+
+                for tick in &y_ticks.ticks {
+                    let TickValue::PriceUnits(units) = tick.value else {
+                        continue;
+                    };
+                    let price = Price::from_units(units).to_f32_lossy();
+                    let tick_unit = self.panel_value_to_unit(primary_precision, price);
+                    let value = scene.primary_unit_to_value(tick_unit);
+                    let y = scene.map_primary_plot_unit(tick_unit).clamp(
+                        scene.primary_plot().y,
+                        scene.primary_plot().y + scene.primary_plot().height,
+                    );
+                    let text = scene.format_primary_axis_label(value, step_value);
+
+                    frame.fill_text(canvas::Text {
+                        content: text,
+                        position: Point::new(scene.layout.regions.y_axis.width - 4.0, y),
+                        color: palette.background.base.text,
+                        size: TEXT_SIZE.into(),
+                        align_x: iced::Alignment::End.into(),
+                        align_y: iced::Alignment::Center.into(),
+                        font: style::AZERET_MONO,
+                        ..Default::default()
+                    });
+                }
+            } else {
+                let primary_precision = self.panel_value_precision(scene.primary_panel);
+                let min_value =
+                    self.panel_unit_to_value(primary_precision, scene.min_primary_unit) as f64;
+                let max_value =
+                    self.panel_unit_to_value(primary_precision, scene.max_primary_unit) as f64;
+                let y_ticks = YAxisScale::Linear.ticks(
+                    min_value,
+                    max_value,
+                    labels_for_height(scene.primary_plot().height),
                 );
-                let text = scene.format_primary_axis_label(value, step_value);
+                let step_value = y_ticks.step.unwrap_or(1.0) as f32;
 
-                frame.fill_text(canvas::Text {
-                    content: text,
-                    position: Point::new(scene.layout.regions.y_axis.width - 4.0, y),
-                    color: palette.background.base.text,
-                    size: TEXT_SIZE.into(),
-                    align_x: iced::Alignment::End.into(),
-                    align_y: iced::Alignment::Center.into(),
-                    font: style::AZERET_MONO,
-                    ..Default::default()
-                });
+                for tick in y_ticks.ticks {
+                    let TickValue::Float(value) = tick.value else {
+                        continue;
+                    };
+                    let tick_unit = self.panel_value_to_unit(primary_precision, value as f32);
+                    let value = self.panel_unit_to_value(primary_precision, tick_unit);
+                    let y = scene.map_primary_plot_unit(tick_unit).clamp(
+                        scene.primary_plot().y,
+                        scene.primary_plot().y + scene.primary_plot().height,
+                    );
+                    let text = scene.format_primary_axis_label(value, step_value);
+
+                    frame.fill_text(canvas::Text {
+                        content: text,
+                        position: Point::new(scene.layout.regions.y_axis.width - 4.0, y),
+                        color: palette.background.base.text,
+                        size: TEXT_SIZE.into(),
+                        align_x: iced::Alignment::End.into(),
+                        align_y: iced::Alignment::Center.into(),
+                        font: style::AZERET_MONO,
+                        ..Default::default()
+                    });
+                }
             }
         } else {
-            let total_ticks = (scene.primary_plot().height / min_tick_px).floor() as usize;
             let (min_display, max_display) = scene.primary_domain_display_values();
-            let (ticks, step) = super::ticks(min_display, max_display, total_ticks.max(2));
-            let display_range = (max_display - min_display).abs().max(1e-6);
+            let scale = if matches!(scene.primary_scale_mode, PanelScaleMode::PercentFromBase) {
+                YAxisScale::Percent
+            } else {
+                YAxisScale::Linear
+            };
+            let y_ticks = scale.ticks(
+                f64::from(min_display),
+                f64::from(max_display),
+                labels_for_height(scene.primary_plot().height),
+            );
+            let step = y_ticks.step.unwrap_or(1.0) as f32;
 
-            for tick in ticks {
-                if tick < min_display - f32::EPSILON || tick > max_display + f32::EPSILON {
+            for tick in y_ticks.ticks {
+                let ratio = tick.ratio as f32;
+                let TickValue::Float(tick) = tick.value else {
                     continue;
-                }
+                };
+                let tick = tick as f32;
 
-                let ratio = ((tick - min_display) / display_range).clamp(0.0, 1.0);
                 let y = scene.primary_plot().y + (1.0 - ratio) * scene.primary_plot().height;
                 let text = scene.format_primary_axis_label(tick, step);
 
@@ -1078,29 +1133,29 @@ where
             let Some(panel) = scene.layout.panel(panel_index) else {
                 continue;
             };
+            let panel_precision = self.panel_value_precision(panel_index);
 
-            let (ticks, step_units) = super::unit_ticks(
-                indicator.min_unit.0,
-                indicator.max_unit.0,
-                panel.plot.height,
-                min_tick_px,
+            let min_value = self.panel_unit_to_value(panel_precision, indicator.min_unit) as f64;
+            let max_value = self.panel_unit_to_value(panel_precision, indicator.max_unit) as f64;
+            let y_ticks = YAxisScale::Linear.ticks(
+                min_value,
+                max_value,
+                labels_for_height(panel.plot.height),
             );
 
-            let panel_precision = self.panel_value_precision(panel_index);
-            let zero_value = self.panel_unit_to_value(panel_precision, YUnit(0));
-            let step_value = (self.panel_unit_to_value(panel_precision, YUnit(step_units))
-                - zero_value)
-                .abs()
-                .max(1e-8);
+            let step_value = y_ticks.step.unwrap_or(1.0) as f32;
 
-            for tick in ticks {
-                let tick_unit = YUnit(tick);
+            for tick in y_ticks.ticks {
+                let TickValue::Float(value) = tick.value else {
+                    continue;
+                };
+                let value = value as f32;
+                let tick_unit = self.panel_value_to_unit(panel_precision, value);
                 let Some(y) = scene.map_indicator_plot_unit(panel_index, tick_unit) else {
                     continue;
                 };
                 let y = y.clamp(panel.plot.y, panel.plot.y + panel.plot.height);
 
-                let value = self.panel_unit_to_value(panel_precision, tick_unit);
                 let text =
                     self.format_panel_axis_value(panel_index, panel_precision, value, step_value);
 
@@ -1121,6 +1176,58 @@ where
     fn fill_x_axis_labels(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
         let horizontal_pixel_ratio = self.resolved_horizontal_pixel_ratio();
         let plot_width = scene.x_axis_plot_width();
+
+        if let XAxis::Time { timeframe, .. } = scene.x_axis
+            && let (Some(earliest), Some(latest)) = (
+                scene.time_for_x_unit(scene.min_x_unit),
+                scene.time_for_x_unit(scene.max_x_unit),
+            )
+        {
+            let span_ms = latest
+                .as_u64()
+                .saturating_sub(earliest.as_u64())
+                .max(timeframe.to_milliseconds());
+            let labels = TimeTickLabel::for_range(
+                earliest,
+                latest,
+                span_ms,
+                plot_width,
+                CHAR_W,
+                x_labels_that_fit(plot_width, CHAR_W) as i32,
+                timeframe,
+                self.timezone,
+            );
+
+            let clip_region = Rectangle {
+                x: 0.0,
+                y: 0.0,
+                width: plot_width,
+                height: scene.layout.regions.x_axis.height,
+            };
+
+            frame.with_clip(clip_region, |frame| {
+                for label in labels {
+                    let color = match label.tier {
+                        TimeTickTier::Secondary => palette.background.strongest.text,
+                        TimeTickTier::Main => palette.background.base.text,
+                    };
+                    let x = Self::snap_plot_x_to_cell(label.x_pos, horizontal_pixel_ratio);
+
+                    frame.fill_text(canvas::Text {
+                        content: label.content,
+                        position: Point::new(x, scene.layout.regions.x_axis.height / 2.0),
+                        color,
+                        size: TEXT_SIZE.into(),
+                        align_x: iced::Alignment::Center.into(),
+                        align_y: iced::Alignment::Center.into(),
+                        font: style::AZERET_MONO,
+                        ..Default::default()
+                    });
+                }
+            });
+            return;
+        }
+
         let (ticks, step_units) = super::unit_ticks(
             scene.min_x_unit,
             scene.max_x_unit,

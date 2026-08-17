@@ -67,6 +67,7 @@ pub enum Icon {
     DragHandle = 59415,
     Folder = 61716,
     ExternalLink = 61772,
+    Refresh = 59416,
 }
 
 impl From<Icon> for char {
@@ -88,6 +89,14 @@ pub fn venue_icon(venue: exchange::adapter::Venue) -> Icon {
         exchange::adapter::Venue::Hyperliquid => Icon::HyperliquidLogo,
         exchange::adapter::Venue::Okex => Icon::OkexLogo,
         exchange::adapter::Venue::Mexc => Icon::MexcLogo,
+    }
+}
+
+pub fn secondary_text(theme: &Theme) -> iced::widget::text::Style {
+    let palette = theme.extended_palette();
+
+    iced::widget::text::Style {
+        color: Some(palette.secondary.weak.color),
     }
 }
 

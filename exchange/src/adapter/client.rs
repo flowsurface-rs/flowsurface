@@ -26,24 +26,26 @@ pub struct AdapterHandles {
 impl AdapterHandles {
     pub fn spawn_venue(
         &mut self,
+        client: &reqwest::Client,
         venue: Venue,
         proxy: Option<&super::proxy::Proxy>,
     ) -> Result<(), AdapterError> {
         match venue {
             Venue::Binance => {
-                self.binance = Some(binance::BinanceHandle::new(proxy)?);
+                self.binance = Some(binance::BinanceHandle::new(client.clone(), proxy)?);
             }
             Venue::Bybit => {
-                self.bybit = Some(bybit::BybitHandle::new(proxy)?);
+                self.bybit = Some(bybit::BybitHandle::new(client.clone(), proxy)?);
             }
             Venue::Hyperliquid => {
-                self.hyperliquid = Some(hyperliquid::HyperliquidHandle::new(proxy)?);
+                self.hyperliquid =
+                    Some(hyperliquid::HyperliquidHandle::new(client.clone(), proxy)?);
             }
             Venue::Okex => {
-                self.okex = Some(okex::OkexHandle::new(proxy)?);
+                self.okex = Some(okex::OkexHandle::new(client.clone(), proxy)?);
             }
             Venue::Mexc => {
-                self.mexc = Some(mexc::MexcHandle::new(proxy)?);
+                self.mexc = Some(mexc::MexcHandle::new(client.clone(), proxy)?);
             }
         }
 
@@ -51,6 +53,7 @@ impl AdapterHandles {
     }
 
     pub fn spawn_venues(
+        client: &reqwest::Client,
         venues: impl IntoIterator<Item = Venue>,
         proxy: Option<&super::proxy::Proxy>,
     ) -> Self {
@@ -63,7 +66,7 @@ impl AdapterHandles {
         };
 
         for venue in venues {
-            if let Err(err) = out.spawn_venue(venue, proxy) {
+            if let Err(err) = out.spawn_venue(client, venue, proxy) {
                 log::error!("Failed to spawn {venue} adapter: {err}");
             }
         }
@@ -510,12 +513,6 @@ impl AdapterHandles {
                 "Trade fetch not available for {exchange}"
             ))),
         }
-    }
-}
-
-impl Default for AdapterHandles {
-    fn default() -> Self {
-        Self::spawn_venues(Venue::ALL, None)
     }
 }
 

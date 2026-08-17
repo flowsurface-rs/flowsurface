@@ -71,8 +71,11 @@ pub struct BybitHandle {
 }
 
 impl BybitHandle {
-    pub fn new(proxy_cfg: Option<&crate::proxy::Proxy>) -> Result<Self, AdapterError> {
-        let worker = Worker::new_with_network(proxy_cfg)?;
+    pub fn new(
+        client: reqwest::Client,
+        proxy_cfg: Option<&crate::proxy::Proxy>,
+    ) -> Result<Self, AdapterError> {
+        let worker = Worker::new(client)?;
         let request_port = super::spawn_fetch_worker(worker);
 
         Ok(Self {
@@ -168,11 +171,11 @@ struct Worker {
 }
 
 impl Worker {
-    fn new_with_network(proxy_cfg: Option<&crate::proxy::Proxy>) -> Result<Self, AdapterError> {
+    fn new(client: reqwest::Client) -> Result<Self, AdapterError> {
         let config = BybitConfig::default();
 
         let limiter = BybitLimiter::new(config.limiter_config());
-        let hub = HttpHub::new(limiter, proxy_cfg)?;
+        let hub = HttpHub::with_client(client, limiter);
 
         Ok(Self { hub })
     }

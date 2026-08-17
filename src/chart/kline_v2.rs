@@ -689,7 +689,7 @@ impl KlineChartV2 {
     ) {
         let Some(idx) = self.series_index.get(&ticker_info).copied() else {
             if let Some(handler) = self.request_handlers.get_mut(&ticker_info) {
-                handler.mark_failed(req_id, "ticker mismatch".to_string());
+                handler.mark_failed(req_id);
             }
             return;
         };
@@ -698,7 +698,7 @@ impl KlineChartV2 {
 
         if incoming.is_empty() {
             if let Some(handler) = self.request_handlers.get_mut(&ticker_info) {
-                handler.mark_failed(req_id, "No data received".to_string());
+                handler.mark_failed(req_id);
             }
             return;
         }
@@ -1248,7 +1248,7 @@ impl KlineChartV2 {
             if let Some(req_id) = req_id
                 && let Some(handler) = self.request_handlers.get_mut(&ticker_info)
             {
-                handler.mark_failed(req_id, "ticker mismatch".to_string());
+                handler.mark_failed(req_id);
             }
             return;
         };
@@ -1257,7 +1257,7 @@ impl KlineChartV2 {
             && let Some(handler) = self.request_handlers.get_mut(&ticker_info)
         {
             if data.is_empty() {
-                handler.mark_failed(req_id, "No data received".to_string());
+                handler.mark_failed(req_id);
             } else {
                 handler.mark_completed(req_id);
             }

@@ -182,6 +182,45 @@ pub fn format_duration_ms(diff_ms: u64) -> String {
     }
 }
 
+/// Round a positive value up to the nearest "nice" `1/2/5 * 10^k`.
+pub fn round_125(v: f64) -> f64 {
+    if !v.is_finite() || v <= 0.0 {
+        return 1.0;
+    }
+
+    let base = 10.0f64.powf(v.log10().floor());
+    let fraction = v / base;
+    let mult = if fraction <= 1.0 {
+        1.0
+    } else if fraction <= 2.0 {
+        2.0
+    } else if fraction <= 5.0 {
+        5.0
+    } else {
+        10.0
+    };
+    mult * base
+}
+
+pub fn reset_to_start_of_day_utc(dt: DateTime<chrono::Utc>) -> DateTime<chrono::Utc> {
+    dt.with_hour(0)
+        .unwrap_or(dt)
+        .with_minute(0)
+        .unwrap_or(dt)
+        .with_second(0)
+        .unwrap_or(dt)
+        .with_nanosecond(0)
+        .unwrap_or(dt)
+}
+
+pub fn reset_to_start_of_month_utc(dt: DateTime<chrono::Utc>) -> DateTime<chrono::Utc> {
+    reset_to_start_of_day_utc(dt.with_day(1).unwrap_or(dt))
+}
+
+pub fn reset_to_start_of_year_utc(dt: DateTime<chrono::Utc>) -> DateTime<chrono::Utc> {
+    reset_to_start_of_month_utc(dt.with_month(1).unwrap_or(dt))
+}
+
 /// Shrinks main panel if needed when adding a new panel.
 /// Ensures indicators never shrink below `MIN_PANEL_HEIGHT`
 pub fn calc_panel_splits(
@@ -231,21 +270,19 @@ pub fn calc_panel_splits(
     splits
 }
 
-pub fn reset_to_start_of_day_utc(dt: DateTime<chrono::Utc>) -> DateTime<chrono::Utc> {
-    dt.with_hour(0)
-        .unwrap_or(dt)
-        .with_minute(0)
-        .unwrap_or(dt)
-        .with_second(0)
-        .unwrap_or(dt)
-        .with_nanosecond(0)
-        .unwrap_or(dt)
-}
+/// Compact relative timestamp for the metadata freshness label.
+/// Future-dated stamps clamp to "just now".
+pub fn relative_time_label(updated: chrono::DateTime<chrono::Utc>) -> String {
+    let elapsed = chrono::Utc::now()
+        .signed_duration_since(updated)
+        .to_std()
+        .unwrap_or_default();
+    let secs = elapsed.as_secs();
 
-pub fn reset_to_start_of_month_utc(dt: DateTime<chrono::Utc>) -> DateTime<chrono::Utc> {
-    reset_to_start_of_day_utc(dt.with_day(1).unwrap_or(dt))
-}
-
-pub fn reset_to_start_of_year_utc(dt: DateTime<chrono::Utc>) -> DateTime<chrono::Utc> {
-    reset_to_start_of_month_utc(dt.with_month(1).unwrap_or(dt))
+    match secs {
+        0..=59 => "just now".to_string(),
+        60..=3_599 => format!("{} min ago", secs / 60),
+        3_600..=86_399 => format!("{} h ago", secs / 3_600),
+        _ => format!("{} d ago", secs / 86_400),
+    }
 }

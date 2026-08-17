@@ -13,13 +13,14 @@ mod version;
 mod widget;
 mod window;
 
+use connector::client::DataSources;
 use data::config::theme::default_theme;
 use data::{layout::WindowSpec, sidebar};
 use layout::{LayoutId, configuration};
 use modal::{
     LayoutManager, ThemeEditor,
     audio::AudioStream,
-    network_manager::{self, NetworkManager},
+    network_editor::{self, NetworkEditor},
 };
 use modal::{dashboard_modal, main_dialog_modal};
 use notify::Notifications;
@@ -37,7 +38,9 @@ use iced::{
         tooltip::Position as TooltipPosition,
     },
 };
-use std::{borrow::Cow, collections::HashMap, vec};
+use std::borrow::Cow;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 fn main() {
     logger::install_panic_hook();
@@ -73,10 +76,11 @@ fn main() {
 struct Flowsurface {
     main_window: window::Window,
     sidebar: dashboard::Sidebar,
-    handles: exchange::adapter::AdapterHandles,
     layout_manager: LayoutManager,
     theme_editor: ThemeEditor,
-    network: NetworkManager,
+    network_editor: NetworkEditor,
+    network_config: data::Network,
+    data_sources: Arc<DataSources>,
     audio_stream: AudioStream,
     confirm_dialog: Option<screen::ConfirmDialog<Message>>,
     volume_size_unit: exchange::SizeUnit,
@@ -107,7 +111,8 @@ enum Message {
     ThemeSelected(iced_core::Theme),
     ScaleFactorChanged(data::ScaleFactor),
     SetTimezone(data::UserTimezone),
-    ToggleTradeFetch(bool),
+    SetMetadataCaching(bool),
+    RefreshMetadata,
     ApplyVolumeSizeUnit(exchange::SizeUnit),
     RemoveNotification(usize),
     ToggleDialogModal(Option<screen::ConfirmDialog<Message>>),
@@ -116,7 +121,7 @@ enum Message {
         scale_factor: f32,
     },
     ThemeEditor(modal::theme_editor::Message),
-    NetworkManager(modal::network_manager::Message),
+    NetworkEditor(modal::network_editor::Message),
     Layouts(modal::layout_manager::Message),
     AudioStream(modal::audio::Message),
 }
@@ -136,12 +141,10 @@ impl Flowsurface {
             window::open(config)
         };
 
-        let handles = exchange::adapter::AdapterHandles::spawn_venues(
-            exchange::adapter::Venue::ALL,
-            saved_state.proxy_cfg.as_ref(),
-        );
+        let data_sources = Arc::new(DataSources::new(&saved_state.network));
 
-        let (sidebar, launch_sidebar) = dashboard::Sidebar::new(&saved_state, handles.clone());
+        let (sidebar, launch_sidebar) =
+            dashboard::Sidebar::new(&saved_state, data_sources.exchange.clone());
 
         let (audio_stream, audio_init_err) = AudioStream::new(saved_state.audio_cfg);
 
@@ -152,14 +155,15 @@ impl Flowsurface {
             window_scale_factors: HashMap::from([(main_window_id, 1.0)]),
             audio_stream,
             sidebar,
-            handles,
+            data_sources,
             confirm_dialog: None,
             timezone: saved_state.timezone,
             ui_scale_factor: saved_state.scale_factor,
             volume_size_unit: saved_state.volume_size_unit,
             theme: saved_state.theme,
             notifications: Notifications::new(),
-            network: NetworkManager::new(saved_state.proxy_cfg),
+            network_config: saved_state.network.clone(),
+            network_editor: NetworkEditor::new(&saved_state.network, None),
         };
 
         if let Some(err) = audio_init_err {
@@ -256,11 +260,11 @@ impl Flowsurface {
             }
             Message::Tick(now) => {
                 let main_window_id = self.main_window.id;
-                let handles = self.handles.clone();
+                let data_sources = Arc::clone(&self.data_sources);
 
                 return self
                     .active_dashboard_mut()
-                    .tick(&handles, now, main_window_id)
+                    .tick(now, &data_sources, main_window_id)
                     .map(move |msg| Message::Dashboard {
                         layout_id: None,
                         event: msg,
@@ -372,11 +376,10 @@ impl Flowsurface {
 
                 let main_window = self.main_window;
                 let layout_id = id.unwrap_or(active_layout.unique);
-                let handles = self.handles.clone();
 
                 if let Some(dashboard) = self.layout_manager.mut_dashboard(layout_id) {
                     let (main_task, event) =
-                        dashboard.update(&handles, msg, &main_window, &layout_id);
+                        dashboard.update(msg, &main_window, &layout_id, &self.data_sources);
 
                     let additional_task = match event {
                         Some(dashboard::Event::DistributeFetchedData {
@@ -469,19 +472,16 @@ impl Flowsurface {
             Message::SetTimezone(tz) => {
                 self.timezone = tz;
             }
+            Message::SetMetadataCaching(enabled) => {
+                self.sidebar.set_cache_enabled(enabled);
+            }
+            Message::RefreshMetadata => {
+                if let Some(task) = self.sidebar.force_refresh_metadata() {
+                    return task.map(Message::Sidebar);
+                }
+            }
             Message::ScaleFactorChanged(value) => {
                 self.ui_scale_factor = value;
-            }
-            Message::ToggleTradeFetch(checked) => {
-                self.layout_manager
-                    .iter_dashboards_mut()
-                    .for_each(|dashboard| {
-                        dashboard.toggle_trade_fetch(checked, &self.main_window);
-                    });
-
-                if checked {
-                    self.confirm_dialog = None;
-                }
             }
             Message::ToggleDialogModal(dialog) => {
                 self.confirm_dialog = dialog;
@@ -604,14 +604,17 @@ impl Flowsurface {
                     None => {}
                 }
             }
-            Message::NetworkManager(msg) => {
-                let action = self.network.update(msg);
+            Message::NetworkEditor(msg) => {
+                let action = self.network_editor.update(msg);
 
                 match action {
-                    Some(network_manager::Action::ApplyProxy) => {
-                        if let Some(proxy) = self.network.proxy_cfg() {
-                            data::config::proxy::save_proxy_auth(&proxy);
+                    Some(network_editor::Action::ApplyProxy(ref proxy)) => {
+                        if let Some(proxy) = proxy {
+                            data::config::auth::save_proxy_auth(proxy);
+                        } else if let Some(ref old_proxy) = self.network_config.proxy {
+                            data::config::auth::delete_proxy_auth(old_proxy);
                         }
+                        self.network_config.proxy = proxy.clone();
 
                         self.confirm_dialog = Some(
                             screen::ConfirmDialog::new(
@@ -636,7 +639,46 @@ impl Flowsurface {
                             Message::SaveStateRequested,
                         );
                     }
-                    Some(network_manager::Action::Exit) => {
+                    Some(network_editor::Action::ApplyServerConfig {
+                        mode,
+                        url,
+                        auth_token,
+                    }) => {
+                        if let Some(ref url) = url
+                            && let Some(ref token) = auth_token
+                        {
+                            data::config::auth::save_server_token(url, token);
+                        } else if let Some(ref old_url) = self.network_config.server_url {
+                            data::config::auth::delete_server_token(old_url);
+                        }
+                        self.network_config.server_url = url;
+                        self.network_config.server_auth_token = auth_token;
+                        self.network_config.trade_fetch_mode = mode;
+
+                        self.confirm_dialog = Some(
+                            screen::ConfirmDialog::new(
+                                "Trade fetch mode changed. Restart now to apply?".to_string(),
+                                Box::new(Message::RestartRequested(None)),
+                            )
+                            .with_confirm_btn_text("Restart now".to_string()),
+                        );
+
+                        let main_window = self.main_window.id;
+                        let dashboard = self.active_dashboard_mut();
+
+                        let mut active_windows = dashboard
+                            .popout
+                            .keys()
+                            .copied()
+                            .collect::<Vec<window::Id>>();
+                        active_windows.push(main_window);
+
+                        return window::collect_window_specs(
+                            active_windows,
+                            Message::SaveStateRequested,
+                        );
+                    }
+                    Some(network_editor::Action::Exit) => {
                         self.sidebar.set_menu(Some(sidebar::Menu::Settings));
                     }
                     None => {}
@@ -646,9 +688,16 @@ impl Flowsurface {
                 let (task, action) = self.sidebar.update(message);
 
                 match action {
+                    Some(dashboard::sidebar::Action::MenuChanged(Some(sidebar::Menu::Network))) => {
+                        self.network_editor = NetworkEditor::new(
+                            &self.network_config,
+                            self.network_editor.pending_apply().cloned(),
+                        );
+                    }
+                    Some(dashboard::sidebar::Action::MenuChanged(_)) => {}
                     Some(dashboard::sidebar::Action::TickerSelected(ticker_info, content)) => {
                         let main_window_id = self.main_window.id;
-                        let handles = self.handles.clone();
+                        let handles = self.data_sources.exchange.clone();
 
                         let task = {
                             if let Some(kind) = content {
@@ -812,7 +861,7 @@ impl Flowsurface {
 
         let exchange_streams = self
             .active_dashboard()
-            .market_subscriptions(&self.handles)
+            .market_subscriptions(&self.data_sources.exchange)
             .map(Message::MarketWsEvent);
 
         let tick = iced::window::frames().map(Message::Tick);
@@ -948,7 +997,7 @@ impl Flowsurface {
                         Message::SetTimezone,
                     );
 
-                    let size_in_quote_currency_checkbox = {
+                    let size_in_quote_ccy_checkbox = {
                         let is_active = match self.volume_size_unit {
                             exchange::SizeUnit::Quote => true,
                             exchange::SizeUnit::Base => false,
@@ -976,10 +1025,79 @@ impl Flowsurface {
                         tooltip(
                             checkbox,
                             Some(
-                                "Display sizes/volumes in quote currency (USD)\nHas no effect on inverse perps or open interest",
+                                "Display sizes/volumes in quote currency (USD).\n- Has no effect on inverse perps or open interest",
                             ),
                             TooltipPosition::Top,
                         )
+                    };
+
+                    let cache_metadata_checkbox = {
+                        let cache_enabled = self.sidebar.cache_enabled();
+
+                        let checkbox = tooltip(
+                            iced::widget::checkbox(cache_enabled)
+                                .label("Cache ticker metadata")
+                                .on_toggle(Message::SetMetadataCaching),
+                            Some("Cache ticker metadata for faster startup."),
+                            TooltipPosition::Top,
+                        );
+
+                        if !cache_enabled {
+                            column![row![checkbox].height(24).align_y(iced::Alignment::Center)]
+                        } else {
+                            let loading = self.sidebar.is_metadata_loading();
+
+                            let refresh_btn = {
+                                let btn = button(crate::style::icon_text(
+                                    crate::style::Icon::Refresh,
+                                    12,
+                                ))
+                                .style(move |theme, status| {
+                                    style::button::modifier(theme, status, loading)
+                                });
+                                let btn = if loading {
+                                    btn
+                                } else {
+                                    btn.on_press(Message::RefreshMetadata)
+                                };
+
+                                tooltip(
+                                    btn,
+                                    if loading { None } else { Some("Refresh now") },
+                                    TooltipPosition::Top,
+                                )
+                            };
+
+                            let last_updated = {
+                                let last_update = self.sidebar.last_metadata_update();
+
+                                let label = if loading {
+                                    "Refreshing metadata…".to_string()
+                                } else {
+                                    match last_update {
+                                        Some(at) => {
+                                            format!(
+                                                "Metadata last update: {}",
+                                                data::util::relative_time_label(at)
+                                            )
+                                        }
+                                        None => "Metadata not fetched yet".to_string(),
+                                    }
+                                };
+
+                                text(label)
+                                    .size(crate::style::text_size::SMALL)
+                                    .style(style::secondary_text)
+                            };
+
+                            column![
+                                row![checkbox, refresh_btn]
+                                    .align_y(iced::Alignment::Center)
+                                    .spacing(8),
+                                last_updated,
+                            ]
+                            .spacing(4)
+                        }
                     };
 
                     let sidebar_pos_picklist = pick_list(
@@ -1019,31 +1137,6 @@ impl Flowsurface {
                             .padding(4),
                         )
                         .style(style::modal_container)
-                    };
-
-                    let trade_fetch_checkbox = {
-                        let is_active = connector::fetcher::is_trade_fetch_enabled();
-
-                        let checkbox = iced::widget::checkbox(is_active)
-                            .label("Fetch trades (Binance)")
-                            .on_toggle(|checked| {
-                                if checked {
-                                    let confirm_dialog = screen::ConfirmDialog::new(
-                                        "This might be unreliable and take some time to complete. Proceed?"
-                                            .to_string(),
-                                        Box::new(Message::ToggleTradeFetch(true)),
-                                    );
-                                    Message::ToggleDialogModal(Some(confirm_dialog))
-                                } else {
-                                    Message::ToggleTradeFetch(false)
-                                }
-                            });
-
-                        tooltip(
-                            checkbox,
-                            Some("Try to fetch trades for footprint charts"),
-                            TooltipPosition::Top,
-                        )
                     };
 
                     let open_data_folder = {
@@ -1113,12 +1206,12 @@ impl Flowsurface {
                         column![open_data_folder,].spacing(8),
                         column![text("Sidebar position").size(crate::style::text_size::SECTION), sidebar_pos_picklist,].spacing(12),
                         column![text("Time zone").size(crate::style::text_size::SECTION), timezone_picklist,].spacing(12),
-                        column![text("Market data").size(crate::style::text_size::SECTION), size_in_quote_currency_checkbox,].spacing(12),
+                        column![text("Market data").size(crate::style::text_size::SECTION), size_in_quote_ccy_checkbox, cache_metadata_checkbox].spacing(12),
                         column![text("Theme").size(crate::style::text_size::SECTION), theme_picklist,].spacing(12),
                         column![text("Interface scale").size(crate::style::text_size::SECTION), scale_factor,].spacing(12),
                         column![
                             text("Experimental").size(crate::style::text_size::SECTION),
-                            column![trade_fetch_checkbox, toggle_theme_editor, toggle_network_editor].spacing(8),
+                            column![toggle_theme_editor, toggle_network_editor].spacing(8),
                         ]
                         .spacing(12),
                         footer,
@@ -1334,7 +1427,9 @@ impl Flowsurface {
 
                 let base_content = dashboard_modal(
                     base,
-                    self.network.view().map(Message::NetworkManager),
+                    self.network_editor
+                        .view(&self.network_config)
+                        .map(Message::NetworkEditor),
                     Message::Sidebar(dashboard::sidebar::Message::ToggleSidebarMenu(None)),
                     padding,
                     Alignment::End,
@@ -1396,8 +1491,6 @@ impl Flowsurface {
 
         let audio_cfg = data::AudioStream::from(&self.audio_stream);
 
-        let proxy_cfg_persisted = self.network.proxy_cfg().map(|p| p.without_auth());
-
         let state = data::State::from_parts(
             layouts,
             self.theme.clone(),
@@ -1407,9 +1500,9 @@ impl Flowsurface {
             self.sidebar.state.clone(),
             self.ui_scale_factor,
             audio_cfg,
-            connector::fetcher::is_trade_fetch_enabled(),
+            self.network_config.for_persistence(),
             self.volume_size_unit,
-            proxy_cfg_persisted,
+            self.sidebar.cache_enabled(),
         );
 
         match serde_json::to_string(&state) {
@@ -1423,6 +1516,8 @@ impl Flowsurface {
             }
             Err(e) => log::error!("Failed to serialize layout: {}", e),
         }
+
+        self.sidebar.persist_metadata_cache();
     }
 
     fn restart(&mut self) -> Task<Message> {
