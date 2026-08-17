@@ -48,6 +48,10 @@ pub enum FetchedData {
         /// Upper bound of the fetch gap — trades beyond this timestamp
         /// already exist on the chart and must be filtered out.
         until_time: UnixMs,
+        /// Whether the paging task has finished producing batches.
+        is_batches_done: bool,
+        /// Whether the source returned any trade data for the request.
+        has_data: bool,
         /// Optional request ID to mark completion on the chart's
         /// [`RequestHandler`] once the batch is processed.
         req_id: Option<Uuid>,
@@ -140,6 +144,10 @@ impl RequestHandler {
             .any(|r| r.status == RequestStatus::Pending && r.same_with_range(range))
     }
 
+    pub fn request_range(&self, id: Uuid) -> Option<FetchRange> {
+        self.requests.get(&id).map(|request| request.fetch_type)
+    }
+
     pub fn mark_completed(&mut self, id: Uuid) {
         if let Some(request) = self.requests.get_mut(&id) {
             request.status = RequestStatus::Completed;
@@ -158,12 +166,13 @@ impl RequestHandler {
         }
     }
 
-    pub fn mark_failed(&mut self, id: Uuid) {
+    pub fn mark_failed(&mut self, id: Uuid) -> bool {
         if let Some(request) = self.requests.get_mut(&id) {
             let timestamp = chrono::Utc::now().timestamp_millis() as u64;
             request.status = RequestStatus::Failed(timestamp);
+            true
         } else {
-            log::warn!("Request not found: {:?}", id);
+            false
         }
     }
 }
@@ -337,15 +346,19 @@ pub fn request_fetch(
             }
         }
         FetchRange::Trades(from_time, to_time) => {
-            let trade_info = ready_streams.iter().find_map(|stream| {
-                if let StreamKind::Trades { ticker_info } = stream {
-                    Some((*ticker_info, pane_id, *stream))
-                } else {
-                    None
-                }
-            });
+            let trade_stream = stream
+                .filter(|stream| matches!(stream, StreamKind::Trades { .. }))
+                .or_else(|| {
+                    ready_streams.iter().find_map(|stream| {
+                        if let StreamKind::Trades { .. } = stream {
+                            Some(*stream)
+                        } else {
+                            None
+                        }
+                    })
+                });
 
-            if let Some((ticker_info, pane_id, stream)) = trade_info {
+            if let Some(trade_stream @ StreamKind::Trades { ticker_info }) = trade_stream {
                 let is_binance = matches!(
                     ticker_info.exchange(),
                     Exchange::BinanceSpot | Exchange::BinanceLinear | Exchange::BinanceInverse
@@ -396,19 +409,29 @@ pub fn request_fetch(
                             batch,
                             req_id: Some(req_id),
                             until_time: to_time,
+                            is_batches_done: false,
+                            has_data: true,
                         };
 
                         FetchUpdate::Data {
                             layout_id,
                             pane_id,
                             data,
-                            stream,
+                            stream: trade_stream,
                         }
                     },
                     move |result| match result {
-                        Ok(true) => FetchUpdate::Status {
+                        Ok(true) => FetchUpdate::Data {
+                            layout_id,
                             pane_id,
-                            status: FetchTaskStatus::Completed,
+                            data: FetchedData::Trades {
+                                batch: Vec::new(),
+                                req_id: Some(req_id),
+                                until_time: to_time,
+                                is_batches_done: true,
+                                has_data: true,
+                            },
+                            stream: trade_stream,
                         },
                         Ok(false) => {
                             // Source returned no data for this range. Produce
@@ -420,8 +443,10 @@ pub fn request_fetch(
                                     batch: Vec::new(),
                                     req_id: Some(req_id),
                                     until_time: to_time,
+                                    is_batches_done: true,
+                                    has_data: false,
                                 },
-                                stream,
+                                stream: trade_stream,
                             }
                         }
                         Err(err) => {

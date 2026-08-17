@@ -21,6 +21,7 @@ use scene::{Scene, XAxis};
 
 use data::UserTimezone;
 use data::chart::Basis;
+use data::chart::kline::KlineTrades;
 use data::chart::ticks::{
     Y_LABEL_DENSITY,
     x::{TimeTickLabel, TimeTickTier},
@@ -28,7 +29,11 @@ use data::chart::ticks::{
     y::{TickValue, YAxisScale},
     y_labels_that_fit,
 };
-use exchange::{Kline, TickerInfo, Timeframe, UnixMs, unit::Price};
+use data::util::abbr_large_numbers;
+use exchange::{
+    Kline, TickerInfo, Timeframe, UnixMs,
+    unit::{Price, PriceStep},
+};
 
 use iced::advanced::widget::tree::{self, Tree};
 use iced::advanced::{self, Clipboard, Layout, Shell, Widget, layout as iced_layout, renderer};
@@ -68,7 +73,7 @@ const DRAWING_HANDLE_HIT_RADIUS_PX: f32 = 8.0;
 
 pub const DEFAULT_BAR_SPACING_PX: f32 = 5.0;
 pub const MIN_BAR_SPACING_PX: f32 = 2.0;
-pub const MAX_BAR_SPACING_PX: f32 = 48.0;
+pub const MAX_BAR_SPACING_PX: f32 = 360.0;
 const BAR_SPACING_SUBPIXEL_UNITS_PER_PX: i32 = 128;
 const BAR_SPACING_QUANTUM_PX: f32 = 1.0 / BAR_SPACING_SUBPIXEL_UNITS_PER_PX as f32;
 const HORIZONTAL_ZOOM_LINE_DELTA_MODE_ADJUSTMENT: f32 = 32.0;
@@ -77,6 +82,126 @@ const HORIZONTAL_ZOOM_DELTA_NORMALIZATION: f32 = 100.0;
 const HORIZONTAL_DRAG_SCALE_DELTA_PER_PX: f32 = 0.2 / 9.0;
 const HORIZONTAL_ZOOM_MAX_ACCUMULATED_CHUNKS_PER_EVENT: usize = 8;
 const HORIZONTAL_ZOOM_MAX_ACCUMULATED_DELTA: f32 = 8.0;
+const FOOTPRINT_MIN_COLUMN_WIDTH_PX: f32 = 80.0;
+const FOOTPRINT_MIN_ROW_HEIGHT_PX: f32 = 6.0;
+const FOOTPRINT_TEXT_ROW_HEIGHT_PX: f32 = 10.0;
+const FOOTPRINT_CELL_INSET_PX: f32 = 2.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrimaryPlotDetail {
+    CandleOnly,
+    Footprint,
+}
+
+fn draw_footprint_bid_ask_row(
+    frame: &mut canvas::Frame,
+    x_center: f32,
+    y: f32,
+    row_height: f32,
+    cell_width: f32,
+    sell_qty: f64,
+    buy_qty: f64,
+    max_side_qty: f64,
+    palette: &Extended,
+) {
+    let row_height = row_height.max(1.0);
+    let row_top = y - row_height * 0.5;
+    let cell_height = (row_height - 1.0).max(1.0);
+    let candle_body_width = (cell_width * 0.025).max(1.0);
+    let cluster_gap = (cell_width * 0.02).max(2.0);
+    let ask_area_right = x_center - candle_body_width * 0.5 - cluster_gap;
+    let bid_area_left = x_center + candle_body_width * 0.5 + cluster_gap;
+    let side_width = (cell_width * 0.5 - candle_body_width * 0.5 - cluster_gap).max(0.0);
+    let sell_ratio = (sell_qty / max_side_qty).clamp(0.0, 1.0) as f32;
+    let buy_ratio = (buy_qty / max_side_qty).clamp(0.0, 1.0) as f32;
+    let bar_alpha = if row_height >= FOOTPRINT_TEXT_ROW_HEIGHT_PX {
+        0.25
+    } else {
+        1.0
+    };
+
+    if sell_qty > 0.0 && side_width > 0.0 {
+        frame.fill_rectangle(
+            Point::new(ask_area_right - side_width * sell_ratio, row_top),
+            Size::new(side_width * sell_ratio, cell_height),
+            palette.danger.base.color.scale_alpha(bar_alpha),
+        );
+    }
+    if buy_qty > 0.0 && side_width > 0.0 {
+        frame.fill_rectangle(
+            Point::new(bid_area_left, row_top),
+            Size::new(side_width * buy_ratio, cell_height),
+            palette.success.base.color.scale_alpha(bar_alpha),
+        );
+    }
+
+    if row_height < FOOTPRINT_TEXT_ROW_HEIGHT_PX {
+        return;
+    }
+
+    let text_size = (row_height - 1.0)
+        .min(side_width / 5.0)
+        .clamp(6.0, TEXT_SIZE);
+    let text_y = y + text_size * 0.08;
+    let text_color = palette.background.weakest.text;
+
+    if sell_qty > 0.0 {
+        frame.fill_text(canvas::Text {
+            content: abbr_large_numbers(sell_qty),
+            position: Point::new(ask_area_right, text_y),
+            color: text_color,
+            size: text_size.into(),
+            align_x: iced::Alignment::End.into(),
+            align_y: iced::Alignment::Center.into(),
+            font: style::AZERET_MONO,
+            ..Default::default()
+        });
+    }
+    if buy_qty > 0.0 {
+        frame.fill_text(canvas::Text {
+            content: abbr_large_numbers(buy_qty),
+            position: Point::new(bid_area_left, text_y),
+            color: text_color,
+            size: text_size.into(),
+            align_x: iced::Alignment::Start.into(),
+            align_y: iced::Alignment::Center.into(),
+            font: style::AZERET_MONO,
+            ..Default::default()
+        });
+    }
+}
+
+fn draw_footprint_candle(
+    frame: &mut canvas::Frame,
+    x_center: f32,
+    candle_body_width: f32,
+    y_open: f32,
+    y_high: f32,
+    y_low: f32,
+    y_close: f32,
+    bullish: bool,
+    palette: &Extended,
+) {
+    let color = if bullish {
+        palette.success.weak.color
+    } else {
+        palette.danger.weak.color
+    };
+    let body_top = y_open.min(y_close);
+    let body_height = (y_open - y_close).abs().max(1.0);
+
+    frame.fill_rectangle(
+        Point::new(x_center - candle_body_width * 0.5, body_top),
+        Size::new(candle_body_width, body_height),
+        color,
+    );
+    frame.stroke(
+        &canvas::Path::line(Point::new(x_center, y_high), Point::new(x_center, y_low)),
+        canvas::Stroke::default()
+            .with_width(1.0)
+            .with_color(color.scale_alpha(0.6)),
+    );
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HorizontalScale(pub f32);
@@ -300,10 +425,17 @@ impl IndicatorData {
 pub trait KlineSeriesLike {
     fn ticker_info(&self) -> &TickerInfo;
     fn bars(&self) -> &[Kline];
+    fn footprint_tick_size(&self) -> PriceStep {
+        self.ticker_info().min_ticksize.into()
+    }
     fn time_at_index(&self, index: usize) -> Option<UnixMs> {
         self.bars().get(index).map(|bar| bar.time)
     }
     fn indicator_value(&self, bar: &Kline) -> f32;
+
+    fn footprint_for_bar(&self, _bar: &Kline) -> Option<&KlineTrades> {
+        None
+    }
 
     fn indicator_value_for_panel_value_opt(
         &self,
@@ -596,6 +728,144 @@ where
         self
     }
 
+    fn primary_plot_detail(&self, scene: &Scene) -> PrimaryPlotDetail {
+        if !matches!(scene.primary_mark, MarkKind::Candle | MarkKind::Bar(_)) {
+            return PrimaryPlotDetail::CandleOnly;
+        }
+
+        let Some(base_series) = self.series.first() else {
+            return PrimaryPlotDetail::CandleOnly;
+        };
+        let Some(last_bar) = base_series.bars().last() else {
+            return PrimaryPlotDetail::CandleOnly;
+        };
+
+        let tick_size = base_series.footprint_tick_size();
+        let row_height = self.footprint_row_height(
+            scene,
+            last_bar.close,
+            tick_size,
+            scene.series_percent_anchors.first().copied().flatten(),
+        );
+
+        if scene.bar_spacing_px().as_f32() >= FOOTPRINT_MIN_COLUMN_WIDTH_PX
+            && row_height >= FOOTPRINT_MIN_ROW_HEIGHT_PX
+        {
+            PrimaryPlotDetail::Footprint
+        } else {
+            PrimaryPlotDetail::CandleOnly
+        }
+    }
+
+    fn footprint_row_height(
+        &self,
+        scene: &Scene,
+        price: Price,
+        tick_size: PriceStep,
+        anchor: Option<f32>,
+    ) -> f32 {
+        let current_y = scene.map_primary_plot_with_anchor(price.to_f32_lossy(), anchor);
+        let next_y = scene
+            .map_primary_plot_with_anchor(price.add_steps(1, tick_size).to_f32_lossy(), anchor);
+        (current_y - next_y).abs()
+    }
+
+    fn fill_footprint_overlay(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
+        let Some(base_series) = self.series.first() else {
+            return;
+        };
+        let tick_size = base_series.footprint_tick_size();
+        let anchor = scene.series_percent_anchors.first().copied().flatten();
+        let in_visible_range =
+            |x_unit: i64| x_unit >= scene.min_x_unit && x_unit <= scene.max_x_unit;
+        let mut max_side_qty = 0.0f64;
+
+        self.for_each_bar_unit_index(scene.x_axis, |series_index, series, x_unit, bar| {
+            if series_index != 0 || !in_visible_range(x_unit) {
+                return;
+            }
+
+            let Some(footprint) = series.footprint_for_bar(bar) else {
+                return;
+            };
+
+            for group in footprint.trades.values() {
+                max_side_qty = max_side_qty
+                    .max(group.buy_qty.to_f64())
+                    .max(group.sell_qty.to_f64());
+            }
+        });
+
+        let primary_plot = *scene.primary_plot();
+        let cell_width = (scene.bar_spacing_px().as_f32() - FOOTPRINT_CELL_INSET_PX * 2.0).max(1.0);
+        let candle_body_width = (cell_width * 0.025).max(1.0);
+
+        frame.with_clip(primary_plot, |frame| {
+            self.for_each_bar_unit_index(scene.x_axis, |series_index, series, x_unit, bar| {
+                if series_index != 0 || !in_visible_range(x_unit) {
+                    return;
+                }
+
+                let series_anchor = scene.series_percent_anchors.first().copied().flatten();
+                let y_open =
+                    scene.map_primary_plot_with_anchor(bar.open.to_f32_lossy(), series_anchor);
+                let y_high =
+                    scene.map_primary_plot_with_anchor(bar.high.to_f32_lossy(), series_anchor);
+                let y_low =
+                    scene.map_primary_plot_with_anchor(bar.low.to_f32_lossy(), series_anchor);
+                let y_close =
+                    scene.map_primary_plot_with_anchor(bar.close.to_f32_lossy(), series_anchor);
+                let Some(footprint) = series.footprint_for_bar(bar) else {
+                    draw_footprint_candle(
+                        frame,
+                        scene.map_x_plot(x_unit),
+                        candle_body_width,
+                        y_open,
+                        y_high,
+                        y_low,
+                        y_close,
+                        bar.close >= bar.open,
+                        palette,
+                    );
+                    return;
+                };
+                let x_center = scene.map_x_plot(x_unit);
+
+                if max_side_qty > f64::EPSILON {
+                    for (price, group) in &footprint.trades {
+                        let row_height = self
+                            .footprint_row_height(scene, *price, tick_size, anchor)
+                            .max(1.0);
+                        let y = scene.map_primary_plot_with_anchor(price.to_f32_lossy(), anchor);
+                        draw_footprint_bid_ask_row(
+                            frame,
+                            x_center,
+                            y,
+                            row_height,
+                            cell_width,
+                            group.sell_qty.to_f64(),
+                            group.buy_qty.to_f64(),
+                            max_side_qty,
+                            palette,
+                        );
+                    }
+                }
+
+                draw_footprint_candle(
+                    frame,
+                    x_center,
+                    candle_body_width,
+                    y_open,
+                    y_high,
+                    y_low,
+                    y_close,
+                    bar.close >= bar.open,
+                    palette,
+                );
+            });
+        });
+    }
+
     fn fill_main_geometry(
         &self,
         frame: &mut canvas::Frame,
@@ -606,6 +876,7 @@ where
         let horizontal_pixel_ratio = self.resolved_horizontal_pixel_ratio();
         let plot_origin_x_global = plot_origin_in_window.x;
         let plot_origin_y_global = plot_origin_in_window.y;
+        let primary_plot_detail = self.primary_plot_detail(scene);
 
         let spacing = scene.bar_spacing_px();
         let px_per_unit = spacing.as_f32();
@@ -822,7 +1093,9 @@ where
             });
         }
 
-        if matches!(scene.primary_mark, MarkKind::Candle | MarkKind::Bar(_)) {
+        if matches!(primary_plot_detail, PrimaryPlotDetail::CandleOnly)
+            && matches!(scene.primary_mark, MarkKind::Candle | MarkKind::Bar(_))
+        {
             let primary_plot = *scene.primary_plot();
             frame.with_clip(primary_plot, |frame| {
                 self.for_each_bar_unit_index(scene.x_axis, |series_index, _series, x_unit, bar| {
@@ -885,6 +1158,10 @@ where
                     );
                 });
             });
+        }
+
+        if matches!(primary_plot_detail, PrimaryPlotDetail::Footprint) {
+            self.fill_footprint_overlay(frame, scene, palette);
         }
 
         let primary_plot = *scene.primary_plot();

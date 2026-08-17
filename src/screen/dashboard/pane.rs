@@ -292,11 +292,11 @@ impl State {
                         derived_plan.basis,
                         Timeframe::M15,
                         |tf| {
-                            tickers
-                                .iter()
-                                .copied()
-                                .map(|ti| kline_stream(ti, tf))
-                                .collect()
+                            let mut streams = vec![StreamKind::Trades {
+                                ticker_info: tickers[0],
+                            }];
+                            streams.extend(tickers.iter().copied().map(|ti| kline_stream(ti, tf)));
+                            streams
                         },
                         || {
                             tickers
@@ -1111,10 +1111,23 @@ impl State {
             Content::KlineV2 { chart } => {
                 if let Some(chart) = chart {
                     let selected_basis = chart.basis();
-                    let kind = ModifierKind::Candlestick(selected_basis);
+                    let tick_multiplier = chart.footprint_tick_multiplier();
+                    let kind = ModifierKind::CandlestickV2(selected_basis, tick_multiplier);
+                    let ticker_info = chart.ticker_info();
 
-                    let modifiers =
-                        row![basis_modifier(id, selected_basis, modifier, kind),].spacing(4);
+                    let modifiers = row![
+                        basis_modifier(id, selected_basis, modifier, kind),
+                        ticksize_modifier(
+                            id,
+                            tick_multiplier.multiply_with_min_tick_step(ticker_info),
+                            Some(ticker_info.min_ticksize),
+                            tick_multiplier,
+                            modifier,
+                            kind,
+                            Some(ticker_info.exchange()),
+                        ),
+                    ]
+                    .spacing(4);
 
                     top_left_buttons = top_left_buttons.push(modifiers);
 
@@ -1359,6 +1372,9 @@ impl State {
                         super::chart::kline_v2::Action::OpenSeriesEditor => {
                             self.modal = Some(Modal::Settings);
                         }
+                        super::chart::kline_v2::Action::RequestFetch(fetch) => {
+                            return Some(Effect::RequestFetch(fetch));
+                        }
                         super::chart::kline_v2::Action::RemoveSeries(ti) => {
                             let rebuilt = c.remove_ticker(&ti);
                             self.streams = ResolvedStream::Ready(rebuilt);
@@ -1474,6 +1490,9 @@ impl State {
                                                 indicators.clone(),
                                                 Some(saved_config),
                                             );
+                                        }
+                                        Content::KlineV2 { chart: Some(c) } => {
+                                            c.set_footprint_tick_multiplier(tm);
                                         }
                                         _ => {}
                                     }
@@ -1618,15 +1637,20 @@ impl State {
                                     }
                                     Content::KlineV2 { chart: Some(c) } => {
                                         let streams: Vec<StreamKind> = match new_basis {
-                                            Basis::Time(tf) => c
-                                                .selected_tickers()
-                                                .iter()
-                                                .copied()
-                                                .map(|ti| StreamKind::Kline {
-                                                    ticker_info: ti,
-                                                    timeframe: tf,
-                                                })
-                                                .collect(),
+                                            Basis::Time(tf) => {
+                                                let mut streams = vec![StreamKind::Trades {
+                                                    ticker_info: c.ticker_info(),
+                                                }];
+                                                streams.extend(
+                                                    c.selected_tickers().iter().copied().map(
+                                                        |ti| StreamKind::Kline {
+                                                            ticker_info: ti,
+                                                            timeframe: tf,
+                                                        },
+                                                    ),
+                                                );
+                                                streams
+                                            }
                                             Basis::Tick(_) => {
                                                 let base_ticker = c.ticker_info();
                                                 let secondary_tickers: Vec<TickerInfo> = c
@@ -2326,9 +2350,12 @@ impl Content {
             .selected_basis
             .unwrap_or(Basis::Time(Timeframe::M15));
 
-        Content::KlineV2 {
-            chart: Some(KlineChartV2::new_with_tickers(basis, tickers)),
+        let mut chart = KlineChartV2::new_with_tickers(basis, tickers);
+        if let Some(multiplier) = settings.tick_multiply {
+            chart.set_footprint_tick_multiplier(multiplier);
         }
+
+        Content::KlineV2 { chart: Some(chart) }
     }
 
     fn placeholder(kind: ContentKind) -> Self {

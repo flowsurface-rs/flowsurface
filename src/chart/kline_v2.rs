@@ -1,4 +1,4 @@
-use crate::connector::fetcher::{FetchRange, FetchSpec, RequestHandler};
+use crate::connector::fetcher::{FetchRange, FetchSpec, RequestHandler, is_trade_fetch_enabled};
 use crate::widget::chart::kline::PanelInteraction;
 use crate::widget::chart::kline::composition::{
     BarMode, ChartComposition, DEFAULT_MIN_PANEL_RATIO, DataSourceId, HistogramMode, LayerDataKind,
@@ -14,12 +14,17 @@ use crate::widget::chart::kline::{
 
 use data::aggr::ticks::TickAggr;
 use data::chart::Basis;
+use data::chart::kline::KlineTrades;
 use exchange::adapter::{MarketKind, StreamKind};
-use exchange::{Kline, OpenInterest, TickerInfo, Timeframe, Trade, UnixMs};
+use exchange::{
+    Kline, OpenInterest, TickMultiplier, TickerInfo, Timeframe, Trade, UnixMs, unit::PriceStep,
+};
 
 use enum_map::{Enum, EnumMap};
+use iced::task::Handle;
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fmt::Display;
 use std::time::Instant;
 
@@ -29,6 +34,7 @@ const DEFAULT_FETCH_BARS: u64 = 500;
 const MAX_AUTO_INDICATOR_WARMUP_BARS: u64 = 2000;
 const SERIES_MAX_BARS: usize = 5000;
 const COMPARISON_SOURCE_ID: DataSourceId = DataSourceId::Synthetic("Comparison");
+pub const DEFAULT_FOOTPRINT_TICK_MULTIPLIER: TickMultiplier = TickMultiplier(10);
 
 const BOLLINGER_OVERLAY_CHANNELS: [OverlayChannelSpec; 3] = [
     OverlayChannelSpec {
@@ -92,6 +98,7 @@ pub enum Action {
     SeriesNameChanged(TickerInfo, String),
     RemoveSeries(TickerInfo),
     OpenSeriesEditor,
+    RequestFetch(Vec<FetchSpec>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,6 +124,8 @@ pub struct KlineSeries {
     pub name: Option<String>,
     pub bars: Vec<Kline>,
     indicators: Option<SeriesIndicatorData>,
+    footprints: Option<BTreeMap<UnixMs, KlineTrades>>,
+    footprint_tick_size: PriceStep,
     raw_trades: Vec<Trade>,
     tick_times: Vec<UnixMs>,
     tick_aggr: Option<TickAggr>,
@@ -129,6 +138,8 @@ impl KlineSeries {
             name: None,
             bars: Vec::new(),
             indicators: None,
+            footprints: None,
+            footprint_tick_size: ticker_info.min_ticksize.into(),
             raw_trades: Vec::new(),
             tick_times: Vec::new(),
             tick_aggr: None,
@@ -138,6 +149,7 @@ impl KlineSeries {
     fn new_base(ticker_info: TickerInfo) -> Self {
         let mut series = Self::new(ticker_info);
         series.indicators = Some(SeriesIndicatorData::default());
+        series.footprints = Some(BTreeMap::new());
         series
     }
 
@@ -151,14 +163,18 @@ impl KlineSeries {
         }
     }
 
-    fn enable_tick_aggregation(&mut self, interval: data::aggr::TickCount) {
+    fn enable_tick_aggregation(
+        &mut self,
+        interval: data::aggr::TickCount,
+        footprint_tick_size: PriceStep,
+    ) {
         self.bars.clear();
         if let Some(indicators) = self.indicators.as_mut() {
             indicators.clear();
         }
         self.tick_aggr = Some(TickAggr::new(
             interval,
-            self.ticker_info.min_ticksize.into(),
+            footprint_tick_size,
             &self.raw_trades,
         ));
         self.rebuild_bars_from_tick_aggregation();
@@ -173,6 +189,9 @@ impl KlineSeries {
         self.bars.clear();
         if let Some(indicators) = self.indicators.as_mut() {
             indicators.clear();
+        }
+        if let Some(footprints) = self.footprints.as_mut() {
+            footprints.clear();
         }
         self.disable_tick_aggregation();
 
@@ -195,6 +214,125 @@ impl KlineSeries {
 
         tick_aggr.insert_trades(trades);
         self.rebuild_bars_from_tick_aggregation();
+    }
+
+    fn insert_time_trades(&mut self, trades: &[Trade], timeframe: Timeframe) {
+        let Some(footprints) = self.footprints.as_mut() else {
+            return;
+        };
+
+        let mut updated_times = Vec::new();
+
+        for trade in trades {
+            let bar_time = trade.time.floor_to(timeframe);
+            if !updated_times.contains(&bar_time) {
+                updated_times.push(bar_time);
+            }
+
+            footprints
+                .entry(bar_time)
+                .or_insert_with(KlineTrades::new)
+                .add_trade_to_nearest_bin(trade, self.footprint_tick_size);
+        }
+
+        for time in updated_times {
+            if let Some(footprint) = footprints.get_mut(&time) {
+                footprint.calculate_poc();
+            }
+        }
+    }
+
+    fn set_footprint_tick_size(&mut self, tick_size: PriceStep) {
+        self.footprint_tick_size = tick_size;
+    }
+
+    fn rebuild_time_footprints(&mut self, timeframe: Timeframe) {
+        if let Some(footprints) = self.footprints.as_mut() {
+            footprints.clear();
+        } else {
+            return;
+        }
+
+        let raw_trades = self.raw_trades.clone();
+        self.insert_time_trades(&raw_trades, timeframe);
+    }
+
+    fn trade_time_range(&self) -> Option<(UnixMs, UnixMs)> {
+        let earliest = self.raw_trades.iter().map(|trade| trade.time).min()?;
+        let latest = self.raw_trades.iter().map(|trade| trade.time).max()?;
+        Some((earliest, latest))
+    }
+
+    fn suggest_trade_fetch_range(
+        &self,
+        visible_earliest: UnixMs,
+        visible_latest: UnixMs,
+        timeframe: Timeframe,
+    ) -> Option<(UnixMs, UnixMs)> {
+        let footprints = self.footprints.as_ref()?;
+        let target_time = self
+            .bars
+            .iter()
+            .rev()
+            .find(|bar| {
+                footprints
+                    .get(&bar.time)
+                    .map(|footprint| footprint.trades.is_empty())
+                    .unwrap_or(true)
+            })
+            .map(|bar| bar.time)?;
+
+        let last_trade_before_gap = self
+            .raw_trades
+            .iter()
+            .filter(|trade| trade.time < target_time)
+            .map(|trade| trade.time)
+            .max();
+        let first_trade_after_gap = self
+            .raw_trades
+            .iter()
+            .filter(|trade| trade.time > target_time)
+            .map(|trade| trade.time)
+            .min();
+
+        if last_trade_before_gap.is_none() && first_trade_after_gap.is_none() {
+            return None;
+        }
+
+        let data_earliest = self.bars.first()?.time;
+        let data_latest = self.bars.last()?.time;
+        let gap_start = last_trade_before_gap.map_or(data_earliest, |time| time.saturating_add(1));
+        let fetch_from = gap_start
+            .max(visible_earliest)
+            .floor_to(timeframe)
+            .max(gap_start);
+        let fetch_to = first_trade_after_gap.map_or(data_latest.min(visible_latest), |time| {
+            time.saturating_sub(1)
+        });
+
+        if fetch_from >= fetch_to {
+            return None;
+        }
+
+        if gap_start < visible_earliest {
+            let interval_ms = timeframe.to_milliseconds();
+            if fetch_to.as_u64().saturating_sub(fetch_from.as_u64()) < interval_ms {
+                return None;
+            }
+        }
+
+        Some((fetch_from, fetch_to))
+    }
+
+    fn footprint_for_bar(&self, bar: &Kline) -> Option<&KlineTrades> {
+        if let Some(tick_aggr) = self.tick_aggr.as_ref() {
+            return usize::try_from(bar.time.as_u64())
+                .ok()
+                .and_then(|index| tick_aggr.datapoints.get(index))
+                .map(|point| &point.footprint);
+        }
+
+        self.footprints.as_ref()?.get(&bar.time)
     }
 
     fn rebuild_bars_from_tick_aggregation(&mut self) {
@@ -312,6 +450,14 @@ impl KlineSeriesLike for KlineSeries {
             _ => &[],
         }
     }
+
+    fn footprint_for_bar(&self, bar: &Kline) -> Option<&KlineTrades> {
+        KlineSeries::footprint_for_bar(self, bar)
+    }
+
+    fn footprint_tick_size(&self) -> PriceStep {
+        self.footprint_tick_size
+    }
 }
 
 impl KlineSeries {
@@ -345,7 +491,10 @@ pub struct KlineChartV2 {
     series_index: FxHashMap<TickerInfo, usize>,
     comparison_layers: FxHashMap<TickerInfo, LayerId>,
     request_handlers: FxHashMap<TickerInfo, RequestHandler>,
+    trade_fetch_handle: Option<Handle>,
+    trade_fetch_in_flight: bool,
     rsi_config: RsiConfig,
+    footprint_tick_multiplier: TickMultiplier,
     drawing: DrawingTools,
     pub series: Vec<KlineSeries>,
 }
@@ -380,7 +529,10 @@ impl KlineChartV2 {
             series_index: FxHashMap::default(),
             comparison_layers: FxHashMap::default(),
             request_handlers: FxHashMap::default(),
+            trade_fetch_handle: None,
+            trade_fetch_in_flight: false,
             rsi_config,
+            footprint_tick_multiplier: DEFAULT_FOOTPRINT_TICK_MULTIPLIER,
             drawing: DrawingTools::default(),
             series: Vec::new(),
         };
@@ -500,11 +652,11 @@ impl KlineChartV2 {
                     }
                     KlineWidgetEvent::HorizontalScaleChanged(scale) => {
                         self.horizontal_scale = scale;
-                        self.bump_rev();
+                        return self.fetch_action_from_invalidation();
                     }
                     KlineWidgetEvent::HorizontalOffsetChanged(offset) => {
                         self.horizontal_offset = offset;
-                        self.bump_rev();
+                        return self.fetch_action_from_invalidation();
                     }
                     KlineWidgetEvent::PrimaryAutoscaleToggled => {
                         let primary_panel_id = self.composition.primary_panel_id()?;
@@ -578,12 +730,19 @@ impl KlineChartV2 {
                         self.horizontal_scale =
                             HorizontalScale::pixels_per_bar(DEFAULT_BAR_SPACING_PX);
                         self.horizontal_offset = DEFAULT_HORIZONTAL_OFFSET_UNITS;
-                        self.bump_rev();
+                        return self.fetch_action_from_invalidation();
                     }
                 }
             }
         }
         None
+    }
+
+    fn fetch_action_from_invalidation(&mut self) -> Option<Action> {
+        match self.invalidate(None)? {
+            super::Action::RequestFetch(fetch) => Some(Action::RequestFetch(fetch)),
+            _ => None,
+        }
     }
 
     pub fn view(
@@ -895,7 +1054,7 @@ impl KlineChartV2 {
     }
 
     pub fn insert_trades(&mut self, ticker_info: &TickerInfo, trades: &[Trade]) {
-        if !matches!(self.basis, Basis::Tick(_)) || trades.is_empty() {
+        if trades.is_empty() {
             return;
         }
 
@@ -903,9 +1062,82 @@ impl KlineChartV2 {
             return;
         };
 
-        self.series[index].insert_tick_trades(trades);
+        match self.basis {
+            Basis::Tick(_) => self.series[index].insert_tick_trades(trades),
+            Basis::Time(timeframe) => {
+                if *ticker_info != self.base_ticker {
+                    return;
+                }
+
+                self.series[index].raw_trades.extend_from_slice(trades);
+                self.series[index].insert_time_trades(trades, timeframe);
+            }
+        }
         self.last_tick = Instant::now();
         self.bump_rev();
+    }
+
+    pub fn insert_fetched_trades(
+        &mut self,
+        trades: &[Trade],
+        is_batches_done: bool,
+        req_id: Option<uuid::Uuid>,
+    ) {
+        let Basis::Time(timeframe) = self.basis else {
+            return;
+        };
+
+        if let Some(base_series) = self.base_series_mut() {
+            base_series.raw_trades.extend_from_slice(trades);
+            base_series.insert_time_trades(trades, timeframe);
+        }
+
+        if is_batches_done
+            && let Some(req_id) = req_id
+            && let Some(handler) = self.request_handlers.get_mut(&self.base_ticker)
+        {
+            handler.mark_completed(req_id);
+            self.trade_fetch_in_flight = false;
+            self.trade_fetch_handle = None;
+        }
+
+        if !trades.is_empty() {
+            self.bump_rev();
+        }
+    }
+
+    pub fn mark_trade_fetch_no_data(&mut self, req_id: uuid::Uuid) {
+        if let Some(handler) = self.request_handlers.get_mut(&self.base_ticker) {
+            handler.mark_no_data(req_id);
+        }
+        self.trade_fetch_in_flight = false;
+        self.trade_fetch_handle = None;
+    }
+
+    pub fn mark_fetch_failed(&mut self, req_id: uuid::Uuid) {
+        let is_trade_fetch = self
+            .request_handlers
+            .values()
+            .find_map(|handler| handler.request_range(req_id))
+            .is_some_and(|range| matches!(range, FetchRange::Trades(..)));
+
+        if self
+            .request_handlers
+            .values_mut()
+            .any(|handler| handler.mark_failed(req_id))
+        {
+            if is_trade_fetch {
+                self.trade_fetch_in_flight = false;
+                self.trade_fetch_handle = None;
+            }
+            return;
+        }
+
+        log::warn!("KlineV2 request not found: {:?}", req_id);
+    }
+
+    pub fn set_trade_fetch_handle(&mut self, handle: Handle) {
+        self.trade_fetch_handle = Some(handle);
     }
 
     pub fn set_basis(&mut self, basis: Basis) -> Option<super::Action> {
@@ -919,11 +1151,27 @@ impl KlineChartV2 {
         }
         self.configure_series_for_basis();
 
+        self.trade_fetch_handle = None;
+        self.trade_fetch_in_flight = false;
         self.rebuild_handlers();
         self.bump_rev();
 
         let reqs = self.collect_fetch_reqs(self.desired_fetch_batches(self.horizontal_offset));
         self.fetch_action(reqs)
+    }
+
+    pub fn footprint_tick_multiplier(&self) -> TickMultiplier {
+        self.footprint_tick_multiplier
+    }
+
+    pub fn set_footprint_tick_multiplier(&mut self, multiplier: TickMultiplier) {
+        if self.footprint_tick_multiplier == multiplier {
+            return;
+        }
+
+        self.footprint_tick_multiplier = multiplier;
+        self.configure_series_for_basis();
+        self.bump_rev();
     }
 
     fn panel_y_viewport_index(&self, panel_id: PanelId) -> Option<usize> {
@@ -1053,12 +1301,21 @@ impl KlineChartV2 {
         match self.basis {
             Basis::Time(_) => {
                 for series in &mut self.series {
+                    series.set_footprint_tick_size(
+                        self.footprint_tick_multiplier
+                            .multiply_with_min_tick_step(series.ticker_info),
+                    );
                     series.disable_tick_aggregation();
+                    series.rebuild_time_footprints(self.timeframe);
                 }
             }
             Basis::Tick(interval) => {
                 for series in &mut self.series {
-                    series.enable_tick_aggregation(interval);
+                    let tick_size = self
+                        .footprint_tick_multiplier
+                        .multiply_with_min_tick_step(series.ticker_info);
+                    series.set_footprint_tick_size(tick_size);
+                    series.enable_tick_aggregation(interval, tick_size);
                 }
             }
         }
@@ -1287,6 +1544,29 @@ impl KlineChartV2 {
         }
     }
 
+    fn queue_trade_fetch(
+        &mut self,
+        range: FetchRange,
+        out: &mut Vec<(uuid::Uuid, FetchRange, Option<StreamKind>)>,
+    ) {
+        if self.trade_fetch_in_flight {
+            return;
+        }
+
+        let handler = self.request_handlers.entry(self.base_ticker).or_default();
+
+        if let Ok(Some(req_id)) = handler.add_request(range) {
+            self.trade_fetch_in_flight = true;
+            out.push((
+                req_id,
+                range,
+                Some(StreamKind::Trades {
+                    ticker_info: self.base_ticker,
+                }),
+            ));
+        }
+    }
+
     fn collect_fetch_reqs(
         &mut self,
         batches: Vec<(FetchRange, Vec<TickerInfo>)>,
@@ -1297,6 +1577,10 @@ impl KlineChartV2 {
             for ticker_info in tickers {
                 self.queue_kline_fetch(ticker_info, range, &mut reqs);
             }
+        }
+
+        if let Some(range) = self.desired_trade_fetch_range(self.horizontal_offset) {
+            self.queue_trade_fetch(range, &mut reqs);
         }
 
         reqs
@@ -1365,6 +1649,47 @@ impl KlineChartV2 {
             left.to_unix_ms_non_negative(),
             right.to_unix_ms_non_negative(),
         ))
+    }
+
+    fn desired_trade_fetch_range(&self, horizontal_offset: f32) -> Option<FetchRange> {
+        if !matches!(self.basis, Basis::Time(_)) || !is_trade_fetch_enabled() {
+            return None;
+        }
+
+        let timeframe = self.timeframe;
+        let dt = self.dt_ms_est();
+        let visible_points = self.estimate_visible_points_for_fetch().max(0) as u64;
+        let (visible_earliest, visible_latest) = self
+            .compute_visible_window(horizontal_offset)
+            .unwrap_or_else(|| {
+                let latest = self.align_floor(UnixMs::now());
+                let span = DEFAULT_FETCH_BARS.max(visible_points).saturating_mul(dt);
+                (latest.saturating_sub(span), latest)
+            });
+        let visible_latest = visible_latest.min(self.align_floor(UnixMs::now()));
+
+        if visible_earliest >= visible_latest {
+            return None;
+        }
+
+        let base_series = self.base_series()?;
+        let Some((data_earliest, data_latest)) = base_series.trade_time_range() else {
+            return Some(FetchRange::Trades(visible_earliest, visible_latest));
+        };
+
+        if visible_earliest < data_earliest {
+            return Some(FetchRange::Trades(visible_earliest, data_earliest));
+        }
+        if visible_latest > data_latest {
+            return Some(FetchRange::Trades(
+                data_latest.saturating_add(1),
+                visible_latest,
+            ));
+        }
+
+        base_series
+            .suggest_trade_fetch_range(visible_earliest, visible_latest, timeframe)
+            .map(|(from, to)| FetchRange::Trades(from, to))
     }
 
     fn desired_fetch_batches(&self, horizontal_offset: f32) -> Vec<(FetchRange, Vec<TickerInfo>)> {
@@ -1541,15 +1866,18 @@ impl KlineChartV2 {
 
     fn streams_for_all(&self) -> Vec<StreamKind> {
         match self.basis {
-            Basis::Time(_) => self
-                .selected_tickers
-                .iter()
-                .copied()
-                .map(|ticker_info| StreamKind::Kline {
-                    ticker_info,
-                    timeframe: self.timeframe,
-                })
-                .collect(),
+            Basis::Time(_) => {
+                let mut streams = vec![StreamKind::Trades {
+                    ticker_info: self.base_ticker,
+                }];
+                streams.extend(self.selected_tickers.iter().copied().map(|ticker_info| {
+                    StreamKind::Kline {
+                        ticker_info,
+                        timeframe: self.timeframe,
+                    }
+                }));
+                streams
+            }
             Basis::Tick(_) => self
                 .selected_tickers
                 .iter()
@@ -1572,7 +1900,11 @@ impl KlineChartV2 {
         };
         let _ = series.set_rsi_config(self.rsi_config);
         if let Basis::Tick(interval) = self.basis {
-            series.enable_tick_aggregation(interval);
+            let tick_size = self
+                .footprint_tick_multiplier
+                .multiply_with_min_tick_step(series.ticker_info);
+            series.set_footprint_tick_size(tick_size);
+            series.enable_tick_aggregation(interval, tick_size);
         }
         self.series.push(series);
         self.series_index.insert(ticker_info, idx);
