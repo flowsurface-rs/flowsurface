@@ -1,17 +1,18 @@
-use super::IndicatorAvailability;
-use super::IndicatorPanelRecipe;
-use crate::widget::chart::kline::composition::{
+use super::super::composition::{
     AxisBinding, DataSourceId, LayerDataKind, MarkKind, PanelScaleMode, PanelValueLabelMode,
     PanelValueLabelPolicy, PanelValuePrecision,
 };
-use data::chart::Basis;
+use super::IndicatorAvailability;
+use super::IndicatorPanelRecipe;
+use crate::chart::Basis;
 use exchange::unit::Power10;
 use exchange::{Kline, UnixMs};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 const SERIES_MAX_POINTS: usize = 5000;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RsiSmoothing {
     None,
     Ema(u16),
@@ -23,7 +24,7 @@ impl Default for RsiSmoothing {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct RsiConfig {
     pub period: u16,
     pub smoothing: RsiSmoothing,

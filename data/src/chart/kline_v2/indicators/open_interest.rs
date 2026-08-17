@@ -1,10 +1,10 @@
-use super::{IndicatorAvailability, IndicatorPanelRecipe, IndicatorUnsupportedReason};
-use crate::chart::indicator::kline::open_interest::OpenInterestIndicator;
-use crate::widget::chart::kline::composition::{
+use super::super::composition::{
     AxisBinding, DataSourceId, LayerDataKind, MarkKind, PanelScaleMode, PanelValueLabelMode,
     PanelValueLabelPolicy, PanelValuePrecision,
 };
-use data::chart::Basis;
+use super::{IndicatorAvailability, IndicatorPanelRecipe, IndicatorUnsupportedReason};
+use crate::chart::Basis;
+use exchange::adapter::Exchange;
 use exchange::{OpenInterest, TickerInfo, Timeframe, UnixMs};
 use std::collections::BTreeMap;
 
@@ -84,15 +84,26 @@ pub fn availability(
         return IndicatorAvailability::Unsupported(IndicatorUnsupportedReason::BasisNotSupported);
     }
 
-    if !OpenInterestIndicator::is_supported_exchange(base_ticker.exchange()) {
+    if !is_supported_exchange(base_ticker.exchange()) {
         return IndicatorAvailability::Unsupported(IndicatorUnsupportedReason::SourceNotSupported);
     }
 
-    if !OpenInterestIndicator::is_supported_timeframe(timeframe) {
+    if !is_supported_timeframe(timeframe) {
         return IndicatorAvailability::Unsupported(
             IndicatorUnsupportedReason::ResolutionNotSupported,
         );
     }
 
     IndicatorAvailability::Available
+}
+
+fn is_supported_exchange(exchange: Exchange) -> bool {
+    exchange.is_perps()
+        && exchange != Exchange::HyperliquidLinear
+        && exchange != Exchange::MexcLinear
+        && exchange != Exchange::MexcInverse
+}
+
+fn is_supported_timeframe(timeframe: Timeframe) -> bool {
+    timeframe >= Timeframe::M5 && timeframe <= Timeframe::H4 && timeframe != Timeframe::H2
 }

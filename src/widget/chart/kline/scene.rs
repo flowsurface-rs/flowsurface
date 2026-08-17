@@ -9,7 +9,7 @@ use crate::widget::chart::kline::composition::{
     LayerDataKind, MarkKind, PanelScaleMode, PanelValueId,
 };
 
-use super::world::WorldAxis;
+use data::chart::kline_v2::WorldAxis;
 use data::chart::ticks::{Y_LABEL_DENSITY, y::YAxisScale, y_labels_that_fit};
 use exchange::{Timeframe, UnixMs};
 

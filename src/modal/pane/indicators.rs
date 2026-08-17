@@ -45,7 +45,7 @@ impl IndicatorItem for data::chart::indicator::HeatmapIndicator {
 
 impl IndicatorItem for crate::chart::kline_v2::KlineIndicator {
     fn for_market(market: exchange::adapter::MarketKind) -> &'static [Self] {
-        <Self as crate::chart::kline_v2::Indicator>::for_market(market)
+        data::chart::kline_v2::KlineIndicator::for_market(market)
     }
 
     fn toggle_event(self) -> pane::Event {

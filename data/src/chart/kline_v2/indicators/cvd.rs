@@ -1,9 +1,9 @@
-use super::{IndicatorAvailability, IndicatorPanelRecipe, IndicatorUnsupportedReason};
-use crate::widget::chart::kline::composition::{
+use super::super::composition::{
     AxisBinding, DataSourceId, LayerDataKind, MarkKind, PanelScaleMode, PanelValueLabelMode,
     PanelValueLabelPolicy, PanelValuePrecision,
 };
-use data::chart::Basis;
+use super::{IndicatorAvailability, IndicatorPanelRecipe, IndicatorUnsupportedReason};
+use crate::chart::Basis;
 use exchange::{Kline, UnixMs};
 use std::collections::BTreeMap;
 

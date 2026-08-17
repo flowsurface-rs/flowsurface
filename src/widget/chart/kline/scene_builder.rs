@@ -10,7 +10,7 @@ use crate::widget::chart::kline::composition::{
     PanelValuePrecision,
 };
 
-use super::world::LEGACY_ZOOM_SENSITIVITY;
+use data::chart::kline_v2::viewport::LEGACY_ZOOM_SENSITIVITY;
 use exchange::{Kline, Timeframe, UnixMs};
 
 use iced::advanced::Layout;

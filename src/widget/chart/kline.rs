@@ -6,7 +6,6 @@ mod helpers;
 mod layout;
 mod scene;
 mod scene_builder;
-mod world;
 
 use crate::style;
 use crate::widget::chart::kline::drawing::{
@@ -18,13 +17,14 @@ use composition::{
     BarMode, ChartComposition, DEFAULT_MIN_PANEL_RATIO, HistogramMode, LayerDataKind, MarkKind,
     PanelId, PanelScaleMode, PanelValueId,
 };
+use data::chart::kline_v2::HorizontalWorld;
 use layout::{LayoutHitZone, PanelLayoutNode, PanelLayoutTree};
 use scene::{Scene, XAxis};
-pub(crate) use world::HorizontalWorld;
 
 use data::UserTimezone;
 use data::chart::Basis;
 use data::chart::kline::KlineTrades;
+pub(crate) use data::chart::kline_v2::{PanelYViewport, YUnit};
 use data::chart::ticks::{
     Y_LABEL_DENSITY,
     x::{TimeTickLabel, TimeTickTier},
@@ -217,79 +217,6 @@ impl HorizontalScale {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct PanelYViewport {
-    pub min_value: f32,
-    pub max_value: f32,
-}
-
-impl PanelYViewport {
-    pub fn normalized(min_value: f32, max_value: f32) -> Option<Self> {
-        if !min_value.is_finite() || !max_value.is_finite() {
-            return None;
-        }
-
-        let (mut min_value, mut max_value) = if min_value <= max_value {
-            (min_value, max_value)
-        } else {
-            (max_value, min_value)
-        };
-
-        if (max_value - min_value).abs() <= 1e-8 {
-            let pad = min_value.abs().max(1.0) * 0.01;
-            min_value -= pad;
-            max_value += pad;
-        }
-
-        Some(Self {
-            min_value,
-            max_value,
-        })
-    }
-
-    pub fn span(self) -> f32 {
-        (self.max_value - self.min_value).abs()
-    }
-
-    pub fn zoom_around_ratio(
-        self,
-        anchor_ratio: f32,
-        zoom_scale: f32,
-        zoom_in: bool,
-        min_span: f32,
-    ) -> Option<Self> {
-        let anchor_ratio = anchor_ratio.clamp(0.0, 1.0);
-        let span = self.span().max(1e-8);
-        let zoom_scale = zoom_scale.abs().max(1.0);
-        let min_span = min_span.abs().max(1e-8);
-
-        let new_span = if zoom_in {
-            span / zoom_scale
-        } else {
-            span * zoom_scale
-        }
-        .max(min_span);
-
-        let anchor_value = self.min_value + anchor_ratio * span;
-        let new_min = anchor_value - anchor_ratio * new_span;
-        let new_max = new_min + new_span;
-        Self::normalized(new_min, new_max)
-    }
-
-    pub fn pan_by_ratio(self, delta_ratio: f32) -> Option<Self> {
-        if !delta_ratio.is_finite() {
-            return None;
-        }
-
-        let span = self.span().max(1e-8);
-        let shift = delta_ratio * span;
-        Self::normalized(self.min_value + shift, self.max_value + shift)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct YUnit(pub i64);
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct BarSpacingPx(i32);
 
@@ -319,22 +246,6 @@ impl BarSpacingPx {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum IndicatorDataFieldKey {
-    SignedOverlay,
-    Custom(&'static str),
-}
-
-pub const BOLLINGER_UPPER_FIELD_KEY: IndicatorDataFieldKey =
-    IndicatorDataFieldKey::Custom("bollinger.upper");
-pub const BOLLINGER_LOWER_FIELD_KEY: IndicatorDataFieldKey =
-    IndicatorDataFieldKey::Custom("bollinger.lower");
-pub const RSI_SIGNAL_FIELD_KEY: IndicatorDataFieldKey = IndicatorDataFieldKey::Custom("rsi.signal");
-pub const RSI_UPPER_BAND_FIELD_KEY: IndicatorDataFieldKey =
-    IndicatorDataFieldKey::Custom("rsi.upper_band");
-pub const RSI_LOWER_BAND_FIELD_KEY: IndicatorDataFieldKey =
-    IndicatorDataFieldKey::Custom("rsi.lower_band");
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverlayChannelColorRole {
     Neutral,
@@ -358,70 +269,10 @@ const DEFAULT_OVERLAY_CHANNELS: [OverlayChannelSpec; 1] = [OverlayChannelSpec {
     color_role: OverlayChannelColorRole::Neutral,
 }];
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct IndicatorDataField {
-    pub key: IndicatorDataFieldKey,
-    pub value: f32,
-}
-
-const MAX_INDICATOR_EXTRA_FIELDS: usize = 6;
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct IndicatorData {
-    value: f32,
-    extra_fields: [Option<IndicatorDataField>; MAX_INDICATOR_EXTRA_FIELDS],
-}
-
-impl IndicatorData {
-    pub fn scalar(value: f32) -> Self {
-        Self {
-            value,
-            extra_fields: [None; MAX_INDICATOR_EXTRA_FIELDS],
-        }
-    }
-
-    pub fn value(self) -> f32 {
-        self.value
-    }
-
-    pub fn with_field(mut self, key: IndicatorDataFieldKey, value: f32) -> Self {
-        if let Some(slot) = self
-            .extra_fields
-            .iter_mut()
-            .find(|slot| slot.as_ref().map(|field| field.key == key).unwrap_or(false))
-        {
-            *slot = Some(IndicatorDataField { key, value });
-            return self;
-        }
-
-        if let Some(slot) = self.extra_fields.iter_mut().find(|slot| slot.is_none()) {
-            *slot = Some(IndicatorDataField { key, value });
-        } else {
-            debug_assert!(
-                false,
-                "IndicatorData extra field capacity exceeded ({MAX_INDICATOR_EXTRA_FIELDS})"
-            );
-        }
-
-        self
-    }
-
-    pub fn field(self, key: IndicatorDataFieldKey) -> Option<f32> {
-        self.extra_fields
-            .iter()
-            .flatten()
-            .find(|field| field.key == key)
-            .map(|field| field.value)
-    }
-
-    pub fn with_signed_overlay(self, signed_overlay: f32) -> Self {
-        self.with_field(IndicatorDataFieldKey::SignedOverlay, signed_overlay)
-    }
-
-    pub fn signed_overlay(self) -> Option<f32> {
-        self.field(IndicatorDataFieldKey::SignedOverlay)
-    }
-}
+pub use data::chart::kline_v2::values::{
+    BOLLINGER_LOWER_FIELD_KEY, BOLLINGER_UPPER_FIELD_KEY, IndicatorData, IndicatorDataFieldKey,
+    RSI_LOWER_BAND_FIELD_KEY, RSI_SIGNAL_FIELD_KEY, RSI_UPPER_BAND_FIELD_KEY,
+};
 
 pub trait KlineSeriesLike {
     fn ticker_info(&self) -> &TickerInfo;

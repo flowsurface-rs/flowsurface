@@ -1,8 +1,8 @@
-use super::{IndicatorAvailability, IndicatorPanelRecipe};
-use crate::widget::chart::kline::composition::{
+use super::super::composition::{
     AxisBinding, BarMode, DataSourceId, HistogramMode, LayerDataKind, MarkKind, PanelScaleMode,
     PanelValueLabelMode, PanelValueLabelPolicy, PanelValuePrecision,
 };
+use super::{IndicatorAvailability, IndicatorPanelRecipe};
 
 pub fn panel_recipe() -> IndicatorPanelRecipe {
     IndicatorPanelRecipe::AuxPanel {

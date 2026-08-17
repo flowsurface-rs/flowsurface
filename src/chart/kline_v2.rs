@@ -1,44 +1,35 @@
 use crate::connector::fetcher::{FetchRange, FetchSpec, RequestHandler, is_trade_fetch_enabled};
 use crate::widget::chart::kline::PanelInteraction;
 use crate::widget::chart::kline::composition::{
-    AxisBinding, BarMode, ChartComposition, DEFAULT_MIN_PANEL_RATIO, DataSourceId, HistogramMode,
-    LayerDataKind, LayerId, LayerSource, LayerStyle, MarkKind, PanelComparisonPolicy, PanelId,
-    PanelRole, PanelScaleMode, PanelValueId, PanelValueLabelMode, PanelValueLabelPolicy,
-    PanelValuePrecision,
+    BarMode, ChartComposition, DEFAULT_MIN_PANEL_RATIO, DataSourceId, HistogramMode, LayerDataKind,
+    LayerId, LayerSource, MarkKind, PanelId, PanelRole, PanelScaleMode, PanelValueId,
 };
-use crate::widget::chart::kline::drawing::{
-    DrawingAnchor, DrawingEntity, DrawingId, DrawingObject, DrawingStyle, DrawingTool,
-};
+use crate::widget::chart::kline::drawing::DrawingObject;
 use crate::widget::chart::kline::{
-    BOLLINGER_LOWER_FIELD_KEY, BOLLINGER_UPPER_FIELD_KEY, DEFAULT_BAR_SPACING_PX, HorizontalWorld,
-    IndicatorData, KlineSeriesLike, KlineWidget, KlineWidgetEvent, OverlayChannelColorRole,
-    OverlayChannelSpec, PanelYViewport, RSI_LOWER_BAND_FIELD_KEY, RSI_SIGNAL_FIELD_KEY,
-    RSI_UPPER_BAND_FIELD_KEY, UnavailableIndicator,
+    BOLLINGER_LOWER_FIELD_KEY, BOLLINGER_UPPER_FIELD_KEY, DEFAULT_BAR_SPACING_PX, IndicatorData,
+    KlineSeriesLike, KlineWidget, KlineWidgetEvent, OverlayChannelColorRole, OverlayChannelSpec,
+    PanelYViewport, RSI_LOWER_BAND_FIELD_KEY, RSI_SIGNAL_FIELD_KEY, RSI_UPPER_BAND_FIELD_KEY,
+    UnavailableIndicator,
     coord::{ChartCoord, ChartStepMs},
 };
 
-use data::aggr::ticks::TickAggr;
 use data::chart::Basis;
 use data::chart::kline::KlineTrades;
-use data::chart::kline_v2 as persisted;
-use exchange::adapter::{MarketKind, StreamKind};
+use data::chart::kline_v2::{self as persisted, HorizontalWorld};
+use exchange::adapter::StreamKind;
 use exchange::{
     Kline, OpenInterest, TickMultiplier, TickerInfo, Timeframe, Trade, UnixMs, unit::PriceStep,
 };
 
-use enum_map::{Enum, EnumMap};
+use enum_map::EnumMap;
 use iced::task::Handle;
 use rustc_hash::FxHashMap;
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
-use std::fmt::Display;
 use std::time::Instant;
 
 const DEFAULT_HORIZONTAL_OFFSET_UNITS: f32 = 8.0;
 const FETCH_VIEWPORT_WIDTH_ESTIMATE_PX: f32 = 1200.0;
 const DEFAULT_FETCH_BARS: u64 = 500;
 const MAX_AUTO_INDICATOR_WARMUP_BARS: u64 = 2000;
-const SERIES_MAX_BARS: usize = 5000;
 const COMPARISON_SOURCE_ID: DataSourceId = DataSourceId::Synthetic("Comparison");
 pub const DEFAULT_FOOTPRINT_TICK_MULTIPLIER: TickMultiplier = TickMultiplier(10);
 
@@ -93,11 +84,10 @@ const RSI_OVERLAY_CHANNELS: [OverlayChannelSpec; 4] = [
 mod drawing;
 mod indicator;
 
+pub use data::chart::kline_v2::KlineIndicator;
 use drawing::{DrawingMessage, DrawingTools, DrawingUpdate};
-use indicator::{
-    AvailabilityContext, IndicatorPanelRecipe, IndicatorUnsupportedReason, SeriesIndicatorData,
-};
-pub use indicator::{IndicatorAvailability, RsiConfig, RsiSmoothing};
+use indicator::{AvailabilityContext, IndicatorPanelRecipe, IndicatorUnsupportedReason};
+pub use indicator::{IndicatorAvailability, RsiConfig};
 
 pub enum Action {
     SeriesColorChanged(TickerInfo, iced::Color),
@@ -124,268 +114,7 @@ pub enum Message {
     Sidebar(DrawingMessage),
 }
 
-#[derive(Debug, Clone)]
-pub struct KlineSeries {
-    pub ticker_info: TickerInfo,
-    pub name: Option<String>,
-    pub bars: Vec<Kline>,
-    indicators: Option<SeriesIndicatorData>,
-    footprints: Option<BTreeMap<UnixMs, KlineTrades>>,
-    footprint_tick_size: PriceStep,
-    raw_trades: Vec<Trade>,
-    tick_times: Vec<UnixMs>,
-    tick_aggr: Option<TickAggr>,
-}
-
-impl KlineSeries {
-    fn new(ticker_info: TickerInfo) -> Self {
-        Self {
-            ticker_info,
-            name: None,
-            bars: Vec::new(),
-            indicators: None,
-            footprints: None,
-            footprint_tick_size: ticker_info.min_ticksize.into(),
-            raw_trades: Vec::new(),
-            tick_times: Vec::new(),
-            tick_aggr: None,
-        }
-    }
-
-    fn new_base(ticker_info: TickerInfo) -> Self {
-        let mut series = Self::new(ticker_info);
-        series.indicators = Some(SeriesIndicatorData::default());
-        series.footprints = Some(BTreeMap::new());
-        series
-    }
-
-    fn oi_timerange(&self) -> Option<(UnixMs, UnixMs)> {
-        self.indicators.as_ref()?.oi_timerange()
-    }
-
-    fn refresh_indicator_inputs(&mut self) {
-        if let Some(indicators) = self.indicators.as_mut() {
-            indicators.refresh_from_bars(&self.bars);
-        }
-    }
-
-    fn enable_tick_aggregation(
-        &mut self,
-        interval: data::aggr::TickCount,
-        footprint_tick_size: PriceStep,
-    ) {
-        self.bars.clear();
-        if let Some(indicators) = self.indicators.as_mut() {
-            indicators.clear();
-        }
-        self.tick_aggr = Some(TickAggr::new(
-            interval,
-            footprint_tick_size,
-            &self.raw_trades,
-        ));
-        self.rebuild_bars_from_tick_aggregation();
-    }
-
-    fn disable_tick_aggregation(&mut self) {
-        self.tick_aggr = None;
-        self.tick_times.clear();
-    }
-
-    fn reset_for_basis(&mut self, preserve_raw_trades: bool) {
-        self.bars.clear();
-        if let Some(indicators) = self.indicators.as_mut() {
-            indicators.clear();
-        }
-        if let Some(footprints) = self.footprints.as_mut() {
-            footprints.clear();
-        }
-        self.disable_tick_aggregation();
-
-        if !preserve_raw_trades {
-            self.raw_trades.clear();
-        }
-    }
-
-    fn insert_tick_trades(&mut self, trades: &[Trade]) {
-        if self.tick_aggr.is_none() {
-            return;
-        }
-
-        self.raw_trades.extend_from_slice(trades);
-
-        let tick_aggr = self
-            .tick_aggr
-            .as_mut()
-            .expect("tick aggregation was checked above");
-
-        tick_aggr.insert_trades(trades);
-        self.rebuild_bars_from_tick_aggregation();
-    }
-
-    fn insert_time_trades(&mut self, trades: &[Trade], timeframe: Timeframe) {
-        let Some(footprints) = self.footprints.as_mut() else {
-            return;
-        };
-
-        let mut updated_times = Vec::new();
-
-        for trade in trades {
-            let bar_time = trade.time.floor_to(timeframe);
-            if !updated_times.contains(&bar_time) {
-                updated_times.push(bar_time);
-            }
-
-            footprints
-                .entry(bar_time)
-                .or_insert_with(KlineTrades::new)
-                .add_trade_to_nearest_bin(trade, self.footprint_tick_size);
-        }
-
-        for time in updated_times {
-            if let Some(footprint) = footprints.get_mut(&time) {
-                footprint.calculate_poc();
-            }
-        }
-    }
-
-    fn set_footprint_tick_size(&mut self, tick_size: PriceStep) {
-        self.footprint_tick_size = tick_size;
-    }
-
-    fn rebuild_time_footprints(&mut self, timeframe: Timeframe) {
-        if let Some(footprints) = self.footprints.as_mut() {
-            footprints.clear();
-        } else {
-            return;
-        }
-
-        let raw_trades = self.raw_trades.clone();
-        self.insert_time_trades(&raw_trades, timeframe);
-    }
-
-    fn trade_time_range(&self) -> Option<(UnixMs, UnixMs)> {
-        let earliest = self.raw_trades.iter().map(|trade| trade.time).min()?;
-        let latest = self.raw_trades.iter().map(|trade| trade.time).max()?;
-        Some((earliest, latest))
-    }
-
-    fn suggest_trade_fetch_range(
-        &self,
-        visible_earliest: UnixMs,
-        visible_latest: UnixMs,
-        timeframe: Timeframe,
-    ) -> Option<(UnixMs, UnixMs)> {
-        let footprints = self.footprints.as_ref()?;
-        let target_time = self
-            .bars
-            .iter()
-            .rev()
-            .find(|bar| {
-                footprints
-                    .get(&bar.time)
-                    .map(|footprint| footprint.trades.is_empty())
-                    .unwrap_or(true)
-            })
-            .map(|bar| bar.time)?;
-
-        let last_trade_before_gap = self
-            .raw_trades
-            .iter()
-            .filter(|trade| trade.time < target_time)
-            .map(|trade| trade.time)
-            .max();
-        let first_trade_after_gap = self
-            .raw_trades
-            .iter()
-            .filter(|trade| trade.time > target_time)
-            .map(|trade| trade.time)
-            .min();
-
-        if last_trade_before_gap.is_none() && first_trade_after_gap.is_none() {
-            return None;
-        }
-
-        let data_earliest = self.bars.first()?.time;
-        let data_latest = self.bars.last()?.time;
-        let gap_start = last_trade_before_gap.map_or(data_earliest, |time| time.saturating_add(1));
-        let fetch_from = gap_start
-            .max(visible_earliest)
-            .floor_to(timeframe)
-            .max(gap_start);
-        let fetch_to = first_trade_after_gap.map_or(data_latest.min(visible_latest), |time| {
-            time.saturating_sub(1)
-        });
-
-        if fetch_from >= fetch_to {
-            return None;
-        }
-
-        if gap_start < visible_earliest {
-            let interval_ms = timeframe.to_milliseconds();
-            if fetch_to.as_u64().saturating_sub(fetch_from.as_u64()) < interval_ms {
-                return None;
-            }
-        }
-
-        Some((fetch_from, fetch_to))
-    }
-
-    fn footprint_for_bar(&self, bar: &Kline) -> Option<&KlineTrades> {
-        if let Some(tick_aggr) = self.tick_aggr.as_ref() {
-            return usize::try_from(bar.time.as_u64())
-                .ok()
-                .and_then(|index| tick_aggr.datapoints.get(index))
-                .map(|point| &point.footprint);
-        }
-
-        self.footprints.as_ref()?.get(&bar.time)
-    }
-
-    fn rebuild_bars_from_tick_aggregation(&mut self) {
-        let Some(tick_aggr) = self.tick_aggr.as_mut() else {
-            self.bars.clear();
-            return;
-        };
-
-        if tick_aggr.datapoints.len() > SERIES_MAX_BARS {
-            let excess = tick_aggr.datapoints.len() - SERIES_MAX_BARS;
-            tick_aggr.datapoints.drain(0..excess);
-        }
-
-        self.tick_times = tick_aggr
-            .datapoints
-            .iter()
-            .map(|point| point.kline.time)
-            .collect();
-        self.bars = tick_aggr
-            .datapoints
-            .iter()
-            .enumerate()
-            .map(|(index, point)| {
-                let mut bar = point.kline;
-                // Tick indicators are keyed by bar time. Synthetic monotonic
-                // timestamps preserve one-to-one identity even when trades
-                // share an exchange timestamp.
-                bar.time = UnixMs::new(index as u64);
-                bar
-            })
-            .collect();
-        self.refresh_indicator_inputs();
-    }
-
-    fn set_rsi_config(&mut self, config: RsiConfig) -> bool {
-        self.indicators
-            .as_mut()
-            .map(|indicators| indicators.set_rsi_config(config))
-            .unwrap_or(false)
-    }
-
-    fn insert_open_interest(&mut self, data: &[OpenInterest], basis: Basis, timeframe: Timeframe) {
-        if let Some(indicators) = self.indicators.as_mut() {
-            indicators.insert_open_interest_batch(data, basis, timeframe);
-        }
-    }
-}
+pub use data::chart::kline_v2::series::{KlineSeries, SERIES_MAX_BARS};
 
 impl KlineSeriesLike for KlineSeries {
     fn ticker_info(&self) -> &TickerInfo {
@@ -463,21 +192,6 @@ impl KlineSeriesLike for KlineSeries {
 
     fn footprint_tick_size(&self) -> PriceStep {
         self.footprint_tick_size
-    }
-}
-
-impl KlineSeries {
-    fn indicator_for_panel_value(panel_value: Option<PanelValueId>) -> Option<KlineIndicator> {
-        match panel_value {
-            Some(PanelValueId::Volume) => Some(KlineIndicator::Volume),
-            Some(PanelValueId::BollingerBands) => Some(KlineIndicator::BollingerBands),
-            Some(PanelValueId::Rsi) => Some(KlineIndicator::Rsi),
-            Some(PanelValueId::OpenInterest) => Some(KlineIndicator::OpenInterest),
-            Some(PanelValueId::CumulativeVolumeDelta) => {
-                Some(KlineIndicator::CumulativeVolumeDelta)
-            }
-            None => None,
-        }
     }
 }
 
@@ -583,7 +297,7 @@ impl KlineChartV2 {
                 .composition
                 .panels
                 .iter()
-                .map(Self::serializable_panel)
+                .map(persisted::panel_config_from_spec)
                 .collect(),
             splits: self.composition.splits.clone(),
             y_viewports: self
@@ -595,14 +309,9 @@ impl KlineChartV2 {
                     max_value: viewport.max_value,
                 })
                 .collect(),
-            drawings: self
-                .drawing
-                .drawings()
-                .iter()
-                .map(Self::serializable_drawing)
-                .collect(),
-            active_drawing_tool: Self::serializable_drawing_tool(self.drawing.active_tool()),
-            rsi: Self::serializable_rsi_config(self.rsi_config),
+            drawings: self.drawing.drawings().to_vec(),
+            active_drawing_tool: self.drawing.active_tool(),
+            rsi: self.rsi_config,
             series: self
                 .series
                 .iter()
@@ -621,7 +330,7 @@ impl KlineChartV2 {
             let panels = config
                 .panels
                 .iter()
-                .map(Self::panel_from_persisted)
+                .map(persisted::panel_spec_from_config)
                 .collect();
             self.composition = ChartComposition::from_parts(panels, config.splits.clone());
             self.rebuild_indicator_panel_bindings();
@@ -650,15 +359,12 @@ impl KlineChartV2 {
         let drawings = config
             .drawings
             .iter()
-            .filter_map(Self::drawing_from_persisted)
             .filter(|drawing| Self::drawing_panels_exist(&self.composition, &drawing.object))
+            .cloned()
             .collect();
-        self.drawing = DrawingTools::from_parts(
-            Self::drawing_tool_from_persisted(config.active_drawing_tool),
-            drawings,
-        );
+        self.drawing = DrawingTools::from_parts(config.active_drawing_tool, drawings);
 
-        self.rsi_config = Self::rsi_config_from_persisted(config.rsi).normalized();
+        self.rsi_config = config.rsi.normalized();
         let rsi_config = self.rsi_config;
         if let Some(base_series) = self.base_series_mut() {
             let _ = base_series.set_rsi_config(rsi_config);
@@ -677,98 +383,6 @@ impl KlineChartV2 {
         }
 
         self.bump_rev();
-    }
-
-    fn serializable_panel(
-        panel: &crate::widget::chart::kline::composition::PanelSpec,
-    ) -> persisted::PanelConfig {
-        persisted::PanelConfig {
-            id: panel.id.0,
-            role: Self::serializable_panel_role(panel.role),
-            title: panel.title.clone(),
-            value_id: panel.value_id.map(Self::serializable_panel_value_id),
-            value_precision: panel
-                .value_precision
-                .map(Self::serializable_value_precision),
-            value_label_policy: Self::serializable_value_label_policy(panel.value_label_policy),
-            base_layer: panel.base_layer.map(|layer_id| layer_id.0),
-            preferred_scale: Self::serializable_panel_scale(panel.preferred_scale),
-            comparison_policy: persisted::ComparisonPolicy {
-                force_percent_scale_on_multi_source: panel
-                    .comparison_policy
-                    .force_percent_scale_on_multi_source,
-                force_line_for_non_base_sources: panel
-                    .comparison_policy
-                    .force_line_for_non_base_sources,
-            },
-            layers: panel.layers.iter().map(Self::serializable_layer).collect(),
-        }
-    }
-
-    fn serializable_layer(
-        layer: &crate::widget::chart::kline::composition::LayerSpec,
-    ) -> persisted::LayerConfig {
-        persisted::LayerConfig {
-            id: layer.id.0,
-            name: layer.name.clone(),
-            source: Self::serializable_layer_source(&layer.source),
-            data_kind: Self::serializable_layer_data_kind(layer.data_kind),
-            mark: Self::serializable_mark(layer.mark),
-            axis: Self::serializable_axis(layer.axis),
-            visible: layer.visible,
-            style: persisted::LayerStyle {
-                line_width: layer.style.line_width,
-                opacity: layer.style.opacity,
-            },
-        }
-    }
-
-    fn panel_from_persisted(
-        panel: &persisted::PanelConfig,
-    ) -> crate::widget::chart::kline::composition::PanelSpec {
-        crate::widget::chart::kline::composition::PanelSpec {
-            id: PanelId(panel.id),
-            role: Self::panel_role_from_persisted(panel.role),
-            title: panel.title.clone(),
-            value_id: panel.value_id.map(Self::panel_value_id_from_persisted),
-            value_precision: panel
-                .value_precision
-                .map(Self::value_precision_from_persisted),
-            value_label_policy: Self::value_label_policy_from_persisted(panel.value_label_policy),
-            base_layer: panel.base_layer.map(LayerId),
-            preferred_scale: Self::panel_scale_from_persisted(panel.preferred_scale),
-            comparison_policy: PanelComparisonPolicy {
-                force_percent_scale_on_multi_source: panel
-                    .comparison_policy
-                    .force_percent_scale_on_multi_source,
-                force_line_for_non_base_sources: panel
-                    .comparison_policy
-                    .force_line_for_non_base_sources,
-            },
-            layers: panel
-                .layers
-                .iter()
-                .map(Self::layer_from_persisted)
-                .collect(),
-        }
-    }
-
-    fn layer_from_persisted(
-        panel: &persisted::LayerConfig,
-    ) -> crate::widget::chart::kline::composition::LayerSpec {
-        crate::widget::chart::kline::composition::LayerSpec {
-            id: LayerId(panel.id),
-            name: panel.name.clone(),
-            source: Self::layer_source_from_persisted(panel.source),
-            data_kind: Self::layer_data_kind_from_persisted(panel.data_kind),
-            mark: Self::mark_from_persisted(panel.mark),
-            axis: Self::axis_from_persisted(panel.axis),
-            visible: panel.visible,
-            style: LayerStyle {
-                line_width: panel.style.line_width,
-                opacity: panel.style.opacity,
-            },
-        }
     }
 
     fn rebuild_indicator_panel_bindings(&mut self) {
@@ -824,323 +438,6 @@ impl KlineChartV2 {
         }
     }
 
-    fn serializable_panel_role(role: PanelRole) -> persisted::PanelRole {
-        match role {
-            PanelRole::Primary => persisted::PanelRole::Primary,
-            PanelRole::Auxiliary => persisted::PanelRole::Auxiliary,
-        }
-    }
-
-    fn panel_role_from_persisted(role: persisted::PanelRole) -> PanelRole {
-        match role {
-            persisted::PanelRole::Primary => PanelRole::Primary,
-            persisted::PanelRole::Auxiliary => PanelRole::Auxiliary,
-        }
-    }
-
-    fn serializable_panel_scale(scale: PanelScaleMode) -> persisted::PanelScaleMode {
-        match scale {
-            PanelScaleMode::Absolute => persisted::PanelScaleMode::Absolute,
-            PanelScaleMode::FitVisible => persisted::PanelScaleMode::FitVisible,
-            PanelScaleMode::FitVisibleIncludeZero => {
-                persisted::PanelScaleMode::FitVisibleIncludeZero
-            }
-            PanelScaleMode::Logarithmic => persisted::PanelScaleMode::Logarithmic,
-            PanelScaleMode::PercentFromBase => persisted::PanelScaleMode::PercentFromBase,
-        }
-    }
-
-    fn panel_scale_from_persisted(scale: persisted::PanelScaleMode) -> PanelScaleMode {
-        match scale {
-            persisted::PanelScaleMode::Absolute => PanelScaleMode::Absolute,
-            persisted::PanelScaleMode::FitVisible => PanelScaleMode::FitVisible,
-            persisted::PanelScaleMode::FitVisibleIncludeZero => {
-                PanelScaleMode::FitVisibleIncludeZero
-            }
-            persisted::PanelScaleMode::Logarithmic => PanelScaleMode::Logarithmic,
-            persisted::PanelScaleMode::PercentFromBase => PanelScaleMode::PercentFromBase,
-        }
-    }
-
-    fn serializable_panel_value_id(value_id: PanelValueId) -> persisted::PanelValueId {
-        match value_id {
-            PanelValueId::Volume => persisted::PanelValueId::Volume,
-            PanelValueId::BollingerBands => persisted::PanelValueId::BollingerBands,
-            PanelValueId::Rsi => persisted::PanelValueId::Rsi,
-            PanelValueId::OpenInterest => persisted::PanelValueId::OpenInterest,
-            PanelValueId::CumulativeVolumeDelta => persisted::PanelValueId::CumulativeVolumeDelta,
-        }
-    }
-
-    fn panel_value_id_from_persisted(value_id: persisted::PanelValueId) -> PanelValueId {
-        match value_id {
-            persisted::PanelValueId::Volume => PanelValueId::Volume,
-            persisted::PanelValueId::BollingerBands => PanelValueId::BollingerBands,
-            persisted::PanelValueId::Rsi => PanelValueId::Rsi,
-            persisted::PanelValueId::OpenInterest => PanelValueId::OpenInterest,
-            persisted::PanelValueId::CumulativeVolumeDelta => PanelValueId::CumulativeVolumeDelta,
-        }
-    }
-
-    fn serializable_layer_source(source: &LayerSource) -> persisted::LayerSource {
-        match source {
-            LayerSource::RawKline {
-                source: DataSourceId::Synthetic("Comparison"),
-            } => persisted::LayerSource::Comparison,
-            LayerSource::RawKline { .. } => persisted::LayerSource::Primary,
-            LayerSource::RawIndicator { value_id, .. } => {
-                persisted::LayerSource::Indicator(Self::serializable_panel_value_id(*value_id))
-            }
-        }
-    }
-
-    fn layer_source_from_persisted(source: persisted::LayerSource) -> LayerSource {
-        match source {
-            persisted::LayerSource::Primary => LayerSource::RawKline {
-                source: DataSourceId::Primary,
-            },
-            persisted::LayerSource::Comparison => LayerSource::RawKline {
-                source: COMPARISON_SOURCE_ID,
-            },
-            persisted::LayerSource::Indicator(value_id) => LayerSource::RawIndicator {
-                source: DataSourceId::Primary,
-                value_id: Self::panel_value_id_from_persisted(value_id),
-            },
-        }
-    }
-
-    fn serializable_layer_data_kind(kind: LayerDataKind) -> persisted::LayerDataKind {
-        match kind {
-            LayerDataKind::Ohlc => persisted::LayerDataKind::Ohlc,
-            LayerDataKind::Scalar => persisted::LayerDataKind::Scalar,
-            LayerDataKind::Histogram => persisted::LayerDataKind::Histogram,
-        }
-    }
-
-    fn layer_data_kind_from_persisted(kind: persisted::LayerDataKind) -> LayerDataKind {
-        match kind {
-            persisted::LayerDataKind::Ohlc => LayerDataKind::Ohlc,
-            persisted::LayerDataKind::Scalar => LayerDataKind::Scalar,
-            persisted::LayerDataKind::Histogram => LayerDataKind::Histogram,
-        }
-    }
-
-    fn serializable_axis(axis: AxisBinding) -> persisted::AxisBinding {
-        match axis {
-            AxisBinding::Primary => persisted::AxisBinding::Primary,
-            AxisBinding::Secondary => persisted::AxisBinding::Secondary,
-        }
-    }
-
-    fn axis_from_persisted(axis: persisted::AxisBinding) -> AxisBinding {
-        match axis {
-            persisted::AxisBinding::Primary => AxisBinding::Primary,
-            persisted::AxisBinding::Secondary => AxisBinding::Secondary,
-        }
-    }
-
-    fn serializable_mark(mark: MarkKind) -> persisted::MarkKind {
-        match mark {
-            MarkKind::Candle => persisted::MarkKind::Candle,
-            MarkKind::Line => persisted::MarkKind::Line,
-            MarkKind::Bar(mode) => persisted::MarkKind::Bar(Self::serializable_bar_mode(mode)),
-        }
-    }
-
-    fn mark_from_persisted(mark: persisted::MarkKind) -> MarkKind {
-        match mark {
-            persisted::MarkKind::Candle => MarkKind::Candle,
-            persisted::MarkKind::Line => MarkKind::Line,
-            persisted::MarkKind::Bar(mode) => MarkKind::Bar(Self::bar_mode_from_persisted(mode)),
-        }
-    }
-
-    fn serializable_bar_mode(mode: BarMode) -> persisted::BarMode {
-        match mode {
-            BarMode::Regular => persisted::BarMode::Regular,
-            BarMode::Histogram(mode) => persisted::BarMode::Histogram(match mode {
-                HistogramMode::Plain => persisted::HistogramMode::Plain,
-                HistogramMode::SignedOverlay => persisted::HistogramMode::SignedOverlay,
-            }),
-        }
-    }
-
-    fn bar_mode_from_persisted(mode: persisted::BarMode) -> BarMode {
-        match mode {
-            persisted::BarMode::Regular => BarMode::Regular,
-            persisted::BarMode::Histogram(mode) => BarMode::Histogram(match mode {
-                persisted::HistogramMode::Plain => HistogramMode::Plain,
-                persisted::HistogramMode::SignedOverlay => HistogramMode::SignedOverlay,
-            }),
-        }
-    }
-
-    fn serializable_value_precision(precision: PanelValuePrecision) -> persisted::ValuePrecision {
-        match precision {
-            PanelValuePrecision::BaseTickerMinTick => persisted::ValuePrecision::BaseTickerMinTick,
-            PanelValuePrecision::BaseTickerMinQty => persisted::ValuePrecision::BaseTickerMinQty,
-            PanelValuePrecision::FixedPower10(step) => {
-                persisted::ValuePrecision::FixedPower10(step.power)
-            }
-            PanelValuePrecision::FixedStep(step) => persisted::ValuePrecision::FixedStep(step),
-        }
-    }
-
-    fn value_precision_from_persisted(precision: persisted::ValuePrecision) -> PanelValuePrecision {
-        match precision {
-            persisted::ValuePrecision::BaseTickerMinTick => PanelValuePrecision::BaseTickerMinTick,
-            persisted::ValuePrecision::BaseTickerMinQty => PanelValuePrecision::BaseTickerMinQty,
-            persisted::ValuePrecision::FixedPower10(power) => {
-                PanelValuePrecision::FixedPower10(exchange::unit::Power10::new(power))
-            }
-            persisted::ValuePrecision::FixedStep(step) => PanelValuePrecision::FixedStep(step),
-        }
-    }
-
-    fn serializable_value_label_policy(
-        policy: PanelValueLabelPolicy,
-    ) -> persisted::ValueLabelPolicy {
-        persisted::ValueLabelPolicy {
-            axis_mode: Self::serializable_value_label_mode(policy.axis_mode),
-            header_mode: Self::serializable_value_label_mode(policy.header_mode),
-            max_decimals: policy.max_decimals,
-        }
-    }
-
-    fn value_label_policy_from_persisted(
-        policy: persisted::ValueLabelPolicy,
-    ) -> PanelValueLabelPolicy {
-        PanelValueLabelPolicy {
-            axis_mode: Self::value_label_mode_from_persisted(policy.axis_mode),
-            header_mode: Self::value_label_mode_from_persisted(policy.header_mode),
-            max_decimals: policy.max_decimals,
-        }
-    }
-
-    fn serializable_value_label_mode(mode: PanelValueLabelMode) -> persisted::ValueLabelMode {
-        match mode {
-            PanelValueLabelMode::Compact => persisted::ValueLabelMode::Compact,
-            PanelValueLabelMode::Commas => persisted::ValueLabelMode::Commas,
-            PanelValueLabelMode::Abbreviated => persisted::ValueLabelMode::Abbreviated,
-        }
-    }
-
-    fn value_label_mode_from_persisted(mode: persisted::ValueLabelMode) -> PanelValueLabelMode {
-        match mode {
-            persisted::ValueLabelMode::Compact => PanelValueLabelMode::Compact,
-            persisted::ValueLabelMode::Commas => PanelValueLabelMode::Commas,
-            persisted::ValueLabelMode::Abbreviated => PanelValueLabelMode::Abbreviated,
-        }
-    }
-
-    fn serializable_drawing_tool(tool: DrawingTool) -> persisted::DrawingTool {
-        match tool {
-            DrawingTool::Cursor => persisted::DrawingTool::Cursor,
-            DrawingTool::Trendline => persisted::DrawingTool::Trendline,
-            DrawingTool::Box => persisted::DrawingTool::Box,
-            DrawingTool::HorizontalLine => persisted::DrawingTool::HorizontalLine,
-            DrawingTool::VerticalLine => persisted::DrawingTool::VerticalLine,
-        }
-    }
-
-    fn drawing_tool_from_persisted(tool: persisted::DrawingTool) -> DrawingTool {
-        match tool {
-            persisted::DrawingTool::Cursor => DrawingTool::Cursor,
-            persisted::DrawingTool::Trendline => DrawingTool::Trendline,
-            persisted::DrawingTool::Box => DrawingTool::Box,
-            persisted::DrawingTool::HorizontalLine => DrawingTool::HorizontalLine,
-            persisted::DrawingTool::VerticalLine => DrawingTool::VerticalLine,
-        }
-    }
-
-    fn serializable_drawing(drawing: &DrawingEntity) -> persisted::DrawingConfig {
-        persisted::DrawingConfig {
-            id: drawing.id.0,
-            object: Self::serializable_drawing_object(&drawing.object),
-            style: persisted::DrawingStyle {
-                stroke_color: drawing.style.stroke_color,
-                stroke_width: drawing.style.stroke_width,
-                fill_color: drawing.style.fill_color,
-            },
-            locked: drawing.locked,
-            visible: drawing.visible,
-        }
-    }
-
-    fn drawing_from_persisted(drawing: &persisted::DrawingConfig) -> Option<DrawingEntity> {
-        Some(DrawingEntity {
-            id: DrawingId(drawing.id),
-            object: Self::drawing_object_from_persisted(&drawing.object)?,
-            style: DrawingStyle {
-                stroke_color: drawing.style.stroke_color,
-                stroke_width: drawing.style.stroke_width,
-                fill_color: drawing.style.fill_color,
-            },
-            locked: drawing.locked,
-            visible: drawing.visible,
-        })
-    }
-
-    fn serializable_drawing_object(object: &DrawingObject) -> persisted::DrawingObject {
-        match object {
-            DrawingObject::Trendline { start, end } => persisted::DrawingObject::Trendline {
-                start: Self::serializable_anchor(*start),
-                end: Self::serializable_anchor(*end),
-            },
-            DrawingObject::Box { start, end } => persisted::DrawingObject::Box {
-                start: Self::serializable_anchor(*start),
-                end: Self::serializable_anchor(*end),
-            },
-            DrawingObject::HorizontalLine { panel_id, y_unit } => {
-                persisted::DrawingObject::HorizontalLine {
-                    panel_id: panel_id.0,
-                    y_unit: y_unit.0,
-                }
-            }
-            DrawingObject::VerticalLine { time } => {
-                persisted::DrawingObject::VerticalLine { time: *time }
-            }
-        }
-    }
-
-    fn drawing_object_from_persisted(object: &persisted::DrawingObject) -> Option<DrawingObject> {
-        match object {
-            persisted::DrawingObject::Trendline { start, end } => Some(DrawingObject::Trendline {
-                start: Self::anchor_from_persisted(*start)?,
-                end: Self::anchor_from_persisted(*end)?,
-            }),
-            persisted::DrawingObject::Box { start, end } => Some(DrawingObject::Box {
-                start: Self::anchor_from_persisted(*start)?,
-                end: Self::anchor_from_persisted(*end)?,
-            }),
-            persisted::DrawingObject::HorizontalLine { panel_id, y_unit } => {
-                Some(DrawingObject::HorizontalLine {
-                    panel_id: PanelId(*panel_id),
-                    y_unit: crate::widget::chart::kline::YUnit(*y_unit),
-                })
-            }
-            persisted::DrawingObject::VerticalLine { time } => {
-                Some(DrawingObject::VerticalLine { time: *time })
-            }
-        }
-    }
-
-    fn serializable_anchor(anchor: DrawingAnchor) -> persisted::DrawingAnchor {
-        persisted::DrawingAnchor {
-            panel_id: anchor.panel_id.0,
-            time: anchor.time,
-            y_unit: anchor.y_unit.0,
-        }
-    }
-
-    fn anchor_from_persisted(anchor: persisted::DrawingAnchor) -> Option<DrawingAnchor> {
-        Some(DrawingAnchor {
-            panel_id: PanelId(anchor.panel_id),
-            time: anchor.time,
-            y_unit: crate::widget::chart::kline::YUnit(anchor.y_unit),
-        })
-    }
-
     fn drawing_panels_exist(composition: &ChartComposition, object: &DrawingObject) -> bool {
         let panel_exists = |panel_id: PanelId| composition.panel(panel_id).is_some();
 
@@ -1150,30 +447,6 @@ impl KlineChartV2 {
             }
             DrawingObject::HorizontalLine { panel_id, .. } => panel_exists(*panel_id),
             DrawingObject::VerticalLine { .. } => true,
-        }
-    }
-
-    fn serializable_rsi_config(config: RsiConfig) -> persisted::RsiConfig {
-        persisted::RsiConfig {
-            period: config.period,
-            smoothing: match config.smoothing {
-                RsiSmoothing::None => persisted::RsiSmoothing::None,
-                RsiSmoothing::Ema(period) => persisted::RsiSmoothing::Ema(period),
-            },
-            upper_band: config.upper_band,
-            lower_band: config.lower_band,
-        }
-    }
-
-    fn rsi_config_from_persisted(config: persisted::RsiConfig) -> RsiConfig {
-        RsiConfig {
-            period: config.period,
-            smoothing: match config.smoothing {
-                persisted::RsiSmoothing::None => RsiSmoothing::None,
-                persisted::RsiSmoothing::Ema(period) => RsiSmoothing::Ema(period),
-            },
-            upper_band: config.upper_band,
-            lower_band: config.lower_band,
         }
     }
 
@@ -2712,32 +1985,5 @@ fn trim_bars(bars: &mut Vec<Kline>) {
     if bars.len() > SERIES_MAX_BARS {
         let to_drop = bars.len() - SERIES_MAX_BARS;
         bars.drain(0..to_drop);
-    }
-}
-
-pub trait Indicator: PartialEq + Display + 'static {
-    fn for_market(market: MarketKind) -> &'static [Self]
-    where
-        Self: Sized;
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize, Eq, Enum)]
-pub enum KlineIndicator {
-    Volume,
-    BollingerBands,
-    Rsi,
-    OpenInterest,
-    CumulativeVolumeDelta,
-}
-
-impl Indicator for KlineIndicator {
-    fn for_market(market: MarketKind) -> &'static [Self] {
-        indicator::indicators_for_market(market)
-    }
-}
-
-impl Display for KlineIndicator {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}", indicator::display_name(*self))
     }
 }

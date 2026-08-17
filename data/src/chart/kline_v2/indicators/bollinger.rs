@@ -1,7 +1,5 @@
+use super::super::composition::{AxisBinding, DataSourceId, LayerDataKind, MarkKind, PanelValueId};
 use super::{IndicatorAvailability, IndicatorPanelRecipe};
-use crate::widget::chart::kline::composition::{
-    AxisBinding, DataSourceId, LayerDataKind, MarkKind, PanelValueId,
-};
 use exchange::{Kline, UnixMs};
 use std::collections::{BTreeMap, VecDeque};
 
