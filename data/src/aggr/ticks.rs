@@ -89,6 +89,7 @@ impl TickAccumulation {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct TickAggr {
     pub datapoints: Vec<TickAccumulation>,
     pub interval: aggr::TickCount,

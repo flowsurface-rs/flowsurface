@@ -12,9 +12,10 @@ use crate::widget::chart::kline::{
     coord::{ChartCoord, ChartStepMs, RoundedOffsetUnits},
 };
 
+use data::aggr::ticks::TickAggr;
 use data::chart::Basis;
 use exchange::adapter::{MarketKind, StreamKind};
-use exchange::{Kline, OpenInterest, TickerInfo, Timeframe, UnixMs};
+use exchange::{Kline, OpenInterest, TickerInfo, Timeframe, Trade, UnixMs};
 
 use enum_map::{Enum, EnumMap};
 use rustc_hash::FxHashMap;
@@ -116,6 +117,9 @@ pub struct KlineSeries {
     pub name: Option<String>,
     pub bars: Vec<Kline>,
     indicators: SeriesIndicatorData,
+    raw_trades: Vec<Trade>,
+    tick_times: Vec<UnixMs>,
+    tick_aggr: Option<TickAggr>,
 }
 
 impl KlineSeries {
@@ -125,6 +129,9 @@ impl KlineSeries {
             name: None,
             bars: Vec::new(),
             indicators: SeriesIndicatorData::default(),
+            raw_trades: Vec::new(),
+            tick_times: Vec::new(),
+            tick_aggr: None,
         }
     }
 
@@ -135,6 +142,80 @@ impl KlineSeries {
     fn refresh_indicator_inputs(&mut self) {
         self.indicators.refresh_from_bars(&self.bars);
     }
+
+    fn enable_tick_aggregation(&mut self, interval: data::aggr::TickCount) {
+        self.bars.clear();
+        self.indicators.clear();
+        self.tick_aggr = Some(TickAggr::new(
+            interval,
+            self.ticker_info.min_ticksize.into(),
+            &self.raw_trades,
+        ));
+        self.rebuild_bars_from_tick_aggregation();
+    }
+
+    fn disable_tick_aggregation(&mut self) {
+        self.tick_aggr = None;
+        self.tick_times.clear();
+    }
+
+    fn reset_for_basis(&mut self, preserve_raw_trades: bool) {
+        self.bars.clear();
+        self.indicators.clear();
+        self.disable_tick_aggregation();
+
+        if !preserve_raw_trades {
+            self.raw_trades.clear();
+        }
+    }
+
+    fn insert_tick_trades(&mut self, trades: &[Trade]) {
+        if self.tick_aggr.is_none() {
+            return;
+        }
+
+        self.raw_trades.extend_from_slice(trades);
+
+        let tick_aggr = self
+            .tick_aggr
+            .as_mut()
+            .expect("tick aggregation was checked above");
+
+        tick_aggr.insert_trades(trades);
+        self.rebuild_bars_from_tick_aggregation();
+    }
+
+    fn rebuild_bars_from_tick_aggregation(&mut self) {
+        let Some(tick_aggr) = self.tick_aggr.as_mut() else {
+            self.bars.clear();
+            return;
+        };
+
+        if tick_aggr.datapoints.len() > SERIES_MAX_BARS {
+            let excess = tick_aggr.datapoints.len() - SERIES_MAX_BARS;
+            tick_aggr.datapoints.drain(0..excess);
+        }
+
+        self.tick_times = tick_aggr
+            .datapoints
+            .iter()
+            .map(|point| point.kline.time)
+            .collect();
+        self.bars = tick_aggr
+            .datapoints
+            .iter()
+            .enumerate()
+            .map(|(index, point)| {
+                let mut bar = point.kline;
+                // Tick indicators are keyed by bar time. Synthetic monotonic
+                // timestamps preserve one-to-one identity even when trades
+                // share an exchange timestamp.
+                bar.time = UnixMs::new(index as u64);
+                bar
+            })
+            .collect();
+        self.refresh_indicator_inputs();
+    }
 }
 
 impl KlineSeriesLike for KlineSeries {
@@ -144,6 +225,13 @@ impl KlineSeriesLike for KlineSeries {
 
     fn bars(&self) -> &[Kline] {
         &self.bars
+    }
+
+    fn time_at_index(&self, index: usize) -> Option<UnixMs> {
+        self.tick_times
+            .get(index)
+            .copied()
+            .or_else(|| self.bars.get(index).map(|bar| bar.time))
     }
 
     fn indicator_value(&self, bar: &Kline) -> f32 {
@@ -280,6 +368,7 @@ impl KlineChartV2 {
         }
 
         chart.sync_primary_panel_comparison_sources();
+        chart.configure_series_for_basis();
 
         chart.install_default_indicator_panels();
         chart
@@ -779,14 +868,30 @@ impl KlineChartV2 {
         self.bump_rev();
     }
 
+    pub fn insert_trades(&mut self, ticker_info: &TickerInfo, trades: &[Trade]) {
+        if !matches!(self.basis, Basis::Tick(_)) || trades.is_empty() {
+            return;
+        }
+
+        let Some(index) = self.series_index.get(ticker_info).copied() else {
+            return;
+        };
+
+        self.series[index].insert_tick_trades(trades);
+        self.last_tick = Instant::now();
+        self.bump_rev();
+    }
+
     pub fn set_basis(&mut self, basis: Basis) -> Option<super::Action> {
+        let preserve_raw_trades =
+            matches!(self.basis, Basis::Tick(_)) && matches!(basis, Basis::Tick(_));
         self.basis = basis;
         self.timeframe = Self::timeframe_for_basis(basis);
 
         for series in &mut self.series {
-            series.bars.clear();
-            series.indicators.clear();
+            series.reset_for_basis(preserve_raw_trades);
         }
+        self.configure_series_for_basis();
 
         self.rebuild_handlers();
         self.bump_rev();
@@ -918,6 +1023,21 @@ impl KlineChartV2 {
         true
     }
 
+    fn configure_series_for_basis(&mut self) {
+        match self.basis {
+            Basis::Time(_) => {
+                for series in &mut self.series {
+                    series.disable_tick_aggregation();
+                }
+            }
+            Basis::Tick(interval) => {
+                for series in &mut self.series {
+                    series.enable_tick_aggregation(interval);
+                }
+            }
+        }
+    }
+
     fn is_indicator_available(&self, indicator: KlineIndicator) -> bool {
         !matches!(
             self.indicator_availability(indicator),
@@ -926,7 +1046,7 @@ impl KlineChartV2 {
     }
 
     fn indicator_availability(&self, indicator: KlineIndicator) -> IndicatorAvailability {
-        indicator::availability(
+        let availability = indicator::availability(
             indicator,
             AvailabilityContext {
                 basis: self.basis,
@@ -934,7 +1054,32 @@ impl KlineChartV2 {
                 base_ticker: self.base_ticker,
             },
             self.series.iter().map(|series| &series.indicators),
-        )
+        );
+
+        if !matches!(availability, IndicatorAvailability::Available) {
+            return availability;
+        }
+
+        let Some(required) = indicator::kline_warmup_bars(indicator, self.rsi_config) else {
+            return availability;
+        };
+
+        let available = self
+            .series
+            .iter()
+            .map(|series| series.bars.len())
+            .min()
+            .unwrap_or(0);
+        let required = required as usize;
+
+        if available < required {
+            IndicatorAvailability::Unsupported(IndicatorUnsupportedReason::InsufficientData {
+                available,
+                required,
+            })
+        } else {
+            availability
+        }
     }
 
     fn unavailable_indicator_panels(&self) -> Vec<UnavailableIndicator> {
@@ -975,6 +1120,12 @@ impl KlineChartV2 {
             }
             IndicatorUnsupportedReason::ResolutionNotSupported => {
                 format!("{name} is not available on {} timeframe.", self.timeframe)
+            }
+            IndicatorUnsupportedReason::InsufficientData {
+                available,
+                required,
+            } => {
+                format!("{name} needs {required} candles; only {available} available.")
             }
             IndicatorUnsupportedReason::MissingRequiredInput => {
                 format!("{name} requires directional trade-volume data.")
@@ -1063,7 +1214,8 @@ impl KlineChartV2 {
     fn timeframe_for_basis(basis: Basis) -> Timeframe {
         match basis {
             Basis::Time(tf) => tf,
-            // Keep widget math operational until tick-domain widget path lands.
+            // Tick mode still carries a placeholder timeframe for APIs that
+            // require one; x-axis positioning uses the tick basis directly.
             Basis::Tick(_) => Timeframe::MS100,
         }
     }
@@ -1189,6 +1341,10 @@ impl KlineChartV2 {
     }
 
     fn desired_fetch_batches(&self, horizontal_offset: f32) -> Vec<(FetchRange, Vec<TickerInfo>)> {
+        if matches!(self.basis, Basis::Tick(_)) {
+            return Vec::new();
+        }
+
         let dt = self.dt_ms_est();
         let visible_points = self.estimate_visible_points_for_fetch().max(0) as u64;
         let indicator_warmup_bars = self.active_indicator_kline_warmup_bars();
@@ -1328,14 +1484,23 @@ impl KlineChartV2 {
     }
 
     fn streams_for_all(&self) -> Vec<StreamKind> {
-        self.selected_tickers
-            .iter()
-            .copied()
-            .map(|ticker_info| StreamKind::Kline {
-                ticker_info,
-                timeframe: self.timeframe,
-            })
-            .collect()
+        match self.basis {
+            Basis::Time(_) => self
+                .selected_tickers
+                .iter()
+                .copied()
+                .map(|ticker_info| StreamKind::Kline {
+                    ticker_info,
+                    timeframe: self.timeframe,
+                })
+                .collect(),
+            Basis::Tick(_) => self
+                .selected_tickers
+                .iter()
+                .copied()
+                .map(|ticker_info| StreamKind::Trades { ticker_info })
+                .collect(),
+        }
     }
 
     fn add_ticker_state(&mut self, ticker_info: TickerInfo) -> bool {
@@ -1346,6 +1511,9 @@ impl KlineChartV2 {
         let idx = self.series.len();
         let mut series = KlineSeries::new(ticker_info);
         let _ = series.indicators.set_rsi_config(self.rsi_config);
+        if let Basis::Tick(interval) = self.basis {
+            series.enable_tick_aggregation(interval);
+        }
         self.series.push(series);
         self.series_index.insert(ticker_info, idx);
         self.request_handlers

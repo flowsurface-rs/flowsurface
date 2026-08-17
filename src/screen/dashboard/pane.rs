@@ -280,6 +280,12 @@ impl State {
                     (content, streams)
                 }
                 ContentKind::CandlestickChartV2 => {
+                    let tickers = if matches!(derived_plan.basis, Some(Basis::Tick(_))) {
+                        vec![tickers[0]]
+                    } else {
+                        tickers.to_vec()
+                    };
+
                     let content = Content::new_kline_v2(&self.content, &tickers, &self.settings);
 
                     let streams = by_basis_default(
@@ -296,7 +302,7 @@ impl State {
                             tickers
                                 .iter()
                                 .copied()
-                                .map(|ti| kline_stream(ti, Timeframe::M15))
+                                .map(|ti| StreamKind::Trades { ticker_info: ti })
                                 .collect()
                         },
                     );
@@ -1130,13 +1136,16 @@ impl State {
                         None
                     };
 
+                    let selected_tickers =
+                        chart.basis().is_time().then_some(chart.selected_tickers());
+
                     self.compose_stack_view(
                         base,
                         id,
                         indicator_modal,
                         compact_controls,
                         || column![].into(),
-                        Some(chart.selected_tickers()),
+                        selected_tickers,
                         tickers_table,
                     )
                 } else {
@@ -1608,8 +1617,8 @@ impl State {
                                         }
                                     }
                                     Content::KlineV2 { chart: Some(c) } => {
-                                        if let Basis::Time(tf) = new_basis {
-                                            let streams: Vec<StreamKind> = c
+                                        let streams: Vec<StreamKind> = match new_basis {
+                                            Basis::Time(tf) => c
                                                 .selected_tickers()
                                                 .iter()
                                                 .copied()
@@ -1617,18 +1626,34 @@ impl State {
                                                     ticker_info: ti,
                                                     timeframe: tf,
                                                 })
-                                                .collect();
+                                                .collect(),
+                                            Basis::Tick(_) => {
+                                                let base_ticker = c.ticker_info();
+                                                let secondary_tickers: Vec<TickerInfo> = c
+                                                    .selected_tickers()
+                                                    .iter()
+                                                    .copied()
+                                                    .filter(|ticker| *ticker != base_ticker)
+                                                    .collect();
 
-                                            self.streams = ResolvedStream::Ready(streams);
-                                            let action = c.set_basis(new_basis);
+                                                for ticker in secondary_tickers {
+                                                    c.remove_ticker(&ticker);
+                                                }
 
-                                            if let Some(chart::Action::RequestFetch(fetch)) = action
-                                            {
-                                                effect = Some(Effect::RequestFetch(fetch));
+                                                vec![StreamKind::Trades {
+                                                    ticker_info: base_ticker,
+                                                }]
                                             }
-                                        } else {
-                                            // Kline v2 currently supports time-basis only.
-                                            self.settings.selected_basis = Some(c.basis());
+                                        };
+
+                                        self.streams = ResolvedStream::Ready(streams);
+                                        let action = c.set_basis(new_basis);
+
+                                        if let Some(chart::Action::RequestFetch(fetch)) = action {
+                                            effect = Some(Effect::RequestFetch(fetch));
+                                        } else if matches!(new_basis, Basis::Tick(_)) {
+                                            self.status = Status::Ready;
+                                            effect = Some(Effect::RefreshStreams);
                                         }
                                     }
                                     Content::Comparison(Some(c)) => {
@@ -1712,6 +1737,10 @@ impl State {
                             }
 
                             if let Content::KlineV2 { chart: Some(c) } = &mut self.content {
+                                if matches!(c.basis(), Basis::Tick(_)) {
+                                    return None;
+                                }
+
                                 let rebuilt = c.add_ticker(&ti);
                                 self.streams = ResolvedStream::Ready(rebuilt);
                                 return Some(Effect::RefreshStreams);
@@ -2293,10 +2322,6 @@ impl Content {
 
         let basis = settings
             .selected_basis
-            .and_then(|basis| match basis {
-                Basis::Time(tf) => Some(Basis::Time(tf)),
-                Basis::Tick(_) => None,
-            })
             .unwrap_or(Basis::Time(Timeframe::M15));
 
         Content::KlineV2 {
