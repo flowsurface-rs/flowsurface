@@ -1,5 +1,6 @@
 use super::chrome::{
-    CornerControlHit, PanelControlHit, TickerLegendHit, TickerLegendIconKind, TickerLegendLayout,
+    CornerControlHit, IndicatorLegendHit, IndicatorLegendLayout, PanelControlHit, TickerLegendHit,
+    TickerLegendIconKind, TickerLegendLayout,
 };
 use super::coord::{ChartCoord, ChartStepMs, RoundedOffsetUnits};
 use super::layout::{LayoutHitZone, PanelLayoutTree};
@@ -152,12 +153,16 @@ pub(super) struct Scene {
     pub(super) panel_controls: Vec<PanelControlHit>,
     pub(super) corner_controls: Vec<CornerControlHit>,
     pub(super) ticker_legend: Option<TickerLegendLayout>,
+    pub(super) indicator_legend: Option<IndicatorLegendLayout>,
     pub(super) controls_visible_for_panel: Option<usize>,
     pub(super) hovered_control: Option<PanelControlHit>,
     pub(super) hovered_corner_control: Option<CornerControlHit>,
     pub(super) hovering_ticker_legend: bool,
     pub(super) hovered_ticker_row: Option<usize>,
     pub(super) hovered_ticker_icon: Option<(usize, TickerLegendIconKind)>,
+    pub(super) hovering_indicator_legend: bool,
+    pub(super) hovered_indicator_row: Option<usize>,
+    pub(super) hovered_indicator_icon: Option<(usize, super::chrome::IndicatorLegendIconKind)>,
     pub(super) cursor: Option<CursorInfo>,
 }
 
@@ -1408,6 +1413,11 @@ where
             show_legend_values,
             false,
         );
+        let indicator_legend = self.build_indicator_legend_layout(
+            &panel_layout,
+            primary_panel,
+            self.tooltip_rows_before_indicators(ticker_legend.as_ref(), show_legend_values),
+        );
         let primary_value_step = self.panel_quantization_step(primary_value_precision);
         let primary_value_decimals = self.panel_value_decimals(primary_value_precision);
         let primary_unit_step = Scene::unit_step_or_default(primary_value_step);
@@ -1433,12 +1443,16 @@ where
             panel_controls,
             corner_controls,
             ticker_legend,
+            indicator_legend,
             controls_visible_for_panel: None,
             hovered_control: None,
             hovered_corner_control: None,
             hovering_ticker_legend: false,
             hovered_ticker_row: None,
             hovered_ticker_icon: None,
+            hovering_indicator_legend: false,
+            hovered_indicator_row: None,
+            hovered_indicator_icon: None,
             cursor: None,
         };
 
@@ -1471,6 +1485,39 @@ where
                     TickerLegendHit::Icon(index, kind) => {
                         scene.hovered_ticker_row = Some(index);
                         scene.hovered_ticker_icon = Some((index, kind));
+                    }
+                }
+            }
+
+            let mut indicator_legend_hit = scene
+                .indicator_legend
+                .as_ref()
+                .and_then(|legend| Self::hit_indicator_legend(&scene.layout, legend, local));
+
+            if indicator_legend_hit.is_some() {
+                scene.indicator_legend = self.build_indicator_legend_layout(
+                    &scene.layout,
+                    primary_panel,
+                    self.tooltip_rows_before_indicators(
+                        scene.ticker_legend.as_ref(),
+                        show_legend_values,
+                    ),
+                );
+                indicator_legend_hit = scene
+                    .indicator_legend
+                    .as_ref()
+                    .and_then(|legend| Self::hit_indicator_legend(&scene.layout, legend, local));
+            }
+
+            if let Some(hit) = indicator_legend_hit {
+                scene.hovering_indicator_legend = true;
+                match hit {
+                    IndicatorLegendHit::Row(index) => {
+                        scene.hovered_indicator_row = Some(index);
+                    }
+                    IndicatorLegendHit::Icon(index, kind) => {
+                        scene.hovered_indicator_row = Some(index);
+                        scene.hovered_indicator_icon = Some((index, kind));
                     }
                 }
             }

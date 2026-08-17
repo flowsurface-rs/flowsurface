@@ -1,7 +1,10 @@
 use crate::{
     chart::{
-        self, comparison::ComparisonChart, heatmap::HeatmapChart, kline::KlineChart,
-        kline_v2::KlineChartV2,
+        self,
+        comparison::ComparisonChart,
+        heatmap::HeatmapChart,
+        kline::KlineChart,
+        kline_v2::{KlineChartV2, KlineIndicator as KlineV2Indicator},
     },
     connector::{
         ResolvedStream,
@@ -97,6 +100,7 @@ pub enum Event {
     ContentSelected(ContentKind),
     ChartInteraction(super::chart::Message),
     KlineV2Interaction(super::chart::kline_v2::Message),
+    ToggleKlineV2Indicator(KlineV2Indicator),
     PanelInteraction(super::panel::Message),
     ToggleIndicator(UiIndicator),
     DeleteNotification(usize),
@@ -1114,10 +1118,22 @@ impl State {
                             Message::PaneEvent(id, Event::KlineV2Interaction(message))
                         });
 
+                    let selected_indicators = chart.selected_indicators();
+                    let indicator_modal = if self.modal == Some(Modal::Indicators) {
+                        Some(modal::indicators::view(
+                            id,
+                            self,
+                            &selected_indicators,
+                            Some(chart.ticker_info().ticker.market_type()),
+                        ))
+                    } else {
+                        None
+                    };
+
                     self.compose_stack_view(
                         base,
                         id,
-                        None,
+                        indicator_modal,
                         compact_controls,
                         || column![].into(),
                         Some(chart.selected_tickers()),
@@ -1341,6 +1357,11 @@ impl State {
                             return Some(Effect::RefreshStreams);
                         }
                     }
+                }
+            }
+            Event::ToggleKlineV2Indicator(indicator) => {
+                if let Content::KlineV2 { chart: Some(chart) } = &mut self.content {
+                    chart.toggle_indicator(indicator);
                 }
             }
             Event::PanelInteraction(msg) => match &mut self.content {
@@ -1761,7 +1782,10 @@ impl State {
         if !treat_as_starter
             && matches!(
                 &self.content,
-                Content::Heatmap { .. } | Content::Kline { .. } | Content::ShaderHeatmap { .. }
+                Content::Heatmap { .. }
+                    | Content::Kline { .. }
+                    | Content::KlineV2 { .. }
+                    | Content::ShaderHeatmap { .. }
             )
         {
             buttons = buttons.push(button_with_tooltip(
@@ -2570,6 +2594,15 @@ impl Content {
             }
             _ => false,
         }
+    }
+
+    pub fn allows_kline_v2_indicator(&self, indicator: KlineV2Indicator) -> bool {
+        matches!(
+            self,
+            Content::KlineV2 {
+                chart: Some(chart)
+            } if chart.indicator_is_available(indicator)
+        )
     }
 }
 

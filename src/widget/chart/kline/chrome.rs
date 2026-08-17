@@ -4,7 +4,7 @@ use super::{
     CHAR_W, KlineSeriesLike, KlineWidget, KlineWidgetEvent, PANEL_CONTROL_BOX, PANEL_CONTROL_GAP,
     PANEL_CONTROL_ICON_SIZE, PANEL_TITLE_LEFT_PAD, PANEL_TITLE_TO_CONTROLS_GAP,
     PANEL_TITLE_TOP_PAD, TEXT_SIZE, TICKER_LEGEND_ICON_BOX, TICKER_LEGEND_ICON_GAP,
-    TICKER_LEGEND_PADDING, TICKER_LEGEND_ROW_H, TICKER_LEGEND_TOP_OFFSET,
+    TICKER_LEGEND_PADDING, TICKER_LEGEND_ROW_H, TICKER_LEGEND_TOP_OFFSET, TOOLTIP_ROW_LEFT_PAD,
 };
 use crate::style;
 use crate::widget::chart::kline::PanelInteraction;
@@ -134,6 +134,49 @@ pub(super) enum TickerLegendHit {
     Background,
     Row(usize),
     Icon(usize, TickerLegendIconKind),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum IndicatorLegendIconKind {
+    Settings,
+    Close,
+}
+
+impl IndicatorLegendIconKind {
+    fn icon(self) -> style::Icon {
+        match self {
+            Self::Settings => style::Icon::Cog,
+            Self::Close => style::Icon::Close,
+        }
+    }
+
+    pub(super) fn into_event(self, value_id: super::PanelValueId) -> KlineWidgetEvent {
+        match self {
+            Self::Settings => KlineWidgetEvent::IndicatorSettings(value_id),
+            Self::Close => KlineWidgetEvent::IndicatorRemove(value_id),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct IndicatorLegendRowHit {
+    pub(super) value_id: super::PanelValueId,
+    pub(super) y_center: f32,
+    pub(super) row_rect: Rectangle,
+    pub(super) settings: Rectangle,
+    pub(super) close: Rectangle,
+    pub(super) primary_overlay: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct IndicatorLegendLayout {
+    pub(super) rows: Vec<IndicatorLegendRowHit>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) enum IndicatorLegendHit {
+    Row(usize),
+    Icon(usize, IndicatorLegendIconKind),
 }
 
 impl<'a, S> KlineWidget<'a, S>
@@ -531,6 +574,195 @@ where
         Some(TickerLegendHit::Background)
     }
 
+    fn indicator_label(
+        &self,
+        panel_index: usize,
+        primary_overlay: bool,
+        value_id: super::PanelValueId,
+    ) -> String {
+        if primary_overlay {
+            return self
+                .overlay_channels_for_panel_value(Some(value_id))
+                .iter()
+                .map(|channel| channel.label)
+                .collect::<Vec<_>>()
+                .join(" ");
+        }
+
+        self.resolved_panel_title(panel_index, super::KlinePanelKind::Indicator)
+            .unwrap_or("Indicator")
+            .to_string()
+    }
+
+    pub(super) fn tooltip_rows_before_indicators(
+        &self,
+        ticker_legend: Option<&TickerLegendLayout>,
+        show_legend_values: bool,
+    ) -> usize {
+        ticker_legend
+            .map(|legend| legend.rows.len())
+            .unwrap_or(usize::from(show_legend_values))
+    }
+
+    pub(super) fn build_indicator_legend_layout(
+        &self,
+        layout: &PanelLayoutTree,
+        primary_panel: usize,
+        preceding_rows: usize,
+    ) -> Option<IndicatorLegendLayout> {
+        let primary_overlay_ids = self.primary_overlay_value_ids();
+        let has_primary_overlays = !primary_overlay_ids.is_empty();
+        let has_indicator_panels = layout.panels.iter().enumerate().any(|(index, panel)| {
+            panel.kind == super::KlinePanelKind::Indicator && self.panel_value_id(index).is_some()
+        });
+
+        if !has_primary_overlays && !has_indicator_panels {
+            return None;
+        }
+
+        let mut rows = Vec::new();
+
+        for (panel_index, panel) in layout.panels.iter().enumerate() {
+            if panel.kind != super::KlinePanelKind::Indicator {
+                continue;
+            }
+
+            let Some(value_id) = self.panel_value_id(panel_index) else {
+                continue;
+            };
+
+            let label = self.indicator_label(panel_index, false, value_id);
+            let x_left = panel.plot.x + TOOLTIP_ROW_LEFT_PAD;
+            let text_end_x = x_left + label.chars().count() as f32 * CHAR_W;
+            let y_center = panel.plot.y + PANEL_TITLE_TOP_PAD + TICKER_LEGEND_ROW_H * 0.5;
+            let (settings, close, row_w) =
+                self.indicator_legend_controls(panel.plot, text_end_x, y_center, true);
+
+            rows.push(IndicatorLegendRowHit {
+                value_id,
+                y_center,
+                row_rect: Rectangle {
+                    x: panel.plot.x,
+                    y: y_center - TICKER_LEGEND_ROW_H * 0.5,
+                    width: row_w,
+                    height: TICKER_LEGEND_ROW_H,
+                },
+                settings,
+                close,
+                primary_overlay: false,
+            });
+        }
+
+        if has_primary_overlays {
+            let panel = layout.panel(primary_panel)?;
+            for (overlay_index, value_id) in primary_overlay_ids.iter().enumerate() {
+                let row_top = panel.plot.y
+                    + PANEL_TITLE_TOP_PAD
+                    + TICKER_LEGEND_PADDING
+                    + (preceding_rows + overlay_index) as f32 * TICKER_LEGEND_ROW_H;
+                let y_center = row_top + TICKER_LEGEND_ROW_H * 0.5;
+                let label = self.indicator_label(primary_panel, true, *value_id);
+                let x_left = panel.plot.x + TOOLTIP_ROW_LEFT_PAD;
+                let text_end_x = x_left + label.chars().count() as f32 * CHAR_W;
+                let (settings, close, row_w) =
+                    self.indicator_legend_controls(panel.plot, text_end_x, y_center, true);
+
+                rows.push(IndicatorLegendRowHit {
+                    value_id: *value_id,
+                    y_center,
+                    row_rect: Rectangle {
+                        x: panel.plot.x,
+                        y: row_top,
+                        width: row_w,
+                        height: TICKER_LEGEND_ROW_H,
+                    },
+                    settings,
+                    close,
+                    primary_overlay: true,
+                });
+            }
+        }
+
+        Some(IndicatorLegendLayout { rows })
+    }
+
+    fn indicator_legend_controls(
+        &self,
+        panel: Rectangle,
+        text_end_x: f32,
+        y_center: f32,
+        has_close: bool,
+    ) -> (Rectangle, Rectangle, f32) {
+        let x_right = panel.x + panel.width - TICKER_LEGEND_PADDING;
+        let free_left = text_end_x + TICKER_LEGEND_PADDING * 2.0;
+        let icon_pack_w = if has_close {
+            2.0 * TICKER_LEGEND_ICON_BOX + TICKER_LEGEND_ICON_GAP
+        } else {
+            TICKER_LEGEND_ICON_BOX
+        };
+
+        let settings_x = free_left.min((x_right - icon_pack_w).max(free_left));
+        let settings = Rectangle {
+            x: settings_x,
+            y: y_center - TICKER_LEGEND_ICON_BOX * 0.5,
+            width: TICKER_LEGEND_ICON_BOX,
+            height: TICKER_LEGEND_ICON_BOX,
+        };
+        let close = if has_close {
+            Rectangle {
+                x: settings_x + TICKER_LEGEND_ICON_BOX + TICKER_LEGEND_ICON_GAP,
+                y: settings.y,
+                width: TICKER_LEGEND_ICON_BOX,
+                height: TICKER_LEGEND_ICON_BOX,
+            }
+        } else {
+            Rectangle {
+                x: 0.0,
+                y: 0.0,
+                width: 0.0,
+                height: 0.0,
+            }
+        };
+        let content_right = if has_close {
+            close.x + close.width
+        } else {
+            settings.x + settings.width
+        };
+        let row_w = (content_right + TICKER_LEGEND_PADDING - panel.x).clamp(0.0, panel.width);
+        (settings, close, row_w)
+    }
+
+    pub(super) fn hit_indicator_legend(
+        layout: &PanelLayoutTree,
+        legend: &IndicatorLegendLayout,
+        root_local: Point,
+    ) -> Option<IndicatorLegendHit> {
+        let plot_local = layout.plot_local_point(root_local)?;
+        for (index, row) in legend.rows.iter().enumerate() {
+            if !row.row_rect.contains(plot_local) {
+                continue;
+            }
+
+            if row.settings.contains(plot_local) {
+                return Some(IndicatorLegendHit::Icon(
+                    index,
+                    IndicatorLegendIconKind::Settings,
+                ));
+            }
+
+            if row.close.contains(plot_local) {
+                return Some(IndicatorLegendHit::Icon(
+                    index,
+                    IndicatorLegendIconKind::Close,
+                ));
+            }
+
+            return Some(IndicatorLegendHit::Row(index));
+        }
+
+        None
+    }
+
     pub(super) fn fill_panel_header_values(
         &self,
         frame: &mut canvas::Frame,
@@ -564,10 +796,13 @@ where
 
             let mut x = scene.layout.regions.plot.x
                 + panel.plot.x
-                + PANEL_TITLE_LEFT_PAD
+                + TOOLTIP_ROW_LEFT_PAD
                 + title_w
                 + title_gap;
-            let y = scene.layout.regions.plot.y + panel.plot.y + PANEL_TITLE_TOP_PAD;
+            let y = scene.layout.regions.plot.y
+                + panel.plot.y
+                + PANEL_TITLE_TOP_PAD
+                + TICKER_LEGEND_ROW_H * 0.5;
             let panel_precision = self.panel_value_precision(panel_index);
 
             let mut max_x = scene.layout.regions.plot.x + panel.plot.x + panel.plot.width
@@ -593,7 +828,6 @@ where
                 }
 
                 let precision = base_series.ticker_info().min_ticksize;
-                let primary_anchor = scene.series_percent_anchors.first().copied().flatten();
 
                 if matches!(scene.primary_mark, MarkKind::Candle | MarkKind::Bar(_)) {
                     let open_f = base_bar.open.to_f32_lossy();
@@ -634,7 +868,7 @@ where
                             color,
                             size: TEXT_SIZE.into(),
                             align_x: iced::Alignment::Start.into(),
-                            align_y: iced::Alignment::Start.into(),
+                            align_y: iced::Alignment::Center.into(),
                             font: style::AZERET_MONO,
                             ..Default::default()
                         });
@@ -650,85 +884,31 @@ where
                         color: palette.background.base.text.scale_alpha(0.85),
                         size: TEXT_SIZE.into(),
                         align_x: iced::Alignment::Start.into(),
-                        align_y: iced::Alignment::Start.into(),
+                        align_y: iced::Alignment::Center.into(),
                         font: style::AZERET_MONO,
                         ..Default::default()
                     });
-
-                    x += text.chars().count() as f32 * CHAR_W + 6.0;
-                }
-
-                for value_id in self.primary_overlay_value_ids() {
-                    let Some(indicator_data) =
-                        base_series.indicator_data_for_panel_value_opt(Some(value_id), base_bar)
-                    else {
-                        continue;
-                    };
-
-                    for channel in self
-                        .overlay_channels_for_panel_value(Some(value_id))
-                        .iter()
-                        .copied()
-                    {
-                        let Some(value) = Self::overlay_channel_value(indicator_data, channel)
-                        else {
-                            continue;
-                        };
-
-                        if x >= max_x {
-                            break;
-                        }
-
-                        let value_text =
-                            if matches!(scene.primary_scale_mode, PanelScaleMode::PercentFromBase)
-                                && primary_anchor
-                                    .map(|anchor| anchor.abs() > f32::EPSILON)
-                                    .unwrap_or(false)
-                            {
-                                let anchor = primary_anchor.unwrap_or(1.0);
-                                format!("{:+.2}%", ((value / anchor) - 1.0) * 100.0)
-                            } else {
-                                self.format_panel_header_value(panel_index, panel_precision, value)
-                            };
-
-                        let label_color = Self::overlay_channel_color(channel, palette);
-                        let label_text = channel.label.to_string();
-
-                        frame.fill_text(canvas::Text {
-                            content: label_text.clone(),
-                            position: Point::new(x, y),
-                            color: label_color,
-                            size: TEXT_SIZE.into(),
-                            align_x: iced::Alignment::Start.into(),
-                            align_y: iced::Alignment::Start.into(),
-                            font: style::AZERET_MONO,
-                            ..Default::default()
-                        });
-
-                        x += label_text.chars().count() as f32 * CHAR_W + 2.0;
-
-                        if x >= max_x {
-                            break;
-                        }
-
-                        frame.fill_text(canvas::Text {
-                            content: value_text.clone(),
-                            position: Point::new(x, y),
-                            color: label_color,
-                            size: TEXT_SIZE.into(),
-                            align_x: iced::Alignment::Start.into(),
-                            align_y: iced::Alignment::Start.into(),
-                            font: style::AZERET_MONO,
-                            ..Default::default()
-                        });
-
-                        x += value_text.chars().count() as f32 * CHAR_W + 6.0;
-                    }
                 }
             } else if let Some(value_id) = self.panel_value_id(panel_index)
                 && let Some(indicator_data) =
                     base_series.indicator_data_for_panel_value_opt(Some(value_id), base_bar)
             {
+                let hovered_indicator = scene.hovering_indicator_legend
+                    && scene
+                        .indicator_legend
+                        .as_ref()
+                        .and_then(|legend| {
+                            scene
+                                .hovered_indicator_row
+                                .and_then(|index| legend.rows.get(index))
+                        })
+                        .map(|row| row.value_id == value_id)
+                        .unwrap_or(false);
+
+                if hovered_indicator {
+                    continue;
+                }
+
                 let mut drew_any_channel = false;
 
                 for channel in self
@@ -755,7 +935,7 @@ where
                         color: label_color,
                         size: TEXT_SIZE.into(),
                         align_x: iced::Alignment::Start.into(),
-                        align_y: iced::Alignment::Start.into(),
+                        align_y: iced::Alignment::Center.into(),
                         font: style::AZERET_MONO,
                         ..Default::default()
                     });
@@ -772,7 +952,7 @@ where
                         color: label_color,
                         size: TEXT_SIZE.into(),
                         align_x: iced::Alignment::Start.into(),
-                        align_y: iced::Alignment::Start.into(),
+                        align_y: iced::Alignment::Center.into(),
                         font: style::AZERET_MONO,
                         ..Default::default()
                     });
@@ -791,7 +971,7 @@ where
                         color: palette.background.base.text.scale_alpha(0.82),
                         size: TEXT_SIZE.into(),
                         align_x: iced::Alignment::Start.into(),
-                        align_y: iced::Alignment::Start.into(),
+                        align_y: iced::Alignment::Center.into(),
                         font: style::AZERET_MONO,
                         ..Default::default()
                     });
@@ -949,6 +1129,135 @@ where
                         palette,
                     );
                 }
+            }
+        }
+    }
+
+    pub(super) fn fill_indicator_legend(
+        &self,
+        frame: &mut canvas::Frame,
+        scene: &Scene,
+        palette: &Extended,
+    ) {
+        let Some(legend) = scene.indicator_legend.as_ref() else {
+            return;
+        };
+
+        let to_root = |rect: Rectangle| Rectangle {
+            x: scene.layout.regions.plot.x + rect.x,
+            y: scene.layout.regions.plot.y + rect.y,
+            width: rect.width,
+            height: rect.height,
+        };
+        let show_buttons = scene.hovering_indicator_legend;
+        let row_hover_fill = palette.background.strong.color.scale_alpha(0.22);
+
+        for (index, row) in legend.rows.iter().enumerate() {
+            let row_rect = to_root(row.row_rect);
+            let hovered_row = scene.hovered_indicator_row == Some(index);
+
+            if show_buttons && hovered_row {
+                let highlight = Rectangle {
+                    x: row_rect.x + 1.0,
+                    y: row_rect.y,
+                    width: (row_rect.width - 2.0).max(0.0),
+                    height: row_rect.height,
+                };
+                frame.fill_rectangle(highlight.position(), highlight.size(), row_hover_fill);
+            }
+
+            if row.primary_overlay {
+                let label_x = row_rect.x + TOOLTIP_ROW_LEFT_PAD;
+                let label_y = scene.layout.regions.plot.y + row.y_center;
+                let base_bar = scene.cursor.and_then(|cursor| {
+                    self.series.first().and_then(|series| {
+                        self.bar_at_or_before_unit(series, scene.x_axis, cursor.x_unit)
+                    })
+                });
+                let primary_anchor = scene.series_percent_anchors.first().copied().flatten();
+                let precision = self.panel_value_precision(scene.primary_panel);
+                let mut x = label_x;
+
+                for channel in self
+                    .overlay_channels_for_panel_value(Some(row.value_id))
+                    .iter()
+                    .copied()
+                {
+                    let label_text = channel.label.to_string();
+                    let color = Self::overlay_channel_color(channel, palette);
+
+                    frame.fill_text(canvas::Text {
+                        content: label_text.clone(),
+                        position: Point::new(x, label_y),
+                        color,
+                        size: TEXT_SIZE.into(),
+                        align_x: iced::Alignment::Start.into(),
+                        align_y: iced::Alignment::Center.into(),
+                        font: style::AZERET_MONO,
+                        ..Default::default()
+                    });
+                    x += label_text.chars().count() as f32 * CHAR_W + 2.0;
+
+                    if show_buttons {
+                        continue;
+                    }
+
+                    let Some(value) = base_bar.and_then(|bar| {
+                        self.series.first().and_then(|series| {
+                            series
+                                .indicator_data_for_panel_value_opt(Some(row.value_id), bar)
+                                .and_then(|data| Self::overlay_channel_value(data, channel))
+                        })
+                    }) else {
+                        continue;
+                    };
+
+                    let value_text =
+                        if matches!(scene.primary_scale_mode, PanelScaleMode::PercentFromBase)
+                            && primary_anchor
+                                .map(|anchor| anchor.abs() > f32::EPSILON)
+                                .unwrap_or(false)
+                        {
+                            let anchor = primary_anchor.unwrap_or(1.0);
+                            format!("{:+.2}%", ((value / anchor) - 1.0) * 100.0)
+                        } else {
+                            self.format_panel_header_value(scene.primary_panel, precision, value)
+                        };
+
+                    frame.fill_text(canvas::Text {
+                        content: value_text.clone(),
+                        position: Point::new(x, label_y),
+                        color,
+                        size: TEXT_SIZE.into(),
+                        align_x: iced::Alignment::Start.into(),
+                        align_y: iced::Alignment::Center.into(),
+                        font: style::AZERET_MONO,
+                        ..Default::default()
+                    });
+                    x += value_text.chars().count() as f32 * CHAR_W + 6.0;
+                }
+            }
+
+            if show_buttons && hovered_row {
+                let settings_hovered = scene.hovered_indicator_icon
+                    == Some((index, IndicatorLegendIconKind::Settings));
+                Self::draw_legend_icon_button(
+                    frame,
+                    to_root(row.settings),
+                    IndicatorLegendIconKind::Settings.icon(),
+                    settings_hovered,
+                    palette,
+                );
+
+                let close_hovered =
+                    scene.hovered_indicator_icon == Some((index, IndicatorLegendIconKind::Close));
+                Self::draw_legend_icon_button(
+                    frame,
+                    to_root(row.close),
+                    IndicatorLegendIconKind::Close.icon(),
+                    close_hovered,
+                    palette,
+                );
             }
         }
     }
