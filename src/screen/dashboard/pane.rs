@@ -464,7 +464,7 @@ impl State {
                 };
                 chart.insert_open_interest(req_id, oi);
             }
-            Content::KlineV2 { chart } => {
+            Content::KlineV2 { chart, .. } => {
                 let Some(chart) = chart else {
                     panic!("Kline v2 chart wasn't initialized when inserting open interest");
                 };
@@ -519,7 +519,7 @@ impl State {
                     );
                 }
             }
-            Content::KlineV2 { chart } => {
+            Content::KlineV2 { chart, .. } => {
                 if chart.is_none() {
                     let mut tickers = Vec::new();
 
@@ -607,7 +607,7 @@ impl State {
         window: window::Id,
         main_window: &'a Window,
         timezone: UserTimezone,
-        horizontal_pixel_ratio: f32,
+        pixel_ratio: f32,
         tickers_table: &'a TickersTable,
     ) -> pane_grid::Content<'a, Message, Theme, Renderer> {
         let mut top_left_buttons = if Content::Starter == self.content {
@@ -1108,7 +1108,7 @@ impl State {
                     )
                 }
             }
-            Content::KlineV2 { chart } => {
+            Content::KlineV2 { chart, .. } => {
                 if let Some(chart) = chart {
                     let selected_basis = chart.basis();
                     let tick_multiplier = chart.footprint_tick_multiplier();
@@ -1131,11 +1131,9 @@ impl State {
 
                     top_left_buttons = top_left_buttons.push(modifiers);
 
-                    let base = chart
-                        .view(timezone, horizontal_pixel_ratio)
-                        .map(move |message| {
-                            Message::PaneEvent(id, Event::KlineV2Interaction(message))
-                        });
+                    let base = chart.view(timezone, pixel_ratio).map(move |message| {
+                        Message::PaneEvent(id, Event::KlineV2Interaction(message))
+                    });
 
                     let selected_indicators = chart.selected_indicators();
                     let indicator_modal = if self.modal == Some(Modal::Indicators) {
@@ -1359,7 +1357,7 @@ impl State {
                 _ => {}
             },
             Event::KlineV2Interaction(message) => {
-                if let Content::KlineV2 { chart: Some(c) } = &mut self.content
+                if let Content::KlineV2 { chart: Some(c), .. } = &mut self.content
                     && let Some(action) = c.update(message)
                 {
                     match action {
@@ -1385,7 +1383,10 @@ impl State {
                 }
             }
             Event::ToggleKlineV2Indicator(indicator) => {
-                if let Content::KlineV2 { chart: Some(chart) } = &mut self.content {
+                if let Content::KlineV2 {
+                    chart: Some(chart), ..
+                } = &mut self.content
+                {
                     chart.toggle_indicator(indicator);
                 }
             }
@@ -1491,7 +1492,7 @@ impl State {
                                                 Some(saved_config),
                                             );
                                         }
-                                        Content::KlineV2 { chart: Some(c) } => {
+                                        Content::KlineV2 { chart: Some(c), .. } => {
                                             c.set_footprint_tick_multiplier(tm);
                                         }
                                         _ => {}
@@ -1635,7 +1636,7 @@ impl State {
                                             }
                                         }
                                     }
-                                    Content::KlineV2 { chart: Some(c) } => {
+                                    Content::KlineV2 { chart: Some(c), .. } => {
                                         let streams: Vec<StreamKind> = match new_basis {
                                             Basis::Time(tf) => {
                                                 let mut streams = vec![StreamKind::Trades {
@@ -1760,7 +1761,7 @@ impl State {
                                 return Some(Effect::RefreshStreams);
                             }
 
-                            if let Content::KlineV2 { chart: Some(c) } = &mut self.content {
+                            if let Content::KlineV2 { chart: Some(c), .. } = &mut self.content {
                                 if matches!(c.basis(), Basis::Tick(_)) {
                                     return None;
                                 }
@@ -1779,7 +1780,7 @@ impl State {
                                 return Some(Effect::RefreshStreams);
                             }
 
-                            if let Content::KlineV2 { chart: Some(c) } = &mut self.content {
+                            if let Content::KlineV2 { chart: Some(c), .. } = &mut self.content {
                                 let rebuilt = c.remove_ticker(&ti);
                                 self.streams = ResolvedStream::Ready(rebuilt);
                                 return Some(Effect::RefreshStreams);
@@ -2028,7 +2029,7 @@ impl State {
             Content::Kline { chart, .. } => chart
                 .as_mut()
                 .and_then(|c| c.invalidate(Some(now)).map(Action::Chart)),
-            Content::KlineV2 { chart } => chart
+            Content::KlineV2 { chart, .. } => chart
                 .as_mut()
                 .and_then(|c| c.invalidate(Some(now)).map(Action::Chart)),
             Content::TimeAndSales(panel) => panel
@@ -2168,6 +2169,7 @@ pub enum Content {
     },
     KlineV2 {
         chart: Option<KlineChartV2>,
+        layout: Option<data::chart::kline_v2::Config>,
     },
     TimeAndSales(Option<TimeAndSales>),
     Ladder(Option<Ladder>),
@@ -2338,24 +2340,41 @@ impl Content {
     }
 
     fn new_kline_v2(
-        _current_content: &Content,
+        current_content: &Content,
         tickers: &[TickerInfo],
         settings: &Settings,
     ) -> Self {
         let Some(_base_ticker) = tickers.first().copied() else {
-            return Content::KlineV2 { chart: None };
+            return Content::KlineV2 {
+                chart: None,
+                layout: None,
+            };
         };
 
         let basis = settings
             .selected_basis
             .unwrap_or(Basis::Time(Timeframe::M15));
 
-        let mut chart = KlineChartV2::new_with_tickers(basis, tickers);
+        let saved_layout = match current_content {
+            Content::KlineV2 { chart, layout } => chart
+                .as_ref()
+                .map(|chart| chart.serializable_config())
+                .or_else(|| layout.clone()),
+            _ => None,
+        };
+
+        let mut chart = saved_layout.as_ref().map_or_else(
+            || KlineChartV2::new_with_tickers(basis, tickers),
+            |layout| KlineChartV2::new_with_tickers_and_config(basis, tickers, layout),
+        );
         if let Some(multiplier) = settings.tick_multiply {
             chart.set_footprint_tick_multiplier(multiplier);
         }
 
-        Content::KlineV2 { chart: Some(chart) }
+        Content::KlineV2 {
+            chart: Some(chart),
+            layout: None,
+        }
     }
 
     fn placeholder(kind: ContentKind) -> Self {
@@ -2370,7 +2389,10 @@ impl Content {
                     autoscale: Some(data::chart::Autoscale::FitToVisible),
                 },
             },
-            ContentKind::CandlestickChartV2 => Content::KlineV2 { chart: None },
+            ContentKind::CandlestickChartV2 => Content::KlineV2 {
+                chart: None,
+                layout: None,
+            },
             ContentKind::FootprintChart => Content::Kline {
                 chart: None,
                 indicators: vec![KlineIndicator::Volume],
@@ -2410,7 +2432,7 @@ impl Content {
         match self {
             Content::Heatmap { chart, .. } => Some(chart.as_ref()?.last_update()),
             Content::Kline { chart, .. } => Some(chart.as_ref()?.last_update()),
-            Content::KlineV2 { chart } => Some(chart.as_ref()?.last_update()),
+            Content::KlineV2 { chart, .. } => Some(chart.as_ref()?.last_update()),
             Content::TimeAndSales(panel) => Some(panel.as_ref()?.last_update()),
             Content::Ladder(panel) => Some(panel.as_ref()?.last_update()),
             Content::Comparison(chart) => Some(chart.as_ref()?.last_update()),
@@ -2630,7 +2652,7 @@ impl Content {
             Content::Heatmap { chart, .. } => chart.is_some(),
             Content::ShaderHeatmap { chart, .. } => chart.is_some(),
             Content::Kline { chart, .. } => chart.is_some(),
-            Content::KlineV2 { chart } => chart.is_some(),
+            Content::KlineV2 { chart, .. } => chart.is_some(),
             Content::TimeAndSales(panel) => panel.is_some(),
             Content::Ladder(panel) => panel.is_some(),
             Content::Comparison(chart) => chart.is_some(),
@@ -2654,7 +2676,8 @@ impl Content {
         matches!(
             self,
             Content::KlineV2 {
-                chart: Some(chart)
+                chart: Some(chart),
+                ..
             } if chart.indicator_is_supported_for_market(indicator)
         )
     }

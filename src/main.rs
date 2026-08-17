@@ -749,7 +749,7 @@ impl Flowsurface {
         let dashboard = self.active_dashboard();
         let sidebar_pos = self.sidebar.position();
 
-        let horizontal_pixel_ratio = self.horizontal_pixel_ratio_for_window(id);
+        let pixel_ratio = self.pixel_ratio_for_window(id);
 
         let tickers_table = &self.sidebar.tickers_table;
 
@@ -760,12 +760,7 @@ impl Flowsurface {
                 .map(Message::Sidebar);
 
             let dashboard_view = dashboard
-                .view(
-                    &self.main_window,
-                    tickers_table,
-                    self.timezone,
-                    horizontal_pixel_ratio,
-                )
+                .view(&self.main_window, tickers_table, self.timezone, pixel_ratio)
                 .map(move |msg| Message::Dashboard {
                     layout_id: None,
                     event: msg,
@@ -816,7 +811,7 @@ impl Flowsurface {
                         &self.main_window,
                         tickers_table,
                         self.timezone,
-                        horizontal_pixel_ratio,
+                        pixel_ratio,
                     )
                     .map(move |msg| Message::Dashboard {
                         layout_id: None,
@@ -915,7 +910,7 @@ impl Flowsurface {
         }
     }
 
-    fn horizontal_pixel_ratio_for_window(&self, window_id: window::Id) -> f32 {
+    fn pixel_ratio_for_window(&self, window_id: window::Id) -> f32 {
         let ui_scale: f32 = Self::sanitize_positive_scale(self.ui_scale_factor.into());
         let os_scale = self
             .window_scale_factors

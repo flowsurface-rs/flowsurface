@@ -69,6 +69,8 @@ pub enum Pane {
         link_group: Option<LinkGroup>,
     },
     KlineChartV2 {
+        #[serde(default)]
+        layout: Option<crate::chart::kline_v2::Config>,
         #[serde(deserialize_with = "ok_or_default", default)]
         stream_type: Vec<PersistStreamKind>,
         #[serde(deserialize_with = "ok_or_default")]

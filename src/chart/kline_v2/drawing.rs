@@ -86,6 +86,33 @@ impl Default for DrawingTools {
 }
 
 impl DrawingTools {
+    pub fn from_parts(active_tool: DrawingTool, drawings: Vec<DrawingEntity>) -> Self {
+        let next_drawing_id = drawings
+            .iter()
+            .map(|drawing| drawing.id.0)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1)
+            .max(1);
+
+        Self {
+            active_tool,
+            sidebar_page: SidebarPage::Tools,
+            drawings,
+            selected_drawing: None,
+            interaction: DrawingInteraction::Idle,
+            next_drawing_id,
+        }
+    }
+
+    pub fn active_tool(&self) -> DrawingTool {
+        self.active_tool
+    }
+
+    pub fn drawings(&self) -> &[DrawingEntity] {
+        &self.drawings
+    }
+
     pub fn update(&mut self, message: DrawingMessage) -> DrawingUpdate {
         match message {
             DrawingMessage::SelectTool(tool) => {

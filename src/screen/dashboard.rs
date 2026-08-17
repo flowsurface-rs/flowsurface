@@ -207,7 +207,7 @@ impl Dashboard {
                                     c.mark_fetch_failed(req_id);
                                 }
                             }
-                            pane::Content::KlineV2 { chart: Some(c) } => {
+                            pane::Content::KlineV2 { chart: Some(c), .. } => {
                                 if let DashboardError::Fetch(ref msg, Some(req_id)) = err {
                                     log::error!("Fetch error: {msg}");
                                     c.mark_fetch_failed(req_id);
@@ -400,7 +400,7 @@ impl Dashboard {
                                         pane::Content::Kline { chart: Some(c), .. } => {
                                             c.set_handle(handle);
                                         }
-                                        pane::Content::KlineV2 { chart: Some(c) } => {
+                                        pane::Content::KlineV2 { chart: Some(c), .. } => {
                                             c.set_trade_fetch_handle(handle);
                                         }
                                         _ => {}
@@ -634,7 +634,7 @@ impl Dashboard {
         main_window: &'a Window,
         tickers_table: &'a TickersTable,
         timezone: UserTimezone,
-        horizontal_pixel_ratio: f32,
+        pixel_ratio: f32,
     ) -> Element<'a, Message> {
         let pane_grid: Element<_> = PaneGrid::new(&self.panes, |id, pane, maximized| {
             let is_focused = self.focus == Some((main_window.id, id));
@@ -646,7 +646,7 @@ impl Dashboard {
                 main_window.id,
                 main_window,
                 timezone,
-                horizontal_pixel_ratio,
+                pixel_ratio,
                 tickers_table,
             )
         })
@@ -667,7 +667,7 @@ impl Dashboard {
         main_window: &'a Window,
         tickers_table: &'a TickersTable,
         timezone: UserTimezone,
-        horizontal_pixel_ratio: f32,
+        pixel_ratio: f32,
     ) -> Element<'a, Message> {
         if let Some((state, _)) = self.popout.get(&window) {
             let content = container(
@@ -681,7 +681,7 @@ impl Dashboard {
                         window,
                         main_window,
                         timezone,
-                        horizontal_pixel_ratio,
+                        pixel_ratio,
                         tickers_table,
                     )
                 })
@@ -976,7 +976,7 @@ impl Dashboard {
                                     c.mark_fetch_no_data(req_id);
                                 }
                             }
-                            pane::Content::KlineV2 { chart: Some(c) } => {
+                            pane::Content::KlineV2 { chart: Some(c), .. } => {
                                 if let Some(req_id) = req_id {
                                     c.mark_trade_fetch_no_data(req_id);
                                 }
@@ -1072,7 +1072,7 @@ impl Dashboard {
                     ))
                 }
             }
-            pane::Content::KlineV2 { chart } => {
+            pane::Content::KlineV2 { chart, .. } => {
                 if let Some(c) = chart {
                     c.insert_fetched_trades(trades, is_batches_done, req_id);
 
@@ -1107,7 +1107,7 @@ impl Dashboard {
                         pane::Content::Kline { chart: Some(c), .. } => {
                             c.update_latest_kline(kline);
                         }
-                        pane::Content::KlineV2 { chart: Some(c) } => {
+                        pane::Content::KlineV2 { chart: Some(c), .. } => {
                             let ticker_info = stream.ticker_info();
                             c.update_latest_kline(&ticker_info, kline);
                         }
@@ -1199,7 +1199,7 @@ impl Dashboard {
                                 c.insert_trades(buffer);
                             }
                         }
-                        pane::Content::KlineV2 { chart: Some(c) } => {
+                        pane::Content::KlineV2 { chart: Some(c), .. } => {
                             c.insert_trades(&stream.ticker_info(), buffer);
                         }
                         pane::Content::TimeAndSales(panel) => {
@@ -1271,7 +1271,7 @@ impl Dashboard {
                             pane::Content::Kline { chart: Some(c), .. } => {
                                 c.set_handle(handle);
                             }
-                            pane::Content::KlineV2 { chart: Some(c) } => {
+                            pane::Content::KlineV2 { chart: Some(c), .. } => {
                                 c.set_trade_fetch_handle(handle);
                             }
                             _ => {}

@@ -530,7 +530,7 @@ where
 
         let mut best: Option<(u64, i64)> = None;
 
-        self.for_each_bar_unit_index(scene.x_axis, |series_index, _, x_unit, bar| {
+        self.for_each_bar_unit_index(scene.x.axis, |series_index, _, x_unit, bar| {
             if series_index != 0 {
                 return;
             }
@@ -554,12 +554,12 @@ where
         }
 
         let series = self.series.first()?;
-        self.bar_at_or_before_unit(series, scene.x_axis, x_unit)
+        self.bar_at_or_before_unit(series, scene.x.axis, x_unit)
             .map(|bar| bar.time)
     }
 
     pub(super) fn drawing_anchor_from_scene_cursor(&self, scene: &Scene) -> Option<DrawingAnchor> {
-        let cursor = scene.cursor?;
+        let cursor = scene.interaction.cursor?;
         let panel_id = self.panel_id(cursor.panel_index)?;
         let time = self.anchor_time_for_cursor_unit(scene, cursor.x_unit)?;
         let y_unit = cursor.y_primary_unit.or(cursor.y_indicator_unit)?;
@@ -581,10 +581,7 @@ where
         let panel = scene.layout.panel(panel_index)?;
 
         let x_plot = cursor_local.x - scene.layout.regions.plot.x;
-        let right_edge_px = scene.x_axis_plot_width().floor().max(1.0);
-        let spacing_px = scene.bar_spacing_px().as_f32().max(1.0);
-        let steps_from_right = ((right_edge_px - x_plot) / spacing_px).round() as i64;
-        let x_unit = scene.max_x_unit.saturating_sub(steps_from_right);
+        let x_unit = scene.unit_from_plot_x(x_plot);
         let time = self.anchor_time_for_cursor_unit(scene, x_unit)?;
 
         let panel_h = panel.plot.height.max(1.0);
@@ -595,9 +592,9 @@ where
         let y_unit = match panel.kind {
             KlinePanelKind::PrimaryChart => {
                 let uses_display_space = matches!(
-                    scene.primary_scale_mode,
+                    scene.primary.mode,
                     PanelScaleMode::PercentFromBase | PanelScaleMode::Logarithmic
-                ) || scene.primary_domain_display_override.is_some();
+                ) || scene.primary.display_domain_override.is_some();
 
                 if uses_display_space {
                     let (min_display, max_display) = scene.primary_domain_display_values();
@@ -605,10 +602,8 @@ where
                     let value = scene.primary_display_to_value(display_value);
                     self.panel_value_to_unit(panel_precision, value)
                 } else {
-                    let min_value =
-                        self.panel_unit_to_value(panel_precision, scene.min_primary_unit);
-                    let max_value =
-                        self.panel_unit_to_value(panel_precision, scene.max_primary_unit);
+                    let min_value = scene.primary.domain.values.0;
+                    let max_value = scene.primary.domain.values.1;
                     let value = min_value + (max_value - min_value) * ratio;
                     self.panel_value_to_unit(panel_precision, value)
                 }
@@ -618,8 +613,8 @@ where
                     .indicator_panels
                     .iter()
                     .find(|indicator| indicator.panel_index == panel_index)?;
-                let min_value = self.panel_unit_to_value(panel_precision, indicator.min_unit);
-                let max_value = self.panel_unit_to_value(panel_precision, indicator.max_unit);
+                let min_value = indicator.min_value();
+                let max_value = indicator.max_value();
                 let value = min_value + (max_value - min_value) * ratio;
                 self.panel_value_to_unit(panel_precision, value)
             }
@@ -739,13 +734,11 @@ where
         let panel_precision = self.panel_value_precision(panel_index);
         let value = self.panel_unit_to_value(panel_precision, anchor.y_unit);
         let x_unit = self.x_unit_for_anchor_time(scene, anchor.time)?;
-        let x_plot = Self::snap_plot_x_to_cell(
-            scene.map_x_plot(x_unit),
-            self.resolved_horizontal_pixel_ratio(),
-        );
+        let x_plot =
+            Self::snap_plot_x_to_cell(scene.map_x_plot(x_unit), self.resolved_pixel_ratio());
         let y_plot = match panel.kind {
             KlinePanelKind::PrimaryChart => {
-                scene.map_primary_plot_with_anchor(value, scene.primary_scale_anchor)
+                scene.map_primary_plot_with_anchor(value, scene.primary.anchor)
             }
             KlinePanelKind::Indicator => scene.map_indicator_plot(panel_index, value)?,
         };
@@ -827,7 +820,7 @@ where
 
         let y_plot = match panel.kind {
             KlinePanelKind::PrimaryChart => {
-                scene.map_primary_plot_with_anchor(value, scene.primary_scale_anchor)
+                scene.map_primary_plot_with_anchor(value, scene.primary.anchor)
             }
             KlinePanelKind::Indicator => scene.map_indicator_plot(panel_index, value)?,
         };
@@ -849,10 +842,7 @@ where
         let x_unit = self.x_unit_for_anchor_time(scene, time)?;
         let clip_bounds = self.plot_bounds_in_overlay(scene);
         let x = scene.layout.regions.plot.x
-            + Self::snap_plot_x_to_cell(
-                scene.map_x_plot(x_unit),
-                self.resolved_horizontal_pixel_ratio(),
-            );
+            + Self::snap_plot_x_to_cell(scene.map_x_plot(x_unit), self.resolved_pixel_ratio());
 
         if x < clip_bounds.x || x > (clip_bounds.x + clip_bounds.width) {
             return None;
@@ -869,7 +859,7 @@ where
         style: DrawingStyle,
         selected: bool,
         overlay_origin_in_window: Point,
-        horizontal_pixel_ratio: f32,
+        pixel_ratio: f32,
     ) {
         let raw_stroke_width = if selected {
             (style.stroke_width + 0.6).max(1.0)
@@ -877,7 +867,7 @@ where
             style.stroke_width.max(1.0)
         };
         let (stroke_width, stroke_width_phys) =
-            Self::quantized_stroke_width(raw_stroke_width, horizontal_pixel_ratio);
+            Self::quantized_stroke_width(raw_stroke_width, pixel_ratio);
         let stroke = canvas::Stroke::default()
             .with_color(style.stroke_color)
             .with_width(stroke_width);
@@ -891,13 +881,13 @@ where
                 };
                 let start = Self::snap_point_for_stroke_with_origin(
                     start,
-                    horizontal_pixel_ratio,
+                    pixel_ratio,
                     overlay_origin_in_window,
                     stroke_width_phys,
                 );
                 let end = Self::snap_point_for_stroke_with_origin(
                     end,
-                    horizontal_pixel_ratio,
+                    pixel_ratio,
                     overlay_origin_in_window,
                     stroke_width_phys,
                 );
@@ -921,37 +911,37 @@ where
                 let (fill_left, fill_width) = Self::snapped_span_with_origin(
                     left,
                     right,
-                    horizontal_pixel_ratio,
+                    pixel_ratio,
                     overlay_origin_in_window.x,
                 );
                 let (fill_top, fill_height) = Self::snapped_span_with_origin(
                     top,
                     bottom,
-                    horizontal_pixel_ratio,
+                    pixel_ratio,
                     overlay_origin_in_window.y,
                 );
 
                 let left_stroke = Self::snap_stroke_center_with_origin(
                     left,
-                    horizontal_pixel_ratio,
+                    pixel_ratio,
                     overlay_origin_in_window.x,
                     stroke_width_phys,
                 );
                 let right_stroke = Self::snap_stroke_center_with_origin(
                     right,
-                    horizontal_pixel_ratio,
+                    pixel_ratio,
                     overlay_origin_in_window.x,
                     stroke_width_phys,
                 );
                 let top_stroke = Self::snap_stroke_center_with_origin(
                     top,
-                    horizontal_pixel_ratio,
+                    pixel_ratio,
                     overlay_origin_in_window.y,
                     stroke_width_phys,
                 );
                 let bottom_stroke = Self::snap_stroke_center_with_origin(
                     bottom,
-                    horizontal_pixel_ratio,
+                    pixel_ratio,
                     overlay_origin_in_window.y,
                     stroke_width_phys,
                 );
@@ -1004,7 +994,7 @@ where
 
                 let y = Self::snap_stroke_center_with_origin(
                     y,
-                    horizontal_pixel_ratio,
+                    pixel_ratio,
                     overlay_origin_in_window.y,
                     stroke_width_phys,
                 );
@@ -1026,7 +1016,7 @@ where
 
                 let x = Self::snap_stroke_center_with_origin(
                     x,
-                    horizontal_pixel_ratio,
+                    pixel_ratio,
                     overlay_origin_in_window.x,
                     stroke_width_phys,
                 );
@@ -1107,7 +1097,7 @@ where
         frame: &mut canvas::Frame,
         scene: &Scene,
         palette: &Extended,
-        horizontal_pixel_ratio: f32,
+        pixel_ratio: f32,
         drawing: &DrawingEntity,
     ) {
         let handles = self.drawing_handle_points(scene, &drawing.object);
@@ -1121,7 +1111,7 @@ where
 
         let fill_color = palette.background.strongest.color;
         let stroke_color = palette.primary.base.color.scale_alpha(0.92);
-        let (handle_stroke_width, _) = Self::quantized_stroke_width(1.2, horizontal_pixel_ratio);
+        let (handle_stroke_width, _) = Self::quantized_stroke_width(1.2, pixel_ratio);
 
         frame.with_clip(clip_bounds, |frame| {
             for (_, point) in handles {
@@ -1177,7 +1167,7 @@ where
         scene: &Scene,
         palette: &Extended,
         overlay_origin_in_window: Point,
-        horizontal_pixel_ratio: f32,
+        pixel_ratio: f32,
     ) {
         let drawing_state = &self.drawings;
 
@@ -1194,7 +1184,7 @@ where
                 drawing.style,
                 selected,
                 overlay_origin_in_window,
-                horizontal_pixel_ratio,
+                pixel_ratio,
             );
         }
 
@@ -1203,7 +1193,7 @@ where
                 frame,
                 scene,
                 palette,
-                horizontal_pixel_ratio,
+                pixel_ratio,
                 selected_drawing,
             );
         }
@@ -1222,7 +1212,7 @@ where
                 style,
                 false,
                 overlay_origin_in_window,
-                horizontal_pixel_ratio,
+                pixel_ratio,
             );
         }
     }
@@ -1570,7 +1560,7 @@ where
             };
 
             if let Some(x_unit) = self.x_unit_for_anchor_time(scene, anchor.time) {
-                let x_text = self.format_x_label(scene.x_axis, x_unit, 1);
+                let x_text = self.format_x_label(scene.x.axis, x_unit, 1);
                 self.draw_x_axis_badge(frame, scene, palette, point.x, &x_text, filter);
             }
 

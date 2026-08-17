@@ -15,7 +15,7 @@ use exchange::{Kline, OpenInterest, TickerInfo, Timeframe, UnixMs};
 use super::KlineIndicator;
 
 pub use cvd::CapabilityProbe as CvdInputProbe;
-pub use rsi::RsiConfig;
+pub use rsi::{RsiConfig, RsiSmoothing};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndicatorUnsupportedReason {

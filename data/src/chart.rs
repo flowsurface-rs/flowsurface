@@ -2,6 +2,7 @@ pub mod comparison;
 pub mod heatmap;
 pub mod indicator;
 pub mod kline;
+pub mod kline_v2;
 pub mod ticks;
 
 use exchange::UnixMs;

@@ -1,20 +1,26 @@
 use crate::connector::fetcher::{FetchRange, FetchSpec, RequestHandler, is_trade_fetch_enabled};
 use crate::widget::chart::kline::PanelInteraction;
 use crate::widget::chart::kline::composition::{
-    BarMode, ChartComposition, DEFAULT_MIN_PANEL_RATIO, DataSourceId, HistogramMode, LayerDataKind,
-    LayerId, LayerSource, MarkKind, PanelId, PanelRole, PanelScaleMode, PanelValueId,
+    AxisBinding, BarMode, ChartComposition, DEFAULT_MIN_PANEL_RATIO, DataSourceId, HistogramMode,
+    LayerDataKind, LayerId, LayerSource, LayerStyle, MarkKind, PanelComparisonPolicy, PanelId,
+    PanelRole, PanelScaleMode, PanelValueId, PanelValueLabelMode, PanelValueLabelPolicy,
+    PanelValuePrecision,
+};
+use crate::widget::chart::kline::drawing::{
+    DrawingAnchor, DrawingEntity, DrawingId, DrawingObject, DrawingStyle, DrawingTool,
 };
 use crate::widget::chart::kline::{
-    BOLLINGER_LOWER_FIELD_KEY, BOLLINGER_UPPER_FIELD_KEY, DEFAULT_BAR_SPACING_PX, HorizontalScale,
+    BOLLINGER_LOWER_FIELD_KEY, BOLLINGER_UPPER_FIELD_KEY, DEFAULT_BAR_SPACING_PX, HorizontalWorld,
     IndicatorData, KlineSeriesLike, KlineWidget, KlineWidgetEvent, OverlayChannelColorRole,
     OverlayChannelSpec, PanelYViewport, RSI_LOWER_BAND_FIELD_KEY, RSI_SIGNAL_FIELD_KEY,
     RSI_UPPER_BAND_FIELD_KEY, UnavailableIndicator,
-    coord::{ChartCoord, ChartStepMs, RoundedOffsetUnits},
+    coord::{ChartCoord, ChartStepMs},
 };
 
 use data::aggr::ticks::TickAggr;
 use data::chart::Basis;
 use data::chart::kline::KlineTrades;
+use data::chart::kline_v2 as persisted;
 use exchange::adapter::{MarketKind, StreamKind};
 use exchange::{
     Kline, OpenInterest, TickMultiplier, TickerInfo, Timeframe, Trade, UnixMs, unit::PriceStep,
@@ -91,7 +97,7 @@ use drawing::{DrawingMessage, DrawingTools, DrawingUpdate};
 use indicator::{
     AvailabilityContext, IndicatorPanelRecipe, IndicatorUnsupportedReason, SeriesIndicatorData,
 };
-pub use indicator::{IndicatorAvailability, RsiConfig};
+pub use indicator::{IndicatorAvailability, RsiConfig, RsiSmoothing};
 
 pub enum Action {
     SeriesColorChanged(TickerInfo, iced::Color),
@@ -478,8 +484,7 @@ impl KlineSeries {
 pub struct KlineChartV2 {
     basis: Basis,
     timeframe: Timeframe,
-    horizontal_scale: HorizontalScale,
-    horizontal_offset: f32,
+    horizontal_world: HorizontalWorld,
     primary_autoscale: bool,
     panel_y_viewports: Vec<(PanelId, PanelYViewport)>,
     composition: ChartComposition,
@@ -516,8 +521,11 @@ impl KlineChartV2 {
         let mut chart = Self {
             basis,
             timeframe,
-            horizontal_scale: HorizontalScale::pixels_per_bar(DEFAULT_BAR_SPACING_PX),
-            horizontal_offset: DEFAULT_HORIZONTAL_OFFSET_UNITS,
+            horizontal_world: HorizontalWorld::new(
+                DEFAULT_BAR_SPACING_PX,
+                1.0,
+                DEFAULT_HORIZONTAL_OFFSET_UNITS,
+            ),
             primary_autoscale: true,
             panel_y_viewports: Vec::new(),
             composition,
@@ -550,6 +558,623 @@ impl KlineChartV2 {
 
         chart.install_default_indicator_panels();
         chart
+    }
+
+    pub fn new_with_tickers_and_config(
+        basis: Basis,
+        tickers: &[TickerInfo],
+        config: &persisted::Config,
+    ) -> Self {
+        let mut chart = Self::new_with_tickers(basis, tickers);
+        chart.apply_persisted_config(config);
+        chart
+    }
+
+    pub fn serializable_config(&self) -> persisted::Config {
+        persisted::Config {
+            version: 1,
+            horizontal: persisted::HorizontalConfig {
+                cell_width: self.horizontal_world.cell_width(),
+                scaling: self.horizontal_world.scaling(),
+                offset: self.horizontal_world.offset(),
+            },
+            primary_autoscale: self.primary_autoscale,
+            panels: self
+                .composition
+                .panels
+                .iter()
+                .map(Self::serializable_panel)
+                .collect(),
+            splits: self.composition.splits.clone(),
+            y_viewports: self
+                .panel_y_viewports
+                .iter()
+                .map(|(panel_id, viewport)| persisted::ViewportConfig {
+                    panel_id: panel_id.0,
+                    min_value: viewport.min_value,
+                    max_value: viewport.max_value,
+                })
+                .collect(),
+            drawings: self
+                .drawing
+                .drawings()
+                .iter()
+                .map(Self::serializable_drawing)
+                .collect(),
+            active_drawing_tool: Self::serializable_drawing_tool(self.drawing.active_tool()),
+            rsi: Self::serializable_rsi_config(self.rsi_config),
+            series: self
+                .series
+                .iter()
+                .filter_map(|series| {
+                    series.name.as_ref().map(|name| persisted::SeriesConfig {
+                        ticker: series.ticker_info.ticker,
+                        name: Some(name.clone()),
+                    })
+                })
+                .collect(),
+        }
+    }
+
+    fn apply_persisted_config(&mut self, config: &persisted::Config) {
+        if !config.panels.is_empty() {
+            let panels = config
+                .panels
+                .iter()
+                .map(Self::panel_from_persisted)
+                .collect();
+            self.composition = ChartComposition::from_parts(panels, config.splits.clone());
+            self.rebuild_indicator_panel_bindings();
+            self.rebuild_comparison_layer_bindings();
+            self.sync_primary_panel_comparison_sources();
+        }
+
+        self.horizontal_world = HorizontalWorld::new(
+            config.horizontal.cell_width,
+            config.horizontal.scaling,
+            config.horizontal.offset,
+        );
+        self.primary_autoscale = config.primary_autoscale;
+        self.panel_y_viewports = config
+            .y_viewports
+            .iter()
+            .filter_map(|viewport| {
+                let panel_id = PanelId(viewport.panel_id);
+                self.composition.panel(panel_id)?;
+                Some((
+                    panel_id,
+                    PanelYViewport::normalized(viewport.min_value, viewport.max_value)?,
+                ))
+            })
+            .collect();
+        let drawings = config
+            .drawings
+            .iter()
+            .filter_map(Self::drawing_from_persisted)
+            .filter(|drawing| Self::drawing_panels_exist(&self.composition, &drawing.object))
+            .collect();
+        self.drawing = DrawingTools::from_parts(
+            Self::drawing_tool_from_persisted(config.active_drawing_tool),
+            drawings,
+        );
+
+        self.rsi_config = Self::rsi_config_from_persisted(config.rsi).normalized();
+        let rsi_config = self.rsi_config;
+        if let Some(base_series) = self.base_series_mut() {
+            let _ = base_series.set_rsi_config(rsi_config);
+        }
+
+        for series_config in &config.series {
+            let Some(index) = self
+                .series
+                .iter()
+                .position(|series| series.ticker_info.ticker == series_config.ticker)
+            else {
+                continue;
+            };
+
+            self.series[index].name = series_config.name.clone();
+        }
+
+        self.bump_rev();
+    }
+
+    fn serializable_panel(
+        panel: &crate::widget::chart::kline::composition::PanelSpec,
+    ) -> persisted::PanelConfig {
+        persisted::PanelConfig {
+            id: panel.id.0,
+            role: Self::serializable_panel_role(panel.role),
+            title: panel.title.clone(),
+            value_id: panel.value_id.map(Self::serializable_panel_value_id),
+            value_precision: panel
+                .value_precision
+                .map(Self::serializable_value_precision),
+            value_label_policy: Self::serializable_value_label_policy(panel.value_label_policy),
+            base_layer: panel.base_layer.map(|layer_id| layer_id.0),
+            preferred_scale: Self::serializable_panel_scale(panel.preferred_scale),
+            comparison_policy: persisted::ComparisonPolicy {
+                force_percent_scale_on_multi_source: panel
+                    .comparison_policy
+                    .force_percent_scale_on_multi_source,
+                force_line_for_non_base_sources: panel
+                    .comparison_policy
+                    .force_line_for_non_base_sources,
+            },
+            layers: panel.layers.iter().map(Self::serializable_layer).collect(),
+        }
+    }
+
+    fn serializable_layer(
+        layer: &crate::widget::chart::kline::composition::LayerSpec,
+    ) -> persisted::LayerConfig {
+        persisted::LayerConfig {
+            id: layer.id.0,
+            name: layer.name.clone(),
+            source: Self::serializable_layer_source(&layer.source),
+            data_kind: Self::serializable_layer_data_kind(layer.data_kind),
+            mark: Self::serializable_mark(layer.mark),
+            axis: Self::serializable_axis(layer.axis),
+            visible: layer.visible,
+            style: persisted::LayerStyle {
+                line_width: layer.style.line_width,
+                opacity: layer.style.opacity,
+            },
+        }
+    }
+
+    fn panel_from_persisted(
+        panel: &persisted::PanelConfig,
+    ) -> crate::widget::chart::kline::composition::PanelSpec {
+        crate::widget::chart::kline::composition::PanelSpec {
+            id: PanelId(panel.id),
+            role: Self::panel_role_from_persisted(panel.role),
+            title: panel.title.clone(),
+            value_id: panel.value_id.map(Self::panel_value_id_from_persisted),
+            value_precision: panel
+                .value_precision
+                .map(Self::value_precision_from_persisted),
+            value_label_policy: Self::value_label_policy_from_persisted(panel.value_label_policy),
+            base_layer: panel.base_layer.map(LayerId),
+            preferred_scale: Self::panel_scale_from_persisted(panel.preferred_scale),
+            comparison_policy: PanelComparisonPolicy {
+                force_percent_scale_on_multi_source: panel
+                    .comparison_policy
+                    .force_percent_scale_on_multi_source,
+                force_line_for_non_base_sources: panel
+                    .comparison_policy
+                    .force_line_for_non_base_sources,
+            },
+            layers: panel
+                .layers
+                .iter()
+                .map(Self::layer_from_persisted)
+                .collect(),
+        }
+    }
+
+    fn layer_from_persisted(
+        panel: &persisted::LayerConfig,
+    ) -> crate::widget::chart::kline::composition::LayerSpec {
+        crate::widget::chart::kline::composition::LayerSpec {
+            id: LayerId(panel.id),
+            name: panel.name.clone(),
+            source: Self::layer_source_from_persisted(panel.source),
+            data_kind: Self::layer_data_kind_from_persisted(panel.data_kind),
+            mark: Self::mark_from_persisted(panel.mark),
+            axis: Self::axis_from_persisted(panel.axis),
+            visible: panel.visible,
+            style: LayerStyle {
+                line_width: panel.style.line_width,
+                opacity: panel.style.opacity,
+            },
+        }
+    }
+
+    fn rebuild_indicator_panel_bindings(&mut self) {
+        self.indicator_panels = EnumMap::default();
+
+        for panel in &self.composition.panels {
+            if let Some(value_id) = panel.value_id {
+                let indicator = Self::indicator_for_panel_value(value_id);
+                self.indicator_panels[indicator] =
+                    Some(IndicatorPanelBinding::AuxPanel { panel_id: panel.id });
+            }
+
+            for layer in &panel.layers {
+                let Some(value_id) = layer.source.indicator_value_id() else {
+                    continue;
+                };
+                let indicator = Self::indicator_for_panel_value(value_id);
+                self.indicator_panels[indicator] = Some(IndicatorPanelBinding::PrimaryLayer {
+                    panel_id: panel.id,
+                    layer_id: layer.id,
+                });
+            }
+        }
+    }
+
+    fn rebuild_comparison_layer_bindings(&mut self) {
+        self.comparison_layers.clear();
+        let Some(primary_panel_id) = self.composition.primary_panel_id() else {
+            return;
+        };
+        let Some(primary_panel) = self.composition.panel(primary_panel_id) else {
+            return;
+        };
+
+        for layer in &primary_panel.layers {
+            if !matches!(
+                layer.source,
+                LayerSource::RawKline {
+                    source: DataSourceId::Synthetic("Comparison")
+                }
+            ) {
+                continue;
+            }
+
+            if let Some(ticker) = self
+                .selected_tickers
+                .iter()
+                .copied()
+                .find(|ticker| ticker.ticker.symbol_and_exchange_string() == layer.name)
+            {
+                self.comparison_layers.insert(ticker, layer.id);
+            }
+        }
+    }
+
+    fn serializable_panel_role(role: PanelRole) -> persisted::PanelRole {
+        match role {
+            PanelRole::Primary => persisted::PanelRole::Primary,
+            PanelRole::Auxiliary => persisted::PanelRole::Auxiliary,
+        }
+    }
+
+    fn panel_role_from_persisted(role: persisted::PanelRole) -> PanelRole {
+        match role {
+            persisted::PanelRole::Primary => PanelRole::Primary,
+            persisted::PanelRole::Auxiliary => PanelRole::Auxiliary,
+        }
+    }
+
+    fn serializable_panel_scale(scale: PanelScaleMode) -> persisted::PanelScaleMode {
+        match scale {
+            PanelScaleMode::Absolute => persisted::PanelScaleMode::Absolute,
+            PanelScaleMode::FitVisible => persisted::PanelScaleMode::FitVisible,
+            PanelScaleMode::FitVisibleIncludeZero => {
+                persisted::PanelScaleMode::FitVisibleIncludeZero
+            }
+            PanelScaleMode::Logarithmic => persisted::PanelScaleMode::Logarithmic,
+            PanelScaleMode::PercentFromBase => persisted::PanelScaleMode::PercentFromBase,
+        }
+    }
+
+    fn panel_scale_from_persisted(scale: persisted::PanelScaleMode) -> PanelScaleMode {
+        match scale {
+            persisted::PanelScaleMode::Absolute => PanelScaleMode::Absolute,
+            persisted::PanelScaleMode::FitVisible => PanelScaleMode::FitVisible,
+            persisted::PanelScaleMode::FitVisibleIncludeZero => {
+                PanelScaleMode::FitVisibleIncludeZero
+            }
+            persisted::PanelScaleMode::Logarithmic => PanelScaleMode::Logarithmic,
+            persisted::PanelScaleMode::PercentFromBase => PanelScaleMode::PercentFromBase,
+        }
+    }
+
+    fn serializable_panel_value_id(value_id: PanelValueId) -> persisted::PanelValueId {
+        match value_id {
+            PanelValueId::Volume => persisted::PanelValueId::Volume,
+            PanelValueId::BollingerBands => persisted::PanelValueId::BollingerBands,
+            PanelValueId::Rsi => persisted::PanelValueId::Rsi,
+            PanelValueId::OpenInterest => persisted::PanelValueId::OpenInterest,
+            PanelValueId::CumulativeVolumeDelta => persisted::PanelValueId::CumulativeVolumeDelta,
+        }
+    }
+
+    fn panel_value_id_from_persisted(value_id: persisted::PanelValueId) -> PanelValueId {
+        match value_id {
+            persisted::PanelValueId::Volume => PanelValueId::Volume,
+            persisted::PanelValueId::BollingerBands => PanelValueId::BollingerBands,
+            persisted::PanelValueId::Rsi => PanelValueId::Rsi,
+            persisted::PanelValueId::OpenInterest => PanelValueId::OpenInterest,
+            persisted::PanelValueId::CumulativeVolumeDelta => PanelValueId::CumulativeVolumeDelta,
+        }
+    }
+
+    fn serializable_layer_source(source: &LayerSource) -> persisted::LayerSource {
+        match source {
+            LayerSource::RawKline {
+                source: DataSourceId::Synthetic("Comparison"),
+            } => persisted::LayerSource::Comparison,
+            LayerSource::RawKline { .. } => persisted::LayerSource::Primary,
+            LayerSource::RawIndicator { value_id, .. } => {
+                persisted::LayerSource::Indicator(Self::serializable_panel_value_id(*value_id))
+            }
+        }
+    }
+
+    fn layer_source_from_persisted(source: persisted::LayerSource) -> LayerSource {
+        match source {
+            persisted::LayerSource::Primary => LayerSource::RawKline {
+                source: DataSourceId::Primary,
+            },
+            persisted::LayerSource::Comparison => LayerSource::RawKline {
+                source: COMPARISON_SOURCE_ID,
+            },
+            persisted::LayerSource::Indicator(value_id) => LayerSource::RawIndicator {
+                source: DataSourceId::Primary,
+                value_id: Self::panel_value_id_from_persisted(value_id),
+            },
+        }
+    }
+
+    fn serializable_layer_data_kind(kind: LayerDataKind) -> persisted::LayerDataKind {
+        match kind {
+            LayerDataKind::Ohlc => persisted::LayerDataKind::Ohlc,
+            LayerDataKind::Scalar => persisted::LayerDataKind::Scalar,
+            LayerDataKind::Histogram => persisted::LayerDataKind::Histogram,
+        }
+    }
+
+    fn layer_data_kind_from_persisted(kind: persisted::LayerDataKind) -> LayerDataKind {
+        match kind {
+            persisted::LayerDataKind::Ohlc => LayerDataKind::Ohlc,
+            persisted::LayerDataKind::Scalar => LayerDataKind::Scalar,
+            persisted::LayerDataKind::Histogram => LayerDataKind::Histogram,
+        }
+    }
+
+    fn serializable_axis(axis: AxisBinding) -> persisted::AxisBinding {
+        match axis {
+            AxisBinding::Primary => persisted::AxisBinding::Primary,
+            AxisBinding::Secondary => persisted::AxisBinding::Secondary,
+        }
+    }
+
+    fn axis_from_persisted(axis: persisted::AxisBinding) -> AxisBinding {
+        match axis {
+            persisted::AxisBinding::Primary => AxisBinding::Primary,
+            persisted::AxisBinding::Secondary => AxisBinding::Secondary,
+        }
+    }
+
+    fn serializable_mark(mark: MarkKind) -> persisted::MarkKind {
+        match mark {
+            MarkKind::Candle => persisted::MarkKind::Candle,
+            MarkKind::Line => persisted::MarkKind::Line,
+            MarkKind::Bar(mode) => persisted::MarkKind::Bar(Self::serializable_bar_mode(mode)),
+        }
+    }
+
+    fn mark_from_persisted(mark: persisted::MarkKind) -> MarkKind {
+        match mark {
+            persisted::MarkKind::Candle => MarkKind::Candle,
+            persisted::MarkKind::Line => MarkKind::Line,
+            persisted::MarkKind::Bar(mode) => MarkKind::Bar(Self::bar_mode_from_persisted(mode)),
+        }
+    }
+
+    fn serializable_bar_mode(mode: BarMode) -> persisted::BarMode {
+        match mode {
+            BarMode::Regular => persisted::BarMode::Regular,
+            BarMode::Histogram(mode) => persisted::BarMode::Histogram(match mode {
+                HistogramMode::Plain => persisted::HistogramMode::Plain,
+                HistogramMode::SignedOverlay => persisted::HistogramMode::SignedOverlay,
+            }),
+        }
+    }
+
+    fn bar_mode_from_persisted(mode: persisted::BarMode) -> BarMode {
+        match mode {
+            persisted::BarMode::Regular => BarMode::Regular,
+            persisted::BarMode::Histogram(mode) => BarMode::Histogram(match mode {
+                persisted::HistogramMode::Plain => HistogramMode::Plain,
+                persisted::HistogramMode::SignedOverlay => HistogramMode::SignedOverlay,
+            }),
+        }
+    }
+
+    fn serializable_value_precision(precision: PanelValuePrecision) -> persisted::ValuePrecision {
+        match precision {
+            PanelValuePrecision::BaseTickerMinTick => persisted::ValuePrecision::BaseTickerMinTick,
+            PanelValuePrecision::BaseTickerMinQty => persisted::ValuePrecision::BaseTickerMinQty,
+            PanelValuePrecision::FixedPower10(step) => {
+                persisted::ValuePrecision::FixedPower10(step.power)
+            }
+            PanelValuePrecision::FixedStep(step) => persisted::ValuePrecision::FixedStep(step),
+        }
+    }
+
+    fn value_precision_from_persisted(precision: persisted::ValuePrecision) -> PanelValuePrecision {
+        match precision {
+            persisted::ValuePrecision::BaseTickerMinTick => PanelValuePrecision::BaseTickerMinTick,
+            persisted::ValuePrecision::BaseTickerMinQty => PanelValuePrecision::BaseTickerMinQty,
+            persisted::ValuePrecision::FixedPower10(power) => {
+                PanelValuePrecision::FixedPower10(exchange::unit::Power10::new(power))
+            }
+            persisted::ValuePrecision::FixedStep(step) => PanelValuePrecision::FixedStep(step),
+        }
+    }
+
+    fn serializable_value_label_policy(
+        policy: PanelValueLabelPolicy,
+    ) -> persisted::ValueLabelPolicy {
+        persisted::ValueLabelPolicy {
+            axis_mode: Self::serializable_value_label_mode(policy.axis_mode),
+            header_mode: Self::serializable_value_label_mode(policy.header_mode),
+            max_decimals: policy.max_decimals,
+        }
+    }
+
+    fn value_label_policy_from_persisted(
+        policy: persisted::ValueLabelPolicy,
+    ) -> PanelValueLabelPolicy {
+        PanelValueLabelPolicy {
+            axis_mode: Self::value_label_mode_from_persisted(policy.axis_mode),
+            header_mode: Self::value_label_mode_from_persisted(policy.header_mode),
+            max_decimals: policy.max_decimals,
+        }
+    }
+
+    fn serializable_value_label_mode(mode: PanelValueLabelMode) -> persisted::ValueLabelMode {
+        match mode {
+            PanelValueLabelMode::Compact => persisted::ValueLabelMode::Compact,
+            PanelValueLabelMode::Commas => persisted::ValueLabelMode::Commas,
+            PanelValueLabelMode::Abbreviated => persisted::ValueLabelMode::Abbreviated,
+        }
+    }
+
+    fn value_label_mode_from_persisted(mode: persisted::ValueLabelMode) -> PanelValueLabelMode {
+        match mode {
+            persisted::ValueLabelMode::Compact => PanelValueLabelMode::Compact,
+            persisted::ValueLabelMode::Commas => PanelValueLabelMode::Commas,
+            persisted::ValueLabelMode::Abbreviated => PanelValueLabelMode::Abbreviated,
+        }
+    }
+
+    fn serializable_drawing_tool(tool: DrawingTool) -> persisted::DrawingTool {
+        match tool {
+            DrawingTool::Cursor => persisted::DrawingTool::Cursor,
+            DrawingTool::Trendline => persisted::DrawingTool::Trendline,
+            DrawingTool::Box => persisted::DrawingTool::Box,
+            DrawingTool::HorizontalLine => persisted::DrawingTool::HorizontalLine,
+            DrawingTool::VerticalLine => persisted::DrawingTool::VerticalLine,
+        }
+    }
+
+    fn drawing_tool_from_persisted(tool: persisted::DrawingTool) -> DrawingTool {
+        match tool {
+            persisted::DrawingTool::Cursor => DrawingTool::Cursor,
+            persisted::DrawingTool::Trendline => DrawingTool::Trendline,
+            persisted::DrawingTool::Box => DrawingTool::Box,
+            persisted::DrawingTool::HorizontalLine => DrawingTool::HorizontalLine,
+            persisted::DrawingTool::VerticalLine => DrawingTool::VerticalLine,
+        }
+    }
+
+    fn serializable_drawing(drawing: &DrawingEntity) -> persisted::DrawingConfig {
+        persisted::DrawingConfig {
+            id: drawing.id.0,
+            object: Self::serializable_drawing_object(&drawing.object),
+            style: persisted::DrawingStyle {
+                stroke_color: drawing.style.stroke_color,
+                stroke_width: drawing.style.stroke_width,
+                fill_color: drawing.style.fill_color,
+            },
+            locked: drawing.locked,
+            visible: drawing.visible,
+        }
+    }
+
+    fn drawing_from_persisted(drawing: &persisted::DrawingConfig) -> Option<DrawingEntity> {
+        Some(DrawingEntity {
+            id: DrawingId(drawing.id),
+            object: Self::drawing_object_from_persisted(&drawing.object)?,
+            style: DrawingStyle {
+                stroke_color: drawing.style.stroke_color,
+                stroke_width: drawing.style.stroke_width,
+                fill_color: drawing.style.fill_color,
+            },
+            locked: drawing.locked,
+            visible: drawing.visible,
+        })
+    }
+
+    fn serializable_drawing_object(object: &DrawingObject) -> persisted::DrawingObject {
+        match object {
+            DrawingObject::Trendline { start, end } => persisted::DrawingObject::Trendline {
+                start: Self::serializable_anchor(*start),
+                end: Self::serializable_anchor(*end),
+            },
+            DrawingObject::Box { start, end } => persisted::DrawingObject::Box {
+                start: Self::serializable_anchor(*start),
+                end: Self::serializable_anchor(*end),
+            },
+            DrawingObject::HorizontalLine { panel_id, y_unit } => {
+                persisted::DrawingObject::HorizontalLine {
+                    panel_id: panel_id.0,
+                    y_unit: y_unit.0,
+                }
+            }
+            DrawingObject::VerticalLine { time } => {
+                persisted::DrawingObject::VerticalLine { time: *time }
+            }
+        }
+    }
+
+    fn drawing_object_from_persisted(object: &persisted::DrawingObject) -> Option<DrawingObject> {
+        match object {
+            persisted::DrawingObject::Trendline { start, end } => Some(DrawingObject::Trendline {
+                start: Self::anchor_from_persisted(*start)?,
+                end: Self::anchor_from_persisted(*end)?,
+            }),
+            persisted::DrawingObject::Box { start, end } => Some(DrawingObject::Box {
+                start: Self::anchor_from_persisted(*start)?,
+                end: Self::anchor_from_persisted(*end)?,
+            }),
+            persisted::DrawingObject::HorizontalLine { panel_id, y_unit } => {
+                Some(DrawingObject::HorizontalLine {
+                    panel_id: PanelId(*panel_id),
+                    y_unit: crate::widget::chart::kline::YUnit(*y_unit),
+                })
+            }
+            persisted::DrawingObject::VerticalLine { time } => {
+                Some(DrawingObject::VerticalLine { time: *time })
+            }
+        }
+    }
+
+    fn serializable_anchor(anchor: DrawingAnchor) -> persisted::DrawingAnchor {
+        persisted::DrawingAnchor {
+            panel_id: anchor.panel_id.0,
+            time: anchor.time,
+            y_unit: anchor.y_unit.0,
+        }
+    }
+
+    fn anchor_from_persisted(anchor: persisted::DrawingAnchor) -> Option<DrawingAnchor> {
+        Some(DrawingAnchor {
+            panel_id: PanelId(anchor.panel_id),
+            time: anchor.time,
+            y_unit: crate::widget::chart::kline::YUnit(anchor.y_unit),
+        })
+    }
+
+    fn drawing_panels_exist(composition: &ChartComposition, object: &DrawingObject) -> bool {
+        let panel_exists = |panel_id: PanelId| composition.panel(panel_id).is_some();
+
+        match object {
+            DrawingObject::Trendline { start, end } | DrawingObject::Box { start, end } => {
+                panel_exists(start.panel_id) && panel_exists(end.panel_id)
+            }
+            DrawingObject::HorizontalLine { panel_id, .. } => panel_exists(*panel_id),
+            DrawingObject::VerticalLine { .. } => true,
+        }
+    }
+
+    fn serializable_rsi_config(config: RsiConfig) -> persisted::RsiConfig {
+        persisted::RsiConfig {
+            period: config.period,
+            smoothing: match config.smoothing {
+                RsiSmoothing::None => persisted::RsiSmoothing::None,
+                RsiSmoothing::Ema(period) => persisted::RsiSmoothing::Ema(period),
+            },
+            upper_band: config.upper_band,
+            lower_band: config.lower_band,
+        }
+    }
+
+    fn rsi_config_from_persisted(config: persisted::RsiConfig) -> RsiConfig {
+        RsiConfig {
+            period: config.period,
+            smoothing: match config.smoothing {
+                persisted::RsiSmoothing::None => RsiSmoothing::None,
+                persisted::RsiSmoothing::Ema(period) => RsiSmoothing::Ema(period),
+            },
+            upper_band: config.upper_band,
+            lower_band: config.lower_band,
+        }
     }
 
     pub fn update(&mut self, message: Message) -> Option<Action> {
@@ -651,12 +1276,57 @@ impl KlineChartV2 {
                         }
                     }
                     KlineWidgetEvent::HorizontalScaleChanged(scale) => {
-                        self.horizontal_scale = scale;
+                        self.horizontal_world = HorizontalWorld::new(
+                            scale.as_pixels_per_bar(),
+                            1.0,
+                            self.horizontal_world.offset(),
+                        );
+                        return self.fetch_action_from_invalidation();
+                    }
+                    KlineWidgetEvent::HorizontalWorldChanged {
+                        cell_width,
+                        scaling,
+                        offset,
+                    } => {
+                        self.horizontal_world = HorizontalWorld::new(cell_width, scaling, offset);
                         return self.fetch_action_from_invalidation();
                     }
                     KlineWidgetEvent::HorizontalOffsetChanged(offset) => {
-                        self.horizontal_offset = offset;
+                        self.horizontal_world = self.horizontal_world.with_offset(offset);
                         return self.fetch_action_from_invalidation();
+                    }
+                    KlineWidgetEvent::ZoomChanged {
+                        cell_width,
+                        scaling,
+                        offset,
+                        y_viewport,
+                    } => {
+                        self.horizontal_world = HorizontalWorld::new(cell_width, scaling, offset);
+
+                        if let Some((panel_id, viewport)) = y_viewport
+                            && !matches!(
+                                self.composition.panel_effective_scale_mode(panel_id),
+                                Some(PanelScaleMode::PercentFromBase)
+                            )
+                        {
+                            if self
+                                .composition
+                                .primary_panel_id()
+                                .is_some_and(|primary_id| primary_id == panel_id)
+                                && self.primary_autoscale
+                            {
+                                self.primary_autoscale = false;
+                            }
+                            self.set_panel_y_viewport(panel_id, viewport);
+                        }
+
+                        return self.fetch_action_from_invalidation();
+                    }
+                    KlineWidgetEvent::PrimaryAutoscaleDisabled => {
+                        if self.primary_autoscale {
+                            self.primary_autoscale = false;
+                            self.bump_rev();
+                        }
                     }
                     KlineWidgetEvent::PrimaryAutoscaleToggled => {
                         let primary_panel_id = self.composition.primary_panel_id()?;
@@ -727,9 +1397,11 @@ impl KlineChartV2 {
                     }
                     KlineWidgetEvent::TickerRemove(_ticker) => {}
                     KlineWidgetEvent::XAxisDoubleClick => {
-                        self.horizontal_scale =
-                            HorizontalScale::pixels_per_bar(DEFAULT_BAR_SPACING_PX);
-                        self.horizontal_offset = DEFAULT_HORIZONTAL_OFFSET_UNITS;
+                        self.horizontal_world = HorizontalWorld::new(
+                            DEFAULT_BAR_SPACING_PX,
+                            1.0,
+                            DEFAULT_HORIZONTAL_OFFSET_UNITS,
+                        );
                         return self.fetch_action_from_invalidation();
                     }
                 }
@@ -748,7 +1420,7 @@ impl KlineChartV2 {
     pub fn view(
         &self,
         timezone: data::UserTimezone,
-        horizontal_pixel_ratio: f32,
+        pixel_ratio: f32,
     ) -> iced::Element<'_, Message> {
         if self.series.iter().all(|series| series.bars.is_empty()) {
             return iced::widget::center(iced::widget::text("Waiting for data...").size(16)).into();
@@ -759,9 +1431,8 @@ impl KlineChartV2 {
         let chart: iced::Element<_> =
             KlineWidget::new(&self.series, self.timeframe, &self.composition)
                 .with_basis(self.basis)
-                .with_horizontal_scale(self.horizontal_scale)
-                .with_horizontal_offset(self.horizontal_offset)
-                .with_horizontal_pixel_ratio(horizontal_pixel_ratio)
+                .with_horizontal_world_state(self.horizontal_world)
+                .with_pixel_ratio(pixel_ratio)
                 .with_primary_autoscale(self.primary_autoscale)
                 .with_panel_y_viewports(&self.panel_y_viewports)
                 .with_unavailable_indicator_panels(unavailable_indicator_panels)
@@ -785,7 +1456,8 @@ impl KlineChartV2 {
 
         self.bump_rev();
 
-        let reqs = self.collect_fetch_reqs(self.desired_fetch_batches(self.horizontal_offset));
+        let reqs =
+            self.collect_fetch_reqs(self.desired_fetch_batches(self.horizontal_world.offset()));
         self.fetch_action(reqs)
     }
 
@@ -837,7 +1509,8 @@ impl KlineChartV2 {
 
         self.bump_rev();
 
-        let reqs = self.collect_fetch_reqs(self.desired_fetch_batches(self.horizontal_offset));
+        let reqs =
+            self.collect_fetch_reqs(self.desired_fetch_batches(self.horizontal_world.offset()));
         self.fetch_action(reqs)
     }
 
@@ -1156,7 +1829,8 @@ impl KlineChartV2 {
         self.rebuild_handlers();
         self.bump_rev();
 
-        let reqs = self.collect_fetch_reqs(self.desired_fetch_batches(self.horizontal_offset));
+        let reqs =
+            self.collect_fetch_reqs(self.desired_fetch_batches(self.horizontal_world.offset()));
         self.fetch_action(reqs)
     }
 
@@ -1579,7 +2253,7 @@ impl KlineChartV2 {
             }
         }
 
-        if let Some(range) = self.desired_trade_fetch_range(self.horizontal_offset) {
+        if let Some(range) = self.desired_trade_fetch_range(self.horizontal_world.offset()) {
             self.queue_trade_fetch(range, &mut reqs);
         }
 
@@ -1621,7 +2295,7 @@ impl KlineChartV2 {
     }
 
     fn estimate_visible_points_for_fetch(&self) -> i64 {
-        let spacing = self.horizontal_scale.as_pixels_per_bar().max(1e-3);
+        let spacing = self.horizontal_world.effective_spacing();
         ((FETCH_VIEWPORT_WIDTH_ESTIMATE_PX / spacing).floor() as i64).max(2)
     }
 
@@ -1637,9 +2311,9 @@ impl KlineChartV2 {
 
         let max_seen = ChartCoord::from_unix_ms(max_seen);
         let span_units = self.estimate_visible_points_for_fetch().saturating_sub(1);
-        let right_units = RoundedOffsetUnits::from_f32(horizontal_offset)?;
-
-        let right_offset = right_units.saturating_scale(dt);
+        let right_offset = (f64::from(horizontal_offset) * dt.get() as f64)
+            .round()
+            .clamp(i64::MIN as f64, i64::MAX as f64) as i64;
         let right = max_seen.saturating_add_i64(right_offset);
 
         let span_offset = span_units.saturating_mul(dt.get());

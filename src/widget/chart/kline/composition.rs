@@ -740,6 +740,32 @@ impl ChartComposition {
         composition
     }
 
+    pub fn from_parts(panels: Vec<PanelSpec>, splits: Vec<f32>) -> Self {
+        let next_panel_id = panels
+            .iter()
+            .map(|panel| panel.id.0)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        let next_layer_id = panels
+            .iter()
+            .flat_map(|panel| panel.layers.iter())
+            .map(|layer| layer.id.0)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+
+        let mut composition = Self {
+            panels,
+            splits,
+            next_panel_id,
+            next_layer_id,
+        };
+        composition.ensure_split_count();
+        composition.splits = composition.normalized_splits(DEFAULT_MIN_PANEL_RATIO);
+        composition
+    }
+
     pub fn panel_count(&self) -> usize {
         self.panels.len()
     }

@@ -274,10 +274,10 @@ where
         optimal.max(pixel_ratio.floor() as i32)
     }
 
-    pub(super) fn candlestick_width(bar_spacing: f32, horizontal_pixel_ratio: f32) -> i32 {
-        let mut width = Self::optimal_candlestick_width(bar_spacing, horizontal_pixel_ratio);
+    pub(super) fn candlestick_width(bar_spacing: f32, pixel_ratio: f32) -> i32 {
+        let mut width = Self::optimal_candlestick_width(bar_spacing, pixel_ratio);
         if width >= 2 {
-            let wick_width = horizontal_pixel_ratio.floor() as i32;
+            let wick_width = pixel_ratio.floor() as i32;
             if (wick_width & 1) != (width & 1) {
                 width -= 1;
             }
@@ -285,133 +285,115 @@ where
         width
     }
 
-    pub(super) fn resolved_horizontal_pixel_ratio(&self) -> f32 {
-        if self.horizontal_pixel_ratio.is_finite() && self.horizontal_pixel_ratio > 0.0 {
-            self.horizontal_pixel_ratio
+    pub(super) fn resolved_pixel_ratio(&self) -> f32 {
+        if self.pixel_ratio.is_finite() && self.pixel_ratio > 0.0 {
+            self.pixel_ratio
         } else {
             1.0
         }
     }
 
-    pub(super) fn physical_px_to_logical(px: i32, horizontal_pixel_ratio: f32) -> f32 {
-        px as f32 / horizontal_pixel_ratio
+    pub(super) fn physical_px_to_logical(px: i32, pixel_ratio: f32) -> f32 {
+        px as f32 / pixel_ratio
     }
 
     pub(super) fn physical_px_to_logical_with_origin(
         px: i32,
-        horizontal_pixel_ratio: f32,
+        pixel_ratio: f32,
         origin_global: f32,
     ) -> f32 {
-        Self::physical_px_to_logical(px, horizontal_pixel_ratio) - origin_global
+        Self::physical_px_to_logical(px, pixel_ratio) - origin_global
     }
 
     pub(super) fn snap_axis_to_physical_with_origin(
         value_local: f32,
-        horizontal_pixel_ratio: f32,
+        pixel_ratio: f32,
         origin_global: f32,
     ) -> i32 {
-        ((value_local + origin_global) * horizontal_pixel_ratio).round() as i32
+        ((value_local + origin_global) * pixel_ratio).round() as i32
     }
 
     pub(super) fn snap_plot_x_to_cell_with_origin(
         x_plot: f32,
-        horizontal_pixel_ratio: f32,
+        pixel_ratio: f32,
         origin_x_global: f32,
     ) -> f32 {
-        let x_phys = Self::snap_axis_to_physical_with_origin(
-            x_plot,
-            horizontal_pixel_ratio,
-            origin_x_global,
-        );
-        Self::physical_px_to_logical_with_origin(x_phys, horizontal_pixel_ratio, origin_x_global)
+        let x_phys = Self::snap_axis_to_physical_with_origin(x_plot, pixel_ratio, origin_x_global);
+        Self::physical_px_to_logical_with_origin(x_phys, pixel_ratio, origin_x_global)
     }
 
     pub(super) fn centered_left_for_width_with_origin(
         x_plot: f32,
         width_phys: i32,
-        horizontal_pixel_ratio: f32,
+        pixel_ratio: f32,
         origin_x_global: f32,
     ) -> f32 {
-        let center_phys = Self::snap_axis_to_physical_with_origin(
-            x_plot,
-            horizontal_pixel_ratio,
-            origin_x_global,
-        );
+        let center_phys =
+            Self::snap_axis_to_physical_with_origin(x_plot, pixel_ratio, origin_x_global);
         let left_phys = center_phys - (width_phys / 2);
-        Self::physical_px_to_logical_with_origin(left_phys, horizontal_pixel_ratio, origin_x_global)
+        Self::physical_px_to_logical_with_origin(left_phys, pixel_ratio, origin_x_global)
     }
 
     pub(super) fn snapped_span_with_origin(
         start_local: f32,
         end_local: f32,
-        horizontal_pixel_ratio: f32,
+        pixel_ratio: f32,
         origin_y_global: f32,
     ) -> (f32, f32) {
         let top = start_local.min(end_local);
         let bottom = start_local.max(end_local);
 
-        let top_phys =
-            Self::snap_axis_to_physical_with_origin(top, horizontal_pixel_ratio, origin_y_global);
-        let mut bottom_phys = Self::snap_axis_to_physical_with_origin(
-            bottom,
-            horizontal_pixel_ratio,
-            origin_y_global,
-        );
+        let top_phys = Self::snap_axis_to_physical_with_origin(top, pixel_ratio, origin_y_global);
+        let mut bottom_phys =
+            Self::snap_axis_to_physical_with_origin(bottom, pixel_ratio, origin_y_global);
 
         if bottom_phys <= top_phys {
             bottom_phys = top_phys + 1;
         }
 
-        let top_snapped = Self::physical_px_to_logical_with_origin(
-            top_phys,
-            horizontal_pixel_ratio,
-            origin_y_global,
-        );
-        let height_snapped = (bottom_phys - top_phys) as f32 / horizontal_pixel_ratio;
+        let top_snapped =
+            Self::physical_px_to_logical_with_origin(top_phys, pixel_ratio, origin_y_global);
+        let height_snapped = (bottom_phys - top_phys) as f32 / pixel_ratio;
 
         (top_snapped, height_snapped)
     }
 
-    pub(super) fn quantized_stroke_width(
-        width_logical: f32,
-        horizontal_pixel_ratio: f32,
-    ) -> (f32, i32) {
-        let stroke_width_phys = (width_logical.max(0.0) * horizontal_pixel_ratio).round() as i32;
+    pub(super) fn quantized_stroke_width(width_logical: f32, pixel_ratio: f32) -> (f32, i32) {
+        let stroke_width_phys = (width_logical.max(0.0) * pixel_ratio).round() as i32;
         let stroke_width_phys = stroke_width_phys.max(1);
         (
-            Self::logical_width_from_physical(stroke_width_phys, horizontal_pixel_ratio),
+            Self::logical_width_from_physical(stroke_width_phys, pixel_ratio),
             stroke_width_phys,
         )
     }
 
     pub(super) fn snap_stroke_center_with_origin(
         value_local: f32,
-        horizontal_pixel_ratio: f32,
+        pixel_ratio: f32,
         origin_global: f32,
         stroke_width_phys: i32,
     ) -> f32 {
-        let axis_phys = (value_local + origin_global) * horizontal_pixel_ratio;
+        let axis_phys = (value_local + origin_global) * pixel_ratio;
         let snapped_phys = if (stroke_width_phys & 1) == 0 {
             axis_phys.round()
         } else {
             (axis_phys - 0.5).round() + 0.5
         };
 
-        (snapped_phys / horizontal_pixel_ratio) - origin_global
+        (snapped_phys / pixel_ratio) - origin_global
     }
 
     pub(super) fn snap_plot_x_for_stroke_with_origin(
         x_plot: f32,
-        horizontal_pixel_ratio: f32,
+        pixel_ratio: f32,
         origin_x_global: f32,
         stroke_width_phys: i32,
     ) -> f32 {
-        let x_cell =
-            Self::snap_plot_x_to_cell_with_origin(x_plot, horizontal_pixel_ratio, origin_x_global);
+        let x_cell = Self::snap_plot_x_to_cell_with_origin(x_plot, pixel_ratio, origin_x_global);
 
         Self::snap_stroke_center_with_origin(
             x_cell,
-            horizontal_pixel_ratio,
+            pixel_ratio,
             origin_x_global,
             stroke_width_phys,
         )
@@ -419,41 +401,41 @@ where
 
     pub(super) fn snap_point_for_stroke_with_origin(
         point: Point,
-        horizontal_pixel_ratio: f32,
+        pixel_ratio: f32,
         origin_global: Point,
         stroke_width_phys: i32,
     ) -> Point {
         Point::new(
             Self::snap_stroke_center_with_origin(
                 point.x,
-                horizontal_pixel_ratio,
+                pixel_ratio,
                 origin_global.x,
                 stroke_width_phys,
             ),
             Self::snap_stroke_center_with_origin(
                 point.y,
-                horizontal_pixel_ratio,
+                pixel_ratio,
                 origin_global.y,
                 stroke_width_phys,
             ),
         )
     }
 
-    pub(super) fn snap_plot_x_to_cell(x_plot: f32, horizontal_pixel_ratio: f32) -> f32 {
-        let x_phys = (x_plot * horizontal_pixel_ratio).round() as i32;
-        Self::physical_px_to_logical(x_phys, horizontal_pixel_ratio)
+    pub(super) fn snap_plot_x_to_cell(x_plot: f32, pixel_ratio: f32) -> f32 {
+        let x_phys = (x_plot * pixel_ratio).round() as i32;
+        Self::physical_px_to_logical(x_phys, pixel_ratio)
     }
 
-    pub(super) fn logical_width_from_physical(width_phys: i32, horizontal_pixel_ratio: f32) -> f32 {
-        Self::physical_px_to_logical(width_phys.max(1), horizontal_pixel_ratio)
+    pub(super) fn logical_width_from_physical(width_phys: i32, pixel_ratio: f32) -> f32 {
+        Self::physical_px_to_logical(width_phys.max(1), pixel_ratio)
     }
 
     pub(super) fn primitive_width_for_spacing(
         bar_spacing: f32,
         width_factor: f32,
-        horizontal_pixel_ratio: f32,
+        pixel_ratio: f32,
     ) -> i32 {
         let scaled_spacing = (bar_spacing * width_factor).max(1e-6);
-        Self::optimal_candlestick_width(scaled_spacing, horizontal_pixel_ratio)
+        Self::optimal_candlestick_width(scaled_spacing, pixel_ratio)
     }
 }

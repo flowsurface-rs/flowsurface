@@ -770,7 +770,7 @@ where
         palette: &Extended,
         show_primary_panel_values: bool,
     ) {
-        let Some(cursor) = scene.cursor else {
+        let Some(cursor) = scene.interaction.cursor else {
             return;
         };
 
@@ -778,7 +778,7 @@ where
             return;
         };
 
-        let Some(base_bar) = self.bar_at_or_before_unit(base_series, scene.x_axis, cursor.x_unit)
+        let Some(base_bar) = self.bar_at_or_before_unit(base_series, scene.x.axis, cursor.x_unit)
         else {
             return;
         };
@@ -807,8 +807,9 @@ where
 
             let mut max_x = scene.layout.regions.plot.x + panel.plot.x + panel.plot.width
                 - PANEL_TITLE_LEFT_PAD;
-            if scene.controls_visible_for_panel == Some(panel_index)
+            if scene.interaction.controls_visible_for_panel == Some(panel_index)
                 && let Some(left_control_x) = scene
+                    .chrome
                     .panel_controls
                     .iter()
                     .filter(|control| control.panel_index == panel_index)
@@ -822,14 +823,14 @@ where
                 continue;
             }
 
-            if panel_index == scene.primary_panel {
+            if panel_index == scene.primary.panel_index {
                 if !show_primary_panel_values {
                     continue;
                 }
 
                 let precision = base_series.ticker_info().min_ticksize;
 
-                if matches!(scene.primary_mark, MarkKind::Candle | MarkKind::Bar(_)) {
+                if matches!(scene.primary.mark, MarkKind::Candle | MarkKind::Bar(_)) {
                     let open_f = base_bar.open.to_f32_lossy();
                     let close_f = base_bar.close.to_f32_lossy();
                     let change_pct = if open_f.abs() > f32::EPSILON {
@@ -893,12 +894,14 @@ where
                 && let Some(indicator_data) =
                     base_series.indicator_data_for_panel_value_opt(Some(value_id), base_bar)
             {
-                let hovered_indicator = scene.hovering_indicator_legend
+                let hovered_indicator = scene.interaction.hovering_indicator_legend
                     && scene
+                        .chrome
                         .indicator_legend
                         .as_ref()
                         .and_then(|legend| {
                             scene
+                                .interaction
                                 .hovered_indicator_row
                                 .and_then(|index| legend.rows.get(index))
                         })
@@ -1011,7 +1014,7 @@ where
         scene: &Scene,
         palette: &Extended,
     ) {
-        let Some(legend) = scene.ticker_legend.as_ref() else {
+        let Some(legend) = scene.chrome.ticker_legend.as_ref() else {
             return;
         };
 
@@ -1029,13 +1032,13 @@ where
             palette.background.weakest.color.scale_alpha(0.9),
         );
 
-        let target_x_unit = scene.cursor.map(|cursor| cursor.x_unit);
-        let show_buttons = scene.hovering_ticker_legend;
+        let target_x_unit = scene.interaction.cursor.map(|cursor| cursor.x_unit);
+        let show_buttons = scene.interaction.hovering_ticker_legend;
         let row_hover_fill = palette.background.strong.color.scale_alpha(0.22);
 
         for (index, row) in legend.rows.iter().enumerate() {
             let row_rect = to_root(row.row_rect);
-            let hovered_row = scene.hovered_ticker_row == Some(index);
+            let hovered_row = scene.interaction.hovered_ticker_row == Some(index);
 
             if show_buttons && hovered_row {
                 let highlight = Rectangle {
@@ -1057,7 +1060,7 @@ where
             let value_text = if let Some(target_x_unit) = target_x_unit
                 && !show_buttons
                 && let Some(series) = self.series.get(index)
-                && let Some(bar) = self.bar_at_or_before_unit(series, scene.x_axis, target_x_unit)
+                && let Some(bar) = self.bar_at_or_before_unit(series, scene.x.axis, target_x_unit)
             {
                 let precision = series.ticker_info().min_ticksize;
                 if index == 0 {
@@ -1070,7 +1073,7 @@ where
                     ))
                 } else {
                     Some(
-                        self.bar_at_or_before_unit(series, scene.x_axis, scene.min_x_unit)
+                        self.bar_at_or_before_unit(series, scene.x.axis, scene.x.min_unit)
                             .and_then(|anchor_bar| {
                                 let anchor = anchor_bar.close.to_f32_lossy();
                                 (anchor.abs() > f32::EPSILON)
@@ -1108,8 +1111,8 @@ where
                 let settings_root = to_root(row.settings);
                 let close_root = to_root(row.close);
 
-                let settings_hovered =
-                    scene.hovered_ticker_icon == Some((index, TickerLegendIconKind::Settings));
+                let settings_hovered = scene.interaction.hovered_ticker_icon
+                    == Some((index, TickerLegendIconKind::Settings));
                 Self::draw_legend_icon_button(
                     frame,
                     settings_root,
@@ -1119,8 +1122,8 @@ where
                 );
 
                 if row.has_close {
-                    let close_hovered =
-                        scene.hovered_ticker_icon == Some((index, TickerLegendIconKind::Close));
+                    let close_hovered = scene.interaction.hovered_ticker_icon
+                        == Some((index, TickerLegendIconKind::Close));
                     Self::draw_legend_icon_button(
                         frame,
                         close_root,
@@ -1139,7 +1142,7 @@ where
         scene: &Scene,
         palette: &Extended,
     ) {
-        let Some(legend) = scene.indicator_legend.as_ref() else {
+        let Some(legend) = scene.chrome.indicator_legend.as_ref() else {
             return;
         };
 
@@ -1149,12 +1152,12 @@ where
             width: rect.width,
             height: rect.height,
         };
-        let show_buttons = scene.hovering_indicator_legend;
+        let show_buttons = scene.interaction.hovering_indicator_legend;
         let row_hover_fill = palette.background.strong.color.scale_alpha(0.22);
 
         for (index, row) in legend.rows.iter().enumerate() {
             let row_rect = to_root(row.row_rect);
-            let hovered_row = scene.hovered_indicator_row == Some(index);
+            let hovered_row = scene.interaction.hovered_indicator_row == Some(index);
 
             if show_buttons && hovered_row {
                 let highlight = Rectangle {
@@ -1187,13 +1190,18 @@ where
                     });
                 }
 
-                let base_bar = scene.cursor.and_then(|cursor| {
+                let base_bar = scene.interaction.cursor.and_then(|cursor| {
                     self.series.first().and_then(|series| {
-                        self.bar_at_or_before_unit(series, scene.x_axis, cursor.x_unit)
+                        self.bar_at_or_before_unit(series, scene.x.axis, cursor.x_unit)
                     })
                 });
-                let primary_anchor = scene.series_percent_anchors.first().copied().flatten();
-                let precision = self.panel_value_precision(scene.primary_panel);
+                let primary_anchor = scene
+                    .primary
+                    .series_percent_anchors
+                    .first()
+                    .copied()
+                    .flatten();
+                let precision = self.panel_value_precision(scene.primary.panel_index);
                 let mut x = label_x;
 
                 for channel in self
@@ -1231,7 +1239,7 @@ where
                     };
 
                     let value_text =
-                        if matches!(scene.primary_scale_mode, PanelScaleMode::PercentFromBase)
+                        if matches!(scene.primary.mode, PanelScaleMode::PercentFromBase)
                             && primary_anchor
                                 .map(|anchor| anchor.abs() > f32::EPSILON)
                                 .unwrap_or(false)
@@ -1239,7 +1247,11 @@ where
                             let anchor = primary_anchor.unwrap_or(1.0);
                             format!("{:+.2}%", ((value / anchor) - 1.0) * 100.0)
                         } else {
-                            self.format_panel_header_value(scene.primary_panel, precision, value)
+                            self.format_panel_header_value(
+                                scene.primary.panel_index,
+                                precision,
+                                value,
+                            )
                         };
 
                     frame.fill_text(canvas::Text {
@@ -1257,7 +1269,7 @@ where
             }
 
             if show_buttons && hovered_row {
-                let settings_hovered = scene.hovered_indicator_icon
+                let settings_hovered = scene.interaction.hovered_indicator_icon
                     == Some((index, IndicatorLegendIconKind::Settings));
                 Self::draw_legend_icon_button(
                     frame,
@@ -1267,8 +1279,8 @@ where
                     palette,
                 );
 
-                let close_hovered =
-                    scene.hovered_indicator_icon == Some((index, IndicatorLegendIconKind::Close));
+                let close_hovered = scene.interaction.hovered_indicator_icon
+                    == Some((index, IndicatorLegendIconKind::Close));
                 Self::draw_legend_icon_button(
                     frame,
                     to_root(row.close),
@@ -1286,15 +1298,16 @@ where
         scene: &Scene,
         palette: &Extended,
     ) {
-        for control in scene.corner_controls.iter().copied() {
+        for control in scene.chrome.corner_controls.iter().copied() {
             let hovered = scene
+                .interaction
                 .hovered_corner_control
                 .map(|hit| hit.kind == control.kind)
                 .unwrap_or(false);
 
             let active = control
                 .kind
-                .is_active(scene.primary_scale_mode, self.primary_autoscale);
+                .is_active(scene.primary.mode, self.primary_autoscale);
 
             let fill_color = if hovered {
                 if active {
@@ -1323,7 +1336,7 @@ where
             );
 
             frame.fill_text(canvas::Text {
-                content: control.kind.label(scene.primary_scale_mode).to_string(),
+                content: control.kind.label(scene.primary.mode).to_string(),
                 position: Point::new(
                     control.rect.x + control.rect.width * 0.5,
                     control.rect.y + control.rect.height * 0.5,
@@ -1344,17 +1357,19 @@ where
         scene: &Scene,
         palette: &Extended,
     ) {
-        let Some(visible_panel) = scene.controls_visible_for_panel else {
+        let Some(visible_panel) = scene.interaction.controls_visible_for_panel else {
             return;
         };
 
         for control in scene
+            .chrome
             .panel_controls
             .iter()
             .copied()
             .filter(|control| control.panel_index == visible_panel)
         {
             let hovered = scene
+                .interaction
                 .hovered_control
                 .map(|hit| hit.panel_index == control.panel_index && hit.kind == control.kind)
                 .unwrap_or(false);

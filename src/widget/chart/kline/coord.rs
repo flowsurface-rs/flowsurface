@@ -1,34 +1,6 @@
 use exchange::UnixMs;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct RoundedOffsetUnits(i64);
-
-impl RoundedOffsetUnits {
-    pub fn from_f32(offset: f32) -> Option<Self> {
-        let rounded = f64::from(offset).round();
-        if !rounded.is_finite() {
-            return None;
-        }
-
-        let min = i64::MIN as f64;
-        let max = i64::MAX as f64;
-        if rounded < min || rounded > max {
-            return None;
-        }
-
-        Some(Self(rounded as i64))
-    }
-
-    pub fn get(self) -> i64 {
-        self.0
-    }
-
-    pub fn saturating_scale(self, step: ChartStepMs) -> i64 {
-        self.0.saturating_mul(step.get())
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ChartStepMs(i64);
 
 impl ChartStepMs {
