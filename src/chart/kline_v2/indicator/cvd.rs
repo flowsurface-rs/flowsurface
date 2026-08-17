@@ -103,50 +103,19 @@ pub fn panel_recipe() -> IndicatorPanelRecipe {
     }
 }
 
-pub fn availability(
-    basis: Basis,
-    probes: impl Iterator<Item = CapabilityProbe>,
-) -> IndicatorAvailability {
+pub fn availability(basis: Basis, probe: CapabilityProbe) -> IndicatorAvailability {
     if matches!(basis, Basis::Tick(_)) {
         return IndicatorAvailability::Available;
     }
 
-    let mut total = 0usize;
-    let mut available = 0usize;
-    let mut pending = 0usize;
-    let mut has_inconsistent = false;
-
-    for probe in probes {
-        total += 1;
-        match probe {
-            CapabilityProbe::Complete => available += 1,
-            CapabilityProbe::Unknown => pending += 1,
-            CapabilityProbe::InconsistentInputCoverage => has_inconsistent = true,
-            CapabilityProbe::MissingRequiredInput => {}
+    match probe {
+        CapabilityProbe::Unknown => IndicatorAvailability::PendingProbe,
+        CapabilityProbe::Complete => IndicatorAvailability::Available,
+        CapabilityProbe::MissingRequiredInput => {
+            IndicatorAvailability::Unsupported(IndicatorUnsupportedReason::MissingRequiredInput)
         }
-    }
-
-    if total == 0 {
-        return IndicatorAvailability::PendingProbe;
-    }
-
-    if available == total {
-        IndicatorAvailability::Available
-    } else if available > 0 {
-        IndicatorAvailability::Partial {
-            available,
-            total,
-            reason: if has_inconsistent {
-                IndicatorUnsupportedReason::InconsistentInputCoverage
-            } else {
-                IndicatorUnsupportedReason::MissingRequiredInput
-            },
-        }
-    } else if pending > 0 {
-        IndicatorAvailability::PendingProbe
-    } else if has_inconsistent {
-        IndicatorAvailability::Unsupported(IndicatorUnsupportedReason::InconsistentInputCoverage)
-    } else {
-        IndicatorAvailability::Unsupported(IndicatorUnsupportedReason::MissingRequiredInput)
+        CapabilityProbe::InconsistentInputCoverage => IndicatorAvailability::Unsupported(
+            IndicatorUnsupportedReason::InconsistentInputCoverage,
+        ),
     }
 }
