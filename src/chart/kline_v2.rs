@@ -116,7 +116,7 @@ pub struct KlineSeries {
     pub ticker_info: TickerInfo,
     pub name: Option<String>,
     pub bars: Vec<Kline>,
-    indicators: SeriesIndicatorData,
+    indicators: Option<SeriesIndicatorData>,
     raw_trades: Vec<Trade>,
     tick_times: Vec<UnixMs>,
     tick_aggr: Option<TickAggr>,
@@ -128,24 +128,34 @@ impl KlineSeries {
             ticker_info,
             name: None,
             bars: Vec::new(),
-            indicators: SeriesIndicatorData::default(),
+            indicators: None,
             raw_trades: Vec::new(),
             tick_times: Vec::new(),
             tick_aggr: None,
         }
     }
 
+    fn new_base(ticker_info: TickerInfo) -> Self {
+        let mut series = Self::new(ticker_info);
+        series.indicators = Some(SeriesIndicatorData::default());
+        series
+    }
+
     fn oi_timerange(&self) -> Option<(UnixMs, UnixMs)> {
-        self.indicators.oi_timerange()
+        self.indicators.as_ref()?.oi_timerange()
     }
 
     fn refresh_indicator_inputs(&mut self) {
-        self.indicators.refresh_from_bars(&self.bars);
+        if let Some(indicators) = self.indicators.as_mut() {
+            indicators.refresh_from_bars(&self.bars);
+        }
     }
 
     fn enable_tick_aggregation(&mut self, interval: data::aggr::TickCount) {
         self.bars.clear();
-        self.indicators.clear();
+        if let Some(indicators) = self.indicators.as_mut() {
+            indicators.clear();
+        }
         self.tick_aggr = Some(TickAggr::new(
             interval,
             self.ticker_info.min_ticksize.into(),
@@ -161,7 +171,9 @@ impl KlineSeries {
 
     fn reset_for_basis(&mut self, preserve_raw_trades: bool) {
         self.bars.clear();
-        self.indicators.clear();
+        if let Some(indicators) = self.indicators.as_mut() {
+            indicators.clear();
+        }
         self.disable_tick_aggregation();
 
         if !preserve_raw_trades {
@@ -216,6 +228,19 @@ impl KlineSeries {
             .collect();
         self.refresh_indicator_inputs();
     }
+
+    fn set_rsi_config(&mut self, config: RsiConfig) -> bool {
+        self.indicators
+            .as_mut()
+            .map(|indicators| indicators.set_rsi_config(config))
+            .unwrap_or(false)
+    }
+
+    fn insert_open_interest(&mut self, data: &[OpenInterest], basis: Basis, timeframe: Timeframe) {
+        if let Some(indicators) = self.indicators.as_mut() {
+            indicators.insert_open_interest_batch(data, basis, timeframe);
+        }
+    }
 }
 
 impl KlineSeriesLike for KlineSeries {
@@ -244,17 +269,18 @@ impl KlineSeriesLike for KlineSeries {
         bar: &Kline,
     ) -> Option<IndicatorData> {
         let indicator = Self::indicator_for_panel_value(panel_value);
-        let value = self.indicators.value_for_indicator(indicator, bar)?;
+        let indicators = self.indicators.as_ref()?;
+        let value = indicators.value_for_indicator(indicator, bar)?;
         let mut data = IndicatorData::scalar(value);
 
         if matches!(indicator, Some(KlineIndicator::Volume))
-            && let Some(signed_overlay) = self.indicators.volume_overlay_for_bar(bar)
+            && let Some(signed_overlay) = indicators.volume_overlay_for_bar(bar)
         {
             data = data.with_signed_overlay(signed_overlay);
         }
 
         if matches!(indicator, Some(KlineIndicator::BollingerBands))
-            && let Some((upper, lower)) = self.indicators.bollinger_bands_for_bar(bar)
+            && let Some((upper, lower)) = indicators.bollinger_bands_for_bar(bar)
         {
             data = data
                 .with_field(BOLLINGER_UPPER_FIELD_KEY, upper)
@@ -262,7 +288,7 @@ impl KlineSeriesLike for KlineSeries {
         }
 
         if matches!(indicator, Some(KlineIndicator::Rsi))
-            && let Some(rsi_point) = self.indicators.rsi_fields_for_bar(bar)
+            && let Some(rsi_point) = indicators.rsi_fields_for_bar(bar)
         {
             data = data
                 .with_field(RSI_UPPER_BAND_FIELD_KEY, rsi_point.upper_band)
@@ -644,10 +670,10 @@ impl KlineChartV2 {
 
         self.rsi_config = normalized;
 
-        for series in &mut self.series {
-            if series.indicators.set_rsi_config(normalized) {
-                series.refresh_indicator_inputs();
-            }
+        if let Some(base_series) = self.base_series_mut()
+            && base_series.set_rsi_config(normalized)
+        {
+            base_series.refresh_indicator_inputs();
         }
 
         self.bump_rev();
@@ -1046,6 +1072,9 @@ impl KlineChartV2 {
     }
 
     fn indicator_availability(&self, indicator: KlineIndicator) -> IndicatorAvailability {
+        let base_series_data = self
+            .base_series()
+            .and_then(|series| series.indicators.as_ref());
         let availability = indicator::availability(
             indicator,
             AvailabilityContext {
@@ -1053,7 +1082,7 @@ impl KlineChartV2 {
                 timeframe: self.timeframe,
                 base_ticker: self.base_ticker,
             },
-            self.series.iter().map(|series| &series.indicators),
+            base_series_data,
         );
 
         if !matches!(availability, IndicatorAvailability::Available) {
@@ -1065,10 +1094,8 @@ impl KlineChartV2 {
         };
 
         let available = self
-            .series
-            .iter()
+            .base_series()
             .map(|series| series.bars.len())
-            .min()
             .unwrap_or(0);
         let required = required as usize;
 
@@ -1348,24 +1375,37 @@ impl KlineChartV2 {
         let dt = self.dt_ms_est();
         let visible_points = self.estimate_visible_points_for_fetch().max(0) as u64;
         let indicator_warmup_bars = self.active_indicator_kline_warmup_bars();
-        let fetch_bars =
+        let base_fetch_bars =
             DEFAULT_FETCH_BARS.max(visible_points.saturating_add(indicator_warmup_bars));
-        let span = fetch_bars.saturating_mul(dt);
+        let comparison_fetch_bars = DEFAULT_FETCH_BARS.max(visible_points);
+        let base_span = base_fetch_bars.saturating_mul(dt);
+        let comparison_span = comparison_fetch_bars.saturating_mul(dt);
         let last_closed = self.align_floor(UnixMs::now());
 
         let mut batches: Vec<(FetchRange, Vec<TickerInfo>)> = Vec::new();
 
-        let mut empty_tickers: Vec<TickerInfo> = Vec::new();
+        let mut empty_base = false;
+        let mut empty_comparisons: Vec<TickerInfo> = Vec::new();
         for series in &self.series {
             if series.bars.is_empty() {
-                empty_tickers.push(series.ticker_info);
+                if series.ticker_info == self.base_ticker {
+                    empty_base = true;
+                } else {
+                    empty_comparisons.push(series.ticker_info);
+                }
             }
         }
 
-        if !empty_tickers.is_empty() {
+        if empty_base {
             let end = last_closed;
-            let start = end.saturating_sub(span);
-            batches.push((FetchRange::Kline(start, end), empty_tickers));
+            let start = end.saturating_sub(base_span);
+            batches.push((FetchRange::Kline(start, end), vec![self.base_ticker]));
+        }
+
+        if !empty_comparisons.is_empty() {
+            let end = last_closed;
+            let start = end.saturating_sub(comparison_span);
+            batches.push((FetchRange::Kline(start, end), empty_comparisons));
         }
 
         if let Some((window_min, _window_max)) = self.compute_visible_window(horizontal_offset) {
@@ -1377,14 +1417,23 @@ impl KlineChartV2 {
                 window_min
             };
 
-            let target_min = warmup_start.min(window_min);
-
             for series in &self.series {
+                let target_min = if series.ticker_info == self.base_ticker {
+                    warmup_start.min(window_min)
+                } else {
+                    window_min
+                };
+                let fetch_span = if series.ticker_info == self.base_ticker {
+                    base_span
+                } else {
+                    comparison_span
+                };
+
                 if let Some(series_min) = series.bars.first().map(|bar| bar.time)
                     && target_min < series_min
                 {
                     let end = self.align_floor(series_min);
-                    let start = end.saturating_sub(span);
+                    let start = end.saturating_sub(fetch_span);
                     batches.push((FetchRange::Kline(start, end), vec![series.ticker_info]));
                 }
             }
@@ -1401,7 +1450,7 @@ impl KlineChartV2 {
                 let visible_earliest = visible_window.map(|(start, _)| start).unwrap_or(window_min);
                 let visible_span = visible_window
                     .map(|(start, end)| end.as_u64().saturating_sub(start.as_u64()))
-                    .unwrap_or(span);
+                    .unwrap_or(base_span);
                 let prefetch_earliest = visible_earliest.saturating_sub(visible_span);
 
                 match base_series.oi_timerange() {
@@ -1447,12 +1496,21 @@ impl KlineChartV2 {
         self.series.get(idx)
     }
 
+    fn base_series_mut(&mut self) -> Option<&mut KlineSeries> {
+        let idx = self.series_index.get(&self.base_ticker).copied()?;
+        self.series.get_mut(idx)
+    }
+
     pub fn insert_open_interest(
         &mut self,
         req_id: Option<uuid::Uuid>,
         ticker_info: TickerInfo,
         data: &[OpenInterest],
     ) {
+        if ticker_info != self.base_ticker {
+            return;
+        }
+
         let Some(idx) = self.series_index.get(&ticker_info).copied() else {
             if let Some(req_id) = req_id
                 && let Some(handler) = self.request_handlers.get_mut(&ticker_info)
@@ -1477,9 +1535,7 @@ impl KlineChartV2 {
         }
 
         let series = &mut self.series[idx];
-        series
-            .indicators
-            .insert_open_interest_batch(data, self.basis, self.timeframe);
+        series.insert_open_interest(data, self.basis, self.timeframe);
         self.bump_rev();
     }
 
@@ -1509,8 +1565,12 @@ impl KlineChartV2 {
         }
 
         let idx = self.series.len();
-        let mut series = KlineSeries::new(ticker_info);
-        let _ = series.indicators.set_rsi_config(self.rsi_config);
+        let mut series = if ticker_info == self.base_ticker {
+            KlineSeries::new_base(ticker_info)
+        } else {
+            KlineSeries::new(ticker_info)
+        };
+        let _ = series.set_rsi_config(self.rsi_config);
         if let Basis::Tick(interval) = self.basis {
             series.enable_tick_aggregation(interval);
         }

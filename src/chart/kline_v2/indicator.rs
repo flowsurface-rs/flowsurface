@@ -31,11 +31,6 @@ pub enum IndicatorUnsupportedReason {
 pub enum IndicatorAvailability {
     Available,
     PendingProbe,
-    Partial {
-        available: usize,
-        total: usize,
-        reason: IndicatorUnsupportedReason,
-    },
     Unsupported(IndicatorUnsupportedReason),
 }
 
@@ -135,14 +130,11 @@ pub fn kline_warmup_bars(indicator: KlineIndicator, rsi_config: RsiConfig) -> Op
     }
 }
 
-pub fn availability<'a, I>(
+pub fn availability(
     indicator: KlineIndicator,
     context: AvailabilityContext,
-    series_data: I,
-) -> IndicatorAvailability
-where
-    I: IntoIterator<Item = &'a SeriesIndicatorData>,
-{
+    base_series_data: Option<&SeriesIndicatorData>,
+) -> IndicatorAvailability {
     if !is_supported_for_market(indicator, context.base_ticker.market_type()) {
         return IndicatorAvailability::Unsupported(IndicatorUnsupportedReason::SourceNotSupported);
     }
@@ -156,7 +148,9 @@ where
         }
         KlineIndicator::CumulativeVolumeDelta => cvd::availability(
             context.basis,
-            series_data.into_iter().map(SeriesIndicatorData::cvd_probe),
+            base_series_data
+                .map(SeriesIndicatorData::cvd_probe)
+                .unwrap_or_default(),
         ),
     }
 }
