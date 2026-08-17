@@ -11,7 +11,7 @@ use crate::widget::chart::kline::drawing::{
     AxisBadgeFilter, DrawingDragTarget, DrawingId, DrawingSnapshot, DrawingTool,
     KlineWidgetDrawingEvent,
 };
-use chrome::TickerLegendHit;
+use chrome::{IndicatorLegendHit, TickerLegendHit};
 use composition::{
     BarMode, ChartComposition, DEFAULT_MIN_PANEL_RATIO, HistogramMode, LayerDataKind, MarkKind,
     PanelId, PanelScaleMode, PanelValueId,
@@ -57,6 +57,7 @@ const PANEL_CONTROL_ICON_SIZE: f32 = TEXT_SIZE - 1.0;
 const Y_AXIS_DRAG_SCALE_DELTA_PER_PX: f32 = 0.1;
 
 const TICKER_LEGEND_PADDING: f32 = 4.0;
+const TOOLTIP_ROW_LEFT_PAD: f32 = TICKER_LEGEND_PADDING * 2.0;
 const TICKER_LEGEND_ROW_H: f32 = TEXT_SIZE + 6.0;
 const TICKER_LEGEND_ICON_BOX: f32 = TEXT_SIZE + 8.0;
 const TICKER_LEGEND_ICON_GAP: f32 = 4.0;
@@ -387,6 +388,8 @@ pub enum KlineWidgetEvent {
     PanelInteraction(PanelInteraction),
     TickerSettings(TickerInfo),
     TickerRemove(TickerInfo),
+    IndicatorSettings(PanelValueId),
+    IndicatorRemove(PanelValueId),
     XAxisDoubleClick,
     Drawing(KlineWidgetDrawingEvent),
 }
@@ -1072,16 +1075,16 @@ where
                 continue;
             };
 
-            let title_x = panel.plot.x + PANEL_TITLE_LEFT_PAD;
-            let title_y = panel.plot.y + PANEL_TITLE_TOP_PAD;
+            let title_x = panel.plot.x + TOOLTIP_ROW_LEFT_PAD;
+            let title_y = panel.plot.y + PANEL_TITLE_TOP_PAD + TICKER_LEGEND_ROW_H * 0.5;
 
             frame.fill_text(canvas::Text {
                 content: title.to_string(),
                 position: Point::new(title_x, title_y),
                 color: palette.background.base.text.scale_alpha(0.72),
-                size: (TEXT_SIZE - 1.0).into(),
+                size: TEXT_SIZE.into(),
                 align_x: iced::Alignment::Start.into(),
-                align_y: iced::Alignment::Start.into(),
+                align_y: iced::Alignment::Center.into(),
                 font: style::AZERET_MONO,
                 ..Default::default()
             });
@@ -1394,6 +1397,7 @@ where
         self.fill_corner_controls(frame, scene, palette);
         self.fill_panel_controls(frame, scene, palette);
         self.fill_primary_ticker_legend(frame, scene, palette);
+        self.fill_indicator_legend(frame, scene, palette);
 
         if !scene.hovering_ticker_legend {
             let show_primary_panel_values = scene.ticker_legend.is_none();
@@ -1413,6 +1417,7 @@ where
         if scene.hovered_control.is_some()
             || scene.hovered_corner_control.is_some()
             || scene.hovering_ticker_legend
+            || scene.hovering_indicator_legend
         {
             return;
         }
@@ -1488,6 +1493,7 @@ where
         if scene.hovered_control.is_some()
             || scene.hovered_corner_control.is_some()
             || scene.hovering_ticker_legend
+            || scene.hovering_indicator_legend
         {
             self.fill_last_price_axis_badge(frame, scene, palette, &mut badge_filter);
             return;
@@ -1872,6 +1878,29 @@ where
                     });
                 }
 
+                let mut indicator_legend = self.build_indicator_legend_layout(
+                    &layout_tree,
+                    primary_panel,
+                    self.tooltip_rows_before_indicators(ticker_legend.as_ref(), show_legend_values),
+                );
+                let mut indicator_legend_hit = indicator_legend.as_ref().and_then(|legend| {
+                    Self::hit_indicator_legend(&layout_tree, legend, cursor_pos)
+                });
+
+                if indicator_legend_hit.is_some() {
+                    indicator_legend = self.build_indicator_legend_layout(
+                        &layout_tree,
+                        primary_panel,
+                        self.tooltip_rows_before_indicators(
+                            ticker_legend.as_ref(),
+                            show_legend_values,
+                        ),
+                    );
+                    indicator_legend_hit = indicator_legend.as_ref().and_then(|legend| {
+                        Self::hit_indicator_legend(&layout_tree, legend, cursor_pos)
+                    });
+                }
+
                 match mouse_event {
                     mouse::Event::WheelScrolled { delta } => {
                         let scroll_y = match delta {
@@ -1913,6 +1942,13 @@ where
 
                                 if matches!(zone, LayoutHitZone::PanelPlot(_))
                                     && ticker_legend_hit.is_some()
+                                {
+                                    state.horizontal_zoom_scroll_accum = 0.0;
+                                    return;
+                                }
+
+                                if matches!(zone, LayoutHitZone::PanelPlot(_))
+                                    && indicator_legend_hit.is_some()
                                 {
                                     state.horizontal_zoom_scroll_accum = 0.0;
                                     return;
@@ -2117,6 +2153,18 @@ where
                             return;
                         }
 
+                        if let (Some(legend), Some(IndicatorLegendHit::Icon(row_index, icon_kind))) =
+                            (&indicator_legend, indicator_legend_hit)
+                            && let Some(row) = legend.rows.get(row_index)
+                        {
+                            shell.publish(M::from(icon_kind.into_event(row.value_id)));
+                            state.drag_mode = DragMode::None;
+                            state.last_cursor = None;
+                            state.clear_all_caches();
+                            shell.capture_event();
+                            return;
+                        }
+
                         if let Some(control) =
                             Self::hit_corner_control(&corner_controls, cursor_pos)
                         {
@@ -2129,6 +2177,12 @@ where
                         }
 
                         if ticker_legend_hit.is_some() {
+                            state.drag_mode = DragMode::None;
+                            state.last_cursor = None;
+                            return;
+                        }
+
+                        if indicator_legend_hit.is_some() {
                             state.drag_mode = DragMode::None;
                             state.last_cursor = None;
                             return;
@@ -2687,6 +2741,19 @@ where
         }
 
         if ticker_legend_hit.is_some() {
+            return advanced::mouse::Interaction::Pointer;
+        }
+
+        let indicator_legend = self.build_indicator_legend_layout(
+            &layout_tree,
+            primary_panel,
+            self.tooltip_rows_before_indicators(ticker_legend.as_ref(), show_legend_values),
+        );
+        if indicator_legend
+            .as_ref()
+            .and_then(|legend| Self::hit_indicator_legend(&layout_tree, legend, cursor_local))
+            .is_some()
+        {
             return advanced::mouse::Interaction::Pointer;
         }
 

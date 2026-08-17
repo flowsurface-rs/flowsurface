@@ -446,6 +446,13 @@ impl KlineChartV2 {
                     KlineWidgetEvent::TickerSettings(_ticker) => {
                         // Hook for ticker-specific settings editor.
                     }
+                    KlineWidgetEvent::IndicatorSettings(_value_id) => {
+                        // Hook for indicator-specific settings editor.
+                    }
+                    KlineWidgetEvent::IndicatorRemove(value_id) => {
+                        let indicator = Self::indicator_for_panel_value(value_id);
+                        self.toggle_indicator(indicator);
+                    }
                     KlineWidgetEvent::TickerRemove(ticker) if ticker != self.base_ticker => {
                         return Some(Action::RemoveSeries(ticker));
                     }
@@ -621,6 +628,18 @@ impl KlineChartV2 {
         }
 
         changed
+    }
+
+    pub fn selected_indicators(&self) -> Vec<KlineIndicator> {
+        indicator::all_indicators()
+            .iter()
+            .copied()
+            .filter(|indicator| self.indicator_panels[*indicator].is_some())
+            .collect()
+    }
+
+    pub fn indicator_is_available(&self, indicator: KlineIndicator) -> bool {
+        self.is_indicator_available(indicator)
     }
 
     pub fn ticker_info(&self) -> TickerInfo {
@@ -995,6 +1014,16 @@ impl KlineChartV2 {
             KlineIndicator::Rsi => PanelValueId::Rsi,
             KlineIndicator::OpenInterest => PanelValueId::OpenInterest,
             KlineIndicator::CumulativeVolumeDelta => PanelValueId::CumulativeVolumeDelta,
+        }
+    }
+
+    fn indicator_for_panel_value(value_id: PanelValueId) -> KlineIndicator {
+        match value_id {
+            PanelValueId::Volume => KlineIndicator::Volume,
+            PanelValueId::BollingerBands => KlineIndicator::BollingerBands,
+            PanelValueId::Rsi => KlineIndicator::Rsi,
+            PanelValueId::OpenInterest => KlineIndicator::OpenInterest,
+            PanelValueId::CumulativeVolumeDelta => KlineIndicator::CumulativeVolumeDelta,
         }
     }
 
