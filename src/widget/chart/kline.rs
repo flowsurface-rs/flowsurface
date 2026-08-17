@@ -28,7 +28,7 @@ use data::chart::ticks::{
     y::{TickValue, YAxisScale},
     y_labels_that_fit,
 };
-use exchange::{Kline, TickerInfo, Timeframe, unit::Price};
+use exchange::{Kline, TickerInfo, Timeframe, UnixMs, unit::Price};
 
 use iced::advanced::widget::tree::{self, Tree};
 use iced::advanced::{self, Clipboard, Layout, Shell, Widget, layout as iced_layout, renderer};
@@ -300,6 +300,9 @@ impl IndicatorData {
 pub trait KlineSeriesLike {
     fn ticker_info(&self) -> &TickerInfo;
     fn bars(&self) -> &[Kline];
+    fn time_at_index(&self, index: usize) -> Option<UnixMs> {
+        self.bars().get(index).map(|bar| bar.time)
+    }
     fn indicator_value(&self, bar: &Kline) -> f32;
 
     fn indicator_value_for_panel_value_opt(
@@ -1451,6 +1454,61 @@ where
                         font: style::AZERET_MONO,
                         ..Default::default()
                     });
+                }
+            });
+            return;
+        }
+
+        if matches!(scene.x_axis, XAxis::Tick { .. }) {
+            let target_spacing = data::chart::ticks::x_label_spacing_px(TEXT_SIZE);
+            let clip_region = Rectangle {
+                x: 0.0,
+                y: 0.0,
+                width: plot_width,
+                height: scene.layout.regions.x_axis.height,
+            };
+
+            frame.with_clip(clip_region, |frame| {
+                let mut last_x: Option<f32> = None;
+
+                if let Some(base_series) = self.series.first() {
+                    for index in 0..base_series.bars().len() {
+                        let Some(unit) = self.tick_unit_for_index(scene.x_axis, index) else {
+                            continue;
+                        };
+                        let x = Self::snap_plot_x_to_cell(
+                            scene.map_x_plot(unit),
+                            horizontal_pixel_ratio,
+                        );
+
+                        if last_x.is_some_and(|previous| (x - previous).abs() < target_spacing) {
+                            continue;
+                        }
+
+                        let Some(time) = self.tick_time_for_unit(scene.x_axis, unit) else {
+                            continue;
+                        };
+                        let Some(content) = self.timezone.format_with_kind(
+                            time.as_u64() as i64,
+                            data::config::timezone::TimeLabelKind::Axis {
+                                timeframe: Timeframe::MS100,
+                            },
+                        ) else {
+                            continue;
+                        };
+
+                        frame.fill_text(canvas::Text {
+                            content,
+                            position: Point::new(x, scene.layout.regions.x_axis.height / 2.0),
+                            color: palette.background.base.text,
+                            size: TEXT_SIZE.into(),
+                            align_x: iced::Alignment::Center.into(),
+                            align_y: iced::Alignment::Center.into(),
+                            font: style::AZERET_MONO,
+                            ..Default::default()
+                        });
+                        last_x = Some(x);
+                    }
                 }
             });
             return;

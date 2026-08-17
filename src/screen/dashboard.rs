@@ -1169,6 +1169,9 @@ impl Dashboard {
                                 c.insert_trades(buffer);
                             }
                         }
+                        pane::Content::KlineV2 { chart: Some(c) } => {
+                            c.insert_trades(&stream.ticker_info(), buffer);
+                        }
                         pane::Content::TimeAndSales(panel) => {
                             if let Some(p) = panel {
                                 p.insert_buffer(buffer);

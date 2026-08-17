@@ -60,7 +60,7 @@ impl XAxis {
     }
 
     #[inline]
-    fn unit_from_tick(self, value: TickIndex) -> i64 {
+    pub(super) fn unit_from_tick(self, value: TickIndex) -> i64 {
         match self {
             Self::Tick { anchor } => {
                 let anchor = ChartCoord::from_u64_clamped(anchor.as_u64()).get();
@@ -84,7 +84,7 @@ impl XAxis {
     }
 
     #[inline]
-    fn tick_from_unit(self, unit: i64) -> Option<TickIndex> {
+    pub(super) fn tick_from_unit(self, unit: i64) -> Option<TickIndex> {
         match self {
             Self::Tick { anchor } => {
                 let anchor = anchor.as_u64();
@@ -948,7 +948,7 @@ where
         let pad = if (max_pct - min_pct).abs() <= f32::EPSILON {
             max_pct.abs().max(1.0)
         } else {
-            ((max_pct - min_pct).abs() * 0.05).max(0.25)
+            (max_pct - min_pct).abs() * 0.05
         };
 
         Some((min_pct - pad, max_pct + pad))
@@ -1636,6 +1636,26 @@ where
         Some(scene)
     }
 
+    pub(super) fn tick_unit_for_index(&self, x_axis: XAxis, index: usize) -> Option<i64> {
+        let series = self.series.first()?;
+        if index >= series.bars().len() {
+            return None;
+        }
+
+        let from_latest = series.bars().len().saturating_sub(1).saturating_sub(index) as u64;
+        Some(x_axis.unit_from_tick(TickIndex(from_latest)))
+    }
+
+    pub(super) fn tick_time_for_unit(&self, x_axis: XAxis, unit: i64) -> Option<UnixMs> {
+        let from_latest = usize::try_from(x_axis.tick_from_unit(unit)?.as_u64()).ok()?;
+        let series = self.series.first()?;
+        let index = series
+            .bars()
+            .len()
+            .checked_sub(from_latest.checked_add(1)?)?;
+        series.time_at_index(index)
+    }
+
     pub(super) fn format_x_label(&self, x_axis: XAxis, unit: i64, step_units: i64) -> String {
         match x_axis {
             XAxis::Time { .. } => x_axis.time_from_unit(unit).map_or_else(
@@ -1648,9 +1668,19 @@ where
                     )
                 },
             ),
-            XAxis::Tick { .. } => x_axis
-                .tick_from_unit(unit)
-                .map_or_else(|| unit.to_string(), |index| index.as_u64().to_string()),
+            XAxis::Tick { .. } => self.tick_time_for_unit(x_axis, unit).map_or_else(
+                || unit.to_string(),
+                |time| {
+                    self.timezone
+                        .format_with_kind(
+                            time.as_u64() as i64,
+                            data::config::timezone::TimeLabelKind::Axis {
+                                timeframe: Timeframe::MS100,
+                            },
+                        )
+                        .unwrap_or_else(|| time.as_u64().to_string())
+                },
+            ),
         }
     }
 
@@ -1667,7 +1697,15 @@ where
                         .unwrap_or_else(|| ts.as_u64().to_string())
                 },
             ),
-            XAxis::Tick { .. } => self.format_x_label(x_axis, unit, 1),
+            XAxis::Tick { .. } => self
+                .tick_time_for_unit(x_axis, unit)
+                .and_then(|time| {
+                    self.timezone.format_with_kind(
+                        time.as_u64() as i64,
+                        data::config::timezone::TimeLabelKind::Crosshair { show_millis: true },
+                    )
+                })
+                .unwrap_or_else(|| self.format_x_label(x_axis, unit, 1)),
         }
     }
 }

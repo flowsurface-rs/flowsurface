@@ -22,6 +22,7 @@ pub enum IndicatorUnsupportedReason {
     BasisNotSupported,
     SourceNotSupported,
     ResolutionNotSupported,
+    InsufficientData { available: usize, required: usize },
     MissingRequiredInput,
     InconsistentInputCoverage,
 }
