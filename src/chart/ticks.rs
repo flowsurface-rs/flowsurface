@@ -17,7 +17,7 @@ const X_LABEL_CHAR_W: f32 = TEXT_SIZE * 0.65;
 /// to prevent conflicts with pane state interactions
 ///
 /// (e.g. pane split dragging when trying to interact with labels)
-const AXIS_DRAG_EDGE_GUARD: f32 = 4.0;
+pub(crate) const AXIS_DRAG_EDGE_GUARD: f32 = 4.0;
 
 #[derive(Debug, Clone)]
 pub enum AxisLabel {

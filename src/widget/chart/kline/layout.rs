@@ -2,6 +2,7 @@ use super::composition::{PanelRole, PanelSpec};
 use super::{
     KlinePanelKind, KlineSeriesLike, KlineWidget, PANEL_SPLITTER_HEIGHT, PANEL_SPLITTER_HIT_PX,
 };
+use crate::chart::ticks::AXIS_DRAG_EDGE_GUARD;
 use crate::widget::chart::Regions;
 use iced::advanced::Layout;
 use iced::{Point, Rectangle};
@@ -155,7 +156,11 @@ impl PanelLayoutTree {
         }
 
         if self.regions.is_in_x_axis(root_local) {
-            return LayoutHitZone::BottomXAxis;
+            if Self::contains(self.regions.x_axis.shrink(AXIS_DRAG_EDGE_GUARD), root_local) {
+                return LayoutHitZone::BottomXAxis;
+            }
+
+            return LayoutHitZone::Outside;
         }
 
         let Some(plot_local) = self.plot_local_point(root_local) else {
@@ -173,7 +178,9 @@ impl PanelLayoutTree {
                 return LayoutHitZone::PanelPlot(index);
             }
 
-            if panel.x_axis.height > 0.0 && Self::contains(panel.x_axis, plot_local) {
+            if panel.x_axis.height > 0.0
+                && Self::contains(panel.x_axis.shrink(AXIS_DRAG_EDGE_GUARD), plot_local)
+            {
                 return LayoutHitZone::PanelXAxis(index);
             }
         }
