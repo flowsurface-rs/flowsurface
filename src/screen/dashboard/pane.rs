@@ -2601,7 +2601,7 @@ impl Content {
             self,
             Content::KlineV2 {
                 chart: Some(chart)
-            } if chart.indicator_is_available(indicator)
+            } if chart.indicator_is_supported_for_market(indicator)
         )
     }
 }

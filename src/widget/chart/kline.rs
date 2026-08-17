@@ -479,8 +479,15 @@ pub struct KlineWidget<'a, S> {
     horizontal_pixel_ratio: f32,
     primary_autoscale: bool,
     panel_y_viewports: &'a [(PanelId, PanelYViewport)],
+    unavailable_indicator_panels: Vec<UnavailableIndicator>,
     timezone: UserTimezone,
     version: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnavailableIndicator {
+    pub value_id: PanelValueId,
+    pub message: String,
 }
 
 impl<'a, S> KlineWidget<'a, S>
@@ -498,6 +505,7 @@ where
             horizontal_pixel_ratio: 1.0,
             primary_autoscale: false,
             panel_y_viewports: &[],
+            unavailable_indicator_panels: Vec::new(),
             timezone: UserTimezone::Utc,
             version: 0,
         }
@@ -537,6 +545,11 @@ where
         self
     }
 
+    pub fn with_unavailable_indicator_panels(mut self, panels: Vec<UnavailableIndicator>) -> Self {
+        self.unavailable_indicator_panels = panels;
+        self
+    }
+
     pub fn with_timezone(mut self, tz: UserTimezone) -> Self {
         self.timezone = tz;
         self
@@ -545,6 +558,34 @@ where
     pub fn with_basis(mut self, basis: Basis) -> Self {
         self.basis = basis;
         self
+    }
+
+    fn indicator_is_unavailable(&self, value_id: Option<PanelValueId>) -> bool {
+        self.indicator_unavailable_message(value_id).is_some()
+    }
+
+    pub(super) fn indicator_unavailable_message(
+        &self,
+        value_id: Option<PanelValueId>,
+    ) -> Option<&str> {
+        let value_id = value_id?;
+        self.unavailable_indicator_panels
+            .iter()
+            .find(|indicator| indicator.value_id == value_id)
+            .map(|indicator| indicator.message.as_str())
+    }
+
+    pub(super) fn indicator_label_x(&self, row_x: f32, value_id: PanelValueId) -> f32 {
+        let marker_width = if self.indicator_is_unavailable(Some(value_id)) {
+            CHAR_W + TICKER_LEGEND_PADDING
+        } else {
+            0.0
+        };
+        row_x + TOOLTIP_ROW_LEFT_PAD + marker_width
+    }
+
+    pub(super) fn indicator_marker_x(&self, row_x: f32) -> f32 {
+        row_x + TOOLTIP_ROW_LEFT_PAD
     }
 
     pub fn version(mut self, rev: u64) -> Self {
@@ -589,6 +630,10 @@ where
             |x_unit: i64| x_unit >= scene.min_x_unit && x_unit <= scene.max_x_unit;
 
         for indicator_panel in &scene.indicator_panels {
+            if self.indicator_is_unavailable(indicator_panel.value_id) {
+                continue;
+            }
+
             if !matches!(indicator_panel.mark, MarkKind::Candle | MarkKind::Bar(_)) {
                 continue;
             }
@@ -915,6 +960,10 @@ where
         });
 
         for indicator_panel in &scene.indicator_panels {
+            if self.indicator_is_unavailable(indicator_panel.value_id) {
+                continue;
+            }
+
             if !matches!(indicator_panel.mark, MarkKind::Line) {
                 continue;
             }
@@ -1075,8 +1124,26 @@ where
                 continue;
             };
 
-            let title_x = panel.plot.x + TOOLTIP_ROW_LEFT_PAD;
+            let value_id = self.panel_value_id(panel_index);
+            let title_x = value_id.map_or(panel.plot.x + TOOLTIP_ROW_LEFT_PAD, |value_id| {
+                self.indicator_label_x(panel.plot.x, value_id)
+            });
             let title_y = panel.plot.y + PANEL_TITLE_TOP_PAD + TICKER_LEGEND_ROW_H * 0.5;
+
+            if let Some(value_id) = value_id
+                && self.indicator_is_unavailable(Some(value_id))
+            {
+                frame.fill_text(canvas::Text {
+                    content: "!".to_string(),
+                    position: Point::new(self.indicator_marker_x(panel.plot.x), title_y),
+                    color: palette.danger.base.color,
+                    size: TEXT_SIZE.into(),
+                    align_x: iced::Alignment::Start.into(),
+                    align_y: iced::Alignment::Center.into(),
+                    font: style::AZERET_MONO,
+                    ..Default::default()
+                });
+            }
 
             frame.fill_text(canvas::Text {
                 content: title.to_string(),
@@ -1189,6 +1256,10 @@ where
         }
 
         for indicator in &scene.indicator_panels {
+            if self.indicator_is_unavailable(indicator.value_id) {
+                continue;
+            }
+
             let panel_index = indicator.panel_index;
             let Some(panel) = scene.layout.panel(panel_index) else {
                 continue;
@@ -1238,6 +1309,10 @@ where
         }
 
         for indicator in &scene.indicator_panels {
+            if self.indicator_is_unavailable(indicator.value_id) {
+                continue;
+            }
+
             let panel_precision = self.panel_value_precision(indicator.panel_index);
             for unit in [indicator.min_unit, indicator.max_unit] {
                 let value = self.panel_unit_to_value(panel_precision, unit);
@@ -1260,6 +1335,46 @@ where
             };
 
             self.draw_y_axis_label(frame, axis, text, y, palette.background.base.text);
+        }
+    }
+
+    fn fill_unavailable_indicator_messages(
+        &self,
+        frame: &mut canvas::Frame,
+        scene: &Scene,
+        palette: &Extended,
+    ) {
+        for indicator in &scene.indicator_panels {
+            if !self.indicator_is_unavailable(indicator.value_id) {
+                continue;
+            }
+
+            let Some(panel) = scene.layout.panel(indicator.panel_index) else {
+                continue;
+            };
+            let Some(content) = self
+                .indicator_unavailable_message(indicator.value_id)
+                .map(str::to_owned)
+            else {
+                continue;
+            };
+            let position = Point::new(
+                panel.plot.x + panel.plot.width * 0.5,
+                panel.plot.y + panel.plot.height * 0.5,
+            );
+
+            frame.with_clip(panel.plot, |frame| {
+                frame.fill_text(canvas::Text {
+                    content,
+                    position,
+                    color: palette.background.base.text.scale_alpha(0.72),
+                    size: TEXT_SIZE.into(),
+                    align_x: iced::Alignment::Center.into(),
+                    align_y: iced::Alignment::Center.into(),
+                    font: style::AZERET_MONO,
+                    ..Default::default()
+                });
+            });
         }
     }
 
@@ -1398,6 +1513,7 @@ where
         self.fill_panel_controls(frame, scene, palette);
         self.fill_primary_ticker_legend(frame, scene, palette);
         self.fill_indicator_legend(frame, scene, palette);
+        self.fill_unavailable_indicator_messages(frame, scene, palette);
 
         if !scene.hovering_ticker_legend {
             let show_primary_panel_values = scene.ticker_legend.is_none();
@@ -1470,16 +1586,18 @@ where
             stroke,
         );
 
-        frame.stroke(
-            &canvas::Path::line(
-                Point::new(scene.layout.regions.plot.x, gy),
-                Point::new(
-                    scene.layout.regions.plot.x + scene.layout.regions.plot.width,
-                    gy,
+        if cursor.y_primary_unit.is_some() || cursor.y_indicator_unit.is_some() {
+            frame.stroke(
+                &canvas::Path::line(
+                    Point::new(scene.layout.regions.plot.x, gy),
+                    Point::new(
+                        scene.layout.regions.plot.x + scene.layout.regions.plot.width,
+                        gy,
+                    ),
                 ),
-            ),
-            stroke,
-        );
+                stroke,
+            );
+        }
     }
 
     fn fill_overlay_interaction_text(

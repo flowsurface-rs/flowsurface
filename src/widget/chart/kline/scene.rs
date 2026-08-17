@@ -1591,25 +1591,32 @@ where
                             (Some(y_primary_unit), None, snapped_y_plot)
                         }
                         KlinePanelKind::Indicator => {
-                            let indicator_ratio = 1.0 - (y_in_panel / panel.plot.height.max(1.0));
-                            let y_indicator_unit = scene
-                                .indicator_panel_config(panel_index)
-                                .map(|indicator| {
-                                    Scene::lerp_unit(
-                                        indicator.min_unit,
-                                        indicator.max_unit,
-                                        indicator_ratio,
-                                    )
-                                })
-                                .unwrap_or_else(|| {
-                                    Scene::lerp_unit(YUnit(0), YUnit(1), indicator_ratio)
-                                });
-                            let snapped_y_plot = scene
-                                .map_indicator_plot_unit(panel_index, y_indicator_unit)
-                                .map(|y| y.clamp(panel.plot.y, panel.plot.y + panel.plot.height))
-                                .unwrap_or(panel.plot.y + y_in_panel);
+                            if self.indicator_is_unavailable(self.panel_value_id(panel_index)) {
+                                (None, None, panel.plot.y + y_in_panel)
+                            } else {
+                                let indicator_ratio =
+                                    1.0 - (y_in_panel / panel.plot.height.max(1.0));
+                                let y_indicator_unit = scene
+                                    .indicator_panel_config(panel_index)
+                                    .map(|indicator| {
+                                        Scene::lerp_unit(
+                                            indicator.min_unit,
+                                            indicator.max_unit,
+                                            indicator_ratio,
+                                        )
+                                    })
+                                    .unwrap_or_else(|| {
+                                        Scene::lerp_unit(YUnit(0), YUnit(1), indicator_ratio)
+                                    });
+                                let snapped_y_plot = scene
+                                    .map_indicator_plot_unit(panel_index, y_indicator_unit)
+                                    .map(|y| {
+                                        y.clamp(panel.plot.y, panel.plot.y + panel.plot.height)
+                                    })
+                                    .unwrap_or(panel.plot.y + y_in_panel);
 
-                            (None, Some(y_indicator_unit), snapped_y_plot)
+                                (None, Some(y_indicator_unit), snapped_y_plot)
+                            }
                         }
                     };
 
