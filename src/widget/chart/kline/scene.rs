@@ -12,6 +12,7 @@ use crate::widget::chart::kline::composition::{
     PanelValuePrecision,
 };
 
+use data::chart::ticks::{Y_LABEL_DENSITY, y::YAxisScale, y_labels_that_fit};
 use exchange::{Kline, Timeframe, UnixMs};
 
 use iced::advanced::Layout;
@@ -368,9 +369,9 @@ impl Scene {
         display_value: f32,
         display_step: f32,
     ) -> String {
-        if let Some(percent_label) = self
-            .primary_scale_mode
-            .format_percent_label(display_value, display_step)
+        if let Some(percent_label) =
+            self.primary_scale_mode
+                .format_percent_label(display_value, display_step, false)
         {
             return percent_label;
         }
@@ -399,20 +400,16 @@ impl Scene {
     pub(super) fn format_primary_cursor_label(&self, raw_value: f32) -> String {
         let quantized = self.quantized_primary_value(raw_value);
 
-        if let Some(display_step) = self.primary_scale_mode.percent_display_step(
-            self.primary_value_step,
-            self.primary_scale_anchor,
-            0.01,
-        ) {
+        if let Some(display_step) = self.primary_percent_display_step() {
             let display_value = self.primary_scale_mode.value_to_display(
                 quantized,
                 self.primary_scale_anchor,
                 self.can_use_log_primary_scale(),
             );
 
-            if let Some(percent_label) = self
-                .primary_scale_mode
-                .format_percent_label(display_value, display_step)
+            if let Some(percent_label) =
+                self.primary_scale_mode
+                    .format_percent_label(display_value, display_step, true)
             {
                 return percent_label;
             }
@@ -426,6 +423,29 @@ impl Scene {
         } else {
             super::super::format_value(quantized, self.primary_format_step(0.01))
         }
+    }
+
+    pub(super) fn primary_percent_display_step(&self) -> Option<f32> {
+        if !self.primary_scale_mode.uses_percent_base() {
+            return None;
+        }
+
+        let (min_display, max_display) = self.primary_domain_display_values();
+        let labels_can_fit = y_labels_that_fit(
+            self.primary_plot().height,
+            super::TEXT_SIZE,
+            Y_LABEL_DENSITY,
+        )
+        .max(2) as i32;
+
+        YAxisScale::Percent
+            .ticks(
+                f64::from(min_display),
+                f64::from(max_display),
+                labels_can_fit,
+            )
+            .step
+            .map(|step| (step as f32).abs().max(1e-6))
     }
 
     pub(super) fn map_primary_plot_unit(&self, y_unit: YUnit) -> f32 {

@@ -123,20 +123,25 @@ impl SeriesLike for Series {
 }
 
 fn format_pct(val: f32, step: f32, show_decimals: bool) -> String {
+    let precision = percent_precision(step, show_decimals);
+    format!("{val:+.*}%", precision)
+}
+
+fn percent_precision(step: f32, show_decimals: bool) -> usize {
     if show_decimals || step.fract() != 0.0 {
         if step >= 1.0 {
-            format!("{:+.1}%", val)
+            1
         } else if step >= 0.1 {
-            format!("{:+.2}%", val)
+            2
         } else {
-            format!("{:+.3}%", val)
+            3
         }
     } else if step >= 1.0 {
-        format!("{:+.0}%", val)
+        0
     } else if step >= 0.1 {
-        format!("{:+.1}%", val)
+        1
     } else {
-        format!("{:+.2}%", val)
+        2
     }
 }
 

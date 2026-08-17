@@ -2,7 +2,7 @@ use super::composition::PanelScaleMode;
 use super::scene::Scene;
 use super::{
     DRAWING_HANDLE_HIT_RADIUS_PX, DRAWING_HANDLE_RADIUS_PX, DRAWING_HIT_TOLERANCE_PX,
-    KlinePanelKind, KlineSeriesLike, KlineWidget, TEXT_SIZE, Y_AXIS_LABEL_RIGHT_INSET,
+    KlinePanelKind, KlineSeriesLike, KlineWidget, TEXT_SIZE, Y_AXIS_LABEL_LEFT_INSET,
 };
 use crate::style;
 use crate::widget::chart::kline::{YUnit, composition::PanelId};
@@ -1464,12 +1464,12 @@ where
         frame.fill_text(canvas::Text {
             content: text.to_string(),
             position: Point::new(
-                y_axis.x + y_axis.width - Y_AXIS_LABEL_RIGHT_INSET,
+                y_axis.x + Y_AXIS_LABEL_LEFT_INSET,
                 y_label_y + y_label_h / 2.0,
             ),
             color: text_color,
             size: TEXT_SIZE.into(),
-            align_x: iced::Alignment::End.into(),
+            align_x: iced::Alignment::Start.into(),
             align_y: iced::Alignment::Center.into(),
             font: style::AZERET_MONO,
             ..Default::default()
@@ -1520,22 +1520,13 @@ where
         } else {
             y_label_y + y_label_h / 2.0
         };
-        let text_x = if timer_text.is_some() {
-            y_axis.x + 4.0
-        } else {
-            y_axis.x + y_axis.width - Y_AXIS_LABEL_RIGHT_INSET
-        };
-        let text_alignment = if timer_text.is_some() {
-            iced::Alignment::Start
-        } else {
-            iced::Alignment::End
-        };
+        let text_x = y_axis.x + Y_AXIS_LABEL_LEFT_INSET;
         frame.fill_text(canvas::Text {
             content: value_text.to_string(),
             position: Point::new(text_x, value_y),
             color: value_text_color,
             size: TEXT_SIZE.into(),
-            align_x: text_alignment.into(),
+            align_x: iced::Alignment::Start.into(),
             align_y: if timer_text.is_some() {
                 iced::Alignment::Start.into()
             } else {

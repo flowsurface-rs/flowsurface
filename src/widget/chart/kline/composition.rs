@@ -162,36 +162,17 @@ impl PanelScaleMode {
         self,
         display_value: f32,
         display_step: f32,
+        show_decimals: bool,
     ) -> Option<String> {
         if !self.uses_percent_base() {
             return None;
         }
 
-        let precision = Self::percent_label_precision(display_step);
-        Some(format!("{display_value:.precision$}%"))
-    }
-
-    pub(super) fn percent_display_step(
-        self,
-        value_step: Option<f32>,
-        anchor: Option<f32>,
-        fallback: f32,
-    ) -> Option<f32> {
-        if !self.uses_percent_base() {
-            return None;
-        }
-
-        Some(
-            value_step
-                .and_then(|step| {
-                    anchor
-                        .filter(|anchor| anchor.abs() > f32::EPSILON)
-                        .map(|anchor| (step / anchor.abs()) * 100.0)
-                })
-                .unwrap_or(fallback)
-                .abs()
-                .max(1e-6),
-        )
+        Some(super::super::format_pct(
+            display_value,
+            display_step,
+            show_decimals,
+        ))
     }
 
     pub(super) fn log_axis_value_and_step(
@@ -251,19 +232,6 @@ impl PanelScaleMode {
                 }
                 _ => display_value,
             }
-        }
-    }
-
-    pub(super) fn percent_label_precision(display_step: f32) -> usize {
-        let step = display_step.abs().max(1e-6);
-        if step >= 1.0 {
-            1
-        } else if step >= 0.1 {
-            2
-        } else if step >= 0.01 {
-            3
-        } else {
-            4
         }
     }
 

@@ -22,9 +22,11 @@ use scene::{Scene, XAxis};
 use data::UserTimezone;
 use data::chart::Basis;
 use data::chart::ticks::{
+    Y_LABEL_DENSITY,
     x::{TimeTickLabel, TimeTickTier},
     x_labels_that_fit,
     y::{TickValue, YAxisScale},
+    y_labels_that_fit,
 };
 use exchange::{Kline, TickerInfo, Timeframe, unit::Price};
 
@@ -43,7 +45,7 @@ const X_AXIS_HEIGHT: f32 = 24.0;
 const MIN_X_TICK_PX: f32 = 80.0;
 const TEXT_SIZE: f32 = 12.0;
 const CHAR_W: f32 = TEXT_SIZE * 0.64;
-const Y_AXIS_LABEL_RIGHT_INSET: f32 = 4.0;
+const Y_AXIS_LABEL_LEFT_INSET: f32 = 4.0;
 const PANEL_SPLITTER_HEIGHT: f32 = 1.0;
 const PANEL_SPLITTER_HIT_PX: f32 = 8.0;
 const PANEL_TITLE_LEFT_PAD: f32 = 6.0;
@@ -71,6 +73,7 @@ const BAR_SPACING_QUANTUM_PX: f32 = 1.0 / BAR_SPACING_SUBPIXEL_UNITS_PER_PX as f
 const HORIZONTAL_ZOOM_LINE_DELTA_MODE_ADJUSTMENT: f32 = 32.0;
 const HORIZONTAL_ZOOM_PIXEL_DELTA_MODE_ADJUSTMENT: f32 = 1.0;
 const HORIZONTAL_ZOOM_DELTA_NORMALIZATION: f32 = 100.0;
+const HORIZONTAL_DRAG_SCALE_DELTA_PER_PX: f32 = 0.2 / 9.0;
 const HORIZONTAL_ZOOM_MAX_ACCUMULATED_CHUNKS_PER_EVENT: usize = 8;
 const HORIZONTAL_ZOOM_MAX_ACCUMULATED_DELTA: f32 = 8.0;
 
@@ -396,6 +399,7 @@ enum DragMode {
         panel_index: usize,
         anchor_y: f32,
     },
+    XAxisScale,
     Pan {
         panel_index: usize,
     },
@@ -989,6 +993,27 @@ where
         self.fill_last_price_line(frame, scene, palette);
     }
 
+    fn horizontal_offset_for_cursor_scale(
+        &self,
+        scene: &Scene,
+        cursor_x: f32,
+        new_scale: HorizontalScale,
+    ) -> f32 {
+        let right_edge = scene.x_axis_plot_width().floor().max(1.0);
+        let cursor_x = (cursor_x - scene.layout.regions.plot.x).clamp(0.0, right_edge);
+        let old_spacing = scene.bar_spacing_px().as_f32().max(1.0);
+        let new_spacing = self
+            .normalize_horizontal_scale(new_scale)
+            .as_pixels_per_bar()
+            .max(1.0);
+        let right_unit = scene.max_x_unit as f32;
+        let pixels_from_right = right_edge - cursor_x;
+        let new_right_unit =
+            right_unit + pixels_from_right * (1.0 / new_spacing - 1.0 / old_spacing);
+
+        self.horizontal_offset + (new_right_unit - right_unit)
+    }
+
     fn fill_last_price_line(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
         let Some(base_series) = self.series.first() else {
             return;
@@ -1052,8 +1077,8 @@ where
     }
 
     fn fill_y_axis_labels(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
-        let min_tick_px = (TEXT_SIZE * 2.5).max(20.0);
-        let labels_for_height = |height: f32| (height / min_tick_px).floor().max(2.0) as i32;
+        let labels_for_height =
+            |height: f32| y_labels_that_fit(height, TEXT_SIZE, Y_LABEL_DENSITY).max(2) as i32;
         let Some(primary_axis) = scene.layout.panel(scene.primary_panel) else {
             return;
         };
@@ -1214,10 +1239,10 @@ where
         frame.with_clip(axis.y_axis, |frame| {
             frame.fill_text(canvas::Text {
                 content,
-                position: Point::new(axis.y_axis.width - Y_AXIS_LABEL_RIGHT_INSET, y),
+                position: Point::new(Y_AXIS_LABEL_LEFT_INSET, y),
                 color,
                 size: TEXT_SIZE.into(),
-                align_x: iced::Alignment::End.into(),
+                align_x: iced::Alignment::Start.into(),
                 align_y: iced::Alignment::Center.into(),
                 font: style::AZERET_MONO,
                 ..Default::default()
@@ -1711,7 +1736,10 @@ where
 
                 let cursor_pos = if let Some(local) = cursor.position_in(bounds) {
                     local
-                } else if matches!(state.drag_mode, DragMode::DrawingMove { .. }) {
+                } else if matches!(
+                    state.drag_mode,
+                    DragMode::DrawingMove { .. } | DragMode::XAxisScale
+                ) {
                     if let Some(global) = cursor.position() {
                         Point::new(global.x - bounds.x, global.y - bounds.y)
                     } else {
@@ -1780,25 +1808,32 @@ where
                         }
 
                         match zone {
-                            LayoutHitZone::PanelPlot(_) => {
-                                if Self::hit_panel_control(
-                                    &layout_tree,
-                                    &panel_controls,
-                                    cursor_pos,
-                                )
-                                .is_some()
+                            LayoutHitZone::PanelPlot(_)
+                            | LayoutHitZone::PanelXAxis(_)
+                            | LayoutHitZone::BottomXAxis => {
+                                if matches!(zone, LayoutHitZone::PanelPlot(_))
+                                    && Self::hit_panel_control(
+                                        &layout_tree,
+                                        &panel_controls,
+                                        cursor_pos,
+                                    )
+                                    .is_some()
                                 {
                                     state.horizontal_zoom_scroll_accum = 0.0;
                                     return;
                                 }
 
-                                if Self::hit_corner_control(&corner_controls, cursor_pos).is_some()
+                                if matches!(zone, LayoutHitZone::PanelPlot(_))
+                                    && Self::hit_corner_control(&corner_controls, cursor_pos)
+                                        .is_some()
                                 {
                                     state.horizontal_zoom_scroll_accum = 0.0;
                                     return;
                                 }
 
-                                if ticker_legend_hit.is_some() {
+                                if matches!(zone, LayoutHitZone::PanelPlot(_))
+                                    && ticker_legend_hit.is_some()
+                                {
                                     state.horizontal_zoom_scroll_accum = 0.0;
                                     return;
                                 }
@@ -1892,9 +1927,31 @@ where
                                 .abs()
                                     > f32::EPSILON
                                 {
+                                    let new_offset = if matches!(
+                                        zone,
+                                        LayoutHitZone::PanelXAxis(_) | LayoutHitZone::BottomXAxis
+                                    ) {
+                                        self.compute_scene(layout, cursor)
+                                            .map(|scene| {
+                                                self.horizontal_offset_for_cursor_scale(
+                                                    &scene,
+                                                    cursor_pos.x,
+                                                    new_scale,
+                                                )
+                                            })
+                                            .unwrap_or(self.horizontal_offset)
+                                    } else {
+                                        self.horizontal_offset
+                                    };
+
                                     shell.publish(M::from(
                                         KlineWidgetEvent::HorizontalScaleChanged(new_scale),
                                     ));
+                                    if (new_offset - self.horizontal_offset).abs() > f32::EPSILON {
+                                        shell.publish(M::from(
+                                            KlineWidgetEvent::HorizontalOffsetChanged(new_offset),
+                                        ));
+                                    }
 
                                     state.clear_all_caches();
                                     shell.capture_event();
@@ -2111,6 +2168,13 @@ where
                             };
                             state.last_cursor = Some(cursor_pos);
                             shell.capture_event();
+                        } else if matches!(
+                            zone,
+                            LayoutHitZone::PanelXAxis(_) | LayoutHitZone::BottomXAxis
+                        ) {
+                            state.drag_mode = DragMode::XAxisScale;
+                            state.last_cursor = Some(cursor_pos);
+                            shell.capture_event();
                         } else if !self.drawings.allows_panning() {
                             let anchor = if let Some(panel_id) = self.drawings.draft_panel_id() {
                                 self.compute_scene(layout, cursor).and_then(|scene| {
@@ -2183,7 +2247,28 @@ where
                     mouse::Event::CursorMoved { .. } => {
                         state.clear_overlay_caches();
 
-                        if let DragMode::Split(split_index) = state.drag_mode {
+                        if matches!(state.drag_mode, DragMode::XAxisScale) {
+                            let previous = state.last_cursor.unwrap_or(cursor_pos);
+                            let delta =
+                                (previous.x - cursor_pos.x) * HORIZONTAL_DRAG_SCALE_DELTA_PER_PX;
+                            let current_scale =
+                                self.normalize_horizontal_scale(self.horizontal_scale);
+                            let new_scale =
+                                self.step_horizontal_scale_percent(current_scale, delta);
+
+                            if (new_scale.as_pixels_per_bar() - current_scale.as_pixels_per_bar())
+                                .abs()
+                                > f32::EPSILON
+                            {
+                                shell.publish(M::from(KlineWidgetEvent::HorizontalScaleChanged(
+                                    new_scale,
+                                )));
+                                state.clear_all_caches();
+                                shell.capture_event();
+                            }
+
+                            state.last_cursor = Some(cursor_pos);
+                        } else if let DragMode::Split(split_index) = state.drag_mode {
                             if let Some(split) = self.split_ratio_from_cursor(
                                 cursor_pos.y,
                                 &layout_tree,
@@ -2485,6 +2570,10 @@ where
             return advanced::mouse::Interaction::ResizingVertically;
         }
 
+        if matches!(state.drag_mode, DragMode::XAxisScale) {
+            return advanced::mouse::Interaction::ResizingHorizontally;
+        }
+
         if matches!(state.drag_mode, DragMode::Pan { .. }) {
             return advanced::mouse::Interaction::Grabbing;
         }
@@ -2556,7 +2645,7 @@ where
             LayoutHitZone::PanelPlot(_) => advanced::mouse::Interaction::Crosshair,
             LayoutHitZone::YAxis(_) => advanced::mouse::Interaction::ResizingVertically,
             LayoutHitZone::PanelXAxis(_) | LayoutHitZone::BottomXAxis => {
-                advanced::mouse::Interaction::Pointer
+                advanced::mouse::Interaction::ResizingHorizontally
             }
             LayoutHitZone::Outside => advanced::mouse::Interaction::default(),
         }
