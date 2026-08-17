@@ -20,7 +20,18 @@ pub(super) enum LayoutHitZone {
 pub(super) struct PanelLayoutNode {
     pub(super) kind: KlinePanelKind,
     pub(super) plot: Rectangle,
+    pub(super) y_axis: Rectangle,
     pub(super) x_axis: Rectangle,
+}
+
+impl PanelLayoutNode {
+    pub(super) fn y_axis_label_y(&self, y: f32, text_size: f32) -> f32 {
+        let inset = (text_size * 0.6).min(self.y_axis.height / 2.0);
+        y.clamp(
+            self.y_axis.y + inset,
+            self.y_axis.y + self.y_axis.height - inset,
+        )
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -73,6 +84,12 @@ impl PanelLayoutTree {
             panel_nodes.push(PanelLayoutNode {
                 kind: panel_kind_for_index(index),
                 plot,
+                y_axis: Rectangle {
+                    x: 0.0,
+                    y: plot.y,
+                    width: regions.y_axis.width,
+                    height: plot.height,
+                },
                 x_axis,
             });
 

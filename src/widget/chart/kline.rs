@@ -8,14 +8,15 @@ mod scene;
 
 use crate::style;
 use crate::widget::chart::kline::drawing::{
-    DrawingDragTarget, DrawingId, DrawingSnapshot, DrawingTool, KlineWidgetDrawingEvent,
+    AxisBadgeFilter, DrawingDragTarget, DrawingId, DrawingSnapshot, DrawingTool,
+    KlineWidgetDrawingEvent,
 };
 use chrome::TickerLegendHit;
 use composition::{
     BarMode, ChartComposition, DEFAULT_MIN_PANEL_RATIO, HistogramMode, LayerDataKind, MarkKind,
     PanelId, PanelScaleMode, PanelValueId,
 };
-use layout::{LayoutHitZone, PanelLayoutTree};
+use layout::{LayoutHitZone, PanelLayoutNode, PanelLayoutTree};
 use scene::{Scene, XAxis};
 
 use data::UserTimezone;
@@ -42,6 +43,7 @@ const X_AXIS_HEIGHT: f32 = 24.0;
 const MIN_X_TICK_PX: f32 = 80.0;
 const TEXT_SIZE: f32 = 12.0;
 const CHAR_W: f32 = TEXT_SIZE * 0.64;
+const Y_AXIS_LABEL_RIGHT_INSET: f32 = 4.0;
 const PANEL_SPLITTER_HEIGHT: f32 = 1.0;
 const PANEL_SPLITTER_HIT_PX: f32 = 8.0;
 const PANEL_TITLE_LEFT_PAD: f32 = 6.0;
@@ -984,6 +986,47 @@ where
         }
 
         self.fill_panel_titles(frame, scene, palette);
+        self.fill_last_price_line(frame, scene, palette);
+    }
+
+    fn fill_last_price_line(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
+        let Some(base_series) = self.series.first() else {
+            return;
+        };
+        let Some(last_bar) = base_series.bars().last() else {
+            return;
+        };
+
+        let last_price = last_bar.close.to_f32_lossy();
+        let y = scene.map_primary_plot_with_anchor(
+            last_price,
+            scene.series_percent_anchors.first().copied().flatten(),
+        );
+        let color = if last_bar.close >= last_bar.open {
+            palette.success.base.color
+        } else {
+            palette.danger.base.color
+        };
+        let stroke = canvas::Stroke {
+            width: 1.0,
+            line_dash: canvas::LineDash {
+                segments: &[2.0, 2.0],
+                offset: 4,
+            },
+            ..Default::default()
+        }
+        .with_color(color.scale_alpha(0.5));
+        let primary_plot = scene.primary_plot();
+
+        frame.with_clip(*primary_plot, |frame| {
+            frame.stroke(
+                &canvas::Path::line(
+                    Point::new(primary_plot.x, y),
+                    Point::new(primary_plot.x + primary_plot.width, y),
+                ),
+                stroke,
+            );
+        });
     }
 
     fn fill_panel_titles(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
@@ -1011,6 +1054,9 @@ where
     fn fill_y_axis_labels(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
         let min_tick_px = (TEXT_SIZE * 2.5).max(20.0);
         let labels_for_height = |height: f32| (height / min_tick_px).floor().max(2.0) as i32;
+        let Some(primary_axis) = scene.layout.panel(scene.primary_panel) else {
+            return;
+        };
         let uses_display_space_ticks = matches!(
             scene.primary_scale_mode,
             PanelScaleMode::PercentFromBase | PanelScaleMode::Logarithmic
@@ -1043,16 +1089,13 @@ where
                     );
                     let text = scene.format_primary_axis_label(value, step_value);
 
-                    frame.fill_text(canvas::Text {
-                        content: text,
-                        position: Point::new(scene.layout.regions.y_axis.width - 4.0, y),
-                        color: palette.background.base.text,
-                        size: TEXT_SIZE.into(),
-                        align_x: iced::Alignment::End.into(),
-                        align_y: iced::Alignment::Center.into(),
-                        font: style::AZERET_MONO,
-                        ..Default::default()
-                    });
+                    self.draw_y_axis_label(
+                        frame,
+                        primary_axis,
+                        text,
+                        y,
+                        palette.background.base.text,
+                    );
                 }
             } else {
                 let primary_precision = self.panel_value_precision(scene.primary_panel);
@@ -1079,16 +1122,13 @@ where
                     );
                     let text = scene.format_primary_axis_label(value, step_value);
 
-                    frame.fill_text(canvas::Text {
-                        content: text,
-                        position: Point::new(scene.layout.regions.y_axis.width - 4.0, y),
-                        color: palette.background.base.text,
-                        size: TEXT_SIZE.into(),
-                        align_x: iced::Alignment::End.into(),
-                        align_y: iced::Alignment::Center.into(),
-                        font: style::AZERET_MONO,
-                        ..Default::default()
-                    });
+                    self.draw_y_axis_label(
+                        frame,
+                        primary_axis,
+                        text,
+                        y,
+                        palette.background.base.text,
+                    );
                 }
             }
         } else {
@@ -1115,16 +1155,7 @@ where
                 let y = scene.primary_plot().y + (1.0 - ratio) * scene.primary_plot().height;
                 let text = scene.format_primary_axis_label(tick, step);
 
-                frame.fill_text(canvas::Text {
-                    content: text,
-                    position: Point::new(scene.layout.regions.y_axis.width - 4.0, y),
-                    color: palette.background.base.text,
-                    size: TEXT_SIZE.into(),
-                    align_x: iced::Alignment::End.into(),
-                    align_y: iced::Alignment::Center.into(),
-                    font: style::AZERET_MONO,
-                    ..Default::default()
-                });
+                self.draw_y_axis_label(frame, primary_axis, text, y, palette.background.base.text);
             }
         }
 
@@ -1133,6 +1164,7 @@ where
             let Some(panel) = scene.layout.panel(panel_index) else {
                 continue;
             };
+            let indicator_axis = panel;
             let panel_precision = self.panel_value_precision(panel_index);
 
             let min_value = self.panel_unit_to_value(panel_precision, indicator.min_unit) as f64;
@@ -1159,18 +1191,38 @@ where
                 let text =
                     self.format_panel_axis_value(panel_index, panel_precision, value, step_value);
 
-                frame.fill_text(canvas::Text {
-                    content: text,
-                    position: Point::new(scene.layout.regions.y_axis.width - 4.0, y),
-                    color: palette.background.base.text,
-                    size: TEXT_SIZE.into(),
-                    align_x: iced::Alignment::End.into(),
-                    align_y: iced::Alignment::Center.into(),
-                    font: style::AZERET_MONO,
-                    ..Default::default()
-                });
+                self.draw_y_axis_label(
+                    frame,
+                    indicator_axis,
+                    text,
+                    y,
+                    palette.background.base.text,
+                );
             }
         }
+    }
+
+    fn draw_y_axis_label(
+        &self,
+        frame: &mut canvas::Frame,
+        axis: &PanelLayoutNode,
+        content: String,
+        y: f32,
+        color: iced::Color,
+    ) {
+        let y = axis.y_axis_label_y(y, TEXT_SIZE);
+        frame.with_clip(axis.y_axis, |frame| {
+            frame.fill_text(canvas::Text {
+                content,
+                position: Point::new(axis.y_axis.width - Y_AXIS_LABEL_RIGHT_INSET, y),
+                color,
+                size: TEXT_SIZE.into(),
+                align_x: iced::Alignment::End.into(),
+                align_y: iced::Alignment::Center.into(),
+                font: style::AZERET_MONO,
+                ..Default::default()
+            });
+        });
     }
 
     fn fill_x_axis_labels(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
@@ -1340,7 +1392,7 @@ where
         )
         .clamp(panel_bounds.0, panel_bounds.1);
 
-        let stroke = canvas::Stroke::default()
+        let stroke = style::dashed_line_from_palette(palette)
             .with_color(line_color)
             .with_width(crosshair_width);
 
@@ -1373,57 +1425,154 @@ where
         scene: &Scene,
         palette: &Extended,
     ) {
+        let mut badge_filter = AxisBadgeFilter::default();
+
         if scene.hovered_control.is_some()
             || scene.hovered_corner_control.is_some()
             || scene.hovering_ticker_legend
         {
+            self.fill_last_price_axis_badge(frame, scene, palette, &mut badge_filter);
             return;
         }
 
-        self.fill_active_drawing_axis_labels(frame, scene, palette);
+        if let Some(cursor) = scene.cursor {
+            let gy = scene.layout.regions.plot.y + cursor.y_plot;
 
-        let Some(cursor) = scene.cursor else {
+            if let Some(y_text) = cursor
+                .y_primary_unit
+                .map(|primary_unit| {
+                    let panel_precision = self.panel_value_precision(cursor.panel_index);
+                    let primary_value = self.panel_unit_to_value(panel_precision, primary_unit);
+                    scene.format_primary_cursor_label(primary_value)
+                })
+                .or_else(|| {
+                    cursor.y_indicator_unit.map(|indicator_unit| {
+                        let panel_precision = self.panel_value_precision(cursor.panel_index);
+                        let indicator_value =
+                            self.panel_unit_to_value(panel_precision, indicator_unit);
+                        self.format_panel_axis_value(
+                            cursor.panel_index,
+                            panel_precision,
+                            indicator_value,
+                            0.01,
+                        )
+                    })
+                })
+            {
+                let y_badge_bounds = self
+                    .panel_plot_bounds_in_overlay(scene, cursor.panel_index)
+                    .unwrap_or_else(|| self.plot_bounds_in_overlay(scene));
+                self.draw_y_axis_badge(
+                    frame,
+                    scene,
+                    palette,
+                    gy,
+                    &y_text,
+                    y_badge_bounds,
+                    &mut badge_filter,
+                );
+            }
+
+            let x_text = self.format_x_crosshair_label(scene.x_axis, cursor.x_unit);
+            let horizontal_pixel_ratio = self.resolved_horizontal_pixel_ratio();
+            self.draw_x_axis_badge(
+                frame,
+                scene,
+                palette,
+                scene.layout.regions.plot.x
+                    + Self::snap_plot_x_to_cell(cursor.x_plot, horizontal_pixel_ratio),
+                &x_text,
+                &mut badge_filter,
+            );
+        }
+
+        self.fill_last_price_axis_badge(frame, scene, palette, &mut badge_filter);
+        self.fill_active_drawing_axis_labels(frame, scene, palette, &mut badge_filter);
+    }
+
+    fn fill_last_price_axis_badge(
+        &self,
+        frame: &mut canvas::Frame,
+        scene: &Scene,
+        palette: &Extended,
+        filter: &mut AxisBadgeFilter,
+    ) {
+        let Some(base_series) = self.series.first() else {
+            return;
+        };
+        let Some(last_bar) = base_series.bars().last() else {
+            return;
+        };
+        let Some(panel_bounds) = self.panel_plot_bounds_in_overlay(scene, scene.primary_panel)
+        else {
             return;
         };
 
-        let gy = scene.layout.regions.plot.y + cursor.y_plot;
+        let last_price = last_bar.close.to_f32_lossy();
+        let y = scene.layout.regions.plot.y
+            + scene.map_primary_plot_with_anchor(
+                last_price,
+                scene.series_percent_anchors.first().copied().flatten(),
+            );
+        let color = if last_bar.close >= last_bar.open {
+            palette.success.base.color
+        } else {
+            palette.danger.base.color
+        };
+        let text = scene.format_primary_cursor_label(last_price);
+        let timer_text = self.candle_close_countdown();
+        let value_text_color = if timer_text.is_some() {
+            if palette.is_dark {
+                iced::Color::BLACK
+            } else {
+                iced::Color::WHITE
+            }
+        } else {
+            palette.primary.strong.text
+        };
+        let timer_text_color = if palette.is_dark {
+            iced::Color::BLACK.scale_alpha(0.8)
+        } else {
+            iced::Color::WHITE.scale_alpha(0.8)
+        };
 
-        if let Some(y_text) = cursor
-            .y_primary_unit
-            .map(|primary_unit| {
-                let panel_precision = self.panel_value_precision(cursor.panel_index);
-                let primary_value = self.panel_unit_to_value(panel_precision, primary_unit);
-                scene.format_primary_cursor_label(primary_value)
-            })
-            .or_else(|| {
-                cursor.y_indicator_unit.map(|indicator_unit| {
-                    let panel_precision = self.panel_value_precision(cursor.panel_index);
-                    let indicator_value = self.panel_unit_to_value(panel_precision, indicator_unit);
-                    self.format_panel_axis_value(
-                        cursor.panel_index,
-                        panel_precision,
-                        indicator_value,
-                        0.01,
-                    )
-                })
-            })
-        {
-            let y_badge_bounds = self
-                .panel_plot_bounds_in_overlay(scene, cursor.panel_index)
-                .unwrap_or_else(|| self.plot_bounds_in_overlay(scene));
-            self.draw_y_axis_badge(frame, scene, palette, gy, &y_text, y_badge_bounds);
-        }
-
-        let x_text = self.format_x_label(scene.x_axis, cursor.x_unit, 1);
-        let horizontal_pixel_ratio = self.resolved_horizontal_pixel_ratio();
-        self.draw_x_axis_badge(
+        self.draw_y_axis_badge_with_timer(
             frame,
             scene,
-            palette,
-            scene.layout.regions.plot.x
-                + Self::snap_plot_x_to_cell(cursor.x_plot, horizontal_pixel_ratio),
-            &x_text,
+            y,
+            &text,
+            timer_text.as_deref(),
+            panel_bounds,
+            color,
+            value_text_color,
+            timer_text_color,
+            filter,
         );
+    }
+
+    fn candle_close_countdown(&self) -> Option<String> {
+        let Basis::Time(timeframe) = self.basis else {
+            return None;
+        };
+
+        let interval = timeframe.to_milliseconds();
+        let current_time = chrono::Utc::now().timestamp_millis() as u64;
+        let next_kline_open = (current_time / interval + 1) * interval;
+        let remaining_seconds = (next_kline_open - current_time) / 1000;
+
+        if remaining_seconds == 0 {
+            return None;
+        }
+
+        let hours = remaining_seconds / 3600;
+        let minutes = (remaining_seconds % 3600) / 60;
+        let seconds = remaining_seconds % 60;
+
+        Some(if hours > 0 {
+            format!("{hours:02}:{minutes:02}:{seconds:02}")
+        } else {
+            format!("{minutes:02}:{seconds:02}")
+        })
     }
 }
 
@@ -2218,7 +2367,7 @@ where
                         bounds: Rectangle {
                             x: plot_rect.x + splitter.x,
                             y: plot_rect.y + splitter.y,
-                            width: splitter.width,
+                            width: splitter.width + scene.layout.regions.y_axis.width,
                             height: splitter.height,
                         },
                         snap: true,

@@ -2,7 +2,7 @@ use super::composition::PanelScaleMode;
 use super::scene::Scene;
 use super::{
     DRAWING_HANDLE_HIT_RADIUS_PX, DRAWING_HANDLE_RADIUS_PX, DRAWING_HIT_TOLERANCE_PX,
-    KlinePanelKind, KlineSeriesLike, KlineWidget, TEXT_SIZE,
+    KlinePanelKind, KlineSeriesLike, KlineWidget, TEXT_SIZE, Y_AXIS_LABEL_RIGHT_INSET,
 };
 use crate::style;
 use crate::widget::chart::kline::{YUnit, composition::PanelId};
@@ -12,6 +12,26 @@ use exchange::UnixMs;
 use iced::theme::palette::Extended;
 use iced::widget::canvas;
 use iced::{Point, Rectangle, Size};
+
+#[derive(Default)]
+pub(super) struct AxisBadgeFilter {
+    occupied: Vec<Rectangle>,
+}
+
+impl AxisBadgeFilter {
+    pub(super) fn reserve(&mut self, bounds: Rectangle) -> bool {
+        if self
+            .occupied
+            .iter()
+            .any(|occupied| occupied.intersects(&bounds))
+        {
+            return false;
+        }
+
+        self.occupied.push(bounds);
+        true
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DrawingId(pub u64);
@@ -1348,14 +1368,25 @@ where
         palette: &Extended,
         x: f32,
         text: &str,
+        filter: &mut AxisBadgeFilter,
     ) {
-        let x_label_w = (text.len() as f32 * TEXT_SIZE * 0.62).clamp(60.0, 180.0);
+        let x_label_w = (text.chars().count() as f32 * TEXT_SIZE * 0.67 + 12.0).clamp(100.0, 240.0);
         let x_label_h = TEXT_SIZE + 6.0;
         let x_label_x = (x - x_label_w / 2.0).clamp(
             scene.layout.regions.plot.x,
             scene.layout.regions.plot.x + scene.layout.regions.plot.width - x_label_w,
         );
         let x_label_y = scene.layout.regions.x_axis.y + 2.0;
+        let label_bounds = Rectangle {
+            x: x_label_x,
+            y: x_label_y,
+            width: x_label_w,
+            height: x_label_h,
+        };
+
+        if !filter.reserve(label_bounds) {
+            return;
+        }
 
         frame.fill_rectangle(
             Point::new(x_label_x, x_label_y),
@@ -1383,24 +1414,60 @@ where
         y: f32,
         text: &str,
         clamp_bounds: Rectangle,
+        filter: &mut AxisBadgeFilter,
     ) {
-        let y_label_w = (text.len() as f32 * TEXT_SIZE * 0.6).clamp(40.0, 96.0);
+        self.draw_y_axis_badge_with_colors(
+            frame,
+            scene,
+            y,
+            text,
+            clamp_bounds,
+            palette.background.strong.color,
+            palette.background.strong.text,
+            filter,
+        );
+    }
+
+    pub(super) fn draw_y_axis_badge_with_colors(
+        &self,
+        frame: &mut canvas::Frame,
+        scene: &Scene,
+        y: f32,
+        text: &str,
+        clamp_bounds: Rectangle,
+        background_color: iced::Color,
+        text_color: iced::Color,
+        filter: &mut AxisBadgeFilter,
+    ) {
         let y_label_h = TEXT_SIZE + 6.0;
-        let y_label_x = scene.layout.regions.y_axis.x + 2.0;
+        let y_axis = scene.layout.regions.y_axis;
         let y_min = clamp_bounds.y;
         let y_max = (clamp_bounds.y + clamp_bounds.height - y_label_h).max(y_min);
         let y_label_y = (y - (y_label_h / 2.0)).clamp(y_min, y_max);
+        let label_bounds = Rectangle {
+            x: y_axis.x,
+            y: y_label_y,
+            width: y_axis.width,
+            height: y_label_h,
+        };
+
+        if !filter.reserve(label_bounds) {
+            return;
+        }
 
         frame.fill_rectangle(
-            Point::new(y_label_x, y_label_y),
-            Size::new(y_label_w, y_label_h),
-            palette.background.strong.color,
+            Point::new(y_axis.x, y_label_y),
+            Size::new(y_axis.width, y_label_h),
+            background_color,
         );
 
         frame.fill_text(canvas::Text {
             content: text.to_string(),
-            position: Point::new(y_label_x + y_label_w - 4.0, y_label_y + y_label_h / 2.0),
-            color: palette.background.strong.text,
+            position: Point::new(
+                y_axis.x + y_axis.width - Y_AXIS_LABEL_RIGHT_INSET,
+                y_label_y + y_label_h / 2.0,
+            ),
+            color: text_color,
             size: TEXT_SIZE.into(),
             align_x: iced::Alignment::End.into(),
             align_y: iced::Alignment::Center.into(),
@@ -1409,11 +1476,95 @@ where
         });
     }
 
+    pub(super) fn draw_y_axis_badge_with_timer(
+        &self,
+        frame: &mut canvas::Frame,
+        scene: &Scene,
+        y: f32,
+        value_text: &str,
+        timer_text: Option<&str>,
+        clamp_bounds: Rectangle,
+        background_color: iced::Color,
+        value_text_color: iced::Color,
+        timer_text_color: iced::Color,
+        filter: &mut AxisBadgeFilter,
+    ) {
+        let y_label_h = if timer_text.is_some() {
+            TEXT_SIZE * 2.0 + 4.0
+        } else {
+            TEXT_SIZE + 6.0
+        };
+        let y_axis = scene.layout.regions.y_axis;
+        let y_min = clamp_bounds.y;
+        let y_max = (clamp_bounds.y + clamp_bounds.height - y_label_h).max(y_min);
+        let y_label_y = (y - (y_label_h / 2.0)).clamp(y_min, y_max);
+        let label_bounds = Rectangle {
+            x: y_axis.x,
+            y: y_label_y,
+            width: y_axis.width,
+            height: y_label_h,
+        };
+
+        if !filter.reserve(label_bounds) {
+            return;
+        }
+
+        frame.fill_rectangle(
+            Point::new(y_axis.x, y_label_y),
+            Size::new(y_axis.width, y_label_h),
+            background_color,
+        );
+
+        let value_y = if timer_text.is_some() {
+            y_label_y + 2.0
+        } else {
+            y_label_y + y_label_h / 2.0
+        };
+        let text_x = if timer_text.is_some() {
+            y_axis.x + 4.0
+        } else {
+            y_axis.x + y_axis.width - Y_AXIS_LABEL_RIGHT_INSET
+        };
+        let text_alignment = if timer_text.is_some() {
+            iced::Alignment::Start
+        } else {
+            iced::Alignment::End
+        };
+        frame.fill_text(canvas::Text {
+            content: value_text.to_string(),
+            position: Point::new(text_x, value_y),
+            color: value_text_color,
+            size: TEXT_SIZE.into(),
+            align_x: text_alignment.into(),
+            align_y: if timer_text.is_some() {
+                iced::Alignment::Start.into()
+            } else {
+                iced::Alignment::Center.into()
+            },
+            font: style::AZERET_MONO,
+            ..Default::default()
+        });
+
+        if let Some(timer_text) = timer_text {
+            frame.fill_text(canvas::Text {
+                content: timer_text.to_string(),
+                position: Point::new(text_x, y_label_y + 15.0),
+                color: timer_text_color,
+                size: (TEXT_SIZE - 1.0).into(),
+                align_x: iced::Alignment::Start.into(),
+                align_y: iced::Alignment::Start.into(),
+                font: style::AZERET_MONO,
+                ..Default::default()
+            });
+        }
+    }
+
     pub(super) fn fill_active_drawing_axis_labels(
         &self,
         frame: &mut canvas::Frame,
         scene: &Scene,
         palette: &Extended,
+        filter: &mut AxisBadgeFilter,
     ) {
         let Some(object) = self.drawings.active_axis_labeled_object() else {
             return;
@@ -1429,7 +1580,7 @@ where
 
             if let Some(x_unit) = self.x_unit_for_anchor_time(scene, anchor.time) {
                 let x_text = self.format_x_label(scene.x_axis, x_unit, 1);
-                self.draw_x_axis_badge(frame, scene, palette, point.x, &x_text);
+                self.draw_x_axis_badge(frame, scene, palette, point.x, &x_text, filter);
             }
 
             if let Some(y_text) = self.format_anchor_y_label(scene, anchor) {
@@ -1441,7 +1592,15 @@ where
                     continue;
                 };
 
-                self.draw_y_axis_badge(frame, scene, palette, point.y, &y_text, panel_bounds);
+                self.draw_y_axis_badge(
+                    frame,
+                    scene,
+                    palette,
+                    point.y,
+                    &y_text,
+                    panel_bounds,
+                    filter,
+                );
             }
         }
     }
