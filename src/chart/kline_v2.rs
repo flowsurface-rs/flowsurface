@@ -8,7 +8,7 @@ use crate::widget::chart::kline::{
     BOLLINGER_LOWER_FIELD_KEY, BOLLINGER_UPPER_FIELD_KEY, DEFAULT_BAR_SPACING_PX, HorizontalScale,
     IndicatorData, KlineSeriesLike, KlineWidget, KlineWidgetEvent, OverlayChannelColorRole,
     OverlayChannelSpec, PanelYViewport, RSI_LOWER_BAND_FIELD_KEY, RSI_SIGNAL_FIELD_KEY,
-    RSI_UPPER_BAND_FIELD_KEY,
+    RSI_UPPER_BAND_FIELD_KEY, UnavailableIndicator,
     coord::{ChartCoord, ChartStepMs, RoundedOffsetUnits},
 };
 
@@ -81,7 +81,9 @@ mod drawing;
 mod indicator;
 
 use drawing::{DrawingMessage, DrawingTools, DrawingUpdate};
-use indicator::{AvailabilityContext, IndicatorPanelRecipe, SeriesIndicatorData};
+use indicator::{
+    AvailabilityContext, IndicatorPanelRecipe, IndicatorUnsupportedReason, SeriesIndicatorData,
+};
 pub use indicator::{IndicatorAvailability, RsiConfig};
 
 pub enum Action {
@@ -479,6 +481,7 @@ impl KlineChartV2 {
         }
 
         let drawing_sidebar = self.drawing.view(&self.composition, Message::Sidebar);
+        let unavailable_indicator_panels = self.unavailable_indicator_panels();
         let chart: iced::Element<_> =
             KlineWidget::new(&self.series, self.timeframe, &self.composition)
                 .with_basis(self.basis)
@@ -487,6 +490,7 @@ impl KlineChartV2 {
                 .with_horizontal_pixel_ratio(horizontal_pixel_ratio)
                 .with_primary_autoscale(self.primary_autoscale)
                 .with_panel_y_viewports(&self.panel_y_viewports)
+                .with_unavailable_indicator_panels(unavailable_indicator_panels)
                 .with_drawing_snapshot(self.drawing.snapshot())
                 .with_timezone(timezone)
                 .version(self.cache_rev)
@@ -557,7 +561,6 @@ impl KlineChartV2 {
             }
         }
 
-        self.enforce_indicator_availability();
         self.bump_rev();
 
         let reqs = self.collect_fetch_reqs(self.desired_fetch_batches(self.horizontal_offset));
@@ -640,6 +643,10 @@ impl KlineChartV2 {
 
     pub fn indicator_is_available(&self, indicator: KlineIndicator) -> bool {
         self.is_indicator_available(indicator)
+    }
+
+    pub fn indicator_is_supported_for_market(&self, indicator: KlineIndicator) -> bool {
+        indicator::is_supported_for_market(indicator, self.base_ticker.market_type())
     }
 
     pub fn ticker_info(&self) -> TickerInfo {
@@ -725,8 +732,6 @@ impl KlineChartV2 {
         merge_bars(&mut self.series[idx].bars, incoming);
         trim_bars(&mut self.series[idx].bars);
         self.series[idx].refresh_indicator_inputs();
-        self.enforce_indicator_availability();
-
         if let Some(handler) = self.request_handlers.get_mut(&ticker_info) {
             handler.mark_completed(req_id);
         }
@@ -747,7 +752,6 @@ impl KlineChartV2 {
         merge_bars(&mut self.series[idx].bars, incoming);
         trim_bars(&mut self.series[idx].bars);
         self.series[idx].refresh_indicator_inputs();
-        self.enforce_indicator_availability();
         self.bump_rev();
     }
 
@@ -772,7 +776,6 @@ impl KlineChartV2 {
 
         trim_bars(&mut series.bars);
         series.refresh_indicator_inputs();
-        self.enforce_indicator_availability();
         self.bump_rev();
     }
 
@@ -784,8 +787,6 @@ impl KlineChartV2 {
             series.bars.clear();
             series.indicators.clear();
         }
-
-        self.enforce_indicator_availability();
 
         self.rebuild_handlers();
         self.bump_rev();
@@ -841,10 +842,6 @@ impl KlineChartV2 {
 
     fn enable_indicator(&mut self, indicator: KlineIndicator) -> bool {
         if self.indicator_panels[indicator].is_some() {
-            return false;
-        }
-
-        if !self.is_indicator_available(indicator) {
             return false;
         }
 
@@ -940,6 +937,54 @@ impl KlineChartV2 {
         )
     }
 
+    fn unavailable_indicator_panels(&self) -> Vec<UnavailableIndicator> {
+        indicator::all_indicators()
+            .iter()
+            .copied()
+            .filter_map(|indicator| {
+                let IndicatorAvailability::Unsupported(reason) =
+                    self.indicator_availability(indicator)
+                else {
+                    return None;
+                };
+
+                self.indicator_panels[indicator].as_ref()?;
+                Some(UnavailableIndicator {
+                    value_id: Self::panel_value_id_for_indicator(indicator),
+                    message: self.unavailable_indicator_message(indicator, reason),
+                })
+            })
+            .collect()
+    }
+
+    fn unavailable_indicator_message(
+        &self,
+        indicator: KlineIndicator,
+        reason: IndicatorUnsupportedReason,
+    ) -> String {
+        let name = indicator::display_name(indicator);
+        match reason {
+            IndicatorUnsupportedReason::BasisNotSupported => {
+                format!("{name} is not available for {}.", self.basis)
+            }
+            IndicatorUnsupportedReason::SourceNotSupported => {
+                format!(
+                    "{name} is not available for {}.",
+                    self.base_ticker.exchange()
+                )
+            }
+            IndicatorUnsupportedReason::ResolutionNotSupported => {
+                format!("{name} is not available on {} timeframe.", self.timeframe)
+            }
+            IndicatorUnsupportedReason::MissingRequiredInput => {
+                format!("{name} requires directional trade-volume data.")
+            }
+            IndicatorUnsupportedReason::InconsistentInputCoverage => {
+                format!("{name} requires consistent directional trade-volume data.")
+            }
+        }
+    }
+
     fn disable_indicator(&mut self, indicator: KlineIndicator) -> bool {
         let Some(binding) = self.indicator_panels[indicator].take() else {
             return false;
@@ -962,27 +1007,6 @@ impl KlineChartV2 {
                     false
                 }
             }
-        }
-    }
-
-    fn enforce_indicator_availability(&mut self) {
-        let mut changed = false;
-
-        for &indicator in indicator::all_indicators() {
-            if self.indicator_panels[indicator].is_none() {
-                continue;
-            }
-
-            if matches!(
-                self.indicator_availability(indicator),
-                IndicatorAvailability::Unsupported(_)
-            ) {
-                changed |= self.disable_indicator(indicator);
-            }
-        }
-
-        if changed {
-            self.bump_rev();
         }
     }
 

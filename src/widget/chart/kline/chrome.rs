@@ -632,7 +632,7 @@ where
             };
 
             let label = self.indicator_label(panel_index, false, value_id);
-            let x_left = panel.plot.x + TOOLTIP_ROW_LEFT_PAD;
+            let x_left = self.indicator_label_x(panel.plot.x, value_id);
             let text_end_x = x_left + label.chars().count() as f32 * CHAR_W;
             let y_center = panel.plot.y + PANEL_TITLE_TOP_PAD + TICKER_LEGEND_ROW_H * 0.5;
             let (settings, close, row_w) =
@@ -662,7 +662,7 @@ where
                     + (preceding_rows + overlay_index) as f32 * TICKER_LEGEND_ROW_H;
                 let y_center = row_top + TICKER_LEGEND_ROW_H * 0.5;
                 let label = self.indicator_label(primary_panel, true, *value_id);
-                let x_left = panel.plot.x + TOOLTIP_ROW_LEFT_PAD;
+                let x_left = self.indicator_label_x(panel.plot.x, *value_id);
                 let text_end_x = x_left + label.chars().count() as f32 * CHAR_W;
                 let (settings, close, row_w) =
                     self.indicator_legend_controls(panel.plot, text_end_x, y_center, true);
@@ -1167,8 +1167,26 @@ where
             }
 
             if row.primary_overlay {
-                let label_x = row_rect.x + TOOLTIP_ROW_LEFT_PAD;
+                let marker_x = self.indicator_marker_x(row_rect.x);
+                let label_x = self.indicator_label_x(row_rect.x, row.value_id);
                 let label_y = scene.layout.regions.plot.y + row.y_center;
+
+                if self
+                    .indicator_unavailable_message(Some(row.value_id))
+                    .is_some()
+                {
+                    frame.fill_text(canvas::Text {
+                        content: "!".to_string(),
+                        position: Point::new(marker_x, label_y),
+                        color: palette.danger.base.color,
+                        size: TEXT_SIZE.into(),
+                        align_x: iced::Alignment::Start.into(),
+                        align_y: iced::Alignment::Center.into(),
+                        font: style::AZERET_MONO,
+                        ..Default::default()
+                    });
+                }
+
                 let base_bar = scene.cursor.and_then(|cursor| {
                     self.series.first().and_then(|series| {
                         self.bar_at_or_before_unit(series, scene.x_axis, cursor.x_unit)
