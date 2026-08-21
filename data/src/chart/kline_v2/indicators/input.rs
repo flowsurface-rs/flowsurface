@@ -39,18 +39,40 @@ impl KlinePriceSource {
             Self::Ohlc4 => (open + high + low + close) / 4.0,
         }
     }
-}
 
-impl Display for KlinePriceSource {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
+    pub const fn id(self) -> &'static str {
+        match self {
             Self::Open => "Open",
             Self::High => "High",
             Self::Low => "Low",
             Self::Close => "Close",
             Self::Hlc3 => "HLC3",
             Self::Ohlc4 => "OHLC4",
-        })
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "Open" => Some(Self::Open),
+            "High" => Some(Self::High),
+            "Low" => Some(Self::Low),
+            "Close" => Some(Self::Close),
+            "HLC3" => Some(Self::Hlc3),
+            "OHLC4" => Some(Self::Ohlc4),
+            _ => None,
+        }
+    }
+}
+
+impl Default for KlinePriceSource {
+    fn default() -> Self {
+        Self::Close
+    }
+}
+
+impl Display for KlinePriceSource {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.id())
     }
 }
 

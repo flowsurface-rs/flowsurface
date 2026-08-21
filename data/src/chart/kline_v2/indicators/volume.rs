@@ -1,4 +1,6 @@
+use super::super::IndicatorUpdateScope;
 use super::super::values::IndicatorData;
+use super::input::IndicatorInput;
 use super::runtime::{IndicatorDefinition, IndicatorRuntime};
 use super::{IndicatorAvailability, IndicatorColorSlot, IndicatorColorSpec, IndicatorMarkSpec};
 use crate::chart::kline_v2::composition::{BarMode, HistogramMode, MarkKind};
@@ -68,6 +70,14 @@ impl IndicatorRuntime for VolumeState {
     fn clear(&mut self) {}
 
     fn rebuild_from_bars(&mut self, _bars: &[Kline], _config: Self::Config) {}
+
+    fn on_input_from(
+        &mut self,
+        _input: IndicatorInput<'_>,
+        _config: Self::Config,
+        _scope: IndicatorUpdateScope,
+    ) {
+    }
 
     fn data_for_bar(&self, bar: &Kline) -> Option<IndicatorData> {
         let mut data = IndicatorData::scalar(bar.volume.total().to_f32_lossy());

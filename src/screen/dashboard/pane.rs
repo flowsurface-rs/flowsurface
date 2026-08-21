@@ -15,7 +15,7 @@ use crate::{
     modal::{
         self, ModifierKind,
         pane::{
-            Modal,
+            IndicatorSettingsModal, Modal,
             mini_tickers_list::MiniPanel,
             settings::{
                 CandlestickSettingsMessage, KlineV2IndicatorSettingsMessage, candlestick_cfg_view,
@@ -113,7 +113,10 @@ pub enum Event {
     ClusterScalingSelected(data::chart::kline::ClusterScaling),
     TradeDataEnabledChanged(bool),
     StudyConfigurator(modal::pane::settings::study::StudyMessage),
-    KlineV2IndicatorSettings(KlineV2Indicator, KlineV2IndicatorSettingsMessage),
+    KlineV2IndicatorSettings(
+        data::chart::kline_v2::IndicatorInstanceId,
+        KlineV2IndicatorSettingsMessage,
+    ),
     KlineV2CandlestickSettings(CandlestickSettingsMessage),
     StreamModifierChanged(modal::stream::Message),
     HeatmapShaderInteraction(crate::widget::chart::heatmap::Message),
@@ -1074,7 +1077,7 @@ impl State {
                         Message::PaneEvent(id, Event::KlineV2Interaction(message))
                     });
 
-                    let selected_indicators = chart.selected_indicators();
+                    let selected_indicators: Vec<KlineV2Indicator> = Vec::new();
                     let indicator_modal = if self.modal == Some(Modal::Indicators) {
                         Some(modal::indicators::view(
                             id,
@@ -1089,14 +1092,15 @@ impl State {
                     let selected_tickers =
                         chart.basis().is_time().then_some(chart.selected_tickers());
 
-                    let settings_modal = || match self.modal {
-                        Some(Modal::IndicatorSettings(indicator)) => kline_v2_indicator_cfg_view(
-                            indicator,
-                            chart.indicator_data_config(indicator),
-                            chart.anchored_vwap_config(),
+                    let settings_modal = || match self.modal.as_ref() {
+                        Some(Modal::IndicatorSettings(modal)) => kline_v2_indicator_cfg_view(
+                            modal,
+                            chart.indicator_data_config(modal.instance_id()),
                             chart.basis(),
-                            chart.indicator_color_config(indicator),
-                            chart.indicator_mark(indicator),
+                            chart
+                                .indicator_color_config(modal.instance_id())
+                                .unwrap_or_default(),
+                            chart.indicator_mark(modal.instance_id()),
                             id,
                         ),
                         Some(Modal::CandlestickSettings) => candlestick_cfg_view(
@@ -1337,8 +1341,16 @@ impl State {
                         super::chart::kline_v2::Action::OpenSeriesEditor => {
                             self.modal = Some(Modal::Settings);
                         }
-                        super::chart::kline_v2::Action::OpenIndicatorSettings(indicator) => {
-                            self.modal = Some(Modal::IndicatorSettings(indicator));
+                        super::chart::kline_v2::Action::OpenIndicatorSettings(id) => {
+                            if let Content::KlineV2 {
+                                chart: Some(chart), ..
+                            } = &self.content
+                                && let Some(kind) = chart.indicator_kind(id)
+                            {
+                                self.modal = Some(Modal::IndicatorSettings(
+                                    IndicatorSettingsModal::new(id, kind),
+                                ));
+                            }
                         }
                         super::chart::kline_v2::Action::OpenCandlestickSettings => {
                             self.modal = Some(Modal::CandlestickSettings);
@@ -1366,34 +1378,65 @@ impl State {
                     return Some(Effect::RefreshStreams);
                 }
             }
-            Event::KlineV2IndicatorSettings(indicator, message) => {
-                if let Content::KlineV2 { chart: Some(c), .. } = &mut self.content {
-                    let command = match message {
-                        KlineV2IndicatorSettingsMessage::DataConfig(config) => {
-                            ChartCommand::SetIndicatorDataConfig(config)
+            Event::KlineV2IndicatorSettings(instance_id, message) => {
+                let command = match message {
+                    KlineV2IndicatorSettingsMessage::TabSelected(tab) => {
+                        if let Some(Modal::IndicatorSettings(modal)) = &mut self.modal
+                            && modal.instance_id() == instance_id
+                        {
+                            modal.select_tab(tab);
                         }
-                        KlineV2IndicatorSettingsMessage::Color {
-                            slot,
-                            accent,
-                            shade,
-                        } => ChartCommand::SetIndicatorColor {
-                            indicator,
-                            slot,
-                            accent,
-                            shade,
-                        },
-                        KlineV2IndicatorSettingsMessage::Mark(mark) => {
-                            ChartCommand::SetIndicatorMark { indicator, mark }
-                        }
-                        KlineV2IndicatorSettingsMessage::Reset => {
-                            ChartCommand::ResetIndicatorSettings(indicator)
-                        }
-                    };
-                    if let CommandResult::Action(Some(chart::Action::RequestFetch(fetch))) =
-                        c.apply_command(command)
-                    {
-                        return Some(Effect::RequestFetch(fetch));
+                        None
                     }
+                    KlineV2IndicatorSettingsMessage::InputChanged { id, value, config } => {
+                        if let Some(Modal::IndicatorSettings(modal)) = &mut self.modal
+                            && modal.instance_id() == instance_id
+                        {
+                            modal.set_input_draft(id, value);
+                        }
+                        config.map(|config| ChartCommand::SetIndicatorDataConfig {
+                            id: instance_id,
+                            config,
+                        })
+                    }
+                    KlineV2IndicatorSettingsMessage::DataConfig(config) => {
+                        Some(ChartCommand::SetIndicatorDataConfig {
+                            id: instance_id,
+                            config,
+                        })
+                    }
+                    KlineV2IndicatorSettingsMessage::Color {
+                        slot,
+                        accent,
+                        shade,
+                    } => Some(ChartCommand::SetIndicatorColor {
+                        id: instance_id,
+                        slot,
+                        accent,
+                        shade,
+                    }),
+                    KlineV2IndicatorSettingsMessage::Mark(mark) => {
+                        Some(ChartCommand::SetIndicatorMark {
+                            id: instance_id,
+                            mark,
+                        })
+                    }
+                    KlineV2IndicatorSettingsMessage::Reset => {
+                        if let Some(Modal::IndicatorSettings(modal)) = &mut self.modal
+                            && modal.instance_id() == instance_id
+                        {
+                            modal.clear_input_drafts();
+                        }
+                        Some(ChartCommand::ResetIndicatorSettings(instance_id))
+                    }
+                };
+
+                if let Some(command) = command
+                    && let Content::KlineV2 { chart: Some(c), .. } = &mut self.content
+                    && let CommandResult::Action(Some(chart::Action::RequestFetch(fetch))) =
+                        c.apply_command(command)
+                {
+                    return Some(Effect::RequestFetch(fetch));
                 }
             }
             Event::KlineV2CandlestickSettings(message) => {
@@ -1414,7 +1457,7 @@ impl State {
                 let result = match &mut self.content {
                     Content::KlineV2 {
                         chart: Some(chart), ..
-                    } => chart.apply_command(ChartCommand::ToggleIndicator(indicator)),
+                    } => chart.apply_command(ChartCommand::AddIndicator(indicator)),
                     _ => CommandResult::None,
                 };
                 let trade_stream_changed = self.sync_kline_v2_trade_stream();

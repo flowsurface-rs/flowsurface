@@ -8,7 +8,7 @@ use super::{
     OverlayChannelSpec, PanelYViewport,
 };
 use data::chart::kline_v2::IndicatorColorSlot;
-use data::chart::kline_v2::SeriesColor;
+use data::chart::kline_v2::{IndicatorInstance, KlineIndicator, SeriesColor};
 use data::config::theme::{
     ThemeColor, ThemeColorRole, ThemeColorShade, darken, lighten, mix_color,
 };
@@ -20,6 +20,14 @@ impl<'a, S> KlineWidget<'a, S>
 where
     S: KlineSeriesLike,
 {
+    pub(super) fn indicator_instance(&self, id: PanelValueId) -> Option<&IndicatorInstance> {
+        self.indicator_instances.get(id)
+    }
+
+    pub(super) fn indicator_kind(&self, id: PanelValueId) -> Option<KlineIndicator> {
+        self.indicator_instance(id).map(|instance| instance.kind)
+    }
+
     pub(super) fn indicator_data_for_series(
         &self,
         series: &S,
@@ -157,7 +165,10 @@ where
             .panel_effective_scale_mode(panel.id)
             .unwrap_or(PanelScaleMode::Absolute);
 
-        if matches!(panel.value_id, Some(PanelValueId::Volume))
+        if panel
+            .value_id
+            .and_then(|id| self.indicator_kind(id))
+            .is_some_and(|kind| kind == KlineIndicator::Volume)
             && matches!(scale, PanelScaleMode::Absolute)
         {
             scale = PanelScaleMode::FitVisibleIncludeZero;
@@ -230,7 +241,10 @@ where
         value_id: Option<PanelValueId>,
     ) -> &'static [OverlayChannelSpec] {
         if let Some(value_id) = value_id {
-            let channels = value_id.overlay_channels();
+            let channels = self
+                .indicator_kind(value_id)
+                .map(KlineIndicator::overlay_channels)
+                .unwrap_or_default();
             if !channels.is_empty() {
                 return channels;
             }
@@ -241,13 +255,16 @@ where
 
     pub(super) fn overlay_channel_value(
         &self,
+        value_id: PanelValueId,
         data: IndicatorData,
         channel: OverlayChannelSpec,
     ) -> Option<f32> {
         match channel.source {
             OverlayChannelSource::Primary => Some(data.value()),
             OverlayChannelSource::Field(key) => data.field(key),
-            OverlayChannelSource::Reference(resolve) => Some(resolve(self.indicator_configs)),
+            OverlayChannelSource::Reference(resolve) => {
+                Some(resolve(self.indicator_instance(value_id)?.config))
+            }
         }
     }
 
@@ -258,10 +275,9 @@ where
         palette: &Extended,
         generated_accents: &[iced::Color; 6],
     ) -> iced::Color {
-        let configured = value_id.map(|indicator| {
-            self.indicator_colors
-                .config_for(indicator)
-                .color_for(channel.color_slot)
+        let configured = value_id.and_then(|id| {
+            self.indicator_instance(id)
+                .map(|instance| instance.colors.color_for(channel.color_slot))
         });
         let color = configured.unwrap_or_else(|| {
             ThemeColor::new(
@@ -285,7 +301,10 @@ where
         generated_accents: &[iced::Color; 6],
     ) -> iced::Color {
         let configured = value_id
-            .map(|indicator| self.indicator_colors.config_for(indicator).color_for(slot))
+            .and_then(|id| {
+                self.indicator_instance(id)
+                    .map(|instance| instance.colors.color_for(slot))
+            })
             .unwrap_or_else(|| ThemeColor::new(ThemeColorRole::Neutral, ThemeColorShade::Base));
         Self::resolve_theme_color(configured, palette, generated_accents)
     }

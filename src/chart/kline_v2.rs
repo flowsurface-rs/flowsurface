@@ -33,9 +33,9 @@ use crate::widget::series_editor::{self, SeriesStyleEntry, TickerSeriesEditor};
 use data::chart::Basis;
 use data::chart::kline::ClusterKind;
 use data::chart::kline_v2::{
-    self as persisted, AnchoredVwapConfig, CandlestickConfig, FetchBatch, FetchPlanInput,
-    FetchStage, HorizontalWorld, IndicatorColorConfigStore, IndicatorColorSlot, IndicatorConfig,
-    IndicatorEngine, KlineStudy, SeriesColor, desired_fetch_batches as plan_fetch_batches,
+    self as persisted, CandlestickConfig, FetchBatch, FetchPlanInput, FetchStage, HorizontalWorld,
+    IndicatorColorSlot, IndicatorConfig, IndicatorEngine, IndicatorInstanceId, KlineStudy,
+    SeriesColor, desired_fetch_batches as plan_fetch_batches,
     desired_trade_fetch_range as plan_trade_fetch_range, visible_window,
 };
 use exchange::adapter::StreamKind;
@@ -51,7 +51,7 @@ pub enum Action {
     RemoveSeries(TickerInfo),
     OpenSeriesEditor,
     OpenSeriesSettings(TickerInfo),
-    OpenIndicatorSettings(KlineIndicator),
+    OpenIndicatorSettings(IndicatorInstanceId),
     OpenCandlestickSettings,
     RequestFetch(Vec<FetchSpec>),
 }
@@ -65,14 +65,17 @@ pub enum Message {
 
 pub enum ChartCommand {
     SetPrimaryScaleMode(PanelScaleMode),
-    SetIndicatorDataConfig(IndicatorConfig),
+    SetIndicatorDataConfig {
+        id: IndicatorInstanceId,
+        config: IndicatorConfig,
+    },
     SetIndicatorColor {
-        indicator: KlineIndicator,
+        id: IndicatorInstanceId,
         slot: IndicatorColorSlot,
         accent: Option<data::chart::kline_v2::ThemeAccent>,
         shade: data::config::theme::ThemeColorShade,
     },
-    ResetIndicatorSettings(KlineIndicator),
+    ResetIndicatorSettings(IndicatorInstanceId),
     SetCandlestickConfig(CandlestickConfig),
     ResetCandlestickSettings,
     SetPrimaryMark(MarkKind),
@@ -81,7 +84,7 @@ pub enum ChartCommand {
     SetTradeDataEnabled(bool),
     SetFootprintClusterKind(ClusterKind),
     SetIndicatorMark {
-        indicator: KlineIndicator,
+        id: IndicatorInstanceId,
         mark: MarkKind,
     },
     SetStudies(Vec<KlineStudy>),
@@ -101,8 +104,9 @@ pub enum ChartCommand {
         panel_index: usize,
         mode: HistogramMode,
     },
-    ToggleIndicatorVisibility(KlineIndicator),
-    ToggleIndicator(KlineIndicator),
+    ToggleIndicatorVisibility(IndicatorInstanceId),
+    AddIndicator(KlineIndicator),
+    RemoveIndicator(IndicatorInstanceId),
     AddTicker(TickerInfo),
     RemoveTicker(TickerInfo),
     SetSeriesColor {
@@ -168,7 +172,6 @@ pub struct KlineChartV2 {
     cache_rev: u64,
     data: KlineData,
     indicators: IndicatorEngine,
-    indicator_colors: IndicatorColorConfigStore,
     fetch: FetchCoordinator,
     drawing: DrawingTools,
     studies: Vec<KlineStudy>,
@@ -188,6 +191,8 @@ impl KlineChartV2 {
             .copied()
             .expect("Kline v2 requires a base ticker");
         let footprint_tick_multiplier = DEFAULT_FOOTPRINT_TICK_MULTIPLIER;
+        let mut indicators = IndicatorEngine::default();
+        let default_volume = indicators.create_instance(KlineIndicator::Volume);
 
         let mut chart = Self {
             basis,
@@ -204,12 +209,11 @@ impl KlineChartV2 {
             footprint_cluster_kind: ClusterKind::default(),
             panel_y_viewports: PanelViewportStore::default(),
             plot_width: None,
-            layout: IndicatorLayout::new(),
+            layout: IndicatorLayout::new(default_volume),
             last_tick: Instant::now(),
             cache_rev: 0,
             data: KlineData::new(base_ticker, footprint_tick_multiplier),
-            indicators: IndicatorEngine::default(),
-            indicator_colors: IndicatorColorConfigStore::default(),
+            indicators,
             fetch: FetchCoordinator::new(&[]),
             drawing: DrawingTools::default(),
             studies: Vec::new(),
@@ -218,21 +222,28 @@ impl KlineChartV2 {
             series_editor: TickerSeriesEditor::default(),
         };
 
-        let _ = chart
-            .data
-            .add_ticker(base_ticker, chart.basis, &chart.indicators);
+        let active_indicators = chart.layout.selected_indicators();
+        let _ = chart.data.add_ticker(
+            base_ticker,
+            chart.basis,
+            &chart.indicators,
+            &active_indicators,
+        );
         for ticker in tickers.iter().copied() {
             if ticker != base_ticker {
-                let _ = chart
-                    .data
-                    .add_ticker(ticker, chart.basis, &chart.indicators);
+                let _ = chart.data.add_ticker(
+                    ticker,
+                    chart.basis,
+                    &chart.indicators,
+                    &active_indicators,
+                );
             }
         }
 
         chart.fetch.rebuild_handlers(chart.data.selected_tickers());
         chart
             .data
-            .configure_series_for_basis(chart.basis, &chart.indicators);
+            .configure_series_for_basis(chart.basis, &chart.indicators, &active_indicators);
         chart
             .layout
             .sync_comparison_sources(chart.data.base_ticker(), chart.data.selected_tickers());
@@ -518,18 +529,14 @@ impl KlineChartV2 {
                             !self.footprints_visible,
                         ));
                     }
-                    KlineWidgetEvent::IndicatorSettings(_value_id) => {
-                        let indicator = _value_id;
-                        return Some(Action::OpenIndicatorSettings(indicator));
+                    KlineWidgetEvent::IndicatorSettings(id) => {
+                        return Some(Action::OpenIndicatorSettings(id));
                     }
-                    KlineWidgetEvent::IndicatorVisibilityToggled(value_id) => {
-                        let indicator = value_id;
-                        let _ =
-                            self.apply_command(ChartCommand::ToggleIndicatorVisibility(indicator));
+                    KlineWidgetEvent::IndicatorVisibilityToggled(id) => {
+                        let _ = self.apply_command(ChartCommand::ToggleIndicatorVisibility(id));
                     }
-                    KlineWidgetEvent::IndicatorRemove(value_id) => {
-                        let indicator = value_id;
-                        let _ = self.apply_command(ChartCommand::ToggleIndicator(indicator));
+                    KlineWidgetEvent::IndicatorRemove(id) => {
+                        let _ = self.apply_command(ChartCommand::RemoveIndicator(id));
                     }
                     KlineWidgetEvent::TickerRemove(ticker) if ticker != self.data.base_ticker() => {
                         return Some(Action::RemoveSeries(ticker));
@@ -566,8 +573,7 @@ impl KlineChartV2 {
             &self.data.series,
             self.basis,
             self.layout.composition(),
-            self.indicators.configs(),
-            &self.indicator_colors,
+            self.indicators.instances(),
         )
         .with_footprint_enabled(self.trade_data_enabled());
 
@@ -619,14 +625,14 @@ impl KlineChartV2 {
         let visible_points = self.visible_points();
         let active_indicators = self.selected_indicators();
         let (required_history_start, required_history_bars) =
-            self.anchored_vwap_history_requirement(&active_indicators, visible_points);
+            self.indicator_history_requirement(&active_indicators, visible_points);
         let input = FetchPlanInput {
             basis: self.basis,
             horizontal_offset,
             base_ticker: self.data.base_ticker(),
             series: &self.data.series,
             active_indicators: &active_indicators,
-            indicator_configs: self.indicators.configs(),
+            indicator_instances: self.indicators.instances(),
             open_interest_enabled: self.oi_enabled_for_base(),
             trade_data_required: self.trade_data_required(),
             trade_fetch_enabled: crate::connector::fetcher::is_trade_fetch_enabled(),
@@ -665,31 +671,26 @@ impl KlineChartV2 {
         visible_units.saturating_add(1).max(2)
     }
 
-    fn anchored_vwap_history_requirement(
+    fn indicator_history_requirement(
         &self,
-        active_indicators: &[KlineIndicator],
+        active_indicators: &[IndicatorInstanceId],
         visible_points: u64,
     ) -> (Option<UnixMs>, u64) {
-        if !active_indicators.contains(&KlineIndicator::AnchoredVwap) {
-            return (None, 0);
-        }
-
-        let Basis::Time(timeframe) = self.basis else {
-            return (None, 0);
+        let reference_time = match self.basis {
+            Basis::Time(timeframe) => visible_window(
+                &self.data.series,
+                self.horizontal_world.offset(),
+                timeframe,
+                visible_points,
+            )
+            .map(|(start, _)| start)
+            .unwrap_or_else(UnixMs::now),
+            Basis::Tick(_) => UnixMs::now(),
         };
-
-        let reference_time = visible_window(
-            &self.data.series,
-            self.horizontal_world.offset(),
-            timeframe,
-            visible_points,
-        )
-        .map(|(start, _)| start)
-        .unwrap_or_else(UnixMs::now);
-        let config = self.indicators.anchored_vwap_config();
-        let history_start = config.history_start(reference_time, data::UserTimezone::Utc);
-        let history_bars = config.required_history_bars(timeframe).unwrap_or_default();
-        (history_start, history_bars)
+        let requirement =
+            self.indicators
+                .history_requirement(active_indicators, self.basis, reference_time);
+        (requirement.history_start(), requirement.history_bars())
     }
 
     pub fn apply_data(&mut self, update: DataUpdate<'_>) {
@@ -788,21 +789,18 @@ impl KlineChartV2 {
         let preserve_raw_trades =
             matches!(self.basis, Basis::Tick(_)) && matches!(basis, Basis::Tick(_));
         self.basis = basis;
-        let normalized_vwap_config = self
-            .indicators
-            .anchored_vwap_config()
-            .normalized_for_basis(basis);
-        if self.indicators.anchored_vwap_config() != normalized_vwap_config {
-            let _ = self
-                .indicators
-                .update_config(IndicatorConfig::AnchoredVwap(normalized_vwap_config));
-        }
+        let _ = self.indicators.normalize_configs_for_basis(basis);
         self.studies = self.normalize_studies_for_basis(self.studies.iter().copied());
         self.study_configs = self.normalize_studies_for_basis(self.study_configs.iter().copied());
         self.remember_study_configs(&self.studies.clone());
 
-        self.data
-            .reset_for_basis(self.basis, preserve_raw_trades, &self.indicators);
+        let active_indicators = self.layout.selected_indicators();
+        self.data.reset_for_basis(
+            self.basis,
+            preserve_raw_trades,
+            &self.indicators,
+            &active_indicators,
+        );
         self.configure_profile_caches();
 
         self.fetch.reset();
@@ -914,10 +912,12 @@ impl KlineChartV2 {
                     if !matches!(self.basis, Basis::Tick(_)) {
                         self.footprints_visible = enabled;
                         if !enabled {
-                            let market = self.data.base_ticker().market_type();
-                            for indicator in self.layout.selected_indicators() {
-                                if indicator::requires_trade_data(indicator) {
-                                    self.layout.toggle_indicator(indicator, market);
+                            for id in self.layout.selected_indicators() {
+                                if self.indicators.instances().get(id).is_some_and(|instance| {
+                                    indicator::requires_trade_data(instance.kind)
+                                }) {
+                                    let _ = self.layout.remove_indicator(id);
+                                    let _ = self.indicators.remove_instance(id);
                                 }
                             }
                             self.studies.retain(|study| !study.requires_trade_data());
@@ -938,17 +938,18 @@ impl KlineChartV2 {
                 }
                 CommandResult::Changed(changed)
             }
-            ChartCommand::SetIndicatorDataConfig(config) => {
-                let requests_history = matches!(config, IndicatorConfig::AnchoredVwap(_));
-                let config = match config {
-                    IndicatorConfig::AnchoredVwap(config) => {
-                        IndicatorConfig::AnchoredVwap(config.normalized_for_basis(self.basis))
-                    }
-                    config => config,
-                };
-                let changed = self.indicators.update_config(config);
+            ChartCommand::SetIndicatorDataConfig { id, config } => {
+                let requests_history = self.layout.selected_indicators().contains(&id);
+                let changed = self
+                    .indicators
+                    .update_config_for_basis(id, config, self.basis);
                 if changed {
-                    self.data.configure_indicators(self.basis, &self.indicators);
+                    let active_indicators = self.layout.selected_indicators();
+                    self.data.configure_indicators(
+                        self.basis,
+                        &self.indicators,
+                        &active_indicators,
+                    );
                     self.bump_rev();
                     if requests_history {
                         return CommandResult::Action(
@@ -959,14 +960,21 @@ impl KlineChartV2 {
                 CommandResult::Changed(changed)
             }
             ChartCommand::SetIndicatorColor {
-                indicator,
+                id,
                 slot,
                 accent,
                 shade,
             } => {
-                let current = self.indicator_colors.config_for(indicator).color_for(slot);
-                let changed = self.indicator_colors.update(
-                    indicator,
+                let Some(current) = self
+                    .indicators
+                    .instances()
+                    .get(id)
+                    .map(|instance| instance.colors.color_for(slot))
+                else {
+                    return CommandResult::Changed(false);
+                };
+                let changed = self.indicators.update_color(
+                    id,
                     slot,
                     data::config::theme::ThemeColor::with_accent(current.role, accent, shade),
                 );
@@ -975,15 +983,20 @@ impl KlineChartV2 {
                 }
                 CommandResult::Changed(changed)
             }
-            ChartCommand::ResetIndicatorSettings(indicator) => {
-                let data_changed = self.indicators.reset_config(indicator);
-                let color_changed = self.indicator_colors.reset(indicator);
-                let mark_changed = self.layout.reset_indicator_mark(indicator);
-                let presentation_changed = self.layout.reset_indicator_presentation(indicator);
+            ChartCommand::ResetIndicatorSettings(id) => {
+                let data_changed = self.indicators.reset_config(id);
+                let color_changed = self.indicators.reset_colors(id);
+                let mark_changed = self.layout.reset_indicator_mark(id);
+                let presentation_changed = self.layout.reset_indicator_presentation(id);
                 let changed = data_changed || color_changed || mark_changed || presentation_changed;
 
                 if data_changed {
-                    self.data.configure_indicators(self.basis, &self.indicators);
+                    let active_indicators = self.layout.selected_indicators();
+                    self.data.configure_indicators(
+                        self.basis,
+                        &self.indicators,
+                        &active_indicators,
+                    );
                 }
                 if changed {
                     self.bump_rev();
@@ -991,8 +1004,8 @@ impl KlineChartV2 {
 
                 CommandResult::Changed(changed)
             }
-            ChartCommand::SetIndicatorMark { indicator, mark } => {
-                let changed = self.layout.set_indicator_mark(indicator, mark);
+            ChartCommand::SetIndicatorMark { id, mark } => {
+                let changed = self.layout.set_indicator_mark(id, mark);
                 if changed {
                     self.bump_rev();
                 }
@@ -1041,33 +1054,54 @@ impl KlineChartV2 {
                 }
                 CommandResult::Changed(changed)
             }
-            ChartCommand::ToggleIndicatorVisibility(indicator) => {
-                let changed = self.layout.toggle_indicator_visibility(indicator);
+            ChartCommand::ToggleIndicatorVisibility(id) => {
+                let changed = self.layout.toggle_indicator_visibility(id);
                 if changed {
                     self.bump_rev();
                 }
                 CommandResult::Changed(changed)
             }
-            ChartCommand::ToggleIndicator(indicator) => {
-                let changed = self
-                    .layout
-                    .toggle_indicator(indicator, self.data.base_ticker().market_type());
+            ChartCommand::AddIndicator(kind) => {
+                if !self.indicator_is_supported_for_market(kind) {
+                    return CommandResult::Changed(false);
+                }
+                let id = self.indicators.create_instance(kind);
+                let changed =
+                    self.layout
+                        .add_indicator(id, kind, self.data.base_ticker().market_type());
+                if !changed {
+                    let _ = self.indicators.remove_instance(id);
+                    return CommandResult::Changed(false);
+                }
+                let active_indicators = self.layout.selected_indicators();
+                self.data
+                    .configure_indicators(self.basis, &self.indicators, &active_indicators);
+                self.bump_rev();
+                CommandResult::Action(self.request_fetch_action().map(super::Action::RequestFetch))
+            }
+            ChartCommand::RemoveIndicator(id) => {
+                let changed = self.layout.remove_indicator(id);
                 if changed {
+                    let _ = self.indicators.remove_instance(id);
+                    let active_indicators = self.layout.selected_indicators();
+                    self.data.configure_indicators(
+                        self.basis,
+                        &self.indicators,
+                        &active_indicators,
+                    );
                     self.bump_rev();
                 }
-                if changed && indicator == KlineIndicator::AnchoredVwap {
-                    CommandResult::Action(
-                        self.request_fetch_action().map(super::Action::RequestFetch),
-                    )
-                } else {
-                    CommandResult::Changed(changed)
-                }
+                CommandResult::Changed(changed)
             }
             ChartCommand::AddTicker(ticker_info) => {
+                let active_indicators = self.layout.selected_indicators();
                 if ticker_info != self.data.base_ticker()
-                    && self
-                        .data
-                        .add_ticker(ticker_info, self.basis, &self.indicators)
+                    && self.data.add_ticker(
+                        ticker_info,
+                        self.basis,
+                        &self.indicators,
+                        &active_indicators,
+                    )
                 {
                     self.fetch.add_ticker(ticker_info);
                     self.layout.sync_comparison_sources(
@@ -1113,8 +1147,12 @@ impl KlineChartV2 {
             ChartCommand::SetBasis(basis) => CommandResult::Action(self.set_basis(basis)),
             ChartCommand::SetFootprintTickMultiplier(multiplier) => {
                 if self.data.set_footprint_tick_multiplier(multiplier) {
-                    self.data
-                        .configure_series_for_basis(self.basis, &self.indicators);
+                    let active_indicators = self.layout.selected_indicators();
+                    self.data.configure_series_for_basis(
+                        self.basis,
+                        &self.indicators,
+                        &active_indicators,
+                    );
                     self.configure_profile_caches();
                     self.bump_rev();
                 }
@@ -1124,6 +1162,9 @@ impl KlineChartV2 {
     }
 
     fn apply_persisted_config(&mut self, config: &persisted::Config) {
+        let _ = self
+            .indicators
+            .replace_instances(config.indicator_instances_for(self.basis));
         if !config.panels.is_empty() {
             let panels = config
                 .panels
@@ -1134,6 +1175,15 @@ impl KlineChartV2 {
                 .replace_composition(panels, config.splits.clone());
             self.layout
                 .sync_comparison_sources(self.data.base_ticker(), self.data.selected_tickers());
+        } else if let Some(volume_id) = self
+            .indicators
+            .instances()
+            .instances()
+            .iter()
+            .find(|instance| instance.kind == KlineIndicator::Volume)
+            .map(|instance| instance.id)
+        {
+            self.layout = IndicatorLayout::new(volume_id);
         }
 
         self.horizontal_world = HorizontalWorld::new(
@@ -1151,10 +1201,15 @@ impl KlineChartV2 {
         };
         if !self.trade_data_enabled && !matches!(self.basis, Basis::Tick(_)) {
             self.footprints_visible = false;
-            let market = self.data.base_ticker().market_type();
-            for indicator in self.layout.selected_indicators() {
-                if indicator::requires_trade_data(indicator) {
-                    self.layout.toggle_indicator(indicator, market);
+            for id in self.layout.selected_indicators() {
+                if self
+                    .indicators
+                    .instances()
+                    .get(id)
+                    .is_some_and(|instance| indicator::requires_trade_data(instance.kind))
+                {
+                    let _ = self.layout.remove_indicator(id);
+                    let _ = self.indicators.remove_instance(id);
                 }
             }
             self.studies.retain(|study| !study.requires_trade_data());
@@ -1191,35 +1246,9 @@ impl KlineChartV2 {
             .collect();
         self.drawing = DrawingTools::from_parts(config.active_drawing_tool, drawings);
 
-        let _ = self
-            .indicators
-            .update_config(IndicatorConfig::Rsi(config.rsi));
-        let _ = self
-            .indicators
-            .update_config(IndicatorConfig::MovingAverages(
-                data::chart::kline_v2::MovingAveragesCalculationConfig {
-                    fast_period: config.moving_averages.fast_period,
-                    medium_period: config.moving_averages.medium_period,
-                    slow_period: config.moving_averages.slow_period,
-                    method: config.moving_averages.method,
-                },
-            ));
-        let _ = self
-            .indicators
-            .update_config(IndicatorConfig::BollingerBands(
-                data::chart::kline_v2::BollingerBandsCalculationConfig {
-                    period: config.bollinger_bands.period,
-                    method: config.bollinger_bands.method,
-                    std_dev_multiplier: config.bollinger_bands.std_dev_multiplier,
-                },
-            ));
-        let _ = self.indicators.update_config(IndicatorConfig::AnchoredVwap(
-            config
-                .resolved_anchored_vwap_config()
-                .normalized_for_basis(self.basis),
-        ));
-        self.indicator_colors = config.indicator_colors.clone();
-        self.data.configure_indicators(self.basis, &self.indicators);
+        let active_indicators = self.layout.selected_indicators();
+        self.data
+            .configure_indicators(self.basis, &self.indicators, &active_indicators);
         self.configure_profile_caches();
 
         for series_config in &config.series {
@@ -1346,44 +1375,54 @@ impl KlineChartV2 {
         self.basis
     }
 
-    pub fn selected_indicators(&self) -> Vec<KlineIndicator> {
+    pub fn selected_indicators(&self) -> Vec<IndicatorInstanceId> {
         self.layout.selected_indicators()
     }
 
-    pub fn indicator_is_available(&self, indicator: KlineIndicator) -> bool {
+    pub fn indicator_is_available(&self, id: IndicatorInstanceId) -> bool {
         self.layout.indicator_is_available(
-            indicator,
+            id,
             self.basis,
             self.data.base_ticker(),
             self.data.base_series(),
-            self.indicators.configs(),
+            self.indicators.instances(),
         )
     }
 
-    pub fn indicator_mark(&self, indicator: KlineIndicator) -> Option<MarkKind> {
-        let signed_overlay_input = matches!(indicator, KlineIndicator::Volume)
+    pub fn indicator_mark(&self, id: IndicatorInstanceId) -> Option<MarkKind> {
+        let kind = self.indicators.instances().get(id)?.kind;
+        let signed_overlay_input = kind.uses_directional_volume()
             && self.data.base_series().is_some_and(|series| {
                 series
                     .bars
                     .iter()
                     .any(|bar| bar.volume.buy_sell().is_some())
             });
-        self.layout.indicator_mark(indicator, signed_overlay_input)
+        self.layout.indicator_mark(id, signed_overlay_input)
     }
 
-    pub fn indicator_data_config(&self, indicator: KlineIndicator) -> Option<IndicatorConfig> {
-        self.indicators.config_for(indicator)
+    pub fn indicator_data_config(&self, id: IndicatorInstanceId) -> Option<IndicatorConfig> {
+        self.indicators
+            .instances()
+            .get(id)
+            .map(|instance| instance.config)
     }
 
-    pub fn anchored_vwap_config(&self) -> AnchoredVwapConfig {
-        self.indicators.anchored_vwap_config()
+    pub fn indicator_kind(&self, id: IndicatorInstanceId) -> Option<KlineIndicator> {
+        self.indicators
+            .instances()
+            .get(id)
+            .map(|instance| instance.kind)
     }
 
     pub fn indicator_color_config(
         &self,
-        indicator: KlineIndicator,
-    ) -> data::chart::kline_v2::IndicatorColorConfig {
-        self.indicator_colors.config_for(indicator)
+        id: IndicatorInstanceId,
+    ) -> Option<data::chart::kline_v2::IndicatorColorConfig> {
+        self.indicators
+            .instances()
+            .get(id)
+            .map(|instance| instance.colors)
     }
 
     pub fn indicator_is_supported_for_market(&self, indicator: KlineIndicator) -> bool {
@@ -1414,22 +1453,27 @@ impl KlineChartV2 {
                 self.basis,
                 self.data.base_ticker(),
                 self.data.base_series(),
-                self.indicators.configs(),
+                self.indicators.instances(),
             )
             .into_iter()
             .chain(trade_data_disabled)
-            .map(|(indicator, reason)| UnavailableIndicator {
-                value_id: indicator,
-                message: self.unavailable_indicator_message(indicator, reason),
+            .filter_map(|(id, reason)| {
+                let kind = self.indicators.instances().get(id)?.kind;
+                Some(UnavailableIndicator {
+                    value_id: id,
+                    message: self.unavailable_indicator_message(kind, reason),
+                })
             })
             .collect()
     }
 
     fn trade_data_unavailable_indicators(
         &self,
-    ) -> Vec<(KlineIndicator, IndicatorUnsupportedReason)> {
-        self.layout
-            .trade_data_unavailable_indicators(self.trade_data_enabled())
+    ) -> Vec<(IndicatorInstanceId, IndicatorUnsupportedReason)> {
+        self.layout.trade_data_unavailable_indicators(
+            self.trade_data_enabled(),
+            self.indicators.instances(),
+        )
     }
 
     fn unavailable_indicator_message(
@@ -1467,7 +1511,7 @@ impl KlineChartV2 {
     }
 
     fn oi_enabled_for_base(&self) -> bool {
-        self.layout.oi_enabled()
+        self.layout.oi_enabled(self.indicators.instances())
     }
 
     pub(crate) fn trade_data_required(&self) -> bool {
@@ -1484,7 +1528,7 @@ impl KlineChartV2 {
 
     pub fn serializable_config(&self) -> persisted::Config {
         persisted::Config {
-            version: 3,
+            version: 5,
             horizontal: persisted::HorizontalConfig {
                 cell_width: self.horizontal_world.cell_width(),
                 scaling: self.horizontal_world.scaling(),
@@ -1517,33 +1561,9 @@ impl KlineChartV2 {
             active_drawing_tool: self.drawing.active_tool(),
             studies: self.studies.clone(),
             study_configs: self.study_configs.clone(),
-            rsi: self.indicators.rsi_config(),
-            moving_averages: persisted::MovingAveragesPersistenceConfig {
-                fast_period: self
-                    .indicators
-                    .moving_averages_calculation_config()
-                    .fast_period,
-                medium_period: self
-                    .indicators
-                    .moving_averages_calculation_config()
-                    .medium_period,
-                slow_period: self
-                    .indicators
-                    .moving_averages_calculation_config()
-                    .slow_period,
-                method: self.indicators.moving_averages_calculation_config().method,
-            },
-            bollinger_bands: persisted::BollingerBandsPersistenceConfig {
-                period: self.indicators.bollinger_bands_calculation_config().period,
-                method: self.indicators.bollinger_bands_calculation_config().method,
-                std_dev_multiplier: self
-                    .indicators
-                    .bollinger_bands_calculation_config()
-                    .std_dev_multiplier,
-            },
-            anchored_vwap: self.indicators.anchored_vwap_config(),
-            legacy_indicator_provider_configs: std::collections::BTreeMap::new(),
-            indicator_colors: self.indicator_colors.clone(),
+            indicator_instances: self.indicators.instances().instances().to_vec(),
+            indicator_configs: None,
+            indicator_colors: Default::default(),
             series: self
                 .data
                 .series
@@ -1561,6 +1581,7 @@ impl KlineChartV2 {
                     },
                 })
                 .collect(),
+            ..persisted::Config::default()
         }
     }
 

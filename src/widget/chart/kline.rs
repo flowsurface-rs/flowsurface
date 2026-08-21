@@ -26,9 +26,7 @@ use composition::{
 use data::chart::kline_v2::indicators::{
     IndicatorCellValue, TableColumnColor, TableColumnFormat, TableColumnValue, table_columns,
 };
-use data::chart::kline_v2::{
-    HorizontalWorld, IndicatorColorConfigStore, IndicatorConfigStore, SeriesColor,
-};
+use data::chart::kline_v2::{HorizontalWorld, IndicatorInstanceStore, SeriesColor};
 pub use data::chart::kline_v2::{
     IndicatorOverlayChannelSpec as OverlayChannelSpec,
     IndicatorOverlayColorRole as OverlayChannelColorRole,
@@ -339,8 +337,7 @@ pub enum KlineWidgetEvent {
 pub struct KlineWidget<'a, S> {
     series: &'a [S],
     composition: &'a ChartComposition,
-    indicator_configs: &'a IndicatorConfigStore,
-    indicator_colors: &'a IndicatorColorConfigStore,
+    indicator_instances: &'a IndicatorInstanceStore,
     studies: &'a [KlineStudy],
     candlestick_config: CandlestickConfig,
     candlesticks_visible: bool,
@@ -373,14 +370,12 @@ where
         series: &'a [S],
         basis: Basis,
         composition: &'a ChartComposition,
-        indicator_configs: &'a IndicatorConfigStore,
-        indicator_colors: &'a IndicatorColorConfigStore,
+        indicator_instances: &'a IndicatorInstanceStore,
     ) -> Self {
         Self {
             series,
             composition,
-            indicator_configs,
-            indicator_colors,
+            indicator_instances,
             studies: &[],
             candlestick_config: CandlestickConfig::default(),
             candlesticks_visible: false,

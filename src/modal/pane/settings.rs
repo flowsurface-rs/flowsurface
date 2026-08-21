@@ -1,3 +1,4 @@
+use super::{IndicatorSettingsModal, IndicatorSettingsTab};
 use crate::screen::dashboard::pane::{Event, Message};
 use crate::screen::dashboard::panel::timeandsales;
 use crate::split_column;
@@ -7,11 +8,10 @@ use crate::{style, tooltip, widget::scrollable_content};
 use data::chart::heatmap::HeatmapStudy;
 use data::chart::kline::FootprintStudy;
 use data::chart::kline_v2::{
-    AnchoredVwapConfig, BollingerBandsCalculationConfig, CandlestickColorSlot, CandlestickConfig,
-    IndicatorColorConfig, IndicatorColorSlot, IndicatorConfig, KlineIndicator as KlineV2Indicator,
-    KlineStudy, MAX_CANDLESTICK_OPACITY_PERCENT, MIN_CANDLESTICK_OPACITY_PERCENT, MarkKind,
-    MovingAverageMethod, MovingAveragesCalculationConfig, RsiConfig, RsiSmoothing, ThemeAccent,
-    VwapAnchor,
+    CandlestickColorSlot, CandlestickConfig, IndicatorColorConfig, IndicatorColorSlot,
+    IndicatorConfig, IndicatorSetting, IndicatorSettingControl, IndicatorSettingValue,
+    IndicatorSettingsContext, KlineIndicator as KlineV2Indicator, KlineStudy,
+    MAX_CANDLESTICK_OPACITY_PERCENT, MIN_CANDLESTICK_OPACITY_PERCENT, MarkKind, ThemeAccent,
 };
 use data::chart::{
     KlineChartKind,
@@ -26,8 +26,14 @@ use data::util::format_with_commas;
 
 use crate::widget::series_editor::{SeriesStyleEntry, TickerSeriesEditor};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum KlineV2IndicatorSettingsMessage {
+    TabSelected(IndicatorSettingsTab),
+    InputChanged {
+        id: &'static str,
+        value: String,
+        config: Option<IndicatorConfig>,
+    },
     DataConfig(IndicatorConfig),
     Mark(data::chart::kline_v2::MarkKind),
     Color {
@@ -49,8 +55,8 @@ use iced::widget::{checkbox, space};
 use iced::{
     Alignment, Element, Length,
     widget::{
-        button, column, container, pane_grid, pick_list, radio, row, slider, text,
-        tooltip::Position as TooltipPosition,
+        button, column, container, pane_grid, pick_list, radio, row, rule, slider, text,
+        text_input, tooltip::Position as TooltipPosition,
     },
 };
 use std::time::Duration;
@@ -980,457 +986,276 @@ pub fn series_cfg_view<'a>(
 }
 
 pub fn kline_v2_indicator_cfg_view<'a>(
-    indicator: KlineV2Indicator,
+    modal: &'a IndicatorSettingsModal,
     data_config: Option<IndicatorConfig>,
-    anchored_vwap_config: AnchoredVwapConfig,
     basis: data::chart::Basis,
     color_config: IndicatorColorConfig,
     mark: Option<data::chart::kline_v2::MarkKind>,
     pane: pane_grid::Pane,
 ) -> Element<'a, Message> {
-    let mark_section = indicator_mark_section(indicator, mark, pane);
-    let color_section = indicator_color_section(indicator, color_config, pane, mark);
+    let indicator = modal.indicator();
+    let instance_id = modal.instance_id();
+    let mark_section = indicator_mark_section(instance_id, indicator, mark, pane);
+    let color_section = indicator_color_section(instance_id, indicator, color_config, pane, mark);
 
     let reset = button("Reset to default").on_press(Message::PaneEvent(
         pane,
-        Event::KlineV2IndicatorSettings(indicator, KlineV2IndicatorSettingsMessage::Reset),
+        Event::KlineV2IndicatorSettings(instance_id, KlineV2IndicatorSettingsMessage::Reset),
     ));
     let title = row![
-        text(format!("{} settings", indicator)).size(crate::style::text_size::TITLE),
+        text(format!("{}", indicator)).size(crate::style::text_size::TITLE),
         space::horizontal(),
         reset,
     ]
     .align_y(Alignment::Center)
     .spacing(12);
-    let mut content = column![title].spacing(16);
-
-    match (indicator, data_config) {
-        (KlineV2Indicator::AnchoredVwap, _) => {
-            let anchors: Vec<_> = VwapAnchor::STANDARD
-                .into_iter()
-                .filter(|anchor| anchor.supports_basis(basis))
-                .collect();
-            let anchor = pick_list(anchors, Some(anchored_vwap_config.anchor), move |anchor| {
-                Message::PaneEvent(
-                    pane,
-                    Event::KlineV2IndicatorSettings(
-                        indicator,
-                        KlineV2IndicatorSettingsMessage::DataConfig(IndicatorConfig::AnchoredVwap(
-                            AnchoredVwapConfig {
-                                anchor,
-                                ..anchored_vwap_config
-                            },
-                        )),
-                    ),
-                )
-            });
-            let source = pick_list(
-                data::chart::kline_v2::KlinePriceSource::ALL,
-                Some(anchored_vwap_config.source),
-                move |source| {
-                    Message::PaneEvent(
-                        pane,
-                        Event::KlineV2IndicatorSettings(
-                            indicator,
-                            KlineV2IndicatorSettingsMessage::DataConfig(
-                                IndicatorConfig::AnchoredVwap(AnchoredVwapConfig {
-                                    source,
-                                    ..anchored_vwap_config
-                                }),
-                            ),
-                        ),
-                    )
-                },
-            );
-            content = content.push(
-                column![
-                    text("Anchor").size(crate::style::text_size::SECTION),
-                    anchor,
-                    text("Price source").size(crate::style::text_size::SECTION),
-                    source,
-                ]
-                .spacing(8),
-            );
+    let tabs = indicator_settings_tabs(modal.tab(), pane, instance_id);
+    let content = match modal.tab() {
+        IndicatorSettingsTab::Inputs => {
+            let mut inputs = column![].spacing(12);
+            if let Some(config) = data_config {
+                for setting in config.settings(IndicatorSettingsContext { basis }) {
+                    inputs = inputs.push(indicator_setting_view(
+                        indicator, config, setting, modal, pane,
+                    ));
+                }
+            }
+            column![title, tabs, inputs].spacing(16)
         }
-        (KlineV2Indicator::Rsi, Some(IndicatorConfig::Rsi(config))) => {
-            let rsi_period = labeled_slider(
-                "Period",
-                2..=100,
-                config.period,
-                move |period| {
-                    Message::PaneEvent(
-                        pane,
-                        Event::KlineV2IndicatorSettings(
-                            indicator,
-                            KlineV2IndicatorSettingsMessage::DataConfig(IndicatorConfig::Rsi(
-                                RsiConfig { period, ..config },
-                            )),
-                        ),
-                    )
-                },
-                |value| value.to_string(),
-                None,
-            );
-            let smoothing_enabled = matches!(config.smoothing, RsiSmoothing::Ema(_));
-            let smoothing_toggle =
-                checkbox(smoothing_enabled)
-                    .label("EMA signal")
-                    .on_toggle(move |enabled| {
-                        let smoothing = if enabled {
-                            RsiSmoothing::Ema(match config.smoothing {
-                                RsiSmoothing::Ema(period) => period.max(2),
-                                RsiSmoothing::None => 9,
-                            })
-                        } else {
-                            RsiSmoothing::None
-                        };
-                        Message::PaneEvent(
-                            pane,
-                            Event::KlineV2IndicatorSettings(
-                                indicator,
-                                KlineV2IndicatorSettingsMessage::DataConfig(IndicatorConfig::Rsi(
-                                    RsiConfig {
-                                        smoothing,
-                                        ..config
-                                    },
-                                )),
-                            ),
-                        )
-                    });
-            let smoothing_period = match config.smoothing {
-                RsiSmoothing::Ema(period) => Some(labeled_slider(
-                    "EMA period",
-                    2..=50,
-                    period,
-                    move |period| {
-                        Message::PaneEvent(
-                            pane,
-                            Event::KlineV2IndicatorSettings(
-                                indicator,
-                                KlineV2IndicatorSettingsMessage::DataConfig(IndicatorConfig::Rsi(
-                                    RsiConfig {
-                                        smoothing: RsiSmoothing::Ema(period),
-                                        ..config
-                                    },
-                                )),
-                            ),
-                        )
-                    },
-                    |value| value.to_string(),
-                    None,
-                )),
-                RsiSmoothing::None => None,
-            };
-            let upper_band = labeled_slider(
-                "Upper band",
-                1.0..=99.0,
-                config.upper_band,
-                move |upper_band| {
-                    Message::PaneEvent(
-                        pane,
-                        Event::KlineV2IndicatorSettings(
-                            indicator,
-                            KlineV2IndicatorSettingsMessage::DataConfig(IndicatorConfig::Rsi(
-                                RsiConfig {
-                                    upper_band,
-                                    ..config
-                                },
-                            )),
-                        ),
-                    )
-                },
-                |value| format!("{value:.0}"),
-                Some(1.0),
-            );
-            let lower_band = labeled_slider(
-                "Lower band",
-                1.0..=99.0,
-                config.lower_band,
-                move |lower_band| {
-                    Message::PaneEvent(
-                        pane,
-                        Event::KlineV2IndicatorSettings(
-                            indicator,
-                            KlineV2IndicatorSettingsMessage::DataConfig(IndicatorConfig::Rsi(
-                                RsiConfig {
-                                    lower_band,
-                                    ..config
-                                },
-                            )),
-                        ),
-                    )
-                },
-                |value| format!("{value:.0}"),
-                Some(1.0),
-            );
-            content = content.push(
-                column![
-                    text("Calculation").size(crate::style::text_size::SECTION),
-                    rsi_period,
-                    smoothing_toggle,
-                    smoothing_period.unwrap_or_else(|| space::vertical().height(0).into()),
-                    text("Bands").size(crate::style::text_size::SECTION),
-                    upper_band,
-                    lower_band,
-                ]
-                .spacing(8),
-            );
+        IndicatorSettingsTab::Style => {
+            let mut style_settings = column![].spacing(16);
+            if let Some(mark_section) = mark_section {
+                style_settings = style_settings.push(mark_section);
+            }
+            style_settings = style_settings.push(color_section);
+            column![title, tabs, style_settings].spacing(16)
         }
-        (KlineV2Indicator::BollingerBands, Some(IndicatorConfig::BollingerBands(config))) => {
-            let period = labeled_slider(
-                "Period",
-                2..=200,
-                config.period,
-                move |period| {
-                    Message::PaneEvent(
-                        pane,
-                        Event::KlineV2IndicatorSettings(
-                            indicator,
-                            KlineV2IndicatorSettingsMessage::DataConfig(
-                                IndicatorConfig::BollingerBands(BollingerBandsCalculationConfig {
-                                    period,
-                                    ..config
-                                }),
-                            ),
-                        ),
-                    )
-                },
-                |value| value.to_string(),
-                None,
-            );
-            let method = row![
-                radio(
-                    "SMA",
-                    MovingAverageMethod::Sma,
-                    Some(config.method),
-                    move |method| {
-                        Message::PaneEvent(
-                            pane,
-                            Event::KlineV2IndicatorSettings(
-                                indicator,
-                                KlineV2IndicatorSettingsMessage::DataConfig(
-                                    IndicatorConfig::BollingerBands(
-                                        BollingerBandsCalculationConfig { method, ..config },
-                                    ),
-                                ),
-                            ),
-                        )
-                    },
-                ),
-                radio(
-                    "EMA",
-                    MovingAverageMethod::Ema,
-                    Some(config.method),
-                    move |method| {
-                        Message::PaneEvent(
-                            pane,
-                            Event::KlineV2IndicatorSettings(
-                                indicator,
-                                KlineV2IndicatorSettingsMessage::DataConfig(
-                                    IndicatorConfig::BollingerBands(
-                                        BollingerBandsCalculationConfig { method, ..config },
-                                    ),
-                                ),
-                            ),
-                        )
-                    },
-                ),
-                radio(
-                    "VWMA",
-                    MovingAverageMethod::Vwma,
-                    Some(config.method),
-                    move |method| {
-                        Message::PaneEvent(
-                            pane,
-                            Event::KlineV2IndicatorSettings(
-                                indicator,
-                                KlineV2IndicatorSettingsMessage::DataConfig(
-                                    IndicatorConfig::BollingerBands(
-                                        BollingerBandsCalculationConfig { method, ..config },
-                                    ),
-                                ),
-                            ),
-                        )
-                    },
-                ),
-            ]
-            .spacing(12);
-            let std_dev_multiplier = labeled_slider(
-                "Std. deviation",
-                0.0..=5.0,
-                config.std_dev_multiplier,
-                move |std_dev_multiplier| {
-                    Message::PaneEvent(
-                        pane,
-                        Event::KlineV2IndicatorSettings(
-                            indicator,
-                            KlineV2IndicatorSettingsMessage::DataConfig(
-                                IndicatorConfig::BollingerBands(BollingerBandsCalculationConfig {
-                                    std_dev_multiplier,
-                                    ..config
-                                }),
-                            ),
-                        ),
-                    )
-                },
-                |value| format!("{value:.1}"),
-                Some(0.1),
-            );
-            content = content.push(
-                column![
-                    text("Calculation").size(crate::style::text_size::SECTION),
-                    period,
-                    method,
-                    std_dev_multiplier,
-                ]
-                .spacing(8),
-            );
-        }
-        (KlineV2Indicator::MovingAverages, Some(IndicatorConfig::MovingAverages(config))) => {
-            let method = row![
-                radio(
-                    "SMA",
-                    MovingAverageMethod::Sma,
-                    Some(config.method),
-                    move |method| {
-                        Message::PaneEvent(
-                            pane,
-                            Event::KlineV2IndicatorSettings(
-                                indicator,
-                                KlineV2IndicatorSettingsMessage::DataConfig(
-                                    IndicatorConfig::MovingAverages(
-                                        MovingAveragesCalculationConfig { method, ..config },
-                                    ),
-                                ),
-                            ),
-                        )
-                    },
-                ),
-                radio(
-                    "EMA",
-                    MovingAverageMethod::Ema,
-                    Some(config.method),
-                    move |method| {
-                        Message::PaneEvent(
-                            pane,
-                            Event::KlineV2IndicatorSettings(
-                                indicator,
-                                KlineV2IndicatorSettingsMessage::DataConfig(
-                                    IndicatorConfig::MovingAverages(
-                                        MovingAveragesCalculationConfig { method, ..config },
-                                    ),
-                                ),
-                            ),
-                        )
-                    },
-                ),
-                radio(
-                    "VWMA",
-                    MovingAverageMethod::Vwma,
-                    Some(config.method),
-                    move |method| {
-                        Message::PaneEvent(
-                            pane,
-                            Event::KlineV2IndicatorSettings(
-                                indicator,
-                                KlineV2IndicatorSettingsMessage::DataConfig(
-                                    IndicatorConfig::MovingAverages(
-                                        MovingAveragesCalculationConfig { method, ..config },
-                                    ),
-                                ),
-                            ),
-                        )
-                    },
-                ),
-            ]
-            .spacing(12);
-            let fast = labeled_slider(
-                "Fast period",
-                1..=500,
-                config.fast_period,
-                move |value| {
-                    Message::PaneEvent(
-                        pane,
-                        Event::KlineV2IndicatorSettings(
-                            indicator,
-                            KlineV2IndicatorSettingsMessage::DataConfig(
-                                IndicatorConfig::MovingAverages(MovingAveragesCalculationConfig {
-                                    fast_period: value,
-                                    ..config
-                                }),
-                            ),
-                        ),
-                    )
-                },
-                |value| value.to_string(),
-                None,
-            );
-            let medium = labeled_slider(
-                "Medium period",
-                1..=500,
-                config.medium_period,
-                move |value| {
-                    Message::PaneEvent(
-                        pane,
-                        Event::KlineV2IndicatorSettings(
-                            indicator,
-                            KlineV2IndicatorSettingsMessage::DataConfig(
-                                IndicatorConfig::MovingAverages(MovingAveragesCalculationConfig {
-                                    medium_period: value,
-                                    ..config
-                                }),
-                            ),
-                        ),
-                    )
-                },
-                |value| value.to_string(),
-                None,
-            );
-            let slow = labeled_slider(
-                "Slow period",
-                1..=500,
-                config.slow_period,
-                move |value| {
-                    Message::PaneEvent(
-                        pane,
-                        Event::KlineV2IndicatorSettings(
-                            indicator,
-                            KlineV2IndicatorSettingsMessage::DataConfig(
-                                IndicatorConfig::MovingAverages(MovingAveragesCalculationConfig {
-                                    slow_period: value,
-                                    ..config
-                                }),
-                            ),
-                        ),
-                    )
-                },
-                |value| value.to_string(),
-                None,
-            );
-            content = content.push(
-                column![
-                    text("Average method").size(crate::style::text_size::SECTION),
-                    method,
-                    text("Periods").size(crate::style::text_size::SECTION),
-                    fast,
-                    medium,
-                    slow,
-                ]
-                .spacing(8),
-            );
-        }
-        _ => {}
-    }
-
-    if let Some(mark_section) = mark_section {
-        content = content.push(mark_section);
-    }
-    content = content.push(color_section);
+    };
 
     cfg_view_container(400, content)
 }
 
+fn indicator_settings_tabs<'a>(
+    selected_tab: IndicatorSettingsTab,
+    pane: pane_grid::Pane,
+    instance_id: data::chart::kline_v2::IndicatorInstanceId,
+) -> Element<'a, Message> {
+    let tab_button = move |label, tab| {
+        let is_selected = selected_tab == tab;
+        let button = button(text(label).size(crate::style::text_size::SECTION))
+            .style(move |theme, status| style::button::transparent(theme, status, is_selected));
+
+        if is_selected {
+            button
+        } else {
+            button.on_press(Message::PaneEvent(
+                pane,
+                Event::KlineV2IndicatorSettings(
+                    instance_id,
+                    KlineV2IndicatorSettingsMessage::TabSelected(tab),
+                ),
+            ))
+        }
+    };
+
+    column![
+        row![
+            tab_button("Inputs", IndicatorSettingsTab::Inputs),
+            tab_button("Style", IndicatorSettingsTab::Style),
+        ]
+        .spacing(12),
+        rule::horizontal(1).style(style::split_ruler),
+    ]
+    .spacing(4)
+    .into()
+}
+
+fn indicator_setting_view<'a>(
+    _indicator: KlineV2Indicator,
+    config: IndicatorConfig,
+    setting: IndicatorSetting,
+    modal: &'a IndicatorSettingsModal,
+    pane: pane_grid::Pane,
+) -> Element<'a, Message> {
+    let IndicatorSetting {
+        id,
+        label,
+        value,
+        control,
+    } = setting;
+    let instance_id = modal.instance_id();
+    match (control, value) {
+        (IndicatorSettingControl::SliderU16 { min, max }, IndicatorSettingValue::U16(value)) => {
+            let input_value = modal
+                .input_draft(id)
+                .map(str::to_owned)
+                .unwrap_or_else(|| value.to_string());
+            let is_valid = input_value
+                .parse::<u16>()
+                .is_ok_and(|value| (min..=max).contains(&value));
+            let input = text_input("", &input_value)
+                .on_input(move |value| {
+                    indicator_numeric_input_message(
+                        instance_id,
+                        config,
+                        id,
+                        value,
+                        move |value| {
+                            value
+                                .parse::<u16>()
+                                .ok()
+                                .filter(|value| (min..=max).contains(value))
+                                .map(IndicatorSettingValue::U16)
+                        },
+                        pane,
+                    )
+                })
+                .style(move |theme, status| style::validated_text_input(theme, status, is_valid))
+                .width(160);
+
+            row![text(label).width(Length::Fill), input]
+                .align_y(Alignment::Center)
+                .spacing(12)
+                .into()
+        }
+        (
+            IndicatorSettingControl::SliderF32 { min, max, step },
+            IndicatorSettingValue::F32(value),
+        ) => {
+            let input_value = modal
+                .input_draft(id)
+                .map(str::to_owned)
+                .unwrap_or_else(|| format_indicator_f32(value, step));
+            let is_valid = input_value
+                .parse::<f32>()
+                .is_ok_and(|value| value.is_finite() && (min..=max).contains(&value));
+            let input = text_input("", &input_value)
+                .on_input(move |value| {
+                    indicator_numeric_input_message(
+                        instance_id,
+                        config,
+                        id,
+                        value,
+                        move |value| {
+                            value
+                                .parse::<f32>()
+                                .ok()
+                                .filter(|value| value.is_finite() && (min..=max).contains(value))
+                                .map(IndicatorSettingValue::F32)
+                        },
+                        pane,
+                    )
+                })
+                .style(move |theme, status| style::validated_text_input(theme, status, is_valid))
+                .width(160);
+
+            row![text(label).width(Length::Fill), input]
+                .align_y(Alignment::Center)
+                .spacing(12)
+                .into()
+        }
+        (IndicatorSettingControl::Toggle, IndicatorSettingValue::Bool(value)) => checkbox(value)
+            .label(label)
+            .on_toggle(move |value| {
+                indicator_setting_message(
+                    instance_id,
+                    config,
+                    id,
+                    IndicatorSettingValue::Bool(value),
+                    pane,
+                )
+            })
+            .into(),
+        (IndicatorSettingControl::Choices(choices), IndicatorSettingValue::Choice(selected)) => {
+            if choices.len() > 3 {
+                let selected = choices.iter().copied().find(|choice| choice.id == selected);
+                return column![
+                    text(label).size(crate::style::text_size::SECTION),
+                    pick_list(choices, selected, move |choice| {
+                        indicator_setting_message(
+                            instance_id,
+                            config,
+                            id,
+                            IndicatorSettingValue::Choice(choice.id),
+                            pane,
+                        )
+                    })
+                    .width(Length::Fill),
+                ]
+                .spacing(8)
+                .into();
+            }
+
+            let mut controls = row![text(label).size(crate::style::text_size::SECTION)].spacing(12);
+            for choice in choices {
+                controls = controls.push(radio(
+                    choice.label,
+                    choice.id,
+                    Some(selected),
+                    move |value| {
+                        indicator_setting_message(
+                            instance_id,
+                            config,
+                            id,
+                            IndicatorSettingValue::Choice(value),
+                            pane,
+                        )
+                    },
+                ));
+            }
+            controls.into()
+        }
+        _ => text(label).into(),
+    }
+}
+
+fn format_indicator_f32(value: f32, step: f32) -> String {
+    if step >= 1.0 {
+        format!("{value:.0}")
+    } else {
+        format!("{value:.1}")
+    }
+}
+
+fn indicator_numeric_input_message(
+    instance_id: data::chart::kline_v2::IndicatorInstanceId,
+    config: IndicatorConfig,
+    id: &'static str,
+    value: String,
+    parse_value: impl Fn(&str) -> Option<IndicatorSettingValue>,
+    pane: pane_grid::Pane,
+) -> Message {
+    let config = parse_value(&value).and_then(|value| config.with_setting(id, value));
+    Message::PaneEvent(
+        pane,
+        Event::KlineV2IndicatorSettings(
+            instance_id,
+            KlineV2IndicatorSettingsMessage::InputChanged { id, value, config },
+        ),
+    )
+}
+
+fn indicator_setting_message(
+    instance_id: data::chart::kline_v2::IndicatorInstanceId,
+    config: IndicatorConfig,
+    id: &'static str,
+    value: IndicatorSettingValue,
+    pane: pane_grid::Pane,
+) -> Message {
+    let config = config
+        .with_setting(id, value)
+        .expect("indicator setting schema must match its configuration");
+    Message::PaneEvent(
+        pane,
+        Event::KlineV2IndicatorSettings(
+            instance_id,
+            KlineV2IndicatorSettingsMessage::DataConfig(config),
+        ),
+    )
+}
+
 fn indicator_color_section<'a>(
+    instance_id: data::chart::kline_v2::IndicatorInstanceId,
     indicator: KlineV2Indicator,
     color_config: IndicatorColorConfig,
     pane: pane_grid::Pane,
@@ -1447,7 +1272,7 @@ fn indicator_color_section<'a>(
                 Message::PaneEvent(
                     pane,
                     Event::KlineV2IndicatorSettings(
-                        indicator,
+                        instance_id,
                         KlineV2IndicatorSettingsMessage::Color {
                             slot: spec.slot,
                             accent,
@@ -1462,7 +1287,7 @@ fn indicator_color_section<'a>(
                     Message::PaneEvent(
                         pane,
                         Event::KlineV2IndicatorSettings(
-                            indicator,
+                            instance_id,
                             KlineV2IndicatorSettingsMessage::Color {
                                 slot: spec.slot,
                                 accent: selected.accent,
@@ -1489,6 +1314,7 @@ fn indicator_color_section<'a>(
 }
 
 fn indicator_mark_section<'a>(
+    instance_id: data::chart::kline_v2::IndicatorInstanceId,
     indicator: KlineV2Indicator,
     mark: Option<data::chart::kline_v2::MarkKind>,
     pane: pane_grid::Pane,
@@ -1503,7 +1329,7 @@ fn indicator_mark_section<'a>(
         Message::PaneEvent(
             pane,
             Event::KlineV2IndicatorSettings(
-                indicator,
+                instance_id,
                 KlineV2IndicatorSettingsMessage::Mark(value),
             ),
         )

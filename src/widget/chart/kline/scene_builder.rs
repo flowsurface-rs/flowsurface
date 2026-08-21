@@ -424,7 +424,9 @@ where
                     };
 
                     for channel in channels.iter().copied() {
-                        if let Some(channel_value) = self.overlay_channel_value(data, channel) {
+                        if let Some(channel_value) =
+                            self.overlay_channel_value(*value_id, data, channel)
+                        {
                             emit_pct(channel_value);
                         }
                     }
@@ -642,7 +644,9 @@ where
                     };
 
                     for channel in channels.iter().copied() {
-                        if let Some(channel_value) = self.overlay_channel_value(data, channel) {
+                        if let Some(channel_value) =
+                            self.overlay_channel_value(*value_id, data, channel)
+                        {
                             let channel_unit =
                                 self.panel_value_to_unit(primary_value_precision, channel_value);
                             min_primary_unit =
@@ -721,7 +725,12 @@ where
             max_unit = max_unit.max(value_unit.0);
 
             for &channel in overlay_channels {
-                if let Some(channel_value) = self.overlay_channel_value(indicator_data, channel) {
+                let Some(value_id) = panel_value_id else {
+                    continue;
+                };
+                if let Some(channel_value) =
+                    self.overlay_channel_value(value_id, indicator_data, channel)
+                {
                     let channel_unit =
                         self.panel_value_to_unit(panel_value_precision, channel_value);
                     min_unit = min_unit.min(channel_unit.0);

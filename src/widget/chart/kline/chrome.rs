@@ -1187,7 +1187,8 @@ where
                     .iter()
                     .copied()
                 {
-                    let Some(value) = self.overlay_channel_value(indicator_data, channel) else {
+                    let Some(value) = self.overlay_channel_value(value_id, indicator_data, channel)
+                    else {
                         continue;
                     };
 
@@ -1653,7 +1654,9 @@ where
                     let Some(value) = base_bar.and_then(|bar| {
                         self.series.first().and_then(|series| {
                             self.indicator_data_for_series(series, Some(row.value_id), bar)
-                                .and_then(|data| self.overlay_channel_value(data, channel))
+                                .and_then(|data| {
+                                    self.overlay_channel_value(row.value_id, data, channel)
+                                })
                         })
                     }) else {
                         continue;

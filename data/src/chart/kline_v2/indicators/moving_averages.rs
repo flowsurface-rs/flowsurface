@@ -6,8 +6,10 @@ use super::input::IndicatorInput;
 use super::moving_average::MovingAverageMethod;
 use super::runtime::{IndicatorDefinition, IndicatorRuntime};
 use super::{
-    IndicatorAvailability, IndicatorColorSlot, IndicatorColorSpec, IndicatorOverlayChannelSpec,
-    IndicatorOverlayColorRole, IndicatorOverlaySource,
+    IndicatorAvailability, IndicatorColorSlot, IndicatorColorSpec, IndicatorConfigValue,
+    IndicatorOverlayChannelSpec, IndicatorOverlayColorRole, IndicatorOverlaySource,
+    IndicatorSetting, IndicatorSettingChoice, IndicatorSettingControl, IndicatorSettingValue,
+    IndicatorSettingsContext,
 };
 use exchange::{Kline, UnixMs};
 use serde::{Deserialize, Serialize};
@@ -88,6 +90,97 @@ impl MovingAveragesCalculationConfig {
 
     pub fn warmup_bars(self) -> u64 {
         self.periods().into_iter().map(u64::from).max().unwrap_or(1)
+    }
+}
+
+impl IndicatorConfigValue for MovingAveragesCalculationConfig {
+    fn normalized(self) -> Self {
+        self.normalized()
+    }
+
+    fn settings(self, _context: IndicatorSettingsContext) -> Vec<IndicatorSetting> {
+        vec![
+            IndicatorSetting {
+                id: "method",
+                label: "Average method",
+                value: IndicatorSettingValue::Choice(moving_average_method_id(self.method)),
+                control: IndicatorSettingControl::Choices(moving_average_method_choices()),
+            },
+            IndicatorSetting {
+                id: "fast_period",
+                label: "Fast period",
+                value: IndicatorSettingValue::U16(self.fast_period),
+                control: IndicatorSettingControl::SliderU16 { min: 1, max: 500 },
+            },
+            IndicatorSetting {
+                id: "medium_period",
+                label: "Medium period",
+                value: IndicatorSettingValue::U16(self.medium_period),
+                control: IndicatorSettingControl::SliderU16 { min: 1, max: 500 },
+            },
+            IndicatorSetting {
+                id: "slow_period",
+                label: "Slow period",
+                value: IndicatorSettingValue::U16(self.slow_period),
+                control: IndicatorSettingControl::SliderU16 { min: 1, max: 500 },
+            },
+        ]
+    }
+
+    fn with_setting(self, id: &'static str, value: IndicatorSettingValue) -> Option<Self> {
+        match (id, value) {
+            ("method", IndicatorSettingValue::Choice(value)) => Some(Self {
+                method: moving_average_method_from_id(value)?,
+                ..self
+            }),
+            ("fast_period", IndicatorSettingValue::U16(fast_period)) => Some(Self {
+                fast_period,
+                ..self
+            }),
+            ("medium_period", IndicatorSettingValue::U16(medium_period)) => Some(Self {
+                medium_period,
+                ..self
+            }),
+            ("slow_period", IndicatorSettingValue::U16(slow_period)) => Some(Self {
+                slow_period,
+                ..self
+            }),
+            _ => None,
+        }
+    }
+}
+
+fn moving_average_method_choices() -> Vec<IndicatorSettingChoice> {
+    vec![
+        IndicatorSettingChoice {
+            id: "sma",
+            label: "SMA",
+        },
+        IndicatorSettingChoice {
+            id: "ema",
+            label: "EMA",
+        },
+        IndicatorSettingChoice {
+            id: "vwma",
+            label: "VWMA",
+        },
+    ]
+}
+
+fn moving_average_method_id(method: MovingAverageMethod) -> &'static str {
+    match method {
+        MovingAverageMethod::Sma => "sma",
+        MovingAverageMethod::Ema => "ema",
+        MovingAverageMethod::Vwma => "vwma",
+    }
+}
+
+fn moving_average_method_from_id(id: &str) -> Option<MovingAverageMethod> {
+    match id {
+        "sma" => Some(MovingAverageMethod::Sma),
+        "ema" => Some(MovingAverageMethod::Ema),
+        "vwma" => Some(MovingAverageMethod::Vwma),
+        _ => None,
     }
 }
 

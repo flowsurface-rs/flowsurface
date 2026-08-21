@@ -1,4 +1,5 @@
 mod anchored_vwap;
+mod atr;
 mod bar_analysis;
 mod bollinger;
 mod catalog;
@@ -9,27 +10,30 @@ mod moving_averages;
 mod open_interest;
 mod rsi;
 mod runtime;
+mod stoch_rsi;
 mod trade_count;
 mod volume;
 
 use super::composition::{
-    AxisBinding, DataSourceId, LayerDataKind, MarkKind, PanelScaleMode, PanelValueId,
-    PanelValueLabelPolicy, PanelValuePrecision,
+    AxisBinding, DataSourceId, LayerDataKind, MarkKind, PanelScaleMode, PanelValueLabelPolicy,
+    PanelValuePrecision,
 };
-use super::engine::IndicatorConfigStore;
 use super::values::IndicatorDataFieldKey;
 use crate::chart::Basis;
 use enum_map::Enum;
 use exchange::{TickerInfo, UnixMs};
+use std::fmt::{Display, Formatter};
 
 pub use crate::chart::kline_v2::values::IndicatorCellValue;
 pub use anchored_vwap::{AnchoredVwapConfig, AnchoredVwapState, VwapAnchor};
+pub use atr::AtrConfig;
 pub use bar_analysis::BarAnalysisState;
 pub use bollinger::BollingerBandsCalculationConfig;
 pub use catalog::{
-    IndicatorRuntimeState, KlineIndicator, all_indicators, availability, color_specs, display_name,
-    indicators_for_market, input_requirements, is_supported_for_market, kline_warmup_bars,
-    mark_specs, overlay_channels, panel_recipe, requires_trade_data, table_columns,
+    IndicatorConfig, IndicatorConfigStore, IndicatorRuntimeState, KlineIndicator, all_indicators,
+    availability, color_specs, display_name, indicators_for_market, input_requirements,
+    is_supported_for_market, kline_warmup_bars, mark_specs, overlay_channels, panel_recipe,
+    requires_trade_data, table_columns, uses_directional_volume,
 };
 pub use input::{
     IndicatorInput, IndicatorInputSource, KLINE_INPUTS, KlinePriceSource, NormalizedTradeBar,
@@ -39,6 +43,41 @@ pub use moving_average::MovingAverageMethod;
 pub use moving_averages::MovingAveragesCalculationConfig;
 pub use rsi::{RsiConfig, RsiSmoothing};
 pub use runtime::{IndicatorRuntime, IndicatorRuntimeSet};
+pub use stoch_rsi::StochRsiConfig;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct IndicatorHistoryRequirement {
+    history_start: Option<UnixMs>,
+    history_bars: u64,
+}
+
+impl IndicatorHistoryRequirement {
+    pub fn new(history_start: Option<UnixMs>, history_bars: u64) -> Self {
+        Self {
+            history_start,
+            history_bars,
+        }
+    }
+
+    pub fn history_start(self) -> Option<UnixMs> {
+        self.history_start
+    }
+
+    pub fn history_bars(self) -> u64 {
+        self.history_bars
+    }
+
+    pub(crate) fn merge(self, other: Self) -> Self {
+        Self {
+            history_start: match (self.history_start, other.history_start) {
+                (Some(left), Some(right)) => Some(left.min(right)),
+                (Some(time), None) | (None, Some(time)) => Some(time),
+                (None, None) => None,
+            },
+            history_bars: self.history_bars.max(other.history_bars),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize, Enum)]
 pub enum IndicatorColorSlot {
@@ -94,7 +133,7 @@ pub enum IndicatorOverlayColorRole {
 pub enum IndicatorOverlaySource {
     Primary,
     Field(IndicatorDataFieldKey),
-    Reference(fn(&IndicatorConfigStore) -> f32),
+    Reference(fn(IndicatorConfig) -> f32),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -191,7 +230,6 @@ pub enum IndicatorPanelRecipe {
     PrimaryOverlay {
         layer_name: &'static str,
         source: DataSourceId,
-        value_id: PanelValueId,
         data_kind: LayerDataKind,
         mark: MarkKind,
         axis: AxisBinding,
@@ -203,3 +241,72 @@ pub struct AvailabilityContext {
     pub basis: Basis,
     pub base_ticker: TickerInfo,
 }
+
+#[derive(Debug, Clone, Copy)]
+pub struct IndicatorSettingsContext {
+    pub basis: Basis,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum IndicatorSettingValue {
+    U16(u16),
+    F32(f32),
+    Bool(bool),
+    Choice(&'static str),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IndicatorSettingChoice {
+    pub id: &'static str,
+    pub label: &'static str,
+}
+
+impl Display for IndicatorSettingChoice {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.label)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum IndicatorSettingControl {
+    SliderU16 { min: u16, max: u16 },
+    SliderF32 { min: f32, max: f32, step: f32 },
+    Toggle,
+    Choices(Vec<IndicatorSettingChoice>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct IndicatorSetting {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub value: IndicatorSettingValue,
+    pub control: IndicatorSettingControl,
+}
+
+pub trait IndicatorConfigValue: Copy + Default + PartialEq {
+    fn normalized(self) -> Self {
+        self
+    }
+
+    fn settings(self, _context: IndicatorSettingsContext) -> Vec<IndicatorSetting> {
+        Vec::new()
+    }
+
+    fn with_setting(self, _id: &'static str, _value: IndicatorSettingValue) -> Option<Self> {
+        None
+    }
+
+    fn normalized_for_basis(self, _basis: Basis) -> Self {
+        self.normalized()
+    }
+
+    fn history_requirement(
+        self,
+        _basis: Basis,
+        _reference_time: UnixMs,
+    ) -> IndicatorHistoryRequirement {
+        IndicatorHistoryRequirement::default()
+    }
+}
+
+impl IndicatorConfigValue for () {}

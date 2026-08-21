@@ -1,3 +1,4 @@
+use super::super::IndicatorUpdateScope;
 use super::super::values::IndicatorData;
 use super::input::IndicatorInput;
 use super::runtime::{IndicatorDefinition, IndicatorRuntime};
@@ -124,6 +125,15 @@ impl IndicatorRuntime for OpenInterestState {
         if let IndicatorInput::OpenInterest { data, basis } = input {
             self.insert_batch(data, basis);
         }
+    }
+
+    fn on_input_from(
+        &mut self,
+        input: IndicatorInput<'_>,
+        config: Self::Config,
+        _scope: IndicatorUpdateScope,
+    ) {
+        self.on_input(input, config);
     }
 
     fn snapshot(&self) -> IndicatorRuntimeSnapshot {

@@ -1,181 +1,103 @@
 use super::IndicatorUpdateScope;
-use super::KlineIndicator;
 use super::indicators::IndicatorInput;
-use super::indicators::{
-    AnchoredVwapConfig, BollingerBandsCalculationConfig, MovingAveragesCalculationConfig, RsiConfig,
-};
 use super::series::KlineSeries;
 use crate::chart::Basis;
-use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub enum IndicatorConfig {
-    Rsi(RsiConfig),
-    MovingAverages(MovingAveragesCalculationConfig),
-    BollingerBands(BollingerBandsCalculationConfig),
-    AnchoredVwap(AnchoredVwapConfig),
-}
-
-impl IndicatorConfig {
-    pub fn normalized(self) -> Self {
-        match self {
-            Self::Rsi(config) => Self::Rsi(config.normalized()),
-            Self::MovingAverages(config) => Self::MovingAverages(config.normalized()),
-            Self::BollingerBands(config) => Self::BollingerBands(config.normalized()),
-            Self::AnchoredVwap(config) => Self::AnchoredVwap(config),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct IndicatorConfigStore {
-    rsi: RsiConfig,
-    moving_averages: MovingAveragesCalculationConfig,
-    bollinger_bands: BollingerBandsCalculationConfig,
-    anchored_vwap: AnchoredVwapConfig,
-}
-
-impl Default for IndicatorConfigStore {
-    fn default() -> Self {
-        Self {
-            rsi: RsiConfig::default().normalized(),
-            moving_averages: MovingAveragesCalculationConfig::default().normalized(),
-            bollinger_bands: BollingerBandsCalculationConfig::default().normalized(),
-            anchored_vwap: AnchoredVwapConfig::default(),
-        }
-    }
-}
-
-impl IndicatorConfigStore {
-    pub fn config_for(&self, indicator: KlineIndicator) -> Option<IndicatorConfig> {
-        match indicator {
-            KlineIndicator::Rsi => Some(IndicatorConfig::Rsi(self.rsi)),
-            KlineIndicator::MovingAverages => {
-                Some(IndicatorConfig::MovingAverages(self.moving_averages))
-            }
-            KlineIndicator::BollingerBands => {
-                Some(IndicatorConfig::BollingerBands(self.bollinger_bands))
-            }
-            KlineIndicator::AnchoredVwap => Some(IndicatorConfig::AnchoredVwap(self.anchored_vwap)),
-            _ => None,
-        }
-    }
-
-    pub fn update(&mut self, config: IndicatorConfig) -> bool {
-        let config = config.normalized();
-        match config {
-            IndicatorConfig::Rsi(config) => replace_if_changed(&mut self.rsi, config),
-            IndicatorConfig::MovingAverages(config) => {
-                replace_if_changed(&mut self.moving_averages, config)
-            }
-            IndicatorConfig::BollingerBands(config) => {
-                replace_if_changed(&mut self.bollinger_bands, config)
-            }
-            IndicatorConfig::AnchoredVwap(config) => {
-                replace_if_changed(&mut self.anchored_vwap, config)
-            }
-        }
-    }
-
-    pub fn reset(&mut self, indicator: KlineIndicator) -> bool {
-        let Some(default_config) = Self::default_config(indicator) else {
-            return false;
-        };
-        self.update(default_config)
-    }
-
-    fn default_config(indicator: KlineIndicator) -> Option<IndicatorConfig> {
-        match indicator {
-            KlineIndicator::Rsi => Some(IndicatorConfig::Rsi(RsiConfig::default().normalized())),
-            KlineIndicator::MovingAverages => Some(IndicatorConfig::MovingAverages(
-                MovingAveragesCalculationConfig::default().normalized(),
-            )),
-            KlineIndicator::BollingerBands => Some(IndicatorConfig::BollingerBands(
-                BollingerBandsCalculationConfig::default().normalized(),
-            )),
-            KlineIndicator::AnchoredVwap => {
-                Some(IndicatorConfig::AnchoredVwap(AnchoredVwapConfig::default()))
-            }
-            _ => None,
-        }
-    }
-
-    pub fn warmup_bars(&self, indicator: KlineIndicator) -> Option<u64> {
-        match indicator {
-            KlineIndicator::Rsi => Some(self.rsi.warmup_bars()),
-            KlineIndicator::MovingAverages => Some(self.moving_averages.warmup_bars()),
-            KlineIndicator::BollingerBands => Some(self.bollinger_bands.warmup_bars()),
-            _ => super::indicators::kline_warmup_bars(indicator),
-        }
-    }
-
-    pub fn rsi_config(&self) -> RsiConfig {
-        self.rsi
-    }
-
-    pub fn moving_averages_calculation_config(&self) -> MovingAveragesCalculationConfig {
-        self.moving_averages
-    }
-
-    pub fn bollinger_bands_calculation_config(&self) -> BollingerBandsCalculationConfig {
-        self.bollinger_bands
-    }
-
-    pub fn anchored_vwap_config(&self) -> AnchoredVwapConfig {
-        self.anchored_vwap
-    }
-}
-
-fn replace_if_changed<T: PartialEq>(current: &mut T, replacement: T) -> bool {
-    if *current == replacement {
-        return false;
-    }
-    *current = replacement;
-    true
-}
+use super::IndicatorColorSlot;
+pub use super::indicators::{IndicatorConfig, IndicatorConfigStore};
+use super::{IndicatorInstanceId, IndicatorInstanceStore, KlineIndicator};
+use crate::config::theme::ThemeColor;
 
 #[derive(Debug, Clone, Default)]
 pub struct IndicatorEngine {
-    configs: IndicatorConfigStore,
+    instances: IndicatorInstanceStore,
 }
 
 impl IndicatorEngine {
-    pub fn configs(&self) -> &IndicatorConfigStore {
-        &self.configs
+    pub fn instances(&self) -> &IndicatorInstanceStore {
+        &self.instances
     }
 
-    pub fn config_for(&self, indicator: KlineIndicator) -> Option<IndicatorConfig> {
-        self.configs.config_for(indicator)
+    pub fn create_instance(&mut self, kind: KlineIndicator) -> IndicatorInstanceId {
+        self.instances.create(kind)
     }
 
-    pub fn update_config(&mut self, config: IndicatorConfig) -> bool {
-        self.configs.update(config)
+    pub fn remove_instance(&mut self, id: IndicatorInstanceId) -> bool {
+        self.instances.remove(id).is_some()
     }
 
-    pub fn reset_config(&mut self, indicator: KlineIndicator) -> bool {
-        self.configs.reset(indicator)
+    pub fn update_color(
+        &mut self,
+        id: IndicatorInstanceId,
+        slot: IndicatorColorSlot,
+        color: ThemeColor,
+    ) -> bool {
+        self.instances.update_color(id, slot, color)
     }
 
-    pub fn rsi_config(&self) -> RsiConfig {
-        self.configs.rsi_config()
+    pub fn reset_colors(&mut self, id: IndicatorInstanceId) -> bool {
+        self.instances.reset_colors(id)
     }
 
-    pub fn moving_averages_calculation_config(&self) -> MovingAveragesCalculationConfig {
-        self.configs.moving_averages_calculation_config()
+    pub fn update_config(&mut self, id: IndicatorInstanceId, config: IndicatorConfig) -> bool {
+        self.instances.update_config(id, config)
     }
 
-    pub fn bollinger_bands_calculation_config(&self) -> BollingerBandsCalculationConfig {
-        self.configs.bollinger_bands_calculation_config()
+    pub fn reset_config(&mut self, id: IndicatorInstanceId) -> bool {
+        self.instances.reset_config(id)
     }
 
-    pub fn anchored_vwap_config(&self) -> AnchoredVwapConfig {
-        self.configs.anchored_vwap_config()
+    pub fn replace_instances(&mut self, instances: IndicatorInstanceStore) -> bool {
+        if self.instances == instances {
+            return false;
+        }
+        self.instances = instances;
+        true
     }
 
-    pub fn configure_series(&self, series: &mut KlineSeries, basis: Basis) {
-        series.refresh_indicator_inputs(&self.configs);
+    pub fn normalize_configs_for_basis(&mut self, basis: Basis) -> bool {
+        self.replace_instances(self.instances.normalized_for_basis(basis))
+    }
+
+    pub fn update_config_for_basis(
+        &mut self,
+        id: IndicatorInstanceId,
+        config: IndicatorConfig,
+        basis: Basis,
+    ) -> bool {
+        self.update_config(id, config.normalized_for_basis(basis))
+    }
+
+    pub fn history_requirement(
+        &self,
+        active: &[IndicatorInstanceId],
+        basis: Basis,
+        reference_time: exchange::UnixMs,
+    ) -> super::indicators::IndicatorHistoryRequirement {
+        active.iter().fold(Default::default(), |requirement, id| {
+            self.instances.get(*id).map_or(requirement, |instance| {
+                requirement.merge(instance.config.history_requirement(basis, reference_time))
+            })
+        })
+    }
+
+    pub fn configure_series(
+        &self,
+        series: &mut KlineSeries,
+        basis: Basis,
+        active: &[IndicatorInstanceId],
+    ) {
+        series.set_active_indicators(active, &self.instances);
+        self.refresh_series(series, basis);
+    }
+
+    pub fn refresh_series(&self, series: &mut KlineSeries, basis: Basis) {
+        series.refresh_indicator_inputs(&self.instances);
         let trade_bars = series.normalized_trade_bars(basis);
-        series.insert_indicator_input(IndicatorInput::Trades { bars: &trade_bars }, &self.configs);
+        series.insert_indicator_input(
+            IndicatorInput::Trades { bars: &trade_bars },
+            &self.instances,
+        );
     }
 
     pub fn update_series_after_trades(
@@ -185,13 +107,13 @@ impl IndicatorEngine {
         scope: IndicatorUpdateScope,
     ) {
         if matches!(basis, Basis::Tick(_)) {
-            series.refresh_indicator_inputs_from(&self.configs, scope);
+            series.refresh_indicator_inputs_from(&self.instances, scope);
         }
 
         let trade_bars = series.normalized_trade_bars(basis);
         series.insert_indicator_input_from(
             IndicatorInput::Trades { bars: &trade_bars },
-            &self.configs,
+            &self.instances,
             scope,
         );
     }
@@ -201,6 +123,6 @@ impl IndicatorEngine {
         series: &mut KlineSeries,
         scope: IndicatorUpdateScope,
     ) {
-        series.refresh_indicator_inputs_from(&self.configs, scope);
+        series.refresh_indicator_inputs_from(&self.instances, scope);
     }
 }

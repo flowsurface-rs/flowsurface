@@ -1,7 +1,9 @@
 use super::KlineSeries;
 use super::fetch::FetchCoordinator;
 use data::chart::Basis;
-use data::chart::kline_v2::{IndicatorEngine, IndicatorInput, SeriesColor, ThemeAccent};
+use data::chart::kline_v2::{
+    IndicatorEngine, IndicatorInput, IndicatorInstanceId, SeriesColor, ThemeAccent,
+};
 use exchange::{
     Kline, OpenInterest, TickMultiplier, TickerInfo, Timeframe, Trade, adapter::StreamKind,
 };
@@ -81,6 +83,7 @@ impl KlineData {
         ticker_info: TickerInfo,
         basis: Basis,
         indicators: &IndicatorEngine,
+        active_indicators: &[IndicatorInstanceId],
     ) -> bool {
         if self.selected_tickers.contains(&ticker_info) {
             return false;
@@ -102,7 +105,7 @@ impl KlineData {
                 series.enable_tick_aggregation(interval, tick_size);
             }
         }
-        indicators.configure_series(&mut series, basis);
+        indicators.configure_series(&mut series, basis, active_indicators);
 
         self.series.push(series);
         self.series_index.insert(ticker_info, idx);
@@ -139,14 +142,20 @@ impl KlineData {
         basis: Basis,
         preserve_raw_trades: bool,
         indicators: &IndicatorEngine,
+        active_indicators: &[IndicatorInstanceId],
     ) {
         for series in &mut self.series {
             series.reset_for_basis(preserve_raw_trades);
         }
-        self.configure_series_for_basis(basis, indicators);
+        self.configure_series_for_basis(basis, indicators, active_indicators);
     }
 
-    pub fn configure_series_for_basis(&mut self, basis: Basis, indicators: &IndicatorEngine) {
+    pub fn configure_series_for_basis(
+        &mut self,
+        basis: Basis,
+        indicators: &IndicatorEngine,
+        active_indicators: &[IndicatorInstanceId],
+    ) {
         match basis {
             Basis::Time(timeframe) => {
                 for series in &mut self.series {
@@ -156,7 +165,7 @@ impl KlineData {
                     );
                     series.disable_tick_aggregation();
                     series.rebuild_time_footprints(timeframe);
-                    indicators.configure_series(series, basis);
+                    indicators.configure_series(series, basis, active_indicators);
                 }
             }
             Basis::Tick(interval) => {
@@ -166,15 +175,20 @@ impl KlineData {
                         .multiply_with_min_tick_step(series.ticker_info);
                     series.set_footprint_tick_size(tick_size);
                     series.enable_tick_aggregation(interval, tick_size);
-                    indicators.configure_series(series, basis);
+                    indicators.configure_series(series, basis, active_indicators);
                 }
             }
         }
     }
 
-    pub fn configure_indicators(&mut self, basis: Basis, indicators: &IndicatorEngine) {
+    pub fn configure_indicators(
+        &mut self,
+        basis: Basis,
+        indicators: &IndicatorEngine,
+        active_indicators: &[IndicatorInstanceId],
+    ) {
         for series in &mut self.series {
-            indicators.configure_series(series, basis);
+            indicators.configure_series(series, basis, active_indicators);
         }
     }
 
@@ -201,7 +215,7 @@ impl KlineData {
         }
 
         self.series[idx].insert_klines(klines, basis);
-        indicators.configure_series(&mut self.series[idx], basis);
+        indicators.refresh_series(&mut self.series[idx], basis);
         if let Some(req_id) = req_id {
             fetch.mark_completed(ticker_info, req_id);
         }
@@ -312,7 +326,7 @@ impl KlineData {
         }
         self.series[idx].insert_indicator_input(
             IndicatorInput::OpenInterest { data, basis },
-            indicators.configs(),
+            indicators.instances(),
         );
         true
     }

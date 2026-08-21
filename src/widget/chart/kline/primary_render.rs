@@ -690,7 +690,9 @@ where
         let Some(value_id) = indicator_panel.value_id else {
             return;
         };
-        let indicator = value_id;
+        let Some(indicator) = self.indicator_kind(value_id) else {
+            return;
+        };
         let columns = table_columns(indicator);
         if columns.is_empty() {
             return;
@@ -1021,7 +1023,8 @@ where
                                         return;
                                     };
 
-                                    let Some(value) = self.overlay_channel_value(data, channel)
+                                    let Some(value) =
+                                        self.overlay_channel_value(value_id, data, channel)
                                     else {
                                         return;
                                     };
@@ -1275,8 +1278,11 @@ where
                                     return;
                                 };
 
+                                let Some(value_id) = indicator_panel.value_id else {
+                                    return;
+                                };
                                 let Some(channel_value) =
-                                    self.overlay_channel_value(indicator_data, channel)
+                                    self.overlay_channel_value(value_id, indicator_data, channel)
                                 else {
                                     return;
                                 };

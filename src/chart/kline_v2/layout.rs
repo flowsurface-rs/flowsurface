@@ -1,14 +1,13 @@
+use super::KlineSeries;
 use super::indicator::{
     AvailabilityContext, IndicatorAvailability, IndicatorPanelRecipe, IndicatorUnsupportedReason,
 };
-use super::{KlineIndicator, KlineSeries};
 use crate::widget::chart::kline::composition::{
     BarMode, ChartComposition, DataSourceId, HistogramMode, LayerDataKind, LayerId, LayerSource,
     LayerSpec, MarkKind, PanelId, PanelPresentation, PanelRole, PanelScaleMode, PanelSpec,
 };
 use data::chart::Basis;
-use data::chart::kline_v2::IndicatorConfigStore;
-use enum_map::EnumMap;
+use data::chart::kline_v2::{IndicatorInstanceId, IndicatorInstanceStore, KlineIndicator};
 use exchange::TickerInfo;
 use rustc_hash::FxHashMap;
 
@@ -40,20 +39,20 @@ enum DisabledIndicatorPresentation {
 
 pub struct IndicatorLayout {
     composition: ChartComposition,
-    indicator_panels: EnumMap<KlineIndicator, Option<IndicatorPanelBinding>>,
-    saved_indicator_presentations: EnumMap<KlineIndicator, Option<DisabledIndicatorPresentation>>,
+    indicator_panels: FxHashMap<IndicatorInstanceId, IndicatorPanelBinding>,
+    saved_indicator_presentations: FxHashMap<IndicatorInstanceId, DisabledIndicatorPresentation>,
     comparison_layers: FxHashMap<TickerInfo, LayerId>,
 }
 
 impl IndicatorLayout {
-    pub fn new() -> Self {
+    pub fn new(default_volume: IndicatorInstanceId) -> Self {
         let mut layout = Self {
             composition: ChartComposition::prototype_kline(),
-            indicator_panels: EnumMap::default(),
-            saved_indicator_presentations: EnumMap::default(),
+            indicator_panels: FxHashMap::default(),
+            saved_indicator_presentations: FxHashMap::default(),
             comparison_layers: FxHashMap::default(),
         };
-        layout.install_default_indicators();
+        let _ = layout.enable_indicator(default_volume, KlineIndicator::Volume);
         layout
     }
 
@@ -71,7 +70,7 @@ impl IndicatorLayout {
         splits: Vec<f32>,
     ) {
         self.composition = ChartComposition::from_parts(panels, splits);
-        self.saved_indicator_presentations = EnumMap::default();
+        self.saved_indicator_presentations.clear();
         self.rebuild_indicator_bindings();
         self.rebuild_comparison_bindings(&[], None);
     }
@@ -106,25 +105,22 @@ impl IndicatorLayout {
             .set_panel_preferred_scale(panel_id, PanelScaleMode::Absolute)
     }
 
-    pub fn selected_indicators(&self) -> Vec<KlineIndicator> {
-        super::indicator::all_indicators()
-            .iter()
-            .copied()
-            .filter(|indicator| self.indicator_panels[*indicator].is_some())
-            .collect()
+    pub fn selected_indicators(&self) -> Vec<IndicatorInstanceId> {
+        self.indicator_panels.keys().copied().collect()
     }
 
-    pub fn toggle_indicator(
+    pub fn add_indicator(
         &mut self,
+        id: IndicatorInstanceId,
         indicator: KlineIndicator,
         market: exchange::adapter::MarketKind,
     ) -> bool {
-        let changed = if self.indicator_panels[indicator].is_some() {
-            self.disable_indicator(indicator)
-        } else if !super::indicator::is_supported_for_market(indicator, market) {
+        let changed = if self.indicator_panels.contains_key(&id)
+            || !super::indicator::is_supported_for_market(indicator, market)
+        {
             false
         } else {
-            self.enable_indicator(indicator)
+            self.enable_indicator(id, indicator)
         };
 
         if changed {
@@ -133,22 +129,24 @@ impl IndicatorLayout {
         changed
     }
 
+    pub fn remove_indicator(&mut self, id: IndicatorInstanceId) -> bool {
+        let changed = self.disable_indicator(id);
+        if changed {
+            self.prune_stale_indicator_bindings();
+        }
+        changed
+    }
+
     pub fn indicator_is_available(
         &self,
-        indicator: KlineIndicator,
+        id: IndicatorInstanceId,
         basis: Basis,
         base_ticker: TickerInfo,
         base_series: Option<&KlineSeries>,
-        indicator_configs: &IndicatorConfigStore,
+        instances: &IndicatorInstanceStore,
     ) -> bool {
         matches!(
-            self.indicator_availability(
-                indicator,
-                basis,
-                base_ticker,
-                base_series,
-                indicator_configs,
-            ),
+            self.indicator_availability(id, basis, base_ticker, base_series, instances,),
             IndicatorAvailability::Available
         )
     }
@@ -163,13 +161,20 @@ impl IndicatorLayout {
 
     pub fn indicator_availability(
         &self,
-        indicator: KlineIndicator,
+        id: IndicatorInstanceId,
         basis: Basis,
         base_ticker: TickerInfo,
         base_series: Option<&KlineSeries>,
-        indicator_configs: &IndicatorConfigStore,
+        instances: &IndicatorInstanceStore,
     ) -> IndicatorAvailability {
+        let Some(instance) = instances.get(id) else {
+            return IndicatorAvailability::Unsupported(
+                IndicatorUnsupportedReason::MissingRequiredInput,
+            );
+        };
+        let indicator = instance.kind;
         let availability = super::indicator::availability(
+            id,
             indicator,
             AvailabilityContext { basis, base_ticker },
             base_series.and_then(|series| series.indicators.as_ref()),
@@ -179,7 +184,7 @@ impl IndicatorLayout {
             return availability;
         }
 
-        let Some(required) = indicator_configs.warmup_bars(indicator) else {
+        let Some(required) = instance.config.warmup_bars() else {
             return availability;
         };
 
@@ -200,25 +205,18 @@ impl IndicatorLayout {
         basis: Basis,
         base_ticker: TickerInfo,
         base_series: Option<&KlineSeries>,
-        indicator_configs: &IndicatorConfigStore,
-    ) -> Vec<(KlineIndicator, IndicatorUnsupportedReason)> {
-        super::indicator::all_indicators()
-            .iter()
-            .copied()
-            .filter_map(|indicator| {
-                let IndicatorAvailability::Unsupported(reason) = self.indicator_availability(
-                    indicator,
-                    basis,
-                    base_ticker,
-                    base_series,
-                    indicator_configs,
-                ) else {
+        instances: &IndicatorInstanceStore,
+    ) -> Vec<(IndicatorInstanceId, IndicatorUnsupportedReason)> {
+        self.selected_indicators()
+            .into_iter()
+            .filter_map(|id| {
+                let IndicatorAvailability::Unsupported(reason) =
+                    self.indicator_availability(id, basis, base_ticker, base_series, instances)
+                else {
                     return None;
                 };
 
-                self.indicator_panels[indicator]
-                    .as_ref()
-                    .map(|_| (indicator, reason))
+                Some((id, reason))
             })
             .collect()
     }
@@ -228,18 +226,19 @@ impl IndicatorLayout {
     pub fn trade_data_unavailable_indicators(
         &self,
         trade_data_enabled: bool,
-    ) -> Vec<(KlineIndicator, IndicatorUnsupportedReason)> {
+        instances: &IndicatorInstanceStore,
+    ) -> Vec<(IndicatorInstanceId, IndicatorUnsupportedReason)> {
         if trade_data_enabled {
             return Vec::new();
         }
-        super::indicator::all_indicators()
-            .iter()
-            .copied()
-            .filter(|indicator| {
-                self.indicator_panels[*indicator].is_some()
-                    && super::indicator::requires_trade_data(*indicator)
+        self.selected_indicators()
+            .into_iter()
+            .filter(|id| {
+                instances
+                    .get(*id)
+                    .is_some_and(|instance| super::indicator::requires_trade_data(instance.kind))
             })
-            .map(|indicator| (indicator, IndicatorUnsupportedReason::MissingRequiredInput))
+            .map(|id| (id, IndicatorUnsupportedReason::MissingRequiredInput))
             .collect()
     }
 
@@ -287,10 +286,10 @@ impl IndicatorLayout {
 
     pub fn indicator_mark(
         &self,
-        indicator: KlineIndicator,
+        id: IndicatorInstanceId,
         signed_overlay_input: bool,
     ) -> Option<MarkKind> {
-        let (panel_id, layer_id) = self.indicator_layer_binding(indicator)?;
+        let (panel_id, layer_id) = self.indicator_layer_binding(id)?;
 
         self.composition
             .resolved_panel_marks_with_runtime(panel_id, signed_overlay_input)?
@@ -299,8 +298,8 @@ impl IndicatorLayout {
             .map(|(_, mark)| mark)
     }
 
-    fn indicator_layer_binding(&self, indicator: KlineIndicator) -> Option<(PanelId, LayerId)> {
-        let binding = self.indicator_panels[indicator]?;
+    fn indicator_layer_binding(&self, id: IndicatorInstanceId) -> Option<(PanelId, LayerId)> {
+        let binding = *self.indicator_panels.get(&id)?;
         Some(match binding {
             IndicatorPanelBinding::AuxPanel { panel_id } => {
                 let layer_id = self.composition.panel(panel_id)?.base_layer.or_else(|| {
@@ -316,8 +315,8 @@ impl IndicatorLayout {
         })
     }
 
-    pub fn set_indicator_mark(&mut self, indicator: KlineIndicator, mark: MarkKind) -> bool {
-        let Some((panel_id, layer_id)) = self.indicator_layer_binding(indicator) else {
+    pub fn set_indicator_mark(&mut self, id: IndicatorInstanceId, mark: MarkKind) -> bool {
+        let Some((panel_id, layer_id)) = self.indicator_layer_binding(id) else {
             return false;
         };
 
@@ -325,8 +324,8 @@ impl IndicatorLayout {
             .set_panel_layer_mark(panel_id, layer_id, mark)
     }
 
-    pub fn toggle_indicator_visibility(&mut self, indicator: KlineIndicator) -> bool {
-        let Some((panel_id, layer_id)) = self.indicator_layer_binding(indicator) else {
+    pub fn toggle_indicator_visibility(&mut self, id: IndicatorInstanceId) -> bool {
+        let Some((panel_id, layer_id)) = self.indicator_layer_binding(id) else {
             return false;
         };
         let Some(visible) = self
@@ -342,30 +341,24 @@ impl IndicatorLayout {
             .set_panel_layer_visibility(panel_id, layer_id, !visible)
     }
 
-    pub fn reset_indicator_mark(&mut self, indicator: KlineIndicator) -> bool {
-        let Some((panel_id, layer_id)) = self.indicator_layer_binding(indicator) else {
+    pub fn reset_indicator_mark(&mut self, id: IndicatorInstanceId) -> bool {
+        let Some((panel_id, layer_id)) = self.indicator_layer_binding(id) else {
             return false;
         };
 
         self.composition.clear_panel_layer_mark(panel_id, layer_id)
     }
 
-    pub fn reset_indicator_presentation(&mut self, indicator: KlineIndicator) -> bool {
-        self.saved_indicator_presentations[indicator]
-            .take()
-            .is_some()
+    pub fn reset_indicator_presentation(&mut self, id: IndicatorInstanceId) -> bool {
+        self.saved_indicator_presentations.remove(&id).is_some()
     }
 
     pub fn retains_panel(&self, panel_id: PanelId) -> bool {
-        super::indicator::all_indicators()
-            .iter()
-            .copied()
-            .any(|indicator| {
-                matches!(
-                    &self.saved_indicator_presentations[indicator],
-                    Some(DisabledIndicatorPresentation::AuxiliaryPanel { panel, .. })
-                        if panel.id == panel_id
-                )
+        self.saved_indicator_presentations
+            .values()
+            .any(|presentation| {
+                matches!(presentation, DisabledIndicatorPresentation::AuxiliaryPanel { panel, .. }
+                if panel.id == panel_id)
             })
     }
 
@@ -389,32 +382,36 @@ impl IndicatorLayout {
         self.set_panel_bar_mode(panel_index, BarMode::Histogram(mode))
     }
 
-    pub fn oi_enabled(&self) -> bool {
-        self.indicator_panels[KlineIndicator::OpenInterest].is_some()
+    pub fn oi_enabled(&self, instances: &IndicatorInstanceStore) -> bool {
+        self.selected_indicators().into_iter().any(|id| {
+            instances
+                .get(id)
+                .is_some_and(|instance| instance.kind == KlineIndicator::OpenInterest)
+        })
     }
 
     pub fn prune_stale_bindings(&mut self) {
         self.prune_stale_indicator_bindings();
     }
 
-    fn install_default_indicators(&mut self) {
-        let _ = self.enable_indicator(KlineIndicator::Volume);
-    }
-
-    fn enable_indicator(&mut self, indicator: KlineIndicator) -> bool {
-        if self.indicator_panels[indicator].is_some() {
+    fn enable_indicator(&mut self, id: IndicatorInstanceId, indicator: KlineIndicator) -> bool {
+        if self.indicator_panels.contains_key(&id) {
             return false;
         }
 
-        if self.restore_saved_indicator(indicator) {
+        if self.restore_saved_indicator(id) {
             return true;
         }
 
-        self.enable_indicator_from_recipe(indicator)
+        self.enable_indicator_from_recipe(id, indicator)
     }
 
-    fn enable_indicator_from_recipe(&mut self, indicator: KlineIndicator) -> bool {
-        if self.indicator_panels[indicator].is_some() {
+    fn enable_indicator_from_recipe(
+        &mut self,
+        id: IndicatorInstanceId,
+        indicator: KlineIndicator,
+    ) -> bool {
+        if self.indicator_panels.contains_key(&id) {
             return false;
         }
 
@@ -447,9 +444,7 @@ impl IndicatorLayout {
                 let _ = self
                     .composition
                     .set_panel_preferred_scale(panel_id, preferred_scale);
-                let _ = self
-                    .composition
-                    .set_panel_value_id(panel_id, Some(indicator));
+                let _ = self.composition.set_panel_value_id(panel_id, Some(id));
                 IndicatorPanelBinding::AuxPanel { panel_id }
             }
             IndicatorPanelRecipe::Table {
@@ -458,15 +453,12 @@ impl IndicatorLayout {
                 ..
             } => {
                 let panel_id = self.composition.add_table_panel(panel_title, source);
-                let _ = self
-                    .composition
-                    .set_panel_value_id(panel_id, Some(indicator));
+                let _ = self.composition.set_panel_value_id(panel_id, Some(id));
                 IndicatorPanelBinding::AuxPanel { panel_id }
             }
             IndicatorPanelRecipe::PrimaryOverlay {
                 layer_name,
                 source,
-                value_id,
                 data_kind,
                 mark,
                 axis,
@@ -476,7 +468,10 @@ impl IndicatorLayout {
                 };
                 let layer = self.composition.new_layer(
                     layer_name,
-                    LayerSource::RawIndicator { source, value_id },
+                    LayerSource::RawIndicator {
+                        source,
+                        value_id: id,
+                    },
                     data_kind,
                     mark,
                     axis,
@@ -492,12 +487,12 @@ impl IndicatorLayout {
             }
         };
 
-        self.indicator_panels[indicator] = Some(binding);
+        self.indicator_panels.insert(id, binding);
         true
     }
 
-    fn disable_indicator(&mut self, indicator: KlineIndicator) -> bool {
-        let Some(binding) = self.indicator_panels[indicator].take() else {
+    fn disable_indicator(&mut self, id: IndicatorInstanceId) -> bool {
+        let Some(binding) = self.indicator_panels.remove(&id) else {
             return false;
         };
 
@@ -509,22 +504,24 @@ impl IndicatorLayout {
                     .iter()
                     .position(|panel| panel.id == panel_id)
                 else {
-                    self.indicator_panels[indicator] = Some(binding);
+                    self.indicator_panels.insert(id, binding);
                     return false;
                 };
                 let Some(panel) = self.composition.panel(panel_id).cloned() else {
-                    self.indicator_panels[indicator] = Some(binding);
+                    self.indicator_panels.insert(id, binding);
                     return false;
                 };
                 let splits = self.composition.splits.clone();
                 let removed = self.composition.remove_panel(panel_id);
                 if removed {
-                    self.saved_indicator_presentations[indicator] =
-                        Some(DisabledIndicatorPresentation::AuxiliaryPanel {
+                    self.saved_indicator_presentations.insert(
+                        id,
+                        DisabledIndicatorPresentation::AuxiliaryPanel {
                             panel,
                             index,
                             splits,
-                        });
+                        },
+                    );
                 }
                 removed
             }
@@ -535,26 +532,28 @@ impl IndicatorLayout {
                     .and_then(|panel| panel.layers.iter().find(|layer| layer.id == layer_id))
                     .cloned()
                 else {
-                    self.indicator_panels[indicator] = Some(binding);
+                    self.indicator_panels.insert(id, binding);
                     return false;
                 };
                 let removed = self.composition.remove_layer_from_panel(panel_id, layer_id);
                 if removed {
-                    self.saved_indicator_presentations[indicator] =
-                        Some(DisabledIndicatorPresentation::PrimaryLayer { panel_id, layer });
+                    self.saved_indicator_presentations.insert(
+                        id,
+                        DisabledIndicatorPresentation::PrimaryLayer { panel_id, layer },
+                    );
                 }
                 removed
             }
         };
 
         if !removed {
-            self.indicator_panels[indicator] = Some(binding);
+            self.indicator_panels.insert(id, binding);
         }
         removed
     }
 
-    fn restore_saved_indicator(&mut self, indicator: KlineIndicator) -> bool {
-        let Some(saved) = self.saved_indicator_presentations[indicator].take() else {
+    fn restore_saved_indicator(&mut self, id: IndicatorInstanceId) -> bool {
+        let Some(saved) = self.saved_indicator_presentations.remove(&id) else {
             return false;
         };
 
@@ -569,19 +568,23 @@ impl IndicatorLayout {
                 let mut panels = self.composition.panels.clone();
                 panels.insert(insert_at, panel);
                 self.composition = ChartComposition::from_parts(panels, splits);
-                self.indicator_panels[indicator] =
-                    Some(IndicatorPanelBinding::AuxPanel { panel_id });
+                self.indicator_panels
+                    .insert(id, IndicatorPanelBinding::AuxPanel { panel_id });
                 true
             }
             DisabledIndicatorPresentation::PrimaryLayer { panel_id, layer } => {
                 let layer_id = layer.id;
                 if self.composition.add_layer_to_panel(panel_id, layer.clone()) {
-                    self.indicator_panels[indicator] =
-                        Some(IndicatorPanelBinding::PrimaryLayer { panel_id, layer_id });
+                    self.indicator_panels.insert(
+                        id,
+                        IndicatorPanelBinding::PrimaryLayer { panel_id, layer_id },
+                    );
                     true
                 } else {
-                    self.saved_indicator_presentations[indicator] =
-                        Some(DisabledIndicatorPresentation::PrimaryLayer { panel_id, layer });
+                    self.saved_indicator_presentations.insert(
+                        id,
+                        DisabledIndicatorPresentation::PrimaryLayer { panel_id, layer },
+                    );
                     false
                 }
             }
@@ -589,20 +592,25 @@ impl IndicatorLayout {
     }
 
     fn rebuild_indicator_bindings(&mut self) {
-        self.indicator_panels = EnumMap::default();
+        self.indicator_panels.clear();
         for panel in &self.composition.panels {
             if let Some(value_id) = panel.value_id {
-                self.indicator_panels[value_id] =
-                    Some(IndicatorPanelBinding::AuxPanel { panel_id: panel.id });
+                self.indicator_panels.insert(
+                    value_id,
+                    IndicatorPanelBinding::AuxPanel { panel_id: panel.id },
+                );
             }
             for layer in &panel.layers {
                 let Some(value_id) = layer.source.indicator_value_id() else {
                     continue;
                 };
-                self.indicator_panels[value_id] = Some(IndicatorPanelBinding::PrimaryLayer {
-                    panel_id: panel.id,
-                    layer_id: layer.id,
-                });
+                self.indicator_panels.insert(
+                    value_id,
+                    IndicatorPanelBinding::PrimaryLayer {
+                        panel_id: panel.id,
+                        layer_id: layer.id,
+                    },
+                );
             }
         }
     }
@@ -691,24 +699,16 @@ impl IndicatorLayout {
     }
 
     fn prune_stale_indicator_bindings(&mut self) {
-        for indicator in super::indicator::all_indicators().iter().copied() {
-            let Some(binding) = self.indicator_panels[indicator] else {
-                continue;
-            };
-            let stale = match binding {
-                IndicatorPanelBinding::AuxPanel { panel_id } => {
-                    self.composition.panel(panel_id).is_none()
-                }
-                IndicatorPanelBinding::PrimaryLayer { panel_id, layer_id } => self
-                    .composition
-                    .panel(panel_id)
-                    .map(|panel| !panel.layers.iter().any(|layer| layer.id == layer_id))
-                    .unwrap_or(true),
-            };
-            if stale {
-                self.indicator_panels[indicator] = None;
+        self.indicator_panels.retain(|_, binding| !match *binding {
+            IndicatorPanelBinding::AuxPanel { panel_id } => {
+                self.composition.panel(panel_id).is_none()
             }
-        }
+            IndicatorPanelBinding::PrimaryLayer { panel_id, layer_id } => self
+                .composition
+                .panel(panel_id)
+                .map(|panel| !panel.layers.iter().any(|layer| layer.id == layer_id))
+                .unwrap_or(true),
+        });
     }
 
     fn panel_base_layer_ids(&self, panel_index: usize) -> Option<(PanelId, LayerId)> {

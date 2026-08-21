@@ -29,6 +29,9 @@ pub const RSI_SIGNAL_FIELD_KEY: IndicatorDataFieldKey = IndicatorDataFieldKey::C
 pub const RSI_LOWER_BAND_FIELD_KEY: IndicatorDataFieldKey =
     IndicatorDataFieldKey::Custom("rsi.lower_band");
 
+pub const STOCH_RSI_D_FIELD_KEY: IndicatorDataFieldKey =
+    IndicatorDataFieldKey::Custom("stoch_rsi.d");
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum IndicatorCellValue {
     Number(f32),

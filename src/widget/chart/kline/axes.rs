@@ -252,7 +252,10 @@ where
                 let Some(panel) = scene.layout.panel(panel_index) else {
                     continue;
                 };
-                let columns = table_columns(value_id);
+                let Some(kind) = self.indicator_kind(value_id) else {
+                    continue;
+                };
+                let columns = table_columns(kind);
                 let row_height = (panel.plot.height / columns.len().max(1) as f32).max(1.0);
                 for (row, column) in columns.iter().enumerate() {
                     labels.push((

@@ -1,10 +1,13 @@
+use super::super::IndicatorUpdateScope;
 use super::super::values::IndicatorData;
 use super::input::IndicatorInput;
 use super::runtime::{IndicatorDefinition, IndicatorRuntime};
 use super::{
     AvailabilityContext, IndicatorAvailability, IndicatorColorSlot, IndicatorColorSpec,
-    IndicatorOverlayChannelSpec, IndicatorOverlayColorRole, IndicatorOverlaySource,
-    IndicatorRuntimeSnapshot, KlinePriceSource,
+    IndicatorConfigValue, IndicatorHistoryRequirement, IndicatorOverlayChannelSpec,
+    IndicatorOverlayColorRole, IndicatorOverlaySource, IndicatorRuntimeSnapshot, IndicatorSetting,
+    IndicatorSettingChoice, IndicatorSettingControl, IndicatorSettingValue,
+    IndicatorSettingsContext, KlinePriceSource,
 };
 use crate::chart::Basis;
 use crate::config::timezone::UserTimezone;
@@ -123,6 +126,92 @@ impl AnchoredVwapConfig {
     }
 }
 
+impl IndicatorConfigValue for AnchoredVwapConfig {
+    fn normalized_for_basis(self, basis: Basis) -> Self {
+        self.normalized_for_basis(basis)
+    }
+
+    fn history_requirement(
+        self,
+        basis: Basis,
+        reference_time: UnixMs,
+    ) -> IndicatorHistoryRequirement {
+        let Basis::Time(timeframe) = basis else {
+            return IndicatorHistoryRequirement::default();
+        };
+
+        IndicatorHistoryRequirement::new(
+            self.history_start(reference_time, UserTimezone::Utc),
+            self.required_history_bars(timeframe).unwrap_or_default(),
+        )
+    }
+
+    fn settings(self, context: IndicatorSettingsContext) -> Vec<IndicatorSetting> {
+        let anchors = VwapAnchor::STANDARD
+            .into_iter()
+            .filter(|anchor| anchor.supports_basis(context.basis))
+            .map(|anchor| IndicatorSettingChoice {
+                id: vwap_anchor_id(anchor),
+                label: vwap_anchor_id(anchor),
+            })
+            .collect();
+        vec![
+            IndicatorSetting {
+                id: "anchor",
+                label: "Anchor",
+                value: IndicatorSettingValue::Choice(vwap_anchor_id(self.anchor)),
+                control: IndicatorSettingControl::Choices(anchors),
+            },
+            IndicatorSetting {
+                id: "source",
+                label: "Price source",
+                value: IndicatorSettingValue::Choice(self.source.id()),
+                control: IndicatorSettingControl::Choices(
+                    KlinePriceSource::ALL
+                        .into_iter()
+                        .map(|source| IndicatorSettingChoice {
+                            id: source.id(),
+                            label: source.id(),
+                        })
+                        .collect(),
+                ),
+            },
+        ]
+    }
+
+    fn with_setting(self, id: &'static str, value: IndicatorSettingValue) -> Option<Self> {
+        match (id, value) {
+            ("anchor", IndicatorSettingValue::Choice(value)) => Some(Self {
+                anchor: vwap_anchor_from_id(value)?,
+                ..self
+            }),
+            ("source", IndicatorSettingValue::Choice(value)) => Some(Self {
+                source: KlinePriceSource::from_id(value)?,
+                ..self
+            }),
+            _ => None,
+        }
+    }
+}
+
+fn vwap_anchor_id(anchor: VwapAnchor) -> &'static str {
+    match anchor {
+        VwapAnchor::Day => "Day",
+        VwapAnchor::Week => "Week",
+        VwapAnchor::Month => "Month",
+        VwapAnchor::Custom(_) => "Custom",
+    }
+}
+
+fn vwap_anchor_from_id(id: &str) -> Option<VwapAnchor> {
+    match id {
+        "Day" => Some(VwapAnchor::Day),
+        "Week" => Some(VwapAnchor::Week),
+        "Month" => Some(VwapAnchor::Month),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct AnchoredVwapState {
     values: BTreeMap<UnixMs, f32>,
@@ -187,6 +276,15 @@ impl IndicatorRuntime for AnchoredVwapState {
         if let IndicatorInput::Klines { bars, times } = input {
             self.recompute(bars, times, config);
         }
+    }
+
+    fn on_input_from(
+        &mut self,
+        input: IndicatorInput<'_>,
+        config: Self::Config,
+        _scope: IndicatorUpdateScope,
+    ) {
+        self.on_input(input, config);
     }
 
     fn data_for_bar(&self, bar: &Kline) -> Option<IndicatorData> {

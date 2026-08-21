@@ -3,8 +3,10 @@ use super::super::values::{BOLLINGER_LOWER_FIELD_KEY, BOLLINGER_UPPER_FIELD_KEY,
 use super::moving_average::MovingAverageMethod;
 use super::runtime::{IndicatorDefinition, IndicatorRuntime};
 use super::{
-    IndicatorAvailability, IndicatorColorSlot, IndicatorColorSpec, IndicatorOverlayChannelSpec,
-    IndicatorOverlayColorRole, IndicatorOverlaySource,
+    IndicatorAvailability, IndicatorColorSlot, IndicatorColorSpec, IndicatorConfigValue,
+    IndicatorOverlayChannelSpec, IndicatorOverlayColorRole, IndicatorOverlaySource,
+    IndicatorSetting, IndicatorSettingChoice, IndicatorSettingControl, IndicatorSettingValue,
+    IndicatorSettingsContext,
 };
 use exchange::{Kline, UnixMs};
 use serde::{Deserialize, Serialize};
@@ -85,6 +87,88 @@ impl BollingerBandsCalculationConfig {
 
     pub fn warmup_bars(self) -> u64 {
         u64::from(self.normalized().period)
+    }
+}
+
+impl IndicatorConfigValue for BollingerBandsCalculationConfig {
+    fn normalized(self) -> Self {
+        self.normalized()
+    }
+
+    fn settings(self, _context: IndicatorSettingsContext) -> Vec<IndicatorSetting> {
+        vec![
+            IndicatorSetting {
+                id: "period",
+                label: "Period",
+                value: IndicatorSettingValue::U16(self.period),
+                control: IndicatorSettingControl::SliderU16 { min: 2, max: 200 },
+            },
+            IndicatorSetting {
+                id: "method",
+                label: "Average method",
+                value: IndicatorSettingValue::Choice(moving_average_method_id(self.method)),
+                control: IndicatorSettingControl::Choices(moving_average_method_choices()),
+            },
+            IndicatorSetting {
+                id: "std_dev_multiplier",
+                label: "Std. deviation",
+                value: IndicatorSettingValue::F32(self.std_dev_multiplier),
+                control: IndicatorSettingControl::SliderF32 {
+                    min: 0.0,
+                    max: 5.0,
+                    step: 0.1,
+                },
+            },
+        ]
+    }
+
+    fn with_setting(self, id: &'static str, value: IndicatorSettingValue) -> Option<Self> {
+        match (id, value) {
+            ("period", IndicatorSettingValue::U16(period)) => Some(Self { period, ..self }),
+            ("method", IndicatorSettingValue::Choice(value)) => Some(Self {
+                method: moving_average_method_from_id(value)?,
+                ..self
+            }),
+            ("std_dev_multiplier", IndicatorSettingValue::F32(std_dev_multiplier)) => Some(Self {
+                std_dev_multiplier,
+                ..self
+            }),
+            _ => None,
+        }
+    }
+}
+
+fn moving_average_method_choices() -> Vec<IndicatorSettingChoice> {
+    vec![
+        IndicatorSettingChoice {
+            id: "sma",
+            label: "SMA",
+        },
+        IndicatorSettingChoice {
+            id: "ema",
+            label: "EMA",
+        },
+        IndicatorSettingChoice {
+            id: "vwma",
+            label: "VWMA",
+        },
+    ]
+}
+
+fn moving_average_method_id(method: MovingAverageMethod) -> &'static str {
+    match method {
+        MovingAverageMethod::Sma => "sma",
+        MovingAverageMethod::Ema => "ema",
+        MovingAverageMethod::Vwma => "vwma",
+    }
+}
+
+fn moving_average_method_from_id(id: &str) -> Option<MovingAverageMethod> {
+    match id {
+        "sma" => Some(MovingAverageMethod::Sma),
+        "ema" => Some(MovingAverageMethod::Ema),
+        "vwma" => Some(MovingAverageMethod::Vwma),
+        _ => None,
     }
 }
 

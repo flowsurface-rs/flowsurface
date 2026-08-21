@@ -1,10 +1,11 @@
 use super::super::IndicatorUpdateScope;
-use super::super::engine::IndicatorConfigStore;
 use super::super::values::{IndicatorData, RSI_SIGNAL_FIELD_KEY};
 use super::runtime::{IndicatorDefinition, IndicatorRuntime};
 use super::{
-    IndicatorAvailability, IndicatorColorSlot, IndicatorColorSpec, IndicatorMarkSpec,
-    IndicatorOverlayChannelSpec, IndicatorOverlayColorRole, IndicatorOverlaySource,
+    IndicatorAvailability, IndicatorColorSlot, IndicatorColorSpec, IndicatorConfig,
+    IndicatorConfigValue, IndicatorMarkSpec, IndicatorOverlayChannelSpec,
+    IndicatorOverlayColorRole, IndicatorOverlaySource, IndicatorSetting, IndicatorSettingControl,
+    IndicatorSettingValue, IndicatorSettingsContext,
 };
 use crate::chart::kline_v2::composition::{BarMode, MarkKind};
 use exchange::{Kline, UnixMs};
@@ -83,12 +84,18 @@ pub(super) const OVERLAY_CHANNELS: [IndicatorOverlayChannelSpec; 4] = [
     },
 ];
 
-fn rsi_upper_band(configs: &IndicatorConfigStore) -> f32 {
-    configs.rsi_config().upper_band
+fn rsi_upper_band(config: IndicatorConfig) -> f32 {
+    let IndicatorConfig::Rsi(config) = config else {
+        unreachable!("RSI must retain its own configuration");
+    };
+    config.upper_band
 }
 
-fn rsi_lower_band(configs: &IndicatorConfigStore) -> f32 {
-    configs.rsi_config().lower_band
+fn rsi_lower_band(config: IndicatorConfig) -> f32 {
+    let IndicatorConfig::Rsi(config) = config else {
+        unreachable!("RSI must retain its own configuration");
+    };
+    config.lower_band
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -176,6 +183,88 @@ impl RsiConfig {
         };
 
         base.saturating_add(smoothing)
+    }
+}
+
+impl IndicatorConfigValue for RsiConfig {
+    fn normalized(self) -> Self {
+        self.normalized()
+    }
+
+    fn settings(self, _context: IndicatorSettingsContext) -> Vec<IndicatorSetting> {
+        let mut settings = vec![
+            IndicatorSetting {
+                id: "period",
+                label: "Period",
+                value: IndicatorSettingValue::U16(self.period),
+                control: IndicatorSettingControl::SliderU16 { min: 2, max: 100 },
+            },
+            IndicatorSetting {
+                id: "ema_signal",
+                label: "EMA signal",
+                value: IndicatorSettingValue::Bool(matches!(self.smoothing, RsiSmoothing::Ema(_))),
+                control: IndicatorSettingControl::Toggle,
+            },
+        ];
+        if let RsiSmoothing::Ema(period) = self.smoothing {
+            settings.push(IndicatorSetting {
+                id: "ema_period",
+                label: "EMA period",
+                value: IndicatorSettingValue::U16(period),
+                control: IndicatorSettingControl::SliderU16 { min: 2, max: 50 },
+            });
+        }
+        settings.extend([
+            IndicatorSetting {
+                id: "upper_band",
+                label: "Upper band",
+                value: IndicatorSettingValue::F32(self.upper_band),
+                control: IndicatorSettingControl::SliderF32 {
+                    min: 1.0,
+                    max: 99.0,
+                    step: 1.0,
+                },
+            },
+            IndicatorSetting {
+                id: "lower_band",
+                label: "Lower band",
+                value: IndicatorSettingValue::F32(self.lower_band),
+                control: IndicatorSettingControl::SliderF32 {
+                    min: 1.0,
+                    max: 99.0,
+                    step: 1.0,
+                },
+            },
+        ]);
+        settings
+    }
+
+    fn with_setting(self, id: &'static str, value: IndicatorSettingValue) -> Option<Self> {
+        match (id, value) {
+            ("period", IndicatorSettingValue::U16(period)) => Some(Self { period, ..self }),
+            ("ema_signal", IndicatorSettingValue::Bool(enabled)) => Some(Self {
+                smoothing: if enabled {
+                    RsiSmoothing::Ema(match self.smoothing {
+                        RsiSmoothing::Ema(period) => period.max(2),
+                        RsiSmoothing::None => 9,
+                    })
+                } else {
+                    RsiSmoothing::None
+                },
+                ..self
+            }),
+            ("ema_period", IndicatorSettingValue::U16(period)) => Some(Self {
+                smoothing: RsiSmoothing::Ema(period),
+                ..self
+            }),
+            ("upper_band", IndicatorSettingValue::F32(upper_band)) => {
+                Some(Self { upper_band, ..self })
+            }
+            ("lower_band", IndicatorSettingValue::F32(lower_band)) => {
+                Some(Self { lower_band, ..self })
+            }
+            _ => None,
+        }
     }
 }
 

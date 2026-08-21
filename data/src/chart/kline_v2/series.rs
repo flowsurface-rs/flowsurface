@@ -2,14 +2,13 @@ use crate::aggr::{TickCount, ticks::TickAggr};
 use crate::chart::Basis;
 use crate::chart::kline::{KlineTrades, NPoc, PointOfControl};
 use crate::chart::kline_v2::IndicatorUpdateScope;
-use crate::chart::kline_v2::KlineIndicator;
 use crate::chart::kline_v2::composition::PanelValueId;
-use crate::chart::kline_v2::engine::IndicatorConfigStore;
 use crate::chart::kline_v2::indicators::{
     IndicatorInput, IndicatorRuntimeSet, IndicatorRuntimeSnapshot, NormalizedTradeBar,
     TradeBarValues,
 };
 use crate::chart::kline_v2::values::IndicatorData;
+use crate::chart::kline_v2::{IndicatorInstanceId, IndicatorInstanceStore};
 use crate::config::theme::ThemeAccent;
 use exchange::{
     Kline, TickerInfo, Timeframe, Trade, UnixMs,
@@ -586,20 +585,30 @@ impl KlineSeries {
         true
     }
 
-    pub fn indicator_snapshot(&self, indicator: KlineIndicator) -> IndicatorRuntimeSnapshot {
+    pub fn indicator_snapshot(&self, id: IndicatorInstanceId) -> IndicatorRuntimeSnapshot {
         self.indicators
             .as_ref()
-            .map(|indicators| indicators.snapshot_for(indicator))
+            .map(|indicators| indicators.snapshot_for(id))
             .unwrap_or_default()
     }
 
-    pub(crate) fn refresh_indicator_inputs(&mut self, configs: &IndicatorConfigStore) {
-        self.refresh_indicator_inputs_from(configs, IndicatorUpdateScope::Full);
+    pub(crate) fn set_active_indicators(
+        &mut self,
+        active: &[IndicatorInstanceId],
+        instances: &IndicatorInstanceStore,
+    ) {
+        if let Some(indicators) = self.indicators.as_mut() {
+            indicators.set_active(active, instances);
+        }
+    }
+
+    pub(crate) fn refresh_indicator_inputs(&mut self, instances: &IndicatorInstanceStore) {
+        self.refresh_indicator_inputs_from(instances, IndicatorUpdateScope::Full);
     }
 
     pub(crate) fn refresh_indicator_inputs_from(
         &mut self,
-        configs: &IndicatorConfigStore,
+        instances: &IndicatorInstanceStore,
         scope: IndicatorUpdateScope,
     ) {
         if let Some(indicators) = self.indicators.as_mut() {
@@ -610,7 +619,7 @@ impl KlineSeries {
                     bars: &self.bars,
                     times,
                 },
-                configs,
+                instances,
                 scope,
             );
         }
@@ -1235,21 +1244,21 @@ impl KlineSeries {
     pub fn insert_indicator_input(
         &mut self,
         input: IndicatorInput<'_>,
-        configs: &IndicatorConfigStore,
+        instances: &IndicatorInstanceStore,
     ) {
         if let Some(indicators) = self.indicators.as_mut() {
-            indicators.on_input(input, configs);
+            indicators.on_input(input, instances);
         }
     }
 
     pub fn insert_indicator_input_from(
         &mut self,
         input: IndicatorInput<'_>,
-        configs: &IndicatorConfigStore,
+        instances: &IndicatorInstanceStore,
         scope: IndicatorUpdateScope,
     ) {
         if let Some(indicators) = self.indicators.as_mut() {
-            indicators.on_input_from(input, configs, scope);
+            indicators.on_input_from(input, instances, scope);
         }
     }
 

@@ -1,10 +1,9 @@
-use super::KlineIndicator;
-use super::engine::IndicatorConfigStore;
 use super::indicators::{
     AvailabilityContext, IndicatorAvailability, IndicatorInputSource, availability,
     input_requirements,
 };
 use super::series::KlineSeries;
+use super::{IndicatorInstanceId, IndicatorInstanceStore};
 use crate::chart::Basis;
 use exchange::{TickerInfo, Timeframe, UnixMs};
 
@@ -39,8 +38,8 @@ pub struct FetchPlanInput<'a> {
     pub horizontal_offset: f32,
     pub base_ticker: TickerInfo,
     pub series: &'a [KlineSeries],
-    pub active_indicators: &'a [KlineIndicator],
-    pub indicator_configs: &'a IndicatorConfigStore,
+    pub active_indicators: &'a [IndicatorInstanceId],
+    pub indicator_instances: &'a IndicatorInstanceStore,
     pub open_interest_enabled: bool,
     pub trade_data_required: bool,
     pub trade_fetch_enabled: bool,
@@ -58,7 +57,7 @@ pub fn desired_fetch_batches(input: FetchPlanInput<'_>) -> Vec<FetchBatch> {
     let dt = timeframe.to_milliseconds().max(1);
     let visible_points = input.visible_points.max(2);
     let indicator_warmup_bars =
-        active_indicator_warmup_bars(input.active_indicators, input.indicator_configs);
+        active_indicator_warmup_bars(input.active_indicators, input.indicator_instances);
     let required_history_bars = indicator_warmup_bars.max(input.required_history_bars);
     let base_fetch_bars = DEFAULT_FETCH_BARS.max(visible_points + required_history_bars);
     let comparison_fetch_bars = DEFAULT_FETCH_BARS.max(visible_points);
@@ -186,8 +185,10 @@ pub fn desired_fetch_batches(input: FetchPlanInput<'_>) -> Vec<FetchBatch> {
             }
         }
 
-        let open_interest_indicator = input.active_indicators.iter().copied().find(|indicator| {
-            input_requirements(*indicator).contains(&IndicatorInputSource::OpenInterest)
+        let open_interest_indicator = input.active_indicators.iter().copied().find(|id| {
+            input.indicator_instances.get(*id).is_some_and(|instance| {
+                input_requirements(instance.kind).contains(&IndicatorInputSource::OpenInterest)
+            })
         });
 
         if input.open_interest_enabled
@@ -312,8 +313,13 @@ pub fn desired_trade_fetch_range(input: FetchPlanInput<'_>) -> Option<FetchRange
 
 fn indicator_availability(
     input: &FetchPlanInput<'_>,
-    indicator: KlineIndicator,
+    id: IndicatorInstanceId,
 ) -> IndicatorAvailability {
+    let Some(instance) = input.indicator_instances.get(id) else {
+        return IndicatorAvailability::Unsupported(
+            super::indicators::IndicatorUnsupportedReason::MissingRequiredInput,
+        );
+    };
     let base_series_data = input
         .series
         .iter()
@@ -321,7 +327,8 @@ fn indicator_availability(
         .and_then(|series| series.indicators.as_ref());
 
     availability(
-        indicator,
+        id,
+        instance.kind,
         AvailabilityContext {
             basis: input.basis,
             base_ticker: input.base_ticker,
@@ -331,13 +338,13 @@ fn indicator_availability(
 }
 
 fn active_indicator_warmup_bars(
-    active_indicators: &[KlineIndicator],
-    indicator_configs: &IndicatorConfigStore,
+    active_indicators: &[IndicatorInstanceId],
+    indicator_instances: &IndicatorInstanceStore,
 ) -> u64 {
     active_indicators
         .iter()
         .copied()
-        .filter_map(|indicator| indicator_configs.warmup_bars(indicator))
+        .filter_map(|id| indicator_instances.get(id)?.config.warmup_bars())
         .filter(|bars| *bars <= MAX_AUTO_INDICATOR_WARMUP_BARS)
         .max()
         .unwrap_or(0)

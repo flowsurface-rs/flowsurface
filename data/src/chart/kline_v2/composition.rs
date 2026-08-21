@@ -279,7 +279,7 @@ impl PanelScaleMode {
     }
 }
 
-pub type PanelValueId = super::indicators::KlineIndicator;
+pub type PanelValueId = super::IndicatorInstanceId;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PanelValuePrecision {

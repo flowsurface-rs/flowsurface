@@ -1,23 +1,24 @@
 use super::super::IndicatorUpdateScope;
-use super::super::engine::IndicatorConfigStore;
 use super::super::values::IndicatorData;
 use super::input::{
     CVD_INPUTS, IndicatorInput, IndicatorInputSource, KLINE_INPUTS, OPEN_INTEREST_INPUTS,
 };
 use super::runtime::IndicatorRuntime;
 use super::{
-    AvailabilityContext, IndicatorAvailability, IndicatorPanelRecipe, IndicatorRuntimeSet,
-    IndicatorRuntimeSnapshot,
+    AvailabilityContext, IndicatorAvailability, IndicatorConfigValue, IndicatorPanelRecipe,
+    IndicatorRuntimeSet, IndicatorRuntimeSnapshot, IndicatorSetting, IndicatorSettingValue,
+    IndicatorSettingsContext,
 };
+use crate::chart::Basis;
 use crate::chart::kline_v2::composition::{DataSourceId, PanelValuePrecision};
 use crate::chart::kline_v2::indicators::input::TRADE_INPUTS;
 use crate::chart::kline_v2::{
-    AxisBinding, BarMode, HistogramMode, LayerDataKind, MarkKind, PanelScaleMode, PanelValueId,
+    AxisBinding, BarMode, HistogramMode, LayerDataKind, MarkKind, PanelScaleMode,
     PanelValueLabelMode, PanelValueLabelPolicy,
 };
-use enum_map::Enum;
-use exchange::Kline;
+use enum_map::{Enum, EnumMap};
 use exchange::adapter::MarketKind;
+use exchange::{Kline, UnixMs};
 
 macro_rules! define_indicator_catalog {
     (
@@ -30,10 +31,11 @@ macro_rules! define_indicator_catalog {
                     display_name: $display_name:literal,
                     panel_recipe: $panel_recipe:block,
                     inputs: $inputs:expr,
-                    config: $config:ident,
+                    config: $config:ty,
                     colors: $colors:path,
                     marks: $marks:path,
-                    channels: $channels:path
+                    channels: $channels:path,
+                    uses_directional_volume: $uses_directional_volume:expr
                 }
             ),+ $(,)?
         }
@@ -41,6 +43,169 @@ macro_rules! define_indicator_catalog {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize, Enum)]
         pub enum KlineIndicator {
             $($variant),+
+        }
+
+        #[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize, serde::Serialize)]
+        pub enum IndicatorConfig {
+            $($variant($config)),+
+        }
+
+        impl Default for IndicatorConfig {
+            fn default() -> Self {
+                define_indicator_catalog!(@default_config $($variant: $config),+)
+            }
+        }
+
+        impl IndicatorConfig {
+            pub fn indicator(self) -> KlineIndicator {
+                match self {
+                    $(Self::$variant(_) => KlineIndicator::$variant),+
+                }
+            }
+
+            pub fn normalized(self) -> Self {
+                match self {
+                    $(Self::$variant(config) => Self::$variant(
+                        < $config as IndicatorConfigValue >::normalized(config)
+                    )),+
+                }
+            }
+
+            pub fn normalized_for_basis(self, basis: Basis) -> Self {
+                match self {
+                    $(Self::$variant(config) => Self::$variant(
+                        < $config as IndicatorConfigValue >::normalized_for_basis(config, basis)
+                    )),+
+                }
+            }
+
+            pub fn history_requirement(
+                self,
+                basis: Basis,
+                reference_time: UnixMs,
+            ) -> super::IndicatorHistoryRequirement {
+                match self {
+                    $(Self::$variant(config) =>
+                        < $config as IndicatorConfigValue >::history_requirement(
+                            config,
+                            basis,
+                            reference_time,
+                        )
+                    ),+
+                }
+            }
+
+            pub fn settings(self, context: IndicatorSettingsContext) -> Vec<IndicatorSetting> {
+                match self {
+                    $(Self::$variant(config) => < $config as IndicatorConfigValue >::settings(
+                        config,
+                        context,
+                    )),+
+                }
+            }
+
+            pub fn with_setting(
+                self,
+                id: &'static str,
+                value: IndicatorSettingValue,
+            ) -> Option<Self> {
+                match self {
+                    $(Self::$variant(config) =>
+                        < $config as IndicatorConfigValue >::with_setting(config, id, value)
+                            .map(Self::$variant)
+                    ),+
+                }
+            }
+
+            pub fn default_for(indicator: KlineIndicator) -> Self {
+                match indicator {
+                    $(KlineIndicator::$variant => Self::$variant(
+                        < $config as Default >::default()
+                    )),+
+                }
+            }
+
+            pub fn warmup_bars(self) -> Option<u64> {
+                match self {
+                    $(Self::$variant(config) =>
+                        <$state as super::runtime::IndicatorDefinition>::warmup_bars(config)
+                    ),+
+                }
+            }
+        }
+
+        #[derive(Debug, Clone, PartialEq, serde::Deserialize, serde::Serialize)]
+        pub struct IndicatorConfigStore {
+            configs: EnumMap<KlineIndicator, IndicatorConfig>,
+        }
+
+        impl Default for IndicatorConfigStore {
+            fn default() -> Self {
+                let mut configs = EnumMap::default();
+                $(configs[KlineIndicator::$variant] = IndicatorConfig::$variant(
+                    < $config as Default >::default()
+                );)+
+                Self { configs }
+            }
+        }
+
+        impl IndicatorConfigStore {
+            pub fn normalized(mut self) -> Self {
+                for indicator in all_indicators() {
+                    self.configs[*indicator] = self.configs[*indicator].normalized();
+                }
+                self
+            }
+
+            pub fn normalized_for_basis(mut self, basis: Basis) -> Self {
+                for indicator in all_indicators() {
+                    self.configs[*indicator] = self.configs[*indicator].normalized_for_basis(basis);
+                }
+                self
+            }
+
+            pub fn config_for(&self, indicator: KlineIndicator) -> IndicatorConfig {
+                self.configs[indicator]
+            }
+
+            pub fn update(&mut self, config: IndicatorConfig) -> bool {
+                let config = config.normalized();
+                let indicator = config.indicator();
+                if self.configs[indicator] == config {
+                    return false;
+                }
+                self.configs[indicator] = config;
+                true
+            }
+
+            pub fn reset(&mut self, indicator: KlineIndicator) -> bool {
+                self.update(IndicatorConfig::default_for(indicator))
+            }
+
+            pub fn warmup_bars(&self, indicator: KlineIndicator) -> Option<u64> {
+                match self.config_for(indicator) {
+                    $(IndicatorConfig::$variant(config) =>
+                        < $state as super::runtime::IndicatorDefinition >::warmup_bars(config)
+                    ),+
+                }
+            }
+
+            pub fn history_requirement(
+                &self,
+                active: &[KlineIndicator],
+                basis: Basis,
+                reference_time: UnixMs,
+            ) -> super::IndicatorHistoryRequirement {
+                active.iter().fold(
+                    super::IndicatorHistoryRequirement::default(),
+                    |requirement, indicator| {
+                        requirement.merge(
+                            self.config_for(*indicator)
+                                .history_requirement(basis, reference_time),
+                        )
+                    },
+                )
+            }
         }
 
         #[derive(Debug, Clone)]
@@ -64,15 +229,17 @@ macro_rules! define_indicator_catalog {
             pub(super) fn on_input_from(
                 &mut self,
                 input: IndicatorInput<'_>,
-                configs: &IndicatorConfigStore,
+                config: IndicatorConfig,
                 scope: IndicatorUpdateScope,
             ) {
                 match self {
-                    $(Self::$variant(state) => state.on_input_from(
-                        input,
-                        define_indicator_catalog!(@config $config configs),
-                        scope,
-                    ),)+
+                    $(Self::$variant(state) => {
+                        let IndicatorConfig::$variant(config) = config
+                        else {
+                            unreachable!("indicator configuration must match its runtime state");
+                        };
+                        state.on_input_from(input, config, scope);
+                    }),+
                 }
             }
 
@@ -116,6 +283,12 @@ macro_rules! define_indicator_catalog {
 
         pub fn requires_trade_data(indicator: KlineIndicator) -> bool {
             input_requirements(indicator).contains(&IndicatorInputSource::Trades)
+        }
+
+        pub fn uses_directional_volume(indicator: KlineIndicator) -> bool {
+            match indicator {
+                $(KlineIndicator::$variant => $uses_directional_volume,)+
+            }
         }
 
         pub fn display_name(indicator: KlineIndicator) -> &'static str {
@@ -178,13 +351,14 @@ macro_rules! define_indicator_catalog {
                 $(
                     KlineIndicator::$variant =>
                         <$state as super::runtime::IndicatorDefinition>::warmup_bars(
-                            <$state as super::runtime::IndicatorDefinition>::Config::default(),
+                            <$config as Default>::default(),
                         ),
                 )+
             }
         }
 
         pub fn availability(
+            instance_id: super::super::IndicatorInstanceId,
             indicator: KlineIndicator,
             context: AvailabilityContext,
             base_series_data: Option<&IndicatorRuntimeSet>,
@@ -196,7 +370,7 @@ macro_rules! define_indicator_catalog {
             }
 
             let snapshot = base_series_data
-                .map(|data| data.snapshot_for(indicator))
+                .map(|data| data.snapshot_for(instance_id))
                 .unwrap_or_default();
 
             match indicator {
@@ -215,15 +389,9 @@ macro_rules! define_indicator_catalog {
         <[()]>::len(&[$(define_indicator_catalog!(@replace $item ())),+])
     };
     (@replace $_item:ident $value:expr) => {$value};
-    (@config unit $configs:ident) => {()};
-    (@config rsi $configs:ident) => {$configs.rsi_config()};
-    (@config moving_averages $configs:ident) => {
-        $configs.moving_averages_calculation_config()
+    (@default_config $variant:ident: $config:ty $(, $rest_variant:ident: $rest_config:ty)*) => {
+        Self::$variant(<$config as Default>::default())
     };
-    (@config bollinger_bands $configs:ident) => {
-        $configs.bollinger_bands_calculation_config()
-    };
-    (@config anchored_vwap $configs:ident) => {$configs.anchored_vwap_config()};
 }
 
 define_indicator_catalog! {
@@ -232,6 +400,8 @@ define_indicator_catalog! {
         BollingerBands,
         MovingAverages,
         Rsi,
+        StochRsi,
+        Atr,
         AnchoredVwap,
         CumulativeVolumeDelta,
         TradeCount,
@@ -242,6 +412,8 @@ define_indicator_catalog! {
         BollingerBands,
         MovingAverages,
         Rsi,
+        StochRsi,
+        Atr,
         AnchoredVwap,
         OpenInterest,
         CumulativeVolumeDelta,
@@ -274,10 +446,11 @@ define_indicator_catalog! {
                 }
             },
             inputs: KLINE_INPUTS,
-            config: unit,
+            config: (),
             colors: super::volume::COLOR_SPECS,
             marks: super::volume::MARK_SPECS,
-            channels: super::NO_OVERLAY_CHANNELS
+            channels: super::NO_OVERLAY_CHANNELS,
+            uses_directional_volume: true
         },
         BollingerBands => {
             state: super::bollinger::BollingerBandsState,
@@ -286,17 +459,17 @@ define_indicator_catalog! {
                 IndicatorPanelRecipe::PrimaryOverlay {
                     layer_name: "Bollinger Basis",
                     source: DataSourceId::Primary,
-                    value_id: PanelValueId::BollingerBands,
                     data_kind: LayerDataKind::Scalar,
                     mark: MarkKind::Line,
                     axis: AxisBinding::Primary,
                 }
             },
             inputs: KLINE_INPUTS,
-            config: bollinger_bands,
+            config: super::bollinger::BollingerBandsCalculationConfig,
             colors: super::bollinger::COLOR_SPECS,
             marks: super::NO_MARK_SPECS,
-            channels: super::bollinger::OVERLAY_CHANNELS
+            channels: super::bollinger::OVERLAY_CHANNELS,
+            uses_directional_volume: false
         },
         MovingAverages => {
             state: super::moving_averages::MovingAveragesState,
@@ -305,17 +478,17 @@ define_indicator_catalog! {
                 IndicatorPanelRecipe::PrimaryOverlay {
                     layer_name: "Moving Averages",
                     source: DataSourceId::Primary,
-                    value_id: PanelValueId::MovingAverages,
                     data_kind: LayerDataKind::Scalar,
                     mark: MarkKind::Line,
                     axis: AxisBinding::Primary,
                 }
             },
             inputs: KLINE_INPUTS,
-            config: moving_averages,
+            config: super::moving_averages::MovingAveragesCalculationConfig,
             colors: super::moving_averages::COLOR_SPECS,
             marks: super::NO_MARK_SPECS,
-            channels: super::moving_averages::OVERLAY_CHANNELS
+            channels: super::moving_averages::OVERLAY_CHANNELS,
+            uses_directional_volume: false
         },
         Rsi => {
             state: super::rsi::RsiState,
@@ -340,10 +513,67 @@ define_indicator_catalog! {
                 }
             },
             inputs: KLINE_INPUTS,
-            config: rsi,
+            config: super::rsi::RsiConfig,
             colors: super::rsi::COLOR_SPECS,
             marks: super::rsi::MARK_SPECS,
-            channels: super::rsi::OVERLAY_CHANNELS
+            channels: super::rsi::OVERLAY_CHANNELS,
+            uses_directional_volume: false
+        },
+        StochRsi => {
+            state: super::stoch_rsi::StochRsiState,
+            display_name: "Stoch RSI",
+            panel_recipe: {
+                IndicatorPanelRecipe::Plot {
+                    panel_title: "Stoch RSI",
+                    layer_name: "Stoch RSI",
+                    source: DataSourceId::Primary,
+                    data_kind: LayerDataKind::Scalar,
+                    mark: MarkKind::Line,
+                    axis: AxisBinding::Secondary,
+                    value_precision: PanelValuePrecision::FixedPower10(
+                        exchange::unit::Power10::new(-2),
+                    ),
+                    value_label_policy: PanelValueLabelPolicy {
+                        axis_mode: PanelValueLabelMode::Compact,
+                        header_mode: PanelValueLabelMode::Compact,
+                        max_decimals: Some(2),
+                    },
+                    preferred_scale: PanelScaleMode::FitVisible,
+                }
+            },
+            inputs: KLINE_INPUTS,
+            config: super::stoch_rsi::StochRsiConfig,
+            colors: super::stoch_rsi::COLOR_SPECS,
+            marks: super::stoch_rsi::MARK_SPECS,
+            channels: super::stoch_rsi::OVERLAY_CHANNELS,
+            uses_directional_volume: false
+        },
+        Atr => {
+            state: super::atr::AtrState,
+            display_name: "ATR",
+            panel_recipe: {
+                IndicatorPanelRecipe::Plot {
+                    panel_title: "ATR",
+                    layer_name: "Average True Range",
+                    source: DataSourceId::Primary,
+                    data_kind: LayerDataKind::Scalar,
+                    mark: MarkKind::Line,
+                    axis: AxisBinding::Secondary,
+                    value_precision: PanelValuePrecision::BaseTickerMinTick,
+                    value_label_policy: PanelValueLabelPolicy {
+                        axis_mode: PanelValueLabelMode::Compact,
+                        header_mode: PanelValueLabelMode::Compact,
+                        max_decimals: None,
+                    },
+                    preferred_scale: PanelScaleMode::FitVisibleIncludeZero,
+                }
+            },
+            inputs: KLINE_INPUTS,
+            config: super::atr::AtrConfig,
+            colors: super::atr::COLOR_SPECS,
+            marks: super::atr::MARK_SPECS,
+            channels: super::atr::OVERLAY_CHANNELS,
+            uses_directional_volume: false
         },
         AnchoredVwap => {
             state: super::anchored_vwap::AnchoredVwapState,
@@ -352,17 +582,17 @@ define_indicator_catalog! {
                 IndicatorPanelRecipe::PrimaryOverlay {
                     layer_name: "Anchored VWAP",
                     source: DataSourceId::Primary,
-                    value_id: PanelValueId::AnchoredVwap,
                     data_kind: LayerDataKind::Scalar,
                     mark: MarkKind::Line,
                     axis: AxisBinding::Primary,
                 }
             },
             inputs: KLINE_INPUTS,
-            config: anchored_vwap,
+            config: super::anchored_vwap::AnchoredVwapConfig,
             colors: super::anchored_vwap::COLOR_SPECS,
             marks: super::NO_MARK_SPECS,
-            channels: super::anchored_vwap::OVERLAY_CHANNELS
+            channels: super::anchored_vwap::OVERLAY_CHANNELS,
+            uses_directional_volume: false
         },
         OpenInterest => {
             state: super::open_interest::OpenInterestState,
@@ -385,10 +615,11 @@ define_indicator_catalog! {
                 }
             },
             inputs: OPEN_INTEREST_INPUTS,
-            config: unit,
+            config: (),
             colors: super::open_interest::COLOR_SPECS,
             marks: super::open_interest::MARK_SPECS,
-            channels: super::NO_OVERLAY_CHANNELS
+            channels: super::NO_OVERLAY_CHANNELS,
+            uses_directional_volume: false
         },
         CumulativeVolumeDelta => {
             state: super::cvd::CumulativeVolumeDeltaState,
@@ -411,10 +642,11 @@ define_indicator_catalog! {
                 }
             },
             inputs: CVD_INPUTS,
-            config: unit,
+            config: (),
             colors: super::cvd::COLOR_SPECS,
             marks: super::cvd::MARK_SPECS,
-            channels: super::NO_OVERLAY_CHANNELS
+            channels: super::NO_OVERLAY_CHANNELS,
+            uses_directional_volume: false
         },
         TradeCount => {
             state: super::trade_count::TradeCountState,
@@ -437,10 +669,11 @@ define_indicator_catalog! {
                 }
             },
             inputs: TRADE_INPUTS,
-            config: unit,
+            config: (),
             colors: super::trade_count::COLOR_SPECS,
             marks: super::trade_count::MARK_SPECS,
-            channels: super::NO_OVERLAY_CHANNELS
+            channels: super::NO_OVERLAY_CHANNELS,
+            uses_directional_volume: false
         },
         BarAnalysis => {
             state: super::bar_analysis::BarAnalysisState,
@@ -453,10 +686,11 @@ define_indicator_catalog! {
                 }
             },
             inputs: TRADE_INPUTS,
-            config: unit,
+            config: (),
             colors: super::bar_analysis::COLOR_SPECS,
             marks: super::NO_MARK_SPECS,
-            channels: super::NO_OVERLAY_CHANNELS
+            channels: super::NO_OVERLAY_CHANNELS,
+            uses_directional_volume: false
         },
     }
 }
