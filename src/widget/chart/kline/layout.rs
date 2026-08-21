@@ -1,11 +1,17 @@
 use super::composition::{PanelRole, PanelSpec};
-use super::{
-    KlinePanelKind, KlineSeriesLike, KlineWidget, PANEL_SPLITTER_HEIGHT, PANEL_SPLITTER_HIT_PX,
-};
+use super::{KlineSeriesLike, KlineWidget, PANEL_SPLITTER_HEIGHT};
 use crate::chart::ticks::AXIS_DRAG_EDGE_GUARD;
 use crate::widget::chart::Regions;
 use iced::advanced::Layout;
 use iced::{Point, Rectangle};
+
+const PANEL_SPLITTER_HIT_PX: f32 = 8.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum KlinePanelKind {
+    PrimaryChart,
+    Indicator,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum LayoutHitZone {
@@ -109,6 +115,20 @@ impl PanelLayoutTree {
 
     pub(super) fn panel(&self, index: usize) -> Option<&PanelLayoutNode> {
         self.panels.get(index)
+    }
+
+    pub(super) fn primary_plot_width(&self) -> Option<f32> {
+        let primary_panel = self
+            .panels
+            .iter()
+            .position(|panel| panel.kind == KlinePanelKind::PrimaryChart)?;
+        let primary_plot_width = self.panel(primary_panel)?.plot.width.max(1.0);
+
+        Some(
+            (self.regions.x_axis.width - self.regions.y_axis.width)
+                .max(1.0)
+                .min(primary_plot_width),
+        )
     }
 
     pub(super) fn contains(rect: Rectangle, p: Point) -> bool {

@@ -1,14 +1,91 @@
-use super::super::composition::{AxisBinding, DataSourceId, LayerDataKind, MarkKind, PanelValueId};
-use super::{IndicatorAvailability, IndicatorPanelRecipe};
+use super::super::IndicatorUpdateScope;
+use super::super::values::{BOLLINGER_LOWER_FIELD_KEY, BOLLINGER_UPPER_FIELD_KEY, IndicatorData};
+use super::moving_average::MovingAverageMethod;
+use super::runtime::{IndicatorDefinition, IndicatorRuntime};
+use super::{
+    IndicatorAvailability, IndicatorColorSlot, IndicatorColorSpec, IndicatorOverlayChannelSpec,
+    IndicatorOverlayColorRole, IndicatorOverlaySource,
+};
 use exchange::{Kline, UnixMs};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 
 const SERIES_MAX_POINTS: usize = 5000;
-const DEFAULT_PERIOD: usize = 20;
-const DEFAULT_STDDEV_MULTIPLIER: f32 = 2.0;
 
-pub fn kline_warmup_bars() -> u64 {
-    DEFAULT_PERIOD as u64
+pub(super) const COLOR_SPECS: [IndicatorColorSpec; 3] = [
+    IndicatorColorSpec {
+        label: "Basis",
+        slot: IndicatorColorSlot::Main,
+    },
+    IndicatorColorSpec {
+        label: "Upper band",
+        slot: IndicatorColorSlot::Upper,
+    },
+    IndicatorColorSpec {
+        label: "Lower band",
+        slot: IndicatorColorSlot::Lower,
+    },
+];
+
+pub(super) const OVERLAY_CHANNELS: [IndicatorOverlayChannelSpec; 3] = [
+    IndicatorOverlayChannelSpec {
+        label: "BB",
+        source: IndicatorOverlaySource::Primary,
+        line_width: 1.1,
+        color_role: IndicatorOverlayColorRole::Neutral,
+        color_slot: IndicatorColorSlot::Main,
+    },
+    IndicatorOverlayChannelSpec {
+        label: "U",
+        source: IndicatorOverlaySource::Field(BOLLINGER_UPPER_FIELD_KEY),
+        line_width: 1.0,
+        color_role: IndicatorOverlayColorRole::Success,
+        color_slot: IndicatorColorSlot::Upper,
+    },
+    IndicatorOverlayChannelSpec {
+        label: "L",
+        source: IndicatorOverlaySource::Field(BOLLINGER_LOWER_FIELD_KEY),
+        line_width: 1.0,
+        color_role: IndicatorOverlayColorRole::Danger,
+        color_slot: IndicatorColorSlot::Lower,
+    },
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct BollingerBandsCalculationConfig {
+    pub period: u16,
+    pub method: MovingAverageMethod,
+    pub std_dev_multiplier: f32,
+}
+
+impl Default for BollingerBandsCalculationConfig {
+    fn default() -> Self {
+        Self {
+            period: 20,
+            method: MovingAverageMethod::Sma,
+            std_dev_multiplier: 2.0,
+        }
+    }
+}
+
+impl BollingerBandsCalculationConfig {
+    pub fn normalized(self) -> Self {
+        let std_dev_multiplier = if self.std_dev_multiplier.is_finite() {
+            self.std_dev_multiplier.max(0.0)
+        } else {
+            Self::default().std_dev_multiplier
+        };
+
+        Self {
+            period: self.period.max(2),
+            std_dev_multiplier,
+            ..self
+        }
+    }
+
+    pub fn warmup_bars(self) -> u64 {
+        u64::from(self.normalized().period)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -28,37 +105,96 @@ impl BollingerBandsState {
         self.values.clear();
     }
 
-    pub fn recompute_from_bars(&mut self, bars: &[Kline]) {
+    pub fn recompute_from_bars(&mut self, bars: &[Kline], config: BollingerBandsCalculationConfig) {
         self.values.clear();
 
-        let period = DEFAULT_PERIOD;
-        if period == 0 {
-            return;
-        }
+        let config = config.normalized();
+        let period = usize::from(config.period);
 
         let mut window = VecDeque::with_capacity(period + 1);
-        let mut sum = 0.0f32;
-        let mut sum_sq = 0.0f32;
 
         for bar in bars {
             let close = bar.close.to_f32_lossy();
-            window.push_back(close);
-            sum += close;
-            sum_sq += close * close;
+            let volume = bar.volume.total().to_f32_lossy();
+            window.push_back((close, volume));
 
-            if window.len() > period
-                && let Some(removed) = window.pop_front()
-            {
-                sum -= removed;
-                sum_sq -= removed * removed;
+            if window.len() > period {
+                window.pop_front();
             }
 
             if window.len() == period {
-                let count = period as f32;
-                let basis = sum / count;
-                let variance = (sum_sq / count - basis * basis).max(0.0);
+                let values: Vec<f32> = window.iter().map(|(value, _)| *value).collect();
+                let weights: Vec<f32> = window.iter().map(|(_, weight)| *weight).collect();
+                let basis = config.method.calculate(&values, &weights).unwrap_or(close);
+                let mean = values.iter().sum::<f32>() / values.len() as f32;
+                let variance = values
+                    .iter()
+                    .map(|value| {
+                        let difference = *value - mean;
+                        difference * difference
+                    })
+                    .sum::<f32>()
+                    / values.len() as f32;
                 let std_dev = variance.sqrt();
-                let delta = std_dev * DEFAULT_STDDEV_MULTIPLIER;
+                let delta = std_dev * config.std_dev_multiplier;
+
+                self.values.insert(
+                    bar.time,
+                    BollingerBandsPoint {
+                        basis,
+                        upper: basis + delta,
+                        lower: basis - delta,
+                    },
+                );
+            }
+        }
+
+        self.trim();
+    }
+
+    pub fn recompute_from_bars_from(
+        &mut self,
+        bars: &[Kline],
+        config: BollingerBandsCalculationConfig,
+        first_index: usize,
+    ) {
+        if first_index == 0 {
+            return self.recompute_from_bars(bars, config);
+        }
+
+        let config = config.normalized();
+        let period = usize::from(config.period);
+        let Some(first_bar) = bars.get(first_index) else {
+            return;
+        };
+        self.values.retain(|time, _| *time < first_bar.time);
+
+        let window_start = first_index.saturating_sub(period.saturating_sub(1));
+        let mut window = VecDeque::with_capacity(period + 1);
+
+        for (index, bar) in bars.iter().enumerate().skip(window_start) {
+            let close = bar.close.to_f32_lossy();
+            let volume = bar.volume.total().to_f32_lossy();
+            window.push_back((close, volume));
+
+            if window.len() > period {
+                window.pop_front();
+            }
+
+            if index >= first_index && window.len() == period {
+                let values: Vec<f32> = window.iter().map(|(value, _)| *value).collect();
+                let weights: Vec<f32> = window.iter().map(|(_, weight)| *weight).collect();
+                let basis = config.method.calculate(&values, &weights).unwrap_or(close);
+                let mean = values.iter().sum::<f32>() / values.len() as f32;
+                let variance = values
+                    .iter()
+                    .map(|value| {
+                        let difference = *value - mean;
+                        difference * difference
+                    })
+                    .sum::<f32>()
+                    / values.len() as f32;
+                let delta = variance.sqrt() * config.std_dev_multiplier;
 
                 self.values.insert(
                     bar.time,
@@ -89,17 +225,48 @@ impl BollingerBandsState {
     }
 }
 
-pub fn panel_recipe() -> IndicatorPanelRecipe {
-    IndicatorPanelRecipe::PrimaryOverlay {
-        layer_name: "Bollinger Basis",
-        source: DataSourceId::Primary,
-        value_id: PanelValueId::BollingerBands,
-        data_kind: LayerDataKind::Scalar,
-        mark: MarkKind::Line,
-        axis: AxisBinding::Primary,
+impl IndicatorDefinition for BollingerBandsState {
+    type Config = BollingerBandsCalculationConfig;
+
+    fn warmup_bars(config: Self::Config) -> Option<u64> {
+        Some(config.warmup_bars())
+    }
+
+    fn availability(
+        _context: super::AvailabilityContext,
+        _snapshot: super::IndicatorRuntimeSnapshot,
+    ) -> IndicatorAvailability {
+        IndicatorAvailability::Available
     }
 }
 
-pub fn availability() -> IndicatorAvailability {
-    IndicatorAvailability::Available
+impl IndicatorRuntime for BollingerBandsState {
+    fn clear(&mut self) {
+        BollingerBandsState::clear(self);
+    }
+
+    fn rebuild_from_bars(&mut self, bars: &[Kline], config: Self::Config) {
+        self.recompute_from_bars(bars, config);
+    }
+
+    fn on_input_from(
+        &mut self,
+        input: super::input::IndicatorInput<'_>,
+        config: Self::Config,
+        scope: IndicatorUpdateScope,
+    ) {
+        let super::input::IndicatorInput::Klines { bars, .. } = input else {
+            return;
+        };
+        self.recompute_from_bars_from(bars, config, scope.first_index());
+    }
+
+    fn data_for_bar(&self, bar: &Kline) -> Option<IndicatorData> {
+        let bands = self.value_at(bar.time)?;
+        Some(
+            IndicatorData::scalar(bands.basis)
+                .with_field(BOLLINGER_UPPER_FIELD_KEY, bands.upper)
+                .with_field(BOLLINGER_LOWER_FIELD_KEY, bands.lower),
+        )
+    }
 }

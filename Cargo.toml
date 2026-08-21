@@ -29,7 +29,7 @@ regex = "1.12.3"
 palette = "0.7.6"
 num-traits = "0.2.19"
 rustc-hash = "2.1.2"
-enum-map = "2.7.3"
+enum-map = { version = "2.7.3", features = ["serde"] }
 url = "2.5.8"
 rand = "0.10.1"
 uuid = { version = "1.23.1", features = ["v4"] }

@@ -1,47 +1,32 @@
-pub const LEGACY_ZOOM_SENSITIVITY: f32 = 30.0;
-
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
-pub struct UnitSpacing(f32);
-
-impl UnitSpacing {
-    pub fn new(size: f32) -> Self {
-        Self(size.max(f32::EPSILON))
-    }
-
-    pub fn size(self) -> f32 {
-        self.0
-    }
-
-    pub fn zoom(self, delta: f32, min_size: f32, max_size: f32) -> Self {
-        let size = (self.0 * (1.0 + delta / LEGACY_ZOOM_SENSITIVITY))
-            .clamp(min_size, max_size)
-            .max(f32::EPSILON);
-        Self::new(size)
-    }
-}
+pub const DEFAULT_HORIZONTAL_SPACING_PX: f32 = 5.0;
+pub const MIN_HORIZONTAL_SPACING_PX: f32 = 2.0;
+pub const MAX_HORIZONTAL_SPACING_PX: f32 = 360.0;
+pub const ZOOM_SENSITIVITY: f32 = 30.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HorizontalWorld {
-    unit_spacing: UnitSpacing,
-    scaling: f32,
+    spacing: f32,
     offset: f32,
 }
 
 impl HorizontalWorld {
     pub fn new(cell_width: f32, scaling: f32, offset: f32) -> Self {
-        Self {
-            unit_spacing: UnitSpacing::new(cell_width),
-            scaling: scaling.max(f32::EPSILON),
-            offset,
-        }
+        let spacing = cell_width * scaling;
+        let spacing = if spacing.is_finite() {
+            spacing.clamp(MIN_HORIZONTAL_SPACING_PX, MAX_HORIZONTAL_SPACING_PX)
+        } else {
+            DEFAULT_HORIZONTAL_SPACING_PX
+        };
+
+        Self { spacing, offset }
     }
 
     pub fn cell_width(self) -> f32 {
-        self.unit_spacing.size()
+        self.spacing
     }
 
     pub fn scaling(self) -> f32 {
-        self.scaling
+        1.0
     }
 
     pub fn offset(self) -> f32 {
@@ -49,7 +34,7 @@ impl HorizontalWorld {
     }
 
     pub fn effective_spacing(self) -> f32 {
-        (self.unit_spacing.size() * self.scaling).max(f32::EPSILON)
+        self.spacing
     }
 
     pub fn with_offset(self, offset: f32) -> Self {
@@ -57,18 +42,31 @@ impl HorizontalWorld {
     }
 
     pub fn axis_at_right_unit(self, right_unit: f32) -> WorldAxis {
-        WorldAxis::new(
-            self.unit_spacing,
-            self.scaling,
-            -right_unit * self.unit_spacing.size(),
-        )
+        WorldAxis::new(self.spacing, -right_unit * self.spacing)
+    }
+
+    pub fn zoom_around_screen(
+        self,
+        current_right_unit: f32,
+        cursor_screen: f32,
+        origin: f32,
+        delta: f32,
+    ) -> Self {
+        let axis = self.axis_at_right_unit(current_right_unit);
+        let next = axis.zoom_around_screen(
+            cursor_screen,
+            origin,
+            delta,
+            MIN_HORIZONTAL_SPACING_PX,
+            MAX_HORIZONTAL_SPACING_PX,
+        );
+        self.updated_from_axis(current_right_unit, next)
     }
 
     pub fn updated_from_axis(self, current_right_unit: f32, next: WorldAxis) -> Self {
-        let next_right_unit = -next.translation() / next.unit_spacing().size();
+        let next_right_unit = -next.translation() / next.spacing();
         Self {
-            unit_spacing: next.unit_spacing(),
-            scaling: next.scaling(),
+            spacing: next.spacing(),
             offset: self.offset + next_right_unit - current_right_unit,
         }
     }
@@ -76,26 +74,20 @@ impl HorizontalWorld {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WorldAxis {
-    unit_spacing: UnitSpacing,
-    scaling: f32,
+    spacing: f32,
     translation: f32,
 }
 
 impl WorldAxis {
-    pub fn new(unit_spacing: UnitSpacing, scaling: f32, translation: f32) -> Self {
+    fn new(spacing: f32, translation: f32) -> Self {
         Self {
-            unit_spacing,
-            scaling: scaling.max(f32::EPSILON),
+            spacing: spacing.max(f32::EPSILON),
             translation,
         }
     }
 
-    pub fn unit_spacing(self) -> UnitSpacing {
-        self.unit_spacing
-    }
-
-    pub fn scaling(self) -> f32 {
-        self.scaling
+    fn spacing(self) -> f32 {
+        self.spacing
     }
 
     pub fn translation(self) -> f32 {
@@ -103,32 +95,11 @@ impl WorldAxis {
     }
 
     pub fn world_to_screen(self, world: f32, origin: f32) -> f32 {
-        origin + (world * self.unit_spacing.size() + self.translation) * self.scaling
+        origin + world * self.spacing + self.translation
     }
 
     pub fn screen_to_world(self, screen: f32, origin: f32) -> f32 {
-        ((screen - origin) / self.scaling - self.translation) / self.unit_spacing.size()
-    }
-
-    pub fn with_translation(self, translation: f32) -> Self {
-        Self {
-            translation,
-            ..self
-        }
-    }
-
-    pub fn with_scale(self, scaling: f32) -> Self {
-        Self {
-            scaling: scaling.max(f32::EPSILON),
-            ..self
-        }
-    }
-
-    pub fn with_unit_spacing(self, unit_spacing: UnitSpacing) -> Self {
-        Self {
-            unit_spacing,
-            ..self
-        }
+        (screen - origin - self.translation) / self.spacing
     }
 
     pub fn zoom_around_screen(
@@ -136,56 +107,75 @@ impl WorldAxis {
         cursor_screen: f32,
         origin: f32,
         delta: f32,
-        min_scaling: f32,
-        max_scaling: f32,
-    ) -> Self {
-        let old_scaling = self.scaling;
-        let new_scaling = (old_scaling * (1.0 + delta / LEGACY_ZOOM_SENSITIVITY))
-            .clamp(min_scaling, max_scaling)
-            .max(f32::EPSILON);
-        let cursor_world = self.screen_to_world(cursor_screen, origin);
-        let translation =
-            (cursor_screen - origin) / new_scaling - cursor_world * self.unit_spacing.size();
-
-        self.with_scale(new_scaling).with_translation(translation)
-    }
-
-    pub fn change_unit_spacing(self, delta: f32, min_spacing: f32, max_spacing: f32) -> Self {
-        self.with_unit_spacing(self.unit_spacing.zoom(delta, min_spacing, max_spacing))
-    }
-
-    pub fn zoom_or_change_unit_spacing(
-        self,
-        cursor_screen: f32,
-        origin: f32,
-        delta: f32,
-        min_scaling: f32,
-        max_scaling: f32,
-        default_spacing: f32,
         min_spacing: f32,
         max_spacing: f32,
     ) -> Self {
-        let zoom_in = delta > 0.0;
-        let should_change_unit_spacing = (zoom_in
-            && self.scaling >= max_scaling
-            && self.unit_spacing.size() < max_spacing)
-            || (!zoom_in && self.scaling <= min_scaling && self.unit_spacing.size() > min_spacing)
-            || (zoom_in
-                && self.scaling <= min_scaling
-                && self.unit_spacing.size() < default_spacing)
-            || (!zoom_in
-                && self.scaling >= max_scaling
-                && self.unit_spacing.size() > default_spacing);
+        let new_spacing =
+            (self.spacing * (delta / ZOOM_SENSITIVITY).exp()).clamp(min_spacing, max_spacing);
+        let cursor_world = self.screen_to_world(cursor_screen, origin);
+        let translation = cursor_screen - origin - cursor_world * new_spacing;
 
-        if should_change_unit_spacing {
-            let cursor_world = self.screen_to_world(cursor_screen, origin);
-            let next = self.change_unit_spacing(delta, min_spacing, max_spacing);
-            let translation =
-                (cursor_screen - origin) / next.scaling - cursor_world * next.unit_spacing.size();
-            return next.with_translation(translation);
+        Self {
+            spacing: new_spacing,
+            translation,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_approximately_equal(left: f32, right: f32) {
+        assert!((left - right).abs() < 1e-5, "{left} != {right}");
+    }
+
+    #[test]
+    fn horizontal_world_normalizes_legacy_components() {
+        let world = HorizontalWorld::new(12.8, 2.5, 8.0);
+
+        assert_approximately_equal(world.cell_width(), 32.0);
+        assert_approximately_equal(world.scaling(), 1.0);
+        assert_approximately_equal(world.effective_spacing(), 32.0);
+        assert_approximately_equal(world.offset(), 8.0);
+    }
+
+    #[test]
+    fn inverse_zoom_steps_restore_spacing() {
+        let world = HorizontalWorld::new(5.0, 1.0, 8.0);
+        let zoomed = world.zoom_around_screen(10.0, 180.0, 400.0, 1.0);
+        let zoomed_right_unit = 10.0 + zoomed.offset() - world.offset();
+        let restored = zoomed.zoom_around_screen(zoomed_right_unit, 180.0, 400.0, -1.0);
+
+        assert_approximately_equal(restored.effective_spacing(), world.effective_spacing());
+        assert_approximately_equal(restored.offset(), world.offset());
+    }
+
+    #[test]
+    fn repeated_inverse_zoom_steps_do_not_drift() {
+        let mut world = HorizontalWorld::new(5.0, 1.0, 8.0);
+        let mut right_unit = 10.0;
+
+        for _ in 0..100 {
+            let zoomed = world.zoom_around_screen(right_unit, 180.0, 400.0, 1.0);
+            let zoomed_right_unit = right_unit + zoomed.offset() - world.offset();
+            let restored = zoomed.zoom_around_screen(zoomed_right_unit, 180.0, 400.0, -1.0);
+            right_unit = zoomed_right_unit + restored.offset() - zoomed.offset();
+            world = restored;
         }
 
-        self.zoom_around_screen(cursor_screen, origin, delta, min_scaling, max_scaling)
+        assert_approximately_equal(world.effective_spacing(), 5.0);
+        assert_approximately_equal(world.offset(), 8.0);
+    }
+
+    #[test]
+    fn zoom_is_clamped_to_renderable_spacing() {
+        let world = HorizontalWorld::new(5.0, 1.0, 8.0);
+        let zoomed_in = world.zoom_around_screen(10.0, 180.0, 400.0, f32::MAX);
+        let zoomed_out = world.zoom_around_screen(10.0, 180.0, 400.0, -f32::MAX);
+
+        assert_approximately_equal(zoomed_in.effective_spacing(), MAX_HORIZONTAL_SPACING_PX);
+        assert_approximately_equal(zoomed_out.effective_spacing(), MIN_HORIZONTAL_SPACING_PX);
     }
 }
 

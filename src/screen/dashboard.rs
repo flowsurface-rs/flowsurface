@@ -210,7 +210,9 @@ impl Dashboard {
                             pane::Content::KlineV2 { chart: Some(c), .. } => {
                                 if let DashboardError::Fetch(ref msg, Some(req_id)) = err {
                                     log::error!("Fetch error: {msg}");
-                                    c.mark_fetch_failed(req_id);
+                                    c.apply_fetch_update(chart::kline_v2::FetchUpdate::Failed(
+                                        req_id,
+                                    ));
                                 }
                             }
                             _ => {}
@@ -294,9 +296,6 @@ impl Dashboard {
                                             ) | (
                                                 data::layout::pane::VisualConfig::TimeAndSales(_),
                                                 pane::Content::TimeAndSales(_)
-                                            ) | (
-                                                data::layout::pane::VisualConfig::Comparison(_),
-                                                pane::Content::Comparison(_)
                                             )
                                         ),
                                     };
@@ -401,7 +400,11 @@ impl Dashboard {
                                             c.set_handle(handle);
                                         }
                                         pane::Content::KlineV2 { chart: Some(c), .. } => {
-                                            c.set_trade_fetch_handle(handle);
+                                            c.apply_fetch_update(
+                                                chart::kline_v2::FetchUpdate::TradeFetchHandle(
+                                                    handle,
+                                                ),
+                                            );
                                         }
                                         _ => {}
                                     },
@@ -978,7 +981,9 @@ impl Dashboard {
                             }
                             pane::Content::KlineV2 { chart: Some(c), .. } => {
                                 if let Some(req_id) = req_id {
-                                    c.mark_trade_fetch_no_data(req_id);
+                                    c.apply_fetch_update(
+                                        chart::kline_v2::FetchUpdate::TradeFetchNoData(req_id),
+                                    );
                                 }
                             }
                             _ => {}
@@ -1074,7 +1079,11 @@ impl Dashboard {
             }
             pane::Content::KlineV2 { chart, .. } => {
                 if let Some(c) = chart {
-                    c.insert_fetched_trades(trades, is_batches_done, req_id);
+                    c.apply_data(chart::kline_v2::DataUpdate::HistoricalTrades {
+                        trades,
+                        is_batches_done,
+                        req_id,
+                    });
 
                     if is_batches_done {
                         pane_state.status = pane::Status::Ready;
@@ -1109,10 +1118,10 @@ impl Dashboard {
                         }
                         pane::Content::KlineV2 { chart: Some(c), .. } => {
                             let ticker_info = stream.ticker_info();
-                            c.update_latest_kline(&ticker_info, kline);
-                        }
-                        pane::Content::Comparison(Some(c)) => {
-                            c.update_latest_kline(&stream.ticker_info(), kline);
+                            c.apply_data(chart::kline_v2::DataUpdate::LiveKline {
+                                ticker_info: &ticker_info,
+                                kline,
+                            });
                         }
                         _ => {}
                     }
@@ -1200,7 +1209,11 @@ impl Dashboard {
                             }
                         }
                         pane::Content::KlineV2 { chart: Some(c), .. } => {
-                            c.insert_trades(&stream.ticker_info(), buffer);
+                            let ticker_info = stream.ticker_info();
+                            c.apply_data(chart::kline_v2::DataUpdate::LiveTrades {
+                                ticker_info: &ticker_info,
+                                trades: buffer,
+                            });
                         }
                         pane::Content::TimeAndSales(panel) => {
                             if let Some(p) = panel {
@@ -1272,7 +1285,9 @@ impl Dashboard {
                                 c.set_handle(handle);
                             }
                             pane::Content::KlineV2 { chart: Some(c), .. } => {
-                                c.set_trade_fetch_handle(handle);
+                                c.apply_fetch_update(
+                                    chart::kline_v2::FetchUpdate::TradeFetchHandle(handle),
+                                );
                             }
                             _ => {}
                         },

@@ -161,8 +161,8 @@ impl From<&pane::State> for data::Pane {
             pane::Content::KlineV2 { chart, layout } => data::Pane::KlineChartV2 {
                 layout: chart
                     .as_ref()
-                    .map(|chart| chart.serializable_config())
-                    .or_else(|| layout.clone()),
+                    .map(|chart| Box::new(chart.serializable_config()))
+                    .or_else(|| layout.clone().map(Box::new)),
                 stream_type: streams,
                 settings: pane.settings.clone(),
                 link_group: pane.link_group,
@@ -177,20 +177,6 @@ impl From<&pane::State> for data::Pane {
                 settings: pane.settings.clone(),
                 link_group: pane.link_group,
             },
-            pane::Content::Comparison(chart) => {
-                let settings = data::layout::pane::Settings {
-                    visual_config: chart.as_ref().map(|c| {
-                        data::layout::pane::VisualConfig::Comparison(c.serializable_config())
-                    }),
-                    ..pane.settings.clone()
-                };
-
-                data::Pane::ComparisonChart {
-                    stream_type: streams,
-                    settings,
-                    link_group: pane.link_group,
-                }
-            }
         }
     }
 }
@@ -284,22 +270,8 @@ pub fn configuration(pane: data::Pane) -> Configuration<pane::State> {
         } => {
             let content = pane::Content::KlineV2 {
                 chart: None,
-                layout,
+                layout: layout.map(|layout| *layout),
             };
-
-            Configuration::Pane(pane::State::from_config(
-                content,
-                stream_type,
-                settings,
-                link_group,
-            ))
-        }
-        data::Pane::ComparisonChart {
-            stream_type,
-            settings,
-            link_group,
-        } => {
-            let content = pane::Content::Comparison(None);
 
             Configuration::Pane(pane::State::from_config(
                 content,

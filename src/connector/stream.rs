@@ -82,6 +82,26 @@ impl ResolvedStream {
         }
     }
 
+    pub fn set_trade_stream(&mut self, ticker_info: exchange::TickerInfo, enabled: bool) -> bool {
+        let ResolvedStream::Ready(streams) = self else {
+            return false;
+        };
+
+        let trade_stream = StreamKind::Trades { ticker_info };
+        if enabled {
+            if streams.contains(&trade_stream) {
+                return false;
+            }
+
+            streams.push(trade_stream);
+            true
+        } else {
+            let original_len = streams.len();
+            streams.retain(|stream| stream != &trade_stream);
+            streams.len() != original_len
+        }
+    }
+
     pub fn find_ready_map<F, T>(&self, f: F) -> Option<T>
     where
         F: FnMut(&StreamKind) -> Option<T>,

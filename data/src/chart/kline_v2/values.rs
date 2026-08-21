@@ -1,4 +1,4 @@
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndicatorDataFieldKey {
     SignedOverlay,
     Custom(&'static str),
@@ -8,39 +8,82 @@ pub const BOLLINGER_UPPER_FIELD_KEY: IndicatorDataFieldKey =
     IndicatorDataFieldKey::Custom("bollinger.upper");
 pub const BOLLINGER_LOWER_FIELD_KEY: IndicatorDataFieldKey =
     IndicatorDataFieldKey::Custom("bollinger.lower");
-pub const RSI_SIGNAL_FIELD_KEY: IndicatorDataFieldKey = IndicatorDataFieldKey::Custom("rsi.signal");
+
+pub const MOVING_AVERAGES_MEDIUM_FIELD_KEY: IndicatorDataFieldKey =
+    IndicatorDataFieldKey::Custom("moving_averages.medium");
+pub const MOVING_AVERAGES_SLOW_FIELD_KEY: IndicatorDataFieldKey =
+    IndicatorDataFieldKey::Custom("moving_averages.slow");
+
+pub const BAR_ANALYSIS_BUY_FIELD_KEY: IndicatorDataFieldKey =
+    IndicatorDataFieldKey::Custom("bar_analysis.buy");
+pub const BAR_ANALYSIS_SELL_FIELD_KEY: IndicatorDataFieldKey =
+    IndicatorDataFieldKey::Custom("bar_analysis.sell");
+pub const BAR_ANALYSIS_TOTAL_FIELD_KEY: IndicatorDataFieldKey =
+    IndicatorDataFieldKey::Custom("bar_analysis.total");
+pub const BAR_ANALYSIS_DELTA_PCT_FIELD_KEY: IndicatorDataFieldKey =
+    IndicatorDataFieldKey::Custom("bar_analysis.delta_pct");
+
 pub const RSI_UPPER_BAND_FIELD_KEY: IndicatorDataFieldKey =
     IndicatorDataFieldKey::Custom("rsi.upper_band");
+pub const RSI_SIGNAL_FIELD_KEY: IndicatorDataFieldKey = IndicatorDataFieldKey::Custom("rsi.signal");
 pub const RSI_LOWER_BAND_FIELD_KEY: IndicatorDataFieldKey =
     IndicatorDataFieldKey::Custom("rsi.lower_band");
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+pub enum IndicatorCellValue {
+    Number(f32),
+    Boolean(bool),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct IndicatorDataField {
     pub key: IndicatorDataFieldKey,
-    pub value: f32,
+    pub value: IndicatorCellValue,
 }
 
 const MAX_INDICATOR_EXTRA_FIELDS: usize = 6;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct IndicatorData {
-    value: f32,
+    value: IndicatorCellValue,
     extra_fields: [Option<IndicatorDataField>; MAX_INDICATOR_EXTRA_FIELDS],
 }
 
 impl IndicatorData {
     pub fn scalar(value: f32) -> Self {
         Self {
-            value,
+            value: IndicatorCellValue::Number(value),
+            extra_fields: [None; MAX_INDICATOR_EXTRA_FIELDS],
+        }
+    }
+
+    pub fn boolean(value: bool) -> Self {
+        Self {
+            value: IndicatorCellValue::Boolean(value),
             extra_fields: [None; MAX_INDICATOR_EXTRA_FIELDS],
         }
     }
 
     pub fn value(self) -> f32 {
+        match self.value {
+            IndicatorCellValue::Number(value) => value,
+            IndicatorCellValue::Boolean(value) => f32::from(value),
+        }
+    }
+
+    pub fn primary_value(self) -> IndicatorCellValue {
         self.value
     }
 
-    pub fn with_field(mut self, key: IndicatorDataFieldKey, value: f32) -> Self {
+    pub fn with_field(self, key: IndicatorDataFieldKey, value: f32) -> Self {
+        self.with_field_value(key, IndicatorCellValue::Number(value))
+    }
+
+    pub fn with_bool_field(self, key: IndicatorDataFieldKey, value: bool) -> Self {
+        self.with_field_value(key, IndicatorCellValue::Boolean(value))
+    }
+
+    fn with_field_value(mut self, key: IndicatorDataFieldKey, value: IndicatorCellValue) -> Self {
         if let Some(slot) = self
             .extra_fields
             .iter_mut()
@@ -63,6 +106,20 @@ impl IndicatorData {
     }
 
     pub fn field(self, key: IndicatorDataFieldKey) -> Option<f32> {
+        match self.field_value(key)? {
+            IndicatorCellValue::Number(value) => Some(value),
+            IndicatorCellValue::Boolean(_) => None,
+        }
+    }
+
+    pub fn bool_field(self, key: IndicatorDataFieldKey) -> Option<bool> {
+        match self.field_value(key)? {
+            IndicatorCellValue::Number(_) => None,
+            IndicatorCellValue::Boolean(value) => Some(value),
+        }
+    }
+
+    pub fn field_value(self, key: IndicatorDataFieldKey) -> Option<IndicatorCellValue> {
         self.extra_fields
             .iter()
             .flatten()

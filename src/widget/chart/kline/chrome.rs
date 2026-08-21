@@ -1,20 +1,34 @@
 use super::layout::{LayoutHitZone, PanelLayoutTree};
 use super::scene::Scene;
 use super::{
-    CHAR_W, KlineSeriesLike, KlineWidget, KlineWidgetEvent, PANEL_CONTROL_BOX, PANEL_CONTROL_GAP,
-    PANEL_CONTROL_ICON_SIZE, PANEL_TITLE_LEFT_PAD, PANEL_TITLE_TO_CONTROLS_GAP,
-    PANEL_TITLE_TOP_PAD, TEXT_SIZE, TICKER_LEGEND_ICON_BOX, TICKER_LEGEND_ICON_GAP,
-    TICKER_LEGEND_PADDING, TICKER_LEGEND_ROW_H, TICKER_LEGEND_TOP_OFFSET, TOOLTIP_ROW_LEFT_PAD,
+    CHAR_W, KlineSeriesLike, KlineWidget, KlineWidgetEvent, PANEL_TITLE_TOP_PAD, TEXT_SIZE,
+    TICKER_LEGEND_PADDING, TICKER_LEGEND_ROW_H, TOOLTIP_ROW_LEFT_PAD,
 };
 use crate::style;
 use crate::widget::chart::kline::PanelInteraction;
 use crate::widget::chart::kline::composition::{MarkKind, PanelScaleMode};
+use data::chart::kline::ClusterKind;
 
 use exchange::TickerInfo;
 
 use iced::theme::palette::Extended;
 use iced::widget::canvas;
 use iced::{Point, Rectangle, Size};
+
+const PANEL_TITLE_LEFT_PAD: f32 = 6.0;
+const PANEL_TITLE_TO_CONTROLS_GAP: f32 = 8.0;
+const PANEL_CONTROL_BOX: f32 = TEXT_SIZE + 5.0;
+const PANEL_CONTROL_GAP: f32 = 4.0;
+const PANEL_CONTROL_ICON_SIZE: f32 = TEXT_SIZE - 1.0;
+const TICKER_LEGEND_ICON_BOX: f32 = TEXT_SIZE + 8.0;
+const TICKER_LEGEND_ICON_GAP: f32 = 4.0;
+const TICKER_LEGEND_TOP_OFFSET: f32 = 0.0;
+const SERIES_END_LABEL_GAP: f32 = 2.0;
+const HIDDEN_LEGEND_ALPHA: f32 = 0.45;
+
+fn series_display_name<S: KlineSeriesLike>(series: &S) -> String {
+    series.ticker_info().ticker.symbol_and_exchange_string()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PanelControlKind {
@@ -94,6 +108,7 @@ pub(super) struct CornerControlHit {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TickerLegendIconKind {
     Settings,
+    Hide,
     Close,
 }
 
@@ -101,6 +116,7 @@ impl TickerLegendIconKind {
     fn icon(self) -> style::Icon {
         match self {
             Self::Settings => style::Icon::Cog,
+            Self::Hide => style::Icon::SpeakerOff,
             Self::Close => style::Icon::Close,
         }
     }
@@ -108,6 +124,7 @@ impl TickerLegendIconKind {
     pub(super) fn into_event(self, ticker: TickerInfo) -> KlineWidgetEvent {
         match self {
             Self::Settings => KlineWidgetEvent::TickerSettings(ticker),
+            Self::Hide => KlineWidgetEvent::CandlesticksVisibilityToggled,
             Self::Close => KlineWidgetEvent::TickerRemove(ticker),
         }
     }
@@ -137,14 +154,58 @@ pub(super) enum TickerLegendHit {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FootprintLegendIconKind {
+    Settings,
+    Hide,
+}
+
+impl FootprintLegendIconKind {
+    fn icon(self) -> style::Icon {
+        match self {
+            Self::Settings => style::Icon::Cog,
+            Self::Hide => style::Icon::SpeakerOff,
+        }
+    }
+
+    pub(super) fn into_event(self) -> KlineWidgetEvent {
+        match self {
+            Self::Settings => KlineWidgetEvent::FootprintSettings,
+            Self::Hide => KlineWidgetEvent::FootprintsVisibilityToggled,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct FootprintLegendRowHit {
+    pub(super) row_rect: Rectangle,
+    pub(super) settings: Rectangle,
+    pub(super) hide: Rectangle,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct FootprintLegendLayout {
+    pub(super) row: FootprintLegendRowHit,
+    pub(super) cluster_kind: ClusterKind,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) enum FootprintLegendHit {
+    Row,
+    Icon(FootprintLegendIconKind),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum IndicatorLegendIconKind {
+    Visibility,
     Settings,
     Close,
 }
 
 impl IndicatorLegendIconKind {
-    fn icon(self) -> style::Icon {
+    fn icon(self, visible: bool) -> style::Icon {
         match self {
+            Self::Visibility if visible => style::Icon::SpeakerHigh,
+            Self::Visibility => style::Icon::SpeakerOff,
             Self::Settings => style::Icon::Cog,
             Self::Close => style::Icon::Close,
         }
@@ -152,6 +213,7 @@ impl IndicatorLegendIconKind {
 
     pub(super) fn into_event(self, value_id: super::PanelValueId) -> KlineWidgetEvent {
         match self {
+            Self::Visibility => KlineWidgetEvent::IndicatorVisibilityToggled(value_id),
             Self::Settings => KlineWidgetEvent::IndicatorSettings(value_id),
             Self::Close => KlineWidgetEvent::IndicatorRemove(value_id),
         }
@@ -163,8 +225,10 @@ pub(super) struct IndicatorLegendRowHit {
     pub(super) value_id: super::PanelValueId,
     pub(super) y_center: f32,
     pub(super) row_rect: Rectangle,
+    pub(super) visibility: Rectangle,
     pub(super) settings: Rectangle,
     pub(super) close: Rectangle,
+    pub(super) visible: bool,
     pub(super) primary_overlay: bool,
 }
 
@@ -183,6 +247,113 @@ impl<'a, S> KlineWidget<'a, S>
 where
     S: KlineSeriesLike,
 {
+    pub(super) fn fill_primary_series_end_labels(
+        &self,
+        frame: &mut canvas::Frame,
+        scene: &Scene,
+        palette: &Extended,
+    ) {
+        if self.series.len() < 2 {
+            return;
+        }
+
+        let primary_plot = scene.primary_plot();
+        let plot_origin = scene.layout.regions.plot;
+        let split_x = plot_origin.x + primary_plot.x + primary_plot.width;
+        let min_y = plot_origin.y + primary_plot.y;
+        let max_y = min_y + primary_plot.height;
+        let mut labels = Vec::new();
+
+        for (index, series) in self.series.iter().enumerate().skip(1) {
+            let Some(bar) = self.bar_at_or_before_unit(series, scene.x.axis, scene.x.max_unit)
+            else {
+                continue;
+            };
+            let anchor = scene
+                .primary
+                .series_percent_anchors
+                .get(index)
+                .copied()
+                .flatten();
+            let y = (plot_origin.y
+                + scene.map_primary_plot_with_anchor(bar.close.to_f32_lossy(), anchor))
+            .clamp(min_y, max_y);
+            let color = self.series_line_color(series, palette).scale_alpha(0.92);
+            let text_color = if data::config::theme::is_dark(color) {
+                iced::Color::WHITE
+            } else {
+                iced::Color::BLACK
+            };
+            let value = anchor
+                .filter(|anchor| anchor.abs() > f32::EPSILON)
+                .map(|anchor| {
+                    format!(
+                        "{:+.2}%",
+                        ((bar.close.to_f32_lossy() / anchor) - 1.0) * 100.0
+                    )
+                })
+                .unwrap_or_else(|| scene.format_primary_cursor_label(bar.close.to_f32_lossy()));
+
+            labels.push(SeriesEndLabel {
+                y,
+                color,
+                text_color,
+                text: series_display_name(series),
+                value: Some(value),
+            });
+        }
+
+        resolve_series_end_label_overlaps(&mut labels, min_y, max_y);
+
+        for label in labels {
+            let label_height = TEXT_SIZE + 4.0;
+            let label_width = label.text.chars().count() as f32 * CHAR_W + 8.0;
+            let rect = Rectangle {
+                x: split_x - label_width,
+                y: label.y - label_height * 0.5,
+                width: label_width,
+                height: label_height,
+            };
+
+            frame.fill_rectangle(rect.position(), rect.size(), label.color);
+            frame.fill_text(canvas::Text {
+                content: label.text,
+                position: Point::new(rect.x + rect.width - 4.0, label.y),
+                color: label.text_color,
+                size: TEXT_SIZE.into(),
+                align_x: iced::Alignment::End.into(),
+                align_y: iced::Alignment::Center.into(),
+                font: style::AZERET_MONO,
+                ..Default::default()
+            });
+
+            if let Some(value) = label.value {
+                let axis_width = scene.layout.regions.y_axis.width;
+                let value_rect = Rectangle {
+                    x: split_x + 2.0,
+                    y: rect.y,
+                    width: (axis_width - 3.0).max(0.0),
+                    height: rect.height,
+                };
+                frame.fill_rectangle(value_rect.position(), value_rect.size(), label.color);
+                frame.fill(
+                    &canvas::Path::circle(Point::new(split_x + axis_width, label.y), 4.0),
+                    label.color,
+                );
+                frame.fill_text(canvas::Text {
+                    content: value,
+                    position: Point::new(value_rect.x + value_rect.width - 4.0, label.y),
+                    color: label.text_color,
+                    size: TEXT_SIZE.into(),
+                    align_x: iced::Alignment::End.into(),
+                    align_y: iced::Alignment::Center.into(),
+                    font: style::AZERET_MONO,
+                    ..Default::default()
+                });
+            }
+        }
+    }
+
     pub(super) fn build_corner_control_hits(
         &self,
         layout: &PanelLayoutTree,
@@ -350,7 +521,7 @@ where
         show_values: bool,
         show_icons: bool,
     ) -> Option<TickerLegendLayout> {
-        if self.series.len() <= 1 {
+        if self.series.is_empty() {
             return None;
         }
 
@@ -363,35 +534,32 @@ where
         let mut max_name_chars: usize = 0;
 
         for (index, series) in self.series.iter().enumerate() {
-            let name_chars = series
-                .ticker_info()
-                .ticker
-                .symbol_and_exchange_string()
-                .chars()
-                .count();
+            let name_chars = series_display_name(series).chars().count();
             max_name_chars = max_name_chars.max(name_chars);
 
-            let value_chars = if show_values {
-                if index == 0 {
-                    series
-                        .bars()
-                        .last()
-                        .map(|bar| {
-                            let precision = series.ticker_info().min_ticksize;
-                            format!(
-                                "O {} H {} L {} C {}",
-                                bar.open.to_string(precision),
-                                bar.high.to_string(precision),
-                                bar.low.to_string(precision),
-                                bar.close.to_string(precision),
-                            )
-                            .chars()
-                            .count()
-                        })
-                        .unwrap_or(0)
-                } else {
-                    "+100.00%".chars().count()
-                }
+            let value_chars = if index == 0 {
+                // Always reserve width for the primary series so its OHLC + %
+                // readout stays visible by default (latest bar), matching the
+                // legacy always-on top-left legend. Estimate includes the
+                // change-percent segment rendered at draw time.
+                series
+                    .bars()
+                    .last()
+                    .map(|bar| {
+                        let precision = series.ticker_info().min_ticksize;
+                        format!(
+                            "O {} H {} L {} C {} +00.00%",
+                            bar.open.to_string(precision),
+                            bar.high.to_string(precision),
+                            bar.low.to_string(precision),
+                            bar.close.to_string(precision),
+                        )
+                        .chars()
+                        .count()
+                    })
+                    .unwrap_or(0)
+            } else if show_values {
+                "+100.00%".chars().count()
             } else {
                 0
             };
@@ -441,14 +609,9 @@ where
         let mut rows = Vec::with_capacity(visible_rows);
         let mut row_top = bg.y + TICKER_LEGEND_PADDING;
 
-        for (index, series) in self.series.iter().take(visible_rows).enumerate() {
-            let has_close = index != 0;
-            let label_chars = series
-                .ticker_info()
-                .ticker
-                .symbol_and_exchange_string()
-                .chars()
-                .count() as f32;
+        for series in self.series.iter().take(visible_rows) {
+            let has_close = true;
+            let label_chars = series_display_name(series).chars().count() as f32;
 
             let y_center = row_top + TICKER_LEGEND_ROW_H * 0.5;
             let text_end_x = x_left + label_chars * CHAR_W;
@@ -565,13 +728,75 @@ where
             }
 
             if row.has_close && row.close.contains(plot_local) {
-                return Some(TickerLegendHit::Icon(index, TickerLegendIconKind::Close));
+                let kind = if index == 0 {
+                    TickerLegendIconKind::Hide
+                } else {
+                    TickerLegendIconKind::Close
+                };
+                return Some(TickerLegendHit::Icon(index, kind));
             }
 
             return Some(TickerLegendHit::Row(index));
         }
 
         Some(TickerLegendHit::Background)
+    }
+
+    pub(super) fn build_footprint_legend_layout(
+        &self,
+        layout: &PanelLayoutTree,
+        primary_panel: usize,
+        preceding_rows: usize,
+        cluster_kind: ClusterKind,
+        active: bool,
+    ) -> Option<FootprintLegendLayout> {
+        if !active {
+            return None;
+        }
+
+        let panel = layout.panel(primary_panel)?;
+        let row_top = panel.plot.y
+            + PANEL_TITLE_TOP_PAD
+            + TICKER_LEGEND_PADDING
+            + preceding_rows as f32 * TICKER_LEGEND_ROW_H;
+        let y_center = row_top + TICKER_LEGEND_ROW_H * 0.5;
+        let label = format!("Footprint · {cluster_kind}");
+        let text_end_x =
+            panel.plot.x + TOOLTIP_ROW_LEFT_PAD + label.chars().count() as f32 * CHAR_W;
+        let (_, settings, hide, row_w) =
+            self.indicator_legend_controls(panel.plot, text_end_x, y_center, false, true);
+
+        Some(FootprintLegendLayout {
+            row: FootprintLegendRowHit {
+                row_rect: Rectangle {
+                    x: panel.plot.x,
+                    y: row_top,
+                    width: row_w,
+                    height: TICKER_LEGEND_ROW_H,
+                },
+                settings,
+                hide,
+            },
+            cluster_kind,
+        })
+    }
+
+    pub(super) fn hit_footprint_legend(
+        layout: &PanelLayoutTree,
+        legend: &FootprintLegendLayout,
+        root_local: Point,
+    ) -> Option<FootprintLegendHit> {
+        let plot_local = layout.plot_local_point(root_local)?;
+        if !legend.row.row_rect.contains(plot_local) {
+            return None;
+        }
+        if legend.row.settings.contains(plot_local) {
+            return Some(FootprintLegendHit::Icon(FootprintLegendIconKind::Settings));
+        }
+        if legend.row.hide.contains(plot_local) {
+            return Some(FootprintLegendHit::Icon(FootprintLegendIconKind::Hide));
+        }
+        Some(FootprintLegendHit::Row)
     }
 
     fn indicator_label(
@@ -597,11 +822,13 @@ where
     pub(super) fn tooltip_rows_before_indicators(
         &self,
         ticker_legend: Option<&TickerLegendLayout>,
+        footprint_legend: Option<&FootprintLegendLayout>,
         show_legend_values: bool,
     ) -> usize {
         ticker_legend
             .map(|legend| legend.rows.len())
             .unwrap_or(usize::from(show_legend_values))
+            + usize::from(footprint_legend.is_some())
     }
 
     pub(super) fn build_indicator_legend_layout(
@@ -610,8 +837,8 @@ where
         primary_panel: usize,
         preceding_rows: usize,
     ) -> Option<IndicatorLegendLayout> {
-        let primary_overlay_ids = self.primary_overlay_value_ids();
-        let has_primary_overlays = !primary_overlay_ids.is_empty();
+        let primary_overlay_entries = self.primary_overlay_entries();
+        let has_primary_overlays = !primary_overlay_entries.is_empty();
         let has_indicator_panels = layout.panels.iter().enumerate().any(|(index, panel)| {
             panel.kind == super::KlinePanelKind::Indicator && self.panel_value_id(index).is_some()
         });
@@ -635,8 +862,8 @@ where
             let x_left = self.indicator_label_x(panel.plot.x, value_id);
             let text_end_x = x_left + label.chars().count() as f32 * CHAR_W;
             let y_center = panel.plot.y + PANEL_TITLE_TOP_PAD + TICKER_LEGEND_ROW_H * 0.5;
-            let (settings, close, row_w) =
-                self.indicator_legend_controls(panel.plot, text_end_x, y_center, true);
+            let (visibility, settings, close, row_w) =
+                self.indicator_legend_controls(panel.plot, text_end_x, y_center, false, true);
 
             rows.push(IndicatorLegendRowHit {
                 value_id,
@@ -647,15 +874,17 @@ where
                     width: row_w,
                     height: TICKER_LEGEND_ROW_H,
                 },
+                visibility,
                 settings,
                 close,
+                visible: true,
                 primary_overlay: false,
             });
         }
 
         if has_primary_overlays {
             let panel = layout.panel(primary_panel)?;
-            for (overlay_index, value_id) in primary_overlay_ids.iter().enumerate() {
+            for (overlay_index, (value_id, visible)) in primary_overlay_entries.iter().enumerate() {
                 let row_top = panel.plot.y
                     + PANEL_TITLE_TOP_PAD
                     + TICKER_LEGEND_PADDING
@@ -664,8 +893,8 @@ where
                 let label = self.indicator_label(primary_panel, true, *value_id);
                 let x_left = self.indicator_label_x(panel.plot.x, *value_id);
                 let text_end_x = x_left + label.chars().count() as f32 * CHAR_W;
-                let (settings, close, row_w) =
-                    self.indicator_legend_controls(panel.plot, text_end_x, y_center, true);
+                let (visibility, settings, close, row_w) =
+                    self.indicator_legend_controls(panel.plot, text_end_x, y_center, true, true);
 
                 rows.push(IndicatorLegendRowHit {
                     value_id: *value_id,
@@ -676,8 +905,10 @@ where
                         width: row_w,
                         height: TICKER_LEGEND_ROW_H,
                     },
+                    visibility,
                     settings,
                     close,
+                    visible: *visible,
                     primary_overlay: true,
                 });
             }
@@ -691,37 +922,51 @@ where
         panel: Rectangle,
         text_end_x: f32,
         y_center: f32,
+        has_visibility: bool,
         has_close: bool,
-    ) -> (Rectangle, Rectangle, f32) {
+    ) -> (Rectangle, Rectangle, Rectangle, f32) {
         let x_right = panel.x + panel.width - TICKER_LEGEND_PADDING;
         let free_left = text_end_x + TICKER_LEGEND_PADDING * 2.0;
-        let icon_pack_w = if has_close {
-            2.0 * TICKER_LEGEND_ICON_BOX + TICKER_LEGEND_ICON_GAP
-        } else {
-            TICKER_LEGEND_ICON_BOX
-        };
+        let icon_count = 1 + usize::from(has_visibility) + usize::from(has_close);
+        let icon_pack_w = icon_count as f32 * TICKER_LEGEND_ICON_BOX
+            + icon_count.saturating_sub(1) as f32 * TICKER_LEGEND_ICON_GAP;
 
         let settings_x = free_left.min((x_right - icon_pack_w).max(free_left));
-        let settings = Rectangle {
+        let first_icon = Rectangle {
             x: settings_x,
             y: y_center - TICKER_LEGEND_ICON_BOX * 0.5,
             width: TICKER_LEGEND_ICON_BOX,
             height: TICKER_LEGEND_ICON_BOX,
         };
+        let empty_icon = || Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: 0.0,
+            height: 0.0,
+        };
+        let mut next_x = settings_x;
+        let visibility = if has_visibility {
+            let visibility = Rectangle {
+                x: next_x,
+                ..first_icon
+            };
+            next_x += TICKER_LEGEND_ICON_BOX + TICKER_LEGEND_ICON_GAP;
+            visibility
+        } else {
+            empty_icon()
+        };
+        let settings = Rectangle {
+            x: next_x,
+            ..first_icon
+        };
+        next_x += TICKER_LEGEND_ICON_BOX + TICKER_LEGEND_ICON_GAP;
         let close = if has_close {
             Rectangle {
-                x: settings_x + TICKER_LEGEND_ICON_BOX + TICKER_LEGEND_ICON_GAP,
-                y: settings.y,
-                width: TICKER_LEGEND_ICON_BOX,
-                height: TICKER_LEGEND_ICON_BOX,
+                x: next_x,
+                ..first_icon
             }
         } else {
-            Rectangle {
-                x: 0.0,
-                y: 0.0,
-                width: 0.0,
-                height: 0.0,
-            }
+            empty_icon()
         };
         let content_right = if has_close {
             close.x + close.width
@@ -729,7 +974,7 @@ where
             settings.x + settings.width
         };
         let row_w = (content_right + TICKER_LEGEND_PADDING - panel.x).clamp(0.0, panel.width);
-        (settings, close, row_w)
+        (visibility, settings, close, row_w)
     }
 
     pub(super) fn hit_indicator_legend(
@@ -741,6 +986,13 @@ where
         for (index, row) in legend.rows.iter().enumerate() {
             if !row.row_rect.contains(plot_local) {
                 continue;
+            }
+
+            if row.visibility.contains(plot_local) {
+                return Some(IndicatorLegendHit::Icon(
+                    index,
+                    IndicatorLegendIconKind::Visibility,
+                ));
             }
 
             if row.settings.contains(plot_local) {
@@ -768,6 +1020,7 @@ where
         frame: &mut canvas::Frame,
         scene: &Scene,
         palette: &Extended,
+        generated_accents: &[iced::Color; 6],
         show_primary_panel_values: bool,
     ) {
         let Some(cursor) = scene.interaction.cursor else {
@@ -839,11 +1092,16 @@ where
                         0.0
                     };
 
-                    let value_color = if change_pct >= 0.0 {
-                        palette.success.base.color
+                    let slot = if change_pct >= 0.0 {
+                        data::chart::kline_v2::CandlestickColorSlot::Bullish
                     } else {
-                        palette.danger.base.color
+                        data::chart::kline_v2::CandlestickColorSlot::Bearish
                     };
+                    let value_color = Self::resolve_theme_color(
+                        self.candlestick_config.colors.color_for(slot),
+                        palette,
+                        generated_accents,
+                    );
                     let label_color = palette.background.base.text.scale_alpha(0.82);
 
                     let segments: Vec<(String, iced::Color, bool)> = vec![
@@ -892,8 +1150,18 @@ where
                 }
             } else if let Some(value_id) = self.panel_value_id(panel_index)
                 && let Some(indicator_data) =
-                    base_series.indicator_data_for_panel_value_opt(Some(value_id), base_bar)
+                    self.indicator_data_for_series(base_series, Some(value_id), base_bar)
             {
+                if matches!(
+                    self.composition
+                        .panels
+                        .get(panel_index)
+                        .map(|panel| panel.presentation),
+                    Some(super::PanelPresentation::Table)
+                ) {
+                    continue;
+                }
+
                 let hovered_indicator = scene.interaction.hovering_indicator_legend
                     && scene
                         .chrome
@@ -919,7 +1187,7 @@ where
                     .iter()
                     .copied()
                 {
-                    let Some(value) = Self::overlay_channel_value(indicator_data, channel) else {
+                    let Some(value) = self.overlay_channel_value(indicator_data, channel) else {
                         continue;
                     };
 
@@ -929,7 +1197,12 @@ where
 
                     let value_text =
                         self.format_panel_header_value(panel_index, panel_precision, value);
-                    let label_color = Self::overlay_channel_color(channel, palette);
+                    let label_color = self.overlay_channel_color(
+                        Some(value_id),
+                        channel,
+                        palette,
+                        generated_accents,
+                    );
                     let label_text = channel.label.to_string();
 
                     frame.fill_text(canvas::Text {
@@ -1013,6 +1286,7 @@ where
         frame: &mut canvas::Frame,
         scene: &Scene,
         palette: &Extended,
+        generated_accents: &[iced::Color; 6],
     ) {
         let Some(legend) = scene.chrome.ticker_legend.as_ref() else {
             return;
@@ -1050,62 +1324,112 @@ where
                 frame.fill_rectangle(highlight.position(), highlight.size(), row_hover_fill);
             }
 
-            let label = row.ticker.ticker.symbol_and_exchange_string();
-            let label_color = if index == 0 {
+            let label = self
+                .series
+                .get(index)
+                .map(series_display_name)
+                .unwrap_or_else(|| row.ticker.ticker.symbol_and_exchange_string());
+            let row_alpha = if index == 0 && !self.candlesticks_visible {
+                HIDDEN_LEGEND_ALPHA
+            } else {
+                1.0
+            };
+            let label_color = if index == 0 && !matches!(scene.primary.mark, MarkKind::Line) {
                 palette.background.base.text
             } else {
-                Self::comparison_line_color(&row.ticker).scale_alpha(0.96)
-            };
+                self.series
+                    .get(index)
+                    .map(|series| self.series_line_color(series, palette))
+                    .unwrap_or(palette.background.base.text)
+            }
+            .scale_alpha(if index == 0 { 1.0 } else { 0.96 });
 
-            let value_text = if let Some(target_x_unit) = target_x_unit
-                && !show_buttons
-                && let Some(series) = self.series.get(index)
-                && let Some(bar) = self.bar_at_or_before_unit(series, scene.x.axis, target_x_unit)
-            {
-                let precision = series.ticker_info().min_ticksize;
-                if index == 0 {
-                    Some(format!(
-                        "O {} H {} L {} C {}",
-                        bar.open.to_string(precision),
-                        bar.high.to_string(precision),
-                        bar.low.to_string(precision),
-                        bar.close.to_string(precision),
-                    ))
+            // Build the colored, segmented text for this row. The primary
+            // series shows O/H/L/C + change% colored green/red by direction
+            // (close vs open), persisting on the latest bar and switching to
+            // the hovered bar when the cursor is over the plot.
+            let mut segments: Vec<(String, iced::Color)> = Vec::new();
+
+            if let Some(series) = self.series.get(index) {
+                let effective_bar = if !show_buttons {
+                    if let Some(target_x_unit) = target_x_unit {
+                        self.bar_at_or_before_unit(series, scene.x.axis, target_x_unit)
+                    } else {
+                        series.bars().last()
+                    }
                 } else {
-                    Some(
-                        self.bar_at_or_before_unit(series, scene.x.axis, scene.x.min_unit)
-                            .and_then(|anchor_bar| {
-                                let anchor = anchor_bar.close.to_f32_lossy();
-                                (anchor.abs() > f32::EPSILON)
-                                    .then_some(((bar.close.to_f32_lossy() / anchor) - 1.0) * 100.0)
-                            })
-                            .map(|pct| format!("{pct:+.2}%"))
-                            .unwrap_or_else(|| "n/a".to_string()),
-                    )
+                    None
+                };
+
+                if index == 0 {
+                    if let Some(bar) = effective_bar {
+                        let precision = series.ticker_info().min_ticksize;
+                        let open_f = bar.open.to_f32_lossy();
+                        let close_f = bar.close.to_f32_lossy();
+                        let change_pct = if open_f.abs() > f32::EPSILON {
+                            ((close_f - open_f) / open_f) * 100.0
+                        } else {
+                            0.0
+                        };
+                        let slot = if change_pct >= 0.0 {
+                            data::chart::kline_v2::CandlestickColorSlot::Bullish
+                        } else {
+                            data::chart::kline_v2::CandlestickColorSlot::Bearish
+                        };
+                        let value_color = Self::resolve_theme_color(
+                            self.candlestick_config.colors.color_for(slot),
+                            palette,
+                            generated_accents,
+                        );
+
+                        segments.push((label, label_color));
+                        segments.push((" O".to_string(), label_color));
+                        segments.push((bar.open.to_string(precision), value_color));
+                        segments.push((" H".to_string(), label_color));
+                        segments.push((bar.high.to_string(precision), value_color));
+                        segments.push((" L".to_string(), label_color));
+                        segments.push((bar.low.to_string(precision), value_color));
+                        segments.push((" C".to_string(), label_color));
+                        segments.push((bar.close.to_string(precision), value_color));
+                        segments.push((format!(" {:+.2}%", change_pct), value_color));
+                    } else {
+                        segments.push((label, label_color));
+                    }
+                } else if let Some(bar) = effective_bar {
+                    let pct_text = self
+                        .bar_at_or_before_unit(series, scene.x.axis, scene.x.min_unit)
+                        .and_then(|anchor_bar| {
+                            let anchor = anchor_bar.close.to_f32_lossy();
+                            (anchor.abs() > f32::EPSILON)
+                                .then_some(((bar.close.to_f32_lossy() / anchor) - 1.0) * 100.0)
+                        })
+                        .map(|pct| format!("{pct:+.2}%"))
+                        .unwrap_or_else(|| "n/a".to_string());
+                    segments.push((label, label_color));
+                    segments.push((format!(" {pct_text}"), label_color));
+                } else {
+                    segments.push((label, label_color));
                 }
             } else {
-                None
-            };
+                segments.push((label, label_color));
+            }
 
-            let content = if let Some(value_text) = value_text {
-                format!("{label} {value_text}")
-            } else {
-                label
-            };
+            let mut text_x = bg.x + TICKER_LEGEND_PADDING;
+            let text_y = scene.layout.regions.plot.y + row.y_center;
 
-            frame.fill_text(canvas::Text {
-                content,
-                position: Point::new(
-                    bg.x + TICKER_LEGEND_PADDING,
-                    scene.layout.regions.plot.y + row.y_center,
-                ),
-                color: label_color,
-                size: TEXT_SIZE.into(),
-                align_x: iced::Alignment::Start.into(),
-                align_y: iced::Alignment::Center.into(),
-                font: style::AZERET_MONO,
-                ..Default::default()
-            });
+            for (text, color) in segments {
+                frame.fill_text(canvas::Text {
+                    content: text.clone(),
+                    position: Point::new(text_x, text_y),
+                    color: color.scale_alpha(row_alpha),
+                    size: TEXT_SIZE.into(),
+                    align_x: iced::Alignment::Start.into(),
+                    align_y: iced::Alignment::Center.into(),
+                    font: style::AZERET_MONO,
+                    ..Default::default()
+                });
+                text_x += text.chars().count() as f32 * CHAR_W;
+            }
 
             if show_buttons {
                 let settings_root = to_root(row.settings);
@@ -1122,12 +1446,17 @@ where
                 );
 
                 if row.has_close {
-                    let close_hovered = scene.interaction.hovered_ticker_icon
-                        == Some((index, TickerLegendIconKind::Close));
+                    let secondary_kind = if index == 0 {
+                        TickerLegendIconKind::Hide
+                    } else {
+                        TickerLegendIconKind::Close
+                    };
+                    let close_hovered =
+                        scene.interaction.hovered_ticker_icon == Some((index, secondary_kind));
                     Self::draw_legend_icon_button(
                         frame,
                         close_root,
-                        TickerLegendIconKind::Close.icon(),
+                        secondary_kind.icon(),
                         close_hovered,
                         palette,
                     );
@@ -1136,11 +1465,92 @@ where
         }
     }
 
+    pub(super) fn fill_footprint_legend(
+        &self,
+        frame: &mut canvas::Frame,
+        scene: &Scene,
+        palette: &Extended,
+    ) {
+        let Some(legend) = scene.chrome.footprint_legend.as_ref() else {
+            return;
+        };
+
+        let to_root = |rect: Rectangle| Rectangle {
+            x: scene.layout.regions.plot.x + rect.x,
+            y: scene.layout.regions.plot.y + rect.y,
+            width: rect.width,
+            height: rect.height,
+        };
+        let row_rect = to_root(legend.row.row_rect);
+        let hovered_row = scene.interaction.hovering_footprint_legend;
+        frame.fill_rectangle(
+            row_rect.position(),
+            row_rect.size(),
+            palette.background.weakest.color.scale_alpha(0.9),
+        );
+
+        if hovered_row {
+            frame.fill_rectangle(
+                row_rect.position(),
+                row_rect.size(),
+                palette.background.strong.color.scale_alpha(0.22),
+            );
+        }
+
+        frame.fill_text(canvas::Text {
+            content: format!("Footprint · {}", legend.cluster_kind),
+            position: Point::new(
+                row_rect.x + TOOLTIP_ROW_LEFT_PAD,
+                row_rect.y + row_rect.height * 0.5,
+            ),
+            color: palette
+                .background
+                .base
+                .text
+                .scale_alpha(if self.footprints_visible {
+                    1.0
+                } else {
+                    HIDDEN_LEGEND_ALPHA
+                }),
+            size: TEXT_SIZE.into(),
+            align_x: iced::Alignment::Start.into(),
+            align_y: iced::Alignment::Center.into(),
+            font: style::AZERET_MONO,
+            ..Default::default()
+        });
+
+        if !hovered_row {
+            return;
+        }
+
+        let settings = to_root(legend.row.settings);
+        let hide = to_root(legend.row.hide);
+        let settings_hovered =
+            scene.interaction.hovered_footprint_icon == Some(FootprintLegendIconKind::Settings);
+        Self::draw_legend_icon_button(
+            frame,
+            settings,
+            FootprintLegendIconKind::Settings.icon(),
+            settings_hovered,
+            palette,
+        );
+        let hide_hovered =
+            scene.interaction.hovered_footprint_icon == Some(FootprintLegendIconKind::Hide);
+        Self::draw_legend_icon_button(
+            frame,
+            hide,
+            FootprintLegendIconKind::Hide.icon(),
+            hide_hovered,
+            palette,
+        );
+    }
+
     pub(super) fn fill_indicator_legend(
         &self,
         frame: &mut canvas::Frame,
         scene: &Scene,
         palette: &Extended,
+        generated_accents: &[iced::Color; 6],
     ) {
         let Some(legend) = scene.chrome.indicator_legend.as_ref() else {
             return;
@@ -1173,6 +1583,11 @@ where
                 let marker_x = self.indicator_marker_x(row_rect.x);
                 let label_x = self.indicator_label_x(row_rect.x, row.value_id);
                 let label_y = scene.layout.regions.plot.y + row.y_center;
+                let row_alpha = if row.visible {
+                    1.0
+                } else {
+                    HIDDEN_LEGEND_ALPHA
+                };
 
                 if self
                     .indicator_unavailable_message(Some(row.value_id))
@@ -1181,7 +1596,7 @@ where
                     frame.fill_text(canvas::Text {
                         content: "!".to_string(),
                         position: Point::new(marker_x, label_y),
-                        color: palette.danger.base.color,
+                        color: palette.danger.base.color.scale_alpha(row_alpha),
                         size: TEXT_SIZE.into(),
                         align_x: iced::Alignment::Start.into(),
                         align_y: iced::Alignment::Center.into(),
@@ -1210,7 +1625,14 @@ where
                     .copied()
                 {
                     let label_text = channel.label.to_string();
-                    let color = Self::overlay_channel_color(channel, palette);
+                    let color = self
+                        .overlay_channel_color(
+                            Some(row.value_id),
+                            channel,
+                            palette,
+                            generated_accents,
+                        )
+                        .scale_alpha(row_alpha);
 
                     frame.fill_text(canvas::Text {
                         content: label_text.clone(),
@@ -1230,9 +1652,8 @@ where
 
                     let Some(value) = base_bar.and_then(|bar| {
                         self.series.first().and_then(|series| {
-                            series
-                                .indicator_data_for_panel_value_opt(Some(row.value_id), bar)
-                                .and_then(|data| Self::overlay_channel_value(data, channel))
+                            self.indicator_data_for_series(series, Some(row.value_id), bar)
+                                .and_then(|data| self.overlay_channel_value(data, channel))
                         })
                     }) else {
                         continue;
@@ -1269,12 +1690,22 @@ where
             }
 
             if show_buttons && hovered_row {
+                let visibility_hovered = scene.interaction.hovered_indicator_icon
+                    == Some((index, IndicatorLegendIconKind::Visibility));
+                Self::draw_legend_icon_button(
+                    frame,
+                    to_root(row.visibility),
+                    IndicatorLegendIconKind::Visibility.icon(row.visible),
+                    visibility_hovered,
+                    palette,
+                );
+
                 let settings_hovered = scene.interaction.hovered_indicator_icon
                     == Some((index, IndicatorLegendIconKind::Settings));
                 Self::draw_legend_icon_button(
                     frame,
                     to_root(row.settings),
-                    IndicatorLegendIconKind::Settings.icon(),
+                    IndicatorLegendIconKind::Settings.icon(row.visible),
                     settings_hovered,
                     palette,
                 );
@@ -1284,7 +1715,7 @@ where
                 Self::draw_legend_icon_button(
                     frame,
                     to_root(row.close),
-                    IndicatorLegendIconKind::Close.icon(),
+                    IndicatorLegendIconKind::Close.icon(row.visible),
                     close_hovered,
                     palette,
                 );
@@ -1412,5 +1843,31 @@ where
                 ..Default::default()
             });
         }
+    }
+}
+
+struct SeriesEndLabel {
+    y: f32,
+    color: iced::Color,
+    text_color: iced::Color,
+    text: String,
+    value: Option<String>,
+}
+
+fn resolve_series_end_label_overlaps(labels: &mut [SeriesEndLabel], min_y: f32, max_y: f32) {
+    if labels.len() <= 1 {
+        return;
+    }
+
+    labels.sort_by(|left, right| left.y.total_cmp(&right.y));
+    let half_height = TEXT_SIZE * 0.5 + SERIES_END_LABEL_GAP;
+    let available_height = (max_y - min_y).max(0.0);
+    let label_count = labels.len();
+    let spacing = (available_height / (label_count - 1) as f32).min(TEXT_SIZE + 4.0);
+
+    for (index, label) in labels.iter_mut().enumerate() {
+        let lower = min_y + half_height + index as f32 * spacing;
+        let upper = max_y - half_height - (label_count - 1 - index) as f32 * spacing;
+        label.y = label.y.clamp(lower.min(upper), lower.max(upper));
     }
 }

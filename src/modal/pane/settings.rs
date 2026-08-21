@@ -1,21 +1,49 @@
-use crate::chart::comparison::ComparisonChart;
 use crate::screen::dashboard::pane::{Event, Message};
 use crate::screen::dashboard::panel::timeandsales;
 use crate::split_column;
-use crate::widget::{classic_slider_row, labeled_slider};
+use crate::widget::{classic_slider_row, labeled_slider, theme_color_control};
 use crate::{style, tooltip, widget::scrollable_content};
 
 use data::chart::heatmap::HeatmapStudy;
 use data::chart::kline::FootprintStudy;
+use data::chart::kline_v2::{
+    AnchoredVwapConfig, BollingerBandsCalculationConfig, CandlestickColorSlot, CandlestickConfig,
+    IndicatorColorConfig, IndicatorColorSlot, IndicatorConfig, KlineIndicator as KlineV2Indicator,
+    KlineStudy, MAX_CANDLESTICK_OPACITY_PERCENT, MIN_CANDLESTICK_OPACITY_PERCENT, MarkKind,
+    MovingAverageMethod, MovingAveragesCalculationConfig, RsiConfig, RsiSmoothing, ThemeAccent,
+    VwapAnchor,
+};
 use data::chart::{
     KlineChartKind,
     heatmap::{self, CoalesceKind},
     kline::ClusterKind,
 };
+use data::config::theme::{ThemeColor, ThemeColorShade};
 use data::layout::pane::VisualConfig;
 use data::panel::ladder;
 use data::panel::timeandsales::{StackedBar, StackedBarRatio};
 use data::util::format_with_commas;
+
+use crate::widget::series_editor::{SeriesStyleEntry, TickerSeriesEditor};
+
+#[derive(Debug, Clone, Copy)]
+pub enum KlineV2IndicatorSettingsMessage {
+    DataConfig(IndicatorConfig),
+    Mark(data::chart::kline_v2::MarkKind),
+    Color {
+        slot: IndicatorColorSlot,
+        accent: Option<ThemeAccent>,
+        shade: ThemeColorShade,
+    },
+    Reset,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum CandlestickSettingsMessage {
+    Config(CandlestickConfig),
+    Mark(MarkKind),
+    Reset,
+}
 
 use iced::widget::{checkbox, space};
 use iced::{
@@ -577,23 +605,6 @@ pub fn timesales_cfg_view<'a>(
     cfg_view_container(320, content)
 }
 
-pub fn comparison_cfg_view<'a>(
-    pane: pane_grid::Pane,
-    chart: &'a ComparisonChart,
-) -> Element<'a, Message> {
-    let series = &chart.series;
-    let series_editor = &chart.series_editor;
-
-    let content = column![series_editor.view(series).map(move |msg| {
-        Message::PaneEvent(
-            pane,
-            Event::ComparisonChartInteraction(crate::chart::comparison::Message::Editor(msg)),
-        )
-    })];
-
-    cfg_view_container(320, content)
-}
-
 pub fn kline_cfg_view<'a>(
     study_config: &'a study::Configurator<FootprintStudy>,
     cfg: data::chart::kline::Config,
@@ -707,7 +718,7 @@ pub fn kline_cfg_view<'a>(
                 .collect();
 
             let study_cfg = study_config
-                .view_available(&active_studies, basis, available_studies)
+                .view_available(&active_studies, basis, available_studies, &[])
                 .map(move |msg| {
                     Message::PaneEvent(
                         pane,
@@ -748,6 +759,767 @@ pub fn kline_cfg_view<'a>(
     };
 
     cfg_view_container(360, content)
+}
+
+pub fn kline_v2_cfg_view<'a>(
+    study_config: &'a study::Configurator<KlineStudy>,
+    studies: &'a [KlineStudy],
+    cluster_kind: ClusterKind,
+    trade_data_enabled: bool,
+    pane: pane_grid::Pane,
+    basis: data::chart::Basis,
+) -> Element<'a, Message> {
+    let active_studies = studies.to_vec();
+    let available_studies = KlineStudy::ALL
+        .into_iter()
+        .filter_map(|study| study.normalized_for_basis(basis))
+        .collect();
+    let disabled_studies: Vec<KlineStudy> = if trade_data_enabled {
+        Vec::new()
+    } else {
+        KlineStudy::ALL
+            .iter()
+            .copied()
+            .filter(|study| study.requires_trade_data())
+            .collect()
+    };
+    let study_cfg = study_config
+        .view_available(&active_studies, basis, available_studies, &disabled_studies)
+        .map(move |message| {
+            Message::PaneEvent(
+                pane,
+                Event::StudyConfigurator(study::StudyMessage::KlineV2(message)),
+            )
+        });
+
+    let cluster_picklist = pick_list(ClusterKind::ALL, Some(cluster_kind), move |kind| {
+        Message::PaneEvent(pane, Event::ClusterKindSelected(kind))
+    });
+
+    let trade_data_required_for_basis = matches!(basis, data::chart::Basis::Tick(_));
+    let trade_data_enabled_checkbox = tooltip(
+        checkbox(trade_data_enabled)
+            .label("Enable trade data")
+            .on_toggle_maybe((!trade_data_required_for_basis).then_some(move |enabled| {
+                Message::PaneEvent(pane, Event::TradeDataEnabledChanged(enabled))
+            })),
+        Some(if trade_data_required_for_basis {
+            "Trade data is required for tick-based charts"
+        } else {
+            "Allow footprint studies and indicators that need trade data to subscribe and fetch it"
+        }),
+        TooltipPosition::Top,
+    );
+
+    cfg_view_container(
+        360,
+        column![
+            trade_data_enabled_checkbox,
+            text("Footprint cluster type").size(crate::style::text_size::SECTION),
+            cluster_picklist,
+            text("Studies").size(crate::style::text_size::SECTION),
+            study_cfg
+        ]
+        .spacing(12),
+    )
+}
+
+fn candlestick_color_section<'a>(
+    config: CandlestickConfig,
+    pane: pane_grid::Pane,
+) -> Element<'a, Message> {
+    let colors = config.colors;
+    let controls = [
+        (CandlestickColorSlot::Bullish, "Bullish"),
+        (CandlestickColorSlot::Bearish, "Bearish"),
+    ]
+    .into_iter()
+    .map(|(slot, label)| {
+        let selected = colors.color_for(slot);
+        let color_choices = theme_color_control(selected, move |accent| {
+            Message::PaneEvent(
+                pane,
+                Event::KlineV2CandlestickSettings(CandlestickSettingsMessage::Config(
+                    config.with_color(
+                        slot,
+                        ThemeColor::with_accent(selected.role, accent, selected.shade),
+                    ),
+                )),
+            )
+        });
+        let shade_picklist = pick_list(ThemeColorShade::ALL, Some(selected.shade), move |shade| {
+            Message::PaneEvent(
+                pane,
+                Event::KlineV2CandlestickSettings(CandlestickSettingsMessage::Config(
+                    config.with_color(
+                        slot,
+                        ThemeColor::with_accent(selected.role, selected.accent, shade),
+                    ),
+                )),
+            )
+        });
+
+        column![
+            row![text(label).width(Length::Fill), shade_picklist].spacing(8),
+            color_choices,
+        ]
+        .spacing(4)
+        .into()
+    })
+    .collect::<Vec<_>>();
+
+    column![
+        text("Colors").size(crate::style::text_size::SECTION),
+        column(controls).spacing(8),
+    ]
+    .spacing(8)
+    .into()
+}
+
+pub fn candlestick_cfg_view<'a>(
+    config: CandlestickConfig,
+    mark: MarkKind,
+    series_editor: &'a TickerSeriesEditor,
+    series: Vec<SeriesStyleEntry>,
+    pane: pane_grid::Pane,
+) -> Element<'a, Message> {
+    let reset = button("Reset to defaults").on_press(Message::PaneEvent(
+        pane,
+        Event::KlineV2CandlestickSettings(CandlestickSettingsMessage::Reset),
+    ));
+    let opacity = config.opacity_percent.clamp(
+        MIN_CANDLESTICK_OPACITY_PERCENT,
+        MAX_CANDLESTICK_OPACITY_PERCENT,
+    );
+    let opacity_slider = slider(
+        f32::from(MIN_CANDLESTICK_OPACITY_PERCENT)..=f32::from(MAX_CANDLESTICK_OPACITY_PERCENT),
+        f32::from(opacity),
+        move |value| {
+            Message::PaneEvent(
+                pane,
+                Event::KlineV2CandlestickSettings(CandlestickSettingsMessage::Config(
+                    config.with_opacity_percent(value.round() as u8),
+                )),
+            )
+        },
+    )
+    .step(5.0);
+
+    let selected_mark = mark;
+    let mark_controls = [("Candles", MarkKind::Candle), ("Line", MarkKind::Line)]
+        .into_iter()
+        .map(|(label, mark)| {
+            radio(label, mark, Some(selected_mark), move |value| {
+                Message::PaneEvent(
+                    pane,
+                    Event::KlineV2CandlestickSettings(CandlestickSettingsMessage::Mark(value)),
+                )
+            })
+            .into()
+        });
+
+    let title = row![
+        text("Candlesticks settings").size(crate::style::text_size::TITLE),
+        space::horizontal(),
+        reset,
+    ]
+    .align_y(Alignment::Center)
+    .spacing(12);
+
+    let mut content = column![
+        title,
+        column![
+            text("Display mark").size(crate::style::text_size::SECTION),
+            row(mark_controls).spacing(12),
+        ]
+        .spacing(8),
+    ]
+    .spacing(16);
+
+    if matches!(mark, MarkKind::Candle) {
+        content = content
+            .push(candlestick_color_section(config, pane))
+            .push(text(format!("Opacity: {opacity}%")))
+            .push(opacity_slider);
+    } else {
+        content = content
+            .push(text("Series").size(crate::style::text_size::SECTION))
+            .push(series_editor.view(series).map(move |message| {
+                Message::PaneEvent(
+                    pane,
+                    Event::KlineV2Interaction(crate::chart::kline_v2::Message::SeriesEditor(
+                        message,
+                    )),
+                )
+            }));
+    }
+
+    cfg_view_container(360, content)
+}
+
+pub fn series_cfg_view<'a>(
+    series_editor: &'a TickerSeriesEditor,
+    series: Vec<SeriesStyleEntry>,
+    pane: pane_grid::Pane,
+) -> Element<'a, Message> {
+    cfg_view_container(
+        360,
+        column![
+            text("Series settings").size(crate::style::text_size::TITLE),
+            series_editor.view(series).map(move |message| {
+                Message::PaneEvent(
+                    pane,
+                    Event::KlineV2Interaction(crate::chart::kline_v2::Message::SeriesEditor(
+                        message,
+                    )),
+                )
+            }),
+        ]
+        .spacing(16),
+    )
+}
+
+pub fn kline_v2_indicator_cfg_view<'a>(
+    indicator: KlineV2Indicator,
+    data_config: Option<IndicatorConfig>,
+    anchored_vwap_config: AnchoredVwapConfig,
+    basis: data::chart::Basis,
+    color_config: IndicatorColorConfig,
+    mark: Option<data::chart::kline_v2::MarkKind>,
+    pane: pane_grid::Pane,
+) -> Element<'a, Message> {
+    let mark_section = indicator_mark_section(indicator, mark, pane);
+    let color_section = indicator_color_section(indicator, color_config, pane, mark);
+
+    let reset = button("Reset to default").on_press(Message::PaneEvent(
+        pane,
+        Event::KlineV2IndicatorSettings(indicator, KlineV2IndicatorSettingsMessage::Reset),
+    ));
+    let title = row![
+        text(format!("{} settings", indicator)).size(crate::style::text_size::TITLE),
+        space::horizontal(),
+        reset,
+    ]
+    .align_y(Alignment::Center)
+    .spacing(12);
+    let mut content = column![title].spacing(16);
+
+    match (indicator, data_config) {
+        (KlineV2Indicator::AnchoredVwap, _) => {
+            let anchors: Vec<_> = VwapAnchor::STANDARD
+                .into_iter()
+                .filter(|anchor| anchor.supports_basis(basis))
+                .collect();
+            let anchor = pick_list(anchors, Some(anchored_vwap_config.anchor), move |anchor| {
+                Message::PaneEvent(
+                    pane,
+                    Event::KlineV2IndicatorSettings(
+                        indicator,
+                        KlineV2IndicatorSettingsMessage::DataConfig(IndicatorConfig::AnchoredVwap(
+                            AnchoredVwapConfig {
+                                anchor,
+                                ..anchored_vwap_config
+                            },
+                        )),
+                    ),
+                )
+            });
+            let source = pick_list(
+                data::chart::kline_v2::KlinePriceSource::ALL,
+                Some(anchored_vwap_config.source),
+                move |source| {
+                    Message::PaneEvent(
+                        pane,
+                        Event::KlineV2IndicatorSettings(
+                            indicator,
+                            KlineV2IndicatorSettingsMessage::DataConfig(
+                                IndicatorConfig::AnchoredVwap(AnchoredVwapConfig {
+                                    source,
+                                    ..anchored_vwap_config
+                                }),
+                            ),
+                        ),
+                    )
+                },
+            );
+            content = content.push(
+                column![
+                    text("Anchor").size(crate::style::text_size::SECTION),
+                    anchor,
+                    text("Price source").size(crate::style::text_size::SECTION),
+                    source,
+                ]
+                .spacing(8),
+            );
+        }
+        (KlineV2Indicator::Rsi, Some(IndicatorConfig::Rsi(config))) => {
+            let rsi_period = labeled_slider(
+                "Period",
+                2..=100,
+                config.period,
+                move |period| {
+                    Message::PaneEvent(
+                        pane,
+                        Event::KlineV2IndicatorSettings(
+                            indicator,
+                            KlineV2IndicatorSettingsMessage::DataConfig(IndicatorConfig::Rsi(
+                                RsiConfig { period, ..config },
+                            )),
+                        ),
+                    )
+                },
+                |value| value.to_string(),
+                None,
+            );
+            let smoothing_enabled = matches!(config.smoothing, RsiSmoothing::Ema(_));
+            let smoothing_toggle =
+                checkbox(smoothing_enabled)
+                    .label("EMA signal")
+                    .on_toggle(move |enabled| {
+                        let smoothing = if enabled {
+                            RsiSmoothing::Ema(match config.smoothing {
+                                RsiSmoothing::Ema(period) => period.max(2),
+                                RsiSmoothing::None => 9,
+                            })
+                        } else {
+                            RsiSmoothing::None
+                        };
+                        Message::PaneEvent(
+                            pane,
+                            Event::KlineV2IndicatorSettings(
+                                indicator,
+                                KlineV2IndicatorSettingsMessage::DataConfig(IndicatorConfig::Rsi(
+                                    RsiConfig {
+                                        smoothing,
+                                        ..config
+                                    },
+                                )),
+                            ),
+                        )
+                    });
+            let smoothing_period = match config.smoothing {
+                RsiSmoothing::Ema(period) => Some(labeled_slider(
+                    "EMA period",
+                    2..=50,
+                    period,
+                    move |period| {
+                        Message::PaneEvent(
+                            pane,
+                            Event::KlineV2IndicatorSettings(
+                                indicator,
+                                KlineV2IndicatorSettingsMessage::DataConfig(IndicatorConfig::Rsi(
+                                    RsiConfig {
+                                        smoothing: RsiSmoothing::Ema(period),
+                                        ..config
+                                    },
+                                )),
+                            ),
+                        )
+                    },
+                    |value| value.to_string(),
+                    None,
+                )),
+                RsiSmoothing::None => None,
+            };
+            let upper_band = labeled_slider(
+                "Upper band",
+                1.0..=99.0,
+                config.upper_band,
+                move |upper_band| {
+                    Message::PaneEvent(
+                        pane,
+                        Event::KlineV2IndicatorSettings(
+                            indicator,
+                            KlineV2IndicatorSettingsMessage::DataConfig(IndicatorConfig::Rsi(
+                                RsiConfig {
+                                    upper_band,
+                                    ..config
+                                },
+                            )),
+                        ),
+                    )
+                },
+                |value| format!("{value:.0}"),
+                Some(1.0),
+            );
+            let lower_band = labeled_slider(
+                "Lower band",
+                1.0..=99.0,
+                config.lower_band,
+                move |lower_band| {
+                    Message::PaneEvent(
+                        pane,
+                        Event::KlineV2IndicatorSettings(
+                            indicator,
+                            KlineV2IndicatorSettingsMessage::DataConfig(IndicatorConfig::Rsi(
+                                RsiConfig {
+                                    lower_band,
+                                    ..config
+                                },
+                            )),
+                        ),
+                    )
+                },
+                |value| format!("{value:.0}"),
+                Some(1.0),
+            );
+            content = content.push(
+                column![
+                    text("Calculation").size(crate::style::text_size::SECTION),
+                    rsi_period,
+                    smoothing_toggle,
+                    smoothing_period.unwrap_or_else(|| space::vertical().height(0).into()),
+                    text("Bands").size(crate::style::text_size::SECTION),
+                    upper_band,
+                    lower_band,
+                ]
+                .spacing(8),
+            );
+        }
+        (KlineV2Indicator::BollingerBands, Some(IndicatorConfig::BollingerBands(config))) => {
+            let period = labeled_slider(
+                "Period",
+                2..=200,
+                config.period,
+                move |period| {
+                    Message::PaneEvent(
+                        pane,
+                        Event::KlineV2IndicatorSettings(
+                            indicator,
+                            KlineV2IndicatorSettingsMessage::DataConfig(
+                                IndicatorConfig::BollingerBands(BollingerBandsCalculationConfig {
+                                    period,
+                                    ..config
+                                }),
+                            ),
+                        ),
+                    )
+                },
+                |value| value.to_string(),
+                None,
+            );
+            let method = row![
+                radio(
+                    "SMA",
+                    MovingAverageMethod::Sma,
+                    Some(config.method),
+                    move |method| {
+                        Message::PaneEvent(
+                            pane,
+                            Event::KlineV2IndicatorSettings(
+                                indicator,
+                                KlineV2IndicatorSettingsMessage::DataConfig(
+                                    IndicatorConfig::BollingerBands(
+                                        BollingerBandsCalculationConfig { method, ..config },
+                                    ),
+                                ),
+                            ),
+                        )
+                    },
+                ),
+                radio(
+                    "EMA",
+                    MovingAverageMethod::Ema,
+                    Some(config.method),
+                    move |method| {
+                        Message::PaneEvent(
+                            pane,
+                            Event::KlineV2IndicatorSettings(
+                                indicator,
+                                KlineV2IndicatorSettingsMessage::DataConfig(
+                                    IndicatorConfig::BollingerBands(
+                                        BollingerBandsCalculationConfig { method, ..config },
+                                    ),
+                                ),
+                            ),
+                        )
+                    },
+                ),
+                radio(
+                    "VWMA",
+                    MovingAverageMethod::Vwma,
+                    Some(config.method),
+                    move |method| {
+                        Message::PaneEvent(
+                            pane,
+                            Event::KlineV2IndicatorSettings(
+                                indicator,
+                                KlineV2IndicatorSettingsMessage::DataConfig(
+                                    IndicatorConfig::BollingerBands(
+                                        BollingerBandsCalculationConfig { method, ..config },
+                                    ),
+                                ),
+                            ),
+                        )
+                    },
+                ),
+            ]
+            .spacing(12);
+            let std_dev_multiplier = labeled_slider(
+                "Std. deviation",
+                0.0..=5.0,
+                config.std_dev_multiplier,
+                move |std_dev_multiplier| {
+                    Message::PaneEvent(
+                        pane,
+                        Event::KlineV2IndicatorSettings(
+                            indicator,
+                            KlineV2IndicatorSettingsMessage::DataConfig(
+                                IndicatorConfig::BollingerBands(BollingerBandsCalculationConfig {
+                                    std_dev_multiplier,
+                                    ..config
+                                }),
+                            ),
+                        ),
+                    )
+                },
+                |value| format!("{value:.1}"),
+                Some(0.1),
+            );
+            content = content.push(
+                column![
+                    text("Calculation").size(crate::style::text_size::SECTION),
+                    period,
+                    method,
+                    std_dev_multiplier,
+                ]
+                .spacing(8),
+            );
+        }
+        (KlineV2Indicator::MovingAverages, Some(IndicatorConfig::MovingAverages(config))) => {
+            let method = row![
+                radio(
+                    "SMA",
+                    MovingAverageMethod::Sma,
+                    Some(config.method),
+                    move |method| {
+                        Message::PaneEvent(
+                            pane,
+                            Event::KlineV2IndicatorSettings(
+                                indicator,
+                                KlineV2IndicatorSettingsMessage::DataConfig(
+                                    IndicatorConfig::MovingAverages(
+                                        MovingAveragesCalculationConfig { method, ..config },
+                                    ),
+                                ),
+                            ),
+                        )
+                    },
+                ),
+                radio(
+                    "EMA",
+                    MovingAverageMethod::Ema,
+                    Some(config.method),
+                    move |method| {
+                        Message::PaneEvent(
+                            pane,
+                            Event::KlineV2IndicatorSettings(
+                                indicator,
+                                KlineV2IndicatorSettingsMessage::DataConfig(
+                                    IndicatorConfig::MovingAverages(
+                                        MovingAveragesCalculationConfig { method, ..config },
+                                    ),
+                                ),
+                            ),
+                        )
+                    },
+                ),
+                radio(
+                    "VWMA",
+                    MovingAverageMethod::Vwma,
+                    Some(config.method),
+                    move |method| {
+                        Message::PaneEvent(
+                            pane,
+                            Event::KlineV2IndicatorSettings(
+                                indicator,
+                                KlineV2IndicatorSettingsMessage::DataConfig(
+                                    IndicatorConfig::MovingAverages(
+                                        MovingAveragesCalculationConfig { method, ..config },
+                                    ),
+                                ),
+                            ),
+                        )
+                    },
+                ),
+            ]
+            .spacing(12);
+            let fast = labeled_slider(
+                "Fast period",
+                1..=500,
+                config.fast_period,
+                move |value| {
+                    Message::PaneEvent(
+                        pane,
+                        Event::KlineV2IndicatorSettings(
+                            indicator,
+                            KlineV2IndicatorSettingsMessage::DataConfig(
+                                IndicatorConfig::MovingAverages(MovingAveragesCalculationConfig {
+                                    fast_period: value,
+                                    ..config
+                                }),
+                            ),
+                        ),
+                    )
+                },
+                |value| value.to_string(),
+                None,
+            );
+            let medium = labeled_slider(
+                "Medium period",
+                1..=500,
+                config.medium_period,
+                move |value| {
+                    Message::PaneEvent(
+                        pane,
+                        Event::KlineV2IndicatorSettings(
+                            indicator,
+                            KlineV2IndicatorSettingsMessage::DataConfig(
+                                IndicatorConfig::MovingAverages(MovingAveragesCalculationConfig {
+                                    medium_period: value,
+                                    ..config
+                                }),
+                            ),
+                        ),
+                    )
+                },
+                |value| value.to_string(),
+                None,
+            );
+            let slow = labeled_slider(
+                "Slow period",
+                1..=500,
+                config.slow_period,
+                move |value| {
+                    Message::PaneEvent(
+                        pane,
+                        Event::KlineV2IndicatorSettings(
+                            indicator,
+                            KlineV2IndicatorSettingsMessage::DataConfig(
+                                IndicatorConfig::MovingAverages(MovingAveragesCalculationConfig {
+                                    slow_period: value,
+                                    ..config
+                                }),
+                            ),
+                        ),
+                    )
+                },
+                |value| value.to_string(),
+                None,
+            );
+            content = content.push(
+                column![
+                    text("Average method").size(crate::style::text_size::SECTION),
+                    method,
+                    text("Periods").size(crate::style::text_size::SECTION),
+                    fast,
+                    medium,
+                    slow,
+                ]
+                .spacing(8),
+            );
+        }
+        _ => {}
+    }
+
+    if let Some(mark_section) = mark_section {
+        content = content.push(mark_section);
+    }
+    content = content.push(color_section);
+
+    cfg_view_container(400, content)
+}
+
+fn indicator_color_section<'a>(
+    indicator: KlineV2Indicator,
+    color_config: IndicatorColorConfig,
+    pane: pane_grid::Pane,
+    mark: Option<MarkKind>,
+) -> Element<'a, Message> {
+    let active_slots = indicator.active_color_slots(mark);
+    let controls = indicator
+        .color_specs()
+        .iter()
+        .filter(|spec| active_slots.is_none_or(|slots| slots.contains(&spec.slot)))
+        .map(|spec| {
+            let selected = color_config.color_for(spec.slot);
+            let send_color = move |accent| {
+                Message::PaneEvent(
+                    pane,
+                    Event::KlineV2IndicatorSettings(
+                        indicator,
+                        KlineV2IndicatorSettingsMessage::Color {
+                            slot: spec.slot,
+                            accent,
+                            shade: selected.shade,
+                        },
+                    ),
+                )
+            };
+            let color_choices = theme_color_control(selected, send_color);
+            let shade_picklist: Element<'a, Message> =
+                pick_list(ThemeColorShade::ALL, Some(selected.shade), move |shade| {
+                    Message::PaneEvent(
+                        pane,
+                        Event::KlineV2IndicatorSettings(
+                            indicator,
+                            KlineV2IndicatorSettingsMessage::Color {
+                                slot: spec.slot,
+                                accent: selected.accent,
+                                shade,
+                            },
+                        ),
+                    )
+                })
+                .into();
+            column![
+                row![text(spec.label).width(Length::Fill), shade_picklist].spacing(8),
+                color_choices,
+            ]
+            .spacing(4)
+            .into()
+        });
+
+    column![
+        text("Colors").size(crate::style::text_size::SECTION),
+        column(controls).spacing(8),
+    ]
+    .spacing(8)
+    .into()
+}
+
+fn indicator_mark_section<'a>(
+    indicator: KlineV2Indicator,
+    mark: Option<data::chart::kline_v2::MarkKind>,
+    pane: pane_grid::Pane,
+) -> Option<Element<'a, Message>> {
+    let mark_specs = indicator.mark_specs();
+    if mark_specs.is_empty() {
+        return None;
+    }
+
+    let selected = mark.or_else(|| mark_specs.first().map(|spec| spec.mark));
+    let send_mark = move |value| {
+        Message::PaneEvent(
+            pane,
+            Event::KlineV2IndicatorSettings(
+                indicator,
+                KlineV2IndicatorSettingsMessage::Mark(value),
+            ),
+        )
+    };
+    let controls = mark_specs
+        .iter()
+        .map(|spec| radio(spec.label, spec.mark, selected, send_mark).into());
+
+    Some(
+        column![
+            text("Display mark").size(crate::style::text_size::SECTION),
+            row(controls).spacing(12),
+        ]
+        .spacing(8)
+        .into(),
+    )
 }
 
 pub fn ladder_cfg_view<'a>(cfg: ladder::Config, pane: pane_grid::Pane) -> Element<'a, Message> {
@@ -858,15 +1630,22 @@ pub mod study {
     };
     use data::chart::heatmap::{CLEANUP_THRESHOLD, HeatmapStudy, ProfileKind};
     use data::chart::kline::FootprintStudy;
+    use data::chart::kline_v2::{
+        FootprintPocColorConfig, FootprintPocConfig, KlineStudy,
+        MAX_VOLUME_PROFILE_OPACITY_PERCENT, MAX_VOLUME_PROFILE_WIDTH_PERCENT,
+        MIN_VOLUME_PROFILE_OPACITY_PERCENT, MIN_VOLUME_PROFILE_WIDTH_PERCENT,
+        VolumeProfileColorConfig, VolumeProfileSchedule,
+    };
     use iced::{
-        Element, padding,
-        widget::{button, checkbox, column, container, row, slider, space, text},
+        Element, Length, padding,
+        widget::{button, checkbox, column, container, pick_list, row, slider, space, text},
     };
 
     #[derive(Debug, Clone, Copy)]
     pub enum StudyMessage {
         Footprint(Message<FootprintStudy>),
         Heatmap(Message<HeatmapStudy>),
+        KlineV2(Message<KlineStudy>),
     }
 
     pub trait Study: Sized + Copy + 'static {
@@ -877,6 +1656,205 @@ pub mod study {
             basis: data::chart::Basis,
             on_change: impl Fn(Self) -> Message<Self> + Copy + 'a,
         ) -> Element<'a, Message<Self>>;
+    }
+
+    fn volume_profile_color_section<'a>(
+        colors: VolumeProfileColorConfig,
+        schedule: VolumeProfileSchedule,
+        on_change: impl Fn(VolumeProfileColorConfig) -> Message<KlineStudy> + Copy + 'a,
+    ) -> Element<'a, Message<KlineStudy>> {
+        let controls = VolumeProfileColorConfig::color_specs_for(schedule)
+            .iter()
+            .map(|spec| {
+                let slot = spec.slot;
+                let enabled = match slot {
+                    data::chart::kline_v2::VolumeProfileColorSlot::NakedPoc => colors.show_npoc,
+                    data::chart::kline_v2::VolumeProfileColorSlot::FilledPoc => colors.show_poc,
+                    _ => true,
+                };
+                let label: Element<'a, Message<KlineStudy>> = match slot {
+                    data::chart::kline_v2::VolumeProfileColorSlot::NakedPoc => {
+                        checkbox(colors.show_npoc)
+                            .label(spec.label)
+                            .on_toggle(move |show| on_change(colors.with_show_npoc(show)))
+                            .width(Length::Fill)
+                            .into()
+                    }
+                    data::chart::kline_v2::VolumeProfileColorSlot::FilledPoc => {
+                        checkbox(colors.show_poc)
+                            .label(spec.label)
+                            .on_toggle(move |show| on_change(colors.with_show_poc(show)))
+                            .width(Length::Fill)
+                            .into()
+                    }
+                    _ => text(spec.label).width(Length::Fill).into(),
+                };
+
+                if !enabled {
+                    column![row![label]].spacing(4).into()
+                } else {
+                    let selected = colors.color_for(slot);
+                    let send_color = move |accent| {
+                        on_change(colors.with_color(
+                            slot,
+                            data::config::theme::ThemeColor::with_accent(
+                                selected.role,
+                                accent,
+                                selected.shade,
+                            ),
+                        ))
+                    };
+                    let color_choices = crate::widget::theme_color_control(selected, send_color);
+                    let shade_picklist = pick_list(
+                        data::config::theme::ThemeColorShade::ALL,
+                        Some(selected.shade),
+                        move |shade| {
+                            on_change(colors.with_color(
+                                slot,
+                                data::config::theme::ThemeColor::with_accent(
+                                    selected.role,
+                                    selected.accent,
+                                    shade,
+                                ),
+                            ))
+                        },
+                    );
+
+                    column![row![label, shade_picklist].spacing(8), color_choices,]
+                        .spacing(4)
+                        .into()
+                }
+            });
+
+        column![
+            text("Colors").size(crate::style::text_size::SECTION),
+            column(controls).spacing(8),
+        ]
+        .spacing(8)
+        .into()
+    }
+
+    fn footprint_poc_color_section<'a>(
+        config: FootprintPocConfig,
+        on_change: impl Fn(FootprintPocConfig) -> Message<KlineStudy> + Copy + 'a,
+    ) -> Element<'a, Message<KlineStudy>> {
+        let controls = FootprintPocColorConfig::color_specs().iter().map(|spec| {
+            let slot = spec.slot;
+            let enabled = match slot {
+                data::chart::kline_v2::FootprintPocColorSlot::Poc => config.show_poc,
+                data::chart::kline_v2::FootprintPocColorSlot::Npoc => config.show_npoc,
+            };
+            let label: Element<'a, Message<KlineStudy>> = match slot {
+                data::chart::kline_v2::FootprintPocColorSlot::Poc => checkbox(config.show_poc)
+                    .label(spec.label)
+                    .on_toggle(move |show| on_change(config.with_show_poc(show)))
+                    .width(Length::Fill)
+                    .into(),
+                data::chart::kline_v2::FootprintPocColorSlot::Npoc => checkbox(config.show_npoc)
+                    .label(spec.label)
+                    .on_toggle(move |show| on_change(config.with_show_npoc(show)))
+                    .width(Length::Fill)
+                    .into(),
+            };
+
+            if !enabled {
+                column![row![label]].spacing(4).into()
+            } else {
+                let selected = config.colors.color_for(slot);
+                let send_color = move |accent| {
+                    on_change(config.with_colors(config.colors.with_color(
+                        slot,
+                        data::config::theme::ThemeColor::with_accent(
+                            selected.role,
+                            accent,
+                            selected.shade,
+                        ),
+                    )))
+                };
+                let color_choices = crate::widget::theme_color_control(selected, send_color);
+                let shade_picklist = pick_list(
+                    data::config::theme::ThemeColorShade::ALL,
+                    Some(selected.shade),
+                    move |shade| {
+                        on_change(config.with_colors(config.colors.with_color(
+                            slot,
+                            data::config::theme::ThemeColor::with_accent(
+                                selected.role,
+                                selected.accent,
+                                shade,
+                            ),
+                        )))
+                    },
+                );
+
+                column![row![label, shade_picklist].spacing(8), color_choices,]
+                    .spacing(4)
+                    .into()
+            }
+        });
+
+        column![
+            text("Colors").size(crate::style::text_size::SECTION),
+            column(controls).spacing(8),
+        ]
+        .spacing(8)
+        .into()
+    }
+
+    fn volume_profile_width_section<'a>(
+        width_percent: u8,
+        reserved_area: &'static str,
+        on_change: impl Fn(u8) -> Message<KlineStudy> + Copy + 'a,
+    ) -> Element<'a, Message<KlineStudy>> {
+        let width_percent = width_percent.clamp(
+            MIN_VOLUME_PROFILE_WIDTH_PERCENT,
+            MAX_VOLUME_PROFILE_WIDTH_PERCENT,
+        );
+        let width_slider = slider(
+            f32::from(MIN_VOLUME_PROFILE_WIDTH_PERCENT)
+                ..=f32::from(MAX_VOLUME_PROFILE_WIDTH_PERCENT),
+            f32::from(width_percent),
+            move |new_width| {
+                on_change(new_width.round().clamp(
+                    f32::from(MIN_VOLUME_PROFILE_WIDTH_PERCENT),
+                    f32::from(MAX_VOLUME_PROFILE_WIDTH_PERCENT),
+                ) as u8)
+            },
+        )
+        .step(5.0);
+
+        column![
+            text(format!("Width: {width_percent}% {reserved_area}")),
+            width_slider,
+        ]
+        .spacing(4)
+        .into()
+    }
+
+    fn volume_profile_opacity_section<'a>(
+        opacity_percent: u8,
+        on_change: impl Fn(u8) -> Message<KlineStudy> + Copy + 'a,
+    ) -> Element<'a, Message<KlineStudy>> {
+        let opacity_percent = opacity_percent.clamp(
+            MIN_VOLUME_PROFILE_OPACITY_PERCENT,
+            MAX_VOLUME_PROFILE_OPACITY_PERCENT,
+        );
+        let opacity_slider = slider(
+            f32::from(MIN_VOLUME_PROFILE_OPACITY_PERCENT)
+                ..=f32::from(MAX_VOLUME_PROFILE_OPACITY_PERCENT),
+            f32::from(opacity_percent),
+            move |new_opacity| {
+                on_change(new_opacity.round().clamp(
+                    f32::from(MIN_VOLUME_PROFILE_OPACITY_PERCENT),
+                    f32::from(MAX_VOLUME_PROFILE_OPACITY_PERCENT),
+                ) as u8)
+            },
+        )
+        .step(5.0);
+
+        column![text(format!("Opacity: {opacity_percent}%")), opacity_slider,]
+            .spacing(4)
+            .into()
     }
 
     impl Study for FootprintStudy {
@@ -1076,6 +2054,176 @@ pub mod study {
         }
     }
 
+    impl Study for KlineStudy {
+        fn is_same_type(&self, other: &Self) -> bool {
+            (*self).is_same_type(*other)
+        }
+
+        fn all() -> Vec<Self> {
+            KlineStudy::ALL.to_vec()
+        }
+
+        fn view_config<'a>(
+            &self,
+            basis: data::chart::Basis,
+            on_change: impl Fn(Self) -> Message<Self> + Copy + 'a,
+        ) -> Element<'a, Message<Self>> {
+            match self {
+                KlineStudy::VolumeProfile {
+                    schedule,
+                    colors,
+                    width_percent,
+                    opacity_percent,
+                } => {
+                    let schedule = *schedule;
+                    let colors = *colors;
+                    let width_percent = *width_percent;
+                    let opacity_percent = *opacity_percent;
+                    let reset = button("Reset to defaults")
+                        .on_press(on_change((*self).default_for_type_for_basis(basis)));
+                    let color_section =
+                        volume_profile_color_section(colors, schedule, move |colors| {
+                            on_change(KlineStudy::VolumeProfile {
+                                schedule,
+                                colors,
+                                width_percent,
+                                opacity_percent,
+                            })
+                        });
+
+                    match schedule {
+                        VolumeProfileSchedule::VisibleRange => {
+                            let width_section = volume_profile_width_section(
+                                width_percent,
+                                "of the chart width",
+                                move |width_percent| {
+                                    on_change(KlineStudy::VolumeProfile {
+                                        schedule,
+                                        colors,
+                                        width_percent,
+                                        opacity_percent,
+                                    })
+                                },
+                            );
+                            let opacity_section = volume_profile_opacity_section(
+                                opacity_percent,
+                                move |opacity_percent| {
+                                    on_change(KlineStudy::VolumeProfile {
+                                        schedule,
+                                        colors,
+                                        width_percent,
+                                        opacity_percent,
+                                    })
+                                },
+                            );
+
+                            column![
+                                row![space::horizontal(), reset],
+                                text("Uses the currently visible chart range"),
+                                width_section,
+                                opacity_section,
+                                color_section,
+                            ]
+                            .padding(8)
+                            .spacing(4)
+                            .into()
+                        }
+                        VolumeProfileSchedule::Recurring { interval } => {
+                            if !basis.is_time() {
+                                return iced::widget::center(text(
+                                    "Recurring volume profiles require a time-based chart",
+                                ))
+                                .into();
+                            }
+
+                            let intervals = VolumeProfileSchedule::recurring_intervals_for(basis);
+                            let width_section = volume_profile_width_section(
+                                width_percent,
+                                "of each profile interval",
+                                move |width_percent| {
+                                    on_change(KlineStudy::VolumeProfile {
+                                        schedule,
+                                        colors,
+                                        width_percent,
+                                        opacity_percent,
+                                    })
+                                },
+                            );
+                            let opacity_section = volume_profile_opacity_section(
+                                opacity_percent,
+                                move |opacity_percent| {
+                                    on_change(KlineStudy::VolumeProfile {
+                                        schedule,
+                                        colors,
+                                        width_percent,
+                                        opacity_percent,
+                                    })
+                                },
+                            );
+                            if intervals.is_empty() {
+                                return column![
+                                    row![space::horizontal(), reset],
+                                    text(
+                                        "No recurring interval is at least 4× the chart timeframe",
+                                    ),
+                                    width_section,
+                                    opacity_section,
+                                    color_section,
+                                ]
+                                .padding(8)
+                                .spacing(4)
+                                .into();
+                            }
+
+                            let selected_interval =
+                                intervals.contains(&interval).then_some(interval);
+                            let interval_picker =
+                                pick_list(intervals, selected_interval, move |new_interval| {
+                                    on_change(KlineStudy::VolumeProfile {
+                                        schedule: VolumeProfileSchedule::Recurring {
+                                            interval: new_interval,
+                                        },
+                                        colors,
+                                        width_percent,
+                                        opacity_percent,
+                                    })
+                                });
+
+                            column![
+                                row![space::horizontal(), reset],
+                                text("Interval"),
+                                interval_picker,
+                                width_section,
+                                opacity_section,
+                                color_section
+                            ]
+                            .padding(8)
+                            .spacing(4)
+                            .into()
+                        }
+                    }
+                }
+                KlineStudy::FootprintPoc { config } => {
+                    let config = *config;
+                    let reset = button("Reset to defaults")
+                        .on_press(on_change((*self).default_for_type_for_basis(basis)));
+                    let color_section = footprint_poc_color_section(config, move |config| {
+                        on_change(KlineStudy::FootprintPoc { config })
+                    });
+
+                    column![
+                        row![space::horizontal(), reset],
+                        color_section,
+                        text("POC/NPOC lines remain active until a later footprint touches the POC price."),
+                    ]
+                    .padding(8)
+                    .spacing(4)
+                    .into()
+                }
+            }
+        }
+    }
+
     #[derive(Debug, Clone, Copy)]
     pub enum Message<S: Study> {
         CardToggled(S),
@@ -1135,7 +2283,7 @@ pub mod study {
             active_studies: &[S],
             basis: data::chart::Basis,
         ) -> Element<'a, Message<S>> {
-            self.view_available(active_studies, basis, S::all())
+            self.view_available(active_studies, basis, S::all(), &[])
         }
 
         pub fn view_available<'a>(
@@ -1143,12 +2291,17 @@ pub mod study {
             active_studies: &[S],
             basis: data::chart::Basis,
             available_studies: Vec<S>,
+            disabled: &[S],
         ) -> Element<'a, Message<S>> {
             let mut content = column![].spacing(4);
 
             for available_study in available_studies {
-                content =
-                    content.push(self.create_study_row(available_study, active_studies, basis));
+                content = content.push(self.create_study_row(
+                    available_study,
+                    active_studies,
+                    basis,
+                    disabled,
+                ));
             }
 
             content.into()
@@ -1159,6 +2312,7 @@ pub mod study {
             study: S,
             active_studies: &[S],
             basis: data::chart::Basis,
+            disabled: &[S],
         ) -> Element<'a, Message<S>> {
             let (is_selected, study_config) = {
                 let mut is_selected = false;
@@ -1174,9 +2328,18 @@ pub mod study {
                 (is_selected, study_config)
             };
 
-            let checkbox = checkbox(is_selected)
-                .label(study_config.map_or(study.to_string(), |s| s.to_string()))
-                .on_toggle(move |checked| Message::StudyToggled(study, checked));
+            let is_disabled = disabled.iter().any(|d| d.is_same_type(&study));
+
+            let checkbox = crate::tooltip(
+                checkbox(is_selected)
+                    .label(study_config.map_or(study.to_string(), |s| s.to_string()))
+                    .on_toggle_maybe(
+                        (!is_disabled)
+                            .then_some(move |checked| Message::StudyToggled(study, checked)),
+                    ),
+                is_disabled.then_some("Requires trade data to be enabled"),
+                iced::widget::tooltip::Position::Top,
+            );
 
             let mut checkbox_row = row![checkbox, space::horizontal()]
                 .height(36)

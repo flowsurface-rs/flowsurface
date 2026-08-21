@@ -1,12 +1,12 @@
 use super::chrome::{
-    CornerControlHit, IndicatorLegendLayout, PanelControlHit, TickerLegendIconKind,
-    TickerLegendLayout,
+    CornerControlHit, FootprintLegendIconKind, FootprintLegendLayout, IndicatorLegendLayout,
+    PanelControlHit, TickerLegendIconKind, TickerLegendLayout,
 };
 use super::coord::{ChartCoord, ChartStepMs};
 use super::layout::PanelLayoutTree;
 use super::{BarSpacingPx, YUnit};
 use crate::widget::chart::kline::composition::{
-    LayerDataKind, MarkKind, PanelScaleMode, PanelValueId,
+    LayerDataKind, MarkKind, PanelPresentation, PanelScaleMode, PanelValueId,
 };
 
 use data::chart::kline_v2::WorldAxis;
@@ -56,6 +56,16 @@ impl XAxis {
                 aligned.saturating_sub(anchor) / step
             }
             Self::Tick { .. } => 0,
+        }
+    }
+
+    pub(super) fn unit_from_time_f32(self, value: UnixMs) -> Option<f32> {
+        match self {
+            Self::Time { timeframe, anchor } => {
+                let delta_ms = value.as_u64() as f64 - anchor.as_u64() as f64;
+                Some((delta_ms / timeframe.to_milliseconds().max(1) as f64) as f32)
+            }
+            Self::Tick { .. } => None,
         }
     }
 
@@ -181,6 +191,7 @@ pub(super) struct IndicatorPanelScene {
     pub(super) domain: ValueDomain,
     pub(super) mark: MarkKind,
     pub(super) data_kind: LayerDataKind,
+    pub(super) presentation: PanelPresentation,
 }
 
 impl IndicatorPanelScene {
@@ -206,6 +217,7 @@ pub(super) struct ChromeScene {
     pub(super) panel_controls: Vec<PanelControlHit>,
     pub(super) corner_controls: Vec<CornerControlHit>,
     pub(super) ticker_legend: Option<TickerLegendLayout>,
+    pub(super) footprint_legend: Option<FootprintLegendLayout>,
     pub(super) indicator_legend: Option<IndicatorLegendLayout>,
 }
 
@@ -217,6 +229,8 @@ pub(super) struct SceneInteraction {
     pub(super) hovering_ticker_legend: bool,
     pub(super) hovered_ticker_row: Option<usize>,
     pub(super) hovered_ticker_icon: Option<(usize, TickerLegendIconKind)>,
+    pub(super) hovering_footprint_legend: bool,
+    pub(super) hovered_footprint_icon: Option<FootprintLegendIconKind>,
     pub(super) hovering_indicator_legend: bool,
     pub(super) hovered_indicator_row: Option<usize>,
     pub(super) hovered_indicator_icon: Option<(usize, super::chrome::IndicatorLegendIconKind)>,
@@ -405,6 +419,14 @@ impl Scene {
             display_value,
             self.primary.anchor,
             self.can_use_log_primary_scale(),
+        )
+    }
+
+    pub(super) fn primary_domain_value_range(&self) -> (f32, f32) {
+        let (min_display, max_display) = self.primary_domain_display_values();
+        (
+            self.primary_display_to_value(min_display),
+            self.primary_display_to_value(max_display),
         )
     }
 

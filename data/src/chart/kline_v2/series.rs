@@ -1,62 +1,740 @@
 use crate::aggr::{TickCount, ticks::TickAggr};
 use crate::chart::Basis;
-use crate::chart::kline::KlineTrades;
-use crate::chart::kline_v2::indicators::{RsiConfig, SeriesIndicatorData};
-use crate::chart::kline_v2::{KlineIndicator, composition::PanelValueId};
-use exchange::{Kline, OpenInterest, TickerInfo, Timeframe, Trade, UnixMs, unit::PriceStep};
-use std::collections::BTreeMap;
+use crate::chart::kline::{KlineTrades, NPoc, PointOfControl};
+use crate::chart::kline_v2::IndicatorUpdateScope;
+use crate::chart::kline_v2::KlineIndicator;
+use crate::chart::kline_v2::composition::PanelValueId;
+use crate::chart::kline_v2::engine::IndicatorConfigStore;
+use crate::chart::kline_v2::indicators::{
+    IndicatorInput, IndicatorRuntimeSet, IndicatorRuntimeSnapshot, NormalizedTradeBar,
+    TradeBarValues,
+};
+use crate::chart::kline_v2::values::IndicatorData;
+use crate::config::theme::ThemeAccent;
+use exchange::{
+    Kline, TickerInfo, Timeframe, Trade, UnixMs,
+    unit::{Price, PriceStep, qty::Qty},
+};
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 
-pub const SERIES_MAX_BARS: usize = 5000;
+pub const SERIES_MAX_BARS: usize = 12_000;
+const MAX_INTEGRITY_SCAN: u64 = 1_000_000;
+const NAKED_POC_LINE_END: UnixMs = UnixMs::new(u64::MAX);
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum SeriesColor {
+    Base,
+    Accent(ThemeAccent),
+    Custom(iced_core::Color),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PriceLevelTrade {
+    pub price: Price,
+    pub buy_qty: Qty,
+    pub sell_qty: Qty,
+}
+
+impl PriceLevelTrade {
+    pub fn total_qty(self) -> Qty {
+        self.buy_qty + self.sell_qty
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PriceLevelTradeDistribution {
+    pub levels: Vec<PriceLevelTrade>,
+    pub max_qty: Qty,
+    pub poc: Option<PointOfControl>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AnchoredPriceLevelTradeDistribution {
+    pub start: UnixMs,
+    pub end: UnixMs,
+    pub distribution: PriceLevelTradeDistribution,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct FootprintPocLine {
+    pub start: UnixMs,
+    pub poc: PointOfControl,
+}
+
+struct RecurringProfile {
+    levels: BTreeMap<Price, (Qty, Qty)>,
+    max_qty: Qty,
+    poc: Option<PointOfControl>,
+}
+
+impl RecurringProfile {
+    fn new() -> Self {
+        Self {
+            levels: BTreeMap::new(),
+            max_qty: Qty::ZERO,
+            poc: None,
+        }
+    }
+
+    fn add_volume(&mut self, price: Price, buy_qty: Qty, sell_qty: Qty) {
+        let level = self.levels.entry(price).or_insert((Qty::ZERO, Qty::ZERO));
+        level.0 += buy_qty;
+        level.1 += sell_qty;
+
+        let total_qty = level.0 + level.1;
+        self.max_qty = self.max_qty.max(total_qty);
+
+        let should_replace_poc = self.poc.is_none_or(|poc| {
+            total_qty > poc.volume || (total_qty == poc.volume && price < poc.price)
+        });
+        if should_replace_poc {
+            self.poc = Some(PointOfControl {
+                price,
+                volume: total_qty,
+                status: NPoc::None,
+            });
+        } else if self.poc.is_some_and(|poc| poc.price == price)
+            && let Some(poc) = self.poc.as_mut()
+        {
+            poc.volume = total_qty;
+        }
+    }
+
+    fn distribution(&self) -> PriceLevelTradeDistribution {
+        let levels = self
+            .levels
+            .iter()
+            .map(|(&price, &(buy_qty, sell_qty))| PriceLevelTrade {
+                price,
+                buy_qty,
+                sell_qty,
+            })
+            .collect();
+
+        PriceLevelTradeDistribution {
+            levels,
+            max_qty: self.max_qty,
+            poc: self.poc,
+        }
+    }
+
+    fn price_range(&self) -> Option<(Price, Price)> {
+        self.levels
+            .first_key_value()
+            .zip(self.levels.last_key_value())
+            .map(|((low, _), (high, _))| (*low, *high))
+    }
+}
+
+struct RecurringProfileCache {
+    interval: Timeframe,
+    profiles: BTreeMap<UnixMs, RecurringProfile>,
+    naked_pocs: BTreeMap<Price, Vec<UnixMs>>,
+    poc_lines_by_end: BTreeMap<UnixMs, Vec<UnixMs>>,
+}
+
+impl RecurringProfileCache {
+    fn new(interval: Timeframe) -> Self {
+        Self {
+            interval,
+            profiles: BTreeMap::new(),
+            naked_pocs: BTreeMap::new(),
+            poc_lines_by_end: BTreeMap::new(),
+        }
+    }
+
+    fn add_trade(&mut self, trade: &Trade, tick_size: PriceStep) -> UnixMs {
+        let start = trade.time.floor_to(self.interval);
+        let price = trade.price.round_to_step(tick_size);
+        let (buy_qty, sell_qty) = if trade.is_sell {
+            (Qty::ZERO, trade.qty)
+        } else {
+            (trade.qty, Qty::ZERO)
+        };
+        self.profiles
+            .entry(start)
+            .or_insert_with(RecurringProfile::new)
+            .add_volume(price, buy_qty, sell_qty);
+        start
+    }
+
+    fn add_footprint(&mut self, time: UnixMs, footprint: &KlineTrades) {
+        let start = time.floor_to(self.interval);
+        let profile = self
+            .profiles
+            .entry(start)
+            .or_insert_with(RecurringProfile::new);
+        for (&price, group) in &footprint.trades {
+            profile.add_volume(price, group.buy_qty, group.sell_qty);
+        }
+    }
+
+    fn insert_trades(&mut self, trades: &[Trade], tick_size: PriceStep) {
+        let mut affected_starts = BTreeSet::new();
+        for trade in trades {
+            affected_starts.insert(self.add_trade(trade, tick_size));
+        }
+
+        if affected_starts.len() == 1
+            && self.profiles.keys().next_back().copied() == affected_starts.first().copied()
+        {
+            let start = affected_starts
+                .first()
+                .copied()
+                .expect("affected profile is present");
+            self.remove_naked_poc(start);
+            self.process_profile(start);
+        } else if !affected_starts.is_empty() {
+            self.rebuild_poc_statuses();
+        }
+    }
+
+    fn rebuild_poc_statuses(&mut self) {
+        self.naked_pocs.clear();
+        self.poc_lines_by_end.clear();
+        let starts = self.profiles.keys().copied().collect::<Vec<_>>();
+        for profile in self.profiles.values_mut() {
+            if let Some(poc) = profile.poc.as_mut() {
+                poc.status = NPoc::None;
+            }
+        }
+        for start in starts {
+            self.process_profile(start);
+        }
+    }
+
+    fn process_profile(&mut self, start: UnixMs) {
+        let Some((low, high)) = self
+            .profiles
+            .get(&start)
+            .and_then(RecurringProfile::price_range)
+        else {
+            return;
+        };
+
+        let touched_prices = self
+            .naked_pocs
+            .range(low..=high)
+            .map(|(&price, _)| price)
+            .collect::<Vec<_>>();
+        for price in touched_prices {
+            if let Some(touched_starts) = self.naked_pocs.remove(&price) {
+                for touched_start in touched_starts {
+                    self.mark_poc_filled(touched_start, start);
+                }
+            }
+        }
+
+        let Some(poc_price) = self
+            .profiles
+            .get(&start)
+            .and_then(|profile| profile.poc.map(|poc| poc.price))
+        else {
+            return;
+        };
+        if let Some(poc) = self
+            .profiles
+            .get_mut(&start)
+            .and_then(|profile| profile.poc.as_mut())
+        {
+            poc.status = NPoc::Naked;
+        }
+        self.naked_pocs.entry(poc_price).or_default().push(start);
+        self.poc_lines_by_end
+            .entry(NAKED_POC_LINE_END)
+            .or_default()
+            .push(start);
+    }
+
+    fn mark_poc_filled(&mut self, start: UnixMs, at: UnixMs) {
+        self.remove_poc_line(start, NAKED_POC_LINE_END);
+        if let Some(poc) = self
+            .profiles
+            .get_mut(&start)
+            .and_then(|profile| profile.poc.as_mut())
+        {
+            poc.status = NPoc::Filled { at: at.as_u64() };
+        }
+        self.poc_lines_by_end.entry(at).or_default().push(start);
+    }
+
+    fn remove_naked_poc(&mut self, start: UnixMs) {
+        let prices = self
+            .naked_pocs
+            .iter()
+            .filter_map(|(&price, starts)| starts.contains(&start).then_some(price))
+            .collect::<Vec<_>>();
+        for price in prices {
+            if let Some(starts) = self.naked_pocs.get_mut(&price) {
+                starts.retain(|&candidate| candidate != start);
+                if starts.is_empty() {
+                    self.naked_pocs.remove(&price);
+                }
+            }
+        }
+        self.remove_poc_line(start, NAKED_POC_LINE_END);
+    }
+
+    fn remove_poc_line(&mut self, start: UnixMs, end: UnixMs) {
+        let mut remove_end = false;
+        if let Some(starts) = self.poc_lines_by_end.get_mut(&end) {
+            starts.retain(|&candidate| candidate != start);
+            remove_end = starts.is_empty();
+        }
+        if remove_end {
+            self.poc_lines_by_end.remove(&end);
+        }
+    }
+
+    fn visible_profiles(
+        &self,
+        earliest: UnixMs,
+        latest: UnixMs,
+    ) -> Vec<AnchoredPriceLevelTradeDistribution> {
+        if earliest > latest {
+            return Vec::new();
+        }
+
+        let body_start = earliest.saturating_sub(self.interval.to_milliseconds());
+        let mut visible_starts = self
+            .profiles
+            .range(body_start..=latest)
+            .map(|(&start, _)| start)
+            .collect::<BTreeSet<_>>();
+        for starts in self
+            .poc_lines_by_end
+            .range(earliest..)
+            .map(|(_, starts)| starts)
+        {
+            visible_starts.extend(starts.iter().copied().filter(|&start| start <= latest));
+        }
+
+        visible_starts
+            .into_iter()
+            .filter_map(|start| {
+                self.profiles
+                    .get(&start)
+                    .map(|profile| AnchoredPriceLevelTradeDistribution {
+                        start,
+                        end: start.saturating_add(self.interval.to_milliseconds()),
+                        distribution: profile.distribution(),
+                    })
+            })
+            .collect()
+    }
+}
+
+struct FootprintPocRecord {
+    poc: Option<PointOfControl>,
+    price_range: Option<(Price, Price)>,
+}
+
+impl FootprintPocRecord {
+    fn from_footprint(footprint: &KlineTrades) -> Self {
+        let poc = footprint.poc.map(|mut poc| {
+            poc.status = NPoc::None;
+            poc
+        });
+        let price_range = footprint
+            .trades
+            .keys()
+            .min()
+            .zip(footprint.trades.keys().max())
+            .map(|(&low, &high)| (low, high));
+        Self { poc, price_range }
+    }
+}
+
+struct FootprintPocCache {
+    records: BTreeMap<UnixMs, FootprintPocRecord>,
+    naked_pocs: BTreeMap<Price, Vec<UnixMs>>,
+    poc_lines_by_end: BTreeMap<UnixMs, Vec<UnixMs>>,
+}
+
+impl FootprintPocCache {
+    fn new() -> Self {
+        Self {
+            records: BTreeMap::new(),
+            naked_pocs: BTreeMap::new(),
+            poc_lines_by_end: BTreeMap::new(),
+        }
+    }
+
+    fn update_footprints<'a, I>(&mut self, footprints: I)
+    where
+        I: IntoIterator<Item = (UnixMs, &'a KlineTrades)>,
+    {
+        let mut affected_starts = BTreeSet::new();
+        for (start, footprint) in footprints {
+            affected_starts.insert(start);
+            self.records
+                .insert(start, FootprintPocRecord::from_footprint(footprint));
+        }
+
+        if affected_starts.len() == 1 && self.records.keys().next_back() == affected_starts.first()
+        {
+            let start = affected_starts
+                .first()
+                .copied()
+                .expect("affected footprint is present");
+            self.remove_naked_poc(start);
+            self.process_footprint(start);
+        } else if !affected_starts.is_empty() {
+            self.rebuild_poc_statuses();
+        }
+    }
+
+    fn retain_from(&mut self, earliest: UnixMs) {
+        self.records.retain(|&start, _| start >= earliest);
+        self.naked_pocs.retain(|_, starts| {
+            starts.retain(|&start| start >= earliest);
+            !starts.is_empty()
+        });
+        self.poc_lines_by_end.retain(|_, starts| {
+            starts.retain(|&start| start >= earliest);
+            !starts.is_empty()
+        });
+    }
+
+    fn rebuild_poc_statuses(&mut self) {
+        self.naked_pocs.clear();
+        self.poc_lines_by_end.clear();
+        let starts = self.records.keys().copied().collect::<Vec<_>>();
+        for record in self.records.values_mut() {
+            if let Some(poc) = record.poc.as_mut() {
+                poc.status = NPoc::None;
+            }
+        }
+        for start in starts {
+            self.process_footprint(start);
+        }
+    }
+
+    fn process_footprint(&mut self, start: UnixMs) {
+        let Some(record) = self.records.get(&start) else {
+            return;
+        };
+        let Some((low, high)) = record.price_range else {
+            return;
+        };
+
+        let touched_prices = self
+            .naked_pocs
+            .range(low..=high)
+            .map(|(&price, _)| price)
+            .collect::<Vec<_>>();
+        for price in touched_prices {
+            if let Some(touched_starts) = self.naked_pocs.remove(&price) {
+                for touched_start in touched_starts {
+                    self.mark_poc_filled(touched_start, start);
+                }
+            }
+        }
+
+        let Some(poc_price) = self
+            .records
+            .get(&start)
+            .and_then(|record| record.poc.map(|poc| poc.price))
+        else {
+            return;
+        };
+        if let Some(poc) = self
+            .records
+            .get_mut(&start)
+            .and_then(|record| record.poc.as_mut())
+        {
+            poc.status = NPoc::Naked;
+        }
+        self.naked_pocs.entry(poc_price).or_default().push(start);
+        self.poc_lines_by_end
+            .entry(NAKED_POC_LINE_END)
+            .or_default()
+            .push(start);
+    }
+
+    fn mark_poc_filled(&mut self, start: UnixMs, at: UnixMs) {
+        self.remove_poc_line(start, NAKED_POC_LINE_END);
+        if let Some(poc) = self
+            .records
+            .get_mut(&start)
+            .and_then(|record| record.poc.as_mut())
+        {
+            poc.status = NPoc::Filled { at: at.as_u64() };
+        }
+        self.poc_lines_by_end.entry(at).or_default().push(start);
+    }
+
+    fn remove_naked_poc(&mut self, start: UnixMs) {
+        let prices = self
+            .naked_pocs
+            .iter()
+            .filter_map(|(&price, starts)| starts.contains(&start).then_some(price))
+            .collect::<Vec<_>>();
+        for price in prices {
+            if let Some(starts) = self.naked_pocs.get_mut(&price) {
+                starts.retain(|&candidate| candidate != start);
+                if starts.is_empty() {
+                    self.naked_pocs.remove(&price);
+                }
+            }
+        }
+        self.remove_poc_line(start, NAKED_POC_LINE_END);
+    }
+
+    fn remove_poc_line(&mut self, start: UnixMs, end: UnixMs) {
+        let mut remove_end = false;
+        if let Some(starts) = self.poc_lines_by_end.get_mut(&end) {
+            starts.retain(|&candidate| candidate != start);
+            remove_end = starts.is_empty();
+        }
+        if remove_end {
+            self.poc_lines_by_end.remove(&end);
+        }
+    }
+
+    fn visible_lines(&self, earliest: UnixMs, latest: UnixMs) -> Vec<FootprintPocLine> {
+        if earliest > latest {
+            return Vec::new();
+        }
+
+        let mut visible_starts = self
+            .records
+            .range(earliest..=latest)
+            .map(|(&start, _)| start)
+            .collect::<BTreeSet<_>>();
+        for starts in self
+            .poc_lines_by_end
+            .range(earliest..)
+            .map(|(_, starts)| starts)
+        {
+            visible_starts.extend(starts.iter().copied().filter(|&start| start <= latest));
+        }
+
+        visible_starts
+            .into_iter()
+            .filter_map(|start| {
+                self.records
+                    .get(&start)
+                    .and_then(|record| record.poc)
+                    .map(|poc| FootprintPocLine { start, poc })
+            })
+            .collect()
+    }
+}
 
 pub struct KlineSeries {
     pub ticker_info: TickerInfo,
-    pub name: Option<String>,
+    color: SeriesColor,
     pub bars: Vec<Kline>,
-    pub indicators: Option<SeriesIndicatorData>,
+    pub indicators: Option<IndicatorRuntimeSet>,
     pub footprints: Option<BTreeMap<UnixMs, KlineTrades>>,
     pub footprint_tick_size: PriceStep,
     pub raw_trades: Vec<Trade>,
     pub tick_times: Vec<UnixMs>,
+    tick_index_offset: u64,
+    trade_values: BTreeMap<UnixMs, TradeBarValues>,
+    trade_time_range: Option<(UnixMs, UnixMs)>,
+    time_trade_timeframe: Option<Timeframe>,
     tick_aggr: Option<TickAggr>,
+    recurring_profile_caches: BTreeMap<Timeframe, RecurringProfileCache>,
+    footprint_poc_cache: Option<FootprintPocCache>,
 }
 
 impl KlineSeries {
-    pub fn new(ticker_info: TickerInfo) -> Self {
+    pub fn new(ticker_info: TickerInfo, color: SeriesColor) -> Self {
         Self {
             ticker_info,
-            name: None,
+            color,
             bars: Vec::new(),
             indicators: None,
             footprints: None,
             footprint_tick_size: ticker_info.min_ticksize.into(),
             raw_trades: Vec::new(),
             tick_times: Vec::new(),
+            tick_index_offset: 0,
+            trade_values: BTreeMap::new(),
+            trade_time_range: None,
+            time_trade_timeframe: None,
             tick_aggr: None,
+            recurring_profile_caches: BTreeMap::new(),
+            footprint_poc_cache: None,
         }
     }
 
     pub fn new_base(ticker_info: TickerInfo) -> Self {
-        let mut series = Self::new(ticker_info);
-        series.indicators = Some(SeriesIndicatorData::default());
+        let mut series = Self::new(ticker_info, SeriesColor::Base);
+        series.indicators = Some(IndicatorRuntimeSet::default());
         series.footprints = Some(BTreeMap::new());
         series
     }
 
-    pub fn oi_timerange(&self) -> Option<(UnixMs, UnixMs)> {
-        self.indicators.as_ref()?.oi_timerange()
+    pub fn color(&self) -> SeriesColor {
+        self.color
     }
 
-    pub fn refresh_indicator_inputs(&mut self) {
+    pub fn set_color(&mut self, color: iced_core::Color) -> bool {
+        self.set_series_color(SeriesColor::Custom(color))
+    }
+
+    pub fn set_series_color(&mut self, color: SeriesColor) -> bool {
+        if self.color == color {
+            return false;
+        }
+
+        self.color = color;
+        true
+    }
+
+    pub fn indicator_snapshot(&self, indicator: KlineIndicator) -> IndicatorRuntimeSnapshot {
+        self.indicators
+            .as_ref()
+            .map(|indicators| indicators.snapshot_for(indicator))
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn refresh_indicator_inputs(&mut self, configs: &IndicatorConfigStore) {
+        self.refresh_indicator_inputs_from(configs, IndicatorUpdateScope::Full);
+    }
+
+    pub(crate) fn refresh_indicator_inputs_from(
+        &mut self,
+        configs: &IndicatorConfigStore,
+        scope: IndicatorUpdateScope,
+    ) {
         if let Some(indicators) = self.indicators.as_mut() {
-            indicators.refresh_from_bars(&self.bars);
+            let times =
+                (self.tick_times.len() == self.bars.len()).then_some(self.tick_times.as_slice());
+            indicators.on_input_from(
+                IndicatorInput::Klines {
+                    bars: &self.bars,
+                    times,
+                },
+                configs,
+                scope,
+            );
         }
     }
 
+    pub fn time_at_index(&self, index: usize) -> Option<UnixMs> {
+        self.tick_times
+            .get(index)
+            .copied()
+            .or_else(|| self.bars.get(index).map(|bar| bar.time))
+    }
+
+    pub fn insert_klines(&mut self, klines: &[Kline], basis: Basis) -> bool {
+        let incoming = Self::normalize_klines(klines, basis);
+        if incoming.is_empty() {
+            return false;
+        }
+
+        Self::merge_bars(&mut self.bars, incoming);
+        self.trim_bars();
+        true
+    }
+
+    /// Returns the first and last missing timeframe slots in the requested range.
+    pub fn missing_kline_range(
+        &self,
+        earliest: UnixMs,
+        latest: UnixMs,
+        timeframe: Timeframe,
+    ) -> Option<(UnixMs, UnixMs)> {
+        let interval = timeframe.to_milliseconds();
+        if interval == 0 {
+            return None;
+        }
+
+        let series_earliest = self.bars.first()?.time;
+        let series_latest = self.bars.last()?.time;
+        let phase = UnixMs::new(series_earliest.as_u64() % interval);
+        let check_earliest = align_down_to_phase(earliest.max(series_earliest), phase, interval)
+            .max(series_earliest);
+        let check_latest =
+            align_down_to_phase(latest.min(series_latest), phase, interval).min(series_latest);
+
+        if check_earliest >= check_latest {
+            return None;
+        }
+
+        let mut expected = check_earliest;
+        let mut missing_earliest = None;
+        let mut missing_latest = None;
+
+        for _ in 0..MAX_INTEGRITY_SCAN {
+            if expected >= check_latest {
+                break;
+            }
+
+            if self
+                .bars
+                .binary_search_by_key(&expected, |bar| bar.time)
+                .is_err()
+            {
+                missing_earliest.get_or_insert(expected);
+                missing_latest = Some(expected);
+            }
+
+            let Some(next) = expected.as_u64().checked_add(interval) else {
+                break;
+            };
+            expected = UnixMs::new(next);
+        }
+
+        missing_earliest.zip(missing_latest)
+    }
+
+    pub fn update_latest_kline(
+        &mut self,
+        kline: &Kline,
+        basis: Basis,
+    ) -> Option<IndicatorUpdateScope> {
+        let new_bar = Self::normalize_kline(kline, basis);
+        let changed = match self.bars.last_mut() {
+            Some(last) if last.time == new_bar.time => {
+                *last = new_bar;
+                true
+            }
+            Some(last) if new_bar.time > last.time => {
+                self.bars.push(new_bar);
+                true
+            }
+            Some(_) => return None,
+            None => {
+                self.bars.push(new_bar);
+                true
+            }
+        };
+
+        if !changed {
+            return None;
+        }
+
+        self.trim_bars();
+        Some(IndicatorUpdateScope::From(
+            self.bars.len().saturating_sub(1),
+        ))
+    }
+
+    pub fn indicator_data_for_panel_value(
+        &self,
+        panel_value: Option<PanelValueId>,
+        bar: &Kline,
+    ) -> Option<IndicatorData> {
+        let indicators = self.indicators.as_ref()?;
+        indicators.data_for_indicator(panel_value, bar)
+    }
+
     pub fn enable_tick_aggregation(&mut self, interval: TickCount, footprint_tick_size: PriceStep) {
+        self.clear_profile_caches();
+        self.tick_index_offset = 0;
         self.bars.clear();
         if let Some(indicators) = self.indicators.as_mut() {
             indicators.clear();
         }
+        self.trade_values.clear();
+        self.trade_time_range = None;
         self.tick_aggr = Some(TickAggr::new(
             interval,
             footprint_tick_size,
@@ -71,6 +749,7 @@ impl KlineSeries {
     }
 
     pub fn reset_for_basis(&mut self, preserve_raw_trades: bool) {
+        self.clear_profile_caches();
         self.bars.clear();
         if let Some(indicators) = self.indicators.as_mut() {
             indicators.clear();
@@ -78,74 +757,301 @@ impl KlineSeries {
         if let Some(footprints) = self.footprints.as_mut() {
             footprints.clear();
         }
+        self.trade_values.clear();
+        self.trade_time_range = None;
         self.disable_tick_aggregation();
+        self.tick_index_offset = 0;
+        self.time_trade_timeframe = None;
 
         if !preserve_raw_trades {
             self.raw_trades.clear();
         }
     }
 
-    pub fn insert_tick_trades(&mut self, trades: &[Trade]) {
+    pub fn insert_tick_trades(&mut self, trades: &[Trade]) -> IndicatorUpdateScope {
         if self.tick_aggr.is_none() {
-            return;
+            return IndicatorUpdateScope::From(self.bars.len());
         }
 
+        self.recurring_profile_caches.clear();
         self.raw_trades.extend_from_slice(trades);
 
-        let tick_aggr = self
-            .tick_aggr
-            .as_mut()
-            .expect("tick aggregation was checked above");
-
-        tick_aggr.insert_trades(trades);
-        self.rebuild_bars_from_tick_aggregation();
+        let first_updated = {
+            let tick_aggr = self
+                .tick_aggr
+                .as_mut()
+                .expect("tick aggregation was checked above");
+            tick_aggr.insert_trades(trades).unwrap_or_default()
+        };
+        let first_updated = self.sync_bars_from_tick_aggregation(first_updated);
+        self.update_footprint_poc_cache_for_ticks(first_updated);
+        IndicatorUpdateScope::From(first_updated)
     }
 
-    pub fn insert_time_trades(&mut self, trades: &[Trade], timeframe: Timeframe) {
-        let Some(footprints) = self.footprints.as_mut() else {
-            return;
-        };
+    pub fn insert_time_trades(
+        &mut self,
+        trades: &[Trade],
+        timeframe: Timeframe,
+    ) -> IndicatorUpdateScope {
+        if self.footprints.is_none() {
+            return IndicatorUpdateScope::From(self.bars.len());
+        }
 
-        let mut updated_times = Vec::new();
+        if self.time_trade_timeframe != Some(timeframe) {
+            self.clear_profile_caches();
+            self.time_trade_timeframe = Some(timeframe);
+        }
+
+        let mut updated_times = BTreeSet::new();
 
         for trade in trades {
             let bar_time = trade.time.floor_to(timeframe);
-            if !updated_times.contains(&bar_time) {
-                updated_times.push(bar_time);
-            }
+            updated_times.insert(bar_time);
 
+            self.trade_values
+                .entry(bar_time)
+                .or_default()
+                .add_trade(trade);
+            self.extend_trade_time_range(trade.time);
+        }
+
+        let Some(footprints) = self.footprints.as_mut() else {
+            return IndicatorUpdateScope::From(self.bars.len());
+        };
+        for trade in trades {
+            let bar_time = trade.time.floor_to(timeframe);
             footprints
                 .entry(bar_time)
                 .or_insert_with(KlineTrades::new)
                 .add_trade_to_nearest_bin(trade, self.footprint_tick_size);
         }
 
-        for time in updated_times {
-            if let Some(footprint) = footprints.get_mut(&time) {
+        for time in updated_times.iter() {
+            if let Some(footprint) = footprints.get_mut(time) {
                 footprint.calculate_poc();
             }
         }
+
+        self.update_recurring_profile_caches(trades);
+        self.update_footprint_poc_cache_for_times(&updated_times);
+
+        let first_time = updated_times.first().copied();
+        let first_index = first_time
+            .map(|time| self.first_bar_at_or_after(time))
+            .unwrap_or(self.bars.len());
+        IndicatorUpdateScope::From(first_index)
     }
 
     pub fn set_footprint_tick_size(&mut self, tick_size: PriceStep) {
+        if self.footprint_tick_size == tick_size {
+            return;
+        }
         self.footprint_tick_size = tick_size;
+        self.clear_profile_caches();
     }
 
     pub fn rebuild_time_footprints(&mut self, timeframe: Timeframe) {
+        self.clear_profile_caches();
         if let Some(footprints) = self.footprints.as_mut() {
             footprints.clear();
         } else {
             return;
         }
 
+        self.trade_values.clear();
+        self.trade_time_range = None;
         let raw_trades = self.raw_trades.clone();
         self.insert_time_trades(&raw_trades, timeframe);
     }
 
+    pub fn configure_recurring_profile_intervals(&mut self, intervals: &[Timeframe]) {
+        let desired_intervals = intervals.iter().copied().collect::<BTreeSet<_>>();
+        self.recurring_profile_caches
+            .retain(|interval, _| desired_intervals.contains(interval));
+
+        let intervals_to_build = desired_intervals
+            .into_iter()
+            .filter(|interval| !self.recurring_profile_caches.contains_key(interval))
+            .collect::<Vec<_>>();
+        for interval in intervals_to_build {
+            let cache = self.build_recurring_profile_cache(interval);
+            self.recurring_profile_caches.insert(interval, cache);
+        }
+    }
+
+    pub fn configure_footprint_poc_cache(&mut self, enabled: bool) {
+        match (enabled, self.footprint_poc_cache.is_some()) {
+            (true, false) => self.footprint_poc_cache = Some(self.build_footprint_poc_cache()),
+            (false, true) => self.footprint_poc_cache = None,
+            _ => {}
+        }
+    }
+
+    pub fn footprint_poc_lines(&self, earliest: UnixMs, latest: UnixMs) -> Vec<FootprintPocLine> {
+        self.footprint_poc_cache
+            .as_ref()
+            .map(|cache| cache.visible_lines(earliest, latest))
+            .unwrap_or_default()
+    }
+
+    fn clear_profile_caches(&mut self) {
+        self.recurring_profile_caches.clear();
+        self.footprint_poc_cache = None;
+    }
+
+    fn update_recurring_profile_caches(&mut self, trades: &[Trade]) {
+        if trades.is_empty() {
+            return;
+        }
+
+        let tick_size = self.footprint_tick_size;
+        for cache in self.recurring_profile_caches.values_mut() {
+            cache.insert_trades(trades, tick_size);
+        }
+    }
+
+    fn update_footprint_poc_cache_for_times(&mut self, times: &BTreeSet<UnixMs>) {
+        let Some(footprints) = self.footprints.as_ref() else {
+            return;
+        };
+        let Some(cache) = self.footprint_poc_cache.as_mut() else {
+            return;
+        };
+
+        cache.update_footprints(
+            times
+                .iter()
+                .filter_map(|&time| footprints.get(&time).map(|footprint| (time, footprint))),
+        );
+    }
+
+    fn update_footprint_poc_cache_for_ticks(&mut self, first_updated: usize) {
+        let Some(tick_aggr) = self.tick_aggr.as_ref() else {
+            return;
+        };
+        let Some(cache) = self.footprint_poc_cache.as_mut() else {
+            return;
+        };
+
+        cache.retain_from(UnixMs::new(self.tick_index_offset));
+        cache.update_footprints(
+            tick_aggr
+                .datapoints
+                .iter()
+                .enumerate()
+                .skip(first_updated)
+                .map(|(index, point)| {
+                    (
+                        UnixMs::new(self.tick_index_offset + index as u64),
+                        &point.footprint,
+                    )
+                }),
+        );
+    }
+
+    fn build_footprint_poc_cache(&self) -> FootprintPocCache {
+        let mut cache = FootprintPocCache::new();
+
+        if let Some(tick_aggr) = self.tick_aggr.as_ref() {
+            cache.update_footprints(tick_aggr.datapoints.iter().enumerate().map(
+                |(index, point)| {
+                    (
+                        UnixMs::new(self.tick_index_offset + index as u64),
+                        &point.footprint,
+                    )
+                },
+            ));
+        } else if let Some(footprints) = self.footprints.as_ref() {
+            cache.update_footprints(
+                footprints
+                    .iter()
+                    .map(|(&time, footprint)| (time, footprint)),
+            );
+        }
+
+        cache
+    }
+
+    fn build_recurring_profile_cache(&self, interval: Timeframe) -> RecurringProfileCache {
+        let interval_ms = interval.to_milliseconds();
+        let can_use_footprints = self.time_trade_timeframe.is_some_and(|timeframe| {
+            timeframe.to_milliseconds() <= interval_ms
+                && interval_ms.is_multiple_of(timeframe.to_milliseconds())
+        });
+        let mut cache = RecurringProfileCache::new(interval);
+
+        if can_use_footprints {
+            if let Some(footprints) = self.footprints.as_ref() {
+                for (&time, footprint) in footprints {
+                    cache.add_footprint(time, footprint);
+                }
+            }
+        } else {
+            for trade in &self.raw_trades {
+                cache.add_trade(trade, self.footprint_tick_size);
+            }
+        }
+
+        cache.rebuild_poc_statuses();
+        cache
+    }
+
     pub fn trade_time_range(&self) -> Option<(UnixMs, UnixMs)> {
-        let earliest = self.raw_trades.iter().map(|trade| trade.time).min()?;
-        let latest = self.raw_trades.iter().map(|trade| trade.time).max()?;
+        let (earliest, latest) = self.trade_time_range?;
         Some((earliest, latest))
+    }
+
+    pub fn normalized_trade_bars(&self, basis: Basis) -> Vec<NormalizedTradeBar> {
+        match basis {
+            Basis::Time(timeframe) => self.normalized_time_trade_bars(timeframe),
+            Basis::Tick(_) => self.normalized_tick_trade_bars(),
+        }
+    }
+
+    fn normalized_time_trade_bars(&self, timeframe: Timeframe) -> Vec<NormalizedTradeBar> {
+        let coverage = self.trade_time_range;
+        let coverage = coverage
+            .map(|(earliest, latest)| (earliest.floor_to(timeframe), latest.floor_to(timeframe)));
+
+        self.bars
+            .iter()
+            .map(|bar| {
+                let values = coverage
+                    .filter(|(earliest, latest)| bar.time >= *earliest && bar.time <= *latest)
+                    .map(|_| {
+                        self.trade_values
+                            .get(&bar.time)
+                            .copied()
+                            .unwrap_or_default()
+                    });
+                NormalizedTradeBar {
+                    time: bar.time,
+                    values,
+                }
+            })
+            .collect()
+    }
+
+    fn normalized_tick_trade_bars(&self) -> Vec<NormalizedTradeBar> {
+        let datapoints = self
+            .tick_aggr
+            .as_ref()
+            .map(|aggregation| &aggregation.datapoints);
+
+        self.bars
+            .iter()
+            .enumerate()
+            .map(|(index, bar)| NormalizedTradeBar {
+                time: bar.time,
+                values: datapoints
+                    .and_then(|datapoints| datapoints.get(index))
+                    .map(|datapoint| TradeBarValues {
+                        trade_count: datapoint.tick_count as u64,
+                        buy_qty: datapoint.kline.volume.buy_qty_or_zero(),
+                        sell_qty: datapoint.kline.volume.sell_qty_or_zero(),
+                    }),
+            })
+            .collect()
     }
 
     pub fn suggest_trade_fetch_range(
@@ -220,68 +1126,457 @@ impl KlineSeries {
         self.footprints.as_ref()?.get(&bar.time)
     }
 
-    pub fn rebuild_bars_from_tick_aggregation(&mut self) {
-        let Some(tick_aggr) = self.tick_aggr.as_mut() else {
-            self.bars.clear();
-            return;
+    pub fn footprint_tick_index_offset(&self) -> u64 {
+        self.tick_index_offset
+    }
+
+    pub fn trade_price_distribution(
+        &self,
+        earliest: UnixMs,
+        latest: UnixMs,
+        lowest: Price,
+        highest: Price,
+    ) -> Option<PriceLevelTradeDistribution> {
+        let mut levels = BTreeMap::new();
+
+        let mut add_footprint = |footprint: &KlineTrades| {
+            for (price, group) in &footprint.trades {
+                if *price < lowest || *price > highest {
+                    continue;
+                }
+
+                let level = levels.entry(*price).or_insert((Qty::ZERO, Qty::ZERO));
+                level.0 += group.buy_qty;
+                level.1 += group.sell_qty;
+            }
         };
 
-        if tick_aggr.datapoints.len() > SERIES_MAX_BARS {
-            let excess = tick_aggr.datapoints.len() - SERIES_MAX_BARS;
-            tick_aggr.datapoints.drain(0..excess);
+        if self.tick_aggr.is_some() {
+            for bar in &self.bars {
+                if bar.time < earliest || bar.time > latest {
+                    continue;
+                }
+
+                if let Some(footprint) = self.footprint_for_bar(bar) {
+                    add_footprint(footprint);
+                }
+            }
+        } else if let Some(footprints) = self.footprints.as_ref() {
+            for (_, footprint) in footprints.range(earliest..=latest) {
+                add_footprint(footprint);
+            }
         }
 
-        self.tick_times = tick_aggr
-            .datapoints
-            .iter()
-            .map(|point| point.kline.time)
-            .collect();
-        self.bars = tick_aggr
-            .datapoints
-            .iter()
-            .enumerate()
-            .map(|(index, point)| {
-                let mut bar = point.kline;
-                // Tick indicators are keyed by bar time. Synthetic monotonic
-                // timestamps preserve one-to-one identity even when trades
-                // share an exchange timestamp.
-                bar.time = UnixMs::new(index as u64);
-                bar
+        Self::distribution_from_levels(levels)
+    }
+
+    pub fn recurring_trade_price_distributions(
+        &self,
+        interval: Timeframe,
+        earliest: UnixMs,
+        latest: UnixMs,
+    ) -> Vec<AnchoredPriceLevelTradeDistribution> {
+        self.recurring_profile_caches
+            .get(&interval)
+            .map(|cache| cache.visible_profiles(earliest, latest))
+            .unwrap_or_default()
+    }
+
+    fn distribution_from_levels(
+        levels: BTreeMap<Price, (Qty, Qty)>,
+    ) -> Option<PriceLevelTradeDistribution> {
+        if levels.is_empty() {
+            return None;
+        }
+
+        let mut max_qty = Qty::ZERO;
+        let levels: Vec<PriceLevelTrade> = levels
+            .into_iter()
+            .map(|(price, (buy_qty, sell_qty))| {
+                let level = PriceLevelTrade {
+                    price,
+                    buy_qty,
+                    sell_qty,
+                };
+                max_qty = max_qty.max(level.total_qty());
+                level
             })
             .collect();
-        self.refresh_indicator_inputs();
+
+        let poc = levels
+            .iter()
+            .copied()
+            .fold(None::<PriceLevelTrade>, |best, level| match best {
+                Some(best) if best.total_qty() >= level.total_qty() => Some(best),
+                _ => Some(level),
+            })
+            .map(|level| PointOfControl {
+                price: level.price,
+                volume: level.total_qty(),
+                status: NPoc::None,
+            });
+
+        Some(PriceLevelTradeDistribution {
+            levels,
+            max_qty,
+            poc,
+        })
     }
 
-    pub fn set_rsi_config(&mut self, config: RsiConfig) -> bool {
-        self.indicators
-            .as_mut()
-            .map(|indicators| indicators.set_rsi_config(config))
-            .unwrap_or(false)
+    pub fn rebuild_bars_from_tick_aggregation(&mut self) {
+        if self.tick_aggr.is_none() {
+            self.bars.clear();
+            return;
+        }
+
+        self.sync_bars_from_tick_aggregation(0);
     }
 
-    pub fn insert_open_interest(
+    pub fn insert_indicator_input(
         &mut self,
-        data: &[OpenInterest],
-        basis: Basis,
-        timeframe: Timeframe,
+        input: IndicatorInput<'_>,
+        configs: &IndicatorConfigStore,
     ) {
         if let Some(indicators) = self.indicators.as_mut() {
-            indicators.insert_open_interest_batch(data, basis, timeframe);
+            indicators.on_input(input, configs);
+        }
+    }
+
+    pub fn insert_indicator_input_from(
+        &mut self,
+        input: IndicatorInput<'_>,
+        configs: &IndicatorConfigStore,
+        scope: IndicatorUpdateScope,
+    ) {
+        if let Some(indicators) = self.indicators.as_mut() {
+            indicators.on_input_from(input, configs, scope);
+        }
+    }
+
+    fn sync_bars_from_tick_aggregation(&mut self, first_updated: usize) -> usize {
+        let Some(tick_aggr) = self.tick_aggr.as_mut() else {
+            self.bars.clear();
+            self.tick_times.clear();
+            return 0;
+        };
+
+        let excess = tick_aggr.datapoints.len().saturating_sub(SERIES_MAX_BARS);
+        if excess > 0 {
+            tick_aggr.datapoints.drain(0..excess);
+            self.tick_index_offset = self.tick_index_offset.saturating_add(excess as u64);
+        }
+
+        let first_index = first_updated.saturating_sub(excess);
+        let data_len = tick_aggr.datapoints.len();
+        self.bars.truncate(data_len);
+        self.tick_times.truncate(data_len);
+        if self.bars.len() < data_len
+            && let Some(template) = tick_aggr.datapoints.first().map(|point| point.kline)
+        {
+            self.bars.resize(data_len, template);
+        }
+        self.tick_times.resize(data_len, UnixMs::new(0));
+
+        for (index, point) in tick_aggr.datapoints.iter().enumerate().skip(first_index) {
+            self.tick_times[index] = point.kline.time;
+            let mut bar = point.kline;
+            // Tick indicators are keyed by bar time. Synthetic monotonic
+            // timestamps preserve one-to-one identity even when trades share
+            // an exchange timestamp.
+            bar.time = UnixMs::new(index as u64);
+            self.bars[index] = bar;
+        }
+
+        first_index
+    }
+
+    fn extend_trade_time_range(&mut self, time: UnixMs) {
+        self.trade_time_range = Some(match self.trade_time_range {
+            Some((earliest, latest)) => (earliest.min(time), latest.max(time)),
+            None => (time, time),
+        });
+    }
+
+    fn first_bar_at_or_after(&self, time: UnixMs) -> usize {
+        self.bars
+            .binary_search_by_key(&time, |bar| bar.time)
+            .unwrap_or_else(|index| index)
+    }
+
+    fn normalize_kline(kline: &Kline, basis: Basis) -> Kline {
+        let mut adjusted = *kline;
+        adjusted.time = match basis {
+            Basis::Time(timeframe) => kline.time.floor_to(timeframe),
+            Basis::Tick(_) => kline.time,
+        };
+        adjusted
+    }
+
+    fn normalize_klines(klines: &[Kline], basis: Basis) -> Vec<Kline> {
+        let mut normalized: Vec<Kline> = klines
+            .iter()
+            .map(|kline| Self::normalize_kline(kline, basis))
+            .collect();
+
+        normalized.sort_by_key(|bar| bar.time);
+        normalized.dedup_by_key(|bar| bar.time);
+        normalized
+    }
+
+    fn merge_bars(dst: &mut Vec<Kline>, mut incoming: Vec<Kline>) {
+        if incoming.is_empty() {
+            return;
+        }
+
+        if dst.is_empty() {
+            *dst = incoming;
+            return;
+        }
+
+        incoming.sort_by_key(|bar| bar.time);
+        incoming.dedup_by_key(|bar| bar.time);
+
+        let mut dst_index = 0;
+        let mut incoming_index = 0;
+        let mut merged = Vec::with_capacity(dst.len() + incoming.len());
+
+        while dst_index < dst.len() && incoming_index < incoming.len() {
+            let existing = dst[dst_index];
+            let next = incoming[incoming_index];
+
+            if existing.time < next.time {
+                merged.push(existing);
+                dst_index += 1;
+            } else if next.time < existing.time {
+                merged.push(next);
+                incoming_index += 1;
+            } else {
+                merged.push(next);
+                dst_index += 1;
+                incoming_index += 1;
+            }
+        }
+
+        if dst_index < dst.len() {
+            merged.extend_from_slice(&dst[dst_index..]);
+        }
+
+        if incoming_index < incoming.len() {
+            merged.extend_from_slice(&incoming[incoming_index..]);
+        }
+
+        *dst = merged;
+    }
+
+    fn trim_bars(&mut self) {
+        if self.bars.len() > SERIES_MAX_BARS {
+            let to_drop = self.bars.len() - SERIES_MAX_BARS;
+            self.bars.drain(0..to_drop);
         }
     }
 }
 
-impl KlineSeries {
-    pub fn indicator_for_panel_value(panel_value: Option<PanelValueId>) -> Option<KlineIndicator> {
-        match panel_value {
-            Some(PanelValueId::Volume) => Some(KlineIndicator::Volume),
-            Some(PanelValueId::BollingerBands) => Some(KlineIndicator::BollingerBands),
-            Some(PanelValueId::Rsi) => Some(KlineIndicator::Rsi),
-            Some(PanelValueId::OpenInterest) => Some(KlineIndicator::OpenInterest),
-            Some(PanelValueId::CumulativeVolumeDelta) => {
-                Some(KlineIndicator::CumulativeVolumeDelta)
-            }
-            None => None,
+fn align_down_to_phase(time: UnixMs, phase: UnixMs, interval: u64) -> UnixMs {
+    if time >= phase {
+        let timestamp = time.as_u64();
+        let phase = phase.as_u64();
+        UnixMs::new(timestamp.saturating_sub((timestamp - phase) % interval))
+    } else {
+        phase
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use exchange::{Ticker, adapter::Exchange};
+
+    fn test_series() -> KlineSeries {
+        KlineSeries::new_base(TickerInfo::new(
+            Ticker::new("BTCUSDT", Exchange::BinanceLinear),
+            0.1,
+            0.001,
+            None,
+        ))
+    }
+
+    fn trade(time: u64, price: f32, qty: f64) -> Trade {
+        Trade {
+            time: UnixMs::new(time),
+            is_sell: false,
+            price: Price::from_f32(price),
+            qty: Qty::from_f64(qty),
         }
+    }
+
+    fn insert_trades(series: &mut KlineSeries, trades: &[Trade]) {
+        series.raw_trades.extend_from_slice(trades);
+        series.insert_time_trades(trades, Timeframe::M5);
+    }
+
+    fn recurring_profiles(
+        series: &mut KlineSeries,
+        earliest: u64,
+        latest: u64,
+    ) -> Vec<AnchoredPriceLevelTradeDistribution> {
+        series.configure_recurring_profile_intervals(&[Timeframe::M15]);
+        series.recurring_trade_price_distributions(
+            Timeframe::M15,
+            UnixMs::new(earliest),
+            UnixMs::new(latest),
+        )
+    }
+
+    fn footprint_poc_lines(
+        series: &mut KlineSeries,
+        earliest: u64,
+        latest: u64,
+    ) -> Vec<FootprintPocLine> {
+        series.configure_footprint_poc_cache(true);
+        series.footprint_poc_lines(UnixMs::new(earliest), UnixMs::new(latest))
+    }
+
+    #[test]
+    fn recurring_profile_uses_the_complete_boundary_bucket() {
+        let mut series = test_series();
+        insert_trades(
+            &mut series,
+            &[
+                trade(60_000, 100.0, 10.0),
+                trade(600_000, 101.0, 5.0),
+                trade(960_000, 102.0, 1.0),
+            ],
+        );
+
+        let profiles = recurring_profiles(&mut series, 300_000, 840_000);
+
+        let poc = profiles[0].distribution.poc.expect("profile POC");
+        assert_eq!(poc.price, Price::from_f32(100.0));
+        assert_eq!(profiles[0].distribution.levels.len(), 2);
+    }
+
+    #[test]
+    fn recurring_poc_uses_levels_outside_the_visible_price_range() {
+        let mut series = test_series();
+        insert_trades(
+            &mut series,
+            &[trade(60_000, 100.0, 10.0), trade(600_000, 101.0, 5.0)],
+        );
+
+        let profiles = recurring_profiles(&mut series, 0, 840_000);
+
+        let poc = profiles[0].distribution.poc.expect("profile POC");
+        assert_eq!(poc.price, Price::from_f32(100.0));
+    }
+
+    #[test]
+    fn recurring_poc_status_includes_profiles_beyond_the_visible_window() {
+        let mut series = test_series();
+        insert_trades(
+            &mut series,
+            &[
+                trade(60_000, 100.0, 10.0),
+                trade(960_000, 102.0, 10.0),
+                trade(1_860_000, 100.0, 1.0),
+            ],
+        );
+
+        let profiles = recurring_profiles(&mut series, 1_200_000, 1_500_000);
+
+        let first_profile = profiles
+            .iter()
+            .find(|profile| profile.start == UnixMs::new(0))
+            .expect("active POC from the previous profile");
+        assert_eq!(
+            first_profile.distribution.poc.expect("profile POC").status,
+            NPoc::Filled { at: 1_800_000 },
+        );
+    }
+
+    #[test]
+    fn recurring_cache_updates_when_a_later_profile_touches_a_poc() {
+        let mut series = test_series();
+        insert_trades(
+            &mut series,
+            &[trade(60_000, 100.0, 10.0), trade(960_000, 102.0, 10.0)],
+        );
+
+        let before = recurring_profiles(&mut series, 1_200_000, 1_500_000);
+        assert_eq!(
+            before
+                .iter()
+                .find(|profile| profile.start == UnixMs::new(0))
+                .and_then(|profile| profile.distribution.poc)
+                .map(|poc| poc.status),
+            Some(NPoc::Naked),
+        );
+
+        insert_trades(&mut series, &[trade(1_860_000, 100.0, 1.0)]);
+
+        let after = recurring_profiles(&mut series, 1_200_000, 1_500_000);
+        assert_eq!(
+            after
+                .iter()
+                .find(|profile| profile.start == UnixMs::new(0))
+                .and_then(|profile| profile.distribution.poc)
+                .map(|poc| poc.status),
+            Some(NPoc::Filled { at: 1_800_000 }),
+        );
+    }
+
+    #[test]
+    fn footprint_poc_cache_tracks_footprint_poc_status_independently() {
+        let mut series = test_series();
+        insert_trades(
+            &mut series,
+            &[trade(60_000, 100.0, 10.0), trade(960_000, 102.0, 10.0)],
+        );
+
+        let before = footprint_poc_lines(&mut series, 1_200_000, 1_500_000);
+        assert_eq!(
+            before
+                .iter()
+                .find(|line| line.start == UnixMs::new(0))
+                .map(|line| line.poc.status),
+            Some(NPoc::Naked),
+        );
+
+        insert_trades(&mut series, &[trade(1_860_000, 100.0, 1.0)]);
+
+        let after = footprint_poc_lines(&mut series, 1_200_000, 1_500_000);
+        assert_eq!(
+            after
+                .iter()
+                .find(|line| line.start == UnixMs::new(0))
+                .map(|line| line.poc.status),
+            Some(NPoc::Filled { at: 1_800_000 }),
+        );
+    }
+
+    #[test]
+    fn footprint_poc_cache_supports_tick_buckets() {
+        let mut series = test_series();
+        let trades = [
+            trade(0, 100.0, 10.0),
+            trade(1, 102.0, 10.0),
+            trade(2, 100.0, 1.0),
+        ];
+        series.raw_trades.extend_from_slice(&trades);
+        series.enable_tick_aggregation(
+            crate::aggr::TickCount(1),
+            PriceStep {
+                units: Price::from_f32(1.0).units,
+            },
+        );
+        series.configure_footprint_poc_cache(true);
+
+        let lines = series.footprint_poc_lines(UnixMs::new(0), UnixMs::new(2));
+        assert_eq!(
+            lines
+                .iter()
+                .find(|line| line.start == UnixMs::new(0))
+                .map(|line| line.poc.status),
+            Some(NPoc::Filled { at: 2 }),
+        );
     }
 }

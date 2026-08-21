@@ -3,12 +3,16 @@ use crate::{
     screen::ConfirmDialog,
     style::{self, Icon, icon_text, modal_container},
 };
+use data::config::theme::{ThemeColorRole, generated_theme_accent};
+use data::{chart::kline_v2::ThemeAccent, config::theme::ThemeColor};
 use iced::{
     Alignment::{self, Center},
     Color,
     Length::Fill,
     Theme, border, padding,
-    widget::{button, column, container, row, scrollable, slider, space, text, tooltip::Position},
+    widget::{
+        button, column, container, radio, row, scrollable, slider, space, text, tooltip::Position,
+    },
 };
 
 pub mod chart;
@@ -16,6 +20,7 @@ pub mod color_picker;
 pub mod column_drag;
 pub mod decorate;
 pub mod multi_split;
+pub mod series_editor;
 pub mod toast;
 
 pub const PANE_CONTROL_BTN_HEIGHT: f32 = 26.0;
@@ -207,6 +212,77 @@ where
             .align_y(Center),
     ]
     .into()
+}
+
+pub fn theme_color_control<'a, Message>(
+    selected: ThemeColor,
+    on_change: impl Fn(Option<ThemeAccent>) -> Message + Clone + 'a,
+) -> Element<'a, Message>
+where
+    Message: Clone + 'a,
+{
+    let color_options = std::iter::once(("Default".to_string(), None)).chain(
+        ThemeAccent::ALL
+            .iter()
+            .copied()
+            .map(|accent| (format!("A{}", accent.index() + 1), Some(accent))),
+    );
+    let color_choices = color_options.into_iter().map(|(option, accent)| {
+        let on_change = on_change.clone();
+        radio(
+            if accent.is_none() {
+                option
+            } else {
+                String::new()
+            },
+            accent,
+            Some(selected.accent),
+            on_change,
+        )
+        .style(move |theme, status| theme_color_radio_style(theme, status, selected.role, accent))
+        .into()
+    });
+
+    row(color_choices).spacing(8).into()
+}
+
+fn theme_color_radio_style(
+    theme: &Theme,
+    status: iced::widget::radio::Status,
+    role: ThemeColorRole,
+    accent: Option<ThemeAccent>,
+) -> iced::widget::radio::Style {
+    let mut style = iced::widget::radio::default(theme, status);
+    let palette = theme.extended_palette();
+    let color = accent.map_or_else(
+        || match role {
+            ThemeColorRole::Neutral => palette.background.base.text,
+            ThemeColorRole::Secondary => palette.secondary.strong.color,
+            ThemeColorRole::Primary => palette.primary.base.color,
+            ThemeColorRole::Success => palette.success.base.color,
+            ThemeColorRole::Danger => palette.danger.base.color,
+            ThemeColorRole::Warning => palette.warning.base.color,
+        },
+        |accent| generated_theme_accent(palette, accent),
+    );
+
+    style.dot_color = color;
+    style.border_color = color;
+    if accent.is_some() {
+        style.background = color.into();
+        if matches!(
+            status,
+            iced::widget::radio::Status::Active { is_selected: true }
+                | iced::widget::radio::Status::Hovered { is_selected: true }
+        ) {
+            style.border_width = 2.0;
+            style.border_color = palette.background.base.text;
+        }
+    } else {
+        style.text_color = Some(color);
+    }
+
+    style
 }
 
 pub fn numeric_input_box<'a, F, Message: Clone + 'static>(

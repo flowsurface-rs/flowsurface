@@ -1,7 +1,6 @@
 use super::composition::PanelScaleMode;
 use super::scene::Scene;
 use super::{
-    DRAWING_HANDLE_HIT_RADIUS_PX, DRAWING_HANDLE_RADIUS_PX, DRAWING_HIT_TOLERANCE_PX,
     KlinePanelKind, KlineSeriesLike, KlineWidget, TEXT_SIZE, Y_AXIS_LABEL_LEFT_INSET, YUnit,
 };
 use crate::style;
@@ -12,6 +11,10 @@ use exchange::UnixMs;
 use iced::theme::palette::Extended;
 use iced::widget::canvas;
 use iced::{Point, Rectangle, Size};
+
+const DRAWING_HIT_TOLERANCE_PX: f32 = 7.0;
+const DRAWING_HANDLE_RADIUS_PX: f32 = 4.0;
+const DRAWING_HANDLE_HIT_RADIUS_PX: f32 = 8.0;
 
 #[derive(Default)]
 pub(super) struct AxisBadgeFilter {

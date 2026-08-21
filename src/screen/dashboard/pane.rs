@@ -1,10 +1,12 @@
 use crate::{
     chart::{
         self,
-        comparison::ComparisonChart,
         heatmap::HeatmapChart,
         kline::KlineChart,
-        kline_v2::{KlineChartV2, KlineIndicator as KlineV2Indicator},
+        kline_v2::{
+            ChartCommand, CommandResult, DataUpdate, KlineChartV2,
+            KlineIndicator as KlineV2Indicator,
+        },
     },
     connector::{
         ResolvedStream,
@@ -16,7 +18,9 @@ use crate::{
             Modal,
             mini_tickers_list::MiniPanel,
             settings::{
-                comparison_cfg_view, heatmap_cfg_view, heatmap_shader_cfg_view, kline_cfg_view,
+                CandlestickSettingsMessage, KlineV2IndicatorSettingsMessage, candlestick_cfg_view,
+                heatmap_cfg_view, heatmap_shader_cfg_view, kline_cfg_view, kline_v2_cfg_view,
+                kline_v2_indicator_cfg_view, series_cfg_view,
             },
             stack_modal,
         },
@@ -107,9 +111,11 @@ pub enum Event {
     ReorderIndicator(column_drag::DragEvent),
     ClusterKindSelected(data::chart::kline::ClusterKind),
     ClusterScalingSelected(data::chart::kline::ClusterScaling),
+    TradeDataEnabledChanged(bool),
     StudyConfigurator(modal::pane::settings::study::StudyMessage),
+    KlineV2IndicatorSettings(KlineV2Indicator, KlineV2IndicatorSettingsMessage),
+    KlineV2CandlestickSettings(CandlestickSettingsMessage),
     StreamModifierChanged(modal::stream::Message),
-    ComparisonChartInteraction(super::chart::comparison::Message),
     HeatmapShaderInteraction(crate::widget::chart::heatmap::Message),
     MiniTickersListInteraction(modal::pane::mini_tickers_list::Message),
 }
@@ -151,6 +157,26 @@ impl State {
             StreamKind::Depth { ticker_info, .. } => Some(*ticker_info),
             StreamKind::Trades { ticker_info, .. } => Some(*ticker_info),
         })
+    }
+
+    fn sync_kline_v2_trade_stream(&mut self) -> bool {
+        let Some((ticker_info, basis, trade_data_required)) = (match &self.content {
+            Content::KlineV2 {
+                chart: Some(chart), ..
+            } => Some((
+                chart.ticker_info(),
+                chart.basis(),
+                chart.trade_data_required(),
+            )),
+            _ => None,
+        }) else {
+            return false;
+        };
+
+        self.streams.set_trade_stream(
+            ticker_info,
+            matches!(basis, Basis::Tick(_)) || trade_data_required,
+        )
     }
 
     pub fn stream_pair_kind(&self) -> Option<StreamPairKind> {
@@ -287,14 +313,23 @@ impl State {
                     };
 
                     let content = Content::new_kline_v2(&self.content, &tickers, &self.settings);
+                    let trade_data_required = match &content {
+                        Content::KlineV2 {
+                            chart: Some(chart), ..
+                        } => chart.trade_data_required(),
+                        _ => false,
+                    };
 
                     let streams = by_basis_default(
                         derived_plan.basis,
-                        Timeframe::M15,
+                        Timeframe::M5,
                         |tf| {
-                            let mut streams = vec![StreamKind::Trades {
-                                ticker_info: tickers[0],
-                            }];
+                            let mut streams = Vec::new();
+                            if trade_data_required {
+                                streams.push(StreamKind::Trades {
+                                    ticker_info: tickers[0],
+                                });
+                            }
                             streams.extend(tickers.iter().copied().map(|ti| kline_stream(ti, tf)));
                             streams
                         },
@@ -342,53 +377,6 @@ impl State {
                     )));
 
                     let streams = vec![depth_stream(&derived_plan), trades_stream(&derived_plan)];
-
-                    (content, streams)
-                }
-                ContentKind::ComparisonChart => {
-                    let config = self
-                        .settings
-                        .visual_config
-                        .clone()
-                        .and_then(|cfg| cfg.comparison());
-
-                    let timeframe = {
-                        let supports = |tf| {
-                            tickers
-                                .iter()
-                                .all(|ti| ti.exchange().supports_kline_timeframe(tf))
-                        };
-
-                        if let Some(tf) = derived_plan.basis.and_then(|basis| match basis {
-                            Basis::Time(tf) => Some(tf),
-                            Basis::Tick(_) => None,
-                        }) && supports(tf)
-                        {
-                            tf
-                        } else {
-                            let fallback = Timeframe::M15;
-                            if supports(fallback) {
-                                fallback
-                            } else {
-                                Timeframe::KLINE
-                                    .iter()
-                                    .copied()
-                                    .find(|tf| supports(*tf))
-                                    .unwrap_or(fallback)
-                            }
-                        }
-                    };
-
-                    let basis = Basis::Time(timeframe);
-                    self.settings.selected_basis = Some(basis);
-                    let content =
-                        Content::Comparison(Some(ComparisonChart::new(basis, &tickers, config)));
-
-                    let streams = tickers
-                        .iter()
-                        .copied()
-                        .map(|ti| kline_stream(ti, timeframe))
-                        .collect();
 
                     (content, streams)
                 }
@@ -468,7 +456,11 @@ impl State {
                 let Some(chart) = chart else {
                     panic!("Kline v2 chart wasn't initialized when inserting open interest");
                 };
-                chart.insert_open_interest(req_id, ticker_info, oi);
+                chart.apply_data(DataUpdate::HistoricalOpenInterest {
+                    req_id,
+                    ticker_info,
+                    data: oi,
+                });
             }
             _ => {
                 log::error!("pane content not candlestick");
@@ -536,10 +528,10 @@ impl State {
                         tickers.push(ticker_info);
                     }
 
-                    *chart = Some(KlineChartV2::new_with_tickers(
+                    *chart = Some(Box::new(KlineChartV2::new_with_tickers(
                         Basis::Time(timeframe),
                         &tickers,
-                    ));
+                    )));
                 }
 
                 let Some(chart) = chart else {
@@ -556,32 +548,17 @@ impl State {
                 }
 
                 if let Some(id) = req_id {
-                    chart.insert_history(id, ticker_info, klines);
+                    chart.apply_data(DataUpdate::HistoricalKlines {
+                        req_id: Some(id),
+                        ticker_info,
+                        klines,
+                    });
                 } else {
-                    chart.insert_snapshot(ticker_info, klines);
-                }
-            }
-            Content::Comparison(chart) => {
-                let Some(chart) = chart else {
-                    panic!("Comparison chart wasn't initialized when inserting klines");
-                };
-
-                if let Some(id) = req_id {
-                    if chart.timeframe != timeframe {
-                        log::warn!(
-                            "Ignoring stale kline fetch for timeframe {:?}; chart timeframe = {:?}",
-                            timeframe,
-                            chart.timeframe
-                        );
-                        return;
-                    }
-                    chart.insert_history(id, ticker_info, klines);
-                } else {
-                    *chart = ComparisonChart::new(
-                        Basis::Time(timeframe),
-                        &[ticker_info],
-                        Some(chart.serializable_config()),
-                    );
+                    chart.apply_data(DataUpdate::HistoricalKlines {
+                        req_id: None,
+                        ticker_info,
+                        klines,
+                    });
                 }
             }
             _ => {
@@ -787,44 +764,6 @@ impl State {
                     None,
                     tickers_table,
                 )
-            }
-            Content::Comparison(chart) => {
-                if let Some(c) = chart {
-                    let selected_basis = Basis::Time(c.timeframe);
-                    let kind = ModifierKind::Comparison(selected_basis);
-
-                    let modifiers =
-                        row![basis_modifier(id, selected_basis, modifier, kind),].spacing(4);
-
-                    top_left_buttons = top_left_buttons.push(modifiers);
-
-                    let base = c.view(timezone).map(move |message| {
-                        Message::PaneEvent(id, Event::ComparisonChartInteraction(message))
-                    });
-
-                    let settings_modal = || comparison_cfg_view(id, c);
-
-                    self.compose_stack_view(
-                        base,
-                        id,
-                        None,
-                        compact_controls,
-                        settings_modal,
-                        Some(c.selected_tickers()),
-                        tickers_table,
-                    )
-                } else {
-                    let base = uninitialized_base(ContentKind::ComparisonChart);
-                    self.compose_stack_view(
-                        base,
-                        id,
-                        None,
-                        compact_controls,
-                        || column![].into(),
-                        None,
-                        tickers_table,
-                    )
-                }
             }
             Content::TimeAndSales(panel) => {
                 if let Some(panel) = panel {
@@ -1150,12 +1089,42 @@ impl State {
                     let selected_tickers =
                         chart.basis().is_time().then_some(chart.selected_tickers());
 
+                    let settings_modal = || match self.modal {
+                        Some(Modal::IndicatorSettings(indicator)) => kline_v2_indicator_cfg_view(
+                            indicator,
+                            chart.indicator_data_config(indicator),
+                            chart.anchored_vwap_config(),
+                            chart.basis(),
+                            chart.indicator_color_config(indicator),
+                            chart.indicator_mark(indicator),
+                            id,
+                        ),
+                        Some(Modal::CandlestickSettings) => candlestick_cfg_view(
+                            chart.candlestick_config(),
+                            chart.primary_mark(),
+                            chart.series_editor(),
+                            chart.series_style_entries(),
+                            id,
+                        ),
+                        Some(Modal::SeriesSettings(_)) => {
+                            series_cfg_view(chart.series_editor(), chart.series_style_entries(), id)
+                        }
+                        _ => kline_v2_cfg_view(
+                            chart.study_configurator(),
+                            chart.studies(),
+                            chart.footprint_cluster_kind(),
+                            chart.trade_data_enabled(),
+                            id,
+                            chart.basis(),
+                        ),
+                    };
+
                     self.compose_stack_view(
                         base,
                         id,
                         indicator_modal,
                         compact_controls,
-                        || column![].into(),
+                        settings_modal,
                         selected_tickers,
                         tickers_table,
                     )
@@ -1357,37 +1326,103 @@ impl State {
                 _ => {}
             },
             Event::KlineV2Interaction(message) => {
-                if let Content::KlineV2 { chart: Some(c), .. } = &mut self.content
-                    && let Some(action) = c.update(message)
-                {
+                let action = match &mut self.content {
+                    Content::KlineV2 { chart: Some(c), .. } => c.update(message),
+                    _ => None,
+                };
+                let trade_stream_changed = self.sync_kline_v2_trade_stream();
+
+                if let Some(action) = action {
                     match action {
-                        super::chart::kline_v2::Action::SeriesColorChanged(t, color) => {
-                            c.set_series_color(t, color);
-                        }
-                        super::chart::kline_v2::Action::SeriesNameChanged(t, name) => {
-                            c.set_series_name(t, name);
-                        }
                         super::chart::kline_v2::Action::OpenSeriesEditor => {
                             self.modal = Some(Modal::Settings);
+                        }
+                        super::chart::kline_v2::Action::OpenIndicatorSettings(indicator) => {
+                            self.modal = Some(Modal::IndicatorSettings(indicator));
+                        }
+                        super::chart::kline_v2::Action::OpenCandlestickSettings => {
+                            self.modal = Some(Modal::CandlestickSettings);
+                        }
+                        super::chart::kline_v2::Action::OpenSeriesSettings(ticker) => {
+                            self.modal = Some(Modal::SeriesSettings(ticker));
                         }
                         super::chart::kline_v2::Action::RequestFetch(fetch) => {
                             return Some(Effect::RequestFetch(fetch));
                         }
                         super::chart::kline_v2::Action::RemoveSeries(ti) => {
-                            let rebuilt = c.remove_ticker(&ti);
-                            self.streams = ResolvedStream::Ready(rebuilt);
+                            if let Content::KlineV2 { chart: Some(c), .. } = &mut self.content
+                                && let CommandResult::Streams(streams) =
+                                    c.apply_command(ChartCommand::RemoveTicker(ti))
+                            {
+                                self.streams = ResolvedStream::Ready(streams);
+                            }
 
                             return Some(Effect::RefreshStreams);
                         }
                     }
                 }
+
+                if trade_stream_changed {
+                    return Some(Effect::RefreshStreams);
+                }
+            }
+            Event::KlineV2IndicatorSettings(indicator, message) => {
+                if let Content::KlineV2 { chart: Some(c), .. } = &mut self.content {
+                    let command = match message {
+                        KlineV2IndicatorSettingsMessage::DataConfig(config) => {
+                            ChartCommand::SetIndicatorDataConfig(config)
+                        }
+                        KlineV2IndicatorSettingsMessage::Color {
+                            slot,
+                            accent,
+                            shade,
+                        } => ChartCommand::SetIndicatorColor {
+                            indicator,
+                            slot,
+                            accent,
+                            shade,
+                        },
+                        KlineV2IndicatorSettingsMessage::Mark(mark) => {
+                            ChartCommand::SetIndicatorMark { indicator, mark }
+                        }
+                        KlineV2IndicatorSettingsMessage::Reset => {
+                            ChartCommand::ResetIndicatorSettings(indicator)
+                        }
+                    };
+                    if let CommandResult::Action(Some(chart::Action::RequestFetch(fetch))) =
+                        c.apply_command(command)
+                    {
+                        return Some(Effect::RequestFetch(fetch));
+                    }
+                }
+            }
+            Event::KlineV2CandlestickSettings(message) => {
+                if let Content::KlineV2 { chart: Some(c), .. } = &mut self.content {
+                    let command = match message {
+                        CandlestickSettingsMessage::Config(config) => {
+                            ChartCommand::SetCandlestickConfig(config)
+                        }
+                        CandlestickSettingsMessage::Mark(mark) => {
+                            ChartCommand::SetPrimaryMark(mark)
+                        }
+                        CandlestickSettingsMessage::Reset => ChartCommand::ResetCandlestickSettings,
+                    };
+                    let _ = c.apply_command(command);
+                }
             }
             Event::ToggleKlineV2Indicator(indicator) => {
-                if let Content::KlineV2 {
-                    chart: Some(chart), ..
-                } = &mut self.content
-                {
-                    chart.toggle_indicator(indicator);
+                let result = match &mut self.content {
+                    Content::KlineV2 {
+                        chart: Some(chart), ..
+                    } => chart.apply_command(ChartCommand::ToggleIndicator(indicator)),
+                    _ => CommandResult::None,
+                };
+                let trade_stream_changed = self.sync_kline_v2_trade_stream();
+                if let CommandResult::Action(Some(chart::Action::RequestFetch(fetch))) = result {
+                    return Some(Effect::RequestFetch(fetch));
+                }
+                if trade_stream_changed {
+                    return Some(Effect::RefreshStreams);
                 }
             }
             Event::PanelInteraction(msg) => match &mut self.content {
@@ -1414,6 +1449,18 @@ impl State {
                 {
                     c.set_cluster_kind(kind);
                     *cur = c.kind.clone();
+                } else if let Content::KlineV2 { chart: Some(c), .. } = &mut self.content {
+                    let _ = c.apply_command(ChartCommand::SetFootprintClusterKind(kind));
+                }
+            }
+            Event::TradeDataEnabledChanged(enabled) => {
+                if let Content::KlineV2 { chart: Some(c), .. } = &mut self.content {
+                    let _ = c.apply_command(ChartCommand::SetTradeDataEnabled(enabled));
+                }
+
+                let trade_stream_changed = self.sync_kline_v2_trade_stream();
+                if trade_stream_changed {
+                    return Some(Effect::RefreshStreams);
                 }
             }
             Event::ClusterScalingSelected(scaling) => {
@@ -1444,6 +1491,15 @@ impl State {
                     {
                         c.update_study_configurator(m);
                         *studies = c.studies.clone();
+                    }
+                }
+                modal::pane::settings::study::StudyMessage::KlineV2(m) => {
+                    if let Content::KlineV2 { chart: Some(c), .. } = &mut self.content {
+                        c.update_study_configurator(m);
+                    }
+                    let trade_stream_changed = self.sync_kline_v2_trade_stream();
+                    if trade_stream_changed {
+                        return Some(Effect::RefreshStreams);
                     }
                 }
             },
@@ -1493,7 +1549,9 @@ impl State {
                                             );
                                         }
                                         Content::KlineV2 { chart: Some(c), .. } => {
-                                            c.set_footprint_tick_multiplier(tm);
+                                            let _ = c.apply_command(
+                                                ChartCommand::SetFootprintTickMultiplier(tm),
+                                            );
                                         }
                                         _ => {}
                                     }
@@ -1637,11 +1695,21 @@ impl State {
                                         }
                                     }
                                     Content::KlineV2 { chart: Some(c), .. } => {
-                                        let streams: Vec<StreamKind> = match new_basis {
+                                        let action = match c
+                                            .apply_command(ChartCommand::SetBasis(new_basis))
+                                        {
+                                            CommandResult::Action(action) => action,
+                                            _ => None,
+                                        };
+
+                                        let streams = match new_basis {
                                             Basis::Time(tf) => {
-                                                let mut streams = vec![StreamKind::Trades {
-                                                    ticker_info: c.ticker_info(),
-                                                }];
+                                                let mut streams = Vec::new();
+                                                if c.trade_data_required() {
+                                                    streams.push(StreamKind::Trades {
+                                                        ticker_info: c.ticker_info(),
+                                                    });
+                                                }
                                                 streams.extend(
                                                     c.selected_tickers().iter().copied().map(
                                                         |ti| StreamKind::Kline {
@@ -1662,7 +1730,9 @@ impl State {
                                                     .collect();
 
                                                 for ticker in secondary_tickers {
-                                                    c.remove_ticker(&ticker);
+                                                    let _ = c.apply_command(
+                                                        ChartCommand::RemoveTicker(ticker),
+                                                    );
                                                 }
 
                                                 vec![StreamKind::Trades {
@@ -1670,36 +1740,13 @@ impl State {
                                                 }]
                                             }
                                         };
-
                                         self.streams = ResolvedStream::Ready(streams);
-                                        let action = c.set_basis(new_basis);
 
                                         if let Some(chart::Action::RequestFetch(fetch)) = action {
                                             effect = Some(Effect::RequestFetch(fetch));
-                                        } else if matches!(new_basis, Basis::Tick(_)) {
+                                        } else {
                                             self.status = Status::Ready;
                                             effect = Some(Effect::RefreshStreams);
-                                        }
-                                    }
-                                    Content::Comparison(Some(c)) => {
-                                        if let Basis::Time(tf) = new_basis {
-                                            let streams: Vec<StreamKind> = c
-                                                .selected_tickers()
-                                                .iter()
-                                                .copied()
-                                                .map(|ti| StreamKind::Kline {
-                                                    ticker_info: ti,
-                                                    timeframe: tf,
-                                                })
-                                                .collect();
-
-                                            self.streams = ResolvedStream::Ready(streams);
-                                            let action = c.set_basis(new_basis);
-
-                                            if let Some(chart::Action::RequestFetch(fetch)) = action
-                                            {
-                                                effect = Some(Effect::RequestFetch(fetch));
-                                            }
                                         }
                                     }
                                     _ => {}
@@ -1712,30 +1759,6 @@ impl State {
 
                     if let Some(e) = effect {
                         return Some(e);
-                    }
-                }
-            }
-            Event::ComparisonChartInteraction(message) => {
-                if let Content::Comparison(chart_opt) = &mut self.content
-                    && let Some(chart) = chart_opt
-                    && let Some(action) = chart.update(message)
-                {
-                    match action {
-                        super::chart::comparison::Action::SeriesColorChanged(t, color) => {
-                            chart.set_series_color(t, color);
-                        }
-                        super::chart::comparison::Action::SeriesNameChanged(t, name) => {
-                            chart.set_series_name(t, name);
-                        }
-                        super::chart::comparison::Action::OpenSeriesEditor => {
-                            self.modal = Some(Modal::Settings);
-                        }
-                        super::chart::comparison::Action::RemoveSeries(ti) => {
-                            let rebuilt = chart.remove_ticker(&ti);
-                            self.streams = ResolvedStream::Ready(rebuilt);
-
-                            return Some(Effect::RefreshStreams);
-                        }
                     }
                 }
             }
@@ -1753,36 +1776,28 @@ impl State {
                     let crate::modal::pane::mini_tickers_list::Action::RowSelected(sel) = action;
                     match sel {
                         crate::modal::pane::mini_tickers_list::RowSelection::Add(ti) => {
-                            if let Content::Comparison(chart) = &mut self.content
-                                && let Some(c) = chart
-                            {
-                                let rebuilt = c.add_ticker(&ti);
-                                self.streams = ResolvedStream::Ready(rebuilt);
-                                return Some(Effect::RefreshStreams);
-                            }
-
                             if let Content::KlineV2 { chart: Some(c), .. } = &mut self.content {
                                 if matches!(c.basis(), Basis::Tick(_)) {
                                     return None;
                                 }
 
-                                let rebuilt = c.add_ticker(&ti);
-                                self.streams = ResolvedStream::Ready(rebuilt);
+                                let CommandResult::Streams(streams) =
+                                    c.apply_command(ChartCommand::AddTicker(ti))
+                                else {
+                                    return None;
+                                };
+                                self.streams = ResolvedStream::Ready(streams);
                                 return Some(Effect::RefreshStreams);
                             }
                         }
                         crate::modal::pane::mini_tickers_list::RowSelection::Remove(ti) => {
-                            if let Content::Comparison(chart) = &mut self.content
-                                && let Some(c) = chart
-                            {
-                                let rebuilt = c.remove_ticker(&ti);
-                                self.streams = ResolvedStream::Ready(rebuilt);
-                                return Some(Effect::RefreshStreams);
-                            }
-
                             if let Content::KlineV2 { chart: Some(c), .. } = &mut self.content {
-                                let rebuilt = c.remove_ticker(&ti);
-                                self.streams = ResolvedStream::Ready(rebuilt);
+                                let CommandResult::Streams(streams) =
+                                    c.apply_command(ChartCommand::RemoveTicker(ti))
+                                else {
+                                    return None;
+                                };
+                                self.streams = ResolvedStream::Ready(streams);
                                 return Some(Effect::RefreshStreams);
                             }
                         }
@@ -1972,6 +1987,27 @@ impl State {
                 padding::right(12).left(12),
                 Alignment::End,
             ),
+            Some(Modal::IndicatorSettings(_)) => stack_modal(
+                base,
+                settings_modal(),
+                on_blur,
+                padding::right(12).left(12),
+                Alignment::End,
+            ),
+            Some(Modal::CandlestickSettings) => stack_modal(
+                base,
+                settings_modal(),
+                on_blur,
+                padding::right(12).left(12),
+                Alignment::End,
+            ),
+            Some(Modal::SeriesSettings(_)) => stack_modal(
+                base,
+                settings_modal(),
+                on_blur,
+                padding::right(12).left(12),
+                Alignment::End,
+            ),
             Some(Modal::Indicators) => stack_modal(
                 base,
                 indicator_modal.unwrap_or_else(|| column![].into()),
@@ -2023,6 +2059,7 @@ impl State {
 
     pub fn invalidate(&mut self, now: Instant) -> Option<Action> {
         match &mut self.content {
+            Content::Starter => None,
             Content::Heatmap { chart, .. } => chart
                 .as_mut()
                 .and_then(|c| c.invalidate(Some(now)).map(Action::Chart)),
@@ -2038,10 +2075,6 @@ impl State {
             Content::Ladder(panel) => panel
                 .as_mut()
                 .and_then(|p| p.invalidate(Some(now)).map(Action::Panel)),
-            Content::Starter => None,
-            Content::Comparison(chart) => chart
-                .as_mut()
-                .and_then(|c| c.invalidate(Some(now)).map(Action::Chart)),
             Content::ShaderHeatmap { chart, .. } => chart
                 .as_mut()
                 .and_then(|c| c.invalidate(Some(now)).map(Action::Chart)),
@@ -2057,7 +2090,7 @@ impl State {
 
     pub fn update_interval(&self) -> Option<u64> {
         match &self.content {
-            Content::Kline { .. } | Content::KlineV2 { .. } | Content::Comparison(_) => Some(1000),
+            Content::Kline { .. } | Content::KlineV2 { .. } => Some(1000),
             Content::Heatmap { chart, .. } => {
                 if let Some(chart) = chart {
                     chart.basis_interval()
@@ -2168,12 +2201,11 @@ pub enum Content {
         kind: data::chart::KlineChartKind,
     },
     KlineV2 {
-        chart: Option<KlineChartV2>,
+        chart: Option<Box<KlineChartV2>>,
         layout: Option<data::chart::kline_v2::Config>,
     },
     TimeAndSales(Option<TimeAndSales>),
     Ladder(Option<Ladder>),
-    Comparison(Option<ComparisonChart>),
 }
 
 impl Content {
@@ -2353,7 +2385,7 @@ impl Content {
 
         let basis = settings
             .selected_basis
-            .unwrap_or(Basis::Time(Timeframe::M15));
+            .unwrap_or(Basis::Time(Timeframe::M5));
 
         let saved_layout = match current_content {
             Content::KlineV2 { chart, layout } => chart
@@ -2368,11 +2400,11 @@ impl Content {
             |layout| KlineChartV2::new_with_tickers_and_config(basis, tickers, layout),
         );
         if let Some(multiplier) = settings.tick_multiply {
-            chart.set_footprint_tick_multiplier(multiplier);
+            let _ = chart.apply_command(ChartCommand::SetFootprintTickMultiplier(multiplier));
         }
 
         Content::KlineV2 {
-            chart: Some(chart),
+            chart: Some(Box::new(chart)),
             layout: None,
         }
     }
@@ -2422,7 +2454,6 @@ impl Content {
                     autoscale: Some(data::chart::Autoscale::CenterLatest),
                 },
             },
-            ContentKind::ComparisonChart => Content::Comparison(None),
             ContentKind::TimeAndSales => Content::TimeAndSales(None),
             ContentKind::Ladder => Content::Ladder(None),
         }
@@ -2435,7 +2466,6 @@ impl Content {
             Content::KlineV2 { chart, .. } => Some(chart.as_ref()?.last_update()),
             Content::TimeAndSales(panel) => Some(panel.as_ref()?.last_update()),
             Content::Ladder(panel) => Some(panel.as_ref()?.last_update()),
-            Content::Comparison(chart) => Some(chart.as_ref()?.last_update()),
             Content::Starter => None,
             Content::ShaderHeatmap { chart, .. } => Some(chart.as_ref()?.last_tick?),
         }
@@ -2519,7 +2549,6 @@ impl Content {
             | Content::Ladder(_)
             | Content::Starter
             | Content::KlineV2 { .. }
-            | Content::Comparison(_)
             | Content::ShaderHeatmap { .. } => {
                 panic!("indicator reorder on {} pane", self)
             }
@@ -2536,9 +2565,6 @@ impl Content {
             }
             (Content::ShaderHeatmap { chart: Some(c), .. }, VisualConfig::Heatmap(cfg)) => {
                 c.set_visual_config(cfg);
-            }
-            (Content::Comparison(Some(chart)), VisualConfig::Comparison(cfg)) => {
-                chart.config = cfg;
             }
             (Content::TimeAndSales(Some(panel)), VisualConfig::TimeAndSales(cfg)) => {
                 panel.config = cfg;
@@ -2566,8 +2592,7 @@ impl Content {
             Content::TimeAndSales(_)
             | Content::Ladder(_)
             | Content::Starter
-            | Content::KlineV2 { .. }
-            | Content::Comparison(_) => None,
+            | Content::KlineV2 { .. } => None,
         }
     }
 
@@ -2635,7 +2660,6 @@ impl Content {
             Content::KlineV2 { .. } => ContentKind::CandlestickChartV2,
             Content::TimeAndSales(_) => ContentKind::TimeAndSales,
             Content::Ladder(_) => ContentKind::Ladder,
-            Content::Comparison(_) => ContentKind::ComparisonChart,
             Content::Starter => ContentKind::Starter,
             Content::ShaderHeatmap { .. } => ContentKind::ShaderHeatmap,
         }
@@ -2655,7 +2679,6 @@ impl Content {
             Content::KlineV2 { chart, .. } => chart.is_some(),
             Content::TimeAndSales(panel) => panel.is_some(),
             Content::Ladder(panel) => panel.is_some(),
-            Content::Comparison(chart) => chart.is_some(),
             Content::Starter => true,
         }
     }
@@ -2679,6 +2702,8 @@ impl Content {
                 chart: Some(chart),
                 ..
             } if chart.indicator_is_supported_for_market(indicator)
+               && (chart.trade_data_enabled()
+                   || !chart.indicator_requires_trade_data(indicator))
         )
     }
 }

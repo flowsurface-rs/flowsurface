@@ -12,6 +12,7 @@ use uuid::Uuid;
 use crate::connector::client::{DataSources, ServerClient};
 
 pub use data::TradeFetchMode;
+pub use data::chart::kline_v2::FetchRange;
 
 static TRADE_FETCH_MODE: RwLock<TradeFetchMode> = RwLock::new(TradeFetchMode::Off);
 
@@ -175,13 +176,6 @@ impl RequestHandler {
             false
         }
     }
-}
-
-#[derive(PartialEq, Debug, Clone, Copy)]
-pub enum FetchRange {
-    Kline(UnixMs, UnixMs),
-    OpenInterest(UnixMs, UnixMs),
-    Trades(UnixMs, UnixMs),
 }
 
 #[derive(PartialEq, Debug)]

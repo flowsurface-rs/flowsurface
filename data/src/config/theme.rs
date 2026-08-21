@@ -4,16 +4,166 @@
 /// All credits and thanks to the authors of [`Halloy`] and [`iced_core`]
 use iced_core::{
     Color,
+    theme::palette::Extended,
     theme::{Custom, Palette},
 };
 use palette::{
-    FromColor, Hsva, RgbHue,
+    Clamp, FromColor, Hsva, Oklab, Oklch, RgbHue, Srgb,
     rgb::{Rgb, Rgba},
 };
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
 pub struct Theme(pub iced_core::Theme);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ThemeAccent {
+    One,
+    Two,
+    Three,
+    Four,
+    Five,
+    Six,
+}
+
+impl ThemeAccent {
+    pub const ALL: [Self; 6] = [
+        Self::One,
+        Self::Two,
+        Self::Three,
+        Self::Four,
+        Self::Five,
+        Self::Six,
+    ];
+
+    pub const fn index(self) -> usize {
+        match self {
+            Self::One => 0,
+            Self::Two => 1,
+            Self::Three => 2,
+            Self::Four => 3,
+            Self::Five => 4,
+            Self::Six => 5,
+        }
+    }
+}
+
+impl std::fmt::Display for ThemeAccent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "Accent {}", self.index() + 1)
+    }
+}
+
+pub fn generated_theme_accents(palette: &Extended) -> [Color; 6] {
+    const HUE_OFFSETS: [f32; 12] = [
+        -165.0, -135.0, -105.0, -75.0, -45.0, -15.0, 15.0, 45.0, 75.0, 105.0, 135.0, 165.0,
+    ];
+    const ANCHOR_COLORS: [usize; 5] = [0, 1, 2, 3, 4];
+
+    let anchors = [
+        palette.primary.base.color,
+        palette.secondary.strong.color,
+        palette.success.base.color,
+        palette.danger.base.color,
+        palette.warning.base.color,
+    ];
+    let semantic_colors = [
+        (to_oklab(palette.primary.base.color), 1.1),
+        (to_oklab(palette.secondary.strong.color), 0.9),
+        (to_oklab(palette.success.base.color), 1.6),
+        (to_oklab(palette.danger.base.color), 1.6),
+        (to_oklab(palette.warning.base.color), 1.4),
+    ];
+    let candidates = ANCHOR_COLORS
+        .into_iter()
+        .flat_map(|anchor_index| {
+            HUE_OFFSETS.into_iter().map(move |hue_offset| {
+                generated_accent_candidate(anchors[anchor_index], hue_offset, palette)
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let mut selected = Vec::with_capacity(ThemeAccent::ALL.len());
+    for _ in ThemeAccent::ALL {
+        let next = candidates
+            .iter()
+            .max_by(|left, right| {
+                candidate_score(left, &semantic_colors, &selected, palette).total_cmp(
+                    &candidate_score(right, &semantic_colors, &selected, palette),
+                )
+            })
+            .unwrap_or(&candidates[0]);
+        selected.push(next.color);
+    }
+
+    selected.try_into().unwrap_or([Color::TRANSPARENT; 6])
+}
+
+pub fn generated_theme_accent(palette: &Extended, accent: ThemeAccent) -> Color {
+    generated_theme_accents(palette)[accent.index()]
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GeneratedAccentCandidate {
+    color: Color,
+    lab: Oklab,
+}
+
+fn generated_accent_candidate(
+    source: Color,
+    hue_offset: f32,
+    palette: &Extended,
+) -> GeneratedAccentCandidate {
+    let mut oklch = Oklch::from_color(Srgb::new(source.r, source.g, source.b));
+    oklch.hue += hue_offset;
+    oklch.l = (oklch.l * 0.65 + (if palette.is_dark { 0.7 } else { 0.5 }) * 0.35).clamp(0.35, 0.8);
+    oklch.chroma = oklch.chroma.clamp(0.08, 0.18);
+
+    let rgb = Srgb::from_color(oklch).clamp();
+    let color = Color {
+        r: rgb.red,
+        g: rgb.green,
+        b: rgb.blue,
+        a: 1.0,
+    };
+    GeneratedAccentCandidate {
+        color,
+        lab: to_oklab(color),
+    }
+}
+
+fn candidate_score(
+    candidate: &GeneratedAccentCandidate,
+    semantic_colors: &[(Oklab, f32); 5],
+    selected: &[Color],
+    palette: &Extended,
+) -> f32 {
+    let semantic_clearance = semantic_colors
+        .iter()
+        .map(|(color, weight)| perceptual_distance(candidate.lab, *color) / weight)
+        .fold(f32::INFINITY, f32::min);
+    let selected_clearance = selected
+        .iter()
+        .map(|color| perceptual_distance(candidate.lab, to_oklab(*color)))
+        .fold(f32::INFINITY, f32::min);
+    let contrast_bonus = (contrast_ratio(candidate.color, palette.background.base.color) - 1.0)
+        .clamp(0.0, 3.0)
+        * 0.01;
+
+    semantic_clearance.min(selected_clearance) + contrast_bonus
+}
+
+fn to_oklab(color: Color) -> Oklab {
+    Oklab::from_color(Srgb::new(color.r, color.g, color.b))
+}
+
+fn perceptual_distance(first: Oklab, second: Oklab) -> f32 {
+    let delta_l = first.l - second.l;
+    let delta_a = first.a - second.a;
+    let delta_b = first.b - second.b;
+
+    (delta_l * delta_l + delta_a * delta_a + delta_b * delta_b).sqrt()
+}
 
 #[derive(Serialize, Deserialize)]
 struct SerTheme {
@@ -157,6 +307,99 @@ impl<'de> Deserialize<'de> for Theme {
         };
 
         Ok(Theme(theme))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ThemeColorRole {
+    Neutral,
+    Secondary,
+    Primary,
+    Success,
+    Danger,
+    Warning,
+}
+
+impl std::fmt::Display for ThemeColorRole {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            Self::Neutral => "Neutral",
+            Self::Secondary => "Secondary",
+            Self::Primary => "Primary",
+            Self::Success => "Success",
+            Self::Danger => "Danger",
+            Self::Warning => "Warning",
+        };
+        formatter.write_str(label)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ThemeColorShade {
+    Faint,
+    Soft,
+    #[default]
+    Base,
+    Strong,
+    Vivid,
+}
+
+impl ThemeColorShade {
+    pub const ALL: &'static [Self] = &[
+        Self::Faint,
+        Self::Soft,
+        Self::Base,
+        Self::Strong,
+        Self::Vivid,
+    ];
+}
+
+impl std::fmt::Display for ThemeColorShade {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            Self::Faint => "Faint",
+            Self::Soft => "Soft",
+            Self::Base => "Base",
+            Self::Strong => "Strong",
+            Self::Vivid => "Vivid",
+        };
+        formatter.write_str(label)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThemeColor {
+    pub role: ThemeColorRole,
+    pub shade: ThemeColorShade,
+    #[serde(default)]
+    pub accent: Option<ThemeAccent>,
+}
+
+impl Default for ThemeColor {
+    fn default() -> Self {
+        Self::new(ThemeColorRole::Neutral, ThemeColorShade::Base)
+    }
+}
+
+impl ThemeColor {
+    pub const fn new(role: ThemeColorRole, shade: ThemeColorShade) -> Self {
+        Self {
+            role,
+            shade,
+            accent: None,
+        }
+    }
+
+    pub const fn with_accent(
+        role: ThemeColorRole,
+        accent: Option<ThemeAccent>,
+        shade: ThemeColorShade,
+    ) -> Self {
+        Self {
+            role,
+            shade,
+            accent,
+        }
     }
 }
 

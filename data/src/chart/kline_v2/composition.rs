@@ -26,6 +26,7 @@ fn format_pct(value: f32, step: f32, show_decimals: bool) -> String {
 }
 
 pub const DEFAULT_MIN_PANEL_RATIO: f32 = 0.08;
+pub const DEFAULT_AUXILIARY_PANEL_RATIO: f32 = 0.15;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PanelId(pub u32);
@@ -37,6 +38,13 @@ pub struct LayerId(pub u32);
 pub enum PanelRole {
     Primary,
     Auxiliary,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum PanelPresentation {
+    #[default]
+    Plot,
+    Table,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -271,14 +279,7 @@ impl PanelScaleMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PanelValueId {
-    Volume,
-    BollingerBands,
-    Rsi,
-    OpenInterest,
-    CumulativeVolumeDelta,
-}
+pub type PanelValueId = super::indicators::KlineIndicator;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PanelValuePrecision {
@@ -555,6 +556,7 @@ pub enum LayerSource {
 pub enum PanelDataHint {
     ValueLike,
     HistogramLike,
+    TableLike,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -579,12 +581,17 @@ pub struct LayerSpec {
     pub source: LayerSource,
     pub data_kind: LayerDataKind,
     pub mark: MarkKind,
+    pub mark_override: Option<MarkKind>,
     pub axis: AxisBinding,
     pub visible: bool,
     pub style: LayerStyle,
 }
 
 impl LayerSpec {
+    pub fn effective_mark(&self) -> MarkKind {
+        self.mark_override.unwrap_or(self.mark)
+    }
+
     pub fn is_histogram_like(&self) -> bool {
         matches!(self.axis, AxisBinding::Secondary)
             || matches!(self.data_kind, LayerDataKind::Histogram)
@@ -615,6 +622,7 @@ impl LayerSource {
 pub struct PanelSpec {
     pub id: PanelId,
     pub role: PanelRole,
+    pub presentation: PanelPresentation,
     pub title: Option<String>,
     pub value_id: Option<PanelValueId>,
     pub value_precision: Option<PanelValuePrecision>,
@@ -627,6 +635,10 @@ pub struct PanelSpec {
 
 impl PanelSpec {
     pub fn data_hint(&self) -> PanelDataHint {
+        if matches!(self.presentation, PanelPresentation::Table) {
+            return PanelDataHint::TableLike;
+        }
+
         if self.layers.iter().any(LayerSpec::is_histogram_like) {
             PanelDataHint::HistogramLike
         } else {
@@ -674,7 +686,7 @@ impl PanelSpec {
             return false;
         };
 
-        layer.mark = if force_line { MarkKind::Line } else { mark };
+        layer.mark_override = Some(if force_line { MarkKind::Line } else { mark });
         true
     }
 
@@ -685,7 +697,7 @@ impl PanelSpec {
 
         for layer in &mut self.layers {
             if Some(layer.id) != self.base_layer {
-                layer.mark = MarkKind::Line;
+                layer.mark_override = Some(MarkKind::Line);
             }
         }
     }
@@ -723,6 +735,7 @@ impl ChartComposition {
         composition.panels.push(PanelSpec {
             id: main_panel_id,
             role: PanelRole::Primary,
+            presentation: PanelPresentation::Plot,
             title: None,
             value_id: None,
             value_precision: Some(PanelValuePrecision::BaseTickerMinTick),
@@ -777,10 +790,6 @@ impl ChartComposition {
 
     pub fn split_count(&self) -> usize {
         self.panels.len().saturating_sub(1)
-    }
-
-    pub fn panel_data_hints(&self) -> Vec<PanelDataHint> {
-        self.panels.iter().map(PanelSpec::data_hint).collect()
     }
 
     pub fn panel(&self, panel_id: PanelId) -> Option<&PanelSpec> {
@@ -942,12 +951,15 @@ impl ChartComposition {
         layers: Vec<LayerSpec>,
         value_precision: Option<PanelValuePrecision>,
         value_label_policy: PanelValueLabelPolicy,
+        presentation: PanelPresentation,
     ) -> PanelId {
+        let use_default_auxiliary_ratio = self.panels.len() == 1 && self.splits.is_empty();
         let panel_id = self.new_panel_id();
         let base_layer = layers.first().map(|layer| layer.id);
         self.panels.push(PanelSpec {
             id: panel_id,
             role: PanelRole::Auxiliary,
+            presentation,
             title: Some(title.into()),
             value_id: None,
             value_precision,
@@ -959,8 +971,30 @@ impl ChartComposition {
         });
 
         self.ensure_split_count();
+        if use_default_auxiliary_ratio {
+            self.splits[0] = 1.0 - DEFAULT_AUXILIARY_PANEL_RATIO;
+        }
         self.splits = self.normalized_splits(DEFAULT_MIN_PANEL_RATIO);
         panel_id
+    }
+
+    pub fn add_table_panel(&mut self, title: impl Into<String>, source: DataSourceId) -> PanelId {
+        let title = title.into();
+        let layer = self.new_layer(
+            title.clone(),
+            LayerSource::RawKline { source },
+            LayerDataKind::Scalar,
+            MarkKind::Line,
+            AxisBinding::Secondary,
+        );
+
+        self.add_aux_panel(
+            title,
+            vec![layer],
+            None,
+            PanelValueLabelPolicy::default(),
+            PanelPresentation::Table,
+        )
     }
 
     pub fn add_layer_to_panel(&mut self, panel_id: PanelId, layer: LayerSpec) -> bool {
@@ -989,6 +1023,7 @@ impl ChartComposition {
         let (data_kind, axis) = match data_hint {
             PanelDataHint::ValueLike => (LayerDataKind::Scalar, AxisBinding::Primary),
             PanelDataHint::HistogramLike => (LayerDataKind::Histogram, AxisBinding::Secondary),
+            PanelDataHint::TableLike => return None,
         };
 
         let layer = self.new_layer(
@@ -1001,14 +1036,6 @@ impl ChartComposition {
 
         let layer_id = layer.id;
         self.add_layer_to_panel(panel_id, layer).then_some(layer_id)
-    }
-
-    pub fn set_panel_base_layer(&mut self, panel_id: PanelId, layer_id: LayerId) -> bool {
-        let Some(panel) = self.panel_mut(panel_id) else {
-            return false;
-        };
-
-        panel.set_base_layer(layer_id)
     }
 
     pub fn set_panel_preferred_scale(&mut self, panel_id: PanelId, scale: PanelScaleMode) -> bool {
@@ -1046,33 +1073,6 @@ impl ChartComposition {
         true
     }
 
-    pub fn set_panel_value_label_policy(
-        &mut self,
-        panel_id: PanelId,
-        value_label_policy: PanelValueLabelPolicy,
-    ) -> bool {
-        let Some(panel) = self.panel_mut(panel_id) else {
-            return false;
-        };
-
-        panel.value_label_policy = value_label_policy;
-        true
-    }
-
-    pub fn set_panel_comparison_policy(
-        &mut self,
-        panel_id: PanelId,
-        comparison_policy: PanelComparisonPolicy,
-    ) -> bool {
-        let Some(panel) = self.panel_mut(panel_id) else {
-            return false;
-        };
-
-        panel.comparison_policy = comparison_policy;
-        panel.enforce_comparison_mark_policy();
-        true
-    }
-
     pub fn set_panel_layer_mark(
         &mut self,
         panel_id: PanelId,
@@ -1084,6 +1084,37 @@ impl ChartComposition {
         };
 
         panel.set_layer_mark(layer_id, mark)
+    }
+
+    pub fn set_panel_layer_visibility(
+        &mut self,
+        panel_id: PanelId,
+        layer_id: LayerId,
+        visible: bool,
+    ) -> bool {
+        let Some(panel) = self.panel_mut(panel_id) else {
+            return false;
+        };
+        let Some(layer) = panel.layers.iter_mut().find(|layer| layer.id == layer_id) else {
+            return false;
+        };
+
+        if layer.visible == visible {
+            return false;
+        }
+
+        layer.visible = visible;
+        true
+    }
+
+    pub fn clear_panel_layer_mark(&mut self, panel_id: PanelId, layer_id: LayerId) -> bool {
+        let Some(panel) = self.panel_mut(panel_id) else {
+            return false;
+        };
+        let Some(layer) = panel.layers.iter_mut().find(|layer| layer.id == layer_id) else {
+            return false;
+        };
+        layer.mark_override.take().is_some()
     }
 
     pub fn set_panel_layer_data_kind(
@@ -1101,8 +1132,8 @@ impl ChartComposition {
         };
 
         layer.data_kind = data_kind;
-        if matches!(layer.mark, MarkKind::Bar(_)) {
-            layer.mark = MarkKind::Bar(default_bar_mode_for_data_kind(data_kind));
+        if matches!(layer.effective_mark(), MarkKind::Bar(_)) {
+            layer.mark_override = Some(MarkKind::Bar(default_bar_mode_for_data_kind(data_kind)));
         }
         true
     }
@@ -1121,18 +1152,9 @@ impl ChartComposition {
             return false;
         };
 
-        layer.mark = MarkKind::Bar(mode);
+        layer.mark_override = Some(MarkKind::Bar(mode));
         panel.enforce_comparison_mark_policy();
         true
-    }
-
-    pub fn set_panel_layer_histogram_mode(
-        &mut self,
-        panel_id: PanelId,
-        layer_id: LayerId,
-        mode: HistogramMode,
-    ) -> bool {
-        self.set_panel_layer_bar_mode(panel_id, layer_id, BarMode::Histogram(mode))
     }
 
     pub fn resolved_panel_marks_with_runtime(
@@ -1148,7 +1170,7 @@ impl ChartComposition {
                 .layers
                 .iter()
                 .map(|layer| {
-                    let mut mark = layer.mark;
+                    let mut mark = layer.effective_mark();
 
                     if panel.comparison_policy.force_line_for_non_base_sources
                         && is_multi_source
@@ -1183,10 +1205,6 @@ impl ChartComposition {
 
         panel.enforce_comparison_mark_policy();
         true
-    }
-
-    pub fn resolved_panel_marks(&self, panel_id: PanelId) -> Option<Vec<(LayerId, MarkKind)>> {
-        self.resolved_panel_marks_with_runtime(panel_id, false)
     }
 
     pub fn remove_panel(&mut self, panel_id: PanelId) -> bool {
@@ -1238,6 +1256,7 @@ impl ChartComposition {
             source,
             data_kind,
             mark,
+            mark_override: None,
             axis,
             visible: true,
             style: LayerStyle::default(),

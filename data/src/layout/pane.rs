@@ -1,7 +1,7 @@
 use exchange::{TickMultiplier, TickerInfo, Timeframe};
 use serde::{Deserialize, Serialize};
 
-use crate::chart::{comparison, heatmap, kline};
+use crate::chart::{heatmap, kline};
 use crate::panel::{ladder, timeandsales};
 use crate::stream::PersistStreamKind;
 use crate::util::ok_or_default;
@@ -70,15 +70,8 @@ pub enum Pane {
     },
     KlineChartV2 {
         #[serde(default)]
-        layout: Option<crate::chart::kline_v2::Config>,
+        layout: Option<Box<crate::chart::kline_v2::Config>>,
         #[serde(deserialize_with = "ok_or_default", default)]
-        stream_type: Vec<PersistStreamKind>,
-        #[serde(deserialize_with = "ok_or_default")]
-        settings: Settings,
-        #[serde(deserialize_with = "ok_or_default", default)]
-        link_group: Option<LinkGroup>,
-    },
-    ComparisonChart {
         stream_type: Vec<PersistStreamKind>,
         #[serde(deserialize_with = "ok_or_default")]
         settings: Settings,
@@ -164,7 +157,6 @@ pub enum VisualConfig {
     TimeAndSales(timeandsales::Config),
     Kline(kline::Config),
     Ladder(ladder::Config),
-    Comparison(comparison::Config),
 }
 
 impl VisualConfig {
@@ -195,13 +187,6 @@ impl VisualConfig {
             _ => None,
         }
     }
-
-    pub fn comparison(&self) -> Option<comparison::Config> {
-        match self {
-            Self::Comparison(cfg) => Some(cfg.clone()),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -212,20 +197,18 @@ pub enum ContentKind {
     FootprintChart,
     CandlestickChart,
     CandlestickChartV2,
-    ComparisonChart,
     TimeAndSales,
     Ladder,
 }
 
 impl ContentKind {
-    pub const ALL: [ContentKind; 9] = [
+    pub const ALL: [ContentKind; 8] = [
         ContentKind::Starter,
         ContentKind::HeatmapChart,
         ContentKind::ShaderHeatmap,
         ContentKind::FootprintChart,
         ContentKind::CandlestickChart,
         ContentKind::CandlestickChartV2,
-        ContentKind::ComparisonChart,
         ContentKind::TimeAndSales,
         ContentKind::Ladder,
     ];
@@ -240,7 +223,6 @@ impl std::fmt::Display for ContentKind {
             ContentKind::FootprintChart => "Footprint Chart",
             ContentKind::CandlestickChart => "Candlestick Chart",
             ContentKind::CandlestickChartV2 => "Candlestick Chart (V2)",
-            ContentKind::ComparisonChart => "Comparison Chart",
             ContentKind::TimeAndSales => "Time&Sales",
             ContentKind::Ladder => "DOM/Ladder",
         };
@@ -300,16 +282,14 @@ impl PaneSetup {
                         Basis::default_kline_time(Some(base_ticker), Timeframe::M5)
                     }))
                 }
-                ContentKind::CandlestickChart
-                | ContentKind::CandlestickChartV2
-                | ContentKind::ComparisonChart => {
+                ContentKind::CandlestickChart | ContentKind::CandlestickChartV2 => {
                     let current = current_basis.and_then(|b| match b {
                         Basis::Time(tf) if exchange.supports_kline_timeframe(tf) => Some(b),
                         _ => None,
                     });
 
                     Some(current.unwrap_or_else(|| {
-                        Basis::default_kline_time(Some(base_ticker), Timeframe::M15)
+                        Basis::default_kline_time(Some(base_ticker), Timeframe::M5)
                     }))
                 }
                 ContentKind::Starter | ContentKind::TimeAndSales => None,
@@ -333,7 +313,6 @@ impl PaneSetup {
             }
             ContentKind::CandlestickChart
             | ContentKind::CandlestickChartV2
-            | ContentKind::ComparisonChart
             | ContentKind::TimeAndSales
             | ContentKind::Starter => current_tick_multiplier,
         };

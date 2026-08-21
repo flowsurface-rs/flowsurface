@@ -1,4 +1,4 @@
-use super::chrome::{IndicatorLegendHit, TickerLegendHit};
+use super::chrome::{FootprintLegendHit, IndicatorLegendHit, TickerLegendHit};
 use super::layout::{LayoutHitZone, PanelLayoutTree};
 use super::scene::{
     ChromeScene, CursorInfo, IndicatorPanelScene, PrimaryPercentScaleState, PrimaryScale, Scene,
@@ -6,11 +6,11 @@ use super::scene::{
 };
 use super::{BarSpacingPx, KlinePanelKind, KlineSeriesLike, KlineWidget, PanelYViewport, YUnit};
 use crate::widget::chart::kline::composition::{
-    BarMode, HistogramMode, LayerDataKind, MarkKind, PanelScaleMode, PanelValueId,
-    PanelValuePrecision,
+    BarMode, HistogramMode, LayerDataKind, MarkKind, PanelPresentation, PanelScaleMode,
+    PanelValueId, PanelValuePrecision,
 };
 
-use data::chart::kline_v2::viewport::LEGACY_ZOOM_SENSITIVITY;
+use data::chart::kline_v2::ZOOM_SENSITIVITY;
 use exchange::{Kline, Timeframe, UnixMs};
 
 use iced::advanced::Layout;
@@ -82,8 +82,8 @@ where
             (cursor_y - scene.layout.regions.plot.y - panel.plot.y).clamp(0.0, panel_h);
         let anchor_ratio = (1.0 - (y_in_panel / panel_h)).clamp(0.0, 1.0);
 
-        let zoom_amount = scroll_delta.abs().clamp(0.05, 6.0);
-        let zoom_scale = (1.0 + zoom_amount / LEGACY_ZOOM_SENSITIVITY).clamp(1.02, 3.0);
+        let zoom_amount = scroll_delta.abs().clamp(0.0, 6.0);
+        let zoom_scale = (zoom_amount / ZOOM_SENSITIVITY).exp();
         let zoom_in = scroll_delta > 0.0;
 
         match panel.kind {
@@ -379,7 +379,7 @@ where
     ) -> Option<(f32, f32)> {
         let mut min_pct: Option<f32> = None;
         let mut max_pct: Option<f32> = None;
-        let primary_overlay_value_ids = self.primary_overlay_value_ids();
+        let primary_overlay_value_ids = self.visible_primary_overlay_value_ids();
         let primary_overlay_channels: Vec<_> = primary_overlay_value_ids
             .iter()
             .map(|value_id| self.overlay_channels_for_panel_value(Some(*value_id)))
@@ -414,8 +414,7 @@ where
 
             if series_index == 0 {
                 for (overlay_idx, value_id) in primary_overlay_value_ids.iter().enumerate() {
-                    let Some(data) =
-                        series.indicator_data_for_panel_value_opt(Some(*value_id), bar)
+                    let Some(data) = self.indicator_data_for_series(series, Some(*value_id), bar)
                     else {
                         continue;
                     };
@@ -425,7 +424,7 @@ where
                     };
 
                     for channel in channels.iter().copied() {
-                        if let Some(channel_value) = Self::overlay_channel_value(data, channel) {
+                        if let Some(channel_value) = self.overlay_channel_value(data, channel) {
                             emit_pct(channel_value);
                         }
                     }
@@ -600,10 +599,11 @@ where
         min_x_unit: i64,
         max_x_unit: i64,
         primary_value_precision: Option<PanelValuePrecision>,
+        primary_mark: MarkKind,
     ) -> Option<(YUnit, YUnit)> {
         let mut min_primary_unit: Option<YUnit> = None;
         let mut max_primary_unit: Option<YUnit> = None;
-        let primary_overlay_value_ids = self.primary_overlay_value_ids();
+        let primary_overlay_value_ids = self.visible_primary_overlay_value_ids();
         let primary_overlay_channels: Vec<_> = primary_overlay_value_ids
             .iter()
             .map(|value_id| self.overlay_channels_for_panel_value(Some(*value_id)))
@@ -614,8 +614,16 @@ where
                 return;
             }
 
-            let low = self.panel_value_to_unit(primary_value_precision, bar.low.to_f32_lossy());
-            let high = self.panel_value_to_unit(primary_value_precision, bar.high.to_f32_lossy());
+            let (low, high) = if matches!(primary_mark, MarkKind::Line) {
+                let close =
+                    self.panel_value_to_unit(primary_value_precision, bar.close.to_f32_lossy());
+                (close, close)
+            } else {
+                (
+                    self.panel_value_to_unit(primary_value_precision, bar.low.to_f32_lossy()),
+                    self.panel_value_to_unit(primary_value_precision, bar.high.to_f32_lossy()),
+                )
+            };
 
             min_primary_unit =
                 Some(min_primary_unit.map_or(low, |value| YUnit(value.0.min(low.0))));
@@ -624,8 +632,7 @@ where
 
             if series_index == 0 {
                 for (overlay_idx, value_id) in primary_overlay_value_ids.iter().enumerate() {
-                    let Some(data) =
-                        series.indicator_data_for_panel_value_opt(Some(*value_id), bar)
+                    let Some(data) = self.indicator_data_for_series(series, Some(*value_id), bar)
                     else {
                         continue;
                     };
@@ -635,7 +642,7 @@ where
                     };
 
                     for channel in channels.iter().copied() {
-                        if let Some(channel_value) = Self::overlay_channel_value(data, channel) {
+                        if let Some(channel_value) = self.overlay_channel_value(data, channel) {
                             let channel_unit =
                                 self.panel_value_to_unit(primary_value_precision, channel_value);
                             min_primary_unit =
@@ -702,8 +709,7 @@ where
                 return;
             }
 
-            let Some(indicator_data) =
-                series.indicator_data_for_panel_value_opt(panel_value_id, bar)
+            let Some(indicator_data) = self.indicator_data_for_series(series, panel_value_id, bar)
             else {
                 return;
             };
@@ -715,7 +721,7 @@ where
             max_unit = max_unit.max(value_unit.0);
 
             for &channel in overlay_channels {
-                if let Some(channel_value) = Self::overlay_channel_value(indicator_data, channel) {
+                if let Some(channel_value) = self.overlay_channel_value(indicator_data, channel) {
                     let channel_unit =
                         self.panel_value_to_unit(panel_value_precision, channel_value);
                     min_unit = min_unit.min(channel_unit.0);
@@ -801,6 +807,18 @@ where
             }
         }
 
+        if let Some(hit) = scene
+            .chrome
+            .footprint_legend
+            .as_ref()
+            .and_then(|legend| Self::hit_footprint_legend(&scene.layout, legend, local))
+        {
+            scene.interaction.hovering_footprint_legend = true;
+            if let FootprintLegendHit::Icon(kind) = hit {
+                scene.interaction.hovered_footprint_icon = Some(kind);
+            }
+        }
+
         let mut indicator_hit = scene
             .chrome
             .indicator_legend
@@ -813,6 +831,7 @@ where
                 primary_panel,
                 self.tooltip_rows_before_indicators(
                     scene.chrome.ticker_legend.as_ref(),
+                    scene.chrome.footprint_legend.as_ref(),
                     show_legend_values,
                 ),
             );
@@ -952,18 +971,20 @@ where
         let logical_bar_spacing = horizontal_world.effective_spacing();
         let bar_spacing_px = BarSpacingPx::from_logical(logical_bar_spacing);
 
-        let x_axis_plot_width = (panel_layout.regions.x_axis.width
-            - panel_layout.regions.y_axis.width)
-            .max(1.0)
-            .min(primary_plot.width.max(1.0));
+        let x_axis_plot_width = panel_layout.primary_plot_width()?;
 
         let (x_axis, min_x_unit, max_x_unit, right_x_unit) =
             self.compute_x_window(x_axis_plot_width)?;
         let x_world = horizontal_world.axis_at_right_unit(right_x_unit);
         let fractional_x_offset = right_x_unit - max_x_unit as f32;
         let primary_value_precision = self.panel_value_precision(primary_panel);
-        let (mut min_primary_unit, mut max_primary_unit) =
-            self.compute_primary_domain(x_axis, min_x_unit, max_x_unit, primary_value_precision)?;
+        let (mut min_primary_unit, mut max_primary_unit) = self.compute_primary_domain(
+            x_axis,
+            min_x_unit,
+            max_x_unit,
+            primary_value_precision,
+            primary_mark,
+        )?;
         let mut primary_domain_values = (
             self.panel_unit_to_value(primary_value_precision, min_primary_unit),
             self.panel_unit_to_value(primary_value_precision, max_primary_unit),
@@ -996,23 +1017,28 @@ where
                 let mark = self.resolved_panel_mark(panel_index, KlinePanelKind::Indicator);
                 let data_kind =
                     self.resolved_panel_data_kind(panel_index, KlinePanelKind::Indicator);
+                let presentation = self.composition.panels[panel_index].presentation;
                 let scale_mode = self.resolved_panel_scale_mode(panel_index);
                 let value_id = self.panel_value_id(panel_index);
                 let value_precision = self.panel_value_precision(panel_index);
                 let unit_step =
                     Scene::unit_step_or_default(self.panel_quantization_step(value_precision));
-                let (mut min_unit, mut max_unit) = self
-                    .compute_indicator_domain(
-                        x_axis,
-                        min_x_unit,
-                        max_x_unit,
-                        value_id,
-                        value_precision,
-                        data_kind,
-                        mark,
-                        scale_mode,
-                    )
-                    .unwrap_or((YUnit(0), YUnit(1)));
+                let (mut min_unit, mut max_unit) =
+                    if matches!(presentation, PanelPresentation::Table) {
+                        (YUnit(0), YUnit(1))
+                    } else {
+                        self.compute_indicator_domain(
+                            x_axis,
+                            min_x_unit,
+                            max_x_unit,
+                            value_id,
+                            value_precision,
+                            data_kind,
+                            mark,
+                            scale_mode,
+                        )
+                        .unwrap_or((YUnit(0), YUnit(1)))
+                    };
                 let mut domain_values = (
                     self.panel_unit_to_value(value_precision, min_unit),
                     self.panel_unit_to_value(value_precision, max_unit),
@@ -1038,6 +1064,7 @@ where
                     domain: ValueDomain::new((min_unit, max_unit), domain_values),
                     mark,
                     data_kind,
+                    presentation,
                 })
             })
             .collect();
@@ -1066,11 +1093,6 @@ where
             primary_panel,
             show_legend_values,
             false,
-        );
-        let indicator_legend = self.build_indicator_legend_layout(
-            &panel_layout,
-            primary_panel,
-            self.tooltip_rows_before_indicators(ticker_legend.as_ref(), show_legend_values),
         );
         let primary_value_step = self.panel_quantization_step(primary_value_precision);
         let primary_value_decimals = self.panel_value_decimals(primary_value_precision);
@@ -1107,10 +1129,34 @@ where
                 panel_controls,
                 corner_controls,
                 ticker_legend,
-                indicator_legend,
+                footprint_legend: None,
+                indicator_legend: None,
             },
             interaction: SceneInteraction::default(),
         };
+
+        if self.footprints_enabled {
+            scene.chrome.footprint_legend = self.build_footprint_legend_layout(
+                &scene.layout,
+                primary_panel,
+                self.tooltip_rows_before_indicators(
+                    scene.chrome.ticker_legend.as_ref(),
+                    None,
+                    show_legend_values,
+                ),
+                self.footprint_cluster_kind,
+                matches!(scene.primary.mark, MarkKind::Candle | MarkKind::Bar(_)),
+            );
+        }
+        scene.chrome.indicator_legend = self.build_indicator_legend_layout(
+            &scene.layout,
+            primary_panel,
+            self.tooltip_rows_before_indicators(
+                scene.chrome.ticker_legend.as_ref(),
+                scene.chrome.footprint_legend.as_ref(),
+                show_legend_values,
+            ),
+        );
 
         self.apply_cursor_interaction(
             &mut scene,

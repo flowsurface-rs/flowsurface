@@ -4,10 +4,14 @@ use super::composition::{
 };
 use super::{
     DEFAULT_MIN_PANEL_RATIO, DEFAULT_OVERLAY_CHANNELS, IndicatorData, KlinePanelKind,
-    KlineSeriesLike, KlineWidget, OverlayChannelColorRole, OverlayChannelSpec, PanelYViewport,
+    KlineSeriesLike, KlineWidget, OverlayChannelColorRole, OverlayChannelSource,
+    OverlayChannelSpec, PanelYViewport,
 };
-
-use exchange::TickerInfo;
+use data::chart::kline_v2::IndicatorColorSlot;
+use data::chart::kline_v2::SeriesColor;
+use data::config::theme::{
+    ThemeColor, ThemeColorRole, ThemeColorShade, darken, lighten, mix_color,
+};
 
 use iced::Point;
 use iced::theme::palette::Extended;
@@ -16,6 +20,15 @@ impl<'a, S> KlineWidget<'a, S>
 where
     S: KlineSeriesLike,
 {
+    pub(super) fn indicator_data_for_series(
+        &self,
+        series: &S,
+        panel_value: Option<PanelValueId>,
+        bar: &exchange::Kline,
+    ) -> Option<IndicatorData> {
+        series.indicator_data_for_panel_value_opt(panel_value, bar)
+    }
+
     pub(super) fn panel_count(&self) -> usize {
         self.composition.panel_count().max(1)
     }
@@ -76,8 +89,7 @@ where
         };
 
         base_series.bars().iter().any(|bar| {
-            base_series
-                .indicator_data_for_panel_value_opt(panel_value, bar)
+            self.indicator_data_for_series(base_series, panel_value, bar)
                 .and_then(IndicatorData::signed_overlay)
                 .is_some()
         })
@@ -175,56 +187,50 @@ where
             .unwrap_or_else(|| Self::default_data_kind_for_panel(panel_kind))
     }
 
-    pub(super) fn comparison_line_color(ticker: &TickerInfo) -> iced::Color {
-        use std::hash::{DefaultHasher, Hash, Hasher};
-
-        let mut hasher = DefaultHasher::new();
-        ticker.hash(&mut hasher);
-        let seed = hasher.finish();
-
-        let golden = 0.618_034_f32;
-        let base = ((seed as f32 / u64::MAX as f32) + 0.12345).fract();
-        let hue = (base + golden).fract() * 360.0;
-
-        let saturation = 0.62 + (((seed >> 8) & 0xFF) as f32 / 255.0) * 0.2;
-        let value = 0.82 + (((seed >> 16) & 0x7F) as f32 / 127.0) * 0.12;
-
-        data::config::theme::from_hsv_degrees(hue, saturation.min(1.0), value.min(1.0))
+    pub(super) fn series_line_color(&self, series: &S, palette: &Extended) -> iced::Color {
+        match series.series_color() {
+            SeriesColor::Base => palette.background.base.text,
+            SeriesColor::Accent(accent) => {
+                data::config::theme::generated_theme_accent(palette, accent)
+            }
+            SeriesColor::Custom(color) => color,
+        }
     }
 
-    pub(super) fn collect_primary_overlay_value_ids(&self, out: &mut Vec<PanelValueId>) {
-        out.clear();
-
+    pub(super) fn primary_overlay_entries(&self) -> Vec<(PanelValueId, bool)> {
         let Some(primary_panel_id) = self.composition.primary_panel_id() else {
-            return;
+            return Vec::new();
         };
 
         let Some(primary_panel) = self.composition.panel(primary_panel_id) else {
-            return;
+            return Vec::new();
         };
 
-        out.extend(
-            primary_panel
-                .layers
-                .iter()
-                .filter_map(|layer| layer.source.indicator_value_id()),
-        );
+        primary_panel
+            .layers
+            .iter()
+            .filter_map(|layer| {
+                layer
+                    .source
+                    .indicator_value_id()
+                    .map(|value_id| (value_id, layer.visible))
+            })
+            .collect()
     }
 
-    pub(super) fn primary_overlay_value_ids(&self) -> Vec<PanelValueId> {
-        let mut out = Vec::new();
-        self.collect_primary_overlay_value_ids(&mut out);
-        out
+    pub(super) fn visible_primary_overlay_value_ids(&self) -> Vec<PanelValueId> {
+        self.primary_overlay_entries()
+            .into_iter()
+            .filter_map(|(value_id, visible)| visible.then_some(value_id))
+            .collect()
     }
 
     pub(super) fn overlay_channels_for_panel_value(
         &self,
         value_id: Option<PanelValueId>,
     ) -> &'static [OverlayChannelSpec] {
-        if let Some(value_id) = value_id
-            && let Some(series) = self.series.first()
-        {
-            let channels = series.indicator_overlay_channels_for_panel_value(value_id);
+        if let Some(value_id) = value_id {
+            let channels = value_id.overlay_channels();
             if !channels.is_empty() {
                 return channels;
             }
@@ -234,23 +240,101 @@ where
     }
 
     pub(super) fn overlay_channel_value(
+        &self,
         data: IndicatorData,
         channel: OverlayChannelSpec,
     ) -> Option<f32> {
-        channel
-            .key
-            .map_or_else(|| Some(data.value()), |key| data.field(key))
+        match channel.source {
+            OverlayChannelSource::Primary => Some(data.value()),
+            OverlayChannelSource::Field(key) => data.field(key),
+            OverlayChannelSource::Reference(resolve) => Some(resolve(self.indicator_configs)),
+        }
     }
 
     pub(super) fn overlay_channel_color(
+        &self,
+        value_id: Option<PanelValueId>,
         channel: OverlayChannelSpec,
         palette: &Extended,
+        generated_accents: &[iced::Color; 6],
     ) -> iced::Color {
-        match channel.color_role {
-            OverlayChannelColorRole::Neutral => palette.background.base.text.scale_alpha(0.72),
-            OverlayChannelColorRole::Success => palette.success.base.color.scale_alpha(0.78),
-            OverlayChannelColorRole::Danger => palette.danger.base.color.scale_alpha(0.78),
-            OverlayChannelColorRole::Primary => palette.primary.base.color.scale_alpha(0.78),
+        let configured = value_id.map(|indicator| {
+            self.indicator_colors
+                .config_for(indicator)
+                .color_for(channel.color_slot)
+        });
+        let color = configured.unwrap_or_else(|| {
+            ThemeColor::new(
+                Self::theme_color_role(channel.color_role),
+                ThemeColorShade::Base,
+            )
+        });
+        Self::resolve_theme_color(color, palette, generated_accents).scale_alpha(
+            match channel.color_role {
+                OverlayChannelColorRole::Neutral => 0.72,
+                _ => 0.78,
+            },
+        )
+    }
+
+    pub(super) fn indicator_color(
+        &self,
+        value_id: Option<PanelValueId>,
+        slot: IndicatorColorSlot,
+        palette: &Extended,
+        generated_accents: &[iced::Color; 6],
+    ) -> iced::Color {
+        let configured = value_id
+            .map(|indicator| self.indicator_colors.config_for(indicator).color_for(slot))
+            .unwrap_or_else(|| ThemeColor::new(ThemeColorRole::Neutral, ThemeColorShade::Base));
+        Self::resolve_theme_color(configured, palette, generated_accents)
+    }
+
+    fn theme_color_role(role: OverlayChannelColorRole) -> ThemeColorRole {
+        match role {
+            OverlayChannelColorRole::Neutral => ThemeColorRole::Neutral,
+            OverlayChannelColorRole::Success => ThemeColorRole::Success,
+            OverlayChannelColorRole::Danger => ThemeColorRole::Danger,
+            OverlayChannelColorRole::Primary => ThemeColorRole::Primary,
+        }
+    }
+
+    pub(super) fn resolve_theme_color(
+        color: ThemeColor,
+        palette: &Extended,
+        generated_accents: &[iced::Color; 6],
+    ) -> iced::Color {
+        let base = color.accent.map_or_else(
+            || match color.role {
+                ThemeColorRole::Neutral => palette.background.base.text,
+                ThemeColorRole::Secondary => palette.secondary.strong.color,
+                ThemeColorRole::Primary => palette.primary.base.color,
+                ThemeColorRole::Success => palette.success.base.color,
+                ThemeColorRole::Danger => palette.danger.base.color,
+                ThemeColorRole::Warning => palette.warning.base.color,
+            },
+            |accent| generated_accents[accent.index()],
+        );
+        let background = palette.background.base.color;
+
+        match color.shade {
+            ThemeColorShade::Faint => mix_color(base, background, 0.3),
+            ThemeColorShade::Soft => mix_color(base, background, 0.65),
+            ThemeColorShade::Base => base,
+            ThemeColorShade::Strong => {
+                if palette.is_dark {
+                    lighten(base, 0.1)
+                } else {
+                    darken(base, 0.1)
+                }
+            }
+            ThemeColorShade::Vivid => {
+                if palette.is_dark {
+                    lighten(base, 0.18)
+                } else {
+                    darken(base, 0.18)
+                }
+            }
         }
     }
 
@@ -428,14 +512,5 @@ where
 
     pub(super) fn logical_width_from_physical(width_phys: i32, pixel_ratio: f32) -> f32 {
         Self::physical_px_to_logical(width_phys.max(1), pixel_ratio)
-    }
-
-    pub(super) fn primitive_width_for_spacing(
-        bar_spacing: f32,
-        width_factor: f32,
-        pixel_ratio: f32,
-    ) -> i32 {
-        let scaled_spacing = (bar_spacing * width_factor).max(1e-6);
-        Self::optimal_candlestick_width(scaled_spacing, pixel_ratio)
     }
 }
