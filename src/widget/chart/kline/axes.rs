@@ -113,6 +113,11 @@ where
                 continue;
             };
 
+            if panel.kind == KlinePanelKind::Indicator && self.panel_value_id(panel_index).is_some()
+            {
+                continue;
+            }
+
             let value_id = self.panel_value_id(panel_index);
             let title_x = value_id.map_or(panel.plot.x + TOOLTIP_ROW_LEFT_PAD, |value_id| {
                 self.indicator_label_x(panel.plot.x, value_id)
@@ -137,7 +142,7 @@ where
             frame.fill_text(canvas::Text {
                 content: title.to_string(),
                 position: Point::new(title_x, title_y),
-                color: palette.background.base.text.scale_alpha(0.72),
+                color: palette.background.base.text,
                 size: TEXT_SIZE.into(),
                 align_x: iced::Alignment::Start.into(),
                 align_y: iced::Alignment::Center.into(),

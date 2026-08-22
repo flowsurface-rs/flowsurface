@@ -8,8 +8,10 @@ use crate::chart::kline_v2::indicators::{
     TradeBarValues,
 };
 use crate::chart::kline_v2::values::IndicatorData;
-use crate::chart::kline_v2::{IndicatorInstanceId, IndicatorInstanceStore};
-use crate::config::theme::ThemeAccent;
+use crate::chart::kline_v2::{
+    IndicatorInstanceId, IndicatorInstanceStore, LineStrokeStyle, MAX_LINE_WIDTH, MIN_LINE_WIDTH,
+};
+use crate::config::theme::{ThemeAccent, ThemeColor, ThemeColorRole, ThemeColorShade};
 use exchange::{
     Kline, TickerInfo, Timeframe, Trade, UnixMs,
     unit::{Price, PriceStep, qty::Qty},
@@ -23,9 +25,43 @@ const NAKED_POC_LINE_END: UnixMs = UnixMs::new(u64::MAX);
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum SeriesColor {
-    Base,
-    Accent(ThemeAccent),
+    Theme(ThemeColor),
     Custom(iced_core::Color),
+}
+
+impl SeriesColor {
+    pub const fn theme(accent: Option<ThemeAccent>, shade: ThemeColorShade) -> Self {
+        Self::Theme(ThemeColor::with_accent(
+            ThemeColorRole::Neutral,
+            accent,
+            shade,
+        ))
+    }
+
+    pub const fn with_accent(accent: ThemeAccent) -> Self {
+        Self::theme(Some(accent), ThemeColorShade::Base)
+    }
+
+    pub fn theme_color(self) -> Option<ThemeColor> {
+        match self {
+            Self::Theme(color) => Some(color),
+            Self::Custom(_) => None,
+        }
+    }
+
+    pub fn accent_value(self) -> Option<ThemeAccent> {
+        self.theme_color().and_then(|color| color.accent)
+    }
+
+    pub fn is_default(self) -> bool {
+        self == Self::default()
+    }
+}
+
+impl Default for SeriesColor {
+    fn default() -> Self {
+        Self::theme(None, ThemeColorShade::Base)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -525,6 +561,8 @@ impl FootprintPocCache {
 pub struct KlineSeries {
     pub ticker_info: TickerInfo,
     color: SeriesColor,
+    line_width: u8,
+    stroke_style: LineStrokeStyle,
     pub bars: Vec<Kline>,
     pub indicators: Option<IndicatorRuntimeSet>,
     pub footprints: Option<BTreeMap<UnixMs, KlineTrades>>,
@@ -545,6 +583,8 @@ impl KlineSeries {
         Self {
             ticker_info,
             color,
+            line_width: MIN_LINE_WIDTH,
+            stroke_style: LineStrokeStyle::Solid,
             bars: Vec::new(),
             indicators: None,
             footprints: None,
@@ -562,7 +602,7 @@ impl KlineSeries {
     }
 
     pub fn new_base(ticker_info: TickerInfo) -> Self {
-        let mut series = Self::new(ticker_info, SeriesColor::Base);
+        let mut series = Self::new(ticker_info, SeriesColor::default());
         series.indicators = Some(IndicatorRuntimeSet::default());
         series.footprints = Some(BTreeMap::new());
         series
@@ -583,6 +623,35 @@ impl KlineSeries {
 
         self.color = color;
         true
+    }
+
+    pub fn line_width(&self) -> u8 {
+        self.line_width
+    }
+
+    pub fn stroke_style(&self) -> LineStrokeStyle {
+        self.stroke_style
+    }
+
+    pub fn set_line_width(&mut self, width: u8) -> bool {
+        let width = width.clamp(MIN_LINE_WIDTH, MAX_LINE_WIDTH);
+        if self.line_width == width {
+            return false;
+        }
+        self.line_width = width;
+        true
+    }
+
+    pub fn set_stroke_style(&mut self, stroke_style: LineStrokeStyle) -> bool {
+        if self.stroke_style == stroke_style {
+            return false;
+        }
+        self.stroke_style = stroke_style;
+        true
+    }
+
+    pub fn has_custom_line_style(&self) -> bool {
+        self.line_width != MIN_LINE_WIDTH || self.stroke_style != LineStrokeStyle::Solid
     }
 
     pub fn indicator_snapshot(&self, id: IndicatorInstanceId) -> IndicatorRuntimeSnapshot {

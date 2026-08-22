@@ -2,7 +2,8 @@ use super::KlineSeries;
 use super::fetch::FetchCoordinator;
 use data::chart::Basis;
 use data::chart::kline_v2::{
-    IndicatorEngine, IndicatorInput, IndicatorInstanceId, SeriesColor, ThemeAccent,
+    IndicatorEngine, IndicatorInput, IndicatorInstanceId, LineStrokeStyle, MIN_LINE_WIDTH,
+    SeriesColor, ThemeAccent,
 };
 use exchange::{
     Kline, OpenInterest, TickMultiplier, TickerInfo, Timeframe, Trade, adapter::StreamKind,
@@ -78,6 +79,50 @@ impl KlineData {
         self.series[idx].set_series_color(color)
     }
 
+    pub fn set_series_line_width(&mut self, ticker_info: TickerInfo, width: u8) -> bool {
+        let Some(idx) = self.series_index.get(&ticker_info).copied() else {
+            return false;
+        };
+
+        self.series[idx].set_line_width(width)
+    }
+
+    pub fn set_series_stroke_style(
+        &mut self,
+        ticker_info: TickerInfo,
+        stroke_style: LineStrokeStyle,
+    ) -> bool {
+        let Some(idx) = self.series_index.get(&ticker_info).copied() else {
+            return false;
+        };
+
+        self.series[idx].set_stroke_style(stroke_style)
+    }
+
+    pub fn reset_series_styles(&mut self) -> bool {
+        let mut changed = false;
+        let mut comparison_index = 0;
+
+        for series in &mut self.series {
+            let color = if series.ticker_info == self.base_ticker {
+                SeriesColor::default()
+            } else {
+                let accent = ThemeAccent::ALL
+                    .get(comparison_index)
+                    .copied()
+                    .unwrap_or(ThemeAccent::One);
+                comparison_index += 1;
+                SeriesColor::with_accent(accent)
+            };
+
+            changed |= series.set_series_color(color);
+            changed |= series.set_line_width(MIN_LINE_WIDTH);
+            changed |= series.set_stroke_style(LineStrokeStyle::Solid);
+        }
+
+        changed
+    }
+
     pub fn add_ticker(
         &mut self,
         ticker_info: TickerInfo,
@@ -93,7 +138,10 @@ impl KlineData {
         let mut series = if ticker_info == self.base_ticker {
             KlineSeries::new_base(ticker_info)
         } else {
-            KlineSeries::new(ticker_info, SeriesColor::Accent(self.next_unused_accent()))
+            KlineSeries::new(
+                ticker_info,
+                SeriesColor::with_accent(self.next_unused_accent()),
+            )
         };
         match basis {
             Basis::Time(timeframe) => series.rebuild_time_footprints(timeframe),
@@ -120,7 +168,7 @@ impl KlineData {
                 !self
                     .series
                     .iter()
-                    .any(|series| series.color() == SeriesColor::Accent(*accent))
+                    .any(|series| series.color().accent_value() == Some(*accent))
             })
             .unwrap_or(ThemeAccent::One)
     }

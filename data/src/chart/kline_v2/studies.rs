@@ -15,31 +15,12 @@ pub const MAX_VOLUME_PROFILE_OPACITY_PERCENT: u8 = 100;
 pub const MIN_VOLUME_PROFILE_WIDTH_PERCENT: u8 = 5;
 pub const MAX_VOLUME_PROFILE_WIDTH_PERCENT: u8 = 100;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FootprintPocColorSlot {
-    Poc,
-    Npoc,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FootprintPocColorSpec {
-    pub label: &'static str,
-    pub slot: FootprintPocColorSlot,
-}
-
-const FOOTPRINT_POC_COLOR_SPECS: [FootprintPocColorSpec; 2] = [
-    FootprintPocColorSpec {
-        label: "POC",
-        slot: FootprintPocColorSlot::Poc,
-    },
-    FootprintPocColorSpec {
-        label: "NPOC",
-        slot: FootprintPocColorSlot::Npoc,
-    },
-];
-
 fn default_volume_profile_width_percent() -> u8 {
     DEFAULT_VOLUME_PROFILE_WIDTH_PERCENT
+}
+
+const fn default_study_visible() -> bool {
+    true
 }
 
 const fn default_show_volume_profile_poc() -> bool {
@@ -48,90 +29,6 @@ const fn default_show_volume_profile_poc() -> bool {
 
 const fn default_show_volume_profile_npoc() -> bool {
     true
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FootprintPocColorConfig {
-    pub poc: ThemeColor,
-    pub npoc: ThemeColor,
-}
-
-impl Default for FootprintPocColorConfig {
-    fn default() -> Self {
-        Self::defaults()
-    }
-}
-
-impl FootprintPocColorConfig {
-    pub const fn defaults() -> Self {
-        Self {
-            poc: ThemeColor::new(ThemeColorRole::Neutral, ThemeColorShade::Strong),
-            npoc: ThemeColor::new(ThemeColorRole::Warning, ThemeColorShade::Strong),
-        }
-    }
-
-    pub const fn color_specs() -> &'static [FootprintPocColorSpec] {
-        &FOOTPRINT_POC_COLOR_SPECS
-    }
-
-    pub const fn color_for(self, slot: FootprintPocColorSlot) -> ThemeColor {
-        match slot {
-            FootprintPocColorSlot::Poc => self.poc,
-            FootprintPocColorSlot::Npoc => self.npoc,
-        }
-    }
-
-    pub const fn with_color(self, slot: FootprintPocColorSlot, color: ThemeColor) -> Self {
-        match slot {
-            FootprintPocColorSlot::Poc => Self { poc: color, ..self },
-            FootprintPocColorSlot::Npoc => Self {
-                npoc: color,
-                ..self
-            },
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FootprintPocConfig {
-    #[serde(default = "default_show_footprint_poc")]
-    pub show_poc: bool,
-    #[serde(default = "default_show_footprint_npoc")]
-    pub show_npoc: bool,
-    #[serde(default)]
-    pub colors: FootprintPocColorConfig,
-}
-
-const fn default_show_footprint_poc() -> bool {
-    true
-}
-
-const fn default_show_footprint_npoc() -> bool {
-    true
-}
-
-impl Default for FootprintPocConfig {
-    fn default() -> Self {
-        Self {
-            show_poc: true,
-            show_npoc: true,
-            colors: FootprintPocColorConfig::defaults(),
-        }
-    }
-}
-
-impl FootprintPocConfig {
-    pub const fn with_show_poc(self, show_poc: bool) -> Self {
-        Self { show_poc, ..self }
-    }
-
-    pub const fn with_show_npoc(self, show_npoc: bool) -> Self {
-        Self { show_npoc, ..self }
-    }
-
-    pub const fn with_colors(self, colors: FootprintPocColorConfig) -> Self {
-        Self { colors, ..self }
-    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -143,10 +40,8 @@ enum PersistedKlineStudy {
         #[serde(default = "default_volume_profile_width_percent")]
         width_percent: u8,
         opacity_percent: Option<u8>,
-    },
-    FootprintPoc {
-        #[serde(default)]
-        config: FootprintPocConfig,
+        #[serde(default = "default_study_visible")]
+        visible: bool,
     },
 }
 
@@ -327,9 +222,8 @@ pub enum KlineStudy {
         #[serde(default = "default_volume_profile_width_percent")]
         width_percent: u8,
         opacity_percent: u8,
-    },
-    FootprintPoc {
-        config: FootprintPocConfig,
+        #[serde(default = "default_study_visible")]
+        visible: bool,
     },
 }
 
@@ -344,14 +238,15 @@ impl<'de> Deserialize<'de> for KlineStudy {
                 colors,
                 width_percent,
                 opacity_percent,
+                visible,
             } => Ok(Self::VolumeProfile {
                 schedule,
                 colors,
                 width_percent,
                 opacity_percent: opacity_percent
                     .unwrap_or_else(|| Self::default_opacity_percent_for(schedule)),
+                visible,
             }),
-            PersistedKlineStudy::FootprintPoc { config } => Ok(Self::FootprintPoc { config }),
         }
     }
 }
@@ -360,16 +255,16 @@ impl<'de> Deserialize<'de> for KlineStudy {
 pub enum KlineStudyId {
     VolumeProfileVisibleRange,
     VolumeProfileRecurring,
-    FootprintPoc,
 }
 
 impl KlineStudy {
-    pub const ALL: [Self; 3] = [
+    pub const ALL: [Self; 2] = [
         Self::VolumeProfile {
             schedule: VolumeProfileSchedule::VisibleRange,
             colors: VolumeProfileColorConfig::defaults(),
             width_percent: DEFAULT_VOLUME_PROFILE_WIDTH_PERCENT,
             opacity_percent: DEFAULT_VISIBLE_VOLUME_PROFILE_OPACITY_PERCENT,
+            visible: true,
         },
         Self::VolumeProfile {
             schedule: VolumeProfileSchedule::Recurring {
@@ -378,13 +273,7 @@ impl KlineStudy {
             colors: VolumeProfileColorConfig::defaults(),
             width_percent: DEFAULT_VOLUME_PROFILE_WIDTH_PERCENT,
             opacity_percent: DEFAULT_RECURRING_VOLUME_PROFILE_OPACITY_PERCENT,
-        },
-        Self::FootprintPoc {
-            config: FootprintPocConfig {
-                show_poc: true,
-                show_npoc: true,
-                colors: FootprintPocColorConfig::defaults(),
-            },
+            visible: true,
         },
     ];
 
@@ -403,6 +292,31 @@ impl KlineStudy {
         self.default_for_type()
             .normalized_for_basis(basis)
             .unwrap_or_else(|| self.default_for_type())
+            .with_visibility(self.visible())
+    }
+
+    pub const fn visible(self) -> bool {
+        match self {
+            Self::VolumeProfile { visible, .. } => visible,
+        }
+    }
+
+    pub const fn with_visibility(self, visible: bool) -> Self {
+        match self {
+            Self::VolumeProfile {
+                schedule,
+                colors,
+                width_percent,
+                opacity_percent,
+                ..
+            } => Self::VolumeProfile {
+                schedule,
+                colors,
+                width_percent,
+                opacity_percent,
+                visible,
+            },
+        }
     }
 
     const fn default_opacity_percent_for(schedule: VolumeProfileSchedule) -> u8 {
@@ -424,7 +338,6 @@ impl KlineStudy {
                 schedule: VolumeProfileSchedule::Recurring { .. },
                 ..
             } => KlineStudyId::VolumeProfileRecurring,
-            Self::FootprintPoc { .. } => KlineStudyId::FootprintPoc,
         }
     }
 
@@ -435,22 +348,17 @@ impl KlineStudy {
     pub fn is_available(self, basis: Basis) -> bool {
         match self {
             Self::VolumeProfile { schedule, .. } => schedule.is_available(basis),
-            Self::FootprintPoc { .. } => matches!(basis, Basis::Time(_) | Basis::Tick(_)),
         }
     }
 
     pub fn is_interval_available(self, basis: Basis) -> bool {
         match self {
             Self::VolumeProfile { schedule, .. } => schedule.is_interval_available(basis),
-            Self::FootprintPoc { .. } => self.is_available(basis),
         }
     }
 
     pub const fn requires_trade_data(self) -> bool {
-        match self {
-            Self::VolumeProfile { .. } => true,
-            Self::FootprintPoc { .. } => true,
-        }
+        true
     }
 
     pub fn normalized_for_basis(self, basis: Basis) -> Option<Self> {
@@ -464,37 +372,35 @@ impl KlineStudy {
                 colors,
                 width_percent,
                 opacity_percent,
+                visible,
             } => VolumeProfileSchedule::minimum_recurring_interval(basis).map(|interval| {
                 Self::VolumeProfile {
                     schedule: VolumeProfileSchedule::Recurring { interval },
                     colors,
                     width_percent,
                     opacity_percent,
+                    visible,
                 }
             }),
             Self::VolumeProfile { .. } => None,
-            Self::FootprintPoc { .. } => Some(self),
         }
     }
 
     pub const fn volume_profile_schedule(self) -> VolumeProfileSchedule {
         match self {
             Self::VolumeProfile { schedule, .. } => schedule,
-            Self::FootprintPoc { .. } => VolumeProfileSchedule::VisibleRange,
         }
     }
 
     pub const fn volume_profile_colors(self) -> VolumeProfileColorConfig {
         match self {
             Self::VolumeProfile { colors, .. } => colors,
-            Self::FootprintPoc { .. } => VolumeProfileColorConfig::defaults(),
         }
     }
 
     pub const fn volume_profile_width_percent(self) -> u8 {
         match self {
             Self::VolumeProfile { width_percent, .. } => width_percent,
-            Self::FootprintPoc { .. } => DEFAULT_VOLUME_PROFILE_WIDTH_PERCENT,
         }
     }
 
@@ -503,7 +409,6 @@ impl KlineStudy {
             Self::VolumeProfile {
                 opacity_percent, ..
             } => opacity_percent,
-            Self::FootprintPoc { .. } => DEFAULT_VISIBLE_VOLUME_PROFILE_OPACITY_PERCENT,
         }
     }
 
@@ -543,19 +448,7 @@ impl KlineStudy {
             Self::VolumeProfile {
                 schedule: VolumeProfileSchedule::VisibleRange,
                 ..
-            }
-            | Self::FootprintPoc { .. } => None,
-        }
-    }
-
-    pub const fn is_footprint_poc(self) -> bool {
-        matches!(self, Self::FootprintPoc { .. })
-    }
-
-    pub const fn footprint_poc_config(self) -> Option<FootprintPocConfig> {
-        match self {
-            Self::FootprintPoc { config } => Some(config),
-            Self::VolumeProfile { .. } => None,
+            } => None,
         }
     }
 }
@@ -566,7 +459,6 @@ impl Display for KlineStudy {
             Self::VolumeProfile { schedule, .. } => {
                 write!(formatter, "Volume Profile ({schedule})")
             }
-            Self::FootprintPoc { .. } => formatter.write_str("Footprint POC / NPOC"),
         }
     }
 }
@@ -577,5 +469,30 @@ impl Display for VolumeProfileSchedule {
             Self::VisibleRange => formatter.write_str("Visible Range"),
             Self::Recurring { interval } => write!(formatter, "Recurring {interval}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::KlineStudy;
+
+    #[test]
+    fn study_visibility_is_backward_compatible_and_persistent() {
+        let hidden = KlineStudy::ALL[0].with_visibility(false);
+        let serialized = serde_json::to_value(hidden).expect("study should serialize");
+
+        let restored: KlineStudy = serde_json::from_value(serialized.clone())
+            .expect("study visibility should deserialize");
+        assert!(!restored.visible());
+
+        let mut legacy = serialized;
+        legacy
+            .get_mut("VolumeProfile")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("serialized study should have a variant object")
+            .remove("visible");
+        let restored_legacy: KlineStudy =
+            serde_json::from_value(legacy).expect("legacy study should deserialize");
+        assert!(restored_legacy.visible());
     }
 }

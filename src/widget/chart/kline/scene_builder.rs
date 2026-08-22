@@ -1,4 +1,4 @@
-use super::chrome::{FootprintLegendHit, IndicatorLegendHit, TickerLegendHit};
+use super::chrome::{FootprintLegendHit, IndicatorLegendHit, StudyLegendHit, TickerLegendHit};
 use super::layout::{LayoutHitZone, PanelLayoutTree};
 use super::scene::{
     ChromeScene, CursorInfo, IndicatorPanelScene, PrimaryPercentScaleState, PrimaryScale, Scene,
@@ -384,7 +384,7 @@ where
             .iter()
             .map(|value_id| self.overlay_channels_for_panel_value(Some(*value_id)))
             .collect();
-
+        let include_primary_ohlc_range = self.uses_primary_ohlc_range(primary_mark);
         self.for_each_bar_unit_index(x_axis, |series_index, series, unit, bar| {
             if unit < min_x_unit || unit > max_x_unit {
                 return;
@@ -405,7 +405,7 @@ where
                 max_pct = Some(max_pct.map_or(pct, |current| current.max(pct)));
             };
 
-            if series_index == 0 && !matches!(primary_mark, MarkKind::Line) {
+            if series_index == 0 && include_primary_ohlc_range {
                 emit_pct(bar.low.to_f32_lossy());
                 emit_pct(bar.high.to_f32_lossy());
             } else {
@@ -444,6 +444,11 @@ where
         };
 
         Some((min_pct - pad, max_pct + pad))
+    }
+
+    fn uses_primary_ohlc_range(&self, primary_mark: MarkKind) -> bool {
+        !matches!(primary_mark, MarkKind::Line)
+            || (self.footprints_enabled && self.footprints_visible)
     }
 
     fn compute_primary_percent_scale_state(
@@ -610,21 +615,26 @@ where
             .iter()
             .map(|value_id| self.overlay_channels_for_panel_value(Some(*value_id)))
             .collect();
+        let primary_fill_specs: Vec<_> = primary_overlay_value_ids
+            .iter()
+            .map(|value_id| self.fill_specs_for_panel_value(Some(*value_id)))
+            .collect();
+        let include_primary_ohlc_range = self.uses_primary_ohlc_range(primary_mark);
 
         self.for_each_bar_unit_index(x_axis, |series_index, series, unit, bar| {
             if unit < min_x_unit || unit > max_x_unit {
                 return;
             }
 
-            let (low, high) = if matches!(primary_mark, MarkKind::Line) {
-                let close =
-                    self.panel_value_to_unit(primary_value_precision, bar.close.to_f32_lossy());
-                (close, close)
-            } else {
+            let (low, high) = if series_index == 0 && include_primary_ohlc_range {
                 (
                     self.panel_value_to_unit(primary_value_precision, bar.low.to_f32_lossy()),
                     self.panel_value_to_unit(primary_value_precision, bar.high.to_f32_lossy()),
                 )
+            } else {
+                let close =
+                    self.panel_value_to_unit(primary_value_precision, bar.close.to_f32_lossy());
+                (close, close)
             };
 
             min_primary_unit =
@@ -657,6 +667,27 @@ where
                                 Some(max_primary_unit.map_or(channel_unit, |value| {
                                     YUnit(value.0.max(channel_unit.0))
                                 }));
+                        }
+                    }
+
+                    if let Some(fills) = primary_fill_specs.get(overlay_idx) {
+                        for fill in fills.iter().copied() {
+                            for source in [fill.upper, fill.lower] {
+                                if let Some(fill_value) =
+                                    self.indicator_source_value(*value_id, Some(data), source)
+                                {
+                                    let fill_unit = self
+                                        .panel_value_to_unit(primary_value_precision, fill_value);
+                                    min_primary_unit =
+                                        Some(min_primary_unit.map_or(fill_unit, |value| {
+                                            YUnit(value.0.min(fill_unit.0))
+                                        }));
+                                    max_primary_unit =
+                                        Some(max_primary_unit.map_or(fill_unit, |value| {
+                                            YUnit(value.0.max(fill_unit.0))
+                                        }));
+                                }
+                            }
                         }
                     }
                 }
@@ -698,6 +729,9 @@ where
         let overlay_channels = panel_value_id
             .map(|value_id| self.overlay_channels_for_panel_value(Some(value_id)))
             .unwrap_or(&[]);
+        let fill_specs = panel_value_id
+            .map(|value_id| self.fill_specs_for_panel_value(Some(value_id)))
+            .unwrap_or(&[]);
         let uses_signed_overlay_histogram = matches!(data_kind, LayerDataKind::Histogram)
             && matches!(
                 mark,
@@ -735,6 +769,21 @@ where
                         self.panel_value_to_unit(panel_value_precision, channel_value);
                     min_unit = min_unit.min(channel_unit.0);
                     max_unit = max_unit.max(channel_unit.0);
+                }
+            }
+
+            if let Some(value_id) = panel_value_id {
+                for fill in fill_specs.iter().copied() {
+                    for source in [fill.upper, fill.lower] {
+                        if let Some(fill_value) =
+                            self.indicator_source_value(value_id, Some(indicator_data), source)
+                        {
+                            let fill_unit =
+                                self.panel_value_to_unit(panel_value_precision, fill_value);
+                            min_unit = min_unit.min(fill_unit.0);
+                            max_unit = max_unit.max(fill_unit.0);
+                        }
+                    }
                 }
             }
 
@@ -805,7 +854,6 @@ where
         if let Some(hit) = ticker_hit {
             scene.interaction.hovering_ticker_legend = true;
             match hit {
-                TickerLegendHit::Background => {}
                 TickerLegendHit::Row(index) => {
                     scene.interaction.hovered_ticker_row = Some(index);
                 }
@@ -828,6 +876,28 @@ where
             }
         }
 
+        if let Some(hit) = scene
+            .chrome
+            .study_legend
+            .as_ref()
+            .and_then(|legend| Self::hit_study_legend(&scene.layout, legend, local))
+        {
+            scene.interaction.hovering_study_legend = true;
+            match hit {
+                StudyLegendHit::CategoryRow => {}
+                StudyLegendHit::CategoryIcon(kind) => {
+                    scene.interaction.hovered_studies_icon = Some(kind);
+                }
+                StudyLegendHit::StudyRow(index) => {
+                    scene.interaction.hovered_study_row = Some(index);
+                }
+                StudyLegendHit::StudyIcon(index, kind) => {
+                    scene.interaction.hovered_study_row = Some(index);
+                    scene.interaction.hovered_study_icon = Some((index, kind));
+                }
+            }
+        }
+
         let mut indicator_hit = scene
             .chrome
             .indicator_legend
@@ -841,6 +911,7 @@ where
                 self.tooltip_rows_before_indicators(
                     scene.chrome.ticker_legend.as_ref(),
                     scene.chrome.footprint_legend.as_ref(),
+                    scene.chrome.study_legend.as_ref(),
                     show_legend_values,
                 ),
             );
@@ -1139,6 +1210,7 @@ where
                 corner_controls,
                 ticker_legend,
                 footprint_legend: None,
+                study_legend: None,
                 indicator_legend: None,
             },
             interaction: SceneInteraction::default(),
@@ -1148,21 +1220,31 @@ where
             scene.chrome.footprint_legend = self.build_footprint_legend_layout(
                 &scene.layout,
                 primary_panel,
-                self.tooltip_rows_before_indicators(
+                self.tooltip_rows_before_studies(
                     scene.chrome.ticker_legend.as_ref(),
                     None,
                     show_legend_values,
                 ),
                 self.footprint_cluster_kind,
-                matches!(scene.primary.mark, MarkKind::Candle | MarkKind::Bar(_)),
             );
         }
+        scene.chrome.study_legend = self.build_study_legend_layout(
+            &scene.layout,
+            primary_panel,
+            self.tooltip_rows_before_studies(
+                scene.chrome.ticker_legend.as_ref(),
+                scene.chrome.footprint_legend.as_ref(),
+                show_legend_values,
+            ),
+            self.studies_legend_expanded,
+        );
         scene.chrome.indicator_legend = self.build_indicator_legend_layout(
             &scene.layout,
             primary_panel,
             self.tooltip_rows_before_indicators(
                 scene.chrome.ticker_legend.as_ref(),
                 scene.chrome.footprint_legend.as_ref(),
+                scene.chrome.study_legend.as_ref(),
                 show_legend_values,
             ),
         );

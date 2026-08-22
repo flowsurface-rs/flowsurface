@@ -3,8 +3,8 @@ use super::indicators::IndicatorInput;
 use super::series::KlineSeries;
 use crate::chart::Basis;
 
-use super::IndicatorColorSlot;
 pub use super::indicators::{IndicatorConfig, IndicatorConfigStore};
+use super::{IndicatorColorSlot, LineStrokeStyle};
 use super::{IndicatorInstanceId, IndicatorInstanceStore, KlineIndicator};
 use crate::config::theme::ThemeColor;
 
@@ -37,6 +37,32 @@ impl IndicatorEngine {
 
     pub fn reset_colors(&mut self, id: IndicatorInstanceId) -> bool {
         self.instances.reset_colors(id)
+    }
+
+    pub fn update_fill_visibility(&mut self, id: IndicatorInstanceId, visible: bool) -> bool {
+        self.instances.update_fill_visibility(id, visible)
+    }
+
+    pub fn update_line_width(
+        &mut self,
+        id: IndicatorInstanceId,
+        slot: IndicatorColorSlot,
+        width: u8,
+    ) -> bool {
+        self.instances.update_line_width(id, slot, width)
+    }
+
+    pub fn update_stroke_style(
+        &mut self,
+        id: IndicatorInstanceId,
+        slot: IndicatorColorSlot,
+        stroke_style: LineStrokeStyle,
+    ) -> bool {
+        self.instances.update_stroke_style(id, slot, stroke_style)
+    }
+
+    pub fn reset_style(&mut self, id: IndicatorInstanceId) -> bool {
+        self.instances.reset_style(id)
     }
 
     pub fn update_config(&mut self, id: IndicatorInstanceId, config: IndicatorConfig) -> bool {

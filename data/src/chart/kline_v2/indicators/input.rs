@@ -4,11 +4,12 @@ use exchange::{Kline, OpenInterest, Trade, UnixMs};
 use serde::{Deserialize, Serialize};
 use std::fmt::{self, Display, Formatter};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum KlinePriceSource {
     Open,
     High,
     Low,
+    #[default]
     Close,
     Hlc3,
     Ohlc4,
@@ -61,12 +62,6 @@ impl KlinePriceSource {
             "OHLC4" => Some(Self::Ohlc4),
             _ => None,
         }
-    }
-}
-
-impl Default for KlinePriceSource {
-    fn default() -> Self {
-        Self::Close
     }
 }
 

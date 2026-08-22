@@ -8,10 +8,8 @@ use super::{
     OverlayChannelSpec, PanelYViewport,
 };
 use data::chart::kline_v2::IndicatorColorSlot;
-use data::chart::kline_v2::{IndicatorInstance, KlineIndicator, SeriesColor};
-use data::config::theme::{
-    ThemeColor, ThemeColorRole, ThemeColorShade, darken, lighten, mix_color,
-};
+use data::chart::kline_v2::{IndicatorInstance, KlineIndicator, LineStrokeStyle, SeriesColor};
+use data::config::theme::{ThemeColor, ThemeColorRole, ThemeColorShade};
 
 use iced::Point;
 use iced::theme::palette::Extended;
@@ -26,6 +24,11 @@ where
 
     pub(super) fn indicator_kind(&self, id: PanelValueId) -> Option<KlineIndicator> {
         self.indicator_instance(id).map(|instance| instance.kind)
+    }
+
+    pub(super) fn indicator_fill_visible(&self, id: PanelValueId) -> bool {
+        self.indicator_instance(id)
+            .is_some_and(|instance| instance.style.fill_visible)
     }
 
     pub(super) fn indicator_data_for_series(
@@ -200,9 +203,9 @@ where
 
     pub(super) fn series_line_color(&self, series: &S, palette: &Extended) -> iced::Color {
         match series.series_color() {
-            SeriesColor::Base => palette.background.base.text,
-            SeriesColor::Accent(accent) => {
-                data::config::theme::generated_theme_accent(palette, accent)
+            SeriesColor::Theme(color) => {
+                let generated_accents = data::config::theme::generated_theme_accents(palette);
+                Self::resolve_theme_color(color, palette, &generated_accents)
             }
             SeriesColor::Custom(color) => color,
         }
@@ -253,19 +256,74 @@ where
         &DEFAULT_OVERLAY_CHANNELS
     }
 
+    pub(super) fn line_channels_for_panel_value(
+        &self,
+        value_id: Option<PanelValueId>,
+    ) -> Vec<OverlayChannelSpec> {
+        value_id
+            .and_then(|id| self.indicator_kind(id))
+            .map(KlineIndicator::line_channels)
+            .unwrap_or_else(|| DEFAULT_OVERLAY_CHANNELS.to_vec())
+    }
+
+    pub(super) fn fill_specs_for_panel_value(
+        &self,
+        value_id: Option<PanelValueId>,
+    ) -> &'static [data::chart::kline_v2::IndicatorFillSpec] {
+        value_id
+            .and_then(|id| self.indicator_kind(id))
+            .map(KlineIndicator::fill_specs)
+            .unwrap_or_default()
+    }
+
+    pub(super) fn indicator_source_value(
+        &self,
+        value_id: PanelValueId,
+        data: Option<IndicatorData>,
+        source: OverlayChannelSource,
+    ) -> Option<f32> {
+        match source {
+            OverlayChannelSource::Primary => data.map(IndicatorData::value),
+            OverlayChannelSource::Field(key) => data.and_then(|data| data.field(key)),
+            OverlayChannelSource::Reference(resolve) => {
+                Some(resolve(self.indicator_instance(value_id)?.config))
+            }
+        }
+    }
+
     pub(super) fn overlay_channel_value(
         &self,
         value_id: PanelValueId,
         data: IndicatorData,
         channel: OverlayChannelSpec,
     ) -> Option<f32> {
-        match channel.source {
-            OverlayChannelSource::Primary => Some(data.value()),
-            OverlayChannelSource::Field(key) => data.field(key),
-            OverlayChannelSource::Reference(resolve) => {
-                Some(resolve(self.indicator_instance(value_id)?.config))
-            }
-        }
+        self.indicator_source_value(value_id, Some(data), channel.source)
+    }
+
+    pub(super) fn indicator_line_width(
+        &self,
+        value_id: Option<PanelValueId>,
+        channel: OverlayChannelSpec,
+    ) -> f32 {
+        value_id
+            .and_then(|id| {
+                self.indicator_instance(id)
+                    .map(|instance| f32::from(instance.style.line_width_for(channel.color_slot)))
+            })
+            .unwrap_or(channel.line_width)
+    }
+
+    pub(super) fn indicator_stroke_style(
+        &self,
+        value_id: Option<PanelValueId>,
+        channel: OverlayChannelSpec,
+    ) -> LineStrokeStyle {
+        value_id
+            .and_then(|id| {
+                self.indicator_instance(id)
+                    .map(|instance| instance.style.stroke_style_for(channel.color_slot))
+            })
+            .unwrap_or_default()
     }
 
     pub(super) fn overlay_channel_color(
@@ -323,38 +381,7 @@ where
         palette: &Extended,
         generated_accents: &[iced::Color; 6],
     ) -> iced::Color {
-        let base = color.accent.map_or_else(
-            || match color.role {
-                ThemeColorRole::Neutral => palette.background.base.text,
-                ThemeColorRole::Secondary => palette.secondary.strong.color,
-                ThemeColorRole::Primary => palette.primary.base.color,
-                ThemeColorRole::Success => palette.success.base.color,
-                ThemeColorRole::Danger => palette.danger.base.color,
-                ThemeColorRole::Warning => palette.warning.base.color,
-            },
-            |accent| generated_accents[accent.index()],
-        );
-        let background = palette.background.base.color;
-
-        match color.shade {
-            ThemeColorShade::Faint => mix_color(base, background, 0.3),
-            ThemeColorShade::Soft => mix_color(base, background, 0.65),
-            ThemeColorShade::Base => base,
-            ThemeColorShade::Strong => {
-                if palette.is_dark {
-                    lighten(base, 0.1)
-                } else {
-                    darken(base, 0.1)
-                }
-            }
-            ThemeColorShade::Vivid => {
-                if palette.is_dark {
-                    lighten(base, 0.18)
-                } else {
-                    darken(base, 0.18)
-                }
-            }
-        }
+        crate::widget::resolve_theme_color(color, palette, generated_accents)
     }
 
     pub(super) fn optimal_candlestick_width(bar_spacing: f32, pixel_ratio: f32) -> i32 {

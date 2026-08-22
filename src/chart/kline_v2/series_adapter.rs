@@ -1,10 +1,10 @@
 use crate::widget::chart::kline::composition::PanelValueId;
 use crate::widget::chart::kline::{IndicatorData, KlineSeriesLike};
 use data::chart::kline::KlineTrades;
-use data::chart::kline_v2::SeriesColor;
 use data::chart::kline_v2::series::{
     AnchoredPriceLevelTradeDistribution, FootprintPocLine, PriceLevelTradeDistribution,
 };
+use data::chart::kline_v2::{LineStrokeStyle, SeriesColor};
 use exchange::{
     Kline, TickerInfo, Timeframe, UnixMs,
     unit::{Price, PriceStep},
@@ -19,6 +19,14 @@ impl KlineSeriesLike for KlineSeries {
 
     fn series_color(&self) -> SeriesColor {
         self.color()
+    }
+
+    fn series_line_width(&self) -> u8 {
+        self.line_width()
+    }
+
+    fn series_stroke_style(&self) -> LineStrokeStyle {
+        self.stroke_style()
     }
 
     fn bars(&self) -> &[Kline] {

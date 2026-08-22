@@ -1,6 +1,7 @@
 use super::chrome::{
     CornerControlHit, FootprintLegendIconKind, FootprintLegendLayout, IndicatorLegendLayout,
-    PanelControlHit, TickerLegendIconKind, TickerLegendLayout,
+    PanelControlHit, StudiesLegendIconKind, StudyLegendIconKind, StudyLegendLayout,
+    TickerLegendIconKind, TickerLegendLayout,
 };
 use super::coord::{ChartCoord, ChartStepMs};
 use super::layout::PanelLayoutTree;
@@ -218,6 +219,7 @@ pub(super) struct ChromeScene {
     pub(super) corner_controls: Vec<CornerControlHit>,
     pub(super) ticker_legend: Option<TickerLegendLayout>,
     pub(super) footprint_legend: Option<FootprintLegendLayout>,
+    pub(super) study_legend: Option<StudyLegendLayout>,
     pub(super) indicator_legend: Option<IndicatorLegendLayout>,
 }
 
@@ -231,6 +233,10 @@ pub(super) struct SceneInteraction {
     pub(super) hovered_ticker_icon: Option<(usize, TickerLegendIconKind)>,
     pub(super) hovering_footprint_legend: bool,
     pub(super) hovered_footprint_icon: Option<FootprintLegendIconKind>,
+    pub(super) hovering_study_legend: bool,
+    pub(super) hovered_study_row: Option<usize>,
+    pub(super) hovered_study_icon: Option<(usize, StudyLegendIconKind)>,
+    pub(super) hovered_studies_icon: Option<StudiesLegendIconKind>,
     pub(super) hovering_indicator_legend: bool,
     pub(super) hovered_indicator_row: Option<usize>,
     pub(super) hovered_indicator_icon: Option<(usize, super::chrome::IndicatorLegendIconKind)>,

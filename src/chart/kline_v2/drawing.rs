@@ -1,15 +1,79 @@
 use crate::style;
 use crate::widget::chart::kline::composition::{ChartComposition, PanelId, PanelRole};
 use crate::widget::chart::kline::drawing::{
-    DrawingAnchor, DrawingDraft, DrawingDragTarget, DrawingEntity, DrawingId, DrawingObject,
-    DrawingSnapshot, DrawingStyle, DrawingTool, KlineWidgetDrawingEvent,
+    DrawingAnchor, DrawingColor, DrawingDraft, DrawingDragTarget, DrawingEntity, DrawingId,
+    DrawingObject, DrawingSnapshot, DrawingStyle, DrawingTool, KlineWidgetDrawingEvent,
+    MAX_DRAWING_STROKE_WIDTH, MIN_DRAWING_STROKE_WIDTH,
 };
+use crate::widget::{color_swatch_button, labeled_slider};
+use data::config::theme::{ThemeAccent, generated_theme_accent};
 
-use iced::widget::row;
+use iced::widget::{button, column, row, text};
+use iced::{Element, Length};
 
 const SIDEBAR_WIDTH: f32 = 36.0;
-const DETAILS_SIDEBAR_WIDTH: f32 = 108.0;
+const DETAILS_SIDEBAR_WIDTH: f32 = 156.0;
 const OBJECT_LIST_SIDEBAR_WIDTH: f32 = 196.0;
+const DRAWING_STROKE_WIDTH_STEP: f32 = 0.5;
+const DRAWING_FILL_ALPHA: f32 = 0.16;
+
+fn drawing_color_picker<'a, Message, SelectColor>(
+    label: &'static str,
+    selected: Option<ThemeAccent>,
+    alpha: f32,
+    allow_none: bool,
+    select_color: SelectColor,
+    on_sidebar_message: fn(DrawingMessage) -> Message,
+) -> Element<'a, Message>
+where
+    Message: Clone + 'a + 'static,
+    SelectColor: Fn(ThemeAccent) -> DrawingMessage + Copy + 'a,
+{
+    let colors = ThemeAccent::ALL.into_iter().map(|accent| {
+        color_swatch_button(
+            move |theme: &iced::Theme| {
+                generated_theme_accent(theme.extended_palette(), accent).scale_alpha(alpha)
+            },
+            selected == Some(accent),
+            on_sidebar_message(select_color(accent)),
+        )
+    });
+    let mut choices = row(colors).spacing(3);
+
+    if allow_none {
+        choices = choices.push(
+            button(text("None").size(11))
+                .style(|theme, status| style::button::transparent(theme, status, false))
+                .padding([2, 4])
+                .on_press(on_sidebar_message(
+                    DrawingMessage::SetSelectedDrawingFillColor(None),
+                )),
+        );
+    }
+
+    column![text(label).size(12), choices]
+        .spacing(2)
+        .width(Length::Fill)
+        .into()
+}
+
+fn drawing_width_slider<'a, Message>(
+    label: &'static str,
+    current: f32,
+    on_sidebar_message: fn(DrawingMessage) -> Message,
+) -> Element<'a, Message>
+where
+    Message: Clone + 'a + 'static,
+{
+    labeled_slider(
+        label,
+        MIN_DRAWING_STROKE_WIDTH..=MAX_DRAWING_STROKE_WIDTH,
+        current,
+        move |width| on_sidebar_message(DrawingMessage::SetSelectedDrawingStrokeWidth(width)),
+        |value| format!("{value:.1}"),
+        Some(DRAWING_STROKE_WIDTH_STEP),
+    )
+}
 
 #[derive(Debug, Clone)]
 struct DrawingDragState {
@@ -39,18 +103,16 @@ impl DrawingUpdate {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DrawingMessage {
     SelectTool(DrawingTool),
     ShowToolsPage,
     ShowObjectListPage,
     SelectDrawing(DrawingId),
     OpenDrawingSettings(DrawingId),
-    SelectedDrawingBorderColor,
-    SelectedDrawingFillColor,
-    SelectedDrawingBorderWidth,
-    SelectedDrawingLineColor,
-    SelectedDrawingLineWidth,
+    SetSelectedDrawingStrokeColor(ThemeAccent),
+    SetSelectedDrawingFillColor(Option<ThemeAccent>),
+    SetSelectedDrawingStrokeWidth(f32),
     DeleteSelectedDrawing,
     DeleteDrawing(DrawingId),
     DeleteAllDrawings,
@@ -152,11 +214,34 @@ impl DrawingTools {
                     DrawingUpdate::None
                 }
             }
-            DrawingMessage::SelectedDrawingBorderColor
-            | DrawingMessage::SelectedDrawingFillColor
-            | DrawingMessage::SelectedDrawingBorderWidth
-            | DrawingMessage::SelectedDrawingLineColor
-            | DrawingMessage::SelectedDrawingLineWidth => DrawingUpdate::None,
+            DrawingMessage::SetSelectedDrawingStrokeColor(color) => {
+                if self.update_selected_style(|style| {
+                    style.stroke_color = DrawingColor::accent(color, 1.0);
+                }) {
+                    DrawingUpdate::Visual
+                } else {
+                    DrawingUpdate::None
+                }
+            }
+            DrawingMessage::SetSelectedDrawingFillColor(color) => {
+                if self.update_selected_style(|style| {
+                    style.fill_color =
+                        color.map(|accent| DrawingColor::accent(accent, DRAWING_FILL_ALPHA));
+                }) {
+                    DrawingUpdate::Visual
+                } else {
+                    DrawingUpdate::None
+                }
+            }
+            DrawingMessage::SetSelectedDrawingStrokeWidth(width) => {
+                if self.update_selected_style(|style| {
+                    style.set_stroke_width(width);
+                }) {
+                    DrawingUpdate::Visual
+                } else {
+                    DrawingUpdate::None
+                }
+            }
             DrawingMessage::DeleteSelectedDrawing => {
                 if self.remove_selected_drawing() {
                     DrawingUpdate::Visual
@@ -187,7 +272,7 @@ impl DrawingTools {
         on_sidebar_message: fn(DrawingMessage) -> Message,
     ) -> iced::widget::Container<'a, Message>
     where
-        Message: Clone + 'a,
+        Message: Clone + 'a + 'static,
     {
         match self.sidebar_page {
             SidebarPage::Tools => {
@@ -209,7 +294,7 @@ impl DrawingTools {
         on_sidebar_message: fn(DrawingMessage) -> Message,
     ) -> iced::widget::Container<'a, Message>
     where
-        Message: Clone + 'a,
+        Message: Clone + 'a + 'static,
     {
         let mut details = iced::widget::Column::new()
             .spacing(4)
@@ -218,58 +303,53 @@ impl DrawingTools {
             .push(iced::widget::rule::horizontal(1.0))
             .align_x(iced::Alignment::Center);
 
+        let stroke_width = drawing.style.normalized_stroke_width();
+
         match drawing.object {
             DrawingObject::Box { .. } => {
                 details = details
-                    .push(
-                        iced::widget::button(
-                            iced::widget::text("Border Color").align_x(iced::Alignment::Center),
-                        )
-                        .style(|theme, status| style::button::transparent(theme, status, false))
-                        .width(iced::Length::Fill)
-                        .on_press(on_sidebar_message(
-                            DrawingMessage::SelectedDrawingBorderColor,
-                        )),
-                    )
-                    .push(
-                        iced::widget::button(
-                            iced::widget::text("Fill Color").align_x(iced::Alignment::Center),
-                        )
-                        .style(|theme, status| style::button::transparent(theme, status, false))
-                        .width(iced::Length::Fill)
-                        .on_press(on_sidebar_message(DrawingMessage::SelectedDrawingFillColor)),
-                    )
-                    .push(
-                        iced::widget::button(
-                            iced::widget::text("Border Width").align_x(iced::Alignment::Center),
-                        )
-                        .style(|theme, status| style::button::transparent(theme, status, false))
-                        .width(iced::Length::Fill)
-                        .on_press(on_sidebar_message(
-                            DrawingMessage::SelectedDrawingBorderWidth,
-                        )),
-                    );
+                    .push(drawing_color_picker(
+                        "Border color",
+                        drawing.style.stroke_color.accent_value(),
+                        1.0,
+                        false,
+                        DrawingMessage::SetSelectedDrawingStrokeColor,
+                        on_sidebar_message,
+                    ))
+                    .push(drawing_color_picker(
+                        "Fill color",
+                        drawing
+                            .style
+                            .fill_color
+                            .and_then(|color| color.accent_value()),
+                        DRAWING_FILL_ALPHA,
+                        true,
+                        |color| DrawingMessage::SetSelectedDrawingFillColor(Some(color)),
+                        on_sidebar_message,
+                    ))
+                    .push(drawing_width_slider(
+                        "Border width",
+                        stroke_width,
+                        on_sidebar_message,
+                    ));
             }
             DrawingObject::Trendline { .. }
             | DrawingObject::HorizontalLine { .. }
             | DrawingObject::VerticalLine { .. } => {
                 details = details
-                    .push(
-                        iced::widget::button(
-                            iced::widget::text("Line Color").align_x(iced::Alignment::Center),
-                        )
-                        .style(|theme, status| style::button::transparent(theme, status, false))
-                        .width(iced::Length::Fill)
-                        .on_press(on_sidebar_message(DrawingMessage::SelectedDrawingLineColor)),
-                    )
-                    .push(
-                        iced::widget::button(
-                            iced::widget::text("Line Width").align_x(iced::Alignment::Center),
-                        )
-                        .style(|theme, status| style::button::transparent(theme, status, false))
-                        .width(iced::Length::Fill)
-                        .on_press(on_sidebar_message(DrawingMessage::SelectedDrawingLineWidth)),
-                    );
+                    .push(drawing_color_picker(
+                        "Line color",
+                        drawing.style.stroke_color.accent_value(),
+                        1.0,
+                        false,
+                        DrawingMessage::SetSelectedDrawingStrokeColor,
+                        on_sidebar_message,
+                    ))
+                    .push(drawing_width_slider(
+                        "Line width",
+                        stroke_width,
+                        on_sidebar_message,
+                    ));
             }
         }
 
@@ -293,7 +373,7 @@ impl DrawingTools {
         on_sidebar_message: fn(DrawingMessage) -> Message,
     ) -> iced::widget::Row<'a, Message>
     where
-        Message: Clone + 'a,
+        Message: Clone + 'a + 'static,
     {
         let selected = self.selected_drawing == Some(drawing.id);
         let object_label = format!("{} #{}", drawing.object.title(), drawing.id.0);
@@ -336,7 +416,7 @@ impl DrawingTools {
         on_sidebar_message: fn(DrawingMessage) -> Message,
     ) -> iced::widget::Container<'a, Message>
     where
-        Message: Clone + 'a,
+        Message: Clone + 'a + 'static,
     {
         let header_nav = row![
             iced::widget::space::horizontal(),
@@ -550,6 +630,20 @@ impl DrawingTools {
         };
 
         self.remove_drawing(id)
+    }
+
+    fn update_selected_style(&mut self, update: impl FnOnce(&mut DrawingStyle)) -> bool {
+        let Some(index) = self.selected_drawing.and_then(|id| self.drawing_index(id)) else {
+            return false;
+        };
+
+        if self.drawings[index].locked {
+            return false;
+        }
+
+        let before = self.drawings[index].style;
+        update(&mut self.drawings[index].style);
+        self.drawings[index].style != before
     }
 
     pub fn remove_drawing(&mut self, id: DrawingId) -> bool {
@@ -901,5 +995,46 @@ impl DrawingTools {
         self.selected_drawing = Some(id);
         self.interaction = DrawingInteraction::Idle;
         id
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::widget::chart::kline::YUnit;
+
+    #[test]
+    fn selected_drawing_style_updates_are_visual() {
+        let id = DrawingId(1);
+        let drawing = DrawingEntity {
+            id,
+            object: DrawingObject::HorizontalLine {
+                panel_id: PanelId(1),
+                y_unit: YUnit(0),
+            },
+            style: DrawingStyle::default(),
+            locked: false,
+            visible: true,
+        };
+        let mut tools = DrawingTools::from_parts(DrawingTool::Cursor, vec![drawing]);
+
+        assert_eq!(
+            tools.update(DrawingMessage::SelectDrawing(id)),
+            DrawingUpdate::Visual
+        );
+        assert_eq!(
+            tools.update(DrawingMessage::SetSelectedDrawingStrokeColor(
+                ThemeAccent::Six
+            )),
+            DrawingUpdate::Visual
+        );
+        assert_eq!(
+            tools.update(DrawingMessage::SetSelectedDrawingStrokeWidth(100.0)),
+            DrawingUpdate::Visual
+        );
+
+        let style = &tools.drawings()[0].style;
+        assert_eq!(style.stroke_color.accent_value(), Some(ThemeAccent::Six));
+        assert_eq!(style.stroke_width, MAX_DRAWING_STROKE_WIDTH);
     }
 }

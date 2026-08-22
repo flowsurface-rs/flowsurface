@@ -16,10 +16,8 @@ use ui::{CanvasCaches, CanvasInvalidation};
 use view::{ViewConfig, ViewInputs, ViewWindow};
 use widget::{DEFAULT_Y_AXIS_GUTTER, HeatmapShaderWidget};
 
-use crate::{
-    chart::Action,
-    modal::pane::settings::study::{self, Study},
-};
+use crate::widget::study_configurator as study;
+use crate::{chart::Action, widget::study_configurator::Study};
 use data::aggr::time::TimeSeries;
 use data::chart::{
     Basis,

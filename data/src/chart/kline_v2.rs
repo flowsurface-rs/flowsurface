@@ -43,18 +43,17 @@ pub use indicators::StochRsiConfig;
 pub use indicators::{AnchoredVwapConfig, VwapAnchor};
 pub use indicators::{
     IndicatorCellValue, IndicatorColorSlot, IndicatorColorSpec, IndicatorConfigValue,
-    IndicatorHistoryRequirement, IndicatorInput, IndicatorInputCoverage, IndicatorInputSource,
-    IndicatorMarkSpec, IndicatorOverlayChannelSpec, IndicatorOverlayColorRole,
-    IndicatorOverlaySource, IndicatorRuntime, IndicatorRuntimeSet, IndicatorRuntimeSnapshot,
-    IndicatorRuntimeState, IndicatorSetting, IndicatorSettingChoice, IndicatorSettingControl,
-    IndicatorSettingValue, IndicatorSettingsContext, KlinePriceSource,
+    IndicatorFillGeometry, IndicatorFillSpec, IndicatorHistoryRequirement, IndicatorInput,
+    IndicatorInputCoverage, IndicatorInputSource, IndicatorMarkSpec, IndicatorOverlayChannelSpec,
+    IndicatorOverlayColorRole, IndicatorOverlaySource, IndicatorRuntime, IndicatorRuntimeSet,
+    IndicatorRuntimeSnapshot, IndicatorRuntimeState, IndicatorSetting, IndicatorSettingChoice,
+    IndicatorSettingControl, IndicatorSettingValue, IndicatorSettingsContext, KlinePriceSource,
 };
 pub use indicators::{RsiConfig, RsiSmoothing};
 pub use studies::{
     DEFAULT_RECURRING_VOLUME_PROFILE_INTERVAL, DEFAULT_RECURRING_VOLUME_PROFILE_OPACITY_PERCENT,
     DEFAULT_VISIBLE_VOLUME_PROFILE_OPACITY_PERCENT, DEFAULT_VOLUME_PROFILE_WIDTH_PERCENT,
-    FootprintPocColorConfig, FootprintPocColorSlot, FootprintPocConfig, KlineStudy, KlineStudyId,
-    MAX_VOLUME_PROFILE_OPACITY_PERCENT, MAX_VOLUME_PROFILE_WIDTH_PERCENT,
+    KlineStudy, KlineStudyId, MAX_VOLUME_PROFILE_OPACITY_PERCENT, MAX_VOLUME_PROFILE_WIDTH_PERCENT,
     MIN_VOLUME_PROFILE_OPACITY_PERCENT, MIN_VOLUME_PROFILE_WIDTH_PERCENT, VolumeProfileColorConfig,
     VolumeProfileColorSlot, VolumeProfileColorSpec, VolumeProfileSchedule,
 };
@@ -64,9 +63,118 @@ pub use viewport::{
     ZOOM_SENSITIVITY,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FootprintPocColorSlot {
+    Poc,
+    Npoc,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FootprintPocColorSpec {
+    pub label: &'static str,
+    pub slot: FootprintPocColorSlot,
+}
+
+const FOOTPRINT_POC_COLOR_SPECS: [FootprintPocColorSpec; 2] = [
+    FootprintPocColorSpec {
+        label: "POC",
+        slot: FootprintPocColorSlot::Poc,
+    },
+    FootprintPocColorSpec {
+        label: "NPOC",
+        slot: FootprintPocColorSlot::Npoc,
+    },
+];
+
+const fn default_show_footprint_poc() -> bool {
+    true
+}
+
+const fn default_show_footprint_npoc() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FootprintPocColorConfig {
+    pub poc: ThemeColor,
+    pub npoc: ThemeColor,
+}
+
+impl Default for FootprintPocColorConfig {
+    fn default() -> Self {
+        Self::defaults()
+    }
+}
+
+impl FootprintPocColorConfig {
+    pub const fn defaults() -> Self {
+        Self {
+            poc: ThemeColor::new(ThemeColorRole::Neutral, ThemeColorShade::Strong),
+            npoc: ThemeColor::new(ThemeColorRole::Warning, ThemeColorShade::Strong),
+        }
+    }
+
+    pub const fn color_specs() -> &'static [FootprintPocColorSpec] {
+        &FOOTPRINT_POC_COLOR_SPECS
+    }
+
+    pub const fn color_for(self, slot: FootprintPocColorSlot) -> ThemeColor {
+        match slot {
+            FootprintPocColorSlot::Poc => self.poc,
+            FootprintPocColorSlot::Npoc => self.npoc,
+        }
+    }
+
+    pub const fn with_color(self, slot: FootprintPocColorSlot, color: ThemeColor) -> Self {
+        match slot {
+            FootprintPocColorSlot::Poc => Self { poc: color, ..self },
+            FootprintPocColorSlot::Npoc => Self {
+                npoc: color,
+                ..self
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FootprintPocConfig {
+    #[serde(default = "default_show_footprint_poc")]
+    pub show_poc: bool,
+    #[serde(default = "default_show_footprint_npoc")]
+    pub show_npoc: bool,
+    #[serde(default)]
+    pub colors: FootprintPocColorConfig,
+}
+
+impl Default for FootprintPocConfig {
+    fn default() -> Self {
+        Self {
+            show_poc: true,
+            show_npoc: true,
+            colors: FootprintPocColorConfig::defaults(),
+        }
+    }
+}
+
+impl FootprintPocConfig {
+    pub const fn with_show_poc(self, show_poc: bool) -> Self {
+        Self { show_poc, ..self }
+    }
+
+    pub const fn with_show_npoc(self, show_npoc: bool) -> Self {
+        Self { show_npoc, ..self }
+    }
+
+    pub const fn with_colors(self, colors: FootprintPocColorConfig) -> Self {
+        Self { colors, ..self }
+    }
+}
+
 pub const DEFAULT_CANDLESTICK_OPACITY_PERCENT: u8 = 100;
 pub const MIN_CANDLESTICK_OPACITY_PERCENT: u8 = 5;
 pub const MAX_CANDLESTICK_OPACITY_PERCENT: u8 = 100;
+pub const MIN_LINE_WIDTH: u8 = 1;
+pub const MAX_LINE_WIDTH: u8 = 4;
 
 const LEGACY_INDICATOR_INSTANCE_ID_BASE: u64 = 1 << 63;
 
@@ -260,7 +368,7 @@ impl Default for IndicatorColorConfig {
         colors[IndicatorColorSlot::Negative] =
             ThemeColor::new(ThemeColorRole::Danger, ThemeColorShade::Base);
         colors[IndicatorColorSlot::Signal] =
-            ThemeColor::new(ThemeColorRole::Primary, ThemeColorShade::Base);
+            ThemeColor::new(ThemeColorRole::Warning, ThemeColorShade::Base);
         colors[IndicatorColorSlot::Upper] =
             ThemeColor::new(ThemeColorRole::Success, ThemeColorShade::Base);
         colors[IndicatorColorSlot::Lower] =
@@ -269,6 +377,8 @@ impl Default for IndicatorColorConfig {
             ThemeColor::new(ThemeColorRole::Success, ThemeColorShade::Base);
         colors[IndicatorColorSlot::Slow] =
             ThemeColor::new(ThemeColorRole::Danger, ThemeColorShade::Base);
+        colors[IndicatorColorSlot::Fill] =
+            ThemeColor::new(ThemeColorRole::Primary, ThemeColorShade::Faint);
         Self { colors }
     }
 }
@@ -287,6 +397,102 @@ impl IndicatorColorConfig {
     }
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LineStrokeStyle {
+    #[default]
+    Solid,
+    Dashed,
+    Dotted,
+}
+
+impl LineStrokeStyle {
+    pub const ALL: [Self; 3] = [Self::Solid, Self::Dashed, Self::Dotted];
+}
+
+impl std::fmt::Display for LineStrokeStyle {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Solid => "Solid",
+            Self::Dashed => "Dashed",
+            Self::Dotted => "Dotted",
+        })
+    }
+}
+
+fn default_indicator_line_widths() -> EnumMap<IndicatorColorSlot, u8> {
+    let mut widths = EnumMap::default();
+    for slot in IndicatorColorSlot::ALL {
+        widths[slot] = MIN_LINE_WIDTH;
+    }
+    widths
+}
+
+fn default_indicator_stroke_styles() -> EnumMap<IndicatorColorSlot, LineStrokeStyle> {
+    let mut styles = EnumMap::default();
+    for slot in IndicatorColorSlot::ALL {
+        styles[slot] = LineStrokeStyle::Solid;
+    }
+    styles
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct IndicatorStyleConfig {
+    pub fill_visible: bool,
+    #[serde(default = "default_indicator_line_widths")]
+    line_widths: EnumMap<IndicatorColorSlot, u8>,
+    #[serde(default = "default_indicator_stroke_styles")]
+    stroke_styles: EnumMap<IndicatorColorSlot, LineStrokeStyle>,
+}
+
+impl Default for IndicatorStyleConfig {
+    fn default() -> Self {
+        Self {
+            fill_visible: true,
+            line_widths: default_indicator_line_widths(),
+            stroke_styles: default_indicator_stroke_styles(),
+        }
+    }
+}
+
+impl IndicatorStyleConfig {
+    pub fn normalized(mut self) -> Self {
+        for slot in IndicatorColorSlot::ALL {
+            self.line_widths[slot] = self.line_widths[slot].clamp(MIN_LINE_WIDTH, MAX_LINE_WIDTH);
+        }
+        self
+    }
+
+    pub fn line_width_for(self, slot: IndicatorColorSlot) -> u8 {
+        self.line_widths[slot].clamp(MIN_LINE_WIDTH, MAX_LINE_WIDTH)
+    }
+
+    pub fn stroke_style_for(self, slot: IndicatorColorSlot) -> LineStrokeStyle {
+        self.stroke_styles[slot]
+    }
+
+    pub fn set_line_width(&mut self, slot: IndicatorColorSlot, width: u8) -> bool {
+        let width = width.clamp(MIN_LINE_WIDTH, MAX_LINE_WIDTH);
+        if self.line_width_for(slot) == width {
+            return false;
+        }
+        self.line_widths[slot] = width;
+        true
+    }
+
+    pub fn set_stroke_style(
+        &mut self,
+        slot: IndicatorColorSlot,
+        stroke_style: LineStrokeStyle,
+    ) -> bool {
+        if self.stroke_style_for(slot) == stroke_style {
+            return false;
+        }
+        self.stroke_styles[slot] = stroke_style;
+        true
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IndicatorInstance {
     pub id: IndicatorInstanceId,
@@ -294,6 +500,8 @@ pub struct IndicatorInstance {
     pub config: IndicatorConfig,
     #[serde(default)]
     pub colors: IndicatorColorConfig,
+    #[serde(default)]
+    pub style: IndicatorStyleConfig,
 }
 
 impl IndicatorInstance {
@@ -303,6 +511,7 @@ impl IndicatorInstance {
             kind,
             config: IndicatorConfig::default_for(kind),
             colors: IndicatorColorConfig::default(),
+            style: IndicatorStyleConfig::default(),
         }
     }
 
@@ -311,6 +520,7 @@ impl IndicatorInstance {
             self.config = IndicatorConfig::default_for(self.kind);
         }
         self.config = self.config.normalized_for_basis(basis);
+        self.style = self.style.normalized();
         self
     }
 }
@@ -410,6 +620,55 @@ impl IndicatorInstanceStore {
         true
     }
 
+    pub fn update_fill_visibility(&mut self, id: IndicatorInstanceId, visible: bool) -> bool {
+        self.instances
+            .iter_mut()
+            .find(|instance| instance.id == id)
+            .is_some_and(|instance| {
+                if instance.style.fill_visible == visible {
+                    return false;
+                }
+                instance.style.fill_visible = visible;
+                true
+            })
+    }
+
+    pub fn update_line_width(
+        &mut self,
+        id: IndicatorInstanceId,
+        slot: IndicatorColorSlot,
+        width: u8,
+    ) -> bool {
+        self.instances
+            .iter_mut()
+            .find(|instance| instance.id == id)
+            .is_some_and(|instance| instance.style.set_line_width(slot, width))
+    }
+
+    pub fn update_stroke_style(
+        &mut self,
+        id: IndicatorInstanceId,
+        slot: IndicatorColorSlot,
+        stroke_style: LineStrokeStyle,
+    ) -> bool {
+        self.instances
+            .iter_mut()
+            .find(|instance| instance.id == id)
+            .is_some_and(|instance| instance.style.set_stroke_style(slot, stroke_style))
+    }
+
+    pub fn reset_style(&mut self, id: IndicatorInstanceId) -> bool {
+        let Some(instance) = self.instances.iter_mut().find(|instance| instance.id == id) else {
+            return false;
+        };
+        let style = IndicatorStyleConfig::default();
+        if instance.style == style {
+            return false;
+        }
+        instance.style = style;
+        true
+    }
+
     pub fn remove(&mut self, id: IndicatorInstanceId) -> Option<IndicatorInstance> {
         let index = self
             .instances
@@ -471,6 +730,10 @@ impl KlineIndicator {
         indicators::input_requirements(self).contains(&indicators::IndicatorInputSource::Trades)
     }
 
+    pub fn input_source_category(self) -> &'static str {
+        indicators::input_source_category(self)
+    }
+
     pub fn uses_directional_volume(self) -> bool {
         indicators::uses_directional_volume(self)
     }
@@ -485,6 +748,31 @@ impl KlineIndicator {
 
     pub fn overlay_channels(self) -> &'static [IndicatorOverlayChannelSpec] {
         indicators::overlay_channels(self)
+    }
+
+    pub fn line_channels(self) -> Vec<IndicatorOverlayChannelSpec> {
+        let channels = self.overlay_channels();
+        if channels
+            .iter()
+            .any(|channel| matches!(channel.source, IndicatorOverlaySource::Primary))
+        {
+            return channels.to_vec();
+        }
+
+        let mut line_channels = Vec::with_capacity(channels.len() + 1);
+        line_channels.push(IndicatorOverlayChannelSpec {
+            label: "Line",
+            source: IndicatorOverlaySource::Primary,
+            line_width: 1.0,
+            color_role: IndicatorOverlayColorRole::Neutral,
+            color_slot: IndicatorColorSlot::Main,
+        });
+        line_channels.extend_from_slice(channels);
+        line_channels
+    }
+
+    pub fn fill_specs(self) -> &'static [IndicatorFillSpec] {
+        indicators::fill_specs(self)
     }
 
     /// Returns the color slots relevant to the selected display mark, or
@@ -528,6 +816,8 @@ pub struct Config {
     pub candlestick: CandlestickConfig,
     #[serde(default)]
     pub footprint_cluster_kind: ClusterKind,
+    #[serde(default)]
+    pub footprint_poc: FootprintPocConfig,
     pub panels: Vec<PanelConfig>,
     pub splits: Vec<f32>,
     pub y_viewports: Vec<ViewportConfig>,
@@ -562,7 +852,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            version: 5,
+            version: 6,
             horizontal: HorizontalConfig::default(),
             primary_autoscale: true,
             candlesticks_visible: true,
@@ -570,6 +860,7 @@ impl Default for Config {
             trade_data_enabled: false,
             candlestick: CandlestickConfig::default(),
             footprint_cluster_kind: ClusterKind::default(),
+            footprint_poc: FootprintPocConfig::default(),
             panels: Vec::new(),
             splits: Vec::new(),
             y_viewports: Vec::new(),
@@ -628,6 +919,7 @@ impl Config {
                     kind,
                     config: configs.config_for(kind),
                     colors: self.indicator_colors.config_for(kind),
+                    style: IndicatorStyleConfig::default(),
                 })
             })
             .collect();
@@ -787,7 +1079,9 @@ pub struct ViewportConfig {
     pub max_value: f32,
 }
 
-pub use drawing::{DrawingAnchor, DrawingEntity, DrawingObject, DrawingStyle, DrawingTool, Rgba};
+pub use drawing::{
+    DrawingAnchor, DrawingColor, DrawingEntity, DrawingObject, DrawingStyle, DrawingTool, Rgba,
+};
 pub type DrawingConfig = DrawingEntity;
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(default)]
@@ -836,6 +1130,16 @@ pub struct SeriesConfig {
     pub color: Option<iced_core::Color>,
     #[serde(default)]
     pub accent: Option<ThemeAccent>,
+    #[serde(default)]
+    pub shade: ThemeColorShade,
+    #[serde(default = "default_series_line_width")]
+    pub line_width: u8,
+    #[serde(default)]
+    pub stroke_style: LineStrokeStyle,
+}
+
+fn default_series_line_width() -> u8 {
+    MIN_LINE_WIDTH
 }
 
 pub fn panel_config_from_spec(panel: &PanelSpec) -> PanelConfig {
@@ -1051,6 +1355,27 @@ mod tests {
     }
 
     #[test]
+    fn persists_footprint_poc_settings_at_chart_level() {
+        let config = Config {
+            footprint_poc: FootprintPocConfig {
+                show_poc: false,
+                show_npoc: true,
+                colors: FootprintPocColorConfig::defaults(),
+            },
+            ..Config::default()
+        };
+
+        let serialized =
+            serde_json::to_value(config).expect("chart configuration should serialize");
+        assert_eq!(serialized["footprint_poc"]["show_poc"], false);
+
+        let restored: Config =
+            serde_json::from_value(serialized).expect("chart configuration should deserialize");
+        assert!(!restored.footprint_poc.show_poc);
+        assert!(restored.footprint_poc.show_npoc);
+    }
+
+    #[test]
     fn migrates_legacy_panel_value_to_an_instance() {
         let config: Config = serde_json::from_value(serde_json::json!({
             "panels": [{ "value_id": "Rsi" }]
@@ -1084,6 +1409,110 @@ mod tests {
         assert_ne!(
             instances.get(first).unwrap().config,
             instances.get(second).unwrap().config
+        );
+    }
+
+    #[test]
+    fn fill_visibility_is_instance_scoped_and_resettable() {
+        let mut instances = IndicatorInstanceStore::default();
+        let first = instances.create(KlineIndicator::Rsi);
+        let second = instances.create(KlineIndicator::Rsi);
+
+        assert!(instances.get(first).unwrap().style.fill_visible);
+        assert!(instances.update_fill_visibility(first, false));
+        assert!(!instances.get(first).unwrap().style.fill_visible);
+        assert!(instances.get(second).unwrap().style.fill_visible);
+        assert!(instances.reset_style(first));
+        assert!(instances.get(first).unwrap().style.fill_visible);
+    }
+
+    #[test]
+    fn line_style_is_instance_scoped_and_width_is_clamped() {
+        let mut instances = IndicatorInstanceStore::default();
+        let first = instances.create(KlineIndicator::Rsi);
+        let second = instances.create(KlineIndicator::Rsi);
+
+        assert_eq!(
+            instances
+                .get(first)
+                .unwrap()
+                .style
+                .line_width_for(IndicatorColorSlot::Main),
+            MIN_LINE_WIDTH
+        );
+        assert!(instances.update_line_width(first, IndicatorColorSlot::Main, 255));
+        assert_eq!(
+            instances
+                .get(first)
+                .unwrap()
+                .style
+                .line_width_for(IndicatorColorSlot::Main),
+            MAX_LINE_WIDTH
+        );
+        assert!(instances.update_stroke_style(
+            first,
+            IndicatorColorSlot::Main,
+            LineStrokeStyle::Dashed,
+        ));
+        assert_eq!(
+            instances
+                .get(second)
+                .unwrap()
+                .style
+                .stroke_style_for(IndicatorColorSlot::Main),
+            LineStrokeStyle::Solid
+        );
+        assert!(instances.reset_style(first));
+        assert_eq!(
+            instances
+                .get(first)
+                .unwrap()
+                .style
+                .stroke_style_for(IndicatorColorSlot::Main),
+            LineStrokeStyle::Solid
+        );
+    }
+
+    #[test]
+    fn line_channels_supply_a_primary_value_when_no_overlay_is_declared() {
+        let volume_channels = KlineIndicator::Volume.line_channels();
+        assert_eq!(volume_channels.len(), 1);
+        assert!(matches!(
+            volume_channels[0].source,
+            IndicatorOverlaySource::Primary
+        ));
+
+        let rsi_channels = KlineIndicator::Rsi.line_channels();
+        assert_eq!(
+            rsi_channels
+                .iter()
+                .filter(|channel| matches!(channel.source, IndicatorOverlaySource::Primary))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn only_line_marks_support_line_styling() {
+        assert!(MarkKind::Line.supports_line_styling());
+        assert!(!MarkKind::Candle.supports_line_styling());
+        assert!(!MarkKind::Bar(BarMode::Regular).supports_line_styling());
+    }
+
+    #[test]
+    fn categorizes_indicators_by_required_input_sources() {
+        assert_eq!(KlineIndicator::Rsi.input_source_category(), "Kline data");
+        assert_eq!(
+            KlineIndicator::CumulativeVolumeDelta.input_source_category(),
+            "Kline + trade data"
+        );
+        assert_eq!(
+            KlineIndicator::OpenInterest.input_source_category(),
+            "Open interest data"
+        );
+        assert_eq!(
+            KlineIndicator::TradeCount.input_source_category(),
+            "Trade data"
         );
     }
 }

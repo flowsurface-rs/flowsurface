@@ -3,9 +3,9 @@ use super::super::values::{IndicatorData, RSI_SIGNAL_FIELD_KEY};
 use super::runtime::{IndicatorDefinition, IndicatorRuntime};
 use super::{
     IndicatorAvailability, IndicatorColorSlot, IndicatorColorSpec, IndicatorConfig,
-    IndicatorConfigValue, IndicatorMarkSpec, IndicatorOverlayChannelSpec,
-    IndicatorOverlayColorRole, IndicatorOverlaySource, IndicatorSetting, IndicatorSettingControl,
-    IndicatorSettingValue, IndicatorSettingsContext,
+    IndicatorConfigValue, IndicatorFillGeometry, IndicatorFillSpec, IndicatorMarkSpec,
+    IndicatorOverlayChannelSpec, IndicatorOverlayColorRole, IndicatorOverlaySource,
+    IndicatorSetting, IndicatorSettingControl, IndicatorSettingValue, IndicatorSettingsContext,
 };
 use crate::chart::kline_v2::composition::{BarMode, MarkKind};
 use exchange::{Kline, UnixMs};
@@ -14,14 +14,15 @@ use std::collections::BTreeMap;
 
 const SERIES_MAX_POINTS: usize = 5000;
 
-const COLOR_SLOTS: [IndicatorColorSlot; 4] = [
+const COLOR_SLOTS: [IndicatorColorSlot; 5] = [
     IndicatorColorSlot::Main,
+    IndicatorColorSlot::Fill,
     IndicatorColorSlot::Signal,
     IndicatorColorSlot::Upper,
     IndicatorColorSlot::Lower,
 ];
 
-pub(super) const COLOR_SPECS: [IndicatorColorSpec; 4] = [
+pub(super) const COLOR_SPECS: [IndicatorColorSpec; 5] = [
     IndicatorColorSpec {
         label: "RSI",
         slot: IndicatorColorSlot::Main,
@@ -29,6 +30,10 @@ pub(super) const COLOR_SPECS: [IndicatorColorSpec; 4] = [
     IndicatorColorSpec {
         label: "Signal",
         slot: IndicatorColorSlot::Signal,
+    },
+    IndicatorColorSpec {
+        label: "Background fill",
+        slot: IndicatorColorSlot::Fill,
     },
     IndicatorColorSpec {
         label: "Overbought",
@@ -83,6 +88,14 @@ pub(super) const OVERLAY_CHANNELS: [IndicatorOverlayChannelSpec; 4] = [
         color_slot: IndicatorColorSlot::Lower,
     },
 ];
+
+pub(super) const FILL_SPECS: [IndicatorFillSpec; 1] = [IndicatorFillSpec {
+    upper: IndicatorOverlaySource::Reference(rsi_upper_band),
+    lower: IndicatorOverlaySource::Reference(rsi_lower_band),
+    geometry: IndicatorFillGeometry::PanelBand,
+    color_slot: IndicatorColorSlot::Fill,
+    opacity: 0.12,
+}];
 
 fn rsi_upper_band(config: IndicatorConfig) -> f32 {
     let IndicatorConfig::Rsi(config) = config else {

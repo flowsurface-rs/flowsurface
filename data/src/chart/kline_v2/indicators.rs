@@ -31,9 +31,9 @@ pub use bar_analysis::BarAnalysisState;
 pub use bollinger::BollingerBandsCalculationConfig;
 pub use catalog::{
     IndicatorConfig, IndicatorConfigStore, IndicatorRuntimeState, KlineIndicator, all_indicators,
-    availability, color_specs, display_name, indicators_for_market, input_requirements,
-    is_supported_for_market, kline_warmup_bars, mark_specs, overlay_channels, panel_recipe,
-    requires_trade_data, table_columns, uses_directional_volume,
+    availability, color_specs, display_name, fill_specs, indicators_for_market, input_requirements,
+    input_source_category, is_supported_for_market, kline_warmup_bars, mark_specs,
+    overlay_channels, panel_recipe, requires_trade_data, table_columns, uses_directional_volume,
 };
 pub use input::{
     IndicatorInput, IndicatorInputSource, KLINE_INPUTS, KlinePriceSource, NormalizedTradeBar,
@@ -82,6 +82,7 @@ impl IndicatorHistoryRequirement {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize, Enum)]
 pub enum IndicatorColorSlot {
     Main,
+    Fill,
     Bars,
     Positive,
     Negative,
@@ -94,8 +95,9 @@ pub enum IndicatorColorSlot {
 }
 
 impl IndicatorColorSlot {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Main,
+        Self::Fill,
         Self::Bars,
         Self::Positive,
         Self::Negative,
@@ -145,8 +147,24 @@ pub struct IndicatorOverlayChannelSpec {
     pub color_slot: IndicatorColorSlot,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndicatorFillGeometry {
+    PanelBand,
+    SeriesBand,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct IndicatorFillSpec {
+    pub upper: IndicatorOverlaySource,
+    pub lower: IndicatorOverlaySource,
+    pub geometry: IndicatorFillGeometry,
+    pub color_slot: IndicatorColorSlot,
+    pub opacity: f32,
+}
+
 pub(super) const NO_MARK_SPECS: [IndicatorMarkSpec; 0] = [];
 pub(super) const NO_OVERLAY_CHANNELS: [IndicatorOverlayChannelSpec; 0] = [];
+pub(super) const NO_FILL_SPECS: [IndicatorFillSpec; 0] = [];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TableColumnValue {

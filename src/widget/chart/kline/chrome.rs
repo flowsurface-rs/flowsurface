@@ -1,19 +1,21 @@
 use super::layout::{LayoutHitZone, PanelLayoutTree};
 use super::scene::Scene;
 use super::{
-    CHAR_W, KlineSeriesLike, KlineWidget, KlineWidgetEvent, PANEL_TITLE_TOP_PAD, TEXT_SIZE,
-    TICKER_LEGEND_PADDING, TICKER_LEGEND_ROW_H, TOOLTIP_ROW_LEFT_PAD,
+    CHAR_W, KlineSeriesLike, KlineWidget, KlineWidgetEvent, OverlayChannelSpec,
+    PANEL_TITLE_TOP_PAD, TEXT_SIZE, TICKER_LEGEND_PADDING, TICKER_LEGEND_ROW_H,
+    TOOLTIP_ROW_LEFT_PAD,
 };
 use crate::style;
 use crate::widget::chart::kline::PanelInteraction;
 use crate::widget::chart::kline::composition::{MarkKind, PanelScaleMode};
 use data::chart::kline::ClusterKind;
+use data::chart::kline_v2::KlineStudyId;
 
 use exchange::TickerInfo;
 
 use iced::theme::palette::Extended;
 use iced::widget::canvas;
-use iced::{Point, Rectangle, Size};
+use iced::{Color, Point, Rectangle, Size};
 
 const PANEL_TITLE_LEFT_PAD: f32 = 6.0;
 const PANEL_TITLE_TO_CONTROLS_GAP: f32 = 8.0;
@@ -25,9 +27,36 @@ const TICKER_LEGEND_ICON_GAP: f32 = 4.0;
 const TICKER_LEGEND_TOP_OFFSET: f32 = 0.0;
 const SERIES_END_LABEL_GAP: f32 = 2.0;
 const HIDDEN_LEGEND_ALPHA: f32 = 0.45;
+const LEGEND_BACKGROUND_ALPHA: f32 = 0.9;
+const STUDY_LEGEND_INDENT: f32 = 8.0;
+const STUDY_COUNT_BADGE_GAP: f32 = 4.0;
+const STUDY_COUNT_BADGE_HORIZONTAL_PAD: f32 = 4.0;
+const STUDY_COUNT_BADGE_HEIGHT: f32 = TEXT_SIZE + 2.0;
+
+enum LegendButtonContent {
+    Icon(style::Icon),
+    Text(&'static str),
+}
 
 fn series_display_name<S: KlineSeriesLike>(series: &S) -> String {
     series.ticker_info().ticker.symbol_and_exchange_string()
+}
+
+fn legend_background_color(palette: &Extended) -> Color {
+    palette
+        .background
+        .weakest
+        .color
+        .scale_alpha(LEGEND_BACKGROUND_ALPHA)
+}
+
+fn legend_row_background(row: Rectangle, content_end_x: f32) -> Rectangle {
+    Rectangle {
+        x: row.x + TICKER_LEGEND_PADDING,
+        y: row.y,
+        width: (content_end_x - row.x).max(0.0),
+        height: row.height,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,11 +142,11 @@ pub(super) enum TickerLegendIconKind {
 }
 
 impl TickerLegendIconKind {
-    fn icon(self) -> style::Icon {
+    fn icon(self, _visible: bool) -> LegendButtonContent {
         match self {
-            Self::Settings => style::Icon::Cog,
-            Self::Hide => style::Icon::SpeakerOff,
-            Self::Close => style::Icon::Close,
+            Self::Settings => LegendButtonContent::Icon(style::Icon::Cog),
+            Self::Hide => LegendButtonContent::Text("○"),
+            Self::Close => LegendButtonContent::Icon(style::Icon::Close),
         }
     }
 
@@ -148,7 +177,6 @@ pub(super) struct TickerLegendLayout {
 
 #[derive(Debug, Clone, Copy)]
 pub(super) enum TickerLegendHit {
-    Background,
     Row(usize),
     Icon(usize, TickerLegendIconKind),
 }
@@ -160,10 +188,10 @@ pub(super) enum FootprintLegendIconKind {
 }
 
 impl FootprintLegendIconKind {
-    fn icon(self) -> style::Icon {
+    fn icon(self, _visible: bool) -> LegendButtonContent {
         match self {
-            Self::Settings => style::Icon::Cog,
-            Self::Hide => style::Icon::SpeakerOff,
+            Self::Settings => LegendButtonContent::Icon(style::Icon::Cog),
+            Self::Hide => LegendButtonContent::Text("○"),
         }
     }
 
@@ -195,6 +223,92 @@ pub(super) enum FootprintLegendHit {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum StudiesLegendIconKind {
+    ExpandCollapse,
+    Visibility,
+    Close,
+}
+
+impl StudiesLegendIconKind {
+    fn icon(self, expanded: bool) -> LegendButtonContent {
+        match self {
+            Self::ExpandCollapse => LegendButtonContent::Text(if expanded { "v" } else { ">" }),
+            Self::Visibility => LegendButtonContent::Text("○"),
+            Self::Close => LegendButtonContent::Icon(style::Icon::Close),
+        }
+    }
+
+    pub(super) fn into_event(self) -> KlineWidgetEvent {
+        match self {
+            Self::ExpandCollapse => KlineWidgetEvent::StudiesExpansionToggled,
+            Self::Visibility => KlineWidgetEvent::StudiesVisibilityToggled,
+            Self::Close => KlineWidgetEvent::StudiesRemove,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct StudiesLegendRowHit {
+    pub(super) row_rect: Rectangle,
+    pub(super) expand: Rectangle,
+    pub(super) visibility: Rectangle,
+    pub(super) close: Rectangle,
+    pub(super) count_badge: Rectangle,
+    pub(super) expanded: bool,
+    pub(super) visible: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum StudyLegendIconKind {
+    Visibility,
+    Settings,
+    Close,
+}
+
+impl StudyLegendIconKind {
+    fn icon(self, _visible: bool) -> LegendButtonContent {
+        match self {
+            Self::Visibility => LegendButtonContent::Text("○"),
+            Self::Settings => LegendButtonContent::Icon(style::Icon::Cog),
+            Self::Close => LegendButtonContent::Icon(style::Icon::Close),
+        }
+    }
+
+    pub(super) fn into_event(self, study_id: KlineStudyId) -> KlineWidgetEvent {
+        match self {
+            Self::Visibility => KlineWidgetEvent::StudyVisibilityToggled(study_id),
+            Self::Settings => KlineWidgetEvent::StudySettings(study_id),
+            Self::Close => KlineWidgetEvent::StudyRemove(study_id),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct StudyLegendRowHit {
+    pub(super) study_id: KlineStudyId,
+    pub(super) row_rect: Rectangle,
+    pub(super) visibility: Rectangle,
+    pub(super) settings: Rectangle,
+    pub(super) close: Rectangle,
+    pub(super) visible: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct StudyLegendLayout {
+    pub(super) category: StudiesLegendRowHit,
+    pub(super) study_count: usize,
+    pub(super) rows: Vec<StudyLegendRowHit>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) enum StudyLegendHit {
+    CategoryRow,
+    CategoryIcon(StudiesLegendIconKind),
+    StudyRow(usize),
+    StudyIcon(usize, StudyLegendIconKind),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum IndicatorLegendIconKind {
     Visibility,
     Settings,
@@ -202,12 +316,11 @@ pub(super) enum IndicatorLegendIconKind {
 }
 
 impl IndicatorLegendIconKind {
-    fn icon(self, visible: bool) -> style::Icon {
+    fn icon(self, _visible: bool) -> LegendButtonContent {
         match self {
-            Self::Visibility if visible => style::Icon::SpeakerHigh,
-            Self::Visibility => style::Icon::SpeakerOff,
-            Self::Settings => style::Icon::Cog,
-            Self::Close => style::Icon::Close,
+            Self::Visibility => LegendButtonContent::Text("○"),
+            Self::Settings => LegendButtonContent::Icon(style::Icon::Cog),
+            Self::Close => LegendButtonContent::Icon(style::Icon::Close),
         }
     }
 
@@ -574,16 +687,8 @@ where
         }
 
         let text_w = max_chars as f32 * CHAR_W;
-        let icons_pack_w = if show_icons {
-            2.0 * TICKER_LEGEND_ICON_BOX + TICKER_LEGEND_ICON_GAP
-        } else {
-            0.0
-        };
-        let min_for_icons = if show_icons {
-            max_name_chars as f32 * CHAR_W + 8.0 + icons_pack_w
-        } else {
-            0.0
-        };
+        let icons_pack_w = 2.0 * TICKER_LEGEND_ICON_BOX + TICKER_LEGEND_ICON_GAP;
+        let min_for_icons = max_name_chars as f32 * CHAR_W + 8.0 + icons_pack_w;
         let bg_w = (text_w.max(min_for_icons) + TICKER_LEGEND_PADDING * 2.0)
             .clamp(80.0, (plot.width * 0.6).max(80.0));
 
@@ -616,7 +721,7 @@ where
             let y_center = row_top + TICKER_LEGEND_ROW_H * 0.5;
             let text_end_x = x_left + label_chars * CHAR_W;
 
-            let (settings, close, row_w) = if show_icons {
+            let (settings, close, row_w) = {
                 let icon_pack_w = if has_close {
                     2.0 * TICKER_LEGEND_ICON_BOX + TICKER_LEGEND_ICON_GAP
                 } else {
@@ -668,24 +773,24 @@ where
                 };
 
                 let content_right = if has_close {
-                    close.x + close.width
+                    settings.x.max(close.x) + close.width
                 } else {
                     settings.x + settings.width
                 };
 
                 let row_w = (content_right + TICKER_LEGEND_PADDING - bg.x).clamp(0.0, bg.width);
 
-                (settings, close, row_w)
-            } else {
-                let hidden = Rectangle {
-                    x: 0.0,
-                    y: 0.0,
-                    width: 0.0,
-                    height: 0.0,
-                };
-                let row_w = (text_end_x + TICKER_LEGEND_PADDING - bg.x).clamp(0.0, bg.width);
-
-                (hidden, hidden, row_w)
+                if show_icons {
+                    (settings, close, row_w)
+                } else {
+                    let hidden = Rectangle {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 0.0,
+                        height: 0.0,
+                    };
+                    (hidden, hidden, row_w)
+                }
             };
 
             rows.push(TickerLegendRowHit {
@@ -739,7 +844,7 @@ where
             return Some(TickerLegendHit::Row(index));
         }
 
-        Some(TickerLegendHit::Background)
+        None
     }
 
     pub(super) fn build_footprint_legend_layout(
@@ -748,12 +853,7 @@ where
         primary_panel: usize,
         preceding_rows: usize,
         cluster_kind: ClusterKind,
-        active: bool,
     ) -> Option<FootprintLegendLayout> {
-        if !active {
-            return None;
-        }
-
         let panel = layout.panel(primary_panel)?;
         let row_top = panel.plot.y
             + PANEL_TITLE_TOP_PAD
@@ -763,8 +863,8 @@ where
         let label = format!("Footprint · {cluster_kind}");
         let text_end_x =
             panel.plot.x + TOOLTIP_ROW_LEFT_PAD + label.chars().count() as f32 * CHAR_W;
-        let (_, settings, hide, row_w) =
-            self.indicator_legend_controls(panel.plot, text_end_x, y_center, false, true);
+        let (_, _, settings, hide, row_w) =
+            Self::legend_controls(panel.plot, text_end_x, y_center, false, false, true, true);
 
         Some(FootprintLegendLayout {
             row: FootprintLegendRowHit {
@@ -799,6 +899,168 @@ where
         Some(FootprintLegendHit::Row)
     }
 
+    pub(super) fn tooltip_rows_before_studies(
+        &self,
+        ticker_legend: Option<&TickerLegendLayout>,
+        footprint_legend: Option<&FootprintLegendLayout>,
+        show_legend_values: bool,
+    ) -> usize {
+        ticker_legend
+            .map(|legend| legend.rows.len())
+            .unwrap_or(usize::from(show_legend_values))
+            + usize::from(footprint_legend.is_some())
+    }
+
+    pub(super) fn build_study_legend_layout(
+        &self,
+        layout: &PanelLayoutTree,
+        primary_panel: usize,
+        preceding_rows: usize,
+        expanded: bool,
+    ) -> Option<StudyLegendLayout> {
+        let study_count = self.studies.len();
+        if study_count == 0 {
+            return None;
+        }
+
+        let panel = layout.panel(primary_panel)?;
+        let category_row_top = panel.plot.y
+            + PANEL_TITLE_TOP_PAD
+            + TICKER_LEGEND_PADDING
+            + preceding_rows as f32 * TICKER_LEGEND_ROW_H;
+        let category_y_center = category_row_top + TICKER_LEGEND_ROW_H * 0.5;
+        let category_label = "Studies";
+        let category_label_end_x =
+            panel.plot.x + TOOLTIP_ROW_LEFT_PAD + category_label.chars().count() as f32 * CHAR_W;
+        let count_badge_width = study_count.to_string().chars().count() as f32 * CHAR_W
+            + STUDY_COUNT_BADGE_HORIZONTAL_PAD * 2.0;
+        let count_badge = Rectangle {
+            x: category_label_end_x + STUDY_COUNT_BADGE_GAP,
+            y: category_y_center - STUDY_COUNT_BADGE_HEIGHT * 0.5,
+            width: count_badge_width,
+            height: STUDY_COUNT_BADGE_HEIGHT,
+        };
+        let category_text_end_x = count_badge.x + count_badge.width;
+        let (category_expand, category_visibility, _, category_close, category_row_w) =
+            Self::legend_controls(
+                panel.plot,
+                category_text_end_x,
+                category_y_center,
+                true,
+                true,
+                false,
+                true,
+            );
+        let category = StudiesLegendRowHit {
+            row_rect: Rectangle {
+                x: panel.plot.x,
+                y: category_row_top,
+                width: category_row_w,
+                height: TICKER_LEGEND_ROW_H,
+            },
+            expand: category_expand,
+            visibility: category_visibility,
+            close: category_close,
+            count_badge,
+            expanded,
+            visible: self.studies.iter().all(|study| study.visible()),
+        };
+        let mut rows = Vec::new();
+
+        if expanded {
+            for (index, study) in self.studies.iter().enumerate() {
+                let label = study.to_string();
+                let row_top = panel.plot.y
+                    + PANEL_TITLE_TOP_PAD
+                    + TICKER_LEGEND_PADDING
+                    + (preceding_rows + 1 + index) as f32 * TICKER_LEGEND_ROW_H;
+                let y_center = row_top + TICKER_LEGEND_ROW_H * 0.5;
+                let row_x = panel.plot.x + STUDY_LEGEND_INDENT;
+                let text_end_x =
+                    row_x + TOOLTIP_ROW_LEFT_PAD + label.chars().count() as f32 * CHAR_W;
+                let (_, visibility, settings, close, row_w) = Self::legend_controls(
+                    panel.plot, text_end_x, y_center, false, true, true, true,
+                );
+
+                rows.push(StudyLegendRowHit {
+                    study_id: study.id(),
+                    row_rect: Rectangle {
+                        x: row_x,
+                        y: row_top,
+                        width: row_w,
+                        height: TICKER_LEGEND_ROW_H,
+                    },
+                    visibility,
+                    settings,
+                    close,
+                    visible: study.visible(),
+                });
+            }
+        }
+
+        Some(StudyLegendLayout {
+            category,
+            study_count,
+            rows,
+        })
+    }
+
+    pub(super) fn hit_study_legend(
+        layout: &PanelLayoutTree,
+        legend: &StudyLegendLayout,
+        root_local: Point,
+    ) -> Option<StudyLegendHit> {
+        let plot_local = layout.plot_local_point(root_local)?;
+
+        if legend.category.row_rect.contains(plot_local) {
+            if legend.category.expand.contains(plot_local) {
+                return Some(StudyLegendHit::CategoryIcon(
+                    StudiesLegendIconKind::ExpandCollapse,
+                ));
+            }
+
+            if legend.category.visibility.contains(plot_local) {
+                return Some(StudyLegendHit::CategoryIcon(
+                    StudiesLegendIconKind::Visibility,
+                ));
+            }
+
+            if legend.category.close.contains(plot_local) {
+                return Some(StudyLegendHit::CategoryIcon(StudiesLegendIconKind::Close));
+            }
+
+            return Some(StudyLegendHit::CategoryRow);
+        }
+
+        for (index, row) in legend.rows.iter().enumerate() {
+            if !row.row_rect.contains(plot_local) {
+                continue;
+            }
+
+            if row.visibility.contains(plot_local) {
+                return Some(StudyLegendHit::StudyIcon(
+                    index,
+                    StudyLegendIconKind::Visibility,
+                ));
+            }
+
+            if row.settings.contains(plot_local) {
+                return Some(StudyLegendHit::StudyIcon(
+                    index,
+                    StudyLegendIconKind::Settings,
+                ));
+            }
+
+            if row.close.contains(plot_local) {
+                return Some(StudyLegendHit::StudyIcon(index, StudyLegendIconKind::Close));
+            }
+
+            return Some(StudyLegendHit::StudyRow(index));
+        }
+
+        None
+    }
+
     fn indicator_label(
         &self,
         panel_index: usize,
@@ -819,16 +1081,288 @@ where
             .to_string()
     }
 
+    fn primary_overlay_value_text(
+        &self,
+        scene: &Scene,
+        value_id: super::PanelValueId,
+        channel: OverlayChannelSpec,
+    ) -> Option<String> {
+        let base_bar = scene.interaction.cursor.and_then(|cursor| {
+            self.series
+                .first()
+                .and_then(|series| self.bar_at_or_before_unit(series, scene.x.axis, cursor.x_unit))
+        })?;
+        let series = self.series.first()?;
+        let data = self.indicator_data_for_series(series, Some(value_id), base_bar)?;
+        let value = self.overlay_channel_value(value_id, data, channel)?;
+        let primary_anchor = scene
+            .primary
+            .series_percent_anchors
+            .first()
+            .copied()
+            .flatten();
+
+        if matches!(scene.primary.mode, PanelScaleMode::PercentFromBase)
+            && primary_anchor
+                .map(|anchor| anchor.abs() > f32::EPSILON)
+                .unwrap_or(false)
+        {
+            let anchor = primary_anchor.unwrap_or(1.0);
+            Some(format!("{:+.2}%", ((value / anchor) - 1.0) * 100.0))
+        } else {
+            Some(self.format_panel_header_value(
+                scene.primary.panel_index,
+                self.panel_value_precision(scene.primary.panel_index),
+                value,
+            ))
+        }
+    }
+
+    fn primary_overlay_text_end_x(
+        &self,
+        scene: &Scene,
+        row_rect: Rectangle,
+        value_id: super::PanelValueId,
+        show_values: bool,
+    ) -> f32 {
+        let mut x = self.indicator_label_x(row_rect.x, value_id);
+        let mut text_end_x = x;
+
+        for channel in self
+            .overlay_channels_for_panel_value(Some(value_id))
+            .iter()
+            .copied()
+        {
+            let label_width = channel.label.chars().count() as f32 * CHAR_W;
+            text_end_x = x + label_width;
+            x = text_end_x + 2.0;
+
+            if !show_values {
+                continue;
+            }
+
+            let Some(value_text) = self.primary_overlay_value_text(scene, value_id, channel) else {
+                continue;
+            };
+
+            text_end_x = x + value_text.chars().count() as f32 * CHAR_W;
+            x = text_end_x + 6.0;
+        }
+
+        text_end_x
+    }
+
+    fn indicator_panel_text_end_x(
+        &self,
+        scene: &Scene,
+        row_rect: Rectangle,
+        value_id: super::PanelValueId,
+        include_values: bool,
+    ) -> f32 {
+        let Some(panel_index) = self.indicator_panel_index(scene, value_id) else {
+            return row_rect.x + TOOLTIP_ROW_LEFT_PAD;
+        };
+        let Some(panel) = scene.layout.panels.get(panel_index) else {
+            return row_rect.x + TOOLTIP_ROW_LEFT_PAD;
+        };
+
+        let label = self.indicator_label(panel_index, false, value_id);
+        let label_end_x =
+            self.indicator_label_x(row_rect.x, value_id) + label.chars().count() as f32 * CHAR_W;
+
+        if !include_values || scene.interaction.hovering_ticker_legend {
+            return label_end_x;
+        }
+
+        let Some(cursor) = scene.interaction.cursor else {
+            return label_end_x;
+        };
+        let Some(series) = self.series.first() else {
+            return label_end_x;
+        };
+        let Some(base_bar) = self.bar_at_or_before_unit(series, scene.x.axis, cursor.x_unit) else {
+            return label_end_x;
+        };
+
+        if matches!(
+            self.composition
+                .panels
+                .get(panel_index)
+                .map(|panel| panel.presentation),
+            Some(super::PanelPresentation::Table)
+        ) {
+            return label_end_x;
+        }
+
+        let Some(indicator_data) = self.indicator_data_for_series(series, Some(value_id), base_bar)
+        else {
+            return label_end_x;
+        };
+
+        let title_width = self
+            .resolved_panel_title(panel_index, super::KlinePanelKind::Indicator)
+            .map(|title| title.chars().count() as f32 * CHAR_W)
+            .unwrap_or(0.0);
+        let title_gap = if title_width > 0.0 {
+            PANEL_TITLE_TO_CONTROLS_GAP
+        } else {
+            0.0
+        };
+        let mut value_x = row_rect.x + TOOLTIP_ROW_LEFT_PAD + title_width + title_gap;
+        let mut text_end_x = label_end_x;
+        let mut drew_channel = false;
+        let mut max_x =
+            scene.layout.regions.plot.x + panel.plot.x + panel.plot.width - PANEL_TITLE_LEFT_PAD;
+        if scene.interaction.controls_visible_for_panel == Some(panel_index)
+            && let Some(left_control_x) = scene
+                .chrome
+                .panel_controls
+                .iter()
+                .filter(|control| control.panel_index == panel_index)
+                .map(|control| control.rect.x)
+                .reduce(f32::min)
+        {
+            max_x = max_x.min(scene.layout.regions.plot.x + left_control_x - 4.0);
+        }
+
+        for channel in self
+            .overlay_channels_for_panel_value(Some(value_id))
+            .iter()
+            .copied()
+        {
+            let Some(value) = self.overlay_channel_value(value_id, indicator_data, channel) else {
+                continue;
+            };
+
+            if value_x >= max_x {
+                break;
+            }
+
+            value_x += channel.label.chars().count() as f32 * CHAR_W + 2.0;
+            if value_x >= max_x {
+                break;
+            }
+
+            let value_text = self.format_panel_header_value(
+                panel_index,
+                self.panel_value_precision(panel_index),
+                value,
+            );
+            text_end_x = value_x + value_text.chars().count() as f32 * CHAR_W;
+            value_x = text_end_x + 6.0;
+            drew_channel = true;
+        }
+
+        if !drew_channel {
+            let value_text = self.format_panel_header_value(
+                panel_index,
+                self.panel_value_precision(panel_index),
+                indicator_data.value(),
+            );
+            text_end_x = value_x + value_text.chars().count() as f32 * CHAR_W;
+        }
+
+        text_end_x.max(label_end_x)
+    }
+
+    fn indicator_panel_index(&self, scene: &Scene, value_id: super::PanelValueId) -> Option<usize> {
+        scene
+            .layout
+            .panels
+            .iter()
+            .enumerate()
+            .find_map(|(index, panel)| {
+                (panel.kind == super::KlinePanelKind::Indicator
+                    && self.panel_value_id(index) == Some(value_id))
+                .then_some(index)
+            })
+    }
+
+    fn fill_indicator_panel_title(
+        &self,
+        frame: &mut canvas::Frame,
+        scene: &Scene,
+        row: &IndicatorLegendRowHit,
+        row_rect: Rectangle,
+        palette: &Extended,
+    ) {
+        let Some(panel_index) = self.indicator_panel_index(scene, row.value_id) else {
+            return;
+        };
+
+        let row_alpha = if row.visible {
+            1.0
+        } else {
+            HIDDEN_LEGEND_ALPHA
+        };
+        let title_y = scene.layout.regions.plot.y + row.y_center;
+
+        if self.indicator_is_unavailable(Some(row.value_id)) {
+            frame.fill_text(canvas::Text {
+                content: "!".to_string(),
+                position: Point::new(self.indicator_marker_x(row_rect.x), title_y),
+                color: palette.danger.base.color.scale_alpha(row_alpha),
+                size: TEXT_SIZE.into(),
+                align_x: iced::Alignment::Start.into(),
+                align_y: iced::Alignment::Center.into(),
+                font: style::AZERET_MONO,
+                ..Default::default()
+            });
+        }
+
+        frame.fill_text(canvas::Text {
+            content: self.indicator_label(panel_index, false, row.value_id),
+            position: Point::new(self.indicator_label_x(row_rect.x, row.value_id), title_y),
+            color: palette.background.base.text.scale_alpha(row_alpha),
+            size: TEXT_SIZE.into(),
+            align_x: iced::Alignment::Start.into(),
+            align_y: iced::Alignment::Center.into(),
+            font: style::AZERET_MONO,
+            ..Default::default()
+        });
+    }
+
+    fn indicator_legend_content_end_x(
+        &self,
+        scene: &Scene,
+        row: &IndicatorLegendRowHit,
+        row_rect: Rectangle,
+        show_buttons: bool,
+        hovered_row: bool,
+    ) -> f32 {
+        if show_buttons && hovered_row {
+            let plot_x = scene.layout.regions.plot.x;
+            return [row.visibility, row.settings, row.close]
+                .iter()
+                .filter(|rect| rect.width > 0.0)
+                .map(|rect| plot_x + rect.x + rect.width)
+                .max_by(f32::total_cmp)
+                .unwrap_or(row_rect.x);
+        }
+
+        if row.primary_overlay {
+            self.primary_overlay_text_end_x(scene, row_rect, row.value_id, !show_buttons)
+        } else {
+            self.indicator_panel_text_end_x(
+                scene,
+                row_rect,
+                row.value_id,
+                !(show_buttons && hovered_row),
+            )
+        }
+    }
+
     pub(super) fn tooltip_rows_before_indicators(
         &self,
         ticker_legend: Option<&TickerLegendLayout>,
         footprint_legend: Option<&FootprintLegendLayout>,
+        study_legend: Option<&StudyLegendLayout>,
         show_legend_values: bool,
     ) -> usize {
-        ticker_legend
-            .map(|legend| legend.rows.len())
-            .unwrap_or(usize::from(show_legend_values))
-            + usize::from(footprint_legend.is_some())
+        self.tooltip_rows_before_studies(ticker_legend, footprint_legend, show_legend_values)
+            + study_legend
+                .map(|legend| legend.rows.len() + 1)
+                .unwrap_or_default()
     }
 
     pub(super) fn build_indicator_legend_layout(
@@ -862,8 +1396,8 @@ where
             let x_left = self.indicator_label_x(panel.plot.x, value_id);
             let text_end_x = x_left + label.chars().count() as f32 * CHAR_W;
             let y_center = panel.plot.y + PANEL_TITLE_TOP_PAD + TICKER_LEGEND_ROW_H * 0.5;
-            let (visibility, settings, close, row_w) =
-                self.indicator_legend_controls(panel.plot, text_end_x, y_center, false, true);
+            let (_, visibility, settings, close, row_w) =
+                Self::legend_controls(panel.plot, text_end_x, y_center, false, false, true, true);
 
             rows.push(IndicatorLegendRowHit {
                 value_id,
@@ -893,8 +1427,9 @@ where
                 let label = self.indicator_label(primary_panel, true, *value_id);
                 let x_left = self.indicator_label_x(panel.plot.x, *value_id);
                 let text_end_x = x_left + label.chars().count() as f32 * CHAR_W;
-                let (visibility, settings, close, row_w) =
-                    self.indicator_legend_controls(panel.plot, text_end_x, y_center, true, true);
+                let (_, visibility, settings, close, row_w) = Self::legend_controls(
+                    panel.plot, text_end_x, y_center, false, true, true, true,
+                );
 
                 rows.push(IndicatorLegendRowHit {
                     value_id: *value_id,
@@ -917,23 +1452,27 @@ where
         Some(IndicatorLegendLayout { rows })
     }
 
-    fn indicator_legend_controls(
-        &self,
+    fn legend_controls(
         panel: Rectangle,
         text_end_x: f32,
         y_center: f32,
+        has_expand: bool,
         has_visibility: bool,
+        has_settings: bool,
         has_close: bool,
-    ) -> (Rectangle, Rectangle, Rectangle, f32) {
+    ) -> (Rectangle, Rectangle, Rectangle, Rectangle, f32) {
         let x_right = panel.x + panel.width - TICKER_LEGEND_PADDING;
         let free_left = text_end_x + TICKER_LEGEND_PADDING * 2.0;
-        let icon_count = 1 + usize::from(has_visibility) + usize::from(has_close);
+        let icon_count = usize::from(has_expand)
+            + usize::from(has_visibility)
+            + usize::from(has_settings)
+            + usize::from(has_close);
         let icon_pack_w = icon_count as f32 * TICKER_LEGEND_ICON_BOX
             + icon_count.saturating_sub(1) as f32 * TICKER_LEGEND_ICON_GAP;
 
-        let settings_x = free_left.min((x_right - icon_pack_w).max(free_left));
+        let pack_x = free_left.min((x_right - icon_pack_w).max(free_left));
         let first_icon = Rectangle {
-            x: settings_x,
+            x: pack_x,
             y: y_center - TICKER_LEGEND_ICON_BOX * 0.5,
             width: TICKER_LEGEND_ICON_BOX,
             height: TICKER_LEGEND_ICON_BOX,
@@ -944,7 +1483,27 @@ where
             width: 0.0,
             height: 0.0,
         };
-        let mut next_x = settings_x;
+        let mut next_x = pack_x;
+        let expand = if has_expand {
+            let expand = Rectangle {
+                x: next_x,
+                ..first_icon
+            };
+            next_x += TICKER_LEGEND_ICON_BOX + TICKER_LEGEND_ICON_GAP;
+            expand
+        } else {
+            empty_icon()
+        };
+        let settings = if has_settings {
+            let settings = Rectangle {
+                x: next_x,
+                ..first_icon
+            };
+            next_x += TICKER_LEGEND_ICON_BOX + TICKER_LEGEND_ICON_GAP;
+            settings
+        } else {
+            empty_icon()
+        };
         let visibility = if has_visibility {
             let visibility = Rectangle {
                 x: next_x,
@@ -955,11 +1514,6 @@ where
         } else {
             empty_icon()
         };
-        let settings = Rectangle {
-            x: next_x,
-            ..first_icon
-        };
-        next_x += TICKER_LEGEND_ICON_BOX + TICKER_LEGEND_ICON_GAP;
         let close = if has_close {
             Rectangle {
                 x: next_x,
@@ -968,13 +1522,14 @@ where
         } else {
             empty_icon()
         };
-        let content_right = if has_close {
-            close.x + close.width
-        } else {
-            settings.x + settings.width
-        };
+        let content_right = [expand, settings, visibility, close]
+            .iter()
+            .filter(|rect| rect.width > 0.0)
+            .map(|rect| rect.x + rect.width)
+            .max_by(f32::total_cmp)
+            .unwrap_or(settings.x + settings.width);
         let row_w = (content_right + TICKER_LEGEND_PADDING - panel.x).clamp(0.0, panel.width);
-        (visibility, settings, close, row_w)
+        (expand, visibility, settings, close, row_w)
     }
 
     pub(super) fn hit_indicator_legend(
@@ -1260,7 +1815,7 @@ where
     fn draw_legend_icon_button(
         frame: &mut canvas::Frame,
         rect: Rectangle,
-        icon: style::Icon,
+        content: LegendButtonContent,
         hovered: bool,
         palette: &Extended,
     ) {
@@ -1269,15 +1824,19 @@ where
         } else {
             palette.background.base.text
         };
+        let (content, font) = match content {
+            LegendButtonContent::Icon(icon) => (char::from(icon).to_string(), style::ICONS_FONT),
+            LegendButtonContent::Text(content) => (content.to_string(), iced::Font::DEFAULT),
+        };
 
         frame.fill_text(canvas::Text {
-            content: char::from(icon).to_string(),
+            content,
             position: Point::new(rect.x + rect.width * 0.5, rect.y + rect.height * 0.5),
             color: text,
             size: TEXT_SIZE.into(),
             align_x: iced::Alignment::Center.into(),
             align_y: iced::Alignment::Center.into(),
-            font: style::ICONS_FONT,
+            font,
             ..Default::default()
         });
     }
@@ -1300,15 +1859,21 @@ where
             height: rect.height,
         };
 
+        let show_buttons = scene.interaction.hovering_ticker_legend;
         let bg = to_root(legend.bg);
-        frame.fill_rectangle(
-            bg.position(),
-            bg.size(),
-            palette.background.weakest.color.scale_alpha(0.9),
-        );
+        let bg = if show_buttons {
+            let width = legend
+                .rows
+                .iter()
+                .map(|row| row.row_rect.width)
+                .fold(0.0, f32::max);
+            Rectangle { width, ..bg }
+        } else {
+            bg
+        };
+        frame.fill_rectangle(bg.position(), bg.size(), legend_background_color(palette));
 
         let target_x_unit = scene.interaction.cursor.map(|cursor| cursor.x_unit);
-        let show_buttons = scene.interaction.hovering_ticker_legend;
         let row_hover_fill = palette.background.strong.color.scale_alpha(0.22);
 
         for (index, row) in legend.rows.iter().enumerate() {
@@ -1441,7 +2006,7 @@ where
                 Self::draw_legend_icon_button(
                     frame,
                     settings_root,
-                    TickerLegendIconKind::Settings.icon(),
+                    TickerLegendIconKind::Settings.icon(true),
                     settings_hovered,
                     palette,
                 );
@@ -1452,12 +2017,17 @@ where
                     } else {
                         TickerLegendIconKind::Close
                     };
+                    let secondary_content = if index == 0 {
+                        secondary_kind.icon(self.candlesticks_visible)
+                    } else {
+                        secondary_kind.icon(true)
+                    };
                     let close_hovered =
                         scene.interaction.hovered_ticker_icon == Some((index, secondary_kind));
                     Self::draw_legend_icon_button(
                         frame,
                         close_root,
-                        secondary_kind.icon(),
+                        secondary_content,
                         close_hovered,
                         palette,
                     );
@@ -1484,22 +2054,30 @@ where
         };
         let row_rect = to_root(legend.row.row_rect);
         let hovered_row = scene.interaction.hovering_footprint_legend;
+        let label = format!("Footprint · {}", legend.cluster_kind);
+        let content_end_x = if hovered_row {
+            let hide = to_root(legend.row.hide);
+            hide.x + hide.width
+        } else {
+            row_rect.x + TOOLTIP_ROW_LEFT_PAD + label.chars().count() as f32 * CHAR_W
+        };
+        let background = legend_row_background(row_rect, content_end_x);
         frame.fill_rectangle(
-            row_rect.position(),
-            row_rect.size(),
-            palette.background.weakest.color.scale_alpha(0.9),
+            background.position(),
+            background.size(),
+            legend_background_color(palette),
         );
 
         if hovered_row {
             frame.fill_rectangle(
-                row_rect.position(),
-                row_rect.size(),
+                background.position(),
+                background.size(),
                 palette.background.strong.color.scale_alpha(0.22),
             );
         }
 
         frame.fill_text(canvas::Text {
-            content: format!("Footprint · {}", legend.cluster_kind),
+            content: label,
             position: Point::new(
                 row_rect.x + TOOLTIP_ROW_LEFT_PAD,
                 row_rect.y + row_rect.height * 0.5,
@@ -1531,7 +2109,7 @@ where
         Self::draw_legend_icon_button(
             frame,
             settings,
-            FootprintLegendIconKind::Settings.icon(),
+            FootprintLegendIconKind::Settings.icon(true),
             settings_hovered,
             palette,
         );
@@ -1540,10 +2118,219 @@ where
         Self::draw_legend_icon_button(
             frame,
             hide,
-            FootprintLegendIconKind::Hide.icon(),
+            FootprintLegendIconKind::Hide.icon(self.footprints_visible),
             hide_hovered,
             palette,
         );
+    }
+
+    pub(super) fn fill_study_legend(
+        &self,
+        frame: &mut canvas::Frame,
+        scene: &Scene,
+        palette: &Extended,
+    ) {
+        let Some(legend) = scene.chrome.study_legend.as_ref() else {
+            return;
+        };
+
+        let to_root = |rect: Rectangle| Rectangle {
+            x: scene.layout.regions.plot.x + rect.x,
+            y: scene.layout.regions.plot.y + rect.y,
+            width: rect.width,
+            height: rect.height,
+        };
+        let show_buttons = scene.interaction.hovering_study_legend;
+        let row_hover_fill = palette.background.strong.color.scale_alpha(0.22);
+        let category_rect = to_root(legend.category.row_rect);
+        let category_hovered = scene.interaction.hovered_study_row.is_none();
+        let category_label = "Studies";
+        let count_badge = to_root(legend.category.count_badge);
+        let count_badge_end_x = count_badge.x + count_badge.width;
+        let category_content_end_x = if show_buttons && category_hovered {
+            [
+                legend.category.expand,
+                legend.category.visibility,
+                legend.category.close,
+            ]
+            .iter()
+            .map(|rect| {
+                let rect = to_root(*rect);
+                rect.x + rect.width
+            })
+            .max_by(f32::total_cmp)
+            .unwrap_or(count_badge_end_x)
+        } else {
+            count_badge_end_x
+        };
+        let category_background = legend_row_background(category_rect, category_content_end_x);
+
+        frame.fill_rectangle(
+            category_background.position(),
+            category_background.size(),
+            legend_background_color(palette),
+        );
+
+        if show_buttons && category_hovered {
+            let highlight = Rectangle {
+                x: category_background.x + 1.0,
+                y: category_background.y,
+                width: (category_background.width - 2.0).max(0.0),
+                height: category_background.height,
+            };
+            frame.fill_rectangle(highlight.position(), highlight.size(), row_hover_fill);
+        }
+
+        frame.fill_text(canvas::Text {
+            content: category_label.to_string(),
+            position: Point::new(
+                category_rect.x + TOOLTIP_ROW_LEFT_PAD,
+                category_rect.y + category_rect.height * 0.5,
+            ),
+            color: palette.background.base.text,
+            size: TEXT_SIZE.into(),
+            align_x: iced::Alignment::Start.into(),
+            align_y: iced::Alignment::Center.into(),
+            font: style::AZERET_MONO,
+            ..Default::default()
+        });
+
+        frame.fill_rectangle(
+            count_badge.position(),
+            count_badge.size(),
+            palette.background.strong.color.scale_alpha(0.65),
+        );
+        frame.fill_text(canvas::Text {
+            content: legend.study_count.to_string(),
+            position: Point::new(
+                count_badge.x + count_badge.width * 0.5,
+                count_badge.y + count_badge.height * 0.5,
+            ),
+            color: palette.background.strongest.text,
+            size: (TEXT_SIZE - 1.0).into(),
+            align_x: iced::Alignment::Center.into(),
+            align_y: iced::Alignment::Center.into(),
+            font: style::AZERET_MONO,
+            ..Default::default()
+        });
+
+        if show_buttons && category_hovered {
+            let expand = to_root(legend.category.expand);
+            let visibility = to_root(legend.category.visibility);
+            let close = to_root(legend.category.close);
+            Self::draw_legend_icon_button(
+                frame,
+                expand,
+                StudiesLegendIconKind::ExpandCollapse.icon(legend.category.expanded),
+                scene.interaction.hovered_studies_icon
+                    == Some(StudiesLegendIconKind::ExpandCollapse),
+                palette,
+            );
+            Self::draw_legend_icon_button(
+                frame,
+                visibility,
+                StudiesLegendIconKind::Visibility.icon(legend.category.visible),
+                scene.interaction.hovered_studies_icon == Some(StudiesLegendIconKind::Visibility),
+                palette,
+            );
+            Self::draw_legend_icon_button(
+                frame,
+                close,
+                StudiesLegendIconKind::Close.icon(legend.category.visible),
+                scene.interaction.hovered_studies_icon == Some(StudiesLegendIconKind::Close),
+                palette,
+            );
+        }
+
+        for (index, row) in legend.rows.iter().enumerate() {
+            let Some(study) = self.studies.iter().find(|study| study.id() == row.study_id) else {
+                continue;
+            };
+
+            let row_rect = to_root(row.row_rect);
+            let hovered_row = scene.interaction.hovered_study_row == Some(index);
+            let label = study.to_string();
+            let label_end_x =
+                row_rect.x + TOOLTIP_ROW_LEFT_PAD + label.chars().count() as f32 * CHAR_W;
+            let content_end_x = if show_buttons && hovered_row {
+                [row.visibility, row.settings, row.close]
+                    .iter()
+                    .map(|rect| {
+                        let rect = to_root(*rect);
+                        rect.x + rect.width
+                    })
+                    .max_by(f32::total_cmp)
+                    .unwrap_or(label_end_x)
+            } else {
+                label_end_x
+            };
+            let background = legend_row_background(row_rect, content_end_x);
+
+            frame.fill_rectangle(
+                background.position(),
+                background.size(),
+                legend_background_color(palette),
+            );
+
+            if show_buttons && hovered_row {
+                let highlight = Rectangle {
+                    x: background.x + 1.0,
+                    y: background.y,
+                    width: (background.width - 2.0).max(0.0),
+                    height: background.height,
+                };
+                frame.fill_rectangle(highlight.position(), highlight.size(), row_hover_fill);
+            }
+
+            frame.fill_text(canvas::Text {
+                content: label,
+                position: Point::new(
+                    row_rect.x + TOOLTIP_ROW_LEFT_PAD,
+                    row_rect.y + row_rect.height * 0.5,
+                ),
+                color: palette.background.base.text.scale_alpha(if row.visible {
+                    1.0
+                } else {
+                    HIDDEN_LEGEND_ALPHA
+                }),
+                size: TEXT_SIZE.into(),
+                align_x: iced::Alignment::Start.into(),
+                align_y: iced::Alignment::Center.into(),
+                font: style::AZERET_MONO,
+                ..Default::default()
+            });
+
+            if !show_buttons || !hovered_row {
+                continue;
+            }
+
+            let visibility = to_root(row.visibility);
+            let settings = to_root(row.settings);
+            let close = to_root(row.close);
+            Self::draw_legend_icon_button(
+                frame,
+                visibility,
+                StudyLegendIconKind::Visibility.icon(row.visible),
+                scene.interaction.hovered_study_icon
+                    == Some((index, StudyLegendIconKind::Visibility)),
+                palette,
+            );
+            Self::draw_legend_icon_button(
+                frame,
+                settings,
+                StudyLegendIconKind::Settings.icon(row.visible),
+                scene.interaction.hovered_study_icon
+                    == Some((index, StudyLegendIconKind::Settings)),
+                palette,
+            );
+            Self::draw_legend_icon_button(
+                frame,
+                close,
+                StudyLegendIconKind::Close.icon(row.visible),
+                scene.interaction.hovered_study_icon == Some((index, StudyLegendIconKind::Close)),
+                palette,
+            );
+        }
     }
 
     pub(super) fn fill_indicator_legend(
@@ -1569,13 +2356,27 @@ where
         for (index, row) in legend.rows.iter().enumerate() {
             let row_rect = to_root(row.row_rect);
             let hovered_row = scene.interaction.hovered_indicator_row == Some(index);
+            let content_end_x = self.indicator_legend_content_end_x(
+                scene,
+                row,
+                row_rect,
+                show_buttons,
+                hovered_row,
+            );
+            let background = legend_row_background(row_rect, content_end_x);
+
+            frame.fill_rectangle(
+                background.position(),
+                background.size(),
+                legend_background_color(palette),
+            );
 
             if show_buttons && hovered_row {
                 let highlight = Rectangle {
-                    x: row_rect.x + 1.0,
-                    y: row_rect.y,
-                    width: (row_rect.width - 2.0).max(0.0),
-                    height: row_rect.height,
+                    x: background.x + 1.0,
+                    y: background.y,
+                    width: (background.width - 2.0).max(0.0),
+                    height: background.height,
                 };
                 frame.fill_rectangle(highlight.position(), highlight.size(), row_hover_fill);
             }
@@ -1606,18 +2407,6 @@ where
                     });
                 }
 
-                let base_bar = scene.interaction.cursor.and_then(|cursor| {
-                    self.series.first().and_then(|series| {
-                        self.bar_at_or_before_unit(series, scene.x.axis, cursor.x_unit)
-                    })
-                });
-                let primary_anchor = scene
-                    .primary
-                    .series_percent_anchors
-                    .first()
-                    .copied()
-                    .flatten();
-                let precision = self.panel_value_precision(scene.primary.panel_index);
                 let mut x = label_x;
 
                 for channel in self
@@ -1651,32 +2440,11 @@ where
                         continue;
                     }
 
-                    let Some(value) = base_bar.and_then(|bar| {
-                        self.series.first().and_then(|series| {
-                            self.indicator_data_for_series(series, Some(row.value_id), bar)
-                                .and_then(|data| {
-                                    self.overlay_channel_value(row.value_id, data, channel)
-                                })
-                        })
-                    }) else {
+                    let Some(value_text) =
+                        self.primary_overlay_value_text(scene, row.value_id, channel)
+                    else {
                         continue;
                     };
-
-                    let value_text =
-                        if matches!(scene.primary.mode, PanelScaleMode::PercentFromBase)
-                            && primary_anchor
-                                .map(|anchor| anchor.abs() > f32::EPSILON)
-                                .unwrap_or(false)
-                        {
-                            let anchor = primary_anchor.unwrap_or(1.0);
-                            format!("{:+.2}%", ((value / anchor) - 1.0) * 100.0)
-                        } else {
-                            self.format_panel_header_value(
-                                scene.primary.panel_index,
-                                precision,
-                                value,
-                            )
-                        };
 
                     frame.fill_text(canvas::Text {
                         content: value_text.clone(),
@@ -1690,6 +2458,8 @@ where
                     });
                     x += value_text.chars().count() as f32 * CHAR_W + 6.0;
                 }
+            } else {
+                self.fill_indicator_panel_title(frame, scene, row, row_rect, palette);
             }
 
             if show_buttons && hovered_row {

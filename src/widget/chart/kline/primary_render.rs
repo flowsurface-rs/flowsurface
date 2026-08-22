@@ -1,6 +1,9 @@
 use super::footprint::{draw_footprint_candle, draw_footprint_cluster_row};
+use super::scene::IndicatorPanelScene;
 use super::*;
-use data::chart::kline_v2::IndicatorColorSlot;
+use data::chart::kline_v2::{
+    IndicatorColorSlot, IndicatorFillGeometry, IndicatorFillSpec, LineStrokeStyle,
+};
 use data::util::abbr_large_numbers;
 
 const FOOTPRINT_MIN_COLUMN_WIDTH_PX: f32 = 24.0;
@@ -12,11 +15,85 @@ const FOOTPRINT_TEXT_MIN_COLUMN_WIDTH_PX: f32 = 76.0;
 const TABLE_TEXT_MIN_COLUMN_WIDTH_PX: f32 = 48.0;
 const TABLE_TEXT_MIN_ROW_HEIGHT_PX: f32 = 9.0;
 const TABLE_CELL_INSET_PX: f32 = 1.0;
+const DASHED_LINE_SEGMENTS: [f32; 2] = [8.0, 5.0];
+const DOTTED_LINE_SEGMENTS: [f32; 2] = [1.0, 4.0];
+
+fn indicator_line_stroke(
+    width: f32,
+    style: LineStrokeStyle,
+    color: iced::Color,
+) -> canvas::Stroke<'static> {
+    let mut stroke = canvas::Stroke::default()
+        .with_width(width)
+        .with_color(color);
+    stroke.line_dash = match style {
+        LineStrokeStyle::Solid => canvas::LineDash::default(),
+        LineStrokeStyle::Dashed => canvas::LineDash {
+            segments: &DASHED_LINE_SEGMENTS,
+            offset: 0,
+        },
+        LineStrokeStyle::Dotted => canvas::LineDash {
+            segments: &DOTTED_LINE_SEGMENTS,
+            offset: 0,
+        },
+    };
+    if matches!(style, LineStrokeStyle::Dotted) {
+        stroke.line_cap = canvas::LineCap::Round;
+    }
+    stroke
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PrimaryPlotDetail {
     CandleOnly,
     Footprint,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BandPoint {
+    upper: Point,
+    lower: Point,
+}
+
+fn fill_static_band(
+    frame: &mut canvas::Frame,
+    plot: Rectangle,
+    upper_y: f32,
+    lower_y: f32,
+    color: iced::Color,
+) {
+    let top = upper_y.min(lower_y);
+    let height = (upper_y - lower_y).abs();
+    if !top.is_finite() || !height.is_finite() || height <= 0.0 {
+        return;
+    }
+
+    frame.fill_rectangle(
+        Point::new(plot.x, top),
+        Size::new(plot.width, height),
+        color,
+    );
+}
+
+fn fill_band_segments(
+    frame: &mut canvas::Frame,
+    segments: Vec<Vec<BandPoint>>,
+    color: iced::Color,
+) {
+    for segment in segments.into_iter().filter(|segment| segment.len() >= 2) {
+        let path = canvas::Path::new(|builder| {
+            builder.move_to(segment[0].upper);
+            for point in segment.iter().skip(1) {
+                builder.line_to(point.upper);
+            }
+            for point in segment.iter().rev() {
+                builder.line_to(point.lower);
+            }
+            builder.close();
+        });
+
+        frame.fill(&path, color);
+    }
 }
 
 impl<'a, S> KlineWidget<'a, S>
@@ -25,9 +102,6 @@ where
 {
     pub(super) fn primary_plot_detail(&self, scene: &Scene) -> PrimaryPlotDetail {
         if !self.footprints_enabled {
-            return PrimaryPlotDetail::CandleOnly;
-        }
-        if !matches!(scene.primary.mark, MarkKind::Candle | MarkKind::Bar(_)) {
             return PrimaryPlotDetail::CandleOnly;
         }
 
@@ -71,6 +145,224 @@ where
         let next_y = scene
             .map_primary_plot_with_anchor(price.add_steps(1, tick_size).to_f32_lossy(), anchor);
         (current_y - next_y).abs()
+    }
+
+    fn band_segments(
+        &self,
+        scene: &Scene,
+        value_id: PanelValueId,
+        fill: IndicatorFillSpec,
+        mut map_y: impl FnMut(f32) -> Option<f32>,
+    ) -> Vec<Vec<BandPoint>> {
+        let mut segments = Vec::new();
+        let mut segment = Vec::new();
+
+        self.for_each_bar_unit_index(scene.x.axis, |series_index, series, x_unit, bar| {
+            if series_index != 0 || x_unit < scene.x.min_unit || x_unit > scene.x.max_unit {
+                return;
+            }
+
+            let Some(data) = self.indicator_data_for_series(series, Some(value_id), bar) else {
+                if !segment.is_empty() {
+                    segments.push(std::mem::take(&mut segment));
+                }
+                return;
+            };
+
+            let Some(upper_value) = self.indicator_source_value(value_id, Some(data), fill.upper)
+            else {
+                if !segment.is_empty() {
+                    segments.push(std::mem::take(&mut segment));
+                }
+                return;
+            };
+            let Some(lower_value) = self.indicator_source_value(value_id, Some(data), fill.lower)
+            else {
+                if !segment.is_empty() {
+                    segments.push(std::mem::take(&mut segment));
+                }
+                return;
+            };
+
+            let Some(upper_y) = map_y(upper_value) else {
+                if !segment.is_empty() {
+                    segments.push(std::mem::take(&mut segment));
+                }
+                return;
+            };
+            let Some(lower_y) = map_y(lower_value) else {
+                if !segment.is_empty() {
+                    segments.push(std::mem::take(&mut segment));
+                }
+                return;
+            };
+
+            if !upper_y.is_finite() || !lower_y.is_finite() {
+                if !segment.is_empty() {
+                    segments.push(std::mem::take(&mut segment));
+                }
+                return;
+            }
+
+            segment.push(BandPoint {
+                upper: Point::new(scene.map_x_plot(x_unit), upper_y),
+                lower: Point::new(scene.map_x_plot(x_unit), lower_y),
+            });
+        });
+
+        if !segment.is_empty() {
+            segments.push(segment);
+        }
+
+        segments
+    }
+
+    fn fill_indicator_panel_background(
+        &self,
+        frame: &mut canvas::Frame,
+        scene: &Scene,
+        indicator_panel: &IndicatorPanelScene,
+        palette: &Extended,
+        generated_accents: &[iced::Color; 6],
+    ) {
+        if self.indicator_is_unavailable(indicator_panel.value_id)
+            || matches!(indicator_panel.presentation, PanelPresentation::Table)
+        {
+            return;
+        }
+
+        let Some(value_id) = indicator_panel.value_id else {
+            return;
+        };
+        if !self.indicator_fill_visible(value_id) {
+            return;
+        }
+        let Some(panel_plot) = scene
+            .layout
+            .panel(indicator_panel.panel_index)
+            .map(|panel| panel.plot)
+        else {
+            return;
+        };
+
+        for fill in self
+            .fill_specs_for_panel_value(Some(value_id))
+            .iter()
+            .copied()
+        {
+            let color = self
+                .indicator_color(Some(value_id), fill.color_slot, palette, generated_accents)
+                .scale_alpha(fill.opacity.clamp(0.0, 1.0));
+
+            frame.with_clip(panel_plot, |frame| match fill.geometry {
+                IndicatorFillGeometry::PanelBand => {
+                    let Some(upper_value) = self.indicator_source_value(value_id, None, fill.upper)
+                    else {
+                        return;
+                    };
+                    let Some(lower_value) = self.indicator_source_value(value_id, None, fill.lower)
+                    else {
+                        return;
+                    };
+                    let Some(upper_y) =
+                        scene.map_indicator_plot(indicator_panel.panel_index, upper_value)
+                    else {
+                        return;
+                    };
+                    let Some(lower_y) =
+                        scene.map_indicator_plot(indicator_panel.panel_index, lower_value)
+                    else {
+                        return;
+                    };
+
+                    fill_static_band(frame, panel_plot, upper_y, lower_y, color);
+                }
+                IndicatorFillGeometry::SeriesBand => {
+                    let segments = self.band_segments(scene, value_id, fill, |value| {
+                        scene.map_indicator_plot(indicator_panel.panel_index, value)
+                    });
+                    fill_band_segments(frame, segments, color);
+                }
+            });
+        }
+    }
+
+    fn fill_primary_overlay_backgrounds(
+        &self,
+        frame: &mut canvas::Frame,
+        scene: &Scene,
+        palette: &Extended,
+        generated_accents: &[iced::Color; 6],
+    ) {
+        let Some(primary_panel_id) = self.composition.primary_panel_id() else {
+            return;
+        };
+        let Some(primary_panel) = self.composition.panel(primary_panel_id) else {
+            return;
+        };
+        let primary_plot = *scene.primary_plot();
+        let base_series_anchor = scene
+            .primary
+            .series_percent_anchors
+            .first()
+            .copied()
+            .flatten();
+
+        frame.with_clip(primary_plot, |frame| {
+            for layer in &primary_panel.layers {
+                if !layer.visible {
+                    continue;
+                }
+
+                let Some(value_id) = layer.source.indicator_value_id() else {
+                    continue;
+                };
+                if !self.indicator_fill_visible(value_id) {
+                    continue;
+                }
+
+                for fill in self
+                    .fill_specs_for_panel_value(Some(value_id))
+                    .iter()
+                    .copied()
+                {
+                    let color = self
+                        .indicator_color(
+                            Some(value_id),
+                            fill.color_slot,
+                            palette,
+                            generated_accents,
+                        )
+                        .scale_alpha(fill.opacity.clamp(0.0, 1.0));
+
+                    match fill.geometry {
+                        IndicatorFillGeometry::PanelBand => {
+                            let Some(upper_value) =
+                                self.indicator_source_value(value_id, None, fill.upper)
+                            else {
+                                continue;
+                            };
+                            let Some(lower_value) =
+                                self.indicator_source_value(value_id, None, fill.lower)
+                            else {
+                                continue;
+                            };
+                            let upper_y =
+                                scene.map_primary_plot_with_anchor(upper_value, base_series_anchor);
+                            let lower_y =
+                                scene.map_primary_plot_with_anchor(lower_value, base_series_anchor);
+                            fill_static_band(frame, primary_plot, upper_y, lower_y, color);
+                        }
+                        IndicatorFillGeometry::SeriesBand => {
+                            let segments = self.band_segments(scene, value_id, fill, |value| {
+                                Some(scene.map_primary_plot_with_anchor(value, base_series_anchor))
+                            });
+                            fill_band_segments(frame, segments, color);
+                        }
+                    }
+                }
+            }
+        });
     }
 
     pub(super) fn candlestick_color(
@@ -135,6 +427,8 @@ where
         let footprint_width =
             (scene.logical_bar_spacing() - FOOTPRINT_CELL_INSET_PX * 2.0).max(1.0);
         let show_text = scene.logical_bar_spacing() >= FOOTPRINT_TEXT_MIN_COLUMN_WIDTH_PX;
+        let draw_candlesticks = self.candlesticks_visible
+            && matches!(scene.primary.mark, MarkKind::Candle | MarkKind::Bar(_));
 
         frame.with_clip(primary_plot, |frame| {
             self.for_each_bar_unit_index(scene.x.axis, |series_index, series, x_unit, bar| {
@@ -157,7 +451,7 @@ where
                 let y_close =
                     scene.map_primary_plot_with_anchor(bar.close.to_f32_lossy(), series_anchor);
                 let Some(footprint) = series.footprint_for_bar(bar) else {
-                    if self.candlesticks_visible {
+                    if draw_candlesticks {
                         draw_footprint_candle(
                             frame,
                             scene.map_x_plot(x_unit),
@@ -199,7 +493,7 @@ where
                     }
                 }
 
-                if self.candlesticks_visible {
+                if draw_candlesticks {
                     draw_footprint_candle(
                         frame,
                         x_center,
@@ -361,13 +655,7 @@ where
             return;
         }
 
-        let Some(config) = self
-            .studies
-            .iter()
-            .find_map(|study| study.footprint_poc_config())
-        else {
-            return;
-        };
+        let config = self.footprint_poc_config;
         if !config.show_poc && !config.show_npoc {
             return;
         }
@@ -495,7 +783,7 @@ where
             Price::from_f32(highest_value),
         );
         let visible_profile = self.studies.iter().find_map(|study| {
-            if !study.is_volume_profile() {
+            if !study.visible() || !study.is_volume_profile() {
                 return None;
             }
 
@@ -521,7 +809,7 @@ where
         let recurring_intervals = self
             .studies
             .iter()
-            .filter(|study| study.is_volume_profile())
+            .filter(|study| study.visible() && study.is_volume_profile())
             .filter_map(|study| match study.volume_profile_schedule() {
                 VolumeProfileSchedule::VisibleRange => None,
                 VolumeProfileSchedule::Recurring { interval }
@@ -852,6 +1140,17 @@ where
             |x_unit: i64| x_unit >= scene.x.min_unit && x_unit <= scene.x.max_unit;
 
         for indicator_panel in &scene.indicator_panels {
+            self.fill_indicator_panel_background(
+                frame,
+                scene,
+                indicator_panel,
+                palette,
+                generated_accents,
+            );
+        }
+        self.fill_primary_overlay_backgrounds(frame, scene, palette, generated_accents);
+
+        for indicator_panel in &scene.indicator_panels {
             if self.indicator_is_unavailable(indicator_panel.value_id) {
                 continue;
             }
@@ -1007,7 +1306,10 @@ where
                         .copied()
                     {
                         let (channel_line_width, channel_line_width_phys) =
-                            Self::quantized_stroke_width(channel.line_width, pixel_ratio);
+                            Self::quantized_stroke_width(
+                                self.indicator_line_width(Some(value_id), channel),
+                                pixel_ratio,
+                            );
                         let mut point_count = 0usize;
                         let path = canvas::Path::new(|builder| {
                             self.for_each_bar_unit_index(
@@ -1063,14 +1365,16 @@ where
 
                         frame.stroke(
                             &path,
-                            canvas::Stroke::default()
-                                .with_width(channel_line_width)
-                                .with_color(self.overlay_channel_color(
+                            indicator_line_stroke(
+                                channel_line_width,
+                                self.indicator_stroke_style(Some(value_id), channel),
+                                self.overlay_channel_color(
                                     Some(value_id),
                                     channel,
                                     palette,
                                     generated_accents,
-                                )),
+                                ),
+                            ),
                         );
                     }
                 }
@@ -1161,9 +1465,10 @@ where
         frame.with_clip(primary_plot, |frame| {
             for series_index in 0..self.series.len() {
                 let is_base_series = series_index == 0;
-                let requested_line_width = if is_base_series { 1.5 } else { 1.3 };
-                let (line_width, line_width_phys) =
-                    Self::quantized_stroke_width(requested_line_width, pixel_ratio);
+                let (line_width, line_width_phys) = Self::quantized_stroke_width(
+                    f32::from(self.series[series_index].series_line_width()),
+                    pixel_ratio,
+                );
                 let mut point_count = 0usize;
 
                 let path = canvas::Path::new(|builder| {
@@ -1223,9 +1528,11 @@ where
 
                 frame.stroke(
                     &path,
-                    canvas::Stroke::default()
-                        .with_width(line_width)
-                        .with_color(line_color),
+                    indicator_line_stroke(
+                        line_width,
+                        self.series[series_index].series_stroke_style(),
+                        line_color,
+                    ),
                 );
             }
         });
@@ -1252,13 +1559,13 @@ where
             };
 
             frame.with_clip(panel_plot, |frame| {
-                for channel in self
-                    .overlay_channels_for_panel_value(indicator_panel.value_id)
-                    .iter()
-                    .copied()
-                {
+                let line_channels = self.line_channels_for_panel_value(indicator_panel.value_id);
+                for channel in line_channels.iter().copied() {
                     let (channel_line_width, channel_line_width_phys) =
-                        Self::quantized_stroke_width(channel.line_width, pixel_ratio);
+                        Self::quantized_stroke_width(
+                            self.indicator_line_width(indicator_panel.value_id, channel),
+                            pixel_ratio,
+                        );
                     let mut point_count = 0usize;
 
                     let path = canvas::Path::new(|builder| {
@@ -1323,14 +1630,16 @@ where
 
                     frame.stroke(
                         &path,
-                        canvas::Stroke::default()
-                            .with_width(channel_line_width)
-                            .with_color(self.overlay_channel_color(
+                        indicator_line_stroke(
+                            channel_line_width,
+                            self.indicator_stroke_style(indicator_panel.value_id, channel),
+                            self.overlay_channel_color(
                                 indicator_panel.value_id,
                                 channel,
                                 palette,
                                 generated_accents,
-                            )),
+                            ),
+                        ),
                     );
                 }
             });

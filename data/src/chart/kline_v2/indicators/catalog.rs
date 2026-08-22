@@ -35,6 +35,7 @@ macro_rules! define_indicator_catalog {
                     colors: $colors:path,
                     marks: $marks:path,
                     channels: $channels:path,
+                    fills: $fills:path,
                     uses_directional_volume: $uses_directional_volume:expr
                 }
             ),+ $(,)?
@@ -315,6 +316,24 @@ macro_rules! define_indicator_catalog {
             }
         }
 
+        pub fn input_source_category(indicator: KlineIndicator) -> &'static str {
+            let inputs = input_requirements(indicator);
+            let has_klines = inputs.contains(&IndicatorInputSource::Klines);
+            let has_trades = inputs.contains(&IndicatorInputSource::Trades);
+            let has_open_interest = inputs.contains(&IndicatorInputSource::OpenInterest);
+
+            match (has_klines, has_trades, has_open_interest) {
+                (true, false, false) => "Kline data",
+                (false, true, false) => "Trade data",
+                (false, false, true) => "Open interest data",
+                (true, true, false) => "Kline + trade data",
+                (true, false, true) => "Kline + open interest data",
+                (false, true, true) => "Trade + open interest data",
+                (true, true, true) => "Kline + trade + open interest data",
+                (false, false, false) => "Other",
+            }
+        }
+
         pub fn color_specs(
             indicator: KlineIndicator,
         ) -> &'static [super::super::IndicatorColorSpec] {
@@ -336,6 +355,14 @@ macro_rules! define_indicator_catalog {
         ) -> &'static [super::IndicatorOverlayChannelSpec] {
             match indicator {
                 $(KlineIndicator::$variant => &$channels,)+
+            }
+        }
+
+        pub fn fill_specs(
+            indicator: KlineIndicator,
+        ) -> &'static [super::IndicatorFillSpec] {
+            match indicator {
+                $(KlineIndicator::$variant => &$fills,)+
             }
         }
 
@@ -450,6 +477,7 @@ define_indicator_catalog! {
             colors: super::volume::COLOR_SPECS,
             marks: super::volume::MARK_SPECS,
             channels: super::NO_OVERLAY_CHANNELS,
+            fills: super::NO_FILL_SPECS,
             uses_directional_volume: true
         },
         BollingerBands => {
@@ -469,6 +497,7 @@ define_indicator_catalog! {
             colors: super::bollinger::COLOR_SPECS,
             marks: super::NO_MARK_SPECS,
             channels: super::bollinger::OVERLAY_CHANNELS,
+            fills: super::bollinger::FILL_SPECS,
             uses_directional_volume: false
         },
         MovingAverages => {
@@ -488,6 +517,7 @@ define_indicator_catalog! {
             colors: super::moving_averages::COLOR_SPECS,
             marks: super::NO_MARK_SPECS,
             channels: super::moving_averages::OVERLAY_CHANNELS,
+            fills: super::NO_FILL_SPECS,
             uses_directional_volume: false
         },
         Rsi => {
@@ -517,6 +547,7 @@ define_indicator_catalog! {
             colors: super::rsi::COLOR_SPECS,
             marks: super::rsi::MARK_SPECS,
             channels: super::rsi::OVERLAY_CHANNELS,
+            fills: super::rsi::FILL_SPECS,
             uses_directional_volume: false
         },
         StochRsi => {
@@ -546,6 +577,7 @@ define_indicator_catalog! {
             colors: super::stoch_rsi::COLOR_SPECS,
             marks: super::stoch_rsi::MARK_SPECS,
             channels: super::stoch_rsi::OVERLAY_CHANNELS,
+            fills: super::stoch_rsi::FILL_SPECS,
             uses_directional_volume: false
         },
         Atr => {
@@ -573,6 +605,7 @@ define_indicator_catalog! {
             colors: super::atr::COLOR_SPECS,
             marks: super::atr::MARK_SPECS,
             channels: super::atr::OVERLAY_CHANNELS,
+            fills: super::NO_FILL_SPECS,
             uses_directional_volume: false
         },
         AnchoredVwap => {
@@ -592,6 +625,7 @@ define_indicator_catalog! {
             colors: super::anchored_vwap::COLOR_SPECS,
             marks: super::NO_MARK_SPECS,
             channels: super::anchored_vwap::OVERLAY_CHANNELS,
+            fills: super::NO_FILL_SPECS,
             uses_directional_volume: false
         },
         OpenInterest => {
@@ -619,6 +653,7 @@ define_indicator_catalog! {
             colors: super::open_interest::COLOR_SPECS,
             marks: super::open_interest::MARK_SPECS,
             channels: super::NO_OVERLAY_CHANNELS,
+            fills: super::NO_FILL_SPECS,
             uses_directional_volume: false
         },
         CumulativeVolumeDelta => {
@@ -646,6 +681,7 @@ define_indicator_catalog! {
             colors: super::cvd::COLOR_SPECS,
             marks: super::cvd::MARK_SPECS,
             channels: super::NO_OVERLAY_CHANNELS,
+            fills: super::NO_FILL_SPECS,
             uses_directional_volume: false
         },
         TradeCount => {
@@ -673,6 +709,7 @@ define_indicator_catalog! {
             colors: super::trade_count::COLOR_SPECS,
             marks: super::trade_count::MARK_SPECS,
             channels: super::NO_OVERLAY_CHANNELS,
+            fills: super::NO_FILL_SPECS,
             uses_directional_volume: false
         },
         BarAnalysis => {
@@ -690,6 +727,7 @@ define_indicator_catalog! {
             colors: super::bar_analysis::COLOR_SPECS,
             marks: super::NO_MARK_SPECS,
             channels: super::NO_OVERLAY_CHANNELS,
+            fills: super::NO_FILL_SPECS,
             uses_directional_volume: false
         },
     }

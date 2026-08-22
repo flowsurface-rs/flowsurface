@@ -1,10 +1,13 @@
 use crate::screen::dashboard::pane::{self, Message};
 use crate::style::{self, Icon, icon_text};
-use crate::widget::{column_drag, dragger_row};
+use crate::{
+    split_column,
+    widget::{column_drag, dragger_row},
+};
 
 use data::chart::indicator::UiIndicator;
 use iced::{
-    Element, Length, padding,
+    Alignment, Element, Length, padding,
     widget::{button, column, container, pane_grid, row, space, text},
 };
 use std::fmt::Display;
@@ -13,6 +16,9 @@ pub trait IndicatorItem: PartialEq + Display + Copy + 'static {
     fn for_market(market: exchange::adapter::MarketKind) -> &'static [Self];
     fn toggle_event(self) -> pane::Event;
     fn is_allowed(content: &pane::Content, indicator: Self) -> bool;
+    fn category(self) -> Option<&'static str> {
+        None
+    }
 }
 
 impl IndicatorItem for data::chart::indicator::KlineIndicator {
@@ -40,20 +46,6 @@ impl IndicatorItem for data::chart::indicator::HeatmapIndicator {
 
     fn is_allowed(content: &pane::Content, indicator: Self) -> bool {
         content.allows_indicator(UiIndicator::Heatmap(indicator))
-    }
-}
-
-impl IndicatorItem for crate::chart::kline_v2::KlineIndicator {
-    fn for_market(market: exchange::adapter::MarketKind) -> &'static [Self] {
-        data::chart::kline_v2::KlineIndicator::for_market(market)
-    }
-
-    fn toggle_event(self) -> pane::Event {
-        pane::Event::ToggleKlineV2Indicator(self)
-    }
-
-    fn is_allowed(content: &pane::Content, indicator: Self) -> bool {
-        content.allows_kline_v2_indicator(indicator)
     }
 }
 
@@ -147,16 +139,35 @@ fn available_list<'a, I>(pane: pane_grid::Pane, available: &[I]) -> Element<'a, 
 where
     I: IndicatorItem,
 {
-    let elements: Vec<Element<_>> = available
-        .iter()
-        .map(|indicator| {
-            let base = build_indicator_row(pane, indicator, false);
-            dragger_row(base, false)
-        })
-        .collect();
+    let mut groups: Vec<(&'static str, Vec<I>)> = Vec::new();
+    for indicator in available.iter().copied() {
+        let category = I::category(indicator).unwrap_or("Other");
+        if let Some((_, indicators)) = groups
+            .iter_mut()
+            .find(|(existing, _)| *existing == category)
+        {
+            indicators.push(indicator);
+        } else {
+            groups.push((category, vec![indicator]));
+        }
+    }
+
+    let mut elements: Vec<Element<'a, Message>> = Vec::new();
+    for (category, indicators) in groups {
+        if available
+            .iter()
+            .any(|indicator| I::category(*indicator).is_some())
+        {
+            elements.push(text(category).size(crate::style::text_size::SECTION).into());
+        }
+        for indicator in indicators {
+            let base = build_indicator_row(pane, &indicator, false);
+            elements.push(dragger_row(base, false));
+        }
+    }
 
     iced::widget::Column::with_children(elements)
-        .spacing(4)
+        .spacing(8)
         .into()
 }
 
@@ -195,18 +206,33 @@ where
         None
     };
 
-    let mut col = iced::widget::Column::new();
-    if let Some(sel) = selected_list {
-        col = col.push(sel);
-    }
-    if let Some(avail) = available_list {
-        col = col.push(avail);
-    }
+    let sections: Element<'a, Message> = match (selected_list, available_list) {
+        (Some(selected), Some(available)) => split_column![
+            column![text("Active").size(crate::style::text_size::SECTION), selected].spacing(4),
+            column![text("Available").size(crate::style::text_size::SECTION), available]
+                .spacing(4),
+            ; spacing = 8, align_x = Alignment::Start
+        ]
+        .into(),
+        (Some(selected), None) => column![
+            text("Active").size(crate::style::text_size::SECTION),
+            selected
+        ]
+        .spacing(4)
+        .into(),
+        (None, Some(available)) => column![
+            text("Available").size(crate::style::text_size::SECTION),
+            available
+        ]
+        .spacing(4)
+        .into(),
+        (None, None) => column![].into(),
+    };
 
     column![
         container(text("Indicators").size(crate::style::text_size::SECTION))
             .padding(padding::bottom(8)),
-        col.spacing(4)
+        sections
     ]
     .spacing(4)
     .into()

@@ -18,7 +18,7 @@ use crate::widget::chart::kline::drawing::{
     KlineWidgetDrawingEvent,
 };
 use axes::horizontal_world_for_drag;
-use chrome::{FootprintLegendHit, IndicatorLegendHit, TickerLegendHit};
+use chrome::{FootprintLegendHit, IndicatorLegendHit, StudyLegendHit, TickerLegendHit};
 use composition::{
     BarMode, ChartComposition, DEFAULT_MIN_PANEL_RATIO, HistogramMode, LayerDataKind, MarkKind,
     PanelId, PanelPresentation, PanelScaleMode, PanelValueId,
@@ -26,7 +26,9 @@ use composition::{
 use data::chart::kline_v2::indicators::{
     IndicatorCellValue, TableColumnColor, TableColumnFormat, TableColumnValue, table_columns,
 };
-use data::chart::kline_v2::{HorizontalWorld, IndicatorInstanceStore, SeriesColor};
+use data::chart::kline_v2::{
+    HorizontalWorld, IndicatorInstanceStore, LineStrokeStyle, MIN_LINE_WIDTH, SeriesColor,
+};
 pub use data::chart::kline_v2::{
     IndicatorOverlayChannelSpec as OverlayChannelSpec,
     IndicatorOverlayColorRole as OverlayChannelColorRole,
@@ -46,8 +48,8 @@ use data::chart::kline_v2::series::{
     AnchoredPriceLevelTradeDistribution, FootprintPocLine, PriceLevelTradeDistribution,
 };
 use data::chart::kline_v2::{
-    CandlestickColorSlot, CandlestickConfig, FootprintPocColorSlot, KlineStudy,
-    VolumeProfileColorConfig, VolumeProfileColorSlot, VolumeProfileSchedule,
+    CandlestickColorSlot, CandlestickConfig, FootprintPocColorSlot, FootprintPocConfig, KlineStudy,
+    KlineStudyId, VolumeProfileColorConfig, VolumeProfileColorSlot, VolumeProfileSchedule,
 };
 pub(crate) use data::chart::kline_v2::{PanelYViewport, YUnit};
 use data::chart::ticks::{
@@ -103,7 +105,15 @@ pub trait KlineSeriesLike {
     fn ticker_info(&self) -> &TickerInfo;
 
     fn series_color(&self) -> SeriesColor {
-        SeriesColor::Base
+        SeriesColor::default()
+    }
+
+    fn series_line_width(&self) -> u8 {
+        MIN_LINE_WIDTH
+    }
+
+    fn series_stroke_style(&self) -> LineStrokeStyle {
+        LineStrokeStyle::Solid
     }
 
     fn bars(&self) -> &[Kline];
@@ -330,6 +340,12 @@ pub enum KlineWidgetEvent {
     IndicatorSettings(PanelValueId),
     IndicatorVisibilityToggled(PanelValueId),
     IndicatorRemove(PanelValueId),
+    StudySettings(KlineStudyId),
+    StudyVisibilityToggled(KlineStudyId),
+    StudyRemove(KlineStudyId),
+    StudiesVisibilityToggled,
+    StudiesExpansionToggled,
+    StudiesRemove,
     XAxisDoubleClick,
     Drawing(KlineWidgetDrawingEvent),
 }
@@ -339,11 +355,13 @@ pub struct KlineWidget<'a, S> {
     composition: &'a ChartComposition,
     indicator_instances: &'a IndicatorInstanceStore,
     studies: &'a [KlineStudy],
+    studies_legend_expanded: bool,
     candlestick_config: CandlestickConfig,
     candlesticks_visible: bool,
     footprints_visible: bool,
     footprints_enabled: bool,
     footprint_cluster_kind: ClusterKind,
+    footprint_poc_config: FootprintPocConfig,
     drawings: DrawingSnapshot<'a>,
     basis: Basis,
     horizontal_world: HorizontalWorld,
@@ -377,11 +395,13 @@ where
             composition,
             indicator_instances,
             studies: &[],
+            studies_legend_expanded: true,
             candlestick_config: CandlestickConfig::default(),
             candlesticks_visible: false,
             footprints_visible: false,
             footprints_enabled: false,
             footprint_cluster_kind: ClusterKind::default(),
+            footprint_poc_config: FootprintPocConfig::default(),
             drawings: DrawingSnapshot::new(DrawingTool::Cursor, &[], None, None),
             basis,
             horizontal_world: HorizontalWorld::new(DEFAULT_BAR_SPACING_PX, 1.0, 0.0),
@@ -400,6 +420,11 @@ where
         self
     }
 
+    pub fn with_studies_legend_expanded(mut self, expanded: bool) -> Self {
+        self.studies_legend_expanded = expanded;
+        self
+    }
+
     pub fn with_candlestick_display(mut self, config: CandlestickConfig) -> Self {
         self.candlestick_config = config;
         self.candlesticks_visible = true;
@@ -409,6 +434,11 @@ where
     pub fn with_footprint_display(mut self, cluster_kind: ClusterKind) -> Self {
         self.footprints_visible = true;
         self.footprint_cluster_kind = cluster_kind;
+        self
+    }
+
+    pub fn with_footprint_poc_config(mut self, config: FootprintPocConfig) -> Self {
+        self.footprint_poc_config = config;
         self
     }
 
@@ -742,12 +772,27 @@ where
                     Self::hit_footprint_legend(&layout_tree, legend, cursor_pos)
                 });
 
+                let study_legend = self.build_study_legend_layout(
+                    &layout_tree,
+                    primary_panel,
+                    self.tooltip_rows_before_studies(
+                        ticker_legend.as_ref(),
+                        footprint_legend.as_ref(),
+                        show_legend_values,
+                    ),
+                    self.studies_legend_expanded,
+                );
+                let study_legend_hit = study_legend
+                    .as_ref()
+                    .and_then(|legend| Self::hit_study_legend(&layout_tree, legend, cursor_pos));
+
                 let mut indicator_legend = self.build_indicator_legend_layout(
                     &layout_tree,
                     primary_panel,
                     self.tooltip_rows_before_indicators(
                         ticker_legend.as_ref(),
                         footprint_legend.as_ref(),
+                        study_legend.as_ref(),
                         show_legend_values,
                     ),
                 );
@@ -762,6 +807,7 @@ where
                         self.tooltip_rows_before_indicators(
                             ticker_legend.as_ref(),
                             footprint_legend.as_ref(),
+                            study_legend.as_ref(),
                             show_legend_values,
                         ),
                     );
@@ -807,7 +853,19 @@ where
                                 }
 
                                 if matches!(zone, LayoutHitZone::PanelPlot(_))
+                                    && footprint_legend_hit.is_some()
+                                {
+                                    return;
+                                }
+
+                                if matches!(zone, LayoutHitZone::PanelPlot(_))
                                     && indicator_legend_hit.is_some()
+                                {
+                                    return;
+                                }
+
+                                if matches!(zone, LayoutHitZone::PanelPlot(_))
+                                    && study_legend_hit.is_some()
                                 {
                                     return;
                                 }
@@ -974,6 +1032,27 @@ where
                             return;
                         }
 
+                        if let Some(StudyLegendHit::CategoryIcon(icon_kind)) = study_legend_hit {
+                            shell.publish(M::from(icon_kind.into_event()));
+                            state.drag_mode = DragMode::None;
+                            state.last_cursor = None;
+                            state.clear_all_caches();
+                            shell.capture_event();
+                            return;
+                        }
+
+                        if let (Some(legend), Some(StudyLegendHit::StudyIcon(row_index, icon_kind))) =
+                            (&study_legend, study_legend_hit)
+                            && let Some(row) = legend.rows.get(row_index)
+                        {
+                            shell.publish(M::from(icon_kind.into_event(row.study_id)));
+                            state.drag_mode = DragMode::None;
+                            state.last_cursor = None;
+                            state.clear_all_caches();
+                            shell.capture_event();
+                            return;
+                        }
+
                         if let (Some(legend), Some(IndicatorLegendHit::Icon(row_index, icon_kind))) =
                             (&indicator_legend, indicator_legend_hit)
                             && let Some(row) = legend.rows.get(row_index)
@@ -1004,6 +1083,12 @@ where
                         }
 
                         if footprint_legend_hit.is_some() {
+                            state.drag_mode = DragMode::None;
+                            state.last_cursor = None;
+                            return;
+                        }
+
+                        if study_legend_hit.is_some() {
                             state.drag_mode = DragMode::None;
                             state.last_cursor = None;
                             return;
@@ -1627,12 +1712,31 @@ where
             return advanced::mouse::Interaction::Pointer;
         }
 
+        let study_legend = self.build_study_legend_layout(
+            &layout_tree,
+            primary_panel,
+            self.tooltip_rows_before_studies(
+                ticker_legend.as_ref(),
+                footprint_legend.as_ref(),
+                show_legend_values,
+            ),
+            self.studies_legend_expanded,
+        );
+        if study_legend
+            .as_ref()
+            .and_then(|legend| Self::hit_study_legend(&layout_tree, legend, cursor_local))
+            .is_some()
+        {
+            return advanced::mouse::Interaction::Pointer;
+        }
+
         let indicator_legend = self.build_indicator_legend_layout(
             &layout_tree,
             primary_panel,
             self.tooltip_rows_before_indicators(
                 ticker_legend.as_ref(),
                 footprint_legend.as_ref(),
+                study_legend.as_ref(),
                 show_legend_values,
             ),
         );

@@ -54,6 +54,12 @@ pub enum MarkKind {
     Line,
 }
 
+impl MarkKind {
+    pub const fn supports_line_styling(self) -> bool {
+        matches!(self, Self::Line)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LayerDataKind {
     Ohlc,

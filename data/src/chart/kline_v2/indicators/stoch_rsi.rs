@@ -3,10 +3,11 @@ use super::super::values::{IndicatorData, STOCH_RSI_D_FIELD_KEY};
 use super::input::{IndicatorInput, KlinePriceSource};
 use super::runtime::{IndicatorDefinition, IndicatorRuntime};
 use super::{
-    IndicatorAvailability, IndicatorColorSlot, IndicatorColorSpec, IndicatorConfigValue,
-    IndicatorMarkSpec, IndicatorOverlayChannelSpec, IndicatorOverlayColorRole,
-    IndicatorOverlaySource, IndicatorSetting, IndicatorSettingChoice, IndicatorSettingControl,
-    IndicatorSettingValue, IndicatorSettingsContext,
+    IndicatorAvailability, IndicatorColorSlot, IndicatorColorSpec, IndicatorConfig,
+    IndicatorConfigValue, IndicatorFillGeometry, IndicatorFillSpec, IndicatorMarkSpec,
+    IndicatorOverlayChannelSpec, IndicatorOverlayColorRole, IndicatorOverlaySource,
+    IndicatorSetting, IndicatorSettingChoice, IndicatorSettingControl, IndicatorSettingValue,
+    IndicatorSettingsContext,
 };
 use crate::chart::kline_v2::composition::{BarMode, MarkKind};
 use exchange::{Kline, UnixMs};
@@ -14,9 +15,15 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 
 const SERIES_MAX_POINTS: usize = 5000;
-const COLOR_SLOTS: [IndicatorColorSlot; 2] = [IndicatorColorSlot::Main, IndicatorColorSlot::Signal];
+const COLOR_SLOTS: [IndicatorColorSlot; 5] = [
+    IndicatorColorSlot::Main,
+    IndicatorColorSlot::Fill,
+    IndicatorColorSlot::Signal,
+    IndicatorColorSlot::Upper,
+    IndicatorColorSlot::Lower,
+];
 
-pub(super) const COLOR_SPECS: [IndicatorColorSpec; 2] = [
+pub(super) const COLOR_SPECS: [IndicatorColorSpec; 5] = [
     IndicatorColorSpec {
         label: "K",
         slot: IndicatorColorSlot::Main,
@@ -24,6 +31,18 @@ pub(super) const COLOR_SPECS: [IndicatorColorSpec; 2] = [
     IndicatorColorSpec {
         label: "D",
         slot: IndicatorColorSlot::Signal,
+    },
+    IndicatorColorSpec {
+        label: "Background fill",
+        slot: IndicatorColorSlot::Fill,
+    },
+    IndicatorColorSpec {
+        label: "Overbought",
+        slot: IndicatorColorSlot::Upper,
+    },
+    IndicatorColorSpec {
+        label: "Oversold",
+        slot: IndicatorColorSlot::Lower,
     },
 ];
 
@@ -40,7 +59,7 @@ pub(super) const MARK_SPECS: [IndicatorMarkSpec; 2] = [
     },
 ];
 
-pub(super) const OVERLAY_CHANNELS: [IndicatorOverlayChannelSpec; 2] = [
+pub(super) const OVERLAY_CHANNELS: [IndicatorOverlayChannelSpec; 4] = [
     IndicatorOverlayChannelSpec {
         label: "K",
         source: IndicatorOverlaySource::Primary,
@@ -55,9 +74,45 @@ pub(super) const OVERLAY_CHANNELS: [IndicatorOverlayChannelSpec; 2] = [
         color_role: IndicatorOverlayColorRole::Primary,
         color_slot: IndicatorColorSlot::Signal,
     },
+    IndicatorOverlayChannelSpec {
+        label: "OB",
+        source: IndicatorOverlaySource::Reference(stoch_rsi_upper_band),
+        line_width: 0.9,
+        color_role: IndicatorOverlayColorRole::Success,
+        color_slot: IndicatorColorSlot::Upper,
+    },
+    IndicatorOverlayChannelSpec {
+        label: "OS",
+        source: IndicatorOverlaySource::Reference(stoch_rsi_lower_band),
+        line_width: 0.9,
+        color_role: IndicatorOverlayColorRole::Danger,
+        color_slot: IndicatorColorSlot::Lower,
+    },
 ];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) const FILL_SPECS: [IndicatorFillSpec; 1] = [IndicatorFillSpec {
+    upper: IndicatorOverlaySource::Reference(stoch_rsi_upper_band),
+    lower: IndicatorOverlaySource::Reference(stoch_rsi_lower_band),
+    geometry: IndicatorFillGeometry::PanelBand,
+    color_slot: IndicatorColorSlot::Fill,
+    opacity: 0.12,
+}];
+
+fn stoch_rsi_upper_band(config: IndicatorConfig) -> f32 {
+    let IndicatorConfig::StochRsi(config) = config else {
+        unreachable!("Stoch RSI must retain its own configuration");
+    };
+    config.upper_band
+}
+
+fn stoch_rsi_lower_band(config: IndicatorConfig) -> f32 {
+    let IndicatorConfig::StochRsi(config) = config else {
+        unreachable!("Stoch RSI must retain its own configuration");
+    };
+    config.lower_band
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct StochRsiConfig {
     pub rsi_length: u16,
@@ -65,6 +120,8 @@ pub struct StochRsiConfig {
     pub k_smoothing: u16,
     pub d_smoothing: u16,
     pub source: KlinePriceSource,
+    pub upper_band: f32,
+    pub lower_band: f32,
 }
 
 impl Default for StochRsiConfig {
@@ -75,17 +132,41 @@ impl Default for StochRsiConfig {
             k_smoothing: 3,
             d_smoothing: 3,
             source: KlinePriceSource::Close,
+            upper_band: 80.0,
+            lower_band: 20.0,
         }
     }
 }
 
 impl StochRsiConfig {
     pub fn normalized(self) -> Self {
+        let defaults = Self::default();
+        let mut upper_band = if self.upper_band.is_finite() {
+            self.upper_band.clamp(0.0, 100.0)
+        } else {
+            defaults.upper_band
+        };
+        let mut lower_band = if self.lower_band.is_finite() {
+            self.lower_band.clamp(0.0, 100.0)
+        } else {
+            defaults.lower_band
+        };
+        if upper_band <= lower_band {
+            let midpoint = (upper_band + lower_band) * 0.5;
+            lower_band = (midpoint - 10.0).clamp(0.0, 99.0);
+            upper_band = (midpoint + 10.0).clamp(1.0, 100.0);
+            if upper_band <= lower_band {
+                upper_band = (lower_band + 1.0).min(100.0);
+            }
+        }
+
         Self {
             rsi_length: self.rsi_length.max(2),
             stoch_length: self.stoch_length.max(1),
             k_smoothing: self.k_smoothing.max(1),
             d_smoothing: self.d_smoothing.max(1),
+            upper_band,
+            lower_band,
             ..self
         }
     }
@@ -106,7 +187,7 @@ impl IndicatorConfigValue for StochRsiConfig {
     }
 
     fn settings(self, _context: IndicatorSettingsContext) -> Vec<IndicatorSetting> {
-        vec![
+        let mut settings = vec![
             IndicatorSetting {
                 id: "rsi_length",
                 label: "RSI length",
@@ -145,7 +226,30 @@ impl IndicatorConfigValue for StochRsiConfig {
                         .collect(),
                 ),
             },
-        ]
+        ];
+        settings.extend([
+            IndicatorSetting {
+                id: "upper_band",
+                label: "Upper band",
+                value: IndicatorSettingValue::F32(self.upper_band),
+                control: IndicatorSettingControl::SliderF32 {
+                    min: 1.0,
+                    max: 99.0,
+                    step: 1.0,
+                },
+            },
+            IndicatorSetting {
+                id: "lower_band",
+                label: "Lower band",
+                value: IndicatorSettingValue::F32(self.lower_band),
+                control: IndicatorSettingControl::SliderF32 {
+                    min: 1.0,
+                    max: 99.0,
+                    step: 1.0,
+                },
+            },
+        ]);
+        settings
     }
 
     fn with_setting(self, id: &'static str, value: IndicatorSettingValue) -> Option<Self> {
@@ -169,6 +273,12 @@ impl IndicatorConfigValue for StochRsiConfig {
                 source: KlinePriceSource::from_id(source)?,
                 ..self
             }),
+            ("upper_band", IndicatorSettingValue::F32(upper_band)) => {
+                Some(Self { upper_band, ..self })
+            }
+            ("lower_band", IndicatorSettingValue::F32(lower_band)) => {
+                Some(Self { lower_band, ..self })
+            }
             _ => None,
         }
     }
@@ -516,7 +626,31 @@ mod tests {
         assert_eq!(config.stoch_length, 1);
         assert_eq!(config.k_smoothing, 1);
         assert_eq!(config.d_smoothing, 1);
+        assert_eq!(config.upper_band, 80.0);
+        assert_eq!(config.lower_band, 20.0);
         assert_eq!(config.warmup_bars(), 3);
+    }
+
+    #[test]
+    fn normalizes_band_settings_into_a_valid_range() {
+        let config = StochRsiConfig {
+            upper_band: 140.0,
+            lower_band: -20.0,
+            ..StochRsiConfig::default()
+        }
+        .normalized();
+
+        assert_eq!(config.upper_band, 100.0);
+        assert_eq!(config.lower_band, 0.0);
+
+        let config = StochRsiConfig {
+            upper_band: 20.0,
+            lower_band: 80.0,
+            ..StochRsiConfig::default()
+        }
+        .normalized();
+
+        assert!(config.upper_band > config.lower_band);
     }
 
     #[test]
@@ -536,7 +670,9 @@ mod tests {
                 "stoch_length",
                 "k_smoothing",
                 "d_smoothing",
-                "source"
+                "source",
+                "upper_band",
+                "lower_band"
             ]
         );
         assert_eq!(

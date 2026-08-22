@@ -3,16 +3,16 @@ use crate::{
     screen::ConfirmDialog,
     style::{self, Icon, icon_text, modal_container},
 };
-use data::config::theme::{ThemeColorRole, generated_theme_accent};
+use data::config::theme::{
+    ThemeColorRole, ThemeColorShade, darken, generated_theme_accent, lighten, mix_color,
+};
 use data::{chart::kline_v2::ThemeAccent, config::theme::ThemeColor};
 use iced::{
     Alignment::{self, Center},
     Color,
     Length::Fill,
     Theme, border, padding,
-    widget::{
-        button, column, container, radio, row, scrollable, slider, space, text, tooltip::Position,
-    },
+    widget::{button, column, container, row, scrollable, slider, space, text, tooltip::Position},
 };
 
 pub mod chart;
@@ -21,6 +21,7 @@ pub mod column_drag;
 pub mod decorate;
 pub mod multi_split;
 pub mod series_editor;
+pub mod study_configurator;
 pub mod toast;
 
 pub const PANE_CONTROL_BTN_HEIGHT: f32 = 26.0;
@@ -219,43 +220,32 @@ pub fn theme_color_control<'a, Message>(
     on_change: impl Fn(Option<ThemeAccent>) -> Message + Clone + 'a,
 ) -> Element<'a, Message>
 where
-    Message: Clone + 'a,
+    Message: Clone + 'a + 'static,
 {
-    let color_options = std::iter::once(("Default".to_string(), None)).chain(
-        ThemeAccent::ALL
-            .iter()
-            .copied()
-            .map(|accent| (format!("A{}", accent.index() + 1), Some(accent))),
+    let default_color = color_swatch_button(
+        move |theme: &Theme| theme_color_for_role(theme, selected.role),
+        selected.accent.is_none(),
+        on_change.clone()(None),
     );
-    let color_choices = color_options.into_iter().map(|(option, accent)| {
-        let on_change = on_change.clone();
-        radio(
-            if accent.is_none() {
-                option
-            } else {
-                String::new()
-            },
-            accent,
-            Some(selected.accent),
-            on_change,
-        )
-        .style(move |theme, status| theme_color_radio_style(theme, status, selected.role, accent))
-        .into()
-    });
+    let color_choices =
+        std::iter::once(default_color).chain(ThemeAccent::ALL.into_iter().map(|accent| {
+            color_swatch_button(
+                move |theme: &Theme| generated_theme_accent(theme.extended_palette(), accent),
+                selected.accent == Some(accent),
+                on_change.clone()(Some(accent)),
+            )
+        }));
 
-    row(color_choices).spacing(8).into()
+    row(color_choices).spacing(4).into()
 }
 
-fn theme_color_radio_style(
-    theme: &Theme,
-    status: iced::widget::radio::Status,
-    role: ThemeColorRole,
-    accent: Option<ThemeAccent>,
-) -> iced::widget::radio::Style {
-    let mut style = iced::widget::radio::default(theme, status);
-    let palette = theme.extended_palette();
-    let color = accent.map_or_else(
-        || match role {
+pub fn resolve_theme_color(
+    color: ThemeColor,
+    palette: &iced::theme::palette::Extended,
+    generated_accents: &[Color; 6],
+) -> Color {
+    let base = color.accent.map_or_else(
+        || match color.role {
             ThemeColorRole::Neutral => palette.background.base.text,
             ThemeColorRole::Secondary => palette.secondary.strong.color,
             ThemeColorRole::Primary => palette.primary.base.color,
@@ -263,26 +253,77 @@ fn theme_color_radio_style(
             ThemeColorRole::Danger => palette.danger.base.color,
             ThemeColorRole::Warning => palette.warning.base.color,
         },
-        |accent| generated_theme_accent(palette, accent),
+        |accent| generated_accents[accent.index()],
     );
+    let background = palette.background.base.color;
 
-    style.dot_color = color;
-    style.border_color = color;
-    if accent.is_some() {
-        style.background = color.into();
-        if matches!(
-            status,
-            iced::widget::radio::Status::Active { is_selected: true }
-                | iced::widget::radio::Status::Hovered { is_selected: true }
-        ) {
-            style.border_width = 2.0;
-            style.border_color = palette.background.base.text;
+    match color.shade {
+        ThemeColorShade::Faint => mix_color(base, background, 0.3),
+        ThemeColorShade::Soft => mix_color(base, background, 0.65),
+        ThemeColorShade::Base => base,
+        ThemeColorShade::Strong => {
+            if palette.is_dark {
+                lighten(base, 0.1)
+            } else {
+                darken(base, 0.1)
+            }
         }
-    } else {
-        style.text_color = Some(color);
+        ThemeColorShade::Vivid => {
+            if palette.is_dark {
+                lighten(base, 0.18)
+            } else {
+                darken(base, 0.18)
+            }
+        }
     }
+}
 
-    style
+pub fn color_swatch_button<'a, Message, ColorResolver>(
+    resolve_color: ColorResolver,
+    selected: bool,
+    message: Message,
+) -> Element<'a, Message>
+where
+    Message: Clone + 'a + 'static,
+    ColorResolver: Fn(&Theme) -> Color + Copy + 'static,
+{
+    let swatch = container("")
+        .width(16)
+        .height(16)
+        .style(move |theme: &Theme| {
+            let palette = theme.extended_palette();
+            iced::widget::container::Style {
+                background: Some(resolve_color(theme).into()),
+                border: iced::Border {
+                    width: if selected { 2.0 } else { 1.0 },
+                    color: if selected {
+                        palette.primary.base.color
+                    } else {
+                        palette.background.weak.color
+                    },
+                    radius: 3.0.into(),
+                },
+                ..Default::default()
+            }
+        });
+
+    button(swatch)
+        .style(|theme, status| style::button::transparent(theme, status, false))
+        .padding(2)
+        .on_press(message)
+        .into()
+}
+
+fn theme_color_for_role(theme: &Theme, role: ThemeColorRole) -> Color {
+    let palette = theme.extended_palette();
+    match role {
+        ThemeColorRole::Neutral => palette.background.base.text,
+        ThemeColorRole::Secondary => palette.secondary.strong.color,
+        ThemeColorRole::Primary => palette.primary.base.color,
+        ThemeColorRole::Success => palette.success.base.color,
+        ThemeColorRole::Danger => palette.danger.base.color,
+        ThemeColorRole::Warning => palette.warning.base.color,
+    }
 }
 
 pub fn numeric_input_box<'a, F, Message: Clone + 'static>(

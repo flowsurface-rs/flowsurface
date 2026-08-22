@@ -18,6 +18,7 @@ where
         self.fill_primary_ticker_legend(frame, scene, palette, generated_accents);
         self.fill_primary_series_end_labels(frame, scene, palette);
         self.fill_footprint_legend(frame, scene, palette);
+        self.fill_study_legend(frame, scene, palette);
         self.fill_indicator_legend(frame, scene, palette, generated_accents);
         self.fill_unavailable_indicator_messages(frame, scene, palette);
 
@@ -33,13 +34,21 @@ where
         }
 
         if self.drawings.has_state() {
-            self.fill_drawings(frame, scene, palette, overlay_origin_in_window, pixel_ratio);
+            self.fill_drawings(
+                frame,
+                scene,
+                palette,
+                generated_accents,
+                overlay_origin_in_window,
+                pixel_ratio,
+            );
         }
 
         if scene.interaction.hovered_control.is_some()
             || scene.interaction.hovered_corner_control.is_some()
             || scene.interaction.hovering_ticker_legend
             || scene.interaction.hovering_footprint_legend
+            || scene.interaction.hovering_study_legend
             || scene.interaction.hovering_indicator_legend
         {
             return;
@@ -118,6 +127,8 @@ where
         if scene.interaction.hovered_control.is_some()
             || scene.interaction.hovered_corner_control.is_some()
             || scene.interaction.hovering_ticker_legend
+            || scene.interaction.hovering_footprint_legend
+            || scene.interaction.hovering_study_legend
             || scene.interaction.hovering_indicator_legend
         {
             self.fill_last_price_axis_badge(frame, scene, palette, &mut badge_filter);

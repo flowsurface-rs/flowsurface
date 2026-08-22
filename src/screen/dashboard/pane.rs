@@ -15,13 +15,9 @@ use crate::{
     modal::{
         self, ModifierKind,
         pane::{
-            IndicatorSettingsModal, Modal,
+            Modal,
             mini_tickers_list::MiniPanel,
-            settings::{
-                CandlestickSettingsMessage, KlineV2IndicatorSettingsMessage, candlestick_cfg_view,
-                heatmap_cfg_view, heatmap_shader_cfg_view, kline_cfg_view, kline_v2_cfg_view,
-                kline_v2_indicator_cfg_view, series_cfg_view,
-            },
+            settings::{self, heatmap_cfg_view, heatmap_shader_cfg_view, kline_cfg_view},
             stack_modal,
         },
     },
@@ -42,6 +38,7 @@ use data::{
         Basis, ViewConfig,
         heatmap::HeatmapStudy,
         indicator::{HeatmapIndicator, Indicator, KlineIndicator, UiIndicator},
+        kline_v2::KlineStudy,
     },
     layout::pane::{ContentKind, LinkGroup, PaneSetup, Settings, VisualConfig},
     stream::PersistStreamKind,
@@ -104,23 +101,26 @@ pub enum Event {
     ContentSelected(ContentKind),
     ChartInteraction(super::chart::Message),
     KlineV2Interaction(super::chart::kline_v2::Message),
+    KlineV2IndicatorsInteraction(modal::pane::kline_v2_indicators::Message),
     ToggleKlineV2Indicator(KlineV2Indicator),
+    ToggleKlineV2Study(KlineStudy),
     PanelInteraction(super::panel::Message),
     ToggleIndicator(UiIndicator),
     DeleteNotification(usize),
     ReorderIndicator(column_drag::DragEvent),
-    ClusterKindSelected(data::chart::kline::ClusterKind),
-    ClusterScalingSelected(data::chart::kline::ClusterScaling),
-    TradeDataEnabledChanged(bool),
-    StudyConfigurator(modal::pane::settings::study::StudyMessage),
-    KlineV2IndicatorSettings(
-        data::chart::kline_v2::IndicatorInstanceId,
-        KlineV2IndicatorSettingsMessage,
-    ),
-    KlineV2CandlestickSettings(CandlestickSettingsMessage),
+    Settings(settings::Message),
     StreamModifierChanged(modal::stream::Message),
     HeatmapShaderInteraction(crate::widget::chart::heatmap::Message),
     MiniTickersListInteraction(modal::pane::mini_tickers_list::Message),
+}
+
+fn settings_message(pane: pane_grid::Pane, message: settings::Message) -> Message {
+    match message {
+        settings::Message::VisualConfigChanged { config, sync_all } => {
+            Message::VisualConfigChanged(pane, config, sync_all)
+        }
+        message => Message::PaneEvent(pane, Event::Settings(message)),
+    }
 }
 
 pub struct State {
@@ -128,6 +128,7 @@ pub struct State {
     pub modal: Option<Modal>,
     pub content: Content,
     pub settings: Settings,
+    kline_v2_indicators: modal::pane::kline_v2_indicators::State,
     pub notifications: Vec<Toast>,
     pub streams: ResolvedStream,
     pub status: Status,
@@ -774,8 +775,10 @@ impl State {
                         Message::PaneEvent(id, Event::PanelInteraction(message))
                     });
 
-                    let settings_modal =
-                        || modal::pane::settings::timesales_cfg_view(panel.config, id);
+                    let settings_modal = || {
+                        modal::pane::settings::timesales_cfg_view(panel.config)
+                            .map(move |message| settings_message(id, message))
+                    };
 
                     self.compose_stack_view(
                         base,
@@ -834,8 +837,10 @@ impl State {
                         Message::PaneEvent(id, Event::PanelInteraction(message))
                     });
 
-                    let settings_modal =
-                        || modal::pane::settings::ladder_cfg_view(panel.config, id);
+                    let settings_modal = || {
+                        modal::pane::settings::ladder_cfg_view(panel.config)
+                            .map(move |message| settings_message(id, message))
+                    };
 
                     self.compose_stack_view(
                         base,
@@ -903,11 +908,11 @@ impl State {
                     let settings_modal = || {
                         heatmap_cfg_view(
                             chart.visual_config(),
-                            id,
                             chart.study_configurator(),
                             &chart.studies,
                             basis,
                         )
+                        .map(move |message| settings_message(id, message))
                     };
 
                     let indicator_modal = if self.modal == Some(Modal::Indicators) {
@@ -1006,9 +1011,9 @@ impl State {
                             chart.study_configurator(),
                             chart.visual_config(),
                             chart_kind,
-                            id,
                             chart.basis(),
                         )
+                        .map(move |message| settings_message(id, message))
                     };
 
                     let indicator_modal = if self.modal == Some(Modal::Indicators) {
@@ -1077,51 +1082,34 @@ impl State {
                         Message::PaneEvent(id, Event::KlineV2Interaction(message))
                     });
 
-                    let selected_indicators: Vec<KlineV2Indicator> = Vec::new();
                     let indicator_modal = if self.modal == Some(Modal::Indicators) {
-                        Some(modal::indicators::view(
+                        let active_indicators = chart
+                            .selected_indicators()
+                            .into_iter()
+                            .filter_map(|id| chart.indicator_kind(id))
+                            .collect::<Vec<_>>();
+
+                        Some(modal::pane::kline_v2_indicators::view(
                             id,
-                            self,
-                            &selected_indicators,
+                            &self.content,
+                            &self.kline_v2_indicators,
+                            &active_indicators,
                             Some(chart.ticker_info().ticker.market_type()),
+                            chart.studies(),
+                            chart.basis(),
                         ))
                     } else {
                         None
                     };
 
+                    let settings_modal = || {
+                        chart.settings_modal_view().map(move |message| {
+                            Message::PaneEvent(id, Event::KlineV2Interaction(message))
+                        })
+                    };
+
                     let selected_tickers =
                         chart.basis().is_time().then_some(chart.selected_tickers());
-
-                    let settings_modal = || match self.modal.as_ref() {
-                        Some(Modal::IndicatorSettings(modal)) => kline_v2_indicator_cfg_view(
-                            modal,
-                            chart.indicator_data_config(modal.instance_id()),
-                            chart.basis(),
-                            chart
-                                .indicator_color_config(modal.instance_id())
-                                .unwrap_or_default(),
-                            chart.indicator_mark(modal.instance_id()),
-                            id,
-                        ),
-                        Some(Modal::CandlestickSettings) => candlestick_cfg_view(
-                            chart.candlestick_config(),
-                            chart.primary_mark(),
-                            chart.series_editor(),
-                            chart.series_style_entries(),
-                            id,
-                        ),
-                        Some(Modal::SeriesSettings(_)) => {
-                            series_cfg_view(chart.series_editor(), chart.series_style_entries(), id)
-                        }
-                        _ => kline_v2_cfg_view(
-                            chart.study_configurator(),
-                            chart.studies(),
-                            chart.footprint_cluster_kind(),
-                            chart.trade_data_enabled(),
-                            id,
-                            chart.basis(),
-                        ),
-                    };
 
                     self.compose_stack_view(
                         base,
@@ -1175,11 +1163,11 @@ impl State {
                     let settings_modal = || {
                         heatmap_shader_cfg_view(
                             chart.visual_config(),
-                            id,
                             chart.study_configurator(),
                             &chart.studies,
                             basis,
                         )
+                        .map(move |message| settings_message(id, message))
                     };
 
                     let indicator_modal = if self.modal == Some(Modal::Indicators) {
@@ -1338,26 +1326,6 @@ impl State {
 
                 if let Some(action) = action {
                     match action {
-                        super::chart::kline_v2::Action::OpenSeriesEditor => {
-                            self.modal = Some(Modal::Settings);
-                        }
-                        super::chart::kline_v2::Action::OpenIndicatorSettings(id) => {
-                            if let Content::KlineV2 {
-                                chart: Some(chart), ..
-                            } = &self.content
-                                && let Some(kind) = chart.indicator_kind(id)
-                            {
-                                self.modal = Some(Modal::IndicatorSettings(
-                                    IndicatorSettingsModal::new(id, kind),
-                                ));
-                            }
-                        }
-                        super::chart::kline_v2::Action::OpenCandlestickSettings => {
-                            self.modal = Some(Modal::CandlestickSettings);
-                        }
-                        super::chart::kline_v2::Action::OpenSeriesSettings(ticker) => {
-                            self.modal = Some(Modal::SeriesSettings(ticker));
-                        }
                         super::chart::kline_v2::Action::RequestFetch(fetch) => {
                             return Some(Effect::RequestFetch(fetch));
                         }
@@ -1378,86 +1346,30 @@ impl State {
                     return Some(Effect::RefreshStreams);
                 }
             }
-            Event::KlineV2IndicatorSettings(instance_id, message) => {
-                let command = match message {
-                    KlineV2IndicatorSettingsMessage::TabSelected(tab) => {
-                        if let Some(Modal::IndicatorSettings(modal)) = &mut self.modal
-                            && modal.instance_id() == instance_id
-                        {
-                            modal.select_tab(tab);
-                        }
-                        None
-                    }
-                    KlineV2IndicatorSettingsMessage::InputChanged { id, value, config } => {
-                        if let Some(Modal::IndicatorSettings(modal)) = &mut self.modal
-                            && modal.instance_id() == instance_id
-                        {
-                            modal.set_input_draft(id, value);
-                        }
-                        config.map(|config| ChartCommand::SetIndicatorDataConfig {
-                            id: instance_id,
-                            config,
-                        })
-                    }
-                    KlineV2IndicatorSettingsMessage::DataConfig(config) => {
-                        Some(ChartCommand::SetIndicatorDataConfig {
-                            id: instance_id,
-                            config,
-                        })
-                    }
-                    KlineV2IndicatorSettingsMessage::Color {
-                        slot,
-                        accent,
-                        shade,
-                    } => Some(ChartCommand::SetIndicatorColor {
-                        id: instance_id,
-                        slot,
-                        accent,
-                        shade,
-                    }),
-                    KlineV2IndicatorSettingsMessage::Mark(mark) => {
-                        Some(ChartCommand::SetIndicatorMark {
-                            id: instance_id,
-                            mark,
-                        })
-                    }
-                    KlineV2IndicatorSettingsMessage::Reset => {
-                        if let Some(Modal::IndicatorSettings(modal)) = &mut self.modal
-                            && modal.instance_id() == instance_id
-                        {
-                            modal.clear_input_drafts();
-                        }
-                        Some(ChartCommand::ResetIndicatorSettings(instance_id))
-                    }
-                };
-
-                if let Some(command) = command
-                    && let Content::KlineV2 { chart: Some(c), .. } = &mut self.content
-                    && let CommandResult::Action(Some(chart::Action::RequestFetch(fetch))) =
-                        c.apply_command(command)
-                {
-                    return Some(Effect::RequestFetch(fetch));
-                }
+            Event::KlineV2IndicatorsInteraction(message) => {
+                self.kline_v2_indicators.update(message);
             }
-            Event::KlineV2CandlestickSettings(message) => {
-                if let Content::KlineV2 { chart: Some(c), .. } = &mut self.content {
-                    let command = match message {
-                        CandlestickSettingsMessage::Config(config) => {
-                            ChartCommand::SetCandlestickConfig(config)
-                        }
-                        CandlestickSettingsMessage::Mark(mark) => {
-                            ChartCommand::SetPrimaryMark(mark)
-                        }
-                        CandlestickSettingsMessage::Reset => ChartCommand::ResetCandlestickSettings,
-                    };
-                    let _ = c.apply_command(command);
-                }
-            }
+            Event::Settings(message) => return self.update_settings(message),
             Event::ToggleKlineV2Indicator(indicator) => {
                 let result = match &mut self.content {
                     Content::KlineV2 {
                         chart: Some(chart), ..
                     } => chart.apply_command(ChartCommand::AddIndicator(indicator)),
+                    _ => CommandResult::None,
+                };
+                let trade_stream_changed = self.sync_kline_v2_trade_stream();
+                if let CommandResult::Action(Some(chart::Action::RequestFetch(fetch))) = result {
+                    return Some(Effect::RequestFetch(fetch));
+                }
+                if trade_stream_changed {
+                    return Some(Effect::RefreshStreams);
+                }
+            }
+            Event::ToggleKlineV2Study(study) => {
+                let result = match &mut self.content {
+                    Content::KlineV2 {
+                        chart: Some(chart), ..
+                    } => chart.apply_command(ChartCommand::ToggleStudy(study)),
                     _ => CommandResult::None,
                 };
                 let trade_stream_changed = self.sync_kline_v2_trade_stream();
@@ -1484,68 +1396,6 @@ impl State {
             Event::ReorderIndicator(e) => {
                 self.content.reorder_indicators(&e);
             }
-            Event::ClusterKindSelected(kind) => {
-                if let Content::Kline {
-                    chart, kind: cur, ..
-                } = &mut self.content
-                    && let Some(c) = chart
-                {
-                    c.set_cluster_kind(kind);
-                    *cur = c.kind.clone();
-                } else if let Content::KlineV2 { chart: Some(c), .. } = &mut self.content {
-                    let _ = c.apply_command(ChartCommand::SetFootprintClusterKind(kind));
-                }
-            }
-            Event::TradeDataEnabledChanged(enabled) => {
-                if let Content::KlineV2 { chart: Some(c), .. } = &mut self.content {
-                    let _ = c.apply_command(ChartCommand::SetTradeDataEnabled(enabled));
-                }
-
-                let trade_stream_changed = self.sync_kline_v2_trade_stream();
-                if trade_stream_changed {
-                    return Some(Effect::RefreshStreams);
-                }
-            }
-            Event::ClusterScalingSelected(scaling) => {
-                if let Content::Kline { chart, kind, .. } = &mut self.content
-                    && let Some(c) = chart
-                {
-                    c.set_cluster_scaling(scaling);
-                    *kind = c.kind.clone();
-                }
-            }
-            Event::StudyConfigurator(study_msg) => match study_msg {
-                modal::pane::settings::study::StudyMessage::Footprint(m) => {
-                    if let Content::Kline { chart, kind, .. } = &mut self.content
-                        && let Some(c) = chart
-                    {
-                        c.update_study_configurator(m);
-                        *kind = c.kind.clone();
-                    }
-                }
-                modal::pane::settings::study::StudyMessage::Heatmap(m) => {
-                    if let Content::Heatmap { chart, studies, .. } = &mut self.content
-                        && let Some(c) = chart
-                    {
-                        c.update_study_configurator(m);
-                        *studies = c.studies.clone();
-                    } else if let Content::ShaderHeatmap { chart, studies, .. } = &mut self.content
-                        && let Some(c) = chart
-                    {
-                        c.update_study_configurator(m);
-                        *studies = c.studies.clone();
-                    }
-                }
-                modal::pane::settings::study::StudyMessage::KlineV2(m) => {
-                    if let Content::KlineV2 { chart: Some(c), .. } = &mut self.content {
-                        c.update_study_configurator(m);
-                    }
-                    let trade_stream_changed = self.sync_kline_v2_trade_stream();
-                    if trade_stream_changed {
-                        return Some(Effect::RefreshStreams);
-                    }
-                }
-            },
             Event::StreamModifierChanged(message) => {
                 if let Some(Modal::StreamModifier(mut modifier)) = self.modal.take() {
                     let mut effect: Option<Effect> = None;
@@ -1854,6 +1704,57 @@ impl State {
         None
     }
 
+    fn update_settings(&mut self, message: settings::Message) -> Option<Effect> {
+        match message {
+            settings::Message::ClusterKindSelected(kind) => {
+                if let Content::Kline {
+                    chart, kind: cur, ..
+                } = &mut self.content
+                    && let Some(c) = chart
+                {
+                    c.set_cluster_kind(kind);
+                    *cur = c.kind.clone();
+                } else if let Content::KlineV2 { chart: Some(c), .. } = &mut self.content {
+                    let _ = c.apply_command(ChartCommand::SetFootprintClusterKind(kind));
+                }
+            }
+            settings::Message::ClusterScalingSelected(scaling) => {
+                if let Content::Kline { chart, kind, .. } = &mut self.content
+                    && let Some(c) = chart
+                {
+                    c.set_cluster_scaling(scaling);
+                    *kind = c.kind.clone();
+                }
+            }
+            settings::Message::Study(study_msg) => match study_msg {
+                crate::widget::study_configurator::StudyMessage::Footprint(m) => {
+                    if let Content::Kline { chart, kind, .. } = &mut self.content
+                        && let Some(c) = chart
+                    {
+                        c.update_study_configurator(m);
+                        *kind = c.kind.clone();
+                    }
+                }
+                crate::widget::study_configurator::StudyMessage::Heatmap(m) => {
+                    if let Content::Heatmap { chart, studies, .. } = &mut self.content
+                        && let Some(c) = chart
+                    {
+                        c.update_study_configurator(m);
+                        *studies = c.studies.clone();
+                    } else if let Content::ShaderHeatmap { chart, studies, .. } = &mut self.content
+                        && let Some(c) = chart
+                    {
+                        c.update_study_configurator(m);
+                        *studies = c.studies.clone();
+                    }
+                }
+            },
+            settings::Message::VisualConfigChanged { .. } => {}
+        }
+
+        None
+    }
+
     fn view_controls(
         &'_ self,
         pane: pane_grid::Pane,
@@ -1861,8 +1762,19 @@ impl State {
         is_maximized: bool,
         is_popout: bool,
     ) -> Element<'_, Message> {
+        let kline_v2_settings_visible = matches!(
+            &self.content,
+            Content::KlineV2 {
+                chart: Some(chart), ..
+            } if chart.settings_sidebar_visible()
+        );
+
         let modal_btn_style = |modal: Modal| {
-            let is_active = self.modal == Some(modal);
+            let is_active = if matches!(&modal, Modal::Settings) {
+                self.modal == Some(modal) || kline_v2_settings_visible
+            } else {
+                self.modal == Some(modal)
+            };
             move |theme: &Theme, status: button::Status| {
                 style::button::transparent(theme, status, is_active)
             }
@@ -2030,27 +1942,6 @@ impl State {
                 padding::right(12).left(12),
                 Alignment::End,
             ),
-            Some(Modal::IndicatorSettings(_)) => stack_modal(
-                base,
-                settings_modal(),
-                on_blur,
-                padding::right(12).left(12),
-                Alignment::End,
-            ),
-            Some(Modal::CandlestickSettings) => stack_modal(
-                base,
-                settings_modal(),
-                on_blur,
-                padding::right(12).left(12),
-                Alignment::End,
-            ),
-            Some(Modal::SeriesSettings(_)) => stack_modal(
-                base,
-                settings_modal(),
-                on_blur,
-                padding::right(12).left(12),
-                Alignment::End,
-            ),
             Some(Modal::Indicators) => stack_modal(
                 base,
                 indicator_modal.unwrap_or_else(|| column![].into()),
@@ -2078,6 +1969,22 @@ impl State {
     }
 
     fn show_modal_with_focus(&mut self, requested_modal: Modal) -> Option<Effect> {
+        if matches!(&requested_modal, Modal::Settings)
+            && let Content::KlineV2 {
+                chart: Some(chart), ..
+            } = &mut self.content
+        {
+            chart.open_settings_modal();
+        }
+
+        if !matches!(&requested_modal, Modal::Settings)
+            && let Content::KlineV2 {
+                chart: Some(chart), ..
+            } = &mut self.content
+        {
+            chart.close_settings_sidebar();
+        }
+
         let should_toggle_close = match (&self.modal, &requested_modal) {
             (Some(Modal::StreamModifier(open)), Modal::StreamModifier(req)) => {
                 open.view_mode == req.view_mode
@@ -2093,6 +2000,9 @@ impl State {
 
         let focus_widget_id = match &requested_modal {
             Modal::MiniTickersList(m) => Some(m.search_box_id.clone()),
+            Modal::Indicators if matches!(self.content, Content::KlineV2 { .. }) => {
+                Some(self.kline_v2_indicators.search_box_id())
+            }
             _ => None,
         };
 
@@ -2214,6 +2124,7 @@ impl Default for State {
             modal: None,
             content: Content::Starter,
             settings: Settings::default(),
+            kline_v2_indicators: modal::pane::kline_v2_indicators::State::default(),
             streams: ResolvedStream::waiting(vec![]),
             notifications: vec![],
             status: Status::Ready,
@@ -2747,6 +2658,15 @@ impl Content {
             } if chart.indicator_is_supported_for_market(indicator)
                && (chart.trade_data_enabled()
                    || !chart.indicator_requires_trade_data(indicator))
+        )
+    }
+
+    pub fn allows_kline_v2_study(&self, study: KlineStudy) -> bool {
+        matches!(
+            self,
+            Content::KlineV2 {
+                chart: Some(chart), ..
+            } if chart.study_is_available(study)
         )
     }
 }

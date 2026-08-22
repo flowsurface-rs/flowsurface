@@ -4,9 +4,9 @@ use super::moving_average::MovingAverageMethod;
 use super::runtime::{IndicatorDefinition, IndicatorRuntime};
 use super::{
     IndicatorAvailability, IndicatorColorSlot, IndicatorColorSpec, IndicatorConfigValue,
-    IndicatorOverlayChannelSpec, IndicatorOverlayColorRole, IndicatorOverlaySource,
-    IndicatorSetting, IndicatorSettingChoice, IndicatorSettingControl, IndicatorSettingValue,
-    IndicatorSettingsContext,
+    IndicatorFillGeometry, IndicatorFillSpec, IndicatorOverlayChannelSpec,
+    IndicatorOverlayColorRole, IndicatorOverlaySource, IndicatorSetting, IndicatorSettingChoice,
+    IndicatorSettingControl, IndicatorSettingValue, IndicatorSettingsContext,
 };
 use exchange::{Kline, UnixMs};
 use serde::{Deserialize, Serialize};
@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, VecDeque};
 
 const SERIES_MAX_POINTS: usize = 5000;
 
-pub(super) const COLOR_SPECS: [IndicatorColorSpec; 3] = [
+pub(super) const COLOR_SPECS: [IndicatorColorSpec; 4] = [
     IndicatorColorSpec {
         label: "Basis",
         slot: IndicatorColorSlot::Main,
@@ -26,6 +26,10 @@ pub(super) const COLOR_SPECS: [IndicatorColorSpec; 3] = [
     IndicatorColorSpec {
         label: "Lower band",
         slot: IndicatorColorSlot::Lower,
+    },
+    IndicatorColorSpec {
+        label: "Background fill",
+        slot: IndicatorColorSlot::Fill,
     },
 ];
 
@@ -52,6 +56,14 @@ pub(super) const OVERLAY_CHANNELS: [IndicatorOverlayChannelSpec; 3] = [
         color_slot: IndicatorColorSlot::Lower,
     },
 ];
+
+pub(super) const FILL_SPECS: [IndicatorFillSpec; 1] = [IndicatorFillSpec {
+    upper: IndicatorOverlaySource::Field(BOLLINGER_UPPER_FIELD_KEY),
+    lower: IndicatorOverlaySource::Field(BOLLINGER_LOWER_FIELD_KEY),
+    geometry: IndicatorFillGeometry::SeriesBand,
+    color_slot: IndicatorColorSlot::Fill,
+    opacity: 0.12,
+}];
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct BollingerBandsCalculationConfig {

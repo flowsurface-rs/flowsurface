@@ -37,12 +37,20 @@ impl AxisBadgeFilter {
 }
 
 pub use data::chart::kline_v2::drawing::{
-    DrawingAnchor, DrawingDraft, DrawingDragTarget, DrawingEntity, DrawingHandleKind, DrawingId,
-    DrawingObject, DrawingSnapshot, DrawingStyle, DrawingTool, KlineWidgetDrawingEvent, Rgba,
+    DrawingAnchor, DrawingColor, DrawingDraft, DrawingDragTarget, DrawingEntity, DrawingHandleKind,
+    DrawingId, DrawingObject, DrawingSnapshot, DrawingStyle, DrawingTool, KlineWidgetDrawingEvent,
+    MAX_DRAWING_STROKE_WIDTH, MIN_DRAWING_STROKE_WIDTH,
 };
 
-fn iced_color(color: Rgba) -> iced::Color {
-    iced::Color::from_rgba(color.red, color.green, color.blue, color.alpha)
+fn iced_color(color: DrawingColor, generated_accents: &[iced::Color; 6]) -> iced::Color {
+    match color {
+        DrawingColor::Accent { accent, alpha } => {
+            generated_accents[accent.index()].scale_alpha(alpha)
+        }
+        DrawingColor::Custom(color) => {
+            iced::Color::from_rgba(color.red, color.green, color.blue, color.alpha)
+        }
+    }
 }
 
 impl<'a, S> KlineWidget<'a, S>
@@ -383,19 +391,20 @@ where
         scene: &Scene,
         object: &DrawingObject,
         style: DrawingStyle,
+        generated_accents: &[iced::Color; 6],
         selected: bool,
         overlay_origin_in_window: Point,
         pixel_ratio: f32,
     ) {
         let raw_stroke_width = if selected {
-            (style.stroke_width + 0.6).max(1.0)
+            style.normalized_stroke_width() + 0.6
         } else {
-            style.stroke_width.max(1.0)
+            style.normalized_stroke_width()
         };
         let (stroke_width, stroke_width_phys) =
             Self::quantized_stroke_width(raw_stroke_width, pixel_ratio);
         let stroke = canvas::Stroke::default()
-            .with_color(iced_color(style.stroke_color))
+            .with_color(iced_color(style.stroke_color, generated_accents))
             .with_width(stroke_width);
 
         match object {
@@ -477,7 +486,7 @@ where
                         frame.fill_rectangle(
                             Point::new(fill_left, fill_top),
                             Size::new(fill_width, fill_height),
-                            iced_color(fill),
+                            iced_color(fill, generated_accents),
                         );
                     }
 
@@ -692,6 +701,7 @@ where
         frame: &mut canvas::Frame,
         scene: &Scene,
         palette: &Extended,
+        generated_accents: &[iced::Color; 6],
         overlay_origin_in_window: Point,
         pixel_ratio: f32,
     ) {
@@ -708,6 +718,7 @@ where
                 scene,
                 &drawing.object,
                 drawing.style,
+                generated_accents,
                 selected,
                 overlay_origin_in_window,
                 pixel_ratio,
@@ -736,6 +747,7 @@ where
                 scene,
                 &draft.preview_object(),
                 style,
+                generated_accents,
                 false,
                 overlay_origin_in_window,
                 pixel_ratio,

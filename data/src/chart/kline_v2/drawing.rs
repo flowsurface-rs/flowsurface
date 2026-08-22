@@ -1,7 +1,11 @@
 use super::YUnit;
 use super::composition::PanelId;
+use crate::config::theme::ThemeAccent;
 use exchange::UnixMs;
 use serde::{Deserialize, Serialize};
+
+pub const MIN_DRAWING_STROKE_WIDTH: f32 = 0.5;
+pub const MAX_DRAWING_STROKE_WIDTH: f32 = 4.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Rgba {
@@ -77,25 +81,55 @@ impl DrawingTool {
         match self {
             Self::Cursor => {}
             Self::Trendline => {
-                style.stroke_color = Rgba::from_rgb(0.78, 0.86, 0.98);
+                style.stroke_color = DrawingColor::accent(ThemeAccent::One, 1.0);
                 style.stroke_width = 1.2;
             }
             Self::Box => {
-                style.stroke_color = Rgba::from_rgb(0.72, 0.84, 0.98);
+                style.stroke_color = DrawingColor::accent(ThemeAccent::Two, 1.0);
                 style.stroke_width = 1.2;
-                style.fill_color = Some(Rgba::from_rgba(0.50, 0.66, 0.98, 0.16));
+                style.fill_color = Some(DrawingColor::accent(ThemeAccent::Two, 0.16));
             }
             Self::HorizontalLine => {
-                style.stroke_color = Rgba::from_rgb(0.96, 0.80, 0.40);
+                style.stroke_color = DrawingColor::accent(ThemeAccent::Three, 1.0);
                 style.stroke_width = 1.0;
             }
             Self::VerticalLine => {
-                style.stroke_color = Rgba::from_rgb(0.74, 0.90, 0.74);
+                style.stroke_color = DrawingColor::accent(ThemeAccent::Four, 1.0);
                 style.stroke_width = 1.0;
             }
         }
 
         style
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum DrawingColor {
+    Accent { accent: ThemeAccent, alpha: f32 },
+    Custom(Rgba),
+}
+
+impl DrawingColor {
+    pub const fn accent(accent: ThemeAccent, alpha: f32) -> Self {
+        Self::Accent { accent, alpha }
+    }
+
+    pub fn accent_value(self) -> Option<ThemeAccent> {
+        match self {
+            Self::Accent { accent, .. } => Some(accent),
+            Self::Custom(_) => None,
+        }
+    }
+
+    pub fn scale_alpha(self, factor: f32) -> Self {
+        match self {
+            Self::Accent { accent, alpha } => Self::Accent {
+                accent,
+                alpha: alpha * factor,
+            },
+            Self::Custom(color) => Self::Custom(color.scale_alpha(factor)),
+        }
     }
 }
 
@@ -182,17 +216,42 @@ impl<'a> DrawingSnapshot<'a> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct DrawingStyle {
-    pub stroke_color: Rgba,
+    pub stroke_color: DrawingColor,
     pub stroke_width: f32,
-    pub fill_color: Option<Rgba>,
+    pub fill_color: Option<DrawingColor>,
 }
 
 impl Default for DrawingStyle {
     fn default() -> Self {
         Self {
-            stroke_color: Rgba::from_rgb(0.82, 0.84, 0.90),
+            stroke_color: DrawingColor::accent(ThemeAccent::One, 1.0),
             stroke_width: 1.2,
             fill_color: None,
+        }
+    }
+}
+
+impl DrawingStyle {
+    pub fn normalized_stroke_width(self) -> f32 {
+        Self::normalize_stroke_width(self.stroke_width)
+    }
+
+    pub fn set_stroke_width(&mut self, width: f32) -> bool {
+        let width = Self::normalize_stroke_width(width);
+
+        if self.stroke_width == width {
+            return false;
+        }
+
+        self.stroke_width = width;
+        true
+    }
+
+    fn normalize_stroke_width(width: f32) -> f32 {
+        if width.is_finite() {
+            width.clamp(MIN_DRAWING_STROKE_WIDTH, MAX_DRAWING_STROKE_WIDTH)
+        } else {
+            Self::default().stroke_width
         }
     }
 }
@@ -516,5 +575,49 @@ impl DrawingObject {
 impl DrawingEntity {
     pub fn belongs_to_panel(&self, panel_id: PanelId) -> bool {
         self.object.belongs_to_panel(panel_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drawing_stroke_width_is_normalized() {
+        let mut style = DrawingStyle::default();
+
+        assert!(style.set_stroke_width(0.0));
+        assert_eq!(style.stroke_width, MIN_DRAWING_STROKE_WIDTH);
+
+        assert!(style.set_stroke_width(100.0));
+        assert_eq!(style.stroke_width, MAX_DRAWING_STROKE_WIDTH);
+
+        style.stroke_width = f32::NAN;
+        assert_eq!(
+            style.normalized_stroke_width(),
+            DrawingStyle::default().stroke_width
+        );
+    }
+
+    #[test]
+    fn drawing_colors_keep_legacy_custom_values_and_support_accents() {
+        let legacy: DrawingStyle = serde_json::from_value(serde_json::json!({
+            "stroke_color": {"red": 0.1, "green": 0.2, "blue": 0.3, "alpha": 1.0},
+            "stroke_width": 1.0,
+            "fill_color": null
+        }))
+        .expect("legacy drawing style should deserialize");
+
+        assert!(matches!(
+            legacy.stroke_color,
+            DrawingColor::Custom(Rgba { red, .. }) if red == 0.1
+        ));
+
+        let accent = DrawingStyle {
+            stroke_color: DrawingColor::accent(ThemeAccent::Three, 1.0),
+            ..DrawingStyle::default()
+        };
+        let serialized = serde_json::to_value(accent).expect("accent style should serialize");
+        assert_eq!(serialized["stroke_color"]["accent"], "Three");
     }
 }

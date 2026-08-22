@@ -1,8 +1,6 @@
 use super::{Chart, Interaction, Message, PlotConstants, ViewState, ticks::y::PriceInfoLabel};
-use crate::{
-    modal::pane::settings::study::{self, Study},
-    style,
-};
+use crate::widget::study_configurator as study;
+use crate::{style, widget::study_configurator::Study};
 use data::chart::{
     Basis, ViewConfig,
     heatmap::{

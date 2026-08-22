@@ -5,7 +5,7 @@ use super::{
 use crate::chart::indicator::kline::KlineIndicatorImpl;
 use crate::connector::fetcher::is_trade_fetch_enabled;
 use crate::connector::fetcher::{FetchRange, RequestHandler};
-use crate::{modal::pane::settings::study, style};
+use crate::{style, widget::study_configurator as study};
 use data::aggr::ticks::TickAggr;
 use data::aggr::time::TimeSeries;
 use data::chart::indicator::{Indicator, KlineIndicator};
