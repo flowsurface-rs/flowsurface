@@ -8,7 +8,7 @@ use crate::widget::chart::kline::drawing::{
 use crate::widget::{color_swatch_button, labeled_slider};
 use data::config::theme::{ThemeAccent, generated_theme_accent};
 
-use iced::widget::{button, column, row, text};
+use iced::widget::{button, checkbox, column, row, rule, space, text};
 use iced::{Element, Length};
 
 const SIDEBAR_WIDTH: f32 = 36.0;
@@ -75,6 +75,27 @@ where
     )
 }
 
+fn drawing_extend_checkbox<'a, Message>(
+    checked: bool,
+    label: &'static str,
+    on_toggle: impl Fn(bool) -> DrawingMessage + Copy + 'a,
+    on_sidebar_message: fn(DrawingMessage) -> Message,
+) -> Element<'a, Message>
+where
+    Message: Clone + 'a + 'static,
+{
+    row![
+        checkbox(checked)
+            .label(label)
+            .on_toggle(move |value| on_sidebar_message(on_toggle(value))),
+        space::horizontal(),
+    ]
+    .spacing(4)
+    .align_y(iced::Alignment::Center)
+    .width(Length::Fill)
+    .into()
+}
+
 #[derive(Debug, Clone)]
 struct DrawingDragState {
     id: DrawingId,
@@ -113,6 +134,8 @@ pub enum DrawingMessage {
     SetSelectedDrawingStrokeColor(ThemeAccent),
     SetSelectedDrawingFillColor(Option<ThemeAccent>),
     SetSelectedDrawingStrokeWidth(f32),
+    SetHorizontalLineRay(bool),
+    SetBoxExtendRight(bool),
     DeleteSelectedDrawing,
     DeleteDrawing(DrawingId),
     DeleteAllDrawings,
@@ -132,6 +155,8 @@ pub struct DrawingTools {
     selected_drawing: Option<DrawingId>,
     interaction: DrawingInteraction,
     next_drawing_id: u64,
+    horizontal_line_ray: bool,
+    box_extend_right: bool,
 }
 
 impl Default for DrawingTools {
@@ -143,12 +168,19 @@ impl Default for DrawingTools {
             selected_drawing: None,
             interaction: DrawingInteraction::Idle,
             next_drawing_id: 1,
+            horizontal_line_ray: false,
+            box_extend_right: false,
         }
     }
 }
 
 impl DrawingTools {
-    pub fn from_parts(active_tool: DrawingTool, drawings: Vec<DrawingEntity>) -> Self {
+    pub fn from_parts(
+        active_tool: DrawingTool,
+        drawings: Vec<DrawingEntity>,
+        horizontal_line_ray: bool,
+        box_extend_right: bool,
+    ) -> Self {
         let next_drawing_id = drawings
             .iter()
             .map(|drawing| drawing.id.0)
@@ -164,11 +196,21 @@ impl DrawingTools {
             selected_drawing: None,
             interaction: DrawingInteraction::Idle,
             next_drawing_id,
+            horizontal_line_ray,
+            box_extend_right,
         }
     }
 
     pub fn active_tool(&self) -> DrawingTool {
         self.active_tool
+    }
+
+    pub fn horizontal_line_ray(&self) -> bool {
+        self.horizontal_line_ray
+    }
+
+    pub fn box_extend_right(&self) -> bool {
+        self.box_extend_right
     }
 
     pub fn drawings(&self) -> &[DrawingEntity] {
@@ -242,6 +284,38 @@ impl DrawingTools {
                     DrawingUpdate::None
                 }
             }
+            DrawingMessage::SetHorizontalLineRay(ray) => {
+                let default_changed = self.horizontal_line_ray != ray;
+                self.horizontal_line_ray = ray;
+                let object_changed = self.update_selected_object(|object| {
+                    if let DrawingObject::HorizontalLine { ray: current, .. } = object {
+                        *current = ray;
+                    }
+                });
+                if default_changed || object_changed {
+                    DrawingUpdate::Visual
+                } else {
+                    DrawingUpdate::None
+                }
+            }
+            DrawingMessage::SetBoxExtendRight(extend) => {
+                let default_changed = self.box_extend_right != extend;
+                self.box_extend_right = extend;
+                let object_changed = self.update_selected_object(|object| {
+                    if let DrawingObject::Box {
+                        extend_right: current,
+                        ..
+                    } = object
+                    {
+                        *current = extend;
+                    }
+                });
+                if default_changed || object_changed {
+                    DrawingUpdate::Visual
+                } else {
+                    DrawingUpdate::None
+                }
+            }
             DrawingMessage::DeleteSelectedDrawing => {
                 if self.remove_selected_drawing() {
                     DrawingUpdate::Visual
@@ -306,7 +380,7 @@ impl DrawingTools {
         let stroke_width = drawing.style.normalized_stroke_width();
 
         match drawing.object {
-            DrawingObject::Box { .. } => {
+            DrawingObject::Box { extend_right, .. } => {
                 details = details
                     .push(drawing_color_picker(
                         "Border color",
@@ -331,11 +405,39 @@ impl DrawingTools {
                         "Border width",
                         stroke_width,
                         on_sidebar_message,
+                    ))
+                    .push(rule::horizontal(1.0).style(style::split_ruler))
+                    .push(drawing_extend_checkbox(
+                        extend_right,
+                        "Extend right",
+                        DrawingMessage::SetBoxExtendRight,
+                        on_sidebar_message,
                     ));
             }
-            DrawingObject::Trendline { .. }
-            | DrawingObject::HorizontalLine { .. }
-            | DrawingObject::VerticalLine { .. } => {
+            DrawingObject::HorizontalLine { ray, .. } => {
+                details = details
+                    .push(drawing_color_picker(
+                        "Line color",
+                        drawing.style.stroke_color.accent_value(),
+                        1.0,
+                        false,
+                        DrawingMessage::SetSelectedDrawingStrokeColor,
+                        on_sidebar_message,
+                    ))
+                    .push(drawing_width_slider(
+                        "Line width",
+                        stroke_width,
+                        on_sidebar_message,
+                    ))
+                    .push(rule::horizontal(1.0).style(style::split_ruler))
+                    .push(drawing_extend_checkbox(
+                        ray,
+                        "Ray",
+                        DrawingMessage::SetHorizontalLineRay,
+                        on_sidebar_message,
+                    ));
+            }
+            DrawingObject::Trendline { .. } | DrawingObject::VerticalLine { .. } => {
                 details = details
                     .push(drawing_color_picker(
                         "Line color",
@@ -646,6 +748,20 @@ impl DrawingTools {
         self.drawings[index].style != before
     }
 
+    fn update_selected_object(&mut self, update: impl FnOnce(&mut DrawingObject)) -> bool {
+        let Some(index) = self.selected_drawing.and_then(|id| self.drawing_index(id)) else {
+            return false;
+        };
+
+        if self.drawings[index].locked {
+            return false;
+        }
+
+        let before = self.drawings[index].object.clone();
+        update(&mut self.drawings[index].object);
+        self.drawings[index].object != before
+    }
+
     pub fn remove_drawing(&mut self, id: DrawingId) -> bool {
         let Some(index) = self.drawings.iter().position(|drawing| drawing.id == id) else {
             return false;
@@ -699,6 +815,7 @@ impl DrawingTools {
                     start: anchor,
                     current: anchor,
                     style: DrawingTool::Box.default_style(),
+                    extend_right: self.box_extend_right,
                 });
                 self.selected_drawing = None;
                 true
@@ -707,6 +824,8 @@ impl DrawingTools {
                 let object = DrawingObject::HorizontalLine {
                     panel_id: anchor.panel_id,
                     y_unit: anchor.y_unit,
+                    time: anchor.time,
+                    ray: self.horizontal_line_ray,
                 };
                 self.push_drawing(object, DrawingTool::HorizontalLine.default_style());
                 true
@@ -1003,7 +1122,7 @@ impl DrawingTools {
         let panel_exists = |panel_id: PanelId| composition.panel(panel_id).is_some();
 
         match object {
-            DrawingObject::Trendline { start, end } | DrawingObject::Box { start, end } => {
+            DrawingObject::Trendline { start, end } | DrawingObject::Box { start, end, .. } => {
                 panel_exists(start.panel_id) && panel_exists(end.panel_id)
             }
             DrawingObject::HorizontalLine { panel_id, .. } => panel_exists(*panel_id),
@@ -1016,6 +1135,7 @@ impl DrawingTools {
 mod tests {
     use super::*;
     use crate::widget::chart::kline::YUnit;
+    use exchange::UnixMs;
 
     #[test]
     fn selected_drawing_style_updates_are_visual() {
@@ -1025,12 +1145,14 @@ mod tests {
             object: DrawingObject::HorizontalLine {
                 panel_id: PanelId(1),
                 y_unit: YUnit(0),
+                time: UnixMs::ZERO,
+                ray: false,
             },
             style: DrawingStyle::default(),
             locked: false,
             visible: true,
         };
-        let mut tools = DrawingTools::from_parts(DrawingTool::Cursor, vec![drawing]);
+        let mut tools = DrawingTools::from_parts(DrawingTool::Cursor, vec![drawing], false, false);
 
         assert_eq!(
             tools.update(DrawingMessage::SelectDrawing(id)),
@@ -1050,5 +1172,157 @@ mod tests {
         let style = &tools.drawings()[0].style;
         assert_eq!(style.stroke_color.accent_value(), Some(ThemeAccent::Six));
         assert_eq!(style.stroke_width, MAX_DRAWING_STROKE_WIDTH);
+    }
+
+    fn anchor(time: u64, y_unit: i64) -> DrawingAnchor {
+        DrawingAnchor {
+            panel_id: PanelId(1),
+            time: UnixMs(time),
+            y_unit: YUnit(y_unit),
+        }
+    }
+
+    #[test]
+    fn ray_toggle_applies_to_selected_line_and_sets_default() {
+        let drawing = DrawingEntity {
+            id: DrawingId(1),
+            object: DrawingObject::HorizontalLine {
+                panel_id: PanelId(1),
+                y_unit: YUnit(5),
+                time: UnixMs(100),
+                ray: false,
+            },
+            style: DrawingStyle::default(),
+            locked: false,
+            visible: true,
+        };
+        let mut tools = DrawingTools::from_parts(DrawingTool::Cursor, vec![drawing], false, false);
+
+        tools.update(DrawingMessage::SelectDrawing(DrawingId(1)));
+        assert_eq!(
+            tools.update(DrawingMessage::SetHorizontalLineRay(true)),
+            DrawingUpdate::Visual
+        );
+
+        assert!(tools.horizontal_line_ray());
+        let object = &tools.drawings()[0].object;
+        assert!(matches!(
+            object,
+            DrawingObject::HorizontalLine { ray: true, .. }
+        ));
+
+        tools.update(DrawingMessage::SelectTool(DrawingTool::HorizontalLine));
+        assert!(tools.start_drawing_from_anchor(anchor(200, 5)));
+        let object = tools.drawings()[1].object.clone();
+        assert_eq!(
+            object,
+            DrawingObject::HorizontalLine {
+                panel_id: PanelId(1),
+                y_unit: YUnit(5),
+                time: UnixMs(200),
+                ray: true,
+            }
+        );
+    }
+
+    #[test]
+    fn extend_right_toggle_applies_to_selected_box_and_sets_default() {
+        let drawing = DrawingEntity {
+            id: DrawingId(1),
+            object: DrawingObject::Box {
+                start: anchor(10, 5),
+                end: anchor(20, 1),
+                extend_right: false,
+            },
+            style: DrawingStyle::default(),
+            locked: false,
+            visible: true,
+        };
+        let mut tools = DrawingTools::from_parts(DrawingTool::Cursor, vec![drawing], false, false);
+
+        tools.update(DrawingMessage::SelectDrawing(DrawingId(1)));
+        assert_eq!(
+            tools.update(DrawingMessage::SetBoxExtendRight(true)),
+            DrawingUpdate::Visual
+        );
+
+        assert!(tools.box_extend_right());
+        let object = &tools.drawings()[0].object;
+        assert!(matches!(
+            object,
+            DrawingObject::Box {
+                extend_right: true,
+                ..
+            }
+        ));
+
+        tools.update(DrawingMessage::SelectTool(DrawingTool::Box));
+        assert!(tools.start_drawing_from_anchor(anchor(30, 5)));
+        let draft = tools
+            .drawing_draft()
+            .expect("box drafting should be active");
+        assert!(matches!(
+            draft,
+            DrawingDraft::Box {
+                extend_right: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn toggles_do_not_affect_unrelated_selected_drawings() {
+        let drawing = DrawingEntity {
+            id: DrawingId(1),
+            object: DrawingObject::Trendline {
+                start: anchor(10, 5),
+                end: anchor(20, 5),
+            },
+            style: DrawingStyle::default(),
+            locked: false,
+            visible: true,
+        };
+        let mut tools = DrawingTools::from_parts(DrawingTool::Cursor, vec![drawing], false, false);
+
+        tools.update(DrawingMessage::SelectDrawing(DrawingId(1)));
+        tools.update(DrawingMessage::SetHorizontalLineRay(true));
+        tools.update(DrawingMessage::SetBoxExtendRight(true));
+
+        assert!(matches!(
+            tools.drawings()[0].object,
+            DrawingObject::Trendline { .. }
+        ));
+        assert!(tools.horizontal_line_ray());
+        assert!(tools.box_extend_right());
+    }
+
+    #[test]
+    fn toggles_do_not_apply_to_locked_drawings() {
+        let drawing = DrawingEntity {
+            id: DrawingId(1),
+            object: DrawingObject::HorizontalLine {
+                panel_id: PanelId(1),
+                y_unit: YUnit(5),
+                time: UnixMs(100),
+                ray: false,
+            },
+            style: DrawingStyle::default(),
+            locked: true,
+            visible: true,
+        };
+        let mut tools = DrawingTools::from_parts(DrawingTool::Cursor, vec![drawing], false, false);
+
+        tools.update(DrawingMessage::SelectDrawing(DrawingId(1)));
+        assert_eq!(
+            tools.update(DrawingMessage::SetHorizontalLineRay(true)),
+            DrawingUpdate::Visual
+        );
+
+        assert!(tools.horizontal_line_ray());
+        let object = &tools.drawings()[0].object;
+        assert!(matches!(
+            object,
+            DrawingObject::HorizontalLine { ray: false, .. }
+        ));
     }
 }

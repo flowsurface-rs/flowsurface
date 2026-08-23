@@ -28,7 +28,6 @@ pub mod viewport;
 
 pub use series::SeriesColor;
 
-pub use indicators::{IndicatorConfig, IndicatorConfigStore};
 pub use fetch_plan::{
     FetchBatch, FetchPlanInput, FetchRange, FetchStage, desired_fetch_batches,
     desired_trade_fetch_range, visible_window,
@@ -48,6 +47,7 @@ pub use indicators::{
     IndicatorRuntimeSnapshot, IndicatorRuntimeState, IndicatorSetting, IndicatorSettingChoice,
     IndicatorSettingControl, IndicatorSettingValue, IndicatorSettingsContext, KlinePriceSource,
 };
+pub use indicators::{IndicatorConfig, IndicatorConfigStore};
 pub use indicators::{RsiConfig, RsiSmoothing};
 pub use studies::{
     DEFAULT_RECURRING_VOLUME_PROFILE_INTERVAL, DEFAULT_RECURRING_VOLUME_PROFILE_OPACITY_PERCENT,
@@ -831,6 +831,10 @@ pub struct Config {
     pub y_viewports: Vec<ViewportConfig>,
     pub drawings: Vec<DrawingConfig>,
     pub active_drawing_tool: DrawingTool,
+    #[serde(default)]
+    pub horizontal_line_ray: bool,
+    #[serde(default)]
+    pub box_extend_right: bool,
     pub studies: Vec<KlineStudy>,
     #[serde(default)]
     pub study_configs: Vec<KlineStudy>,
@@ -874,6 +878,8 @@ impl Default for Config {
             y_viewports: Vec::new(),
             drawings: Vec::new(),
             active_drawing_tool: DrawingTool::Cursor,
+            horizontal_line_ray: false,
+            box_extend_right: false,
             studies: Vec::new(),
             study_configs: Vec::new(),
             indicator_instances: Vec::new(),

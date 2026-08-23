@@ -399,10 +399,8 @@ impl KlineData {
         if data.is_empty() {
             return false;
         }
-        self.series[idx].insert_indicator_input(
-            IndicatorInput::OpenInterest { data, basis },
-            indicators,
-        );
+        self.series[idx]
+            .insert_indicator_input(IndicatorInput::OpenInterest { data, basis }, indicators);
         true
     }
 

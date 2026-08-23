@@ -1,6 +1,7 @@
 use super::{
-    Action as ChartAction, ChartCommand, CommandResult, KlineChartV2, Message as ChartMessage,
-    SETTINGS_SIDEBAR_HEADER_HEIGHT,
+    Action as ChartAction, CandlestickCommand, ChartCommand, CommandResult, FootprintCommand,
+    IndicatorCommand, KlineChartV2, Message as ChartMessage, SETTINGS_SIDEBAR_HEADER_HEIGHT,
+    SeriesCommand,
 };
 use crate::widget::study_configurator::Study as _;
 use crate::{
@@ -1085,52 +1086,54 @@ impl State {
                         {
                             modal.set_input_draft(id, value);
                         }
-                        config.map(|config| ChartCommand::SetIndicatorDataConfig {
-                            id: instance_id,
-                            config,
+                        config.map(|config| {
+                            ChartCommand::Indicator(IndicatorCommand::SetDataConfig {
+                                id: instance_id,
+                                config,
+                            })
                         })
                     }
                     KlineV2IndicatorSettingsMessage::DataConfig(config) => {
-                        Some(ChartCommand::SetIndicatorDataConfig {
+                        Some(ChartCommand::Indicator(IndicatorCommand::SetDataConfig {
                             id: instance_id,
                             config,
-                        })
+                        }))
                     }
                     KlineV2IndicatorSettingsMessage::Color {
                         slot,
                         accent,
                         shade,
-                    } => Some(ChartCommand::SetIndicatorColor {
+                    } => Some(ChartCommand::Indicator(IndicatorCommand::SetColor {
                         id: instance_id,
                         slot,
                         accent,
                         shade,
-                    }),
-                    KlineV2IndicatorSettingsMessage::FillVisible(visible) => {
-                        Some(ChartCommand::SetIndicatorFillVisibility {
+                    })),
+                    KlineV2IndicatorSettingsMessage::FillVisible(visible) => Some(
+                        ChartCommand::Indicator(IndicatorCommand::SetFillVisibility {
                             id: instance_id,
                             visible,
-                        })
-                    }
+                        }),
+                    ),
                     KlineV2IndicatorSettingsMessage::LineWidth { slot, width } => {
-                        Some(ChartCommand::SetIndicatorLineWidth {
+                        Some(ChartCommand::Indicator(IndicatorCommand::SetLineWidth {
                             id: instance_id,
                             slot,
                             width,
-                        })
+                        }))
                     }
                     KlineV2IndicatorSettingsMessage::StrokeStyle { slot, stroke_style } => {
-                        Some(ChartCommand::SetIndicatorStrokeStyle {
+                        Some(ChartCommand::Indicator(IndicatorCommand::SetStrokeStyle {
                             id: instance_id,
                             slot,
                             stroke_style,
-                        })
+                        }))
                     }
                     KlineV2IndicatorSettingsMessage::Mark(mark) => {
-                        Some(ChartCommand::SetIndicatorMark {
+                        Some(ChartCommand::Indicator(IndicatorCommand::SetMark {
                             id: instance_id,
                             mark,
-                        })
+                        }))
                     }
                     KlineV2IndicatorSettingsMessage::Reset => {
                         if let SettingsTarget::Indicator(modal) = &mut self.target
@@ -1138,7 +1141,9 @@ impl State {
                         {
                             modal.clear_input_drafts();
                         }
-                        Some(ChartCommand::ResetIndicatorSettings(instance_id))
+                        Some(ChartCommand::Indicator(IndicatorCommand::ResetSettings(
+                            instance_id,
+                        )))
                     }
                 };
 
@@ -1152,27 +1157,38 @@ impl State {
             Message::CandlestickSettings(message) => {
                 let command = match message {
                     CandlestickSettingsMessage::Config(config) => {
-                        ChartCommand::SetCandlestickConfig(config)
+                        ChartCommand::Candlestick(CandlestickCommand::SetConfig(config))
                     }
-                    CandlestickSettingsMessage::Mark(mark) => ChartCommand::SetPrimaryMark(mark),
-                    CandlestickSettingsMessage::Reset => ChartCommand::ResetCandlestickSettings,
+                    CandlestickSettingsMessage::Mark(mark) => {
+                        ChartCommand::Candlestick(CandlestickCommand::SetMark(mark))
+                    }
+                    CandlestickSettingsMessage::Reset => {
+                        ChartCommand::Candlestick(CandlestickCommand::ResetSettings)
+                    }
                 };
                 let _ = chart.apply_command(command);
             }
             Message::ClusterKindSelected(kind) => {
-                let _ = chart.apply_command(ChartCommand::SetFootprintClusterKind(kind));
+                let _ = chart.apply_command(ChartCommand::Footprint(
+                    FootprintCommand::SetClusterKind(kind),
+                ));
             }
             Message::FootprintPocConfigChanged(config) => {
-                let _ = chart.apply_command(ChartCommand::SetFootprintPocConfig(config));
+                let _ = chart.apply_command(ChartCommand::Footprint(
+                    FootprintCommand::SetPocConfig(config),
+                ));
             }
             Message::TradeDataEnabledChanged(enabled) => {
-                let _ = chart.apply_command(ChartCommand::SetTradeDataEnabled(enabled));
+                let _ = chart.apply_command(ChartCommand::Footprint(
+                    FootprintCommand::SetTradeDataEnabled(enabled),
+                ));
             }
             Message::ResetFootprintSettings => {
-                let _ = chart.apply_command(ChartCommand::ResetFootprintSettings);
+                let _ =
+                    chart.apply_command(ChartCommand::Footprint(FootprintCommand::ResetSettings));
             }
             Message::ResetSeriesSettings => {
-                let _ = chart.apply_command(ChartCommand::ResetSeriesSettings);
+                let _ = chart.apply_command(ChartCommand::Series(SeriesCommand::ResetSettings));
             }
             Message::Study(message) => chart.update_study_configurator(message),
             Message::SeriesEditor(message) => {
@@ -1183,10 +1199,7 @@ impl State {
         None
     }
 
-    pub(super) fn sidebar_view<'a>(
-        &'a self,
-        chart: &'a KlineChartV2,
-    ) -> Element<'a, ChartMessage> {
+    pub(super) fn sidebar_view<'a>(&'a self, chart: &'a KlineChartV2) -> Element<'a, ChartMessage> {
         let close = button(style::icon_text(style::Icon::Close, 14))
             .style(|theme, status| style::button::cancel(theme, status, false))
             .padding([4, 8])
@@ -1237,15 +1250,11 @@ impl State {
             settings_content
         };
 
-        container(column![
-            header,
-            rule::horizontal(1.0),
-            settings_content,
-        ])
-        .width(Length::Fixed(self.sidebar_width()))
-        .height(Length::Fill)
-        .padding([4, 8])
-        .style(style::chart_sidebar_container)
-        .into()
+        container(column![header, rule::horizontal(1.0), settings_content,])
+            .width(Length::Fixed(self.sidebar_width()))
+            .height(Length::Fill)
+            .padding([4, 8])
+            .style(style::chart_sidebar_container)
+            .into()
     }
 }

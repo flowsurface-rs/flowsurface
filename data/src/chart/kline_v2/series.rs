@@ -721,10 +721,7 @@ impl KlineSeries {
     pub fn refresh_indicators(&mut self, instances: &IndicatorInstanceStore, basis: Basis) {
         self.refresh_indicator_inputs(instances);
         let trade_bars = self.normalized_trade_bars(basis);
-        self.insert_indicator_input(
-            IndicatorInput::Trades { bars: &trade_bars },
-            instances,
-        );
+        self.insert_indicator_input(IndicatorInput::Trades { bars: &trade_bars }, instances);
     }
 
     pub fn update_indicators_after_trades(

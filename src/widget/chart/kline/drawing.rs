@@ -37,9 +37,9 @@ impl AxisBadgeFilter {
 }
 
 pub use data::chart::kline_v2::drawing::{
-    DrawingAnchor, DrawingColor, DrawingDraft, DrawingDragTarget, DrawingEntity, DrawingHandleKind,
-    DrawingId, DrawingObject, DrawingSnapshot, DrawingStyle, DrawingTool, KlineWidgetDrawingEvent,
-    MAX_DRAWING_STROKE_WIDTH, MIN_DRAWING_STROKE_WIDTH,
+    AxisLabelAnchor, DrawingAnchor, DrawingColor, DrawingDraft, DrawingDragTarget, DrawingEntity,
+    DrawingHandleKind, DrawingId, DrawingObject, DrawingSnapshot, DrawingStyle, DrawingTool,
+    KlineWidgetDrawingEvent, MAX_DRAWING_STROKE_WIDTH, MIN_DRAWING_STROKE_WIDTH,
 };
 
 fn iced_color(color: DrawingColor, generated_accents: &[iced::Color; 6]) -> iced::Color {
@@ -262,14 +262,18 @@ where
         })
     }
 
-    fn anchor_to_overlay_point(&self, scene: &Scene, anchor: DrawingAnchor) -> Option<Point> {
-        let panel_index = self.panel_index_for_id(anchor.panel_id)?;
-        let panel = scene.layout.panel(panel_index)?;
-        let panel_precision = self.panel_value_precision(panel_index);
-        let value = self.panel_unit_to_value(panel_precision, anchor.y_unit);
-        let x_unit = self.x_unit_for_anchor_time(scene, anchor.time)?;
+    fn x_overlay_for_time(&self, scene: &Scene, time: UnixMs) -> Option<f32> {
+        let x_unit = self.x_unit_for_anchor_time(scene, time)?;
         let x_plot =
             Self::snap_plot_x_to_cell(scene.map_x_plot(x_unit), self.resolved_pixel_ratio());
+        Some(scene.layout.regions.plot.x + x_plot)
+    }
+
+    fn y_overlay_for_value(&self, scene: &Scene, panel_id: PanelId, y_unit: YUnit) -> Option<f32> {
+        let panel_index = self.panel_index_for_id(panel_id)?;
+        let panel = scene.layout.panel(panel_index)?;
+        let panel_precision = self.panel_value_precision(panel_index);
+        let value = self.panel_unit_to_value(panel_precision, y_unit);
         let y_plot = match panel.kind {
             KlinePanelKind::PrimaryChart => {
                 scene.map_primary_plot_with_anchor(value, scene.primary.anchor)
@@ -277,10 +281,14 @@ where
             KlinePanelKind::Indicator => scene.map_indicator_plot(panel_index, value)?,
         };
 
-        Some(Point::new(
-            scene.layout.regions.plot.x + x_plot,
-            scene.layout.regions.plot.y + y_plot,
-        ))
+        Some(scene.layout.regions.plot.y + y_plot)
+    }
+
+    fn anchor_to_overlay_point(&self, scene: &Scene, anchor: DrawingAnchor) -> Option<Point> {
+        let x = self.x_overlay_for_time(scene, anchor.time)?;
+        let y = self.y_overlay_for_value(scene, anchor.panel_id, anchor.y_unit)?;
+
+        Some(Point::new(x, y))
     }
 
     fn drawing_trendline_geometry(
@@ -313,6 +321,7 @@ where
         scene: &Scene,
         start: DrawingAnchor,
         end: DrawingAnchor,
+        extend_right: bool,
     ) -> Option<(Point, Size, Rectangle, Rectangle)> {
         if start.panel_id != end.panel_id {
             return None;
@@ -323,7 +332,11 @@ where
         let end_point = self.anchor_to_overlay_point(scene, end)?;
 
         let left = start_point.x.min(end_point.x);
-        let right = start_point.x.max(end_point.x);
+        let right = if extend_right {
+            clip_bounds.x + clip_bounds.width
+        } else {
+            start_point.x.max(end_point.x)
+        };
         let top = start_point.y.min(end_point.y);
         let bottom = start_point.y.max(end_point.y);
 
@@ -345,7 +358,9 @@ where
         scene: &Scene,
         panel_id: PanelId,
         y_unit: YUnit,
-    ) -> Option<(Rectangle, f32)> {
+        time: UnixMs,
+        ray: bool,
+    ) -> Option<(Rectangle, f32, f32)> {
         let panel_index = self.panel_index_for_id(panel_id)?;
         let panel = scene.layout.panel(panel_index)?;
         let clip_bounds = self.panel_plot_bounds_in_overlay(scene, panel_index)?;
@@ -365,7 +380,16 @@ where
             return None;
         }
 
-        Some((clip_bounds, scene.layout.regions.plot.y + y_plot))
+        let start_x = if ray {
+            let x_unit = self.x_unit_for_anchor_time(scene, time)?;
+            let x = scene.layout.regions.plot.x
+                + Self::snap_plot_x_to_cell(scene.map_x_plot(x_unit), self.resolved_pixel_ratio());
+            x.max(clip_bounds.x)
+        } else {
+            clip_bounds.x
+        };
+
+        Some((clip_bounds, scene.layout.regions.plot.y + y_plot, start_x))
     }
 
     fn drawing_vertical_line_geometry(
@@ -431,9 +455,13 @@ where
                     frame.stroke(&canvas::Path::line(start, end), stroke);
                 });
             }
-            DrawingObject::Box { start, end } => {
+            DrawingObject::Box {
+                start,
+                end,
+                extend_right,
+            } => {
                 let Some((origin, size, bounds, _)) =
-                    self.drawing_box_geometry(scene, *start, *end)
+                    self.drawing_box_geometry(scene, *start, *end, *extend_right)
                 else {
                     return;
                 };
@@ -520,9 +548,14 @@ where
                     );
                 });
             }
-            DrawingObject::HorizontalLine { panel_id, y_unit } => {
-                let Some((bounds, y)) =
-                    self.drawing_horizontal_line_geometry(scene, *panel_id, *y_unit)
+            DrawingObject::HorizontalLine {
+                panel_id,
+                y_unit,
+                time,
+                ray,
+            } => {
+                let Some((bounds, y, start_x)) =
+                    self.drawing_horizontal_line_geometry(scene, *panel_id, *y_unit, *time, *ray)
                 else {
                     return;
                 };
@@ -533,11 +566,17 @@ where
                     overlay_origin_in_window.y,
                     stroke_width_phys,
                 );
+                let start_x = Self::snap_stroke_center_with_origin(
+                    start_x,
+                    pixel_ratio,
+                    overlay_origin_in_window.x,
+                    stroke_width_phys,
+                );
 
                 frame.with_clip(bounds, |frame| {
                     frame.stroke(
                         &canvas::Path::line(
-                            Point::new(bounds.x, y),
+                            Point::new(start_x, y),
                             Point::new(bounds.x + bounds.width, y),
                         ),
                         stroke,
@@ -588,7 +627,11 @@ where
 
                 points
             }
-            DrawingObject::Box { start, end } => {
+            DrawingObject::Box {
+                start,
+                end,
+                extend_right,
+            } => {
                 if start.panel_id != end.panel_id {
                     return Vec::new();
                 }
@@ -604,6 +647,13 @@ where
                 let right = start_point.x.max(end_point.x);
                 let top = start_point.y.min(end_point.y);
                 let bottom = start_point.y.max(end_point.y);
+
+                if *extend_right {
+                    return vec![
+                        (DrawingHandleKind::BoxTopLeft, Point::new(left, top)),
+                        (DrawingHandleKind::BoxBottomLeft, Point::new(left, bottom)),
+                    ];
+                }
 
                 vec![
                     (DrawingHandleKind::BoxTopLeft, Point::new(left, top)),
@@ -792,9 +842,13 @@ where
 
                 Self::point_segment_distance(point, visible_start, visible_end) <= tolerance
             }
-            DrawingObject::Box { start, end } => {
+            DrawingObject::Box {
+                start,
+                end,
+                extend_right,
+            } => {
                 let Some((origin, size, bounds, visible_bounds)) =
-                    self.drawing_box_geometry(scene, *start, *end)
+                    self.drawing_box_geometry(scene, *start, *end, *extend_right)
                 else {
                     return false;
                 };
@@ -840,14 +894,19 @@ where
 
                 near_edge || inside_visible_fill
             }
-            DrawingObject::HorizontalLine { panel_id, y_unit } => {
-                let Some((bounds, y)) =
-                    self.drawing_horizontal_line_geometry(scene, *panel_id, *y_unit)
+            DrawingObject::HorizontalLine {
+                panel_id,
+                y_unit,
+                time,
+                ray,
+            } => {
+                let Some((bounds, y, start_x)) =
+                    self.drawing_horizontal_line_geometry(scene, *panel_id, *y_unit, *time, *ray)
                 else {
                     return false;
                 };
 
-                point.x >= (bounds.x - tolerance)
+                point.x >= (start_x - tolerance)
                     && point.x <= (bounds.x + bounds.width + tolerance)
                     && (point.y - y).abs() <= tolerance
             }
@@ -875,11 +934,11 @@ where
             .map(|drawing| drawing.id)
     }
 
-    fn format_anchor_y_label(&self, scene: &Scene, anchor: DrawingAnchor) -> Option<String> {
-        let panel_index = self.panel_index_for_id(anchor.panel_id)?;
+    fn format_y_label(&self, scene: &Scene, panel_id: PanelId, y_unit: YUnit) -> Option<String> {
+        let panel_index = self.panel_index_for_id(panel_id)?;
         let panel = scene.layout.panel(panel_index)?;
         let panel_precision = self.panel_value_precision(panel_index);
-        let value = self.panel_unit_to_value(panel_precision, anchor.y_unit);
+        let value = self.panel_unit_to_value(panel_precision, y_unit);
 
         match panel.kind {
             KlinePanelKind::PrimaryChart => Some(scene.format_primary_cursor_label(value)),
@@ -1088,38 +1147,36 @@ where
         let Some(object) = self.drawings.active_axis_labeled_object() else {
             return;
         };
-        let Some((start, end)) = object.axis_label_anchors() else {
-            return;
-        };
 
-        for anchor in [start, end] {
-            let Some(point) = self.anchor_to_overlay_point(scene, anchor) else {
-                continue;
-            };
+        for anchor in object.axis_label_anchors() {
+            match anchor {
+                AxisLabelAnchor::X { time } => {
+                    let Some(x) = self.x_overlay_for_time(scene, time) else {
+                        continue;
+                    };
+                    let Some(x_unit) = self.x_unit_for_anchor_time(scene, time) else {
+                        continue;
+                    };
+                    let x_text = self.format_x_label(scene.x.axis, x_unit, 1);
+                    self.draw_x_axis_badge(frame, scene, palette, x, &x_text, filter);
+                }
+                AxisLabelAnchor::Y { panel_id, y_unit } => {
+                    let Some(y) = self.y_overlay_for_value(scene, panel_id, y_unit) else {
+                        continue;
+                    };
+                    let Some(y_text) = self.format_y_label(scene, panel_id, y_unit) else {
+                        continue;
+                    };
+                    let Some(panel_index) = self.panel_index_for_id(panel_id) else {
+                        continue;
+                    };
+                    let Some(panel_bounds) = self.panel_plot_bounds_in_overlay(scene, panel_index)
+                    else {
+                        continue;
+                    };
 
-            if let Some(x_unit) = self.x_unit_for_anchor_time(scene, anchor.time) {
-                let x_text = self.format_x_label(scene.x.axis, x_unit, 1);
-                self.draw_x_axis_badge(frame, scene, palette, point.x, &x_text, filter);
-            }
-
-            if let Some(y_text) = self.format_anchor_y_label(scene, anchor) {
-                let Some(panel_index) = self.panel_index_for_id(anchor.panel_id) else {
-                    continue;
-                };
-                let Some(panel_bounds) = self.panel_plot_bounds_in_overlay(scene, panel_index)
-                else {
-                    continue;
-                };
-
-                self.draw_y_axis_badge(
-                    frame,
-                    scene,
-                    palette,
-                    point.y,
-                    &y_text,
-                    panel_bounds,
-                    filter,
-                );
+                    self.draw_y_axis_badge(frame, scene, palette, y, &y_text, panel_bounds, filter);
+                }
             }
         }
     }

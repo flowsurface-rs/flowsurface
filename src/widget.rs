@@ -226,8 +226,8 @@ where
         let palette = theme.extended_palette();
         resolve_theme_color(
             ThemeColor::with_accent(selected.role, accent, selected.shade),
-            &palette,
-            &generated_theme_accents(&palette),
+            palette,
+            &generated_theme_accents(palette),
         )
     };
 

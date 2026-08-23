@@ -4,8 +4,8 @@ use crate::{
         heatmap::HeatmapChart,
         kline::KlineChart,
         kline_v2::{
-            ChartCommand, CommandResult, DataUpdate, KlineChartV2,
-            KlineIndicator as KlineV2Indicator,
+            ChartCommand, CommandResult, DataUpdate, FootprintCommand, IndicatorCommand,
+            KlineChartV2, KlineIndicator as KlineV2Indicator, StudyCommand, TickerCommand,
         },
     },
     connector::{
@@ -1332,7 +1332,7 @@ impl State {
                         super::chart::kline_v2::Action::RemoveSeries(ti) => {
                             if let Content::KlineV2 { chart: Some(c), .. } = &mut self.content
                                 && let CommandResult::Streams(streams) =
-                                    c.apply_command(ChartCommand::RemoveTicker(ti))
+                                    c.apply_command(ChartCommand::Ticker(TickerCommand::Remove(ti)))
                             {
                                 self.streams = ResolvedStream::Ready(streams);
                             }
@@ -1354,7 +1354,8 @@ impl State {
                 let result = match &mut self.content {
                     Content::KlineV2 {
                         chart: Some(chart), ..
-                    } => chart.apply_command(ChartCommand::AddIndicator(indicator)),
+                    } => chart
+                        .apply_command(ChartCommand::Indicator(IndicatorCommand::Add(indicator))),
                     _ => CommandResult::None,
                 };
                 let trade_stream_changed = self.sync_kline_v2_trade_stream();
@@ -1369,7 +1370,7 @@ impl State {
                 let result = match &mut self.content {
                     Content::KlineV2 {
                         chart: Some(chart), ..
-                    } => chart.apply_command(ChartCommand::ToggleStudy(study)),
+                    } => chart.apply_command(ChartCommand::Study(StudyCommand::Toggle(study))),
                     _ => CommandResult::None,
                 };
                 let trade_stream_changed = self.sync_kline_v2_trade_stream();
@@ -1442,9 +1443,9 @@ impl State {
                                             );
                                         }
                                         Content::KlineV2 { chart: Some(c), .. } => {
-                                            let _ = c.apply_command(
-                                                ChartCommand::SetFootprintTickMultiplier(tm),
-                                            );
+                                            let _ = c.apply_command(ChartCommand::Footprint(
+                                                FootprintCommand::SetTickMultiplier(tm),
+                                            ));
                                         }
                                         _ => {}
                                     }
@@ -1623,9 +1624,9 @@ impl State {
                                                     .collect();
 
                                                 for ticker in secondary_tickers {
-                                                    let _ = c.apply_command(
-                                                        ChartCommand::RemoveTicker(ticker),
-                                                    );
+                                                    let _ = c.apply_command(ChartCommand::Ticker(
+                                                        TickerCommand::Remove(ticker),
+                                                    ));
                                                 }
 
                                                 vec![StreamKind::Trades {
@@ -1675,7 +1676,7 @@ impl State {
                                 }
 
                                 let CommandResult::Streams(streams) =
-                                    c.apply_command(ChartCommand::AddTicker(ti))
+                                    c.apply_command(ChartCommand::Ticker(TickerCommand::Add(ti)))
                                 else {
                                     return None;
                                 };
@@ -1685,8 +1686,8 @@ impl State {
                         }
                         crate::modal::pane::mini_tickers_list::RowSelection::Remove(ti) => {
                             if let Content::KlineV2 { chart: Some(c), .. } = &mut self.content {
-                                let CommandResult::Streams(streams) =
-                                    c.apply_command(ChartCommand::RemoveTicker(ti))
+                                let CommandResult::Streams(streams) = c
+                                    .apply_command(ChartCommand::Ticker(TickerCommand::Remove(ti)))
                                 else {
                                     return None;
                                 };
@@ -1715,7 +1716,9 @@ impl State {
                     c.set_cluster_kind(kind);
                     *cur = c.kind.clone();
                 } else if let Content::KlineV2 { chart: Some(c), .. } = &mut self.content {
-                    let _ = c.apply_command(ChartCommand::SetFootprintClusterKind(kind));
+                    let _ = c.apply_command(ChartCommand::Footprint(
+                        FootprintCommand::SetClusterKind(kind),
+                    ));
                 }
             }
             settings::Message::ClusterScalingSelected(scaling) => {
@@ -2354,7 +2357,9 @@ impl Content {
             |layout| KlineChartV2::new_with_tickers_and_config(basis, tickers, layout),
         );
         if let Some(multiplier) = settings.tick_multiply {
-            let _ = chart.apply_command(ChartCommand::SetFootprintTickMultiplier(multiplier));
+            let _ = chart.apply_command(ChartCommand::Footprint(
+                FootprintCommand::SetTickMultiplier(multiplier),
+            ));
         }
 
         Content::KlineV2 {

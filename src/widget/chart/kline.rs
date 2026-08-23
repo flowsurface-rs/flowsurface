@@ -1699,18 +1699,17 @@ where
                 .and_then(|legend| Self::hit_ticker_legend(&layout_tree, legend, cursor_local));
         }
 
-        if ticker_legend_hit.is_some() {
+        if matches!(ticker_legend_hit, Some(TickerLegendHit::Icon(_, _))) {
             return advanced::mouse::Interaction::Pointer;
         }
 
         let footprint_legend = self
             .compute_scene(layout, cursor)
             .and_then(|scene| scene.chrome.footprint_legend);
-        if footprint_legend
+        let footprint_legend_hit = footprint_legend
             .as_ref()
-            .and_then(|legend| Self::hit_footprint_legend(&layout_tree, legend, cursor_local))
-            .is_some()
-        {
+            .and_then(|legend| Self::hit_footprint_legend(&layout_tree, legend, cursor_local));
+        if matches!(footprint_legend_hit, Some(FootprintLegendHit::Icon(_))) {
             return advanced::mouse::Interaction::Pointer;
         }
 
@@ -1724,11 +1723,13 @@ where
             ),
             self.studies_legend_expanded,
         );
-        if study_legend
+        let study_legend_hit = study_legend
             .as_ref()
-            .and_then(|legend| Self::hit_study_legend(&layout_tree, legend, cursor_local))
-            .is_some()
-        {
+            .and_then(|legend| Self::hit_study_legend(&layout_tree, legend, cursor_local));
+        if matches!(
+            study_legend_hit,
+            Some(StudyLegendHit::CategoryIcon(_)) | Some(StudyLegendHit::StudyIcon(_, _))
+        ) {
             return advanced::mouse::Interaction::Pointer;
         }
 
@@ -1742,11 +1743,10 @@ where
                 show_legend_values,
             ),
         );
-        if indicator_legend
+        let indicator_legend_hit = indicator_legend
             .as_ref()
-            .and_then(|legend| Self::hit_indicator_legend(&layout_tree, legend, cursor_local))
-            .is_some()
-        {
+            .and_then(|legend| Self::hit_indicator_legend(&layout_tree, legend, cursor_local));
+        if matches!(indicator_legend_hit, Some(IndicatorLegendHit::Icon(_, _))) {
             return advanced::mouse::Interaction::Pointer;
         }
 
