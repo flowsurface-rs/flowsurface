@@ -33,7 +33,7 @@ pub use catalog::{
     IndicatorConfig, IndicatorConfigStore, IndicatorRuntimeState, KlineIndicator, all_indicators,
     availability, color_specs, display_name, fill_specs, indicators_for_market, input_requirements,
     input_source_category, is_supported_for_market, kline_warmup_bars, mark_specs,
-    overlay_channels, panel_recipe, requires_trade_data, table_columns, uses_directional_volume,
+    overlay_channels, panel_recipe, requires_trade_data, table_columns,
 };
 pub use input::{
     IndicatorInput, IndicatorInputSource, KLINE_INPUTS, KlinePriceSource, NormalizedTradeBar,

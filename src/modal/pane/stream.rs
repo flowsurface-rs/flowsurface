@@ -274,6 +274,9 @@ impl Modifier {
                         *is_input_valid = true;
                     };
                 }
+                if let Some(min_tick) = self.min_ticksize {
+                    self.price_step = Some(new_ticksize.multiply_step(PriceStep::from(min_tick)));
+                }
                 Some(Action::TicksizeSelected(new_ticksize))
             }
             Message::TicksizeInputChanged(value_str) => {

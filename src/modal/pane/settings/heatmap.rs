@@ -210,7 +210,7 @@ pub fn heatmap_cfg_view<'a>(
     };
 
     let study_cfg = study_config
-        .view(studies, basis)
+        .view(studies, basis, None, None)
         .map(move |msg| Message::Study(study::StudyMessage::Heatmap(msg)));
 
     let content = split_column![
@@ -317,7 +317,7 @@ pub fn heatmap_shader_cfg_view<'a>(
     };
 
     let study_cfg = study_config
-        .view(studies, basis)
+        .view(studies, basis, None, None)
         .map(move |msg| Message::Study(study::StudyMessage::Heatmap(msg)));
 
     let content = split_column![

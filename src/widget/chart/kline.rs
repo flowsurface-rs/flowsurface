@@ -138,6 +138,7 @@ pub trait KlineSeriesLike {
         _latest: UnixMs,
         _lowest: Price,
         _highest: Price,
+        _tick_size: PriceStep,
     ) -> Option<PriceLevelTradeDistribution> {
         None
     }
@@ -145,6 +146,7 @@ pub trait KlineSeriesLike {
     fn recurring_trade_price_distributions(
         &self,
         _interval: Timeframe,
+        _tick_size: PriceStep,
         _earliest: UnixMs,
         _latest: UnixMs,
     ) -> Vec<AnchoredPriceLevelTradeDistribution> {

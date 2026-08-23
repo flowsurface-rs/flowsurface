@@ -1,5 +1,6 @@
 use super::{
     Action as ChartAction, ChartCommand, CommandResult, KlineChartV2, Message as ChartMessage,
+    SETTINGS_SIDEBAR_HEADER_HEIGHT,
 };
 use crate::widget::study_configurator::Study as _;
 use crate::{
@@ -12,18 +13,21 @@ use crate::{
 };
 use data::chart::kline::ClusterKind;
 use data::chart::kline_v2::{
-    CandlestickColorSlot, CandlestickConfig, FootprintPocColorConfig, FootprintPocColorSlot,
-    FootprintPocConfig, IndicatorColorConfig, IndicatorColorSlot, IndicatorConfig,
-    IndicatorSetting, IndicatorSettingControl, IndicatorSettingValue, IndicatorSettingsContext,
-    IndicatorStyleConfig, KlineIndicator as KlineV2Indicator, KlineStudy, KlineStudyId,
-    LineStrokeStyle, MAX_CANDLESTICK_OPACITY_PERCENT, MAX_LINE_WIDTH,
-    MIN_CANDLESTICK_OPACITY_PERCENT, MIN_LINE_WIDTH, MarkKind, ThemeAccent,
+    BarMode, CandlestickColorSlot, CandlestickConfig, FootprintPocColorConfig,
+    FootprintPocColorSlot, FootprintPocConfig, HistogramMode, IndicatorColorConfig,
+    IndicatorColorSlot, IndicatorConfig, IndicatorSetting, IndicatorSettingControl,
+    IndicatorSettingValue, IndicatorSettingsContext, IndicatorStyleConfig,
+    KlineIndicator as KlineV2Indicator, KlineStudy, KlineStudyId, LineStrokeStyle,
+    MAX_CANDLESTICK_OPACITY_PERCENT, MAX_LINE_WIDTH, MIN_CANDLESTICK_OPACITY_PERCENT,
+    MIN_LINE_WIDTH, MarkKind, ThemeAccent,
 };
 use data::config::theme::{ThemeColor, ThemeColorShade};
+use exchange::TickMultiplier;
+use exchange::unit::MinTicksize;
 use iced::{
     Alignment, Element, Length,
     widget::{
-        button, checkbox, column, container, pick_list, radio, row, rule, text, text_input,
+        button, checkbox, column, container, pick_list, radio, row, rule, space, text, text_input,
         tooltip::Position as TooltipPosition,
     },
 };
@@ -172,11 +176,12 @@ pub fn kline_v2_indicator_cfg_view<'a>(
     color_config: IndicatorColorConfig,
     style_config: IndicatorStyleConfig,
     mark: Option<data::chart::kline_v2::MarkKind>,
+    chart: &'a KlineChartV2,
 ) -> Element<'a, Message> {
     let indicator = modal.indicator();
     let instance_id = modal.instance_id();
 
-    let mark_section = indicator_mark_section(instance_id, indicator, mark);
+    let mark_section = indicator_mark_section(instance_id, indicator, mark, chart);
     let fill_section = indicator_fill_section(instance_id, indicator, style_config);
     let channel_style_section =
         indicator_channel_style_section(instance_id, indicator, color_config, style_config, mark);
@@ -532,12 +537,14 @@ fn indicator_mark_section<'a>(
     instance_id: data::chart::kline_v2::IndicatorInstanceId,
     indicator: KlineV2Indicator,
     mark: Option<data::chart::kline_v2::MarkKind>,
+    chart: &'a KlineChartV2,
 ) -> Option<Element<'a, Message>> {
     let mark_specs = indicator.mark_specs();
     if mark_specs.is_empty() {
         return None;
     }
 
+    let signed_overlay_available = chart.indicator_produces_signed_overlay(instance_id);
     let selected = mark.or_else(|| mark_specs.first().map(|spec| spec.mark));
     let send_mark = move |value| Message::Indicator {
         instance_id,
@@ -545,6 +552,13 @@ fn indicator_mark_section<'a>(
     };
     let controls = mark_specs
         .iter()
+        .filter(|spec| {
+            let is_signed_overlay = matches!(
+                spec.mark,
+                MarkKind::Bar(BarMode::Histogram(HistogramMode::SignedOverlay))
+            );
+            !is_signed_overlay || signed_overlay_available
+        })
         .map(|spec| radio(spec.label, spec.mark, selected, send_mark).into());
 
     Some(
@@ -707,9 +721,19 @@ pub fn footprint_cfg_view(
     ])
 }
 
-fn study_cfg_view(study: KlineStudy, basis: data::chart::Basis) -> Element<'static, Message> {
+fn study_cfg_view(
+    study: KlineStudy,
+    basis: data::chart::Basis,
+    footprint_tick_multiplier: TickMultiplier,
+    min_ticksize: MinTicksize,
+) -> Element<'static, Message> {
     let content = study
-        .view_config_without_reset(basis, study::Message::StudyValueChanged)
+        .view_config_without_reset(
+            basis,
+            Some(footprint_tick_multiplier),
+            Some(min_ticksize),
+            study::Message::StudyValueChanged,
+        )
         .map(Message::Study);
 
     cfg_view_container(
@@ -985,6 +1009,7 @@ impl State {
                     .indicator_style_config(modal.instance_id())
                     .unwrap_or_default(),
                 chart.indicator_mark(modal.instance_id()),
+                chart,
             ),
             SettingsTarget::Candlestick => candlestick_cfg_view(
                 chart.candlestick_config(),
@@ -1002,7 +1027,14 @@ impl State {
             ),
             SettingsTarget::Study(study_id) => chart
                 .study(*study_id)
-                .map(|study| study_cfg_view(study, chart.basis()))
+                .map(|study| {
+                    study_cfg_view(
+                        study,
+                        chart.basis(),
+                        chart.footprint_tick_multiplier(),
+                        chart.ticker_info().min_ticksize,
+                    )
+                })
                 .unwrap_or_else(|| {
                     kline_v2_cfg_view(
                         chart.footprint_cluster_kind(),
@@ -1149,5 +1181,71 @@ impl State {
         }
 
         None
+    }
+
+    pub(super) fn sidebar_view<'a>(
+        &'a self,
+        chart: &'a KlineChartV2,
+    ) -> Element<'a, ChartMessage> {
+        let close = button(style::icon_text(style::Icon::Close, 14))
+            .style(|theme, status| style::button::cancel(theme, status, false))
+            .padding([4, 8])
+            .on_press(ChartMessage::CloseSettingsSidebar);
+        let header = row![
+            text(self.sidebar_title()).size(style::text_size::TITLE),
+            space::horizontal(),
+            close,
+        ]
+        .align_y(Alignment::Center)
+        .height(Length::Fixed(SETTINGS_SIDEBAR_HEADER_HEIGHT))
+        .spacing(8);
+
+        let settings_content = self.view(chart);
+        let settings_content = if self.can_reset(chart) {
+            let reset: Element<'_, ChartMessage> = if self.is_confirming_reset() {
+                row![
+                    text("Reset settings?"),
+                    button(style::icon_text(style::Icon::Checkmark, 12))
+                        .style(|theme, status| style::button::confirm(theme, status, true))
+                        .on_press(ChartMessage::Settings(Message::ResetConfirmed)),
+                    button(style::icon_text(style::Icon::Close, 12))
+                        .style(|theme, status| style::button::cancel(theme, status, true))
+                        .on_press(ChartMessage::Settings(Message::ResetCancelled)),
+                ]
+                .align_y(Alignment::Center)
+                .spacing(4)
+                .into()
+            } else {
+                button(style::icon_text(style::Icon::TrashBin, 12))
+                    .style(|theme, status| style::button::transparent(theme, status, false))
+                    .on_press(ChartMessage::Settings(Message::ResetRequested))
+                    .into()
+            };
+            column![
+                settings_content,
+                rule::horizontal(1.0),
+                container(
+                    row![space::horizontal(), reset]
+                        .align_y(Alignment::Center)
+                        .padding([4, 0]),
+                )
+                .width(Length::Fill),
+            ]
+            .height(Length::Fill)
+            .into()
+        } else {
+            settings_content
+        };
+
+        container(column![
+            header,
+            rule::horizontal(1.0),
+            settings_content,
+        ])
+        .width(Length::Fixed(self.sidebar_width()))
+        .height(Length::Fill)
+        .padding([4, 8])
+        .style(style::chart_sidebar_container)
+        .into()
     }
 }

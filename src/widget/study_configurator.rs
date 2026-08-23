@@ -1,6 +1,7 @@
 use crate::{
     split_column,
     style::{self, Icon, icon_text},
+    tooltip,
     widget::labeled_slider,
 };
 use data::chart::heatmap::{CLEANUP_THRESHOLD, HeatmapStudy, ProfileKind};
@@ -10,9 +11,14 @@ use data::chart::kline_v2::{
     MIN_VOLUME_PROFILE_OPACITY_PERCENT, MIN_VOLUME_PROFILE_WIDTH_PERCENT, VolumeProfileColorConfig,
     VolumeProfileSchedule,
 };
+use exchange::TickMultiplier;
+use exchange::unit::{MinTicksize, PriceStep};
 use iced::{
     Element, Length, padding,
-    widget::{button, checkbox, column, container, pick_list, row, rule, space, text},
+    widget::{
+        button, checkbox, column, container, pick_list, row, rule, space, text,
+        tooltip::Position as TooltipPosition,
+    },
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -27,15 +33,19 @@ pub trait Study: Sized + Copy + 'static {
     fn view_config<'a>(
         &self,
         basis: data::chart::Basis,
+        footprint_tick_multiplier: Option<TickMultiplier>,
+        min_ticksize: Option<MinTicksize>,
         on_change: impl Fn(Self) -> Message<Self> + Copy + 'a,
     ) -> Element<'a, Message<Self>>;
 
     fn view_config_without_reset<'a>(
         &self,
         basis: data::chart::Basis,
+        footprint_tick_multiplier: Option<TickMultiplier>,
+        min_ticksize: Option<MinTicksize>,
         on_change: impl Fn(Self) -> Message<Self> + Copy + 'a,
     ) -> Element<'a, Message<Self>> {
-        self.view_config(basis, on_change)
+        self.view_config(basis, footprint_tick_multiplier, min_ticksize, on_change)
     }
 }
 
@@ -191,13 +201,19 @@ fn volume_profile_opacity_section<'a>(
 
 fn volume_profile_settings_sections<'a>(
     schedule_section: Option<Element<'a, Message<KlineStudy>>>,
+    ticksize_section: Element<'a, Message<KlineStudy>>,
     width_section: Element<'a, Message<KlineStudy>>,
     opacity_section: Element<'a, Message<KlineStudy>>,
     color_section: Element<'a, Message<KlineStudy>>,
 ) -> Element<'a, Message<KlineStudy>> {
     if let Some(schedule) = schedule_section {
+        let schedule_row = row![
+            container(schedule).width(Length::Fill),
+            container(ticksize_section).width(Length::Fill),
+        ]
+        .spacing(12);
         column![
-            schedule,
+            schedule_row,
             rule::horizontal(1.0).style(style::split_ruler),
             column![width_section, opacity_section].spacing(8),
             rule::horizontal(1.0).style(style::split_ruler),
@@ -207,6 +223,8 @@ fn volume_profile_settings_sections<'a>(
         .into()
     } else {
         column![
+            ticksize_section,
+            rule::horizontal(1.0).style(style::split_ruler),
             column![width_section, opacity_section].spacing(8),
             rule::horizontal(1.0).style(style::split_ruler),
             color_section,
@@ -214,6 +232,64 @@ fn volume_profile_settings_sections<'a>(
         .spacing(16)
         .into()
     }
+}
+
+fn volume_profile_ticksize_section<'a>(
+    tick_multiplier: Option<TickMultiplier>,
+    footprint_tick_multiplier: Option<TickMultiplier>,
+    min_ticksize: Option<MinTicksize>,
+    on_change: impl Fn(Option<TickMultiplier>) -> Message<KlineStudy> + Copy + 'a,
+) -> Element<'a, Message<KlineStudy>> {
+    let floor = footprint_tick_multiplier.map_or(0, |multiplier| multiplier.0);
+    let options = TickMultiplier::ALL
+        .iter()
+        .copied()
+        .filter(|multiplier| multiplier.0 >= floor)
+        .collect::<Vec<_>>();
+    let selected = tick_multiplier
+        .map(|multiplier| TickMultiplier(multiplier.0.max(floor)))
+        .unwrap_or_else(|| {
+            footprint_tick_multiplier.unwrap_or_else(|| {
+                TickMultiplier::ALL
+                    .first()
+                    .copied()
+                    .expect("TickMultiplier::ALL is never empty")
+            })
+        });
+    let picker = pick_list(options, Some(selected), move |option| {
+        on_change(Some(option))
+    });
+
+    let label = text("Tick size").size(crate::style::text_size::SECTION);
+    let picker_row = row![
+        picker.width(Length::Fill),
+        tooltip(
+            button("i").style(style::button::info),
+            Some("Only coarser than the pane's footprint;\nthe smallest option inherits its tick size."),
+            TooltipPosition::Top,
+        ),
+    ]
+    .spacing(4)
+    .align_y(iced::Alignment::Center);
+
+    let mut column = column![label, picker_row].spacing(4).width(Length::Fill);
+
+    if let Some(min_tick) = min_ticksize {
+        let step = selected.multiply_step(PriceStep::from(min_tick));
+        let step_text = row![
+            space::horizontal(),
+            text(format!("Step: {}", step.to_ui_string()))
+                .size(crate::style::text_size::SMALL)
+                .style(|theme: &iced::Theme| {
+                    iced::widget::text::Style {
+                        color: Some(theme.extended_palette().background.base.text),
+                    }
+                }),
+        ];
+        column = column.push(step_text);
+    }
+
+    column.into()
 }
 
 impl Study for FootprintStudy {
@@ -228,6 +304,8 @@ impl Study for FootprintStudy {
     fn view_config<'a>(
         &self,
         _basis: data::chart::Basis,
+        _footprint_tick_multiplier: Option<TickMultiplier>,
+        _min_ticksize: Option<MinTicksize>,
         on_change: impl Fn(Self) -> Message<Self> + Copy + 'a,
     ) -> Element<'a, Message<Self>> {
         match *self {
@@ -348,6 +426,8 @@ impl Study for HeatmapStudy {
     fn view_config<'a>(
         &self,
         basis: data::chart::Basis,
+        _footprint_tick_multiplier: Option<TickMultiplier>,
+        _min_ticksize: Option<MinTicksize>,
         on_change: impl Fn(Self) -> Message<Self> + Copy + 'a,
     ) -> Element<'a, Message<Self>> {
         let interval_ms = match basis {
@@ -413,6 +493,8 @@ impl Study for HeatmapStudy {
 fn kline_study_config_view<'a>(
     study: &KlineStudy,
     basis: data::chart::Basis,
+    footprint_tick_multiplier: Option<TickMultiplier>,
+    min_ticksize: Option<MinTicksize>,
     on_change: impl Fn(KlineStudy) -> Message<KlineStudy> + Copy + 'a,
     include_reset: bool,
 ) -> Element<'a, Message<KlineStudy>> {
@@ -423,12 +505,14 @@ fn kline_study_config_view<'a>(
             width_percent,
             opacity_percent,
             visible,
+            tick_multiplier,
         } => {
             let schedule = *schedule;
             let colors = *colors;
             let width_percent = *width_percent;
             let opacity_percent = *opacity_percent;
             let visible = *visible;
+            let tick_multiplier = *tick_multiplier;
             let reset_row = || {
                 row![
                     space::horizontal(),
@@ -443,8 +527,24 @@ fn kline_study_config_view<'a>(
                     width_percent,
                     opacity_percent,
                     visible,
+                    tick_multiplier,
                 })
             });
+            let ticksize_section = volume_profile_ticksize_section(
+                tick_multiplier,
+                footprint_tick_multiplier,
+                min_ticksize,
+                move |new_multiplier| {
+                    on_change(KlineStudy::VolumeProfile {
+                        schedule,
+                        colors,
+                        width_percent,
+                        opacity_percent,
+                        visible,
+                        tick_multiplier: new_multiplier,
+                    })
+                },
+            );
 
             match schedule {
                 VolumeProfileSchedule::VisibleRange => {
@@ -458,6 +558,7 @@ fn kline_study_config_view<'a>(
                                 width_percent,
                                 opacity_percent,
                                 visible,
+                                tick_multiplier,
                             })
                         },
                     );
@@ -469,6 +570,7 @@ fn kline_study_config_view<'a>(
                                 width_percent,
                                 opacity_percent,
                                 visible,
+                                tick_multiplier,
                             })
                         });
 
@@ -478,6 +580,7 @@ fn kline_study_config_view<'a>(
                     }
                     content = content.push(volume_profile_settings_sections(
                         None,
+                        ticksize_section,
                         width_section,
                         opacity_section,
                         color_section,
@@ -504,6 +607,7 @@ fn kline_study_config_view<'a>(
                                 width_percent,
                                 opacity_percent,
                                 visible,
+                                tick_multiplier,
                             })
                         },
                     );
@@ -515,6 +619,7 @@ fn kline_study_config_view<'a>(
                                 width_percent,
                                 opacity_percent,
                                 visible,
+                                tick_multiplier,
                             })
                         });
                     if intervals.is_empty() {
@@ -527,6 +632,7 @@ fn kline_study_config_view<'a>(
                                 text("No recurring interval is at least 4x the chart timeframe")
                                     .into(),
                             ),
+                            ticksize_section,
                             width_section,
                             opacity_section,
                             color_section,
@@ -546,15 +652,26 @@ fn kline_study_config_view<'a>(
                                 width_percent,
                                 opacity_percent,
                                 visible,
+                                tick_multiplier,
                             })
-                        });
+                        })
+                        .width(Length::Fill);
 
                     let mut content = column![];
                     if include_reset {
                         content = content.push(reset_row());
                     }
                     content = content.push(volume_profile_settings_sections(
-                        Some(column![text("Interval"), interval_picker].spacing(4).into()),
+                        Some(
+                            column![
+                                text("Interval").size(crate::style::text_size::SECTION),
+                                interval_picker,
+                            ]
+                            .spacing(4)
+                            .width(Length::Fill)
+                            .into(),
+                        ),
+                        ticksize_section,
                         width_section,
                         opacity_section,
                         color_section,
@@ -579,17 +696,35 @@ impl Study for KlineStudy {
     fn view_config<'a>(
         &self,
         basis: data::chart::Basis,
+        footprint_tick_multiplier: Option<TickMultiplier>,
+        min_ticksize: Option<MinTicksize>,
         on_change: impl Fn(Self) -> Message<Self> + Copy + 'a,
     ) -> Element<'a, Message<Self>> {
-        kline_study_config_view(self, basis, on_change, true)
+        kline_study_config_view(
+            self,
+            basis,
+            footprint_tick_multiplier,
+            min_ticksize,
+            on_change,
+            true,
+        )
     }
 
     fn view_config_without_reset<'a>(
         &self,
         basis: data::chart::Basis,
+        footprint_tick_multiplier: Option<TickMultiplier>,
+        min_ticksize: Option<MinTicksize>,
         on_change: impl Fn(Self) -> Message<Self> + Copy + 'a,
     ) -> Element<'a, Message<Self>> {
-        kline_study_config_view(self, basis, on_change, false)
+        kline_study_config_view(
+            self,
+            basis,
+            footprint_tick_multiplier,
+            min_ticksize,
+            on_change,
+            false,
+        )
     }
 }
 
@@ -651,14 +786,25 @@ impl<S: Study + ToString> Configurator<S> {
         &self,
         active_studies: &[S],
         basis: data::chart::Basis,
+        footprint_tick_multiplier: Option<TickMultiplier>,
+        min_ticksize: Option<MinTicksize>,
     ) -> Element<'a, Message<S>> {
-        self.view_available(active_studies, basis, S::all(), &[])
+        self.view_available(
+            active_studies,
+            basis,
+            footprint_tick_multiplier,
+            min_ticksize,
+            S::all(),
+            &[],
+        )
     }
 
     pub fn view_available<'a>(
         &self,
         active_studies: &[S],
         basis: data::chart::Basis,
+        footprint_tick_multiplier: Option<TickMultiplier>,
+        min_ticksize: Option<MinTicksize>,
         available_studies: Vec<S>,
         disabled: &[S],
     ) -> Element<'a, Message<S>> {
@@ -669,6 +815,8 @@ impl<S: Study + ToString> Configurator<S> {
                 available_study,
                 active_studies,
                 basis,
+                footprint_tick_multiplier,
+                min_ticksize,
                 disabled,
             ));
         }
@@ -681,6 +829,8 @@ impl<S: Study + ToString> Configurator<S> {
         study: S,
         active_studies: &[S],
         basis: data::chart::Basis,
+        footprint_tick_multiplier: Option<TickMultiplier>,
+        min_ticksize: Option<MinTicksize>,
         disabled: &[S],
     ) -> Element<'a, Message<S>> {
         let (is_selected, study_config) = {
@@ -733,7 +883,12 @@ impl<S: Study + ToString> Configurator<S> {
         let mut column = column![checkbox_row];
 
         if is_expanded && let Some(config) = study_config {
-            column = column.push(config.view_config(basis, Message::StudyValueChanged));
+            column = column.push(config.view_config(
+                basis,
+                footprint_tick_multiplier,
+                min_ticksize,
+                Message::StudyValueChanged,
+            ));
         }
 
         container(column).style(style::modal_container).into()

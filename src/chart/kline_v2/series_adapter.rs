@@ -59,17 +59,21 @@ impl KlineSeriesLike for KlineSeries {
         latest: UnixMs,
         lowest: Price,
         highest: Price,
+        tick_size: PriceStep,
     ) -> Option<PriceLevelTradeDistribution> {
-        KlineSeries::trade_price_distribution(self, earliest, latest, lowest, highest)
+        KlineSeries::trade_price_distribution(self, earliest, latest, lowest, highest, tick_size)
     }
 
     fn recurring_trade_price_distributions(
         &self,
         interval: Timeframe,
+        tick_size: PriceStep,
         earliest: UnixMs,
         latest: UnixMs,
     ) -> Vec<AnchoredPriceLevelTradeDistribution> {
-        KlineSeries::recurring_trade_price_distributions(self, interval, earliest, latest)
+        KlineSeries::recurring_trade_price_distributions(
+            self, interval, tick_size, earliest, latest,
+        )
     }
 
     fn footprint_poc_lines(&self, earliest: UnixMs, latest: UnixMs) -> Vec<FootprintPocLine> {

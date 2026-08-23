@@ -31,12 +31,12 @@ macro_rules! define_indicator_catalog {
                     display_name: $display_name:literal,
                     panel_recipe: $panel_recipe:block,
                     inputs: $inputs:expr,
+                    optional_inputs: $optional_inputs:expr,
                     config: $config:ty,
                     colors: $colors:path,
                     marks: $marks:path,
                     channels: $channels:path,
                     fills: $fills:path,
-                    uses_directional_volume: $uses_directional_volume:expr
                 }
             ),+ $(,)?
         }
@@ -284,11 +284,14 @@ macro_rules! define_indicator_catalog {
 
         pub fn requires_trade_data(indicator: KlineIndicator) -> bool {
             input_requirements(indicator).contains(&IndicatorInputSource::Trades)
+                && !optional_input_requirements(indicator).contains(&IndicatorInputSource::Trades)
         }
 
-        pub fn uses_directional_volume(indicator: KlineIndicator) -> bool {
+        pub fn optional_input_requirements(
+            indicator: KlineIndicator,
+        ) -> &'static [IndicatorInputSource] {
             match indicator {
-                $(KlineIndicator::$variant => $uses_directional_volume,)+
+                $(KlineIndicator::$variant => $optional_inputs,)+
             }
         }
 
@@ -318,8 +321,10 @@ macro_rules! define_indicator_catalog {
 
         pub fn input_source_category(indicator: KlineIndicator) -> &'static str {
             let inputs = input_requirements(indicator);
+            let optional = optional_input_requirements(indicator);
             let has_klines = inputs.contains(&IndicatorInputSource::Klines);
-            let has_trades = inputs.contains(&IndicatorInputSource::Trades);
+            let has_trades = inputs.contains(&IndicatorInputSource::Trades)
+                && !optional.contains(&IndicatorInputSource::Trades);
             let has_open_interest = inputs.contains(&IndicatorInputSource::OpenInterest);
 
             match (has_klines, has_trades, has_open_interest) {
@@ -472,13 +477,13 @@ define_indicator_catalog! {
                     preferred_scale: PanelScaleMode::FitVisibleIncludeZero,
                 }
             },
-            inputs: KLINE_INPUTS,
+            inputs: CVD_INPUTS,
+            optional_inputs: &[IndicatorInputSource::Trades],
             config: (),
             colors: super::volume::COLOR_SPECS,
             marks: super::volume::MARK_SPECS,
             channels: super::NO_OVERLAY_CHANNELS,
             fills: super::NO_FILL_SPECS,
-            uses_directional_volume: true
         },
         BollingerBands => {
             state: super::bollinger::BollingerBandsState,
@@ -493,12 +498,12 @@ define_indicator_catalog! {
                 }
             },
             inputs: KLINE_INPUTS,
+            optional_inputs: &[],
             config: super::bollinger::BollingerBandsCalculationConfig,
             colors: super::bollinger::COLOR_SPECS,
             marks: super::NO_MARK_SPECS,
             channels: super::bollinger::OVERLAY_CHANNELS,
             fills: super::bollinger::FILL_SPECS,
-            uses_directional_volume: false
         },
         MovingAverages => {
             state: super::moving_averages::MovingAveragesState,
@@ -513,12 +518,12 @@ define_indicator_catalog! {
                 }
             },
             inputs: KLINE_INPUTS,
+            optional_inputs: &[],
             config: super::moving_averages::MovingAveragesCalculationConfig,
             colors: super::moving_averages::COLOR_SPECS,
             marks: super::NO_MARK_SPECS,
             channels: super::moving_averages::OVERLAY_CHANNELS,
             fills: super::NO_FILL_SPECS,
-            uses_directional_volume: false
         },
         Rsi => {
             state: super::rsi::RsiState,
@@ -543,12 +548,12 @@ define_indicator_catalog! {
                 }
             },
             inputs: KLINE_INPUTS,
+            optional_inputs: &[],
             config: super::rsi::RsiConfig,
             colors: super::rsi::COLOR_SPECS,
             marks: super::rsi::MARK_SPECS,
             channels: super::rsi::OVERLAY_CHANNELS,
             fills: super::rsi::FILL_SPECS,
-            uses_directional_volume: false
         },
         StochRsi => {
             state: super::stoch_rsi::StochRsiState,
@@ -573,12 +578,12 @@ define_indicator_catalog! {
                 }
             },
             inputs: KLINE_INPUTS,
+            optional_inputs: &[],
             config: super::stoch_rsi::StochRsiConfig,
             colors: super::stoch_rsi::COLOR_SPECS,
             marks: super::stoch_rsi::MARK_SPECS,
             channels: super::stoch_rsi::OVERLAY_CHANNELS,
             fills: super::stoch_rsi::FILL_SPECS,
-            uses_directional_volume: false
         },
         Atr => {
             state: super::atr::AtrState,
@@ -601,12 +606,12 @@ define_indicator_catalog! {
                 }
             },
             inputs: KLINE_INPUTS,
+            optional_inputs: &[],
             config: super::atr::AtrConfig,
             colors: super::atr::COLOR_SPECS,
             marks: super::atr::MARK_SPECS,
             channels: super::atr::OVERLAY_CHANNELS,
             fills: super::NO_FILL_SPECS,
-            uses_directional_volume: false
         },
         AnchoredVwap => {
             state: super::anchored_vwap::AnchoredVwapState,
@@ -621,12 +626,12 @@ define_indicator_catalog! {
                 }
             },
             inputs: KLINE_INPUTS,
+            optional_inputs: &[],
             config: super::anchored_vwap::AnchoredVwapConfig,
             colors: super::anchored_vwap::COLOR_SPECS,
             marks: super::NO_MARK_SPECS,
             channels: super::anchored_vwap::OVERLAY_CHANNELS,
             fills: super::NO_FILL_SPECS,
-            uses_directional_volume: false
         },
         OpenInterest => {
             state: super::open_interest::OpenInterestState,
@@ -649,12 +654,12 @@ define_indicator_catalog! {
                 }
             },
             inputs: OPEN_INTEREST_INPUTS,
+            optional_inputs: &[],
             config: (),
             colors: super::open_interest::COLOR_SPECS,
             marks: super::open_interest::MARK_SPECS,
             channels: super::NO_OVERLAY_CHANNELS,
             fills: super::NO_FILL_SPECS,
-            uses_directional_volume: false
         },
         CumulativeVolumeDelta => {
             state: super::cvd::CumulativeVolumeDeltaState,
@@ -677,12 +682,12 @@ define_indicator_catalog! {
                 }
             },
             inputs: CVD_INPUTS,
+            optional_inputs: &[IndicatorInputSource::Trades],
             config: (),
             colors: super::cvd::COLOR_SPECS,
             marks: super::cvd::MARK_SPECS,
             channels: super::NO_OVERLAY_CHANNELS,
             fills: super::NO_FILL_SPECS,
-            uses_directional_volume: false
         },
         TradeCount => {
             state: super::trade_count::TradeCountState,
@@ -705,12 +710,12 @@ define_indicator_catalog! {
                 }
             },
             inputs: TRADE_INPUTS,
+            optional_inputs: &[],
             config: (),
             colors: super::trade_count::COLOR_SPECS,
             marks: super::trade_count::MARK_SPECS,
             channels: super::NO_OVERLAY_CHANNELS,
             fills: super::NO_FILL_SPECS,
-            uses_directional_volume: false
         },
         BarAnalysis => {
             state: super::bar_analysis::BarAnalysisState,
@@ -723,12 +728,12 @@ define_indicator_catalog! {
                 }
             },
             inputs: TRADE_INPUTS,
+            optional_inputs: &[],
             config: (),
             colors: super::bar_analysis::COLOR_SPECS,
             marks: super::NO_MARK_SPECS,
             channels: super::NO_OVERLAY_CHANNELS,
             fills: super::NO_FILL_SPECS,
-            uses_directional_volume: false
         },
     }
 }

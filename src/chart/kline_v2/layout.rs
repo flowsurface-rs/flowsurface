@@ -1,7 +1,9 @@
 use super::KlineSeries;
 use super::indicator::{
     AvailabilityContext, IndicatorAvailability, IndicatorPanelRecipe, IndicatorUnsupportedReason,
+    display_name,
 };
+use crate::widget::chart::kline::UnavailableIndicator;
 use crate::widget::chart::kline::composition::{
     BarMode, ChartComposition, DataSourceId, HistogramMode, LayerDataKind, LayerId, LayerSource,
     LayerSpec, MarkKind, PanelId, PanelPresentation, PanelRole, PanelScaleMode, PanelSpec,
@@ -717,5 +719,70 @@ impl IndicatorLayout {
             .base_layer
             .or_else(|| panel.layers.first().map(|layer| layer.id))?;
         Some((panel.id, layer_id))
+    }
+}
+
+impl IndicatorLayout {
+    pub fn close_panel(&mut self, panel_id: PanelId) -> bool {
+        let removed = self.composition.remove_panel(panel_id);
+        if removed {
+            self.prune_stale_bindings();
+        }
+        removed
+    }
+
+    pub fn unavailable_indicator_panels(
+        &self,
+        basis: Basis,
+        base_ticker: TickerInfo,
+        base_series: Option<&KlineSeries>,
+        instances: &IndicatorInstanceStore,
+        trade_data_enabled: bool,
+    ) -> Vec<UnavailableIndicator> {
+        let trade_data_disabled =
+            self.trade_data_unavailable_indicators(trade_data_enabled, instances);
+        self.unavailable_indicators(basis, base_ticker, base_series, instances)
+            .into_iter()
+            .chain(trade_data_disabled)
+            .filter_map(|(id, reason)| {
+                let kind = instances.get(id)?.kind;
+                Some(UnavailableIndicator {
+                    value_id: id,
+                    message: unavailable_indicator_message(kind, reason, basis, base_ticker),
+                })
+            })
+            .collect()
+    }
+}
+
+fn unavailable_indicator_message(
+    indicator: KlineIndicator,
+    reason: IndicatorUnsupportedReason,
+    basis: Basis,
+    base_ticker: TickerInfo,
+) -> String {
+    let name = display_name(indicator);
+    match reason {
+        IndicatorUnsupportedReason::BasisNotSupported => {
+            format!("{name} is not available for {basis}.")
+        }
+        IndicatorUnsupportedReason::SourceNotSupported => {
+            format!("{name} is not available for {}.", base_ticker.exchange())
+        }
+        IndicatorUnsupportedReason::ResolutionNotSupported => match basis {
+            Basis::Time(timeframe) => {
+                format!("{name} is not available on {timeframe} timeframe.")
+            }
+            Basis::Tick(_) => format!("{name} is not available for tick charts."),
+        },
+        IndicatorUnsupportedReason::InsufficientData {
+            available,
+            required,
+        } => {
+            format!("{name} needs {required} candles; only {available} available.")
+        }
+        IndicatorUnsupportedReason::MissingRequiredInput => {
+            format!("{name} requires directional trade-volume data.")
+        }
     }
 }

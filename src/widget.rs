@@ -4,7 +4,7 @@ use crate::{
     style::{self, Icon, icon_text, modal_container},
 };
 use data::config::theme::{
-    ThemeColorRole, ThemeColorShade, darken, generated_theme_accent, lighten, mix_color,
+    ThemeColorRole, ThemeColorShade, darken, generated_theme_accents, lighten, mix_color,
 };
 use data::{chart::kline_v2::ThemeAccent, config::theme::ThemeColor};
 use iced::{
@@ -222,15 +222,24 @@ pub fn theme_color_control<'a, Message>(
 where
     Message: Clone + 'a + 'static,
 {
+    let color_at_shade = move |theme: &Theme, accent: Option<ThemeAccent>| {
+        let palette = theme.extended_palette();
+        resolve_theme_color(
+            ThemeColor::with_accent(selected.role, accent, selected.shade),
+            &palette,
+            &generated_theme_accents(&palette),
+        )
+    };
+
     let default_color = color_swatch_button(
-        move |theme: &Theme| theme_color_for_role(theme, selected.role),
+        move |theme: &Theme| color_at_shade(theme, None),
         selected.accent.is_none(),
         on_change.clone()(None),
     );
     let color_choices =
         std::iter::once(default_color).chain(ThemeAccent::ALL.into_iter().map(|accent| {
             color_swatch_button(
-                move |theme: &Theme| generated_theme_accent(theme.extended_palette(), accent),
+                move |theme: &Theme| color_at_shade(theme, Some(accent)),
                 selected.accent == Some(accent),
                 on_change.clone()(Some(accent)),
             )
@@ -292,16 +301,22 @@ where
         .height(16)
         .style(move |theme: &Theme| {
             let palette = theme.extended_palette();
+            let color = resolve_color(theme);
             iced::widget::container::Style {
-                background: Some(resolve_color(theme).into()),
+                background: Some(color.into()),
                 border: iced::Border {
-                    width: if selected { 2.0 } else { 1.0 },
-                    color: if selected {
-                        palette.primary.base.color
-                    } else {
-                        palette.background.weak.color
-                    },
+                    width: 2.0,
+                    color: palette.background.weak.color,
                     radius: 3.0.into(),
+                },
+                shadow: if selected {
+                    iced::Shadow {
+                        color,
+                        offset: iced::Vector { x: 0.0, y: 0.0 },
+                        blur_radius: 2.0,
+                    }
+                } else {
+                    iced::Shadow::default()
                 },
                 ..Default::default()
             }
@@ -312,18 +327,6 @@ where
         .padding(2)
         .on_press(message)
         .into()
-}
-
-fn theme_color_for_role(theme: &Theme, role: ThemeColorRole) -> Color {
-    let palette = theme.extended_palette();
-    match role {
-        ThemeColorRole::Neutral => palette.background.base.text,
-        ThemeColorRole::Secondary => palette.secondary.strong.color,
-        ThemeColorRole::Primary => palette.primary.base.color,
-        ThemeColorRole::Success => palette.success.base.color,
-        ThemeColorRole::Danger => palette.danger.base.color,
-        ThemeColorRole::Warning => palette.warning.base.color,
-    }
 }
 
 pub fn numeric_input_box<'a, F, Message: Clone + 'static>(

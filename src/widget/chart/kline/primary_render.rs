@@ -759,6 +759,25 @@ where
         });
     }
 
+    fn effective_study_tick_size(
+        &self,
+        study: KlineStudy,
+        footprint_tick_size: PriceStep,
+    ) -> PriceStep {
+        let Some(multiplier) = study.volume_profile_tick_multiplier() else {
+            return footprint_tick_size;
+        };
+        let Some(base_series) = self.series.first() else {
+            return footprint_tick_size;
+        };
+        let step = multiplier.multiply_with_min_tick_step(*base_series.ticker_info());
+        if step.units < footprint_tick_size.units {
+            footprint_tick_size
+        } else {
+            step
+        }
+    }
+
     pub(super) fn fill_volume_profile_overlay(
         &self,
         frame: &mut canvas::Frame,
@@ -782,6 +801,7 @@ where
             Price::from_f32(lowest_value),
             Price::from_f32(highest_value),
         );
+        let footprint_tick_size = base_series.footprint_tick_size();
         let visible_profile = self.studies.iter().find_map(|study| {
             if !study.visible() || !study.is_volume_profile() {
                 return None;
@@ -794,8 +814,9 @@ where
                 return None;
             }
 
+            let tick_size = self.effective_study_tick_size(*study, footprint_tick_size);
             base_series
-                .trade_price_distribution(earliest, latest, lowest, highest)
+                .trade_price_distribution(earliest, latest, lowest, highest, tick_size)
                 .map(|profile| {
                     (
                         profile,
@@ -803,6 +824,7 @@ where
                         study.volume_profile_width_ratio(),
                         study.volume_profile_opacity_ratio(),
                         study.volume_profile_opacity_scale(),
+                        tick_size,
                     )
                 })
         });
@@ -821,18 +843,26 @@ where
                         study.volume_profile_width_ratio(),
                         study.volume_profile_opacity_ratio(),
                         study.volume_profile_opacity_scale(),
+                        self.effective_study_tick_size(*study, footprint_tick_size),
                     ))
                 }
                 VolumeProfileSchedule::Recurring { .. } => None,
             });
         let profiles = recurring_intervals
             .flat_map(
-                |(interval, colors, width_ratio, opacity_ratio, opacity_scale)| {
+                |(interval, colors, width_ratio, opacity_ratio, opacity_scale, tick_size)| {
                     base_series
-                        .recurring_trade_price_distributions(interval, earliest, latest)
+                        .recurring_trade_price_distributions(interval, tick_size, earliest, latest)
                         .into_iter()
                         .map(move |profile| {
-                            (profile, colors, width_ratio, opacity_ratio, opacity_scale)
+                            (
+                                profile,
+                                colors,
+                                width_ratio,
+                                opacity_ratio,
+                                opacity_scale,
+                                tick_size,
+                            )
                         })
                 },
             )
@@ -842,9 +872,8 @@ where
         }
 
         let primary_plot = *scene.primary_plot();
-        let tick_size = base_series.footprint_tick_size();
         frame.with_clip(primary_plot, |frame| {
-            if let Some((profile, colors, width_ratio, opacity_ratio, opacity_scale)) =
+            if let Some((profile, colors, width_ratio, opacity_ratio, opacity_scale, tick_size)) =
                 visible_profile.as_ref()
             {
                 self.draw_profile_distribution(
@@ -854,7 +883,7 @@ where
                     generated_accents,
                     profile,
                     *colors,
-                    tick_size,
+                    *tick_size,
                     primary_plot.x + primary_plot.width,
                     primary_plot.width * width_ratio,
                     *opacity_ratio,
@@ -865,7 +894,9 @@ where
                 );
             }
 
-            for (anchored_profile, colors, width_ratio, opacity_ratio, opacity_scale) in profiles {
+            for (anchored_profile, colors, width_ratio, opacity_ratio, opacity_scale, tick_size) in
+                profiles
+            {
                 let Some(start_unit) = scene.x.axis.unit_from_time_f32(anchored_profile.start)
                 else {
                     continue;

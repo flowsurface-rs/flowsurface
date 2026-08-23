@@ -1,5 +1,5 @@
 use crate::chart::Basis;
-use exchange::Timeframe;
+use exchange::{TickMultiplier, Timeframe};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 
@@ -24,7 +24,7 @@ const fn default_study_visible() -> bool {
 }
 
 const fn default_show_volume_profile_poc() -> bool {
-    true
+    false
 }
 
 const fn default_show_volume_profile_npoc() -> bool {
@@ -42,6 +42,8 @@ enum PersistedKlineStudy {
         opacity_percent: Option<u8>,
         #[serde(default = "default_study_visible")]
         visible: bool,
+        #[serde(default)]
+        tick_multiplier: Option<TickMultiplier>,
     },
 }
 
@@ -103,7 +105,7 @@ impl VolumeProfileColorConfig {
             sell: ThemeColor::new(ThemeColorRole::Secondary, ThemeColorShade::Soft),
             naked_poc: ThemeColor::new(ThemeColorRole::Warning, ThemeColorShade::Strong),
             filled_poc: ThemeColor::new(ThemeColorRole::Neutral, ThemeColorShade::Strong),
-            show_poc: true,
+            show_poc: false,
             show_npoc: true,
         }
     }
@@ -224,6 +226,8 @@ pub enum KlineStudy {
         opacity_percent: u8,
         #[serde(default = "default_study_visible")]
         visible: bool,
+        #[serde(default)]
+        tick_multiplier: Option<TickMultiplier>,
     },
 }
 
@@ -239,6 +243,7 @@ impl<'de> Deserialize<'de> for KlineStudy {
                 width_percent,
                 opacity_percent,
                 visible,
+                tick_multiplier,
             } => Ok(Self::VolumeProfile {
                 schedule,
                 colors,
@@ -246,6 +251,7 @@ impl<'de> Deserialize<'de> for KlineStudy {
                 opacity_percent: opacity_percent
                     .unwrap_or_else(|| Self::default_opacity_percent_for(schedule)),
                 visible,
+                tick_multiplier,
             }),
         }
     }
@@ -265,6 +271,7 @@ impl KlineStudy {
             width_percent: DEFAULT_VOLUME_PROFILE_WIDTH_PERCENT,
             opacity_percent: DEFAULT_VISIBLE_VOLUME_PROFILE_OPACITY_PERCENT,
             visible: true,
+            tick_multiplier: None,
         },
         Self::VolumeProfile {
             schedule: VolumeProfileSchedule::Recurring {
@@ -274,6 +281,7 @@ impl KlineStudy {
             width_percent: DEFAULT_VOLUME_PROFILE_WIDTH_PERCENT,
             opacity_percent: DEFAULT_RECURRING_VOLUME_PROFILE_OPACITY_PERCENT,
             visible: true,
+            tick_multiplier: None,
         },
     ];
 
@@ -308,6 +316,7 @@ impl KlineStudy {
                 colors,
                 width_percent,
                 opacity_percent,
+                tick_multiplier,
                 ..
             } => Self::VolumeProfile {
                 schedule,
@@ -315,6 +324,7 @@ impl KlineStudy {
                 width_percent,
                 opacity_percent,
                 visible,
+                tick_multiplier,
             },
         }
     }
@@ -373,6 +383,7 @@ impl KlineStudy {
                 width_percent,
                 opacity_percent,
                 visible,
+                tick_multiplier,
             } => VolumeProfileSchedule::minimum_recurring_interval(basis).map(|interval| {
                 Self::VolumeProfile {
                     schedule: VolumeProfileSchedule::Recurring { interval },
@@ -380,6 +391,7 @@ impl KlineStudy {
                     width_percent,
                     opacity_percent,
                     visible,
+                    tick_multiplier,
                 }
             }),
             Self::VolumeProfile { .. } => None,
@@ -389,6 +401,37 @@ impl KlineStudy {
     pub const fn volume_profile_schedule(self) -> VolumeProfileSchedule {
         match self {
             Self::VolumeProfile { schedule, .. } => schedule,
+        }
+    }
+
+    pub const fn volume_profile_tick_multiplier(self) -> Option<TickMultiplier> {
+        match self {
+            Self::VolumeProfile {
+                tick_multiplier, ..
+            } => tick_multiplier,
+        }
+    }
+
+    pub const fn with_volume_profile_tick_multiplier(
+        self,
+        tick_multiplier: Option<TickMultiplier>,
+    ) -> Self {
+        match self {
+            Self::VolumeProfile {
+                schedule,
+                colors,
+                width_percent,
+                opacity_percent,
+                visible,
+                ..
+            } => Self::VolumeProfile {
+                schedule,
+                colors,
+                width_percent,
+                opacity_percent,
+                visible,
+                tick_multiplier,
+            },
         }
     }
 
@@ -474,7 +517,7 @@ impl Display for VolumeProfileSchedule {
 
 #[cfg(test)]
 mod tests {
-    use super::KlineStudy;
+    use super::{KlineStudy, TickMultiplier};
 
     #[test]
     fn study_visibility_is_backward_compatible_and_persistent() {
@@ -494,5 +537,29 @@ mod tests {
         let restored_legacy: KlineStudy =
             serde_json::from_value(legacy).expect("legacy study should deserialize");
         assert!(restored_legacy.visible());
+    }
+
+    #[test]
+    fn study_tick_multiplier_is_persisted_and_backward_compatible() {
+        let configured =
+            KlineStudy::ALL[0].with_volume_profile_tick_multiplier(Some(TickMultiplier(25)));
+        let serialized = serde_json::to_value(configured).expect("study should serialize");
+
+        let restored: KlineStudy = serde_json::from_value(serialized.clone())
+            .expect("study tick multiplier should deserialize");
+        assert_eq!(
+            restored.volume_profile_tick_multiplier(),
+            Some(TickMultiplier(25))
+        );
+
+        let mut legacy = serialized;
+        legacy
+            .get_mut("VolumeProfile")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("serialized study should have a variant object")
+            .remove("tick_multiplier");
+        let restored_legacy: KlineStudy =
+            serde_json::from_value(legacy).expect("legacy study should deserialize");
+        assert_eq!(restored_legacy.volume_profile_tick_multiplier(), None);
     }
 }

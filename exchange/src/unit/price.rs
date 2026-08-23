@@ -112,7 +112,7 @@ impl Price {
     }
 
     /// Floor to multiple of an arbitrary step
-    fn floor_to_step(self, step: PriceStep) -> Self {
+    pub fn floor_to_step(self, step: PriceStep) -> Self {
         let unit = step.units;
         if unit <= 1 {
             return self;
@@ -263,7 +263,9 @@ where
     serde_util::de_number_like_or_object(deserializer, "price", Price::from_f64)
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[derive(
+    Debug, Default, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize, Serialize,
+)]
 pub struct PriceStep {
     /// step size in atomic units (10^-ATOMIC_SCALE)
     pub units: i64,

@@ -112,7 +112,7 @@ pub fn kline_cfg_view<'a>(
                 .collect();
 
             let study_cfg = study_config
-                .view_available(&active_studies, basis, available_studies, &[])
+                .view_available(&active_studies, basis, None, None, available_studies, &[])
                 .map(move |msg| Message::Study(study::StudyMessage::Footprint(msg)));
 
             let mut content = split_column![

@@ -5,6 +5,12 @@ use exchange::{TickerInfo, adapter::StreamKind};
 use iced::task::Handle;
 use rustc_hash::FxHashMap;
 
+pub enum FetchUpdate {
+    Failed(uuid::Uuid),
+    TradeFetchNoData(uuid::Uuid),
+    TradeFetchHandle(Handle),
+}
+
 pub struct FetchCoordinator {
     request_handlers: FxHashMap<TickerInfo, RequestHandler>,
     trade_fetch_handle: Option<Handle>,

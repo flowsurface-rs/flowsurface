@@ -19,7 +19,6 @@ pub use crate::config::theme::ThemeAccent;
 
 pub mod composition;
 pub mod drawing;
-pub mod engine;
 pub mod fetch_plan;
 pub mod indicators;
 pub mod series;
@@ -29,7 +28,7 @@ pub mod viewport;
 
 pub use series::SeriesColor;
 
-pub use engine::{IndicatorConfig, IndicatorConfigStore, IndicatorEngine};
+pub use indicators::{IndicatorConfig, IndicatorConfigStore};
 pub use fetch_plan::{
     FetchBatch, FetchPlanInput, FetchRange, FetchStage, desired_fetch_batches,
     desired_trade_fetch_range, visible_window,
@@ -87,7 +86,7 @@ const FOOTPRINT_POC_COLOR_SPECS: [FootprintPocColorSpec; 2] = [
 ];
 
 const fn default_show_footprint_poc() -> bool {
-    true
+    false
 }
 
 const fn default_show_footprint_npoc() -> bool {
@@ -149,7 +148,7 @@ pub struct FootprintPocConfig {
 impl Default for FootprintPocConfig {
     fn default() -> Self {
         Self {
-            show_poc: true,
+            show_poc: false,
             show_npoc: true,
             colors: FootprintPocColorConfig::defaults(),
         }
@@ -677,6 +676,19 @@ impl IndicatorInstanceStore {
         Some(self.instances.remove(index))
     }
 
+    pub fn history_requirement(
+        &self,
+        active: &[IndicatorInstanceId],
+        basis: Basis,
+        reference_time: exchange::UnixMs,
+    ) -> IndicatorHistoryRequirement {
+        active.iter().fold(Default::default(), |requirement, id| {
+            self.get(*id).map_or(requirement, |instance| {
+                requirement.merge(instance.config.history_requirement(basis, reference_time))
+            })
+        })
+    }
+
     pub fn normalized_for_basis(&self, basis: Basis) -> Self {
         Self::from_instances(self.instances.clone(), basis)
     }
@@ -727,15 +739,11 @@ impl KlineIndicator {
     }
 
     pub fn requires_trade_data(self) -> bool {
-        indicators::input_requirements(self).contains(&indicators::IndicatorInputSource::Trades)
+        indicators::requires_trade_data(self)
     }
 
     pub fn input_source_category(self) -> &'static str {
         indicators::input_source_category(self)
-    }
-
-    pub fn uses_directional_volume(self) -> bool {
-        indicators::uses_directional_volume(self)
     }
 
     pub fn color_specs(self) -> &'static [IndicatorColorSpec] {
@@ -1504,7 +1512,7 @@ mod tests {
         assert_eq!(KlineIndicator::Rsi.input_source_category(), "Kline data");
         assert_eq!(
             KlineIndicator::CumulativeVolumeDelta.input_source_category(),
-            "Kline + trade data"
+            "Kline data"
         );
         assert_eq!(
             KlineIndicator::OpenInterest.input_source_category(),

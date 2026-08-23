@@ -2,13 +2,40 @@ use super::KlineSeries;
 use super::fetch::FetchCoordinator;
 use data::chart::Basis;
 use data::chart::kline_v2::{
-    IndicatorEngine, IndicatorInput, IndicatorInstanceId, LineStrokeStyle, MIN_LINE_WIDTH,
-    SeriesColor, ThemeAccent,
+    FootprintPocConfig, IndicatorInput, IndicatorInstanceId, IndicatorInstanceStore, KlineStudy,
+    LineStrokeStyle, MIN_LINE_WIDTH, SeriesColor, ThemeAccent,
 };
 use exchange::{
     Kline, OpenInterest, TickMultiplier, TickerInfo, Timeframe, Trade, adapter::StreamKind,
+    unit::PriceStep,
 };
 use rustc_hash::FxHashMap;
+
+pub enum DataUpdate<'a> {
+    HistoricalKlines {
+        req_id: Option<uuid::Uuid>,
+        ticker_info: TickerInfo,
+        klines: &'a [Kline],
+    },
+    LiveKline {
+        ticker_info: &'a TickerInfo,
+        kline: &'a Kline,
+    },
+    LiveTrades {
+        ticker_info: &'a TickerInfo,
+        trades: &'a [Trade],
+    },
+    HistoricalTrades {
+        trades: &'a [Trade],
+        is_batches_done: bool,
+        req_id: Option<uuid::Uuid>,
+    },
+    HistoricalOpenInterest {
+        req_id: Option<uuid::Uuid>,
+        ticker_info: TickerInfo,
+        data: &'a [OpenInterest],
+    },
+}
 
 pub struct KlineData {
     pub series: Vec<KlineSeries>,
@@ -51,7 +78,7 @@ impl KlineData {
         self.series.get_mut(idx)
     }
 
-    pub fn configure_recurring_profile_intervals(&mut self, intervals: &[Timeframe]) {
+    pub fn configure_recurring_profile_intervals(&mut self, intervals: &[(Timeframe, PriceStep)]) {
         if let Some(base_series) = self.base_series_mut() {
             base_series.configure_recurring_profile_intervals(intervals);
         }
@@ -127,7 +154,7 @@ impl KlineData {
         &mut self,
         ticker_info: TickerInfo,
         basis: Basis,
-        indicators: &IndicatorEngine,
+        indicators: &IndicatorInstanceStore,
         active_indicators: &[IndicatorInstanceId],
     ) -> bool {
         if self.selected_tickers.contains(&ticker_info) {
@@ -153,7 +180,7 @@ impl KlineData {
                 series.enable_tick_aggregation(interval, tick_size);
             }
         }
-        indicators.configure_series(&mut series, basis, active_indicators);
+        series.configure_indicators(indicators, basis, active_indicators);
 
         self.series.push(series);
         self.series_index.insert(ticker_info, idx);
@@ -189,7 +216,7 @@ impl KlineData {
         &mut self,
         basis: Basis,
         preserve_raw_trades: bool,
-        indicators: &IndicatorEngine,
+        indicators: &IndicatorInstanceStore,
         active_indicators: &[IndicatorInstanceId],
     ) {
         for series in &mut self.series {
@@ -201,7 +228,7 @@ impl KlineData {
     pub fn configure_series_for_basis(
         &mut self,
         basis: Basis,
-        indicators: &IndicatorEngine,
+        indicators: &IndicatorInstanceStore,
         active_indicators: &[IndicatorInstanceId],
     ) {
         match basis {
@@ -213,7 +240,7 @@ impl KlineData {
                     );
                     series.disable_tick_aggregation();
                     series.rebuild_time_footprints(timeframe);
-                    indicators.configure_series(series, basis, active_indicators);
+                    series.configure_indicators(indicators, basis, active_indicators);
                 }
             }
             Basis::Tick(interval) => {
@@ -223,7 +250,7 @@ impl KlineData {
                         .multiply_with_min_tick_step(series.ticker_info);
                     series.set_footprint_tick_size(tick_size);
                     series.enable_tick_aggregation(interval, tick_size);
-                    indicators.configure_series(series, basis, active_indicators);
+                    series.configure_indicators(indicators, basis, active_indicators);
                 }
             }
         }
@@ -232,11 +259,11 @@ impl KlineData {
     pub fn configure_indicators(
         &mut self,
         basis: Basis,
-        indicators: &IndicatorEngine,
+        indicators: &IndicatorInstanceStore,
         active_indicators: &[IndicatorInstanceId],
     ) {
         for series in &mut self.series {
-            indicators.configure_series(series, basis, active_indicators);
+            series.configure_indicators(indicators, basis, active_indicators);
         }
     }
 
@@ -247,7 +274,7 @@ impl KlineData {
         klines: &[Kline],
         basis: Basis,
         fetch: &mut FetchCoordinator,
-        indicators: &IndicatorEngine,
+        indicators: &IndicatorInstanceStore,
     ) -> bool {
         let Some(idx) = self.series_index.get(&ticker_info).copied() else {
             if let Some(req_id) = req_id {
@@ -263,7 +290,7 @@ impl KlineData {
         }
 
         self.series[idx].insert_klines(klines, basis);
-        indicators.refresh_series(&mut self.series[idx], basis);
+        self.series[idx].refresh_indicators(indicators, basis);
         if let Some(req_id) = req_id {
             fetch.mark_completed(ticker_info, req_id);
         }
@@ -275,14 +302,14 @@ impl KlineData {
         ticker_info: &TickerInfo,
         kline: &Kline,
         basis: Basis,
-        indicators: &IndicatorEngine,
+        indicators: &IndicatorInstanceStore,
     ) -> bool {
         let Some(idx) = self.series_index.get(ticker_info).copied() else {
             return false;
         };
         let scope = self.series[idx].update_latest_kline(kline, basis);
         if let Some(scope) = scope {
-            indicators.update_series_after_klines(&mut self.series[idx], scope);
+            self.series[idx].update_indicators_after_klines(indicators, scope);
         }
         scope.is_some()
     }
@@ -292,7 +319,7 @@ impl KlineData {
         ticker_info: &TickerInfo,
         trades: &[Trade],
         basis: Basis,
-        indicators: &IndicatorEngine,
+        indicators: &IndicatorInstanceStore,
     ) -> bool {
         if trades.is_empty() {
             return false;
@@ -311,7 +338,7 @@ impl KlineData {
                 self.series[index].insert_time_trades(trades, timeframe)
             }
         };
-        indicators.update_series_after_trades(&mut self.series[index], basis, scope);
+        self.series[index].update_indicators_after_trades(indicators, basis, scope);
         true
     }
 
@@ -322,7 +349,7 @@ impl KlineData {
         req_id: Option<uuid::Uuid>,
         basis: Basis,
         fetch: &mut FetchCoordinator,
-        indicators: &IndicatorEngine,
+        indicators: &IndicatorInstanceStore,
     ) -> bool {
         let Basis::Time(timeframe) = basis else {
             return false;
@@ -338,7 +365,7 @@ impl KlineData {
             && let Some(scope) = scope
             && let Some(base_series) = self.base_series_mut()
         {
-            indicators.update_series_after_trades(base_series, basis, scope);
+            base_series.update_indicators_after_trades(indicators, basis, scope);
         }
         fetch.complete_trade_fetch(self.base_ticker, req_id, is_batches_done);
         !trades.is_empty()
@@ -351,7 +378,7 @@ impl KlineData {
         data: &[OpenInterest],
         basis: Basis,
         fetch: &mut FetchCoordinator,
-        indicators: &IndicatorEngine,
+        indicators: &IndicatorInstanceStore,
     ) -> bool {
         if ticker_info != self.base_ticker {
             return false;
@@ -374,7 +401,7 @@ impl KlineData {
         }
         self.series[idx].insert_indicator_input(
             IndicatorInput::OpenInterest { data, basis },
-            indicators.instances(),
+            indicators,
         );
         true
     }
@@ -407,5 +434,43 @@ impl KlineData {
         for (idx, series) in self.series.iter().enumerate() {
             self.series_index.insert(series.ticker_info, idx);
         }
+    }
+}
+
+impl KlineData {
+    /// Resolves the row tick size a volume profile study aggregates at.
+    ///
+    /// A study without an explicit tick multiplier inherits the pane's
+    /// footprint multiplier. A study can only choose a tick multiplier that is
+    /// at least as coarse as the footprint multiplier, so the resolved step is
+    /// never finer than the footprint step.
+    pub fn effective_study_tick_size(&self, study: KlineStudy) -> PriceStep {
+        let footprint = self.footprint_tick_multiplier;
+        let multiplier = study.volume_profile_tick_multiplier().unwrap_or(footprint);
+        let multiplier = TickMultiplier(multiplier.0.max(footprint.0));
+        multiplier.multiply_with_min_tick_step(self.base_ticker)
+    }
+
+    pub fn configure_profile_caches(
+        &mut self,
+        studies: &[KlineStudy],
+        basis: Basis,
+        footprints_visible: bool,
+        poc_config: FootprintPocConfig,
+    ) {
+        let recurring_intervals = studies
+            .iter()
+            .filter_map(|study| {
+                study
+                    .recurring_profile_interval()
+                    .filter(|_| study.is_interval_available(basis))
+                    .map(|interval| (interval, self.effective_study_tick_size(*study)))
+            })
+            .collect::<Vec<_>>();
+        let footprint_poc_enabled = footprints_visible
+            && matches!(basis, Basis::Time(_) | Basis::Tick(_))
+            && (poc_config.show_poc || poc_config.show_npoc);
+        self.configure_recurring_profile_intervals(&recurring_intervals);
+        self.configure_footprint_poc_cache(footprint_poc_enabled);
     }
 }

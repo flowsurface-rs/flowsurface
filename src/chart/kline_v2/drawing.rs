@@ -998,6 +998,20 @@ impl DrawingTools {
     }
 }
 
+impl DrawingTools {
+    pub fn drawing_panels_exist(composition: &ChartComposition, object: &DrawingObject) -> bool {
+        let panel_exists = |panel_id: PanelId| composition.panel(panel_id).is_some();
+
+        match object {
+            DrawingObject::Trendline { start, end } | DrawingObject::Box { start, end } => {
+                panel_exists(start.panel_id) && panel_exists(end.panel_id)
+            }
+            DrawingObject::HorizontalLine { panel_id, .. } => panel_exists(*panel_id),
+            DrawingObject::VerticalLine { .. } => true,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
