@@ -48,6 +48,7 @@ pub enum DrawingTool {
     Box,
     HorizontalLine,
     VerticalLine,
+    Measure,
 }
 
 impl DrawingTool {
@@ -62,6 +63,7 @@ impl DrawingTool {
             Self::Box,
             Self::HorizontalLine,
             Self::VerticalLine,
+            Self::Measure,
         ]
     }
 
@@ -72,6 +74,7 @@ impl DrawingTool {
             Self::VerticalLine => "V",
             Self::Trendline => "TL",
             Self::Box => "B",
+            Self::Measure => "M",
         }
     }
 
@@ -79,7 +82,7 @@ impl DrawingTool {
         let mut style = DrawingStyle::default();
 
         match self {
-            Self::Cursor => {}
+            Self::Cursor | Self::Measure => {}
             Self::Trendline => {
                 style.stroke_color = DrawingColor::accent(ThemeAccent::One, 1.0);
                 style.stroke_width = 1.2;
@@ -140,9 +143,10 @@ pub struct DrawingAnchor {
     pub y_unit: YUnit,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum KlineWidgetDrawingEvent {
     Selected(Option<DrawingId>),
+    MarqueeSelected(Vec<DrawingId>),
     AnchorPressed(DrawingAnchor),
     AnchorMoved(DrawingAnchor),
     DragStarted {
@@ -158,29 +162,56 @@ pub enum KlineWidgetDrawingEvent {
     DragFinished {
         id: DrawingId,
     },
+    MeasureClick(DrawingAnchor),
+    MeasureMove(DrawingAnchor),
+    MeasureCanceled,
     DraftCanceled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MeasureState {
+    pub panel_id: PanelId,
+    pub start: DrawingAnchor,
+    pub end: DrawingAnchor,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DrawingMeasure {
+    Pending(MeasureState),
+    Committed(MeasureState),
+}
+
+impl DrawingMeasure {
+    pub fn state(self) -> MeasureState {
+        match self {
+            Self::Pending(state) | Self::Committed(state) => state,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct DrawingSnapshot<'a> {
     pub active_tool: DrawingTool,
     pub entities: &'a [DrawingEntity],
-    pub selected_drawing: Option<DrawingId>,
+    pub selected_drawings: &'a [DrawingId],
     pub drawing_draft: Option<&'a DrawingDraft>,
+    pub measure: Option<DrawingMeasure>,
 }
 
 impl<'a> DrawingSnapshot<'a> {
     pub const fn new(
         active_tool: DrawingTool,
         entities: &'a [DrawingEntity],
-        selected_drawing: Option<DrawingId>,
+        selected_drawings: &'a [DrawingId],
         drawing_draft: Option<&'a DrawingDraft>,
+        measure: Option<DrawingMeasure>,
     ) -> Self {
         Self {
             active_tool,
             entities,
-            selected_drawing,
+            selected_drawings,
             drawing_draft,
+            measure,
         }
     }
 
@@ -189,19 +220,28 @@ impl<'a> DrawingSnapshot<'a> {
     }
 
     pub fn has_state(&self) -> bool {
-        !self.entities.is_empty() || self.selected_drawing.is_some() || self.drawing_draft.is_some()
+        !self.entities.is_empty()
+            || !self.selected_drawings.is_empty()
+            || self.drawing_draft.is_some()
+            || self.measure.is_some()
     }
 
     pub fn draft_panel_id(&self) -> Option<PanelId> {
         self.drawing_draft.map(DrawingDraft::panel_id)
     }
 
-    pub fn selected_visible_drawing(&self) -> Option<&'a DrawingEntity> {
-        let selected = self.selected_drawing?;
-
+    pub fn selected_visible_drawings(&self) -> impl Iterator<Item = &'a DrawingEntity> {
         self.entities
             .iter()
-            .find(|drawing| drawing.id == selected && drawing.visible)
+            .filter(|drawing| drawing.visible && self.selected_drawings.contains(&drawing.id))
+    }
+
+    pub fn selected_visible_drawing(&self) -> Option<&'a DrawingEntity> {
+        if self.selected_drawings.len() == 1 {
+            self.selected_visible_drawings().next()
+        } else {
+            None
+        }
     }
 
     pub fn active_axis_labeled_object(&self) -> Option<DrawingObject> {

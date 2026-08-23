@@ -14,7 +14,7 @@ mod scene_builder;
 
 use crate::style;
 use crate::widget::chart::kline::drawing::{
-    AxisBadgeFilter, DrawingDragTarget, DrawingId, DrawingSnapshot, DrawingTool,
+    AxisBadgeFilter, DrawingDragTarget, DrawingId, DrawingMeasure, DrawingSnapshot, DrawingTool,
     KlineWidgetDrawingEvent,
 };
 use axes::horizontal_world_for_drag;
@@ -69,7 +69,8 @@ use iced::advanced::{self, Clipboard, Layout, Shell, Widget, layout as iced_layo
 use iced::theme::palette::Extended;
 use iced::widget::canvas;
 use iced::{
-    Element, Event, Length, Point, Rectangle, Renderer, Size, Theme, Vector, mouse, window,
+    Element, Event, Length, Point, Rectangle, Renderer, Size, Theme, Vector, keyboard, mouse,
+    window,
 };
 use iced_core::renderer::Quad;
 use std::time::{Duration, Instant};
@@ -217,6 +218,11 @@ pub(super) enum DragMode {
         target: DrawingDragTarget,
         panel_id: PanelId,
     },
+    Marquee {
+        panel_index: usize,
+        start: Point,
+        current: Point,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -233,8 +239,10 @@ struct State {
     x_axis_cache: canvas::Cache,
     overlay_cache: canvas::Cache,
     interaction_text_cache: canvas::Cache,
+    marquee_cache: canvas::Cache,
     drag_mode: DragMode,
     last_cursor: Option<Point>,
+    modifiers: keyboard::Modifiers,
     y_axis_gutter_width: f32,
     gutter_cache_key: Option<GutterCacheKey>,
     last_cache_rev: u64,
@@ -250,8 +258,10 @@ impl Default for State {
             x_axis_cache: canvas::Cache::new(),
             overlay_cache: canvas::Cache::new(),
             interaction_text_cache: canvas::Cache::new(),
+            marquee_cache: canvas::Cache::new(),
             drag_mode: DragMode::None,
             last_cursor: None,
+            modifiers: keyboard::Modifiers::empty(),
             y_axis_gutter_width: Y_AXIS_GUTTER,
             gutter_cache_key: None,
             last_cache_rev: 0,
@@ -284,6 +294,7 @@ impl State {
     fn clear_overlay_caches(&mut self) {
         self.overlay_cache.clear();
         self.interaction_text_cache.clear();
+        self.marquee_cache.clear();
     }
 }
 
@@ -349,6 +360,7 @@ pub enum KlineWidgetEvent {
     StudiesExpansionToggled,
     StudiesRemove,
     XAxisDoubleClick,
+    DeletePressed,
     Drawing(KlineWidgetDrawingEvent),
 }
 
@@ -404,7 +416,7 @@ where
             footprints_enabled: false,
             footprint_cluster_kind: ClusterKind::default(),
             footprint_poc_config: FootprintPocConfig::default(),
-            drawings: DrawingSnapshot::new(DrawingTool::Cursor, &[], None, None),
+            drawings: DrawingSnapshot::new(DrawingTool::Cursor, &[], &[], None, None),
             basis,
             horizontal_world: HorizontalWorld::new(DEFAULT_BAR_SPACING_PX, 1.0, 0.0),
             known_plot_width: None,
@@ -526,6 +538,10 @@ where
     pub fn with_version(mut self, rev: u64) -> Self {
         self.version = rev;
         self
+    }
+
+    fn is_marquee_modifier(modifiers: keyboard::Modifiers) -> bool {
+        modifiers.intersects(keyboard::Modifiers::COMMAND)
     }
 }
 
@@ -700,6 +716,37 @@ where
         }
 
         match event {
+            Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
+                let state = tree.state.downcast_mut::<State>();
+                state.modifiers = *modifiers;
+
+                match key.as_ref() {
+                    keyboard::Key::Named(keyboard::key::Named::Backspace)
+                    | keyboard::Key::Named(keyboard::key::Named::Delete)
+                        if cursor.is_over(layout.bounds()) =>
+                    {
+                        shell.publish(M::from(KlineWidgetEvent::DeletePressed));
+                        shell.capture_event();
+                    }
+                    keyboard::Key::Named(keyboard::key::Named::Escape)
+                        if self.drawings.measure.is_some() =>
+                    {
+                        shell.publish(M::from(KlineWidgetEvent::Drawing(
+                            KlineWidgetDrawingEvent::MeasureCanceled,
+                        )));
+                        shell.capture_event();
+                    }
+                    _ => {}
+                }
+            }
+            Event::Keyboard(keyboard::Event::KeyReleased { modifiers, .. }) => {
+                let state = tree.state.downcast_mut::<State>();
+                state.modifiers = *modifiers;
+            }
+            Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
+                let state = tree.state.downcast_mut::<State>();
+                state.modifiers = *modifiers;
+            }
             Event::Mouse(mouse_event) => {
                 let state = tree.state.downcast_mut::<State>();
                 let bounds = layout.bounds();
@@ -713,7 +760,9 @@ where
                     local
                 } else if matches!(
                     state.drag_mode,
-                    DragMode::DrawingMove { .. } | DragMode::XAxisScale { .. }
+                    DragMode::DrawingMove { .. }
+                        | DragMode::XAxisScale { .. }
+                        | DragMode::Marquee { .. }
                 ) {
                     if let Some(global) = cursor.position() {
                         Point::new(global.x - bounds.x, global.y - bounds.y)
@@ -1117,6 +1166,45 @@ where
                             return;
                         }
 
+                        if (self.drawings.measure.is_some()
+                            || state.modifiers.intersects(keyboard::Modifiers::SHIFT)
+                            || self.drawings.active_tool == DrawingTool::Measure)
+                            && let LayoutHitZone::PanelPlot(panel_index) = zone
+                        {
+                            let measure_panel = self.drawings.measure.map(|m| m.state().panel_id);
+                            let panel_id = measure_panel.or_else(|| self.panel_id(panel_index));
+
+                            if let Some(panel_id) = panel_id
+                                && let Some(scene) = self.compute_scene(layout, cursor)
+                                && let Some(anchor) = self
+                                    .drawing_anchor_from_scene_point(&scene, panel_id, cursor_pos)
+                            {
+                                shell.publish(M::from(KlineWidgetEvent::Drawing(
+                                    KlineWidgetDrawingEvent::MeasureClick(anchor),
+                                )));
+                                state.drag_mode = DragMode::None;
+                                state.last_cursor = None;
+                                state.clear_all_caches();
+                                shell.capture_event();
+                                return;
+                            }
+                        }
+
+                        if self.drawings.allows_panning()
+                            && Self::is_marquee_modifier(state.modifiers)
+                            && let LayoutHitZone::PanelPlot(panel_index) = zone
+                        {
+                            state.drag_mode = DragMode::Marquee {
+                                panel_index,
+                                start: cursor_pos,
+                                current: cursor_pos,
+                            };
+                            state.last_cursor = Some(cursor_pos);
+                            state.clear_overlay_caches();
+                            shell.capture_event();
+                            return;
+                        }
+
                         if self.drawings.allows_panning()
                             && matches!(zone, LayoutHitZone::PanelPlot(_))
                             && let Some(scene) = self.compute_scene(layout, cursor)
@@ -1151,7 +1239,7 @@ where
                             let hit_drawing = self.hit_test_drawings(&scene, cursor_pos);
 
                             if let Some(id) = hit_drawing {
-                                let was_selected = self.drawings.selected_drawing == Some(id);
+                                let was_selected = self.drawings.selected_drawings.contains(&id);
 
                                 if !was_selected {
                                     shell.publish(M::from(KlineWidgetEvent::Drawing(
@@ -1192,7 +1280,7 @@ where
                                 return;
                             }
 
-                            if self.drawings.selected_drawing.is_some() {
+                            if !self.drawings.selected_drawings.is_empty() {
                                 shell.publish(M::from(KlineWidgetEvent::Drawing(
                                     KlineWidgetDrawingEvent::Selected(None),
                                 )));
@@ -1309,11 +1397,50 @@ where
                             shell.capture_event();
                         }
 
+                        if let DragMode::Marquee {
+                            panel_index,
+                            start,
+                            current,
+                        } = state.drag_mode
+                        {
+                            if let Some(scene) = self.compute_scene(layout, cursor)
+                                && self
+                                    .clipped_marquee_rect(&scene, panel_index, start, current)
+                                    .is_some()
+                            {
+                                let selected = self.marquee_selected_drawings(
+                                    &scene,
+                                    panel_index,
+                                    start,
+                                    current,
+                                );
+                                shell.publish(M::from(KlineWidgetEvent::Drawing(
+                                    KlineWidgetDrawingEvent::MarqueeSelected(selected),
+                                )));
+                            }
+                            state.clear_overlay_caches();
+                            state.clear_all_caches();
+                            shell.capture_event();
+                        }
+
                         state.drag_mode = DragMode::None;
                         state.last_cursor = None;
                     }
                     mouse::Event::CursorMoved { .. } => {
                         state.clear_overlay_caches();
+
+                        if let Some(DrawingMeasure::Pending(state)) = self.drawings.measure
+                            && let Some(scene) = self.compute_scene(layout, cursor)
+                            && let Some(anchor) = self.drawing_anchor_from_scene_point(
+                                &scene,
+                                state.panel_id,
+                                cursor_pos,
+                            )
+                        {
+                            shell.publish(M::from(KlineWidgetEvent::Drawing(
+                                KlineWidgetDrawingEvent::MeasureMove(anchor),
+                            )));
+                        }
 
                         if let DragMode::XAxisScale {
                             anchor_x,
@@ -1414,6 +1541,18 @@ where
                                 state.clear_all_caches();
                                 shell.capture_event();
                             }
+                        } else if let DragMode::Marquee {
+                            panel_index, start, ..
+                        } = state.drag_mode
+                        {
+                            state.drag_mode = DragMode::Marquee {
+                                panel_index,
+                                start,
+                                current: cursor_pos,
+                            };
+                            state.last_cursor = Some(cursor_pos);
+                            state.clear_overlay_caches();
+                            shell.capture_event();
                         } else if let Some(draft_panel_id) = self.drawings.draft_panel_id()
                             && Self::hit_panel_control(&layout_tree, &panel_controls, cursor_pos)
                                 .is_none()
@@ -1604,6 +1743,19 @@ where
                         self.fill_overlay_interaction_text(frame, &scene, palette);
                     });
 
+            let marquee_geom = state.marquee_cache.draw(r, bounds.size(), |frame| {
+                if let DragMode::Marquee {
+                    panel_index,
+                    start,
+                    current,
+                } = &state.drag_mode
+                    && let Some(rect) =
+                        self.clipped_marquee_rect(&scene, *panel_index, *start, *current)
+                {
+                    self.fill_marquee_rectangle(frame, rect, palette);
+                }
+            });
+
             r.with_translation(Vector::new(plot_rect.x, plot_rect.y), |r| {
                 use iced::advanced::graphics::geometry::Renderer as _;
                 r.draw_geometry(plot_geom);
@@ -1634,6 +1786,11 @@ where
             r.with_layer(layer_bounds, |r| {
                 use iced::advanced::graphics::geometry::Renderer as _;
                 r.draw_geometry(interaction_text_geom);
+            });
+
+            r.with_layer(layer_bounds, |r| {
+                use iced::advanced::graphics::geometry::Renderer as _;
+                r.draw_geometry(marquee_geom);
             });
         });
     }
@@ -1773,7 +1930,7 @@ where
             && let Some(scene) = self.compute_scene(layout, cursor)
             && let Some(hit_id) = self.hit_test_drawings(&scene, cursor_local)
         {
-            if self.drawings.selected_drawing == Some(hit_id) {
+            if self.drawings.selected_drawings.contains(&hit_id) {
                 return advanced::mouse::Interaction::Grab;
             }
 

@@ -2,8 +2,8 @@ use crate::style;
 use crate::widget::chart::kline::composition::{ChartComposition, PanelId, PanelRole};
 use crate::widget::chart::kline::drawing::{
     DrawingAnchor, DrawingColor, DrawingDraft, DrawingDragTarget, DrawingEntity, DrawingId,
-    DrawingObject, DrawingSnapshot, DrawingStyle, DrawingTool, KlineWidgetDrawingEvent,
-    MAX_DRAWING_STROKE_WIDTH, MIN_DRAWING_STROKE_WIDTH,
+    DrawingMeasure, DrawingObject, DrawingSnapshot, DrawingStyle, DrawingTool,
+    KlineWidgetDrawingEvent, MAX_DRAWING_STROKE_WIDTH, MIN_DRAWING_STROKE_WIDTH, MeasureState,
 };
 use crate::widget::{color_swatch_button, labeled_slider};
 use data::config::theme::{ThemeAccent, generated_theme_accent};
@@ -97,11 +97,16 @@ where
 }
 
 #[derive(Debug, Clone)]
-struct DrawingDragState {
+struct DraggedDrawing {
     id: DrawingId,
+    origin_object: DrawingObject,
+}
+
+#[derive(Debug, Clone)]
+struct DrawingDragState {
     target: DrawingDragTarget,
     origin_anchor: DrawingAnchor,
-    origin_object: DrawingObject,
+    dragged: Vec<DraggedDrawing>,
 }
 
 #[derive(Debug, Clone)]
@@ -152,11 +157,12 @@ pub struct DrawingTools {
     active_tool: DrawingTool,
     sidebar_page: SidebarPage,
     drawings: Vec<DrawingEntity>,
-    selected_drawing: Option<DrawingId>,
+    selected_drawings: Vec<DrawingId>,
     interaction: DrawingInteraction,
     next_drawing_id: u64,
     horizontal_line_ray: bool,
     box_extend_right: bool,
+    measure: Option<DrawingMeasure>,
 }
 
 impl Default for DrawingTools {
@@ -165,11 +171,12 @@ impl Default for DrawingTools {
             active_tool: DrawingTool::Cursor,
             sidebar_page: SidebarPage::Tools,
             drawings: Vec::new(),
-            selected_drawing: None,
+            selected_drawings: Vec::new(),
             interaction: DrawingInteraction::Idle,
             next_drawing_id: 1,
             horizontal_line_ray: false,
             box_extend_right: false,
+            measure: None,
         }
     }
 }
@@ -193,11 +200,12 @@ impl DrawingTools {
             active_tool,
             sidebar_page: SidebarPage::Tools,
             drawings,
-            selected_drawing: None,
+            selected_drawings: Vec::new(),
             interaction: DrawingInteraction::Idle,
             next_drawing_id,
             horizontal_line_ray,
             box_extend_right,
+            measure: None,
         }
     }
 
@@ -227,7 +235,7 @@ impl DrawingTools {
                 }
             }
             DrawingMessage::ShowToolsPage => {
-                self.selected_drawing = None;
+                self.selected_drawings.clear();
 
                 if self.set_sidebar_page(SidebarPage::Tools) {
                     DrawingUpdate::Visual
@@ -477,7 +485,7 @@ impl DrawingTools {
     where
         Message: Clone + 'a + 'static,
     {
-        let selected = self.selected_drawing == Some(drawing.id);
+        let selected = self.selected_drawings.contains(&drawing.id);
         let object_label = format!("{} #{}", drawing.object.title(), drawing.id.0);
 
         let select_button = iced::widget::button(iced::widget::text(object_label).size(12))
@@ -630,8 +638,9 @@ impl DrawingTools {
         DrawingSnapshot::new(
             self.active_tool,
             &self.drawings,
-            self.selected_drawing,
+            &self.selected_drawings,
             self.drawing_draft(),
+            self.measure,
         )
     }
 
@@ -639,6 +648,13 @@ impl DrawingTools {
         match event {
             KlineWidgetDrawingEvent::Selected(selected) => {
                 if self.select_drawing(selected) {
+                    DrawingUpdate::Visual
+                } else {
+                    DrawingUpdate::None
+                }
+            }
+            KlineWidgetDrawingEvent::MarqueeSelected(selected) => {
+                if self.select_drawings(selected) {
                     DrawingUpdate::Visual
                 } else {
                     DrawingUpdate::None
@@ -693,6 +709,27 @@ impl DrawingTools {
                     DrawingUpdate::None
                 }
             }
+            KlineWidgetDrawingEvent::MeasureClick(anchor) => {
+                if self.measure_click(anchor) {
+                    DrawingUpdate::Visual
+                } else {
+                    DrawingUpdate::None
+                }
+            }
+            KlineWidgetDrawingEvent::MeasureMove(anchor) => {
+                if self.measure_move(anchor) {
+                    DrawingUpdate::Visual
+                } else {
+                    DrawingUpdate::None
+                }
+            }
+            KlineWidgetDrawingEvent::MeasureCanceled => {
+                if self.measure.take().is_some() {
+                    DrawingUpdate::Visual
+                } else {
+                    DrawingUpdate::None
+                }
+            }
             KlineWidgetDrawingEvent::DraftCanceled => {
                 if self.cancel_drawing_draft() {
                     DrawingUpdate::Visual
@@ -711,31 +748,52 @@ impl DrawingTools {
     }
 
     pub fn select_drawing(&mut self, selected: Option<DrawingId>) -> bool {
-        if let Some(id) = selected
-            && !self.drawings.iter().any(|drawing| drawing.id == id)
+        let ids = selected.into_iter().collect::<Vec<_>>();
+        self.select_drawings(ids)
+    }
+
+    pub fn select_drawings(&mut self, selected: Vec<DrawingId>) -> bool {
+        if selected
+            .iter()
+            .any(|id| !self.drawings.iter().any(|drawing| drawing.id == *id))
         {
             return false;
         }
 
-        if self.selected_drawing == selected {
+        if self.selected_drawings == selected {
             return false;
         }
 
-        self.selected_drawing = selected;
+        self.selected_drawings = selected;
         self.clear_drag();
         true
     }
 
     pub fn remove_selected_drawing(&mut self) -> bool {
-        let Some(id) = self.selected_drawing else {
+        let ids = std::mem::take(&mut self.selected_drawings);
+        if ids.is_empty() {
             return false;
-        };
+        }
 
-        self.remove_drawing(id)
+        let mut changed = false;
+        for id in ids {
+            changed |= self.remove_drawing(id);
+        }
+        changed
+    }
+
+    fn single_selected_index(&self) -> Option<usize> {
+        if self.selected_drawings.len() == 1 {
+            self.selected_drawings
+                .first()
+                .and_then(|id| self.drawing_index(*id))
+        } else {
+            None
+        }
     }
 
     fn update_selected_style(&mut self, update: impl FnOnce(&mut DrawingStyle)) -> bool {
-        let Some(index) = self.selected_drawing.and_then(|id| self.drawing_index(id)) else {
+        let Some(index) = self.single_selected_index() else {
             return false;
         };
 
@@ -749,7 +807,7 @@ impl DrawingTools {
     }
 
     fn update_selected_object(&mut self, update: impl FnOnce(&mut DrawingObject)) -> bool {
-        let Some(index) = self.selected_drawing.and_then(|id| self.drawing_index(id)) else {
+        let Some(index) = self.single_selected_index() else {
             return false;
         };
 
@@ -773,11 +831,10 @@ impl DrawingTools {
 
         self.drawings.remove(index);
 
-        if self.selected_drawing == Some(id) {
-            self.selected_drawing = None;
-        }
+        self.selected_drawings.retain(|selected| *selected != id);
 
-        if matches!(self.interaction, DrawingInteraction::Dragging(ref drag) if drag.id == id) {
+        if matches!(self.interaction, DrawingInteraction::Dragging(ref drag) if drag.dragged.iter().any(|d| d.id == id))
+        {
             self.interaction = DrawingInteraction::Idle;
         }
 
@@ -787,27 +844,27 @@ impl DrawingTools {
     pub fn remove_all_drawings(&mut self) -> bool {
         if self.drawings.is_empty()
             && matches!(self.interaction, DrawingInteraction::Idle)
-            && self.selected_drawing.is_none()
+            && self.selected_drawings.is_empty()
         {
             return false;
         }
 
         self.drawings.clear();
-        self.selected_drawing = None;
+        self.selected_drawings.clear();
         self.interaction = DrawingInteraction::Idle;
         true
     }
 
     pub fn start_drawing_from_anchor(&mut self, anchor: DrawingAnchor) -> bool {
         match self.active_tool {
-            DrawingTool::Cursor => false,
+            DrawingTool::Cursor | DrawingTool::Measure => false,
             DrawingTool::Trendline => {
                 self.interaction = DrawingInteraction::Drafting(DrawingDraft::Trendline {
                     start: anchor,
                     current: anchor,
                     style: DrawingTool::Trendline.default_style(),
                 });
-                self.selected_drawing = None;
+                self.selected_drawings.clear();
                 true
             }
             DrawingTool::Box => {
@@ -817,7 +874,7 @@ impl DrawingTools {
                     style: DrawingTool::Box.default_style(),
                     extend_right: self.box_extend_right,
                 });
-                self.selected_drawing = None;
+                self.selected_drawings.clear();
                 true
             }
             DrawingTool::HorizontalLine => {
@@ -882,18 +939,29 @@ impl DrawingTools {
 
         let mut changed = drawings_pruned;
 
-        if self
-            .selected_drawing
-            .map(|id| self.drawing_index(id).is_none())
-            .unwrap_or(false)
-        {
-            self.selected_drawing = None;
+        let selection_pruned = !self.selected_drawings.is_empty()
+            && self
+                .selected_drawings
+                .iter()
+                .any(|id| self.drawing_index(*id).is_none());
+        if selection_pruned {
+            let kept = self
+                .selected_drawings
+                .iter()
+                .filter(|id| self.drawing_index(**id).is_some())
+                .copied()
+                .collect();
+            self.selected_drawings = kept;
             changed = true;
         }
 
         if self
             .active_drag_any()
-            .map(|drag| self.drawing_index(drag.id).is_none())
+            .map(|drag| {
+                drag.dragged
+                    .iter()
+                    .any(|d| self.drawing_index(d.id).is_none())
+            })
             .unwrap_or(false)
         {
             self.interaction = DrawingInteraction::Idle;
@@ -909,7 +977,57 @@ impl DrawingTools {
             changed = true;
         }
 
+        if self
+            .measure
+            .map(|measure| measure.state().panel_id == panel_id)
+            .unwrap_or(false)
+        {
+            self.measure = None;
+            changed = true;
+        }
+
         changed
+    }
+
+    fn measure_click(&mut self, anchor: DrawingAnchor) -> bool {
+        match self.measure {
+            None => {
+                self.measure = Some(DrawingMeasure::Pending(MeasureState {
+                    panel_id: anchor.panel_id,
+                    start: anchor,
+                    end: anchor,
+                }));
+                true
+            }
+            Some(DrawingMeasure::Pending(state)) => {
+                self.measure = Some(DrawingMeasure::Committed(MeasureState {
+                    panel_id: state.panel_id,
+                    start: state.start,
+                    end: anchor,
+                }));
+                if self.active_tool == DrawingTool::Measure {
+                    self.active_tool = DrawingTool::Cursor;
+                }
+                true
+            }
+            Some(DrawingMeasure::Committed(_)) => {
+                self.measure = None;
+                true
+            }
+        }
+    }
+
+    fn measure_move(&mut self, anchor: DrawingAnchor) -> bool {
+        let Some(DrawingMeasure::Pending(state)) = self.measure else {
+            return false;
+        };
+
+        self.measure = Some(DrawingMeasure::Pending(MeasureState {
+            panel_id: state.panel_id,
+            start: state.start,
+            end: anchor,
+        }));
+        true
     }
 
     fn open_drawing_settings(&mut self, id: DrawingId) -> bool {
@@ -920,8 +1038,8 @@ impl DrawingTools {
     }
 
     fn selected_entity(&self) -> Option<&DrawingEntity> {
-        let selected = self.selected_drawing?;
-        self.drawings.iter().find(|drawing| drawing.id == selected)
+        let id = self.single_selected_index()?;
+        self.drawings.get(id)
     }
 
     fn set_sidebar_page(&mut self, page: SidebarPage) -> bool {
@@ -973,12 +1091,43 @@ impl DrawingTools {
             return false;
         }
 
-        self.selected_drawing = Some(id);
+        let dragged = if matches!(target, DrawingDragTarget::Translate) {
+            let mut ids = vec![id];
+            for selected in &self.selected_drawings {
+                if *selected == id {
+                    continue;
+                }
+                if let Some(index) = self.drawing_index(*selected)
+                    && self.drawings[index].object.panel_id() == Some(anchor.panel_id)
+                {
+                    ids.push(*selected);
+                }
+            }
+            ids
+        } else {
+            vec![id]
+        };
+
+        let dragged = dragged
+            .into_iter()
+            .filter_map(|dragged_id| {
+                self.drawing_index(dragged_id).map(|index| DraggedDrawing {
+                    id: dragged_id,
+                    origin_object: self.drawings[index].object.clone(),
+                })
+            })
+            .collect::<Vec<_>>();
+
+        if dragged.is_empty() {
+            self.clear_drag();
+            return false;
+        }
+
+        self.selected_drawings = dragged.iter().map(|d| d.id).collect();
         self.interaction = DrawingInteraction::Dragging(DrawingDragState {
-            id,
             target,
             origin_anchor: anchor,
-            origin_object: drawing.object.clone(),
+            dragged,
         });
         true
     }
@@ -997,52 +1146,68 @@ impl DrawingTools {
             return false;
         }
 
-        let Some(index) = self.drawing_index(id) else {
-            self.clear_drag();
-            return false;
-        };
-
-        if matches!(target, DrawingDragTarget::Translate)
-            && anchor.panel_id != drag_state.origin_anchor.panel_id
+        if matches!(
+            target,
+            DrawingDragTarget::Translate | DrawingDragTarget::Handle(_)
+        ) && anchor.panel_id != drag_state.origin_anchor.panel_id
         {
             return false;
         }
 
-        if matches!(target, DrawingDragTarget::Handle(_))
-            && anchor.panel_id != drag_state.origin_anchor.panel_id
-        {
-            return false;
-        }
+        let mut changed = false;
 
-        if self.drawings[index].locked {
-            self.clear_drag();
-            return false;
-        }
-
-        let moved = match target {
-            DrawingDragTarget::Translate => drag_state
-                .origin_object
-                .translated(drag_state.origin_anchor, anchor),
+        match target {
+            DrawingDragTarget::Translate => {
+                for dragged in &drag_state.dragged {
+                    let Some(index) = self.drawing_index(dragged.id) else {
+                        self.clear_drag();
+                        return false;
+                    };
+                    if self.drawings[index].locked {
+                        self.clear_drag();
+                        return false;
+                    }
+                    let moved = dragged
+                        .origin_object
+                        .translated(drag_state.origin_anchor, anchor);
+                    if self.drawings[index].object != moved {
+                        self.drawings[index].object = moved;
+                        changed = true;
+                    }
+                }
+            }
             DrawingDragTarget::Handle(handle) => {
-                let Some(edited) = drag_state.origin_object.handle_dragged(handle, anchor) else {
+                let Some(primary) = drag_state.dragged.iter().find(|d| d.id == id) else {
+                    self.clear_drag();
                     return false;
                 };
-
-                edited
+                let Some(index) = self.drawing_index(id) else {
+                    self.clear_drag();
+                    return false;
+                };
+                if self.drawings[index].locked {
+                    self.clear_drag();
+                    return false;
+                }
+                let Some(edited) = primary.origin_object.handle_dragged(handle, anchor) else {
+                    return false;
+                };
+                if self.drawings[index].object != edited {
+                    self.drawings[index].object = edited;
+                    changed = true;
+                }
             }
-        };
-
-        if self.drawings[index].object == moved {
-            return false;
         }
 
-        self.drawings[index].object = moved;
-        self.selected_drawing = Some(id);
-        true
+        if changed {
+            self.selected_drawings = drag_state.dragged.iter().map(|d| d.id).collect();
+        }
+        changed
     }
 
     fn finish_drawing_drag(&mut self, id: DrawingId) -> bool {
-        if matches!(self.interaction, DrawingInteraction::Dragging(ref drag) if drag.id == id) {
+        if matches!(self.interaction, DrawingInteraction::Dragging(ref drag) if drag.dragged.iter().any(|d| d.id == id))
+        {
             self.interaction = DrawingInteraction::Idle;
             true
         } else {
@@ -1057,6 +1222,7 @@ impl DrawingTools {
 
         self.active_tool = tool;
         self.interaction = DrawingInteraction::Idle;
+        self.measure = None;
         true
     }
 
@@ -1066,7 +1232,9 @@ impl DrawingTools {
 
     fn active_drag(&self, id: DrawingId) -> Option<&DrawingDragState> {
         match &self.interaction {
-            DrawingInteraction::Dragging(drag) if drag.id == id => Some(drag),
+            DrawingInteraction::Dragging(drag) if drag.dragged.iter().any(|d| d.id == id) => {
+                Some(drag)
+            }
             DrawingInteraction::Idle
             | DrawingInteraction::Drafting(_)
             | DrawingInteraction::Dragging(_) => None,
@@ -1111,7 +1279,7 @@ impl DrawingTools {
             visible: true,
         });
 
-        self.selected_drawing = Some(id);
+        self.selected_drawings = vec![id];
         self.interaction = DrawingInteraction::Idle;
         id
     }
@@ -1324,5 +1492,334 @@ mod tests {
             object,
             DrawingObject::HorizontalLine { ray: false, .. }
         ));
+    }
+
+    #[test]
+    fn delete_selected_drawing_removes_selection() {
+        let drawing = DrawingEntity {
+            id: DrawingId(1),
+            object: DrawingObject::Box {
+                start: anchor(10, 5),
+                end: anchor(20, 1),
+                extend_right: false,
+            },
+            style: DrawingStyle::default(),
+            locked: false,
+            visible: true,
+        };
+        let mut tools = DrawingTools::from_parts(DrawingTool::Cursor, vec![drawing], false, false);
+
+        assert_eq!(
+            tools.update(DrawingMessage::DeleteSelectedDrawing),
+            DrawingUpdate::None
+        );
+        assert_eq!(tools.drawings().len(), 1);
+
+        tools.update(DrawingMessage::SelectDrawing(DrawingId(1)));
+        assert_eq!(
+            tools.update(DrawingMessage::DeleteSelectedDrawing),
+            DrawingUpdate::Visual
+        );
+        assert!(tools.drawings().is_empty());
+    }
+
+    #[test]
+    fn marquee_select_then_delete_removes_all_selected() {
+        let drawings = vec![
+            DrawingEntity {
+                id: DrawingId(1),
+                object: DrawingObject::Box {
+                    start: anchor(10, 5),
+                    end: anchor(20, 1),
+                    extend_right: false,
+                },
+                style: DrawingStyle::default(),
+                locked: false,
+                visible: true,
+            },
+            DrawingEntity {
+                id: DrawingId(2),
+                object: DrawingObject::HorizontalLine {
+                    panel_id: PanelId(1),
+                    y_unit: YUnit(8),
+                    time: UnixMs(15),
+                    ray: true,
+                },
+                style: DrawingStyle::default(),
+                locked: false,
+                visible: true,
+            },
+            DrawingEntity {
+                id: DrawingId(3),
+                object: DrawingObject::HorizontalLine {
+                    panel_id: PanelId(1),
+                    y_unit: YUnit(3),
+                    time: UnixMs(5),
+                    ray: false,
+                },
+                style: DrawingStyle::default(),
+                locked: false,
+                visible: true,
+            },
+        ];
+        let mut tools = DrawingTools::from_parts(DrawingTool::Cursor, drawings, false, false);
+
+        assert_eq!(
+            tools.handle_widget_drawing_event(KlineWidgetDrawingEvent::MarqueeSelected(vec![
+                DrawingId(1),
+                DrawingId(2),
+            ])),
+            DrawingUpdate::Visual
+        );
+
+        assert_eq!(
+            tools.update(DrawingMessage::DeleteSelectedDrawing),
+            DrawingUpdate::Visual
+        );
+        assert_eq!(tools.drawings().len(), 1);
+        assert_eq!(tools.drawings()[0].id, DrawingId(3));
+    }
+
+    #[test]
+    fn marquee_select_filters_invalid_ids() {
+        let drawing = DrawingEntity {
+            id: DrawingId(1),
+            object: DrawingObject::VerticalLine { time: UnixMs(10) },
+            style: DrawingStyle::default(),
+            locked: false,
+            visible: true,
+        };
+        let mut tools = DrawingTools::from_parts(DrawingTool::Cursor, vec![drawing], false, false);
+
+        assert_eq!(
+            tools.handle_widget_drawing_event(KlineWidgetDrawingEvent::MarqueeSelected(vec![
+                DrawingId(1),
+                DrawingId(99),
+            ])),
+            DrawingUpdate::None
+        );
+        assert_eq!(tools.drawings().len(), 1);
+    }
+
+    #[test]
+    fn group_translate_moves_selected_same_panel_drawings() {
+        let drawings = vec![
+            DrawingEntity {
+                id: DrawingId(1),
+                object: DrawingObject::Box {
+                    start: anchor(10, 5),
+                    end: anchor(20, 1),
+                    extend_right: false,
+                },
+                style: DrawingStyle::default(),
+                locked: false,
+                visible: true,
+            },
+            DrawingEntity {
+                id: DrawingId(2),
+                object: DrawingObject::Trendline {
+                    start: anchor(12, 6),
+                    end: anchor(18, 2),
+                },
+                style: DrawingStyle::default(),
+                locked: false,
+                visible: true,
+            },
+        ];
+        let mut tools = DrawingTools::from_parts(DrawingTool::Cursor, drawings, false, false);
+
+        tools.handle_widget_drawing_event(KlineWidgetDrawingEvent::MarqueeSelected(vec![
+            DrawingId(1),
+            DrawingId(2),
+        ]));
+
+        assert!(tools.start_drawing_drag(
+            DrawingId(1),
+            DrawingDragTarget::Translate,
+            anchor(10, 5),
+        ));
+        assert!(tools.update_drawing_drag(
+            DrawingId(1),
+            DrawingDragTarget::Translate,
+            anchor(30, 8),
+        ));
+
+        let box_obj = &tools.drawings()[0].object;
+        let trend_obj = &tools.drawings()[1].object;
+        assert!(matches!(box_obj, DrawingObject::Box { start, end, .. }
+            if start.time == UnixMs(30) && start.y_unit == YUnit(8)));
+        assert!(
+            matches!(trend_obj, DrawingObject::Trendline { start, end, .. }
+            if start.time == UnixMs(32) && start.y_unit == YUnit(9))
+        );
+    }
+
+    #[test]
+    fn group_translate_skips_other_panel_drawings() {
+        let other_panel = DrawingAnchor {
+            panel_id: PanelId(2),
+            time: UnixMs(12),
+            y_unit: YUnit(6),
+        };
+        let drawings = vec![
+            DrawingEntity {
+                id: DrawingId(1),
+                object: DrawingObject::Box {
+                    start: anchor(10, 5),
+                    end: anchor(20, 1),
+                    extend_right: false,
+                },
+                style: DrawingStyle::default(),
+                locked: false,
+                visible: true,
+            },
+            DrawingEntity {
+                id: DrawingId(2),
+                object: DrawingObject::Trendline {
+                    start: other_panel,
+                    end: DrawingAnchor {
+                        panel_id: PanelId(2),
+                        time: UnixMs(18),
+                        y_unit: YUnit(2),
+                    },
+                },
+                style: DrawingStyle::default(),
+                locked: false,
+                visible: true,
+            },
+        ];
+        let mut tools = DrawingTools::from_parts(DrawingTool::Cursor, drawings, false, false);
+
+        tools.handle_widget_drawing_event(KlineWidgetDrawingEvent::MarqueeSelected(vec![
+            DrawingId(1),
+            DrawingId(2),
+        ]));
+
+        assert!(tools.start_drawing_drag(
+            DrawingId(1),
+            DrawingDragTarget::Translate,
+            anchor(10, 5),
+        ));
+        assert!(tools.update_drawing_drag(
+            DrawingId(1),
+            DrawingDragTarget::Translate,
+            anchor(30, 8),
+        ));
+
+        assert!(
+            matches!(&tools.drawings()[0].object, DrawingObject::Box { start, .. }
+            if start.time == UnixMs(30))
+        );
+        assert!(
+            matches!(&tools.drawings()[1].object, DrawingObject::Trendline { start, .. }
+            if start.time == UnixMs(12))
+        );
+    }
+
+    #[test]
+    fn measure_click_start_commit_remove() {
+        let mut tools = DrawingTools::from_parts(DrawingTool::Cursor, Vec::new(), false, false);
+
+        assert_eq!(
+            tools.handle_widget_drawing_event(KlineWidgetDrawingEvent::MeasureClick(anchor(10, 5))),
+            DrawingUpdate::Visual
+        );
+        assert!(matches!(
+            tools.snapshot().measure,
+            Some(DrawingMeasure::Pending(state))
+                if state.start.time == UnixMs(10) && state.end.time == UnixMs(10)
+        ));
+
+        assert_eq!(
+            tools.handle_widget_drawing_event(KlineWidgetDrawingEvent::MeasureClick(anchor(30, 8))),
+            DrawingUpdate::Visual
+        );
+        assert!(matches!(
+            tools.snapshot().measure,
+            Some(DrawingMeasure::Committed(state))
+                if state.start.time == UnixMs(10) && state.end.time == UnixMs(30)
+        ));
+
+        assert_eq!(
+            tools.handle_widget_drawing_event(KlineWidgetDrawingEvent::MeasureClick(anchor(50, 2))),
+            DrawingUpdate::Visual
+        );
+        assert_eq!(tools.snapshot().measure, None);
+    }
+
+    #[test]
+    fn measure_tool_commits_as_one_off_and_reverts_to_cursor() {
+        let mut tools = DrawingTools::from_parts(DrawingTool::Measure, Vec::new(), false, false);
+
+        tools.handle_widget_drawing_event(KlineWidgetDrawingEvent::MeasureClick(anchor(10, 5)));
+        assert_eq!(tools.active_tool(), DrawingTool::Measure);
+
+        tools.handle_widget_drawing_event(KlineWidgetDrawingEvent::MeasureClick(anchor(30, 8)));
+        assert_eq!(tools.active_tool(), DrawingTool::Cursor);
+        assert!(matches!(
+            tools.snapshot().measure,
+            Some(DrawingMeasure::Committed(_))
+        ));
+
+        tools.handle_widget_drawing_event(KlineWidgetDrawingEvent::MeasureClick(anchor(50, 2)));
+        assert_eq!(tools.snapshot().measure, None);
+        assert_eq!(tools.active_tool(), DrawingTool::Cursor);
+    }
+
+    #[test]
+    fn measure_move_only_updates_pending() {
+        let mut tools = DrawingTools::from_parts(DrawingTool::Cursor, Vec::new(), false, false);
+
+        assert_eq!(
+            tools.handle_widget_drawing_event(KlineWidgetDrawingEvent::MeasureMove(anchor(20, 6))),
+            DrawingUpdate::None
+        );
+
+        tools.handle_widget_drawing_event(KlineWidgetDrawingEvent::MeasureClick(anchor(10, 5)));
+        assert_eq!(
+            tools.handle_widget_drawing_event(KlineWidgetDrawingEvent::MeasureMove(anchor(25, 7))),
+            DrawingUpdate::Visual
+        );
+        assert!(matches!(
+            tools.snapshot().measure,
+            Some(DrawingMeasure::Pending(state)) if state.end.time == UnixMs(25)
+        ));
+
+        tools.handle_widget_drawing_event(KlineWidgetDrawingEvent::MeasureClick(anchor(40, 9)));
+        assert_eq!(
+            tools.handle_widget_drawing_event(KlineWidgetDrawingEvent::MeasureMove(anchor(50, 3))),
+            DrawingUpdate::None
+        );
+        assert!(matches!(
+            tools.snapshot().measure,
+            Some(DrawingMeasure::Committed(state)) if state.end.time == UnixMs(40)
+        ));
+    }
+
+    #[test]
+    fn measure_canceled_clears() {
+        let mut tools = DrawingTools::from_parts(DrawingTool::Cursor, Vec::new(), false, false);
+
+        tools.handle_widget_drawing_event(KlineWidgetDrawingEvent::MeasureClick(anchor(10, 5)));
+        assert_eq!(
+            tools.handle_widget_drawing_event(KlineWidgetDrawingEvent::MeasureCanceled),
+            DrawingUpdate::Visual
+        );
+        assert_eq!(tools.snapshot().measure, None);
+
+        assert_eq!(
+            tools.handle_widget_drawing_event(KlineWidgetDrawingEvent::MeasureCanceled),
+            DrawingUpdate::None
+        );
+    }
+
+    #[test]
+    fn measure_tool_is_listed_and_does_not_start_drawings() {
+        assert!(DrawingTool::all().contains(&DrawingTool::Measure));
+        assert_eq!(DrawingTool::Measure.short_label(), "M");
+
+        let mut tools = DrawingTools::from_parts(DrawingTool::Measure, Vec::new(), false, false);
+        assert!(!tools.start_drawing_from_anchor(anchor(10, 5)));
+        assert!(tools.drawings().is_empty());
     }
 }

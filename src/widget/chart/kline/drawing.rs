@@ -38,8 +38,9 @@ impl AxisBadgeFilter {
 
 pub use data::chart::kline_v2::drawing::{
     AxisLabelAnchor, DrawingAnchor, DrawingColor, DrawingDraft, DrawingDragTarget, DrawingEntity,
-    DrawingHandleKind, DrawingId, DrawingObject, DrawingSnapshot, DrawingStyle, DrawingTool,
-    KlineWidgetDrawingEvent, MAX_DRAWING_STROKE_WIDTH, MIN_DRAWING_STROKE_WIDTH,
+    DrawingHandleKind, DrawingId, DrawingMeasure, DrawingObject, DrawingSnapshot, DrawingStyle,
+    DrawingTool, KlineWidgetDrawingEvent, MAX_DRAWING_STROKE_WIDTH, MIN_DRAWING_STROKE_WIDTH,
+    MeasureState,
 };
 
 fn iced_color(color: DrawingColor, generated_accents: &[iced::Color; 6]) -> iced::Color {
@@ -51,6 +52,24 @@ fn iced_color(color: DrawingColor, generated_accents: &[iced::Color; 6]) -> iced
             iced::Color::from_rgba(color.red, color.green, color.blue, color.alpha)
         }
     }
+}
+
+fn intersect_bounds(a: Rectangle, b: Rectangle) -> Option<Rectangle> {
+    let left = a.x.max(b.x);
+    let right = (a.x + a.width).min(b.x + b.width);
+    let top = a.y.max(b.y);
+    let bottom = (a.y + a.height).min(b.y + b.height);
+
+    if right <= left || bottom <= top {
+        return None;
+    }
+
+    Some(Rectangle {
+        x: left,
+        y: top,
+        width: right - left,
+        height: bottom - top,
+    })
 }
 
 impl<'a, S> KlineWidget<'a, S>
@@ -244,24 +263,6 @@ where
         ))
     }
 
-    fn intersect_bounds(a: Rectangle, b: Rectangle) -> Option<Rectangle> {
-        let left = a.x.max(b.x);
-        let right = (a.x + a.width).min(b.x + b.width);
-        let top = a.y.max(b.y);
-        let bottom = (a.y + a.height).min(b.y + b.height);
-
-        if right <= left || bottom <= top {
-            return None;
-        }
-
-        Some(Rectangle {
-            x: left,
-            y: top,
-            width: right - left,
-            height: bottom - top,
-        })
-    }
-
     fn x_overlay_for_time(&self, scene: &Scene, time: UnixMs) -> Option<f32> {
         let x_unit = self.x_unit_for_anchor_time(scene, time)?;
         let x_plot =
@@ -348,7 +349,7 @@ where
             width: size.width,
             height: size.height,
         };
-        let visible_bounds = Self::intersect_bounds(object_bounds, clip_bounds)?;
+        let visible_bounds = intersect_bounds(object_bounds, clip_bounds)?;
 
         Some((origin, size, clip_bounds, visible_bounds))
     }
@@ -608,6 +609,26 @@ where
         }
     }
 
+    pub(super) fn fill_marquee_rectangle(
+        &self,
+        frame: &mut canvas::Frame,
+        bounds: Rectangle,
+        palette: &Extended,
+    ) {
+        frame.fill_rectangle(
+            Point::new(bounds.x, bounds.y),
+            Size::new(bounds.width, bounds.height),
+            palette.primary.base.color.scale_alpha(0.08),
+        );
+        frame.stroke_rectangle(
+            Point::new(bounds.x, bounds.y),
+            Size::new(bounds.width, bounds.height),
+            canvas::Stroke::default()
+                .with_color(palette.primary.base.color.scale_alpha(0.6))
+                .with_width(1.0),
+        );
+    }
+
     fn drawing_handle_points(
         &self,
         scene: &Scene,
@@ -718,32 +739,33 @@ where
         scene: &Scene,
         point: Point,
     ) -> Option<(DrawingId, DrawingHandleKind)> {
-        let drawing = self.drawings.selected_visible_drawing()?;
-        if drawing.locked {
-            return None;
-        }
-
         let hit_radius_sq = DRAWING_HANDLE_HIT_RADIUS_PX * DRAWING_HANDLE_HIT_RADIUS_PX;
-        let mut best: Option<(f32, DrawingHandleKind)> = None;
+        let mut best: Option<(f32, DrawingId, DrawingHandleKind)> = None;
 
-        for (kind, handle_point) in self.drawing_handle_points(scene, &drawing.object) {
-            let dx = point.x - handle_point.x;
-            let dy = point.y - handle_point.y;
-            let dist_sq = dx * dx + dy * dy;
-
-            if dist_sq > hit_radius_sq {
+        for drawing in self.drawings.selected_visible_drawings() {
+            if drawing.locked {
                 continue;
             }
 
-            if best
-                .map(|(best_dist_sq, _)| dist_sq < best_dist_sq)
-                .unwrap_or(true)
-            {
-                best = Some((dist_sq, kind));
+            for (kind, handle_point) in self.drawing_handle_points(scene, &drawing.object) {
+                let dx = point.x - handle_point.x;
+                let dy = point.y - handle_point.y;
+                let dist_sq = dx * dx + dy * dy;
+
+                if dist_sq > hit_radius_sq {
+                    continue;
+                }
+
+                if best
+                    .map(|(best_dist_sq, _, _)| dist_sq < best_dist_sq)
+                    .unwrap_or(true)
+                {
+                    best = Some((dist_sq, drawing.id, kind));
+                }
             }
         }
 
-        best.map(|(_, kind)| (drawing.id, kind))
+        best.map(|(_, id, kind)| (id, kind))
     }
 
     pub(super) fn fill_drawings(
@@ -762,7 +784,7 @@ where
             .iter()
             .filter(|drawing| drawing.visible)
         {
-            let selected = drawing_state.selected_drawing == Some(drawing.id);
+            let selected = drawing_state.selected_drawings.contains(&drawing.id);
             self.draw_drawing_object(
                 frame,
                 scene,
@@ -775,7 +797,7 @@ where
             );
         }
 
-        if let Some(selected_drawing) = drawing_state.selected_visible_drawing() {
+        for selected_drawing in drawing_state.selected_visible_drawings() {
             self.draw_selected_drawing_handles(
                 frame,
                 scene,
@@ -802,6 +824,181 @@ where
                 overlay_origin_in_window,
                 pixel_ratio,
             );
+        }
+
+        if let Some(measure) = drawing_state.measure {
+            self.fill_measure(
+                frame,
+                scene,
+                palette,
+                measure,
+                overlay_origin_in_window,
+                pixel_ratio,
+            );
+        }
+    }
+
+    fn fill_measure(
+        &self,
+        frame: &mut canvas::Frame,
+        scene: &Scene,
+        palette: &Extended,
+        measure: DrawingMeasure,
+        overlay_origin_in_window: Point,
+        pixel_ratio: f32,
+    ) {
+        let state = measure.state();
+        let Some(start_point) = self.anchor_to_overlay_point(scene, state.start) else {
+            return;
+        };
+        let Some(end_point) = self.anchor_to_overlay_point(scene, state.end) else {
+            return;
+        };
+        let Some(panel_index) = self.panel_index_for_id(state.panel_id) else {
+            return;
+        };
+        let Some(clip_bounds) = self.panel_plot_bounds_in_overlay(scene, panel_index) else {
+            return;
+        };
+        let panel_precision = self.panel_value_precision(panel_index);
+
+        let start_value = self.panel_unit_to_value(panel_precision, state.start.y_unit);
+        let end_value = self.panel_unit_to_value(panel_precision, state.end.y_unit);
+        let delta = end_value - start_value;
+        let pct = if start_value.abs() > 1e-12 {
+            (delta / start_value.abs()) * 100.0
+        } else {
+            0.0
+        };
+
+        let color = if delta > 1e-9 {
+            palette.success.base.color
+        } else if delta < -1e-9 {
+            palette.danger.base.color
+        } else {
+            palette.background.base.text
+        };
+
+        let span_ms = state.start.time.as_u64().abs_diff(state.end.time.as_u64());
+        let bars = match (
+            self.x_unit_for_anchor_time(scene, state.start.time),
+            self.x_unit_for_anchor_time(scene, state.end.time),
+        ) {
+            (Some(start_unit), Some(end_unit)) => (start_unit - end_unit).unsigned_abs(),
+            _ => 0,
+        };
+
+        let sign = if delta > 1e-9 {
+            "+"
+        } else if delta < -1e-9 {
+            "-"
+        } else {
+            ""
+        };
+        let delta_label =
+            self.format_panel_axis_value(panel_index, panel_precision, delta.abs(), 0.01);
+        let text1 = format!("{sign}{delta_label} ({sign}{:.2}%)", pct.abs());
+        let text2 = format!("{} ({}b)", data::util::format_duration_ms(span_ms), bars);
+
+        let (_, stroke_width_phys) = Self::quantized_stroke_width(1.25, pixel_ratio);
+        let start = Self::snap_point_for_stroke_with_origin(
+            start_point,
+            pixel_ratio,
+            overlay_origin_in_window,
+            stroke_width_phys,
+        );
+        let end = Self::snap_point_for_stroke_with_origin(
+            end_point,
+            pixel_ratio,
+            overlay_origin_in_window,
+            stroke_width_phys,
+        );
+        let stroke = canvas::Stroke::default().with_color(color).with_width(1.25);
+
+        frame.with_clip(clip_bounds, |frame| {
+            let left = start.x.min(end.x);
+            let right = start.x.max(end.x);
+            let top = start.y.min(end.y);
+            let bottom = start.y.max(end.y);
+
+            frame.fill_rectangle(
+                Point::new(left, top),
+                Size::new((right - left).max(1.0), (bottom - top).max(1.0)),
+                color.scale_alpha(0.08),
+            );
+
+            frame.stroke(&canvas::Path::line(start, end), stroke);
+
+            for point in [start, end] {
+                let dot = canvas::Path::circle(point, 2.5);
+                frame.fill(&dot, color);
+            }
+
+            self.fill_measure_bubble(
+                frame,
+                palette,
+                clip_bounds,
+                color,
+                &text1,
+                &text2,
+                start,
+                end,
+            );
+        });
+    }
+
+    fn fill_measure_bubble(
+        &self,
+        frame: &mut canvas::Frame,
+        palette: &Extended,
+        bounds: Rectangle,
+        color: iced::Color,
+        text1: &str,
+        text2: &str,
+        start: Point,
+        end: Point,
+    ) {
+        let mid_x = (start.x + end.x) / 2.0;
+        let mid_y = (start.y + end.y) / 2.0;
+
+        let text_width = |text: &str| text.chars().count() as f32 * TEXT_SIZE * 0.6 + 16.0;
+        let bubble_width = text_width(text1).max(text_width(text2));
+        let bubble_height = TEXT_SIZE * 2.0 + 8.0;
+
+        let bubble_x = (mid_x - bubble_width / 2.0).clamp(
+            bounds.x + 4.0,
+            (bounds.x + bounds.width - bubble_width - 4.0).max(bounds.x + 4.0),
+        );
+        let mut bubble_y = mid_y - bubble_height - 8.0;
+        if bubble_y < bounds.y + 4.0 {
+            bubble_y = mid_y + 8.0;
+        }
+
+        frame.fill_rectangle(
+            Point::new(bubble_x, bubble_y),
+            Size::new(bubble_width, bubble_height),
+            palette.background.strong.color,
+        );
+        frame.stroke_rectangle(
+            Point::new(bubble_x, bubble_y),
+            Size::new(bubble_width, bubble_height),
+            canvas::Stroke::default().with_color(color).with_width(1.0),
+        );
+
+        for (index, line) in [text1, text2].into_iter().enumerate() {
+            frame.fill_text(canvas::Text {
+                content: line.to_string(),
+                position: Point::new(
+                    bubble_x + bubble_width / 2.0,
+                    bubble_y + TEXT_SIZE / 2.0 + TEXT_SIZE * index as f32 + 1.0,
+                ),
+                color: palette.background.strong.text,
+                size: TEXT_SIZE.into(),
+                align_x: iced::Alignment::Center.into(),
+                align_y: iced::Alignment::Center.into(),
+                font: style::AZERET_MONO,
+                ..Default::default()
+            });
         }
     }
 
@@ -932,6 +1129,117 @@ where
                 self.drawing_hit_test_object(scene, &drawing.object, drawing.style, point)
             })
             .map(|drawing| drawing.id)
+    }
+
+    pub(super) fn clipped_marquee_rect(
+        &self,
+        scene: &Scene,
+        panel_index: usize,
+        start: Point,
+        current: Point,
+    ) -> Option<Rectangle> {
+        let rect = Rectangle {
+            x: start.x.min(current.x),
+            y: start.y.min(current.y),
+            width: (current.x - start.x).abs(),
+            height: (current.y - start.y).abs(),
+        };
+        let panel_bounds = self.panel_plot_bounds_in_overlay(scene, panel_index)?;
+        intersect_bounds(rect, panel_bounds)
+    }
+
+    pub(super) fn marquee_selected_drawings(
+        &self,
+        scene: &Scene,
+        panel_index: usize,
+        start: Point,
+        current: Point,
+    ) -> Vec<DrawingId> {
+        let Some(rect) = self.clipped_marquee_rect(scene, panel_index, start, current) else {
+            return Vec::new();
+        };
+
+        self.drawings
+            .entities
+            .iter()
+            .filter(|drawing| drawing.visible)
+            .filter(|drawing| {
+                self.drawing_selection_corners(scene, &drawing.object)
+                    .iter()
+                    .any(|corner| {
+                        corner.x >= rect.x
+                            && corner.x <= rect.x + rect.width
+                            && corner.y >= rect.y
+                            && corner.y <= rect.y + rect.height
+                    })
+            })
+            .map(|drawing| drawing.id)
+            .collect()
+    }
+
+    fn drawing_selection_corners(&self, scene: &Scene, object: &DrawingObject) -> Vec<Point> {
+        match object {
+            DrawingObject::Trendline { start, end } => {
+                let mut corners = Vec::with_capacity(2);
+                if let Some(point) = self.anchor_to_overlay_point(scene, *start) {
+                    corners.push(point);
+                }
+                if let Some(point) = self.anchor_to_overlay_point(scene, *end) {
+                    corners.push(point);
+                }
+                corners
+            }
+            DrawingObject::Box {
+                start,
+                end,
+                extend_right,
+            } => {
+                if start.panel_id != end.panel_id {
+                    return Vec::new();
+                }
+                let Some(start_point) = self.anchor_to_overlay_point(scene, *start) else {
+                    return Vec::new();
+                };
+                let Some(end_point) = self.anchor_to_overlay_point(scene, *end) else {
+                    return Vec::new();
+                };
+                let left = start_point.x.min(end_point.x);
+                let right = start_point.x.max(end_point.x);
+                let top = start_point.y.min(end_point.y);
+                let bottom = start_point.y.max(end_point.y);
+                if *extend_right {
+                    vec![Point::new(left, top), Point::new(left, bottom)]
+                } else {
+                    vec![
+                        Point::new(left, top),
+                        Point::new(right, top),
+                        Point::new(right, bottom),
+                        Point::new(left, bottom),
+                    ]
+                }
+            }
+            DrawingObject::HorizontalLine {
+                panel_id,
+                y_unit,
+                time,
+                ray,
+            } => {
+                if !*ray {
+                    return Vec::new();
+                }
+                self.anchor_to_overlay_point(
+                    scene,
+                    DrawingAnchor {
+                        panel_id: *panel_id,
+                        time: *time,
+                        y_unit: *y_unit,
+                    },
+                )
+                .into_iter()
+                .collect()
+            }
+            DrawingObject::VerticalLine { .. } => Vec::new(),
+        }
     }
 
     fn format_y_label(&self, scene: &Scene, panel_id: PanelId, y_unit: YUnit) -> Option<String> {
@@ -1179,5 +1487,52 @@ where
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn intersect_bounds_clips_overlapping_rectangles() {
+        let a = Rectangle {
+            x: 10.0,
+            y: 10.0,
+            width: 100.0,
+            height: 50.0,
+        };
+        let b = Rectangle {
+            x: 50.0,
+            y: 30.0,
+            width: 100.0,
+            height: 50.0,
+        };
+        assert_eq!(
+            intersect_bounds(a, b),
+            Some(Rectangle {
+                x: 50.0,
+                y: 30.0,
+                width: 60.0,
+                height: 30.0,
+            })
+        );
+    }
+
+    #[test]
+    fn intersect_bounds_returns_none_for_disjoint_rectangles() {
+        let a = Rectangle {
+            x: 10.0,
+            y: 10.0,
+            width: 10.0,
+            height: 10.0,
+        };
+        let b = Rectangle {
+            x: 50.0,
+            y: 50.0,
+            width: 10.0,
+            height: 10.0,
+        };
+        assert_eq!(intersect_bounds(a, b), None);
     }
 }

@@ -531,6 +531,10 @@ impl KlineChartV2 {
                         );
                         self.bump_rev();
                     }
+                    KlineWidgetEvent::DeletePressed => {
+                        let update = self.drawing.update(DrawingMessage::DeleteSelectedDrawing);
+                        self.apply_drawing_update(update);
+                    }
                 }
             }
         }
