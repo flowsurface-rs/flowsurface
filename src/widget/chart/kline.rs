@@ -14,8 +14,8 @@ mod scene_builder;
 
 use crate::style;
 use crate::widget::chart::kline::drawing::{
-    AxisBadgeFilter, DrawingDragTarget, DrawingId, DrawingMeasure, DrawingSnapshot, DrawingTool,
-    KlineWidgetDrawingEvent,
+    AxisBadgeFilter, DrawingDragOperation, DrawingDragTarget, DrawingId, DrawingMeasure,
+    DrawingSnapshot, DrawingTool, KlineWidgetDrawingEvent,
 };
 use axes::horizontal_world_for_drag;
 use chrome::{FootprintLegendHit, IndicatorLegendHit, StudyLegendHit, TickerLegendHit};
@@ -212,6 +212,8 @@ pub(super) enum DragMode {
     },
     Pan {
         panel_index: usize,
+        anchor_x: f32,
+        initial_offset: f32,
     },
     DrawingMove {
         id: DrawingId,
@@ -380,6 +382,7 @@ pub struct KlineWidget<'a, S> {
     basis: Basis,
     horizontal_world: HorizontalWorld,
     known_plot_width: Option<f32>,
+    autoscale_plot_width_offset: f32,
     pixel_ratio: f32,
     primary_autoscale: bool,
     panel_y_viewports: &'a [(PanelId, PanelYViewport)],
@@ -420,6 +423,7 @@ where
             basis,
             horizontal_world: HorizontalWorld::new(DEFAULT_BAR_SPACING_PX, 1.0, 0.0),
             known_plot_width: None,
+            autoscale_plot_width_offset: 0.0,
             pixel_ratio: 1.0,
             primary_autoscale: false,
             panel_y_viewports: &[],
@@ -482,6 +486,15 @@ where
         self
     }
 
+    pub fn with_autoscale_plot_width_offset(mut self, offset: f32) -> Self {
+        self.autoscale_plot_width_offset = if offset.is_finite() {
+            offset.max(0.0)
+        } else {
+            0.0
+        };
+        self
+    }
+
     pub fn with_drawings(mut self, snapshot: DrawingSnapshot<'a>) -> Self {
         self.drawings = snapshot;
         self
@@ -540,7 +553,7 @@ where
         self
     }
 
-    fn is_marquee_modifier(modifiers: keyboard::Modifiers) -> bool {
+    fn is_command_modifier(modifiers: keyboard::Modifiers) -> bool {
         modifiers.intersects(keyboard::Modifiers::COMMAND)
     }
 }
@@ -1191,21 +1204,6 @@ where
                         }
 
                         if self.drawings.allows_panning()
-                            && Self::is_marquee_modifier(state.modifiers)
-                            && let LayoutHitZone::PanelPlot(panel_index) = zone
-                        {
-                            state.drag_mode = DragMode::Marquee {
-                                panel_index,
-                                start: cursor_pos,
-                                current: cursor_pos,
-                            };
-                            state.last_cursor = Some(cursor_pos);
-                            state.clear_overlay_caches();
-                            shell.capture_event();
-                            return;
-                        }
-
-                        if self.drawings.allows_panning()
                             && matches!(zone, LayoutHitZone::PanelPlot(_))
                             && let Some(scene) = self.compute_scene(layout, cursor)
                         {
@@ -1215,14 +1213,20 @@ where
                                 return;
                             }
 
-                            if let Some((id, handle_kind)) =
-                                self.hit_test_selected_drawing_handle(&scene, cursor_pos)
+                            if !Self::is_command_modifier(state.modifiers)
+                                && let Some((id, handle_kind)) =
+                                    self.hit_test_selected_drawing_handle(&scene, cursor_pos)
                                 && let Some(anchor) = self.drawing_anchor_from_scene_cursor(&scene)
                             {
                                 let target = DrawingDragTarget::Handle(handle_kind);
 
                                 shell.publish(M::from(KlineWidgetEvent::Drawing(
-                                    KlineWidgetDrawingEvent::DragStarted { id, target, anchor },
+                                    KlineWidgetDrawingEvent::DragStarted {
+                                        id,
+                                        target,
+                                        operation: DrawingDragOperation::Move,
+                                        anchor,
+                                    },
                                 )));
                                 state.drag_mode = DragMode::DrawingMove {
                                     id,
@@ -1245,20 +1249,24 @@ where
                                     shell.publish(M::from(KlineWidgetEvent::Drawing(
                                         KlineWidgetDrawingEvent::Selected(Some(id)),
                                     )));
-                                    state.drag_mode = DragMode::None;
-                                    state.last_cursor = None;
-                                    state.clear_overlay_caches();
-                                    state.clear_all_caches();
-                                    shell.capture_event();
-                                    return;
                                 }
 
                                 if let Some(anchor) = self.drawing_anchor_from_scene_cursor(&scene)
                                 {
                                     let target = DrawingDragTarget::Translate;
+                                    let operation = if Self::is_command_modifier(state.modifiers) {
+                                        DrawingDragOperation::Copy
+                                    } else {
+                                        DrawingDragOperation::Move
+                                    };
 
                                     shell.publish(M::from(KlineWidgetEvent::Drawing(
-                                        KlineWidgetDrawingEvent::DragStarted { id, target, anchor },
+                                        KlineWidgetDrawingEvent::DragStarted {
+                                            id,
+                                            target,
+                                            operation,
+                                            anchor,
+                                        },
                                     )));
                                     state.drag_mode = DragMode::DrawingMove {
                                         id,
@@ -1280,17 +1288,29 @@ where
                                 return;
                             }
 
-                            if !self.drawings.selected_drawings.is_empty() {
+                            if !Self::is_command_modifier(state.modifiers)
+                                && !self.drawings.selected_drawings.is_empty()
+                            {
                                 shell.publish(M::from(KlineWidgetEvent::Drawing(
                                     KlineWidgetDrawingEvent::Selected(None),
                                 )));
-                                state.drag_mode = DragMode::None;
-                                state.last_cursor = None;
-                                state.clear_overlay_caches();
                                 state.clear_all_caches();
-                                shell.capture_event();
-                                return;
                             }
+                        }
+
+                        if self.drawings.allows_panning()
+                            && Self::is_command_modifier(state.modifiers)
+                            && let LayoutHitZone::PanelPlot(panel_index) = zone
+                        {
+                            state.drag_mode = DragMode::Marquee {
+                                panel_index,
+                                start: cursor_pos,
+                                current: cursor_pos,
+                            };
+                            state.last_cursor = Some(cursor_pos);
+                            state.clear_overlay_caches();
+                            shell.capture_event();
+                            return;
                         }
 
                         if let LayoutHitZone::Splitter(split_index) = zone {
@@ -1368,7 +1388,11 @@ where
                         } else if self.drawings.allows_panning()
                             && let LayoutHitZone::PanelPlot(panel_index) = zone
                         {
-                            state.drag_mode = DragMode::Pan { panel_index };
+                            state.drag_mode = DragMode::Pan {
+                                panel_index,
+                                anchor_x: cursor.position().map_or(cursor_pos.x, |pos| pos.x),
+                                initial_offset: self.horizontal_world.offset(),
+                            };
                             state.last_cursor = Some(cursor_pos);
                         } else {
                             state.drag_mode = DragMode::None;
@@ -1571,22 +1595,26 @@ where
                             state.last_cursor = Some(cursor_pos);
                             state.clear_overlay_caches();
                             shell.capture_event();
-                        } else if let DragMode::Pan { panel_index } = state.drag_mode {
+                        } else if let DragMode::Pan {
+                            panel_index,
+                            anchor_x,
+                            initial_offset,
+                        } = state.drag_mode
+                        {
                             if Self::hit_corner_control(&corner_controls, cursor_pos).is_some() {
                                 state.last_cursor = Some(cursor_pos);
                                 return;
                             }
 
-                            let prev = state.last_cursor.unwrap_or(cursor_pos);
-                            let dx_px = cursor_pos.x - prev.x;
-                            let dy_px = cursor_pos.y - prev.y;
+                            let prev_y = state.last_cursor.map_or(cursor_pos.y, |prev| prev.y);
+                            let dy_px = cursor_pos.y - prev_y;
+                            let spacing = self.horizontal_world.effective_spacing();
+                            let cursor_x = cursor.position().map_or(cursor_pos.x, |pos| pos.x);
+                            let offset = initial_offset + (anchor_x - cursor_x) / spacing;
 
-                            if dx_px.abs() > f32::EPSILON {
-                                let spacing = self.horizontal_world.effective_spacing();
-                                let dx_units = -(dx_px) / spacing;
-
+                            if (offset - self.horizontal_world.offset()).abs() > f32::EPSILON {
                                 shell.publish(M::from(KlineWidgetEvent::HorizontalOffsetChanged(
-                                    self.horizontal_world.offset() + dx_units,
+                                    offset,
                                 )));
                                 state.clear_all_caches();
                             }

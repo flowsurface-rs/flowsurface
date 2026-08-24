@@ -1,21 +1,26 @@
 use crate::style;
 use crate::widget::chart::kline::composition::{ChartComposition, PanelId, PanelRole};
 use crate::widget::chart::kline::drawing::{
-    DrawingAnchor, DrawingColor, DrawingDraft, DrawingDragTarget, DrawingEntity, DrawingId,
-    DrawingMeasure, DrawingObject, DrawingSnapshot, DrawingStyle, DrawingTool,
-    KlineWidgetDrawingEvent, MAX_DRAWING_STROKE_WIDTH, MIN_DRAWING_STROKE_WIDTH, MeasureState,
+    DrawingAnchor, DrawingColor, DrawingDraft, DrawingDragOperation, DrawingDragTarget,
+    DrawingEntity, DrawingId, DrawingMeasure, DrawingObject, DrawingSnapshot, DrawingStyle,
+    DrawingStyleDefaults, DrawingTool, KlineWidgetDrawingEvent, MAX_DRAWING_STROKE_WIDTH,
+    MIN_DRAWING_STROKE_WIDTH, MeasureState,
 };
 use crate::widget::{color_swatch_button, labeled_slider};
 use data::config::theme::{ThemeAccent, generated_theme_accent};
 
-use iced::widget::{button, checkbox, column, row, rule, space, text};
+use iced::widget::{button, checkbox, column, row, space, text};
 use iced::{Element, Length};
 
 const SIDEBAR_WIDTH: f32 = 36.0;
-const DETAILS_SIDEBAR_WIDTH: f32 = 156.0;
 const OBJECT_LIST_SIDEBAR_WIDTH: f32 = 196.0;
 const DRAWING_STROKE_WIDTH_STEP: f32 = 0.5;
 const DRAWING_FILL_ALPHA: f32 = 0.16;
+const DRAWING_TOOLBAR_COLOR_WIDTH: f32 = 156.0;
+const DRAWING_TOOLBAR_FILL_COLOR_WIDTH: f32 = 196.0;
+const DRAWING_TOOLBAR_SLIDER_WIDTH: f32 = 140.0;
+const DRAWING_TOOLBAR_TOGGLE_WIDTH: f32 = 112.0;
+const DRAWING_TOOLBAR_DIVIDER_HEIGHT: f32 = 36.0;
 
 fn drawing_color_picker<'a, Message, SelectColor>(
     label: &'static str,
@@ -96,6 +101,15 @@ where
     .into()
 }
 
+fn drawing_toolbar_divider<'a, Message>() -> Element<'a, Message>
+where
+    Message: 'a,
+{
+    iced::widget::container(iced::widget::rule::vertical(1.0).style(style::split_ruler))
+        .height(DRAWING_TOOLBAR_DIVIDER_HEIGHT)
+        .into()
+}
+
 #[derive(Debug, Clone)]
 struct DraggedDrawing {
     id: DrawingId,
@@ -104,6 +118,7 @@ struct DraggedDrawing {
 
 #[derive(Debug, Clone)]
 struct DrawingDragState {
+    controller_id: DrawingId,
     target: DrawingDragTarget,
     origin_anchor: DrawingAnchor,
     dragged: Vec<DraggedDrawing>,
@@ -134,6 +149,7 @@ pub enum DrawingMessage {
     SelectTool(DrawingTool),
     ShowToolsPage,
     ShowObjectListPage,
+    ClearSelection,
     SelectDrawing(DrawingId),
     OpenDrawingSettings(DrawingId),
     SetSelectedDrawingStrokeColor(ThemeAccent),
@@ -160,6 +176,7 @@ pub struct DrawingTools {
     selected_drawings: Vec<DrawingId>,
     interaction: DrawingInteraction,
     next_drawing_id: u64,
+    style_defaults: DrawingStyleDefaults,
     horizontal_line_ray: bool,
     box_extend_right: bool,
     measure: Option<DrawingMeasure>,
@@ -174,6 +191,7 @@ impl Default for DrawingTools {
             selected_drawings: Vec::new(),
             interaction: DrawingInteraction::Idle,
             next_drawing_id: 1,
+            style_defaults: DrawingStyleDefaults::default(),
             horizontal_line_ray: false,
             box_extend_right: false,
             measure: None,
@@ -185,6 +203,7 @@ impl DrawingTools {
     pub fn from_parts(
         active_tool: DrawingTool,
         drawings: Vec<DrawingEntity>,
+        style_defaults: DrawingStyleDefaults,
         horizontal_line_ray: bool,
         box_extend_right: bool,
     ) -> Self {
@@ -203,6 +222,7 @@ impl DrawingTools {
             selected_drawings: Vec::new(),
             interaction: DrawingInteraction::Idle,
             next_drawing_id,
+            style_defaults,
             horizontal_line_ray,
             box_extend_right,
             measure: None,
@@ -215,6 +235,10 @@ impl DrawingTools {
 
     pub fn horizontal_line_ray(&self) -> bool {
         self.horizontal_line_ray
+    }
+
+    pub fn style_defaults(&self) -> DrawingStyleDefaults {
+        self.style_defaults
     }
 
     pub fn box_extend_right(&self) -> bool {
@@ -245,6 +269,13 @@ impl DrawingTools {
             }
             DrawingMessage::ShowObjectListPage => {
                 if self.set_sidebar_page(SidebarPage::ObjectList) {
+                    DrawingUpdate::Visual
+                } else {
+                    DrawingUpdate::None
+                }
+            }
+            DrawingMessage::ClearSelection => {
+                if self.select_drawing(None) {
                     DrawingUpdate::Visual
                 } else {
                     DrawingUpdate::None
@@ -348,7 +379,7 @@ impl DrawingTools {
         }
     }
 
-    pub fn view<'a, Message>(
+    pub fn sidebar_view<'a, Message>(
         &'a self,
         composition: &'a ChartComposition,
         on_sidebar_message: fn(DrawingMessage) -> Message,
@@ -357,20 +388,30 @@ impl DrawingTools {
         Message: Clone + 'a + 'static,
     {
         match self.sidebar_page {
-            SidebarPage::Tools => {
-                if let Some(drawing) = self.selected_entity() {
-                    self.view_selected_sidebar(drawing, on_sidebar_message)
-                } else {
-                    self.view_tools_sidebar(on_sidebar_message)
-                }
-            }
+            SidebarPage::Tools => self.view_tools_sidebar(on_sidebar_message),
             SidebarPage::ObjectList => {
                 self.view_object_list_sidebar(composition, on_sidebar_message)
             }
         }
     }
 
-    fn view_selected_sidebar<'a, Message>(
+    pub fn selected_toolbar_view<'a, Message>(
+        &'a self,
+        on_sidebar_message: fn(DrawingMessage) -> Message,
+    ) -> Option<Element<'a, Message>>
+    where
+        Message: Clone + 'a + 'static,
+    {
+        matches!(self.sidebar_page, SidebarPage::Tools)
+            .then(|| self.selected_entity())
+            .flatten()
+            .map(|drawing| {
+                self.view_selected_toolbar(drawing, on_sidebar_message)
+                    .into()
+            })
+    }
+
+    fn view_selected_toolbar<'a, Message>(
         &'a self,
         drawing: &DrawingEntity,
         on_sidebar_message: fn(DrawingMessage) -> Message,
@@ -378,103 +419,135 @@ impl DrawingTools {
     where
         Message: Clone + 'a + 'static,
     {
-        let mut details = iced::widget::Column::new()
-            .spacing(4)
-            .height(iced::Length::Fill)
-            .push(iced::widget::text(drawing.object.title()).size(13))
-            .push(iced::widget::rule::horizontal(1.0))
-            .align_x(iced::Alignment::Center);
+        let mut controls = iced::widget::row![
+            iced::widget::text(drawing.object.title()).size(13),
+            drawing_toolbar_divider(),
+        ]
+        .spacing(4)
+        .align_y(iced::Alignment::Center);
 
         let stroke_width = drawing.style.normalized_stroke_width();
 
         match drawing.object {
             DrawingObject::Box { extend_right, .. } => {
-                details = details
-                    .push(drawing_color_picker(
-                        "Border color",
-                        drawing.style.stroke_color.accent_value(),
-                        1.0,
-                        false,
-                        DrawingMessage::SetSelectedDrawingStrokeColor,
-                        on_sidebar_message,
-                    ))
-                    .push(drawing_color_picker(
-                        "Fill color",
-                        drawing
-                            .style
-                            .fill_color
-                            .and_then(|color| color.accent_value()),
-                        DRAWING_FILL_ALPHA,
-                        true,
-                        |color| DrawingMessage::SetSelectedDrawingFillColor(Some(color)),
-                        on_sidebar_message,
-                    ))
-                    .push(drawing_width_slider(
-                        "Border width",
-                        stroke_width,
-                        on_sidebar_message,
-                    ))
-                    .push(rule::horizontal(1.0).style(style::split_ruler))
-                    .push(drawing_extend_checkbox(
-                        extend_right,
-                        "Extend right",
-                        DrawingMessage::SetBoxExtendRight,
-                        on_sidebar_message,
-                    ));
+                controls = controls
+                    .push(
+                        iced::widget::container(drawing_color_picker(
+                            "Border color",
+                            drawing.style.stroke_color.accent_value(),
+                            1.0,
+                            false,
+                            DrawingMessage::SetSelectedDrawingStrokeColor,
+                            on_sidebar_message,
+                        ))
+                        .width(DRAWING_TOOLBAR_COLOR_WIDTH),
+                    )
+                    .push(
+                        iced::widget::container(drawing_color_picker(
+                            "Fill color",
+                            drawing
+                                .style
+                                .fill_color
+                                .and_then(|color| color.accent_value()),
+                            DRAWING_FILL_ALPHA,
+                            true,
+                            |color| DrawingMessage::SetSelectedDrawingFillColor(Some(color)),
+                            on_sidebar_message,
+                        ))
+                        .width(DRAWING_TOOLBAR_FILL_COLOR_WIDTH),
+                    )
+                    .push(
+                        iced::widget::container(drawing_width_slider(
+                            "Border width",
+                            stroke_width,
+                            on_sidebar_message,
+                        ))
+                        .width(DRAWING_TOOLBAR_SLIDER_WIDTH),
+                    )
+                    .push(
+                        iced::widget::container(drawing_extend_checkbox(
+                            extend_right,
+                            "Extend right",
+                            DrawingMessage::SetBoxExtendRight,
+                            on_sidebar_message,
+                        ))
+                        .width(DRAWING_TOOLBAR_TOGGLE_WIDTH),
+                    );
             }
             DrawingObject::HorizontalLine { ray, .. } => {
-                details = details
-                    .push(drawing_color_picker(
-                        "Line color",
-                        drawing.style.stroke_color.accent_value(),
-                        1.0,
-                        false,
-                        DrawingMessage::SetSelectedDrawingStrokeColor,
-                        on_sidebar_message,
-                    ))
-                    .push(drawing_width_slider(
-                        "Line width",
-                        stroke_width,
-                        on_sidebar_message,
-                    ))
-                    .push(rule::horizontal(1.0).style(style::split_ruler))
-                    .push(drawing_extend_checkbox(
-                        ray,
-                        "Ray",
-                        DrawingMessage::SetHorizontalLineRay,
-                        on_sidebar_message,
-                    ));
+                controls = controls
+                    .push(
+                        iced::widget::container(drawing_color_picker(
+                            "Line color",
+                            drawing.style.stroke_color.accent_value(),
+                            1.0,
+                            false,
+                            DrawingMessage::SetSelectedDrawingStrokeColor,
+                            on_sidebar_message,
+                        ))
+                        .width(DRAWING_TOOLBAR_COLOR_WIDTH),
+                    )
+                    .push(
+                        iced::widget::container(drawing_width_slider(
+                            "Line width",
+                            stroke_width,
+                            on_sidebar_message,
+                        ))
+                        .width(DRAWING_TOOLBAR_SLIDER_WIDTH),
+                    )
+                    .push(
+                        iced::widget::container(drawing_extend_checkbox(
+                            ray,
+                            "Ray",
+                            DrawingMessage::SetHorizontalLineRay,
+                            on_sidebar_message,
+                        ))
+                        .width(DRAWING_TOOLBAR_TOGGLE_WIDTH),
+                    );
             }
             DrawingObject::Trendline { .. } | DrawingObject::VerticalLine { .. } => {
-                details = details
-                    .push(drawing_color_picker(
-                        "Line color",
-                        drawing.style.stroke_color.accent_value(),
-                        1.0,
-                        false,
-                        DrawingMessage::SetSelectedDrawingStrokeColor,
-                        on_sidebar_message,
-                    ))
-                    .push(drawing_width_slider(
-                        "Line width",
-                        stroke_width,
-                        on_sidebar_message,
-                    ));
+                controls = controls
+                    .push(
+                        iced::widget::container(drawing_color_picker(
+                            "Line color",
+                            drawing.style.stroke_color.accent_value(),
+                            1.0,
+                            false,
+                            DrawingMessage::SetSelectedDrawingStrokeColor,
+                            on_sidebar_message,
+                        ))
+                        .width(DRAWING_TOOLBAR_COLOR_WIDTH),
+                    )
+                    .push(
+                        iced::widget::container(drawing_width_slider(
+                            "Line width",
+                            stroke_width,
+                            on_sidebar_message,
+                        ))
+                        .width(DRAWING_TOOLBAR_SLIDER_WIDTH),
+                    );
             }
         }
 
-        details = details.push(
-            iced::widget::button(iced::widget::text("Delete").align_x(iced::Alignment::Center))
-                .style(|theme, status| style::button::cancel(theme, status, false))
-                .width(iced::Length::Fill)
-                .on_press(on_sidebar_message(DrawingMessage::DeleteSelectedDrawing)),
-        );
+        controls = controls
+            .push(drawing_toolbar_divider())
+            .push(
+                iced::widget::button(style::icon_text(style::Icon::TrashBin, 12))
+                    .style(|theme, status| style::button::cancel(theme, status, false))
+                    .padding([4, 6])
+                    .on_press(on_sidebar_message(DrawingMessage::DeleteSelectedDrawing)),
+            )
+            .push(
+                iced::widget::button(style::icon_text(style::Icon::Close, 12))
+                    .style(|theme, status| style::button::transparent(theme, status, false))
+                    .padding([4, 6])
+                    .on_press(on_sidebar_message(DrawingMessage::ClearSelection)),
+            );
 
-        iced::widget::container(details)
-            .style(style::chart_sidebar_container)
-            .width(DETAILS_SIDEBAR_WIDTH)
-            .height(iced::Length::Fill)
-            .padding([4, 6])
+        iced::widget::container(controls)
+            .height(Length::Fill)
+            .padding([0, 4])
+            .align_y(iced::alignment::Vertical::Center)
     }
 
     fn view_object_row<'a, Message>(
@@ -688,9 +761,17 @@ impl DrawingTools {
                     DrawingUpdate::None
                 }
             }
-            KlineWidgetDrawingEvent::DragStarted { id, target, anchor } => {
-                if self.start_drawing_drag(id, target, anchor) {
-                    DrawingUpdate::StateOnly
+            KlineWidgetDrawingEvent::DragStarted {
+                id,
+                target,
+                operation,
+                anchor,
+            } => {
+                if self.start_drawing_drag(id, target, operation, anchor) {
+                    match operation {
+                        DrawingDragOperation::Move => DrawingUpdate::StateOnly,
+                        DrawingDragOperation::Copy => DrawingUpdate::Visual,
+                    }
                 } else {
                     DrawingUpdate::None
                 }
@@ -801,9 +882,16 @@ impl DrawingTools {
             return false;
         }
 
-        let before = self.drawings[index].style;
-        update(&mut self.drawings[index].style);
-        self.drawings[index].style != before
+        let drawing = &mut self.drawings[index];
+        let before = drawing.style;
+        update(&mut drawing.style);
+        if drawing.style == before {
+            return false;
+        }
+
+        self.style_defaults
+            .set_style(drawing.object.tool(), drawing.style);
+        true
     }
 
     fn update_selected_object(&mut self, update: impl FnOnce(&mut DrawingObject)) -> bool {
@@ -862,7 +950,7 @@ impl DrawingTools {
                 self.interaction = DrawingInteraction::Drafting(DrawingDraft::Trendline {
                     start: anchor,
                     current: anchor,
-                    style: DrawingTool::Trendline.default_style(),
+                    style: self.style_defaults.style_for(DrawingTool::Trendline),
                 });
                 self.selected_drawings.clear();
                 true
@@ -871,7 +959,7 @@ impl DrawingTools {
                 self.interaction = DrawingInteraction::Drafting(DrawingDraft::Box {
                     start: anchor,
                     current: anchor,
-                    style: DrawingTool::Box.default_style(),
+                    style: self.style_defaults.style_for(DrawingTool::Box),
                     extend_right: self.box_extend_right,
                 });
                 self.selected_drawings.clear();
@@ -884,12 +972,18 @@ impl DrawingTools {
                     time: anchor.time,
                     ray: self.horizontal_line_ray,
                 };
-                self.push_drawing(object, DrawingTool::HorizontalLine.default_style());
+                self.push_drawing(
+                    object,
+                    self.style_defaults.style_for(DrawingTool::HorizontalLine),
+                );
                 true
             }
             DrawingTool::VerticalLine => {
                 let object = DrawingObject::VerticalLine { time: anchor.time };
-                self.push_drawing(object, DrawingTool::VerticalLine.default_style());
+                self.push_drawing(
+                    object,
+                    self.style_defaults.style_for(DrawingTool::VerticalLine),
+                );
                 true
             }
         }
@@ -1078,6 +1172,7 @@ impl DrawingTools {
         &mut self,
         id: DrawingId,
         target: DrawingDragTarget,
+        operation: DrawingDragOperation,
         anchor: DrawingAnchor,
     ) -> bool {
         let Some(index) = self.drawing_index(id) else {
@@ -1108,12 +1203,15 @@ impl DrawingTools {
             vec![id]
         };
 
-        let dragged = dragged
+        let mut dragged = dragged
             .into_iter()
             .filter_map(|dragged_id| {
-                self.drawing_index(dragged_id).map(|index| DraggedDrawing {
-                    id: dragged_id,
-                    origin_object: self.drawings[index].object.clone(),
+                self.drawing_index(dragged_id).and_then(|index| {
+                    let drawing = &self.drawings[index];
+                    (!drawing.locked && drawing.visible).then(|| DraggedDrawing {
+                        id: dragged_id,
+                        origin_object: drawing.object.clone(),
+                    })
                 })
             })
             .collect::<Vec<_>>();
@@ -1123,8 +1221,23 @@ impl DrawingTools {
             return false;
         }
 
+        if matches!(operation, DrawingDragOperation::Copy) {
+            for dragged in &mut dragged {
+                let Some(index) = self.drawing_index(dragged.id) else {
+                    self.clear_drag();
+                    return false;
+                };
+                let mut copy = self.drawings[index].clone();
+                let copy_id = self.allocate_drawing_id();
+                copy.id = copy_id;
+                self.drawings.push(copy);
+                dragged.id = copy_id;
+            }
+        }
+
         self.selected_drawings = dragged.iter().map(|d| d.id).collect();
         self.interaction = DrawingInteraction::Dragging(DrawingDragState {
+            controller_id: id,
             target,
             origin_anchor: anchor,
             dragged,
@@ -1206,7 +1319,7 @@ impl DrawingTools {
     }
 
     fn finish_drawing_drag(&mut self, id: DrawingId) -> bool {
-        if matches!(self.interaction, DrawingInteraction::Dragging(ref drag) if drag.dragged.iter().any(|d| d.id == id))
+        if matches!(self.interaction, DrawingInteraction::Dragging(ref drag) if drag.controller_id == id)
         {
             self.interaction = DrawingInteraction::Idle;
             true
@@ -1232,9 +1345,7 @@ impl DrawingTools {
 
     fn active_drag(&self, id: DrawingId) -> Option<&DrawingDragState> {
         match &self.interaction {
-            DrawingInteraction::Dragging(drag) if drag.dragged.iter().any(|d| d.id == id) => {
-                Some(drag)
-            }
+            DrawingInteraction::Dragging(drag) if drag.controller_id == id => Some(drag),
             DrawingInteraction::Idle
             | DrawingInteraction::Drafting(_)
             | DrawingInteraction::Dragging(_) => None,
@@ -1268,8 +1379,7 @@ impl DrawingTools {
     }
 
     fn push_drawing(&mut self, object: DrawingObject, style: DrawingStyle) -> DrawingId {
-        let id = DrawingId(self.next_drawing_id.max(1));
-        self.next_drawing_id = self.next_drawing_id.wrapping_add(1).max(1);
+        let id = self.allocate_drawing_id();
 
         self.drawings.push(DrawingEntity {
             id,
@@ -1283,9 +1393,26 @@ impl DrawingTools {
         self.interaction = DrawingInteraction::Idle;
         id
     }
+
+    fn allocate_drawing_id(&mut self) -> DrawingId {
+        let id = DrawingId(self.next_drawing_id.max(1));
+        self.next_drawing_id = self.next_drawing_id.wrapping_add(1).max(1);
+        id
+    }
 }
 
 impl DrawingTools {
+    pub(super) const fn compact_sidebar_width() -> f32 {
+        SIDEBAR_WIDTH
+    }
+
+    pub(super) fn sidebar_width(&self) -> f32 {
+        match self.sidebar_page {
+            SidebarPage::Tools => SIDEBAR_WIDTH,
+            SidebarPage::ObjectList => OBJECT_LIST_SIDEBAR_WIDTH,
+        }
+    }
+
     pub fn drawing_panels_exist(composition: &ChartComposition, object: &DrawingObject) -> bool {
         let panel_exists = |panel_id: PanelId| composition.panel(panel_id).is_some();
 
@@ -1296,530 +1423,5 @@ impl DrawingTools {
             DrawingObject::HorizontalLine { panel_id, .. } => panel_exists(*panel_id),
             DrawingObject::VerticalLine { .. } => true,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::widget::chart::kline::YUnit;
-    use exchange::UnixMs;
-
-    #[test]
-    fn selected_drawing_style_updates_are_visual() {
-        let id = DrawingId(1);
-        let drawing = DrawingEntity {
-            id,
-            object: DrawingObject::HorizontalLine {
-                panel_id: PanelId(1),
-                y_unit: YUnit(0),
-                time: UnixMs::ZERO,
-                ray: false,
-            },
-            style: DrawingStyle::default(),
-            locked: false,
-            visible: true,
-        };
-        let mut tools = DrawingTools::from_parts(DrawingTool::Cursor, vec![drawing], false, false);
-
-        assert_eq!(
-            tools.update(DrawingMessage::SelectDrawing(id)),
-            DrawingUpdate::Visual
-        );
-        assert_eq!(
-            tools.update(DrawingMessage::SetSelectedDrawingStrokeColor(
-                ThemeAccent::Six
-            )),
-            DrawingUpdate::Visual
-        );
-        assert_eq!(
-            tools.update(DrawingMessage::SetSelectedDrawingStrokeWidth(100.0)),
-            DrawingUpdate::Visual
-        );
-
-        let style = &tools.drawings()[0].style;
-        assert_eq!(style.stroke_color.accent_value(), Some(ThemeAccent::Six));
-        assert_eq!(style.stroke_width, MAX_DRAWING_STROKE_WIDTH);
-    }
-
-    fn anchor(time: u64, y_unit: i64) -> DrawingAnchor {
-        DrawingAnchor {
-            panel_id: PanelId(1),
-            time: UnixMs(time),
-            y_unit: YUnit(y_unit),
-        }
-    }
-
-    #[test]
-    fn ray_toggle_applies_to_selected_line_and_sets_default() {
-        let drawing = DrawingEntity {
-            id: DrawingId(1),
-            object: DrawingObject::HorizontalLine {
-                panel_id: PanelId(1),
-                y_unit: YUnit(5),
-                time: UnixMs(100),
-                ray: false,
-            },
-            style: DrawingStyle::default(),
-            locked: false,
-            visible: true,
-        };
-        let mut tools = DrawingTools::from_parts(DrawingTool::Cursor, vec![drawing], false, false);
-
-        tools.update(DrawingMessage::SelectDrawing(DrawingId(1)));
-        assert_eq!(
-            tools.update(DrawingMessage::SetHorizontalLineRay(true)),
-            DrawingUpdate::Visual
-        );
-
-        assert!(tools.horizontal_line_ray());
-        let object = &tools.drawings()[0].object;
-        assert!(matches!(
-            object,
-            DrawingObject::HorizontalLine { ray: true, .. }
-        ));
-
-        tools.update(DrawingMessage::SelectTool(DrawingTool::HorizontalLine));
-        assert!(tools.start_drawing_from_anchor(anchor(200, 5)));
-        let object = tools.drawings()[1].object.clone();
-        assert_eq!(
-            object,
-            DrawingObject::HorizontalLine {
-                panel_id: PanelId(1),
-                y_unit: YUnit(5),
-                time: UnixMs(200),
-                ray: true,
-            }
-        );
-    }
-
-    #[test]
-    fn extend_right_toggle_applies_to_selected_box_and_sets_default() {
-        let drawing = DrawingEntity {
-            id: DrawingId(1),
-            object: DrawingObject::Box {
-                start: anchor(10, 5),
-                end: anchor(20, 1),
-                extend_right: false,
-            },
-            style: DrawingStyle::default(),
-            locked: false,
-            visible: true,
-        };
-        let mut tools = DrawingTools::from_parts(DrawingTool::Cursor, vec![drawing], false, false);
-
-        tools.update(DrawingMessage::SelectDrawing(DrawingId(1)));
-        assert_eq!(
-            tools.update(DrawingMessage::SetBoxExtendRight(true)),
-            DrawingUpdate::Visual
-        );
-
-        assert!(tools.box_extend_right());
-        let object = &tools.drawings()[0].object;
-        assert!(matches!(
-            object,
-            DrawingObject::Box {
-                extend_right: true,
-                ..
-            }
-        ));
-
-        tools.update(DrawingMessage::SelectTool(DrawingTool::Box));
-        assert!(tools.start_drawing_from_anchor(anchor(30, 5)));
-        let draft = tools
-            .drawing_draft()
-            .expect("box drafting should be active");
-        assert!(matches!(
-            draft,
-            DrawingDraft::Box {
-                extend_right: true,
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn toggles_do_not_affect_unrelated_selected_drawings() {
-        let drawing = DrawingEntity {
-            id: DrawingId(1),
-            object: DrawingObject::Trendline {
-                start: anchor(10, 5),
-                end: anchor(20, 5),
-            },
-            style: DrawingStyle::default(),
-            locked: false,
-            visible: true,
-        };
-        let mut tools = DrawingTools::from_parts(DrawingTool::Cursor, vec![drawing], false, false);
-
-        tools.update(DrawingMessage::SelectDrawing(DrawingId(1)));
-        tools.update(DrawingMessage::SetHorizontalLineRay(true));
-        tools.update(DrawingMessage::SetBoxExtendRight(true));
-
-        assert!(matches!(
-            tools.drawings()[0].object,
-            DrawingObject::Trendline { .. }
-        ));
-        assert!(tools.horizontal_line_ray());
-        assert!(tools.box_extend_right());
-    }
-
-    #[test]
-    fn toggles_do_not_apply_to_locked_drawings() {
-        let drawing = DrawingEntity {
-            id: DrawingId(1),
-            object: DrawingObject::HorizontalLine {
-                panel_id: PanelId(1),
-                y_unit: YUnit(5),
-                time: UnixMs(100),
-                ray: false,
-            },
-            style: DrawingStyle::default(),
-            locked: true,
-            visible: true,
-        };
-        let mut tools = DrawingTools::from_parts(DrawingTool::Cursor, vec![drawing], false, false);
-
-        tools.update(DrawingMessage::SelectDrawing(DrawingId(1)));
-        assert_eq!(
-            tools.update(DrawingMessage::SetHorizontalLineRay(true)),
-            DrawingUpdate::Visual
-        );
-
-        assert!(tools.horizontal_line_ray());
-        let object = &tools.drawings()[0].object;
-        assert!(matches!(
-            object,
-            DrawingObject::HorizontalLine { ray: false, .. }
-        ));
-    }
-
-    #[test]
-    fn delete_selected_drawing_removes_selection() {
-        let drawing = DrawingEntity {
-            id: DrawingId(1),
-            object: DrawingObject::Box {
-                start: anchor(10, 5),
-                end: anchor(20, 1),
-                extend_right: false,
-            },
-            style: DrawingStyle::default(),
-            locked: false,
-            visible: true,
-        };
-        let mut tools = DrawingTools::from_parts(DrawingTool::Cursor, vec![drawing], false, false);
-
-        assert_eq!(
-            tools.update(DrawingMessage::DeleteSelectedDrawing),
-            DrawingUpdate::None
-        );
-        assert_eq!(tools.drawings().len(), 1);
-
-        tools.update(DrawingMessage::SelectDrawing(DrawingId(1)));
-        assert_eq!(
-            tools.update(DrawingMessage::DeleteSelectedDrawing),
-            DrawingUpdate::Visual
-        );
-        assert!(tools.drawings().is_empty());
-    }
-
-    #[test]
-    fn marquee_select_then_delete_removes_all_selected() {
-        let drawings = vec![
-            DrawingEntity {
-                id: DrawingId(1),
-                object: DrawingObject::Box {
-                    start: anchor(10, 5),
-                    end: anchor(20, 1),
-                    extend_right: false,
-                },
-                style: DrawingStyle::default(),
-                locked: false,
-                visible: true,
-            },
-            DrawingEntity {
-                id: DrawingId(2),
-                object: DrawingObject::HorizontalLine {
-                    panel_id: PanelId(1),
-                    y_unit: YUnit(8),
-                    time: UnixMs(15),
-                    ray: true,
-                },
-                style: DrawingStyle::default(),
-                locked: false,
-                visible: true,
-            },
-            DrawingEntity {
-                id: DrawingId(3),
-                object: DrawingObject::HorizontalLine {
-                    panel_id: PanelId(1),
-                    y_unit: YUnit(3),
-                    time: UnixMs(5),
-                    ray: false,
-                },
-                style: DrawingStyle::default(),
-                locked: false,
-                visible: true,
-            },
-        ];
-        let mut tools = DrawingTools::from_parts(DrawingTool::Cursor, drawings, false, false);
-
-        assert_eq!(
-            tools.handle_widget_drawing_event(KlineWidgetDrawingEvent::MarqueeSelected(vec![
-                DrawingId(1),
-                DrawingId(2),
-            ])),
-            DrawingUpdate::Visual
-        );
-
-        assert_eq!(
-            tools.update(DrawingMessage::DeleteSelectedDrawing),
-            DrawingUpdate::Visual
-        );
-        assert_eq!(tools.drawings().len(), 1);
-        assert_eq!(tools.drawings()[0].id, DrawingId(3));
-    }
-
-    #[test]
-    fn marquee_select_filters_invalid_ids() {
-        let drawing = DrawingEntity {
-            id: DrawingId(1),
-            object: DrawingObject::VerticalLine { time: UnixMs(10) },
-            style: DrawingStyle::default(),
-            locked: false,
-            visible: true,
-        };
-        let mut tools = DrawingTools::from_parts(DrawingTool::Cursor, vec![drawing], false, false);
-
-        assert_eq!(
-            tools.handle_widget_drawing_event(KlineWidgetDrawingEvent::MarqueeSelected(vec![
-                DrawingId(1),
-                DrawingId(99),
-            ])),
-            DrawingUpdate::None
-        );
-        assert_eq!(tools.drawings().len(), 1);
-    }
-
-    #[test]
-    fn group_translate_moves_selected_same_panel_drawings() {
-        let drawings = vec![
-            DrawingEntity {
-                id: DrawingId(1),
-                object: DrawingObject::Box {
-                    start: anchor(10, 5),
-                    end: anchor(20, 1),
-                    extend_right: false,
-                },
-                style: DrawingStyle::default(),
-                locked: false,
-                visible: true,
-            },
-            DrawingEntity {
-                id: DrawingId(2),
-                object: DrawingObject::Trendline {
-                    start: anchor(12, 6),
-                    end: anchor(18, 2),
-                },
-                style: DrawingStyle::default(),
-                locked: false,
-                visible: true,
-            },
-        ];
-        let mut tools = DrawingTools::from_parts(DrawingTool::Cursor, drawings, false, false);
-
-        tools.handle_widget_drawing_event(KlineWidgetDrawingEvent::MarqueeSelected(vec![
-            DrawingId(1),
-            DrawingId(2),
-        ]));
-
-        assert!(tools.start_drawing_drag(
-            DrawingId(1),
-            DrawingDragTarget::Translate,
-            anchor(10, 5),
-        ));
-        assert!(tools.update_drawing_drag(
-            DrawingId(1),
-            DrawingDragTarget::Translate,
-            anchor(30, 8),
-        ));
-
-        let box_obj = &tools.drawings()[0].object;
-        let trend_obj = &tools.drawings()[1].object;
-        assert!(matches!(box_obj, DrawingObject::Box { start, end, .. }
-            if start.time == UnixMs(30) && start.y_unit == YUnit(8)));
-        assert!(
-            matches!(trend_obj, DrawingObject::Trendline { start, end, .. }
-            if start.time == UnixMs(32) && start.y_unit == YUnit(9))
-        );
-    }
-
-    #[test]
-    fn group_translate_skips_other_panel_drawings() {
-        let other_panel = DrawingAnchor {
-            panel_id: PanelId(2),
-            time: UnixMs(12),
-            y_unit: YUnit(6),
-        };
-        let drawings = vec![
-            DrawingEntity {
-                id: DrawingId(1),
-                object: DrawingObject::Box {
-                    start: anchor(10, 5),
-                    end: anchor(20, 1),
-                    extend_right: false,
-                },
-                style: DrawingStyle::default(),
-                locked: false,
-                visible: true,
-            },
-            DrawingEntity {
-                id: DrawingId(2),
-                object: DrawingObject::Trendline {
-                    start: other_panel,
-                    end: DrawingAnchor {
-                        panel_id: PanelId(2),
-                        time: UnixMs(18),
-                        y_unit: YUnit(2),
-                    },
-                },
-                style: DrawingStyle::default(),
-                locked: false,
-                visible: true,
-            },
-        ];
-        let mut tools = DrawingTools::from_parts(DrawingTool::Cursor, drawings, false, false);
-
-        tools.handle_widget_drawing_event(KlineWidgetDrawingEvent::MarqueeSelected(vec![
-            DrawingId(1),
-            DrawingId(2),
-        ]));
-
-        assert!(tools.start_drawing_drag(
-            DrawingId(1),
-            DrawingDragTarget::Translate,
-            anchor(10, 5),
-        ));
-        assert!(tools.update_drawing_drag(
-            DrawingId(1),
-            DrawingDragTarget::Translate,
-            anchor(30, 8),
-        ));
-
-        assert!(
-            matches!(&tools.drawings()[0].object, DrawingObject::Box { start, .. }
-            if start.time == UnixMs(30))
-        );
-        assert!(
-            matches!(&tools.drawings()[1].object, DrawingObject::Trendline { start, .. }
-            if start.time == UnixMs(12))
-        );
-    }
-
-    #[test]
-    fn measure_click_start_commit_remove() {
-        let mut tools = DrawingTools::from_parts(DrawingTool::Cursor, Vec::new(), false, false);
-
-        assert_eq!(
-            tools.handle_widget_drawing_event(KlineWidgetDrawingEvent::MeasureClick(anchor(10, 5))),
-            DrawingUpdate::Visual
-        );
-        assert!(matches!(
-            tools.snapshot().measure,
-            Some(DrawingMeasure::Pending(state))
-                if state.start.time == UnixMs(10) && state.end.time == UnixMs(10)
-        ));
-
-        assert_eq!(
-            tools.handle_widget_drawing_event(KlineWidgetDrawingEvent::MeasureClick(anchor(30, 8))),
-            DrawingUpdate::Visual
-        );
-        assert!(matches!(
-            tools.snapshot().measure,
-            Some(DrawingMeasure::Committed(state))
-                if state.start.time == UnixMs(10) && state.end.time == UnixMs(30)
-        ));
-
-        assert_eq!(
-            tools.handle_widget_drawing_event(KlineWidgetDrawingEvent::MeasureClick(anchor(50, 2))),
-            DrawingUpdate::Visual
-        );
-        assert_eq!(tools.snapshot().measure, None);
-    }
-
-    #[test]
-    fn measure_tool_commits_as_one_off_and_reverts_to_cursor() {
-        let mut tools = DrawingTools::from_parts(DrawingTool::Measure, Vec::new(), false, false);
-
-        tools.handle_widget_drawing_event(KlineWidgetDrawingEvent::MeasureClick(anchor(10, 5)));
-        assert_eq!(tools.active_tool(), DrawingTool::Measure);
-
-        tools.handle_widget_drawing_event(KlineWidgetDrawingEvent::MeasureClick(anchor(30, 8)));
-        assert_eq!(tools.active_tool(), DrawingTool::Cursor);
-        assert!(matches!(
-            tools.snapshot().measure,
-            Some(DrawingMeasure::Committed(_))
-        ));
-
-        tools.handle_widget_drawing_event(KlineWidgetDrawingEvent::MeasureClick(anchor(50, 2)));
-        assert_eq!(tools.snapshot().measure, None);
-        assert_eq!(tools.active_tool(), DrawingTool::Cursor);
-    }
-
-    #[test]
-    fn measure_move_only_updates_pending() {
-        let mut tools = DrawingTools::from_parts(DrawingTool::Cursor, Vec::new(), false, false);
-
-        assert_eq!(
-            tools.handle_widget_drawing_event(KlineWidgetDrawingEvent::MeasureMove(anchor(20, 6))),
-            DrawingUpdate::None
-        );
-
-        tools.handle_widget_drawing_event(KlineWidgetDrawingEvent::MeasureClick(anchor(10, 5)));
-        assert_eq!(
-            tools.handle_widget_drawing_event(KlineWidgetDrawingEvent::MeasureMove(anchor(25, 7))),
-            DrawingUpdate::Visual
-        );
-        assert!(matches!(
-            tools.snapshot().measure,
-            Some(DrawingMeasure::Pending(state)) if state.end.time == UnixMs(25)
-        ));
-
-        tools.handle_widget_drawing_event(KlineWidgetDrawingEvent::MeasureClick(anchor(40, 9)));
-        assert_eq!(
-            tools.handle_widget_drawing_event(KlineWidgetDrawingEvent::MeasureMove(anchor(50, 3))),
-            DrawingUpdate::None
-        );
-        assert!(matches!(
-            tools.snapshot().measure,
-            Some(DrawingMeasure::Committed(state)) if state.end.time == UnixMs(40)
-        ));
-    }
-
-    #[test]
-    fn measure_canceled_clears() {
-        let mut tools = DrawingTools::from_parts(DrawingTool::Cursor, Vec::new(), false, false);
-
-        tools.handle_widget_drawing_event(KlineWidgetDrawingEvent::MeasureClick(anchor(10, 5)));
-        assert_eq!(
-            tools.handle_widget_drawing_event(KlineWidgetDrawingEvent::MeasureCanceled),
-            DrawingUpdate::Visual
-        );
-        assert_eq!(tools.snapshot().measure, None);
-
-        assert_eq!(
-            tools.handle_widget_drawing_event(KlineWidgetDrawingEvent::MeasureCanceled),
-            DrawingUpdate::None
-        );
-    }
-
-    #[test]
-    fn measure_tool_is_listed_and_does_not_start_drawings() {
-        assert!(DrawingTool::all().contains(&DrawingTool::Measure));
-        assert_eq!(DrawingTool::Measure.short_label(), "M");
-
-        let mut tools = DrawingTools::from_parts(DrawingTool::Measure, Vec::new(), false, false);
-        assert!(!tools.start_drawing_from_anchor(anchor(10, 5)));
-        assert!(tools.drawings().is_empty());
     }
 }

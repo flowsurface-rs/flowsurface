@@ -25,6 +25,7 @@ use layout::IndicatorLayout;
 use viewport::PanelViewportStore;
 
 use crate::connector::fetcher::FetchSpec;
+use crate::style;
 use crate::widget::chart::kline::PanelInteraction;
 use crate::widget::chart::kline::composition::{
     DEFAULT_MIN_PANEL_RATIO, MarkKind, PanelId, PanelRole, PanelScaleMode,
@@ -52,6 +53,9 @@ use std::time::Instant;
 const DEFAULT_HORIZONTAL_OFFSET_UNITS: f32 = 8.0;
 pub const DEFAULT_FOOTPRINT_TICK_MULTIPLIER: TickMultiplier = TickMultiplier(10);
 const SETTINGS_SIDEBAR_HEADER_HEIGHT: f32 = 32.0;
+const FLOATING_TOOLBAR_MARGIN: f32 = 8.0;
+const FLOATING_TOOLBAR_HANDLE_WIDTH: f32 = 28.0;
+const FLOATING_TOOLBAR_HEIGHT: f32 = 48.0;
 
 pub enum Action {
     RemoveSeries(TickerInfo),
@@ -65,12 +69,70 @@ pub enum Message {
     Settings(settings::Message),
     SeriesEditor(series_editor::Message),
     CloseSettingsSidebar,
+    FloatingToolbarHandleMoved(iced::Point),
+    FloatingToolbarDragStarted,
+    FloatingToolbarDragMoved(iced::Point),
+    FloatingToolbarDragFinished,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SidebarMode {
     Drawing,
     Settings,
+}
+
+const DRAWING_SIDEBAR_PADDING: f32 = 4.0;
+
+#[derive(Debug, Clone, Copy)]
+struct FloatingToolbarState {
+    position: iced::Point,
+    handle_cursor: iced::Point,
+    is_dragging: bool,
+}
+
+impl Default for FloatingToolbarState {
+    fn default() -> Self {
+        Self {
+            position: iced::Point::new(FLOATING_TOOLBAR_MARGIN, FLOATING_TOOLBAR_MARGIN),
+            handle_cursor: iced::Point::ORIGIN,
+            is_dragging: false,
+        }
+    }
+}
+
+impl FloatingToolbarState {
+    fn set_handle_cursor(&mut self, cursor: iced::Point) {
+        self.handle_cursor = cursor;
+    }
+
+    fn start_drag(&mut self) {
+        self.is_dragging = true;
+    }
+
+    fn drag_to(&mut self, cursor: iced::Point) {
+        if !self.is_dragging {
+            return;
+        }
+
+        self.position = iced::Point::new(
+            (cursor.x - self.handle_cursor.x).max(FLOATING_TOOLBAR_MARGIN),
+            (cursor.y - self.handle_cursor.y).max(FLOATING_TOOLBAR_MARGIN),
+        );
+    }
+
+    fn finish_drag(&mut self) {
+        self.is_dragging = false;
+    }
+
+    fn position_within(&self, overlay_size: iced::Size) -> iced::Point {
+        let max_y = (overlay_size.height - FLOATING_TOOLBAR_HEIGHT - FLOATING_TOOLBAR_MARGIN)
+            .max(FLOATING_TOOLBAR_MARGIN);
+
+        iced::Point::new(
+            self.position.x.max(FLOATING_TOOLBAR_MARGIN),
+            self.position.y.clamp(FLOATING_TOOLBAR_MARGIN, max_y),
+        )
+    }
 }
 
 pub struct KlineChartV2 {
@@ -99,6 +161,7 @@ pub struct KlineChartV2 {
     settings: settings::State,
     studies_legend_expanded: bool,
     sidebar_mode: SidebarMode,
+    floating_toolbar: FloatingToolbarState,
 }
 
 impl KlineChartV2 {
@@ -145,6 +208,7 @@ impl KlineChartV2 {
             settings: settings::State::default(),
             studies_legend_expanded: true,
             sidebar_mode: SidebarMode::Drawing,
+            floating_toolbar: FloatingToolbarState::default(),
         };
 
         let active_indicators = chart.layout.selected_indicators();
@@ -190,6 +254,18 @@ impl KlineChartV2 {
         match message {
             Message::CloseSettingsSidebar => {
                 self.close_settings_sidebar();
+            }
+            Message::FloatingToolbarHandleMoved(cursor) => {
+                self.floating_toolbar.set_handle_cursor(cursor);
+            }
+            Message::FloatingToolbarDragStarted => {
+                self.floating_toolbar.start_drag();
+            }
+            Message::FloatingToolbarDragMoved(cursor) => {
+                self.floating_toolbar.drag_to(cursor);
+            }
+            Message::FloatingToolbarDragFinished => {
+                self.floating_toolbar.finish_drag();
             }
             Message::Settings(message) => {
                 let mut settings = std::mem::take(&mut self.settings);
@@ -577,6 +653,7 @@ impl KlineChartV2 {
                 .with_studies_legend_expanded(self.studies_legend_expanded)
                 .with_coordinate_state(self.horizontal_world, pixel_ratio, self.primary_autoscale)
                 .with_known_plot_width(self.plot_width)
+                .with_autoscale_plot_width_offset(self.autoscale_plot_width_offset())
                 .with_panels(self.panel_y_viewports.as_slice())
                 .with_indicator_availability(unavailable_indicator_panels)
                 .with_drawings(self.drawing.snapshot())
@@ -591,16 +668,31 @@ impl KlineChartV2 {
                 .into()
         };
 
-        let sidebar: iced::Element<'_, Message> = match self.sidebar_mode {
-            SidebarMode::Drawing => self
-                .drawing
-                .view(self.layout.composition(), Message::Sidebar)
-                .padding(4)
-                .into(),
-            SidebarMode::Settings => self.settings.sidebar_view(self),
-        };
+        match self.sidebar_mode {
+            SidebarMode::Drawing => {
+                let sidebar: iced::Element<'_, Message> = self
+                    .drawing
+                    .sidebar_view(self.layout.composition(), Message::Sidebar)
+                    .padding(DRAWING_SIDEBAR_PADDING)
+                    .into();
 
-        iced::widget::row![sidebar, chart].into()
+                let mut chart_stack = iced::widget::Stack::new()
+                    .width(iced::Length::Fill)
+                    .height(iced::Length::Fill)
+                    .push(chart)
+                    .push(self.floating_toolbar_overlay());
+
+                if self.floating_toolbar.is_dragging {
+                    chart_stack = chart_stack.push(self.floating_toolbar_drag_capture());
+                }
+
+                iced::widget::row![sidebar, chart_stack.clip(true)].into()
+            }
+            SidebarMode::Settings => {
+                let sidebar: iced::Element<'_, Message> = self.settings.sidebar_view(self);
+                iced::widget::row![sidebar, chart].into()
+            }
+        }
     }
 
     pub fn settings_modal_view(&self) -> iced::Element<'static, Message> {
@@ -622,6 +714,100 @@ impl KlineChartV2 {
 
     fn open_settings_sidebar(&mut self) {
         self.sidebar_mode = SidebarMode::Settings;
+    }
+
+    fn floating_toolbar_overlay<'a>(&'a self) -> iced::Element<'a, Message> {
+        iced::widget::responsive(move |overlay_size| {
+            self.drawing
+                .selected_toolbar_view(Message::Sidebar)
+                .map(|controls| self.floating_toolbar_content(controls, overlay_size))
+                .unwrap_or_else(|| self.empty_floating_toolbar_content())
+        })
+        .into()
+    }
+
+    fn floating_toolbar_content<'a>(
+        &'a self,
+        controls: iced::Element<'a, Message>,
+        overlay_size: iced::Size,
+    ) -> iced::Element<'a, Message> {
+        let drag_handle = iced::widget::mouse_area(
+            iced::widget::container(style::icon_text(style::Icon::DragHandle, 12))
+                .width(FLOATING_TOOLBAR_HANDLE_WIDTH)
+                .height(iced::Length::Fill)
+                .align_x(iced::alignment::Horizontal::Center)
+                .align_y(iced::alignment::Vertical::Center),
+        )
+        .on_move(Message::FloatingToolbarHandleMoved)
+        .on_press(Message::FloatingToolbarDragStarted)
+        .interaction(iced::mouse::Interaction::Grab);
+
+        let scrollable_controls = iced::widget::scrollable::Scrollable::with_direction(
+            controls,
+            iced::widget::scrollable::Direction::Horizontal(
+                iced::widget::scrollable::Scrollbar::new()
+                    .width(6)
+                    .scroller_width(6),
+            ),
+        )
+        .anchor_left()
+        .width(iced::Length::Shrink)
+        .height(iced::Length::Fill)
+        .style(style::scroll_bar);
+        let toolbar = iced::widget::mouse_area(
+            iced::widget::container(iced::widget::row![drag_handle, scrollable_controls])
+                .style(style::chart_toolbar_container)
+                .width(iced::Length::Shrink)
+                .height(FLOATING_TOOLBAR_HEIGHT),
+        )
+        .interaction(iced::mouse::Interaction::Idle);
+        let position = self.floating_toolbar.position_within(overlay_size);
+
+        iced::widget::container(
+            iced::widget::column![
+                iced::widget::space::vertical().height(position.y),
+                iced::widget::row![iced::widget::space::horizontal().width(position.x), toolbar,],
+            ]
+            .width(iced::Length::Fill)
+            .height(iced::Length::Fill),
+        )
+        .width(iced::Length::Fill)
+        .height(iced::Length::Fill)
+        .into()
+    }
+
+    fn empty_floating_toolbar_content<'a>(&self) -> iced::Element<'a, Message> {
+        iced::widget::container(iced::widget::space::horizontal())
+            .width(iced::Length::Fill)
+            .height(iced::Length::Fill)
+            .into()
+    }
+
+    fn floating_toolbar_drag_capture<'a>(&self) -> iced::Element<'a, Message> {
+        iced::widget::mouse_area(
+            iced::widget::space::horizontal()
+                .width(iced::Length::Fill)
+                .height(iced::Length::Fill),
+        )
+        .on_move(Message::FloatingToolbarDragMoved)
+        .on_release(Message::FloatingToolbarDragFinished)
+        .interaction(iced::mouse::Interaction::Grabbing)
+        .into()
+    }
+
+    fn autoscale_plot_width_offset(&self) -> f32 {
+        (self.sidebar_width() - self.compact_sidebar_width()).max(0.0)
+    }
+
+    fn sidebar_width(&self) -> f32 {
+        match self.sidebar_mode {
+            SidebarMode::Drawing => self.drawing.sidebar_width() + 2.0 * DRAWING_SIDEBAR_PADDING,
+            SidebarMode::Settings => self.settings.sidebar_width(),
+        }
+    }
+
+    fn compact_sidebar_width(&self) -> f32 {
+        DrawingTools::compact_sidebar_width() + 2.0 * DRAWING_SIDEBAR_PADDING
     }
 
     pub fn invalidate(&mut self, now: Option<Instant>) -> Option<crate::chart::Action> {
@@ -687,7 +873,8 @@ impl KlineChartV2 {
         };
 
         let spacing = self.horizontal_world.effective_spacing();
-        let visible_units = (plot_width / spacing).max(1.0).ceil() as u64;
+        let autoscale_plot_width = plot_width + self.autoscale_plot_width_offset();
+        let visible_units = (autoscale_plot_width / spacing).max(1.0).ceil() as u64;
         visible_units.saturating_add(1).max(2)
     }
 
@@ -1471,6 +1658,7 @@ impl KlineChartV2 {
         self.drawing = DrawingTools::from_parts(
             config.active_drawing_tool,
             drawings,
+            config.drawing_style_defaults,
             config.horizontal_line_ray,
             config.box_extend_right,
         );
@@ -1762,6 +1950,7 @@ impl KlineChartV2 {
                 .collect(),
             drawings: self.drawing.drawings().to_vec(),
             active_drawing_tool: self.drawing.active_tool(),
+            drawing_style_defaults: self.drawing.style_defaults(),
             horizontal_line_ray: self.drawing.horizontal_line_ray(),
             box_extend_right: self.drawing.box_extend_right(),
             studies: self.studies.clone(),

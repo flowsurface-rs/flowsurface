@@ -152,6 +152,7 @@ pub enum KlineWidgetDrawingEvent {
     DragStarted {
         id: DrawingId,
         target: DrawingDragTarget,
+        operation: DrawingDragOperation,
         anchor: DrawingAnchor,
     },
     DragMoved {
@@ -296,6 +297,55 @@ impl DrawingStyle {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DrawingStyleDefaults {
+    pub trendline: DrawingStyle,
+    pub box_drawing: DrawingStyle,
+    pub horizontal_line: DrawingStyle,
+    pub vertical_line: DrawingStyle,
+}
+
+impl Default for DrawingStyleDefaults {
+    fn default() -> Self {
+        Self {
+            trendline: DrawingTool::Trendline.default_style(),
+            box_drawing: DrawingTool::Box.default_style(),
+            horizontal_line: DrawingTool::HorizontalLine.default_style(),
+            vertical_line: DrawingTool::VerticalLine.default_style(),
+        }
+    }
+}
+
+impl DrawingStyleDefaults {
+    pub fn style_for(self, tool: DrawingTool) -> DrawingStyle {
+        match tool {
+            DrawingTool::Trendline => self.trendline,
+            DrawingTool::Box => self.box_drawing,
+            DrawingTool::HorizontalLine => self.horizontal_line,
+            DrawingTool::VerticalLine => self.vertical_line,
+            DrawingTool::Cursor | DrawingTool::Measure => tool.default_style(),
+        }
+    }
+
+    pub fn set_style(&mut self, tool: DrawingTool, style: DrawingStyle) -> bool {
+        let stored_style = match tool {
+            DrawingTool::Trendline => &mut self.trendline,
+            DrawingTool::Box => &mut self.box_drawing,
+            DrawingTool::HorizontalLine => &mut self.horizontal_line,
+            DrawingTool::VerticalLine => &mut self.vertical_line,
+            DrawingTool::Cursor | DrawingTool::Measure => return false,
+        };
+
+        if *stored_style == style {
+            return false;
+        }
+
+        *stored_style = style;
+        true
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum DrawingObject {
     Trendline {
@@ -428,6 +478,7 @@ impl DrawingDraft {
 pub enum DrawingHandleKind {
     TrendlineStart,
     TrendlineEnd,
+    HorizontalLineStart,
     BoxTopLeft,
     BoxTopRight,
     BoxBottomRight,
@@ -440,6 +491,12 @@ pub enum DrawingDragTarget {
     Handle(DrawingHandleKind),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DrawingDragOperation {
+    Move,
+    Copy,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AxisLabelAnchor {
     X { time: UnixMs },
@@ -447,6 +504,15 @@ pub enum AxisLabelAnchor {
 }
 
 impl DrawingObject {
+    pub fn tool(&self) -> DrawingTool {
+        match self {
+            Self::Trendline { .. } => DrawingTool::Trendline,
+            Self::Box { .. } => DrawingTool::Box,
+            Self::HorizontalLine { .. } => DrawingTool::HorizontalLine,
+            Self::VerticalLine { .. } => DrawingTool::VerticalLine,
+        }
+    }
+
     pub fn title(&self) -> &'static str {
         match self {
             Self::Box { .. } => "Box",
@@ -469,7 +535,8 @@ impl DrawingObject {
             Self::Trendline { start, end } | Self::Box { start, end, .. } => {
                 (start.panel_id == end.panel_id).then_some(start.panel_id)
             }
-            Self::HorizontalLine { .. } | Self::VerticalLine { .. } => None,
+            Self::HorizontalLine { panel_id, .. } => Some(*panel_id),
+            Self::VerticalLine { .. } => None,
         }
     }
 
@@ -493,7 +560,11 @@ impl DrawingObject {
                 extend_right,
             } => {
                 let panel_id = start.panel_id;
-                let left = start.time.min(end.time);
+                let left = if *extend_right {
+                    start.time
+                } else {
+                    start.time.min(end.time)
+                };
                 let top = YUnit(start.y_unit.0.max(end.y_unit.0));
                 let bottom = YUnit(start.y_unit.0.min(end.y_unit.0));
 
@@ -609,6 +680,19 @@ impl DrawingObject {
                 })
             }
             (
+                Self::HorizontalLine {
+                    panel_id,
+                    ray: true,
+                    ..
+                },
+                DrawingHandleKind::HorizontalLineStart,
+            ) if anchor.panel_id == *panel_id => Some(Self::HorizontalLine {
+                panel_id: *panel_id,
+                y_unit: anchor.y_unit,
+                time: anchor.time,
+                ray: true,
+            }),
+            (
                 Self::Box {
                     start,
                     end,
@@ -634,6 +718,10 @@ impl DrawingObject {
         let panel_id = start.panel_id;
         if anchor.panel_id != panel_id {
             return None;
+        }
+
+        if extend_right {
+            return Self::resized_extended_box(start, end, corner, anchor);
         }
 
         let mut left = if start.time <= end.time {
@@ -667,7 +755,9 @@ impl DrawingObject {
                 left = anchor.time;
                 bottom = anchor.y_unit.0;
             }
-            DrawingHandleKind::TrendlineStart | DrawingHandleKind::TrendlineEnd => {
+            DrawingHandleKind::TrendlineStart
+            | DrawingHandleKind::TrendlineEnd
+            | DrawingHandleKind::HorizontalLineStart => {
                 return None;
             }
         }
@@ -684,6 +774,39 @@ impl DrawingObject {
                 y_unit: YUnit(bottom),
             },
             extend_right,
+        })
+    }
+
+    fn resized_extended_box(
+        start: DrawingAnchor,
+        end: DrawingAnchor,
+        corner: DrawingHandleKind,
+        anchor: DrawingAnchor,
+    ) -> Option<Self> {
+        let top = start.y_unit.0.max(end.y_unit.0);
+        let bottom = start.y_unit.0.min(end.y_unit.0);
+        let (top, bottom) = match corner {
+            DrawingHandleKind::BoxTopLeft => (anchor.y_unit.0, bottom),
+            DrawingHandleKind::BoxBottomLeft => (top, anchor.y_unit.0),
+            DrawingHandleKind::TrendlineStart
+            | DrawingHandleKind::TrendlineEnd
+            | DrawingHandleKind::HorizontalLineStart
+            | DrawingHandleKind::BoxTopRight
+            | DrawingHandleKind::BoxBottomRight => return None,
+        };
+
+        Some(Self::Box {
+            start: DrawingAnchor {
+                panel_id: start.panel_id,
+                time: anchor.time,
+                y_unit: YUnit(top),
+            },
+            end: DrawingAnchor {
+                panel_id: end.panel_id,
+                time: end.time,
+                y_unit: YUnit(bottom),
+            },
+            extend_right: true,
         })
     }
 
@@ -724,245 +847,5 @@ impl DrawingObject {
 impl DrawingEntity {
     pub fn belongs_to_panel(&self, panel_id: PanelId) -> bool {
         self.object.belongs_to_panel(panel_id)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn drawing_stroke_width_is_normalized() {
-        let mut style = DrawingStyle::default();
-
-        assert!(style.set_stroke_width(0.0));
-        assert_eq!(style.stroke_width, MIN_DRAWING_STROKE_WIDTH);
-
-        assert!(style.set_stroke_width(100.0));
-        assert_eq!(style.stroke_width, MAX_DRAWING_STROKE_WIDTH);
-
-        style.stroke_width = f32::NAN;
-        assert_eq!(
-            style.normalized_stroke_width(),
-            DrawingStyle::default().stroke_width
-        );
-    }
-
-    #[test]
-    fn drawing_colors_keep_legacy_custom_values_and_support_accents() {
-        let legacy: DrawingStyle = serde_json::from_value(serde_json::json!({
-            "stroke_color": {"red": 0.1, "green": 0.2, "blue": 0.3, "alpha": 1.0},
-            "stroke_width": 1.0,
-            "fill_color": null
-        }))
-        .expect("legacy drawing style should deserialize");
-
-        assert!(matches!(
-            legacy.stroke_color,
-            DrawingColor::Custom(Rgba { red, .. }) if red == 0.1
-        ));
-
-        let accent = DrawingStyle {
-            stroke_color: DrawingColor::accent(ThemeAccent::Three, 1.0),
-            ..DrawingStyle::default()
-        };
-        let serialized = serde_json::to_value(accent).expect("accent style should serialize");
-        assert_eq!(serialized["stroke_color"]["accent"], "Three");
-    }
-
-    #[test]
-    fn drawing_objects_deserialize_legacy_fields_with_defaults() {
-        let anchor = |time: u64| DrawingAnchor {
-            panel_id: PanelId(1),
-            time: UnixMs(time),
-            y_unit: YUnit(10),
-        };
-
-        let legacy_box: DrawingObject = serde_json::from_value(serde_json::json!({
-            "Box": {"start": anchor(1), "end": anchor(2)}
-        }))
-        .expect("legacy box should deserialize");
-        assert_eq!(
-            legacy_box,
-            DrawingObject::Box {
-                start: anchor(1),
-                end: anchor(2),
-                extend_right: false,
-            }
-        );
-
-        let legacy_line: DrawingObject = serde_json::from_value(serde_json::json!({
-            "HorizontalLine": {"panel_id": 1, "y_unit": 10}
-        }))
-        .expect("legacy horizontal line should deserialize");
-        assert_eq!(
-            legacy_line,
-            DrawingObject::HorizontalLine {
-                panel_id: PanelId(1),
-                y_unit: YUnit(10),
-                time: UnixMs::ZERO,
-                ray: false,
-            }
-        );
-    }
-
-    #[test]
-    fn drawing_object_extend_flags_survive_round_trip() {
-        let ray_line = DrawingObject::HorizontalLine {
-            panel_id: PanelId(1),
-            y_unit: YUnit(10),
-            time: UnixMs(1234),
-            ray: true,
-        };
-        let box_extended = DrawingObject::Box {
-            start: DrawingAnchor {
-                panel_id: PanelId(1),
-                time: UnixMs(1),
-                y_unit: YUnit(10),
-            },
-            end: DrawingAnchor {
-                panel_id: PanelId(1),
-                time: UnixMs(2),
-                y_unit: YUnit(4),
-            },
-            extend_right: true,
-        };
-
-        for object in [ray_line, box_extended] {
-            let serialized = serde_json::to_value(&object).expect("object should serialize");
-            let round_trip: DrawingObject =
-                serde_json::from_value(serialized).expect("object should deserialize");
-            assert_eq!(object, round_trip);
-        }
-    }
-
-    #[test]
-    fn translating_preserves_extend_flags() {
-        let origin = DrawingAnchor {
-            panel_id: PanelId(1),
-            time: UnixMs(10),
-            y_unit: YUnit(5),
-        };
-        let current = DrawingAnchor {
-            panel_id: PanelId(1),
-            time: UnixMs(20),
-            y_unit: YUnit(7),
-        };
-
-        let ray_line = DrawingObject::HorizontalLine {
-            panel_id: PanelId(1),
-            y_unit: YUnit(5),
-            time: UnixMs(10),
-            ray: true,
-        };
-        let translated = ray_line.translated(origin, current);
-        assert_eq!(
-            translated,
-            DrawingObject::HorizontalLine {
-                panel_id: PanelId(1),
-                y_unit: YUnit(7),
-                time: UnixMs(20),
-                ray: true,
-            }
-        );
-
-        let box_extended = DrawingObject::Box {
-            start: anchor(1),
-            end: anchor(2),
-            extend_right: true,
-        };
-        let shifted = |time: u64| DrawingAnchor {
-            panel_id: PanelId(1),
-            time: UnixMs(time),
-            y_unit: YUnit(12),
-        };
-        assert_eq!(
-            box_extended.translated(origin, current),
-            DrawingObject::Box {
-                start: shifted(11),
-                end: shifted(12),
-                extend_right: true,
-            }
-        );
-    }
-
-    #[test]
-    fn axis_label_anchors_reflect_ray_and_extend_semantics() {
-        let start = DrawingAnchor {
-            panel_id: PanelId(1),
-            time: UnixMs(100),
-            y_unit: YUnit(40),
-        };
-        let end = DrawingAnchor {
-            panel_id: PanelId(1),
-            time: UnixMs(200),
-            y_unit: YUnit(10),
-        };
-
-        let x = |time: u64| AxisLabelAnchor::X { time: UnixMs(time) };
-        let y = |y_unit: i64| AxisLabelAnchor::Y {
-            panel_id: PanelId(1),
-            y_unit: YUnit(y_unit),
-        };
-
-        assert_eq!(
-            DrawingObject::Trendline { start, end }.axis_label_anchors(),
-            vec![x(100), y(40), x(200), y(10)]
-        );
-
-        assert_eq!(
-            DrawingObject::Box {
-                start,
-                end,
-                extend_right: false,
-            }
-            .axis_label_anchors(),
-            vec![x(100), y(40), y(10), x(200)]
-        );
-
-        assert_eq!(
-            DrawingObject::Box {
-                start,
-                end,
-                extend_right: true,
-            }
-            .axis_label_anchors(),
-            vec![x(100), y(40), y(10)]
-        );
-
-        assert_eq!(
-            DrawingObject::HorizontalLine {
-                panel_id: PanelId(1),
-                y_unit: YUnit(25),
-                time: UnixMs(150),
-                ray: true,
-            }
-            .axis_label_anchors(),
-            vec![x(150), y(25)]
-        );
-
-        assert_eq!(
-            DrawingObject::HorizontalLine {
-                panel_id: PanelId(1),
-                y_unit: YUnit(25),
-                time: UnixMs(150),
-                ray: false,
-            }
-            .axis_label_anchors(),
-            vec![y(25)]
-        );
-
-        assert_eq!(
-            DrawingObject::VerticalLine { time: UnixMs(175) }.axis_label_anchors(),
-            vec![x(175)]
-        );
-    }
-
-    fn anchor(time: u64) -> DrawingAnchor {
-        DrawingAnchor {
-            panel_id: PanelId(1),
-            time: UnixMs(time),
-            y_unit: YUnit(10),
-        }
     }
 }

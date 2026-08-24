@@ -1052,16 +1052,19 @@ where
         let bar_spacing_px = BarSpacingPx::from_logical(logical_bar_spacing);
 
         let x_axis_plot_width = panel_layout.primary_plot_width()?;
+        let autoscale_plot_width = (x_axis_plot_width + self.autoscale_plot_width_offset).max(1.0);
 
         let (x_axis, min_x_unit, max_x_unit, right_x_unit) =
             self.compute_x_window(x_axis_plot_width)?;
+        let (autoscale_x_axis, autoscale_min_x_unit, autoscale_max_x_unit, _) =
+            self.compute_x_window(autoscale_plot_width)?;
         let x_world = horizontal_world.axis_at_right_unit(right_x_unit);
         let fractional_x_offset = right_x_unit - max_x_unit as f32;
         let primary_value_precision = self.panel_value_precision(primary_panel);
         let (mut min_primary_unit, mut max_primary_unit) = self.compute_primary_domain(
-            x_axis,
-            min_x_unit,
-            max_x_unit,
+            autoscale_x_axis,
+            autoscale_min_x_unit,
+            autoscale_max_x_unit,
             primary_value_precision,
             primary_mark,
         )?;
@@ -1108,9 +1111,9 @@ where
                         (YUnit(0), YUnit(1))
                     } else {
                         self.compute_indicator_domain(
-                            x_axis,
-                            min_x_unit,
-                            max_x_unit,
+                            autoscale_x_axis,
+                            autoscale_min_x_unit,
+                            autoscale_max_x_unit,
                             value_id,
                             value_precision,
                             data_kind,
@@ -1154,9 +1157,9 @@ where
             series_percent_anchors,
             primary_domain_display_override,
         } = self.compute_primary_percent_scale_state(
-            x_axis,
-            min_x_unit,
-            max_x_unit,
+            autoscale_x_axis,
+            autoscale_min_x_unit,
+            autoscale_max_x_unit,
             primary_mark,
             primary_scale_mode,
         )?;

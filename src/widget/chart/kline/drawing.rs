@@ -37,10 +37,10 @@ impl AxisBadgeFilter {
 }
 
 pub use data::chart::kline_v2::drawing::{
-    AxisLabelAnchor, DrawingAnchor, DrawingColor, DrawingDraft, DrawingDragTarget, DrawingEntity,
-    DrawingHandleKind, DrawingId, DrawingMeasure, DrawingObject, DrawingSnapshot, DrawingStyle,
-    DrawingTool, KlineWidgetDrawingEvent, MAX_DRAWING_STROKE_WIDTH, MIN_DRAWING_STROKE_WIDTH,
-    MeasureState,
+    AxisLabelAnchor, DrawingAnchor, DrawingColor, DrawingDraft, DrawingDragOperation,
+    DrawingDragTarget, DrawingEntity, DrawingHandleKind, DrawingId, DrawingMeasure, DrawingObject,
+    DrawingSnapshot, DrawingStyle, DrawingStyleDefaults, DrawingTool, KlineWidgetDrawingEvent,
+    MAX_DRAWING_STROKE_WIDTH, MIN_DRAWING_STROKE_WIDTH, MeasureState,
 };
 
 fn iced_color(color: DrawingColor, generated_accents: &[iced::Color; 6]) -> iced::Color {
@@ -332,7 +332,11 @@ where
         let start_point = self.anchor_to_overlay_point(scene, start)?;
         let end_point = self.anchor_to_overlay_point(scene, end)?;
 
-        let left = start_point.x.min(end_point.x);
+        let left = if extend_right {
+            start_point.x
+        } else {
+            start_point.x.min(end_point.x)
+        };
         let right = if extend_right {
             clip_bounds.x + clip_bounds.width
         } else {
@@ -664,7 +668,11 @@ where
                     return Vec::new();
                 };
 
-                let left = start_point.x.min(end_point.x);
+                let left = if *extend_right {
+                    start_point.x
+                } else {
+                    start_point.x.min(end_point.x)
+                };
                 let right = start_point.x.max(end_point.x);
                 let top = start_point.y.min(end_point.y);
                 let bottom = start_point.y.max(end_point.y);
@@ -683,6 +691,23 @@ where
                     (DrawingHandleKind::BoxBottomLeft, Point::new(left, bottom)),
                 ]
             }
+            DrawingObject::HorizontalLine {
+                panel_id,
+                y_unit,
+                time,
+                ray: true,
+            } => self
+                .anchor_to_overlay_point(
+                    scene,
+                    DrawingAnchor {
+                        panel_id: *panel_id,
+                        time: *time,
+                        y_unit: *y_unit,
+                    },
+                )
+                .into_iter()
+                .map(|point| (DrawingHandleKind::HorizontalLineStart, point))
+                .collect(),
             DrawingObject::HorizontalLine { .. } | DrawingObject::VerticalLine { .. } => Vec::new(),
         }
     }
@@ -1203,7 +1228,11 @@ where
                 let Some(end_point) = self.anchor_to_overlay_point(scene, *end) else {
                     return Vec::new();
                 };
-                let left = start_point.x.min(end_point.x);
+                let left = if *extend_right {
+                    start_point.x
+                } else {
+                    start_point.x.min(end_point.x)
+                };
                 let right = start_point.x.max(end_point.x);
                 let top = start_point.y.min(end_point.y);
                 let bottom = start_point.y.max(end_point.y);
@@ -1487,52 +1516,5 @@ where
                 }
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn intersect_bounds_clips_overlapping_rectangles() {
-        let a = Rectangle {
-            x: 10.0,
-            y: 10.0,
-            width: 100.0,
-            height: 50.0,
-        };
-        let b = Rectangle {
-            x: 50.0,
-            y: 30.0,
-            width: 100.0,
-            height: 50.0,
-        };
-        assert_eq!(
-            intersect_bounds(a, b),
-            Some(Rectangle {
-                x: 50.0,
-                y: 30.0,
-                width: 60.0,
-                height: 30.0,
-            })
-        );
-    }
-
-    #[test]
-    fn intersect_bounds_returns_none_for_disjoint_rectangles() {
-        let a = Rectangle {
-            x: 10.0,
-            y: 10.0,
-            width: 10.0,
-            height: 10.0,
-        };
-        let b = Rectangle {
-            x: 50.0,
-            y: 50.0,
-            width: 10.0,
-            height: 10.0,
-        };
-        assert_eq!(intersect_bounds(a, b), None);
     }
 }

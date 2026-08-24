@@ -588,6 +588,26 @@ pub fn chart_sidebar_container(theme: &Theme) -> Style {
     }
 }
 
+pub fn chart_toolbar_container(theme: &Theme) -> Style {
+    let palette = theme.extended_palette();
+
+    Style {
+        text_color: Some(palette.background.base.text),
+        background: Some(palette.background.base.color.into()),
+        border: Border {
+            width: 1.0,
+            color: palette.background.strong.color,
+            radius: 4.0.into(),
+        },
+        shadow: Shadow {
+            offset: iced::Vector { x: 0.0, y: 0.0 },
+            blur_radius: 8.0,
+            color: Color::BLACK.scale_alpha(if palette.is_dark { 0.8 } else { 0.2 }),
+        },
+        snap: true,
+    }
+}
+
 pub fn dragger_row_container(theme: &Theme) -> Style {
     let palette = theme.extended_palette();
 

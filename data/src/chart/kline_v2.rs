@@ -832,6 +832,8 @@ pub struct Config {
     pub drawings: Vec<DrawingConfig>,
     pub active_drawing_tool: DrawingTool,
     #[serde(default)]
+    pub drawing_style_defaults: DrawingStyleDefaults,
+    #[serde(default)]
     pub horizontal_line_ray: bool,
     #[serde(default)]
     pub box_extend_right: bool,
@@ -878,6 +880,7 @@ impl Default for Config {
             y_viewports: Vec::new(),
             drawings: Vec::new(),
             active_drawing_tool: DrawingTool::Cursor,
+            drawing_style_defaults: DrawingStyleDefaults::default(),
             horizontal_line_ray: false,
             box_extend_right: false,
             studies: Vec::new(),
@@ -1094,7 +1097,8 @@ pub struct ViewportConfig {
 }
 
 pub use drawing::{
-    DrawingAnchor, DrawingColor, DrawingEntity, DrawingObject, DrawingStyle, DrawingTool, Rgba,
+    DrawingAnchor, DrawingColor, DrawingEntity, DrawingObject, DrawingStyle, DrawingStyleDefaults,
+    DrawingTool, Rgba,
 };
 pub type DrawingConfig = DrawingEntity;
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
