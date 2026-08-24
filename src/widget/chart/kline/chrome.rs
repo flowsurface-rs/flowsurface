@@ -1,4 +1,4 @@
-use super::layout::{LayoutHitZone, PanelLayoutTree};
+use super::layout::{LayoutHitZone, PanelLayoutTree, place_non_overlapping_labels};
 use super::scene::Scene;
 use super::{
     CHAR_W, KlineSeriesLike, KlineWidget, KlineWidgetEvent, OverlayChannelSpec,
@@ -25,7 +25,7 @@ const PANEL_CONTROL_ICON_SIZE: f32 = TEXT_SIZE - 1.0;
 const TICKER_LEGEND_ICON_BOX: f32 = TEXT_SIZE + 8.0;
 const TICKER_LEGEND_ICON_GAP: f32 = 4.0;
 const TICKER_LEGEND_TOP_OFFSET: f32 = 0.0;
-const SERIES_END_LABEL_GAP: f32 = 2.0;
+const SERIES_END_LABEL_GAP: f32 = 1.0;
 const HIDDEN_LEGEND_ALPHA: f32 = 0.45;
 const LEGEND_BACKGROUND_ALPHA: f32 = 0.9;
 const STUDY_LEGEND_INDENT: f32 = 8.0;
@@ -366,18 +366,15 @@ where
         scene: &Scene,
         palette: &Extended,
     ) {
-        if self.series.len() < 2 {
-            return;
-        }
-
         let primary_plot = scene.primary_plot();
         let plot_origin = scene.layout.regions.plot;
         let split_x = plot_origin.x + primary_plot.x + primary_plot.width;
-        let min_y = plot_origin.y + primary_plot.y;
-        let max_y = min_y + primary_plot.height;
-        let mut labels = Vec::new();
+        let axis_width = scene.layout.regions.y_axis.width;
 
-        for (index, series) in self.series.iter().enumerate().skip(1) {
+        for (index, label_y) in self.primary_series_end_label_positions(scene) {
+            let Some(series) = self.series.get(index) else {
+                continue;
+            };
             let Some(bar) = self.bar_at_or_before_unit(series, scene.x.axis, scene.x.max_unit)
             else {
                 continue;
@@ -388,10 +385,10 @@ where
                 .get(index)
                 .copied()
                 .flatten();
-            let y = (plot_origin.y
-                + scene.map_primary_plot_with_anchor(bar.close.to_f32_lossy(), anchor))
-            .clamp(min_y, max_y);
-            let color = self.series_line_color(series, palette).scale_alpha(0.92);
+            let color = iced::Color {
+                a: 1.0,
+                ..self.series_line_color(series, palette)
+            };
             let text_color = if data::config::theme::is_dark(color) {
                 iced::Color::WHITE
             } else {
@@ -407,64 +404,91 @@ where
                 })
                 .unwrap_or_else(|| scene.format_primary_cursor_label(bar.close.to_f32_lossy()));
 
-            labels.push(SeriesEndLabel {
-                y,
-                color,
-                text_color,
-                text: series_display_name(series),
-                value: Some(value),
-            });
-        }
-
-        resolve_series_end_label_overlaps(&mut labels, min_y, max_y);
-
-        for label in labels {
+            let label = series_display_name(series);
             let label_height = TEXT_SIZE + 4.0;
-            let label_width = label.text.chars().count() as f32 * CHAR_W + 8.0;
+            let label_width = label.chars().count() as f32 * CHAR_W + 8.0;
             let rect = Rectangle {
                 x: split_x - label_width,
-                y: label.y - label_height * 0.5,
+                y: label_y - label_height * 0.5,
                 width: label_width,
                 height: label_height,
             };
 
-            frame.fill_rectangle(rect.position(), rect.size(), label.color);
+            frame.fill_rectangle(rect.position(), rect.size(), color);
             frame.fill_text(canvas::Text {
-                content: label.text,
-                position: Point::new(rect.x + rect.width - 4.0, label.y),
-                color: label.text_color,
+                content: label,
+                position: Point::new(rect.x + 4.0, label_y),
+                color: text_color,
                 size: TEXT_SIZE.into(),
-                align_x: iced::Alignment::End.into(),
+                align_x: iced::Alignment::Start.into(),
                 align_y: iced::Alignment::Center.into(),
                 font: style::AZERET_MONO,
                 ..Default::default()
             });
 
-            if let Some(value) = label.value {
-                let axis_width = scene.layout.regions.y_axis.width;
-                let value_rect = Rectangle {
-                    x: split_x + 2.0,
-                    y: rect.y,
-                    width: (axis_width - 3.0).max(0.0),
-                    height: rect.height,
-                };
-                frame.fill_rectangle(value_rect.position(), value_rect.size(), label.color);
-                frame.fill(
-                    &canvas::Path::circle(Point::new(split_x + axis_width, label.y), 4.0),
-                    label.color,
-                );
-                frame.fill_text(canvas::Text {
-                    content: value,
-                    position: Point::new(value_rect.x + value_rect.width - 4.0, label.y),
-                    color: label.text_color,
-                    size: TEXT_SIZE.into(),
-                    align_x: iced::Alignment::End.into(),
-                    align_y: iced::Alignment::Center.into(),
-                    font: style::AZERET_MONO,
-                    ..Default::default()
-                });
-            }
+            let value_rect = Rectangle {
+                x: split_x,
+                y: rect.y,
+                width: axis_width,
+                height: rect.height,
+            };
+            frame.fill_rectangle(value_rect.position(), value_rect.size(), color);
+            frame.fill_text(canvas::Text {
+                content: value,
+                position: Point::new(value_rect.x + 4.0, label_y),
+                color: text_color,
+                size: TEXT_SIZE.into(),
+                align_x: iced::Alignment::Start.into(),
+                align_y: iced::Alignment::Center.into(),
+                font: style::AZERET_MONO,
+                ..Default::default()
+            });
         }
+    }
+
+    pub(super) fn primary_series_end_label_positions(&self, scene: &Scene) -> Vec<(usize, f32)> {
+        if self.series.len() < 2 {
+            return Vec::new();
+        }
+
+        let primary_plot = scene.primary_plot();
+        let plot_origin = scene.layout.regions.plot;
+        let min_y = plot_origin.y + primary_plot.y;
+        let max_y = min_y + primary_plot.height;
+        let desired = self
+            .series
+            .iter()
+            .enumerate()
+            .skip(1)
+            .filter_map(|(index, series)| {
+                let bar = self.bar_at_or_before_unit(series, scene.x.axis, scene.x.max_unit)?;
+                let anchor = scene
+                    .primary
+                    .series_percent_anchors
+                    .get(index)
+                    .copied()
+                    .flatten();
+                let y = (plot_origin.y
+                    + scene.map_primary_plot_with_anchor(bar.close.to_f32_lossy(), anchor))
+                .clamp(min_y, max_y);
+
+                Some((index, y))
+            })
+            .collect::<Vec<_>>();
+        let desired_centers: Vec<f32> = desired.iter().map(|(_, y)| *y).collect();
+        let placements = place_non_overlapping_labels(
+            &desired_centers,
+            min_y,
+            max_y,
+            TEXT_SIZE + 4.0,
+            SERIES_END_LABEL_GAP,
+        );
+
+        desired
+            .into_iter()
+            .zip(placements)
+            .filter_map(|((index, _), placement)| placement.map(|y| (index, y)))
+            .collect()
     }
 
     pub(super) fn build_corner_control_hits(
@@ -2513,24 +2537,20 @@ where
                 .kind
                 .is_active(scene.primary.mode, self.primary_autoscale);
 
-            let fill_color = if hovered {
-                if active {
-                    palette.primary.base.color.scale_alpha(0.42)
-                } else {
-                    palette.background.strong.color
-                }
-            } else if active {
-                palette.primary.base.color.scale_alpha(0.24)
+            let fill_color = if hovered && active {
+                palette.primary.base.color
+            } else if hovered | active {
+                palette.primary.weak.color
             } else {
-                palette.background.base.color.scale_alpha(0.72)
+                palette.background.weak.color
             };
 
-            let text_color = if active {
+            let text_color = if hovered && active {
                 palette.primary.base.text
-            } else if hovered {
-                palette.background.strong.text
+            } else if hovered | active {
+                palette.primary.strong.text
             } else {
-                palette.background.base.text.scale_alpha(0.86)
+                palette.background.strong.text
             };
 
             frame.fill_rectangle(
@@ -2616,31 +2636,5 @@ where
                 ..Default::default()
             });
         }
-    }
-}
-
-struct SeriesEndLabel {
-    y: f32,
-    color: iced::Color,
-    text_color: iced::Color,
-    text: String,
-    value: Option<String>,
-}
-
-fn resolve_series_end_label_overlaps(labels: &mut [SeriesEndLabel], min_y: f32, max_y: f32) {
-    if labels.len() <= 1 {
-        return;
-    }
-
-    labels.sort_by(|left, right| left.y.total_cmp(&right.y));
-    let half_height = TEXT_SIZE * 0.5 + SERIES_END_LABEL_GAP;
-    let available_height = (max_y - min_y).max(0.0);
-    let label_count = labels.len();
-    let spacing = (available_height / (label_count - 1) as f32).min(TEXT_SIZE + 4.0);
-
-    for (index, label) in labels.iter_mut().enumerate() {
-        let lower = min_y + half_height + index as f32 * spacing;
-        let upper = max_y - half_height - (label_count - 1 - index) as f32 * spacing;
-        label.y = label.y.clamp(lower.min(upper), lower.max(upper));
     }
 }

@@ -55,7 +55,7 @@ pub const DEFAULT_FOOTPRINT_TICK_MULTIPLIER: TickMultiplier = TickMultiplier(10)
 const SETTINGS_SIDEBAR_HEADER_HEIGHT: f32 = 32.0;
 const FLOATING_TOOLBAR_MARGIN: f32 = 8.0;
 const FLOATING_TOOLBAR_HANDLE_WIDTH: f32 = 28.0;
-const FLOATING_TOOLBAR_HEIGHT: f32 = 48.0;
+const FLOATING_TOOLBAR_HEIGHT: f32 = 36.0;
 
 pub enum Action {
     RemoveSeries(TickerInfo),
@@ -520,26 +520,14 @@ impl KlineChartV2 {
                         }
                     }
                     KlineWidgetEvent::TickerSettings(ticker) => {
+                        self.open_series_editor_for(ticker);
+
                         if ticker == self.data.base_ticker() {
-                            self.series_editor.close();
                             self.settings.open_candlestick();
                             self.open_settings_sidebar();
                             return None;
                         }
-                        if let Some(series) = self
-                            .data
-                            .series
-                            .iter()
-                            .find(|series| series.ticker_info == ticker)
-                        {
-                            self.series_editor.open_for(
-                                ticker,
-                                series.color(),
-                                series.line_width(),
-                                series.stroke_style(),
-                            );
-                        }
-                        self.settings.open_series();
+                        self.settings.open_series(ticker);
                         self.open_settings_sidebar();
                     }
                     KlineWidgetEvent::FootprintSettings => {
@@ -1102,8 +1090,9 @@ impl KlineChartV2 {
             CandlestickCommand::ResetSettings => {
                 let config_changed = self.candlestick_config != CandlestickConfig::default();
                 let mark_changed = self.layout.reset_primary_mark();
-                let series_changed = self.data.reset_series_styles();
-                self.series_editor.close();
+                let ticker_info = self.data.base_ticker();
+                let series_changed = self.data.reset_series_style(ticker_info);
+                self.refresh_open_series_editor(ticker_info);
                 if config_changed {
                     self.candlestick_config = CandlestickConfig::default();
                 }
@@ -1515,9 +1504,9 @@ impl KlineChartV2 {
                 }
                 CommandResult::Changed(changed)
             }
-            SeriesCommand::ResetSettings => {
-                let changed = self.data.reset_series_styles();
-                self.series_editor.close();
+            SeriesCommand::ResetSettings { ticker_info } => {
+                let changed = self.data.reset_series_style(ticker_info);
+                self.refresh_open_series_editor(ticker_info);
                 if changed {
                     *dirty = true;
                 }
@@ -1716,17 +1705,37 @@ impl KlineChartV2 {
         &self.series_editor
     }
 
-    pub fn series_style_entries(&self) -> Vec<SeriesStyleEntry> {
+    fn open_series_editor_for(&mut self, ticker: TickerInfo) {
+        let Some(series) = self.series_style_entry(ticker) else {
+            self.series_editor.close();
+            return;
+        };
+
+        self.series_editor.open_for(
+            series.ticker,
+            series.color,
+            series.line_width,
+            series.stroke_style,
+        );
+    }
+
+    fn refresh_open_series_editor(&mut self, ticker: TickerInfo) {
+        if self.series_editor.is_open_for(ticker) {
+            self.open_series_editor_for(ticker);
+        }
+    }
+
+    pub fn series_style_entry(&self, ticker: TickerInfo) -> Option<SeriesStyleEntry> {
         self.data
             .series
             .iter()
+            .find(|series| series.ticker_info == ticker)
             .map(|series| SeriesStyleEntry {
                 ticker: series.ticker_info,
                 color: series.color(),
                 line_width: series.line_width(),
                 stroke_style: series.stroke_style(),
             })
-            .collect()
     }
 
     pub fn trade_data_enabled(&self) -> bool {
@@ -1984,5 +1993,136 @@ impl KlineChartV2 {
                 .collect(),
             ..persisted::Config::default()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use data::chart::kline_v2::{LineStrokeStyle, MIN_LINE_WIDTH, SeriesColor, ThemeAccent};
+    use exchange::{Ticker, Timeframe, adapter::Exchange};
+
+    fn ticker(symbol: &str) -> TickerInfo {
+        TickerInfo::new(
+            Ticker::new(symbol, Exchange::BinanceLinear),
+            0.1,
+            0.001,
+            None,
+        )
+    }
+
+    #[test]
+    fn resetting_a_series_style_leaves_other_series_unchanged() {
+        let base_ticker = ticker("BTCUSDT");
+        let comparison_ticker = ticker("ETHUSDT");
+        let mut chart = KlineChartV2::new_with_tickers(
+            Basis::Time(Timeframe::M1),
+            &[base_ticker, comparison_ticker],
+        );
+
+        let base_color = SeriesColor::with_accent(ThemeAccent::Four);
+        let comparison_color = SeriesColor::with_accent(ThemeAccent::Five);
+        let _ = chart.apply_command(ChartCommand::Series(SeriesCommand::SetColor {
+            ticker_info: base_ticker,
+            color: base_color,
+        }));
+        let _ = chart.apply_command(ChartCommand::Series(SeriesCommand::SetLineWidth {
+            ticker_info: base_ticker,
+            width: 3,
+        }));
+        let _ = chart.apply_command(ChartCommand::Series(SeriesCommand::SetStrokeStyle {
+            ticker_info: base_ticker,
+            stroke_style: LineStrokeStyle::Dashed,
+        }));
+        let _ = chart.apply_command(ChartCommand::Series(SeriesCommand::SetColor {
+            ticker_info: comparison_ticker,
+            color: comparison_color,
+        }));
+        let _ = chart.apply_command(ChartCommand::Series(SeriesCommand::SetLineWidth {
+            ticker_info: comparison_ticker,
+            width: 4,
+        }));
+        let _ = chart.apply_command(ChartCommand::Series(SeriesCommand::SetStrokeStyle {
+            ticker_info: comparison_ticker,
+            stroke_style: LineStrokeStyle::Dotted,
+        }));
+
+        let _ = chart.apply_command(ChartCommand::Series(SeriesCommand::ResetSettings {
+            ticker_info: comparison_ticker,
+        }));
+
+        assert_eq!(
+            chart.series_style_entry(base_ticker).unwrap().color,
+            base_color
+        );
+        assert_eq!(chart.series_style_entry(base_ticker).unwrap().line_width, 3);
+        assert_eq!(
+            chart.series_style_entry(base_ticker).unwrap().stroke_style,
+            LineStrokeStyle::Dashed
+        );
+        assert_eq!(
+            chart.series_style_entry(comparison_ticker).unwrap().color,
+            SeriesColor::with_accent(ThemeAccent::One)
+        );
+        assert_eq!(
+            chart
+                .series_style_entry(comparison_ticker)
+                .unwrap()
+                .line_width,
+            MIN_LINE_WIDTH
+        );
+        assert_eq!(
+            chart
+                .series_style_entry(comparison_ticker)
+                .unwrap()
+                .stroke_style,
+            LineStrokeStyle::Solid
+        );
+
+        let _ = chart.apply_command(ChartCommand::Series(SeriesCommand::SetColor {
+            ticker_info: comparison_ticker,
+            color: comparison_color,
+        }));
+        let _ = chart.apply_command(ChartCommand::Series(SeriesCommand::SetLineWidth {
+            ticker_info: comparison_ticker,
+            width: 4,
+        }));
+        let _ = chart.apply_command(ChartCommand::Series(SeriesCommand::SetStrokeStyle {
+            ticker_info: comparison_ticker,
+            stroke_style: LineStrokeStyle::Dotted,
+        }));
+
+        let _ = chart.apply_command(ChartCommand::Candlestick(CandlestickCommand::ResetSettings));
+
+        assert_eq!(
+            chart.series_style_entry(base_ticker).unwrap().color,
+            SeriesColor::default()
+        );
+        assert_eq!(
+            chart.series_style_entry(base_ticker).unwrap().line_width,
+            MIN_LINE_WIDTH
+        );
+        assert_eq!(
+            chart.series_style_entry(base_ticker).unwrap().stroke_style,
+            LineStrokeStyle::Solid
+        );
+        assert_eq!(
+            chart.series_style_entry(comparison_ticker).unwrap().color,
+            comparison_color
+        );
+        assert_eq!(
+            chart
+                .series_style_entry(comparison_ticker)
+                .unwrap()
+                .line_width,
+            4
+        );
+        assert_eq!(
+            chart
+                .series_style_entry(comparison_ticker)
+                .unwrap()
+                .stroke_style,
+            LineStrokeStyle::Dotted
+        );
     }
 }

@@ -23,8 +23,8 @@ use data::chart::kline_v2::{
     MIN_LINE_WIDTH, MarkKind, ThemeAccent,
 };
 use data::config::theme::{ThemeColor, ThemeColorShade};
-use exchange::TickMultiplier;
 use exchange::unit::MinTicksize;
+use exchange::{TickMultiplier, TickerInfo};
 use iced::{
     Alignment, Element, Length,
     widget::{
@@ -42,7 +42,7 @@ pub enum Message {
     FootprintPocConfigChanged(FootprintPocConfig),
     TradeDataEnabledChanged(bool),
     ResetFootprintSettings,
-    ResetSeriesSettings,
+    ResetSeriesSettings(TickerInfo),
     Study(study::Message<KlineStudy>),
     Indicator {
         instance_id: data::chart::kline_v2::IndicatorInstanceId,
@@ -784,7 +784,7 @@ pub fn candlestick_cfg_view<'a>(
     config: CandlestickConfig,
     mark: MarkKind,
     series_editor: &'a TickerSeriesEditor,
-    series: Vec<SeriesStyleEntry>,
+    base_series: Option<SeriesStyleEntry>,
 ) -> Element<'a, Message> {
     let opacity = config.opacity_percent.clamp(
         MIN_CANDLESTICK_OPACITY_PERCENT,
@@ -827,44 +827,46 @@ pub fn candlestick_cfg_view<'a>(
             spacing = 16, align_x = Alignment::Start
         ]
     } else {
-        let series_section = column![
-            text("Series").size(crate::style::text_size::SECTION),
-            series_editor
-                .view(series)
-                .map(move |message| { Message::SeriesEditor(message) }),
-        ]
-        .spacing(8);
-
-        split_column![
-            display_section,
-            series_section;
-            spacing = 16, align_x = Alignment::Start
-        ]
+        let mut content = column![display_section].spacing(16);
+        if let Some(series) = base_series {
+            content = content.push(
+                column![
+                    text("Line style").size(crate::style::text_size::SECTION),
+                    series_editor
+                        .view(&series)
+                        .map(move |message| { Message::SeriesEditor(message) }),
+                ]
+                .spacing(8),
+            );
+        }
+        content
     };
 
     cfg_view_container(content)
 }
 
 pub fn series_cfg_view<'a>(
+    ticker: TickerInfo,
     series_editor: &'a TickerSeriesEditor,
-    series: Vec<SeriesStyleEntry>,
+    series: Option<SeriesStyleEntry>,
 ) -> Element<'a, Message> {
-    cfg_view_container(
-        column![
-            text("Series settings").size(crate::style::text_size::TITLE),
-            series_editor
-                .view(series)
-                .map(move |message| { Message::SeriesEditor(message) }),
-        ]
-        .spacing(16),
-    )
+    let mut content = column![
+        text(ticker.ticker.symbol_and_exchange_string()).size(crate::style::text_size::BODY),
+    ]
+    .spacing(16);
+
+    if let Some(series) = series {
+        content = content.push(series_editor.view(&series).map(Message::SeriesEditor));
+    }
+
+    cfg_view_container(content)
 }
 #[derive(Debug, Clone, PartialEq)]
 enum SettingsTarget {
     Main,
     Indicator(IndicatorSettingsState),
     Candlestick,
-    Series,
+    Series(TickerInfo),
     Footprint,
     Study(KlineStudyId),
 }
@@ -893,9 +895,9 @@ impl State {
             SettingsTarget::Main | SettingsTarget::Footprint | SettingsTarget::Study(_) => {
                 CHART_SETTINGS_SIDEBAR_WIDTH
             }
-            SettingsTarget::Indicator(_) | SettingsTarget::Candlestick | SettingsTarget::Series => {
-                COMPACT_SIDEBAR_WIDTH
-            }
+            SettingsTarget::Indicator(_)
+            | SettingsTarget::Candlestick
+            | SettingsTarget::Series(_) => COMPACT_SIDEBAR_WIDTH,
         }
     }
 
@@ -904,7 +906,7 @@ impl State {
             SettingsTarget::Main => "Chart",
             SettingsTarget::Indicator(_) => "Indicator",
             SettingsTarget::Candlestick => "Candles",
-            SettingsTarget::Series => "Series",
+            SettingsTarget::Series(_) => "Series",
             SettingsTarget::Footprint => "Footprint",
             SettingsTarget::Study(_) => "Study",
         }
@@ -930,7 +932,7 @@ impl State {
             SettingsTarget::Candlestick => Some(Message::CandlestickSettings(
                 CandlestickSettingsMessage::Reset,
             )),
-            SettingsTarget::Series => Some(Message::ResetSeriesSettings),
+            SettingsTarget::Series(ticker) => Some(Message::ResetSeriesSettings(*ticker)),
             SettingsTarget::Study(study_id) => chart.study(*study_id).map(|study| {
                 Message::Study(study::Message::StudyValueChanged(
                     study.default_for_type_for_basis(chart.basis()),
@@ -980,8 +982,8 @@ impl State {
         self.set_target(SettingsTarget::Candlestick);
     }
 
-    pub(super) fn open_series(&mut self) {
-        self.set_target(SettingsTarget::Series);
+    pub(super) fn open_series(&mut self, ticker: TickerInfo) {
+        self.set_target(SettingsTarget::Series(ticker));
     }
 
     pub(super) fn open_footprint(&mut self) {
@@ -1016,11 +1018,13 @@ impl State {
                 chart.candlestick_config(),
                 chart.primary_mark(),
                 chart.series_editor(),
-                chart.series_style_entries(),
+                chart.series_style_entry(chart.ticker_info()),
             ),
-            SettingsTarget::Series => {
-                series_cfg_view(chart.series_editor(), chart.series_style_entries())
-            }
+            SettingsTarget::Series(ticker) => series_cfg_view(
+                *ticker,
+                chart.series_editor(),
+                chart.series_style_entry(*ticker),
+            ),
             SettingsTarget::Footprint => footprint_cfg_view(
                 chart.footprint_cluster_kind(),
                 chart.footprint_poc_config(),
@@ -1187,8 +1191,10 @@ impl State {
                 let _ =
                     chart.apply_command(ChartCommand::Footprint(FootprintCommand::ResetSettings));
             }
-            Message::ResetSeriesSettings => {
-                let _ = chart.apply_command(ChartCommand::Series(SeriesCommand::ResetSettings));
+            Message::ResetSeriesSettings(ticker_info) => {
+                let _ = chart.apply_command(ChartCommand::Series(SeriesCommand::ResetSettings {
+                    ticker_info,
+                }));
             }
             Message::Study(message) => chart.update_study_configurator(message),
             Message::SeriesEditor(message) => {

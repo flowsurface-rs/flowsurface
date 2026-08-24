@@ -11,6 +11,7 @@ where
         palette: &Extended,
         generated_accents: &[iced::Color; 6],
         overlay_origin_in_window: Point,
+        drawing_magnet: bool,
     ) {
         let pixel_ratio = self.resolved_pixel_ratio();
         self.fill_corner_controls(frame, scene, palette);
@@ -57,6 +58,9 @@ where
         let Some(cursor) = scene.interaction.cursor else {
             return;
         };
+        let magnetic_anchor = drawing_magnet
+            .then(|| self.primary_magnetic_drawing_anchor_at_cursor(scene))
+            .flatten();
 
         let line_color = palette.background.base.text.scale_alpha(0.35);
         let (crosshair_width, crosshair_width_phys) =
@@ -79,8 +83,11 @@ where
             scene.layout.regions.plot.y + panel_plot.y,
             scene.layout.regions.plot.y + panel_plot.y + panel_plot.height,
         );
+        let crosshair_y = magnetic_anchor
+            .and_then(|anchor| self.y_overlay_for_value(scene, anchor.panel_id, anchor.y_unit))
+            .unwrap_or(scene.layout.regions.plot.y + cursor.y_plot);
         let gy = Self::snap_stroke_center_with_origin(
-            scene.layout.regions.plot.y + cursor.y_plot,
+            crosshair_y,
             pixel_ratio,
             overlay_origin_in_window.y,
             crosshair_width_phys,
@@ -121,6 +128,7 @@ where
         frame: &mut canvas::Frame,
         scene: &Scene,
         palette: &Extended,
+        drawing_magnet: bool,
     ) {
         let mut badge_filter = AxisBadgeFilter::default();
 
@@ -136,10 +144,16 @@ where
         }
 
         if let Some(cursor) = scene.interaction.cursor {
-            let gy = scene.layout.regions.plot.y + cursor.y_plot;
+            let magnetic_anchor = drawing_magnet
+                .then(|| self.primary_magnetic_drawing_anchor_at_cursor(scene))
+                .flatten();
+            let gy = magnetic_anchor
+                .and_then(|anchor| self.y_overlay_for_value(scene, anchor.panel_id, anchor.y_unit))
+                .unwrap_or(scene.layout.regions.plot.y + cursor.y_plot);
 
-            if let Some(y_text) = cursor
-                .y_primary_unit
+            if let Some(y_text) = magnetic_anchor
+                .map(|anchor| anchor.y_unit)
+                .or(cursor.y_primary_unit)
                 .map(|primary_unit| {
                     let panel_precision = self.panel_value_precision(cursor.panel_index);
                     let primary_value = self.panel_unit_to_value(panel_precision, primary_unit);

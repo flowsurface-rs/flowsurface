@@ -126,28 +126,34 @@ impl KlineData {
         self.series[idx].set_stroke_style(stroke_style)
     }
 
-    pub fn reset_series_styles(&mut self) -> bool {
-        let mut changed = false;
-        let mut comparison_index = 0;
+    pub fn reset_series_style(&mut self, ticker_info: TickerInfo) -> bool {
+        let Some(index) = self.series_index.get(&ticker_info).copied() else {
+            return false;
+        };
 
-        for series in &mut self.series {
-            let color = if series.ticker_info == self.base_ticker {
-                SeriesColor::default()
-            } else {
-                let accent = ThemeAccent::ALL
-                    .get(comparison_index)
-                    .copied()
-                    .unwrap_or(ThemeAccent::One);
-                comparison_index += 1;
-                SeriesColor::with_accent(accent)
-            };
+        let color = self.default_series_color(index);
+        let series = &mut self.series[index];
+        let color_changed = series.set_series_color(color);
+        let width_changed = series.set_line_width(MIN_LINE_WIDTH);
+        let stroke_changed = series.set_stroke_style(LineStrokeStyle::Solid);
 
-            changed |= series.set_series_color(color);
-            changed |= series.set_line_width(MIN_LINE_WIDTH);
-            changed |= series.set_stroke_style(LineStrokeStyle::Solid);
+        color_changed || width_changed || stroke_changed
+    }
+
+    fn default_series_color(&self, index: usize) -> SeriesColor {
+        if self.series[index].ticker_info == self.base_ticker {
+            return SeriesColor::default();
         }
 
-        changed
+        let comparison_index = self.series[..index]
+            .iter()
+            .filter(|series| series.ticker_info != self.base_ticker)
+            .count();
+        let accent = ThemeAccent::ALL
+            .get(comparison_index)
+            .copied()
+            .unwrap_or(ThemeAccent::One);
+        SeriesColor::with_accent(accent)
     }
 
     pub fn add_ticker(

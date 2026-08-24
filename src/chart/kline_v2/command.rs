@@ -117,7 +117,9 @@ pub enum SeriesCommand {
         ticker_info: TickerInfo,
         stroke_style: LineStrokeStyle,
     },
-    ResetSettings,
+    ResetSettings {
+        ticker_info: TickerInfo,
+    },
 }
 
 pub enum TickerCommand {

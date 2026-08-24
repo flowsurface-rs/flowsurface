@@ -6,27 +6,34 @@ use crate::widget::chart::kline::drawing::{
     DrawingStyleDefaults, DrawingTool, KlineWidgetDrawingEvent, MAX_DRAWING_STROKE_WIDTH,
     MIN_DRAWING_STROKE_WIDTH, MeasureState,
 };
-use crate::widget::{color_swatch_button, labeled_slider};
-use data::config::theme::{ThemeAccent, generated_theme_accent};
+use crate::widget::{color_swatch_button, labeled_slider, tooltip};
+use data::config::theme::{
+    ThemeAccent, ThemeColor, ThemeColorRole, ThemeColorShade, generated_theme_accents,
+};
 
-use iced::widget::{button, checkbox, column, row, space, text};
+use iced::widget::{checkbox, pick_list, row, tooltip::Position as TooltipPosition};
 use iced::{Element, Length};
 
 const SIDEBAR_WIDTH: f32 = 36.0;
 const OBJECT_LIST_SIDEBAR_WIDTH: f32 = 196.0;
 const DRAWING_STROKE_WIDTH_STEP: f32 = 0.5;
 const DRAWING_FILL_ALPHA: f32 = 0.16;
-const DRAWING_TOOLBAR_COLOR_WIDTH: f32 = 156.0;
-const DRAWING_TOOLBAR_FILL_COLOR_WIDTH: f32 = 196.0;
-const DRAWING_TOOLBAR_SLIDER_WIDTH: f32 = 140.0;
-const DRAWING_TOOLBAR_TOGGLE_WIDTH: f32 = 112.0;
-const DRAWING_TOOLBAR_DIVIDER_HEIGHT: f32 = 36.0;
+const DRAWING_TOOLBAR_COLOR_WIDTH: f32 = 135.0;
+const DRAWING_TOOLBAR_SHADE_WIDTH: f32 = 76.0;
+const DRAWING_TOOLBAR_STYLE_TARGET_WIDTH: f32 = 72.0;
+const DRAWING_TOOLBAR_WIDTH_CONTROL_WIDTH: f32 = 96.0;
+const DRAWING_TOOLBAR_DIVIDER_HEIGHT: f32 = 24.0;
+
+fn ensure_box_fill_color(style: &mut DrawingStyle) {
+    if style.fill_color.is_none() {
+        style.fill_color = Some(style.stroke_color.scale_alpha(DRAWING_FILL_ALPHA));
+    }
+}
 
 fn drawing_color_picker<'a, Message, SelectColor>(
-    label: &'static str,
     selected: Option<ThemeAccent>,
+    shade: ThemeColorShade,
     alpha: f32,
-    allow_none: bool,
     select_color: SelectColor,
     on_sidebar_message: fn(DrawingMessage) -> Message,
 ) -> Element<'a, Message>
@@ -37,33 +44,40 @@ where
     let colors = ThemeAccent::ALL.into_iter().map(|accent| {
         color_swatch_button(
             move |theme: &iced::Theme| {
-                generated_theme_accent(theme.extended_palette(), accent).scale_alpha(alpha)
+                let palette = theme.extended_palette();
+                crate::widget::resolve_theme_color(
+                    ThemeColor::with_accent(ThemeColorRole::Primary, Some(accent), shade),
+                    palette,
+                    &generated_theme_accents(palette),
+                )
+                .scale_alpha(alpha)
             },
             selected == Some(accent),
             on_sidebar_message(select_color(accent)),
         )
     });
-    let mut choices = row(colors).spacing(3);
+    let choices = row(colors).spacing(3);
 
-    if allow_none {
-        choices = choices.push(
-            button(text("None").size(11))
-                .style(|theme, status| style::button::transparent(theme, status, false))
-                .padding([2, 4])
-                .on_press(on_sidebar_message(
-                    DrawingMessage::SetSelectedDrawingFillColor(None),
-                )),
-        );
-    }
-
-    column![text(label).size(12), choices]
-        .spacing(2)
-        .width(Length::Fill)
-        .into()
+    choices.into()
 }
 
-fn drawing_width_slider<'a, Message>(
-    label: &'static str,
+fn drawing_shade_picker<'a, Message>(
+    selected: ThemeColorShade,
+    on_select: impl Fn(ThemeColorShade) -> DrawingMessage + Copy + 'a,
+    on_sidebar_message: fn(DrawingMessage) -> Message,
+) -> Element<'a, Message>
+where
+    Message: Clone + 'a + 'static,
+{
+    pick_list(ThemeColorShade::ALL, Some(selected), move |shade| {
+        on_sidebar_message(on_select(shade))
+    })
+    .padding(4)
+    .width(Length::Fill)
+    .into()
+}
+
+fn drawing_width_control<'a, Message>(
     current: f32,
     on_sidebar_message: fn(DrawingMessage) -> Message,
 ) -> Element<'a, Message>
@@ -71,7 +85,7 @@ where
     Message: Clone + 'a + 'static,
 {
     labeled_slider(
-        label,
+        "Width",
         MIN_DRAWING_STROKE_WIDTH..=MAX_DRAWING_STROKE_WIDTH,
         current,
         move |width| on_sidebar_message(DrawingMessage::SetSelectedDrawingStrokeWidth(width)),
@@ -89,15 +103,25 @@ fn drawing_extend_checkbox<'a, Message>(
 where
     Message: Clone + 'a + 'static,
 {
-    row![
-        checkbox(checked)
-            .label(label)
-            .on_toggle(move |value| on_sidebar_message(on_toggle(value))),
-        space::horizontal(),
-    ]
-    .spacing(4)
-    .align_y(iced::Alignment::Center)
-    .width(Length::Fill)
+    checkbox(checked)
+        .label(label)
+        .spacing(8)
+        .on_toggle(move |value| on_sidebar_message(on_toggle(value)))
+        .into()
+}
+
+fn drawing_box_style_target<'a, Message>(
+    selected: BoxStyleTarget,
+    on_sidebar_message: fn(DrawingMessage) -> Message,
+) -> Element<'a, Message>
+where
+    Message: Clone + 'a + 'static,
+{
+    pick_list(BoxStyleTarget::ALL, Some(selected), move |target| {
+        on_sidebar_message(target.selection_message())
+    })
+    .padding(4)
+    .width(DRAWING_TOOLBAR_STYLE_TARGET_WIDTH)
     .into()
 }
 
@@ -147,14 +171,18 @@ impl DrawingUpdate {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DrawingMessage {
     SelectTool(DrawingTool),
+    ToggleMagnet,
     ShowToolsPage,
     ShowObjectListPage,
     ClearSelection,
-    SelectDrawing(DrawingId),
-    OpenDrawingSettings(DrawingId),
+    OpenDrawingToolbar(DrawingId),
     SetSelectedDrawingStrokeColor(ThemeAccent),
-    SetSelectedDrawingFillColor(Option<ThemeAccent>),
+    SetSelectedDrawingStrokeShade(ThemeColorShade),
+    SetSelectedDrawingFillColor(ThemeAccent),
+    SetSelectedDrawingFillShade(ThemeColorShade),
     SetSelectedDrawingStrokeWidth(f32),
+    SelectBoxBorderStyle,
+    SelectBoxFillStyle,
     SetHorizontalLineRay(bool),
     SetBoxExtendRight(bool),
     DeleteSelectedDrawing,
@@ -168,6 +196,33 @@ enum SidebarPage {
     ObjectList,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum BoxStyleTarget {
+    #[default]
+    Border,
+    Fill,
+}
+
+impl BoxStyleTarget {
+    const ALL: &'static [Self] = &[Self::Border, Self::Fill];
+
+    fn selection_message(self) -> DrawingMessage {
+        match self {
+            Self::Border => DrawingMessage::SelectBoxBorderStyle,
+            Self::Fill => DrawingMessage::SelectBoxFillStyle,
+        }
+    }
+}
+
+impl std::fmt::Display for BoxStyleTarget {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Border => formatter.write_str("Border"),
+            Self::Fill => formatter.write_str("Fill"),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DrawingTools {
     active_tool: DrawingTool,
@@ -179,6 +234,9 @@ pub struct DrawingTools {
     style_defaults: DrawingStyleDefaults,
     horizontal_line_ray: bool,
     box_extend_right: bool,
+    magnet_enabled: bool,
+    magnet_modifier_active: bool,
+    box_style_target: BoxStyleTarget,
     measure: Option<DrawingMeasure>,
 }
 
@@ -194,6 +252,9 @@ impl Default for DrawingTools {
             style_defaults: DrawingStyleDefaults::default(),
             horizontal_line_ray: false,
             box_extend_right: false,
+            magnet_enabled: false,
+            magnet_modifier_active: false,
+            box_style_target: BoxStyleTarget::default(),
             measure: None,
         }
     }
@@ -202,11 +263,18 @@ impl Default for DrawingTools {
 impl DrawingTools {
     pub fn from_parts(
         active_tool: DrawingTool,
-        drawings: Vec<DrawingEntity>,
-        style_defaults: DrawingStyleDefaults,
+        mut drawings: Vec<DrawingEntity>,
+        mut style_defaults: DrawingStyleDefaults,
         horizontal_line_ray: bool,
         box_extend_right: bool,
     ) -> Self {
+        for drawing in &mut drawings {
+            if matches!(&drawing.object, DrawingObject::Box { .. }) {
+                ensure_box_fill_color(&mut drawing.style);
+            }
+        }
+        ensure_box_fill_color(&mut style_defaults.box_drawing);
+
         let next_drawing_id = drawings
             .iter()
             .map(|drawing| drawing.id.0)
@@ -225,6 +293,9 @@ impl DrawingTools {
             style_defaults,
             horizontal_line_ray,
             box_extend_right,
+            magnet_enabled: false,
+            magnet_modifier_active: false,
+            box_style_target: BoxStyleTarget::default(),
             measure: None,
         }
     }
@@ -245,6 +316,10 @@ impl DrawingTools {
         self.box_extend_right
     }
 
+    fn magnet_active(&self) -> bool {
+        self.active_tool.supports_magnet() && (self.magnet_enabled || self.magnet_modifier_active)
+    }
+
     pub fn drawings(&self) -> &[DrawingEntity] {
         &self.drawings
     }
@@ -257,6 +332,10 @@ impl DrawingTools {
                 } else {
                     DrawingUpdate::None
                 }
+            }
+            DrawingMessage::ToggleMagnet => {
+                self.magnet_enabled = !self.magnet_enabled;
+                DrawingUpdate::Visual
             }
             DrawingMessage::ShowToolsPage => {
                 self.selected_drawings.clear();
@@ -281,15 +360,8 @@ impl DrawingTools {
                     DrawingUpdate::None
                 }
             }
-            DrawingMessage::SelectDrawing(id) => {
-                if self.select_drawing(Some(id)) {
-                    DrawingUpdate::Visual
-                } else {
-                    DrawingUpdate::None
-                }
-            }
-            DrawingMessage::OpenDrawingSettings(id) => {
-                if self.open_drawing_settings(id) {
+            DrawingMessage::OpenDrawingToolbar(id) => {
+                if self.open_drawing_toolbar(id) {
                     DrawingUpdate::Visual
                 } else {
                     DrawingUpdate::None
@@ -297,7 +369,16 @@ impl DrawingTools {
             }
             DrawingMessage::SetSelectedDrawingStrokeColor(color) => {
                 if self.update_selected_style(|style| {
-                    style.stroke_color = DrawingColor::accent(color, 1.0);
+                    style.stroke_color = style.stroke_color.with_accent(color, 1.0);
+                }) {
+                    DrawingUpdate::Visual
+                } else {
+                    DrawingUpdate::None
+                }
+            }
+            DrawingMessage::SetSelectedDrawingStrokeShade(shade) => {
+                if self.update_selected_style(|style| {
+                    style.stroke_color.set_shade(shade);
                 }) {
                     DrawingUpdate::Visual
                 } else {
@@ -306,8 +387,22 @@ impl DrawingTools {
             }
             DrawingMessage::SetSelectedDrawingFillColor(color) => {
                 if self.update_selected_style(|style| {
-                    style.fill_color =
-                        color.map(|accent| DrawingColor::accent(accent, DRAWING_FILL_ALPHA));
+                    let shade = style
+                        .fill_color
+                        .map(DrawingColor::shade_value)
+                        .unwrap_or_default();
+                    style.fill_color = Some(DrawingColor::themed(color, shade, DRAWING_FILL_ALPHA));
+                }) {
+                    DrawingUpdate::Visual
+                } else {
+                    DrawingUpdate::None
+                }
+            }
+            DrawingMessage::SetSelectedDrawingFillShade(shade) => {
+                if self.update_selected_style(|style| {
+                    if let Some(color) = &mut style.fill_color {
+                        color.set_shade(shade);
+                    }
                 }) {
                     DrawingUpdate::Visual
                 } else {
@@ -319,6 +414,22 @@ impl DrawingTools {
                     style.set_stroke_width(width);
                 }) {
                     DrawingUpdate::Visual
+                } else {
+                    DrawingUpdate::None
+                }
+            }
+            DrawingMessage::SelectBoxBorderStyle => {
+                if self.box_style_target != BoxStyleTarget::Border {
+                    self.box_style_target = BoxStyleTarget::Border;
+                    DrawingUpdate::StateOnly
+                } else {
+                    DrawingUpdate::None
+                }
+            }
+            DrawingMessage::SelectBoxFillStyle => {
+                if self.box_style_target != BoxStyleTarget::Fill {
+                    self.box_style_target = BoxStyleTarget::Fill;
+                    DrawingUpdate::StateOnly
                 } else {
                     DrawingUpdate::None
                 }
@@ -402,13 +513,10 @@ impl DrawingTools {
     where
         Message: Clone + 'a + 'static,
     {
-        matches!(self.sidebar_page, SidebarPage::Tools)
-            .then(|| self.selected_entity())
-            .flatten()
-            .map(|drawing| {
-                self.view_selected_toolbar(drawing, on_sidebar_message)
-                    .into()
-            })
+        self.selected_entity().map(|drawing| {
+            self.view_selected_toolbar(drawing, on_sidebar_message)
+                .into()
+        })
     }
 
     fn view_selected_toolbar<'a, Message>(
@@ -423,109 +531,153 @@ impl DrawingTools {
             iced::widget::text(drawing.object.title()).size(13),
             drawing_toolbar_divider(),
         ]
-        .spacing(4)
+        .padding([2, 0])
+        .spacing(8)
         .align_y(iced::Alignment::Center);
 
         let stroke_width = drawing.style.normalized_stroke_width();
 
         match drawing.object {
             DrawingObject::Box { extend_right, .. } => {
+                let mut style_controls = iced::widget::Row::new()
+                    .spacing(8)
+                    .align_y(iced::Alignment::Center);
+
+                match self.box_style_target {
+                    BoxStyleTarget::Border => {
+                        style_controls = style_controls
+                            .push(
+                                iced::widget::container(drawing_color_picker(
+                                    drawing.style.stroke_color.accent_value(),
+                                    drawing.style.stroke_color.shade_value(),
+                                    1.0,
+                                    DrawingMessage::SetSelectedDrawingStrokeColor,
+                                    on_sidebar_message,
+                                ))
+                                .width(DRAWING_TOOLBAR_COLOR_WIDTH),
+                            )
+                            .push(
+                                iced::widget::container(drawing_shade_picker(
+                                    drawing.style.stroke_color.shade_value(),
+                                    DrawingMessage::SetSelectedDrawingStrokeShade,
+                                    on_sidebar_message,
+                                ))
+                                .width(DRAWING_TOOLBAR_SHADE_WIDTH),
+                            )
+                            .push(
+                                iced::widget::container(drawing_width_control(
+                                    stroke_width,
+                                    on_sidebar_message,
+                                ))
+                                .width(DRAWING_TOOLBAR_WIDTH_CONTROL_WIDTH),
+                            );
+                    }
+                    BoxStyleTarget::Fill => {
+                        let fill_color = drawing.style.fill_color;
+                        let fill_shade = fill_color
+                            .map(DrawingColor::shade_value)
+                            .unwrap_or_default();
+
+                        style_controls = style_controls
+                            .push(
+                                iced::widget::container(drawing_color_picker(
+                                    fill_color.and_then(DrawingColor::accent_value),
+                                    fill_shade,
+                                    DRAWING_FILL_ALPHA,
+                                    DrawingMessage::SetSelectedDrawingFillColor,
+                                    on_sidebar_message,
+                                ))
+                                .width(DRAWING_TOOLBAR_COLOR_WIDTH),
+                            )
+                            .push(
+                                iced::widget::container(drawing_shade_picker(
+                                    fill_shade,
+                                    DrawingMessage::SetSelectedDrawingFillShade,
+                                    on_sidebar_message,
+                                ))
+                                .width(DRAWING_TOOLBAR_SHADE_WIDTH),
+                            );
+                    }
+                }
+
+                let style_section = iced::widget::row![
+                    drawing_box_style_target(self.box_style_target, on_sidebar_message,),
+                    style_controls,
+                ]
+                .spacing(16)
+                .align_y(iced::Alignment::Center);
+
                 controls = controls
-                    .push(
-                        iced::widget::container(drawing_color_picker(
-                            "Border color",
-                            drawing.style.stroke_color.accent_value(),
-                            1.0,
-                            false,
-                            DrawingMessage::SetSelectedDrawingStrokeColor,
-                            on_sidebar_message,
-                        ))
-                        .width(DRAWING_TOOLBAR_COLOR_WIDTH),
-                    )
-                    .push(
-                        iced::widget::container(drawing_color_picker(
-                            "Fill color",
-                            drawing
-                                .style
-                                .fill_color
-                                .and_then(|color| color.accent_value()),
-                            DRAWING_FILL_ALPHA,
-                            true,
-                            |color| DrawingMessage::SetSelectedDrawingFillColor(Some(color)),
-                            on_sidebar_message,
-                        ))
-                        .width(DRAWING_TOOLBAR_FILL_COLOR_WIDTH),
-                    )
-                    .push(
-                        iced::widget::container(drawing_width_slider(
-                            "Border width",
-                            stroke_width,
-                            on_sidebar_message,
-                        ))
-                        .width(DRAWING_TOOLBAR_SLIDER_WIDTH),
-                    )
-                    .push(
-                        iced::widget::container(drawing_extend_checkbox(
-                            extend_right,
-                            "Extend right",
-                            DrawingMessage::SetBoxExtendRight,
-                            on_sidebar_message,
-                        ))
-                        .width(DRAWING_TOOLBAR_TOGGLE_WIDTH),
-                    );
+                    .push(style_section)
+                    .push(drawing_toolbar_divider())
+                    .push(drawing_extend_checkbox(
+                        extend_right,
+                        "Extend right",
+                        DrawingMessage::SetBoxExtendRight,
+                        on_sidebar_message,
+                    ));
             }
             DrawingObject::HorizontalLine { ray, .. } => {
+                let style_section = iced::widget::row![
+                    iced::widget::container(drawing_color_picker(
+                        drawing.style.stroke_color.accent_value(),
+                        drawing.style.stroke_color.shade_value(),
+                        1.0,
+                        DrawingMessage::SetSelectedDrawingStrokeColor,
+                        on_sidebar_message,
+                    ))
+                    .width(DRAWING_TOOLBAR_COLOR_WIDTH),
+                    iced::widget::container(drawing_shade_picker(
+                        drawing.style.stroke_color.shade_value(),
+                        DrawingMessage::SetSelectedDrawingStrokeShade,
+                        on_sidebar_message,
+                    ))
+                    .width(DRAWING_TOOLBAR_SHADE_WIDTH),
+                    iced::widget::container(drawing_width_control(
+                        stroke_width,
+                        on_sidebar_message,
+                    ))
+                    .width(DRAWING_TOOLBAR_WIDTH_CONTROL_WIDTH),
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center);
+
                 controls = controls
-                    .push(
-                        iced::widget::container(drawing_color_picker(
-                            "Line color",
-                            drawing.style.stroke_color.accent_value(),
-                            1.0,
-                            false,
-                            DrawingMessage::SetSelectedDrawingStrokeColor,
-                            on_sidebar_message,
-                        ))
-                        .width(DRAWING_TOOLBAR_COLOR_WIDTH),
-                    )
-                    .push(
-                        iced::widget::container(drawing_width_slider(
-                            "Line width",
-                            stroke_width,
-                            on_sidebar_message,
-                        ))
-                        .width(DRAWING_TOOLBAR_SLIDER_WIDTH),
-                    )
-                    .push(
-                        iced::widget::container(drawing_extend_checkbox(
-                            ray,
-                            "Ray",
-                            DrawingMessage::SetHorizontalLineRay,
-                            on_sidebar_message,
-                        ))
-                        .width(DRAWING_TOOLBAR_TOGGLE_WIDTH),
-                    );
+                    .push(style_section)
+                    .push(drawing_toolbar_divider())
+                    .push(drawing_extend_checkbox(
+                        ray,
+                        "Ray",
+                        DrawingMessage::SetHorizontalLineRay,
+                        on_sidebar_message,
+                    ));
             }
             DrawingObject::Trendline { .. } | DrawingObject::VerticalLine { .. } => {
-                controls = controls
-                    .push(
-                        iced::widget::container(drawing_color_picker(
-                            "Line color",
-                            drawing.style.stroke_color.accent_value(),
-                            1.0,
-                            false,
-                            DrawingMessage::SetSelectedDrawingStrokeColor,
-                            on_sidebar_message,
-                        ))
-                        .width(DRAWING_TOOLBAR_COLOR_WIDTH),
-                    )
-                    .push(
-                        iced::widget::container(drawing_width_slider(
-                            "Line width",
-                            stroke_width,
-                            on_sidebar_message,
-                        ))
-                        .width(DRAWING_TOOLBAR_SLIDER_WIDTH),
-                    );
+                let style_section = iced::widget::row![
+                    iced::widget::container(drawing_color_picker(
+                        drawing.style.stroke_color.accent_value(),
+                        drawing.style.stroke_color.shade_value(),
+                        1.0,
+                        DrawingMessage::SetSelectedDrawingStrokeColor,
+                        on_sidebar_message,
+                    ))
+                    .width(DRAWING_TOOLBAR_COLOR_WIDTH),
+                    iced::widget::container(drawing_shade_picker(
+                        drawing.style.stroke_color.shade_value(),
+                        DrawingMessage::SetSelectedDrawingStrokeShade,
+                        on_sidebar_message,
+                    ))
+                    .width(DRAWING_TOOLBAR_SHADE_WIDTH),
+                    iced::widget::container(drawing_width_control(
+                        stroke_width,
+                        on_sidebar_message,
+                    ))
+                    .width(DRAWING_TOOLBAR_WIDTH_CONTROL_WIDTH),
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center);
+
+                controls = controls.push(style_section);
             }
         }
 
@@ -561,19 +713,20 @@ impl DrawingTools {
         let selected = self.selected_drawings.contains(&drawing.id);
         let object_label = format!("{} #{}", drawing.object.title(), drawing.id.0);
 
-        let select_button = iced::widget::button(iced::widget::text(object_label).size(12))
-            .style(move |theme, status| style::button::transparent(theme, status, selected))
-            .width(iced::Length::Fill)
-            .on_press(on_sidebar_message(DrawingMessage::SelectDrawing(
-                drawing.id,
-            )));
-
-        let settings_button = iced::widget::button(style::icon_text(style::Icon::Cog, 12))
-            .style(|theme, status| style::button::transparent(theme, status, false))
-            .padding([2, 6])
-            .on_press(on_sidebar_message(DrawingMessage::OpenDrawingSettings(
-                drawing.id,
-            )));
+        let toolbar_button = iced::widget::button(
+            iced::widget::row![
+                iced::widget::text(object_label).size(12),
+                iced::widget::space::horizontal(),
+                style::icon_text(style::Icon::Cog, 12),
+            ]
+            .align_y(iced::Alignment::Center),
+        )
+        .style(move |theme, status| style::button::transparent(theme, status, selected))
+        .width(iced::Length::Fill)
+        .padding([2, 6])
+        .on_press(on_sidebar_message(DrawingMessage::OpenDrawingToolbar(
+            drawing.id,
+        )));
 
         let remove_button = iced::widget::button(style::icon_text(style::Icon::TrashBin, 12))
             .style(|theme, status| style::button::cancel(theme, status, false))
@@ -587,7 +740,7 @@ impl DrawingTools {
             )))
         };
 
-        iced::widget::row![select_button, settings_button, remove_button]
+        iced::widget::row![toolbar_button, remove_button]
             .spacing(4)
             .align_y(iced::Alignment::Center)
             .width(iced::Length::Fill)
@@ -684,21 +837,41 @@ impl DrawingTools {
                     .style(move |theme, status| style::button::transparent(theme, status, selected))
                     .width(iced::Length::Fill);
 
-            tools = tools.push(if selected {
+            let button = if selected {
                 btn
             } else {
                 btn.on_press(on_sidebar_message(DrawingMessage::SelectTool(tool)))
-            });
+            };
+            tools = tools.push(tooltip(button, Some(tool.label()), TooltipPosition::Right));
         }
 
         tools = tools.push(iced::widget::space::vertical());
 
-        tools = tools.push(
+        let magnet_enabled = self.magnet_enabled;
+        let magnet_active = self.magnet_active();
+        let magnet_button =
+            iced::widget::button(iced::widget::text("M").align_x(iced::Alignment::Center))
+                .style(move |theme, status| {
+                    style::button::magnet(theme, status, magnet_enabled, magnet_active)
+                })
+                .width(iced::Length::Fill)
+                .on_press(on_sidebar_message(DrawingMessage::ToggleMagnet));
+        tools = tools.push(tooltip(
+            magnet_button,
+            Some("Magnet"),
+            TooltipPosition::Right,
+        ));
+
+        let objects_button =
             iced::widget::button(iced::widget::text("O").align_x(iced::Alignment::Center))
                 .style(|theme, status| style::button::transparent(theme, status, false))
                 .width(iced::Length::Fill)
-                .on_press(on_sidebar_message(DrawingMessage::ShowObjectListPage)),
-        );
+                .on_press(on_sidebar_message(DrawingMessage::ShowObjectListPage));
+        tools = tools.push(tooltip(
+            objects_button,
+            Some("Drawings"),
+            TooltipPosition::Right,
+        ));
 
         iced::widget::container(tools)
             .style(style::chart_sidebar_container)
@@ -710,6 +883,7 @@ impl DrawingTools {
     pub fn snapshot(&self) -> DrawingSnapshot<'_> {
         DrawingSnapshot::new(
             self.active_tool,
+            self.magnet_enabled,
             &self.drawings,
             &self.selected_drawings,
             self.drawing_draft(),
@@ -719,6 +893,14 @@ impl DrawingTools {
 
     pub fn handle_widget_drawing_event(&mut self, event: KlineWidgetDrawingEvent) -> DrawingUpdate {
         match event {
+            KlineWidgetDrawingEvent::MagnetModifierChanged(active) => {
+                if self.magnet_modifier_active != active {
+                    self.magnet_modifier_active = active;
+                    DrawingUpdate::StateOnly
+                } else {
+                    DrawingUpdate::None
+                }
+            }
             KlineWidgetDrawingEvent::Selected(selected) => {
                 if self.select_drawing(selected) {
                     DrawingUpdate::Visual
@@ -1124,11 +1306,8 @@ impl DrawingTools {
         true
     }
 
-    fn open_drawing_settings(&mut self, id: DrawingId) -> bool {
-        let mut changed = false;
-        changed |= self.select_drawing(Some(id));
-        changed |= self.set_sidebar_page(SidebarPage::Tools);
-        changed
+    fn open_drawing_toolbar(&mut self, id: DrawingId) -> bool {
+        self.select_drawing(Some(id))
     }
 
     fn selected_entity(&self) -> Option<&DrawingEntity> {
@@ -1423,5 +1602,61 @@ impl DrawingTools {
             DrawingObject::HorizontalLine { panel_id, .. } => panel_exists(*panel_id),
             DrawingObject::VerticalLine { .. } => true,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn magnet_is_session_only_and_requires_a_supported_tool() {
+        let mut tools = DrawingTools::default();
+
+        assert!(!tools.magnet_active());
+        assert!(!tools.snapshot().magnet_enabled);
+
+        assert_eq!(
+            tools.update(DrawingMessage::ToggleMagnet),
+            DrawingUpdate::Visual
+        );
+        assert!(tools.snapshot().magnet_enabled);
+        assert!(!tools.magnet_active());
+
+        assert_eq!(
+            tools.update(DrawingMessage::SelectTool(DrawingTool::Trendline)),
+            DrawingUpdate::Visual
+        );
+        assert!(tools.magnet_active());
+
+        assert_eq!(
+            tools.update(DrawingMessage::ToggleMagnet),
+            DrawingUpdate::Visual
+        );
+        assert!(!tools.snapshot().magnet_enabled);
+        assert!(!tools.magnet_active());
+
+        assert_eq!(
+            tools.handle_widget_drawing_event(KlineWidgetDrawingEvent::MagnetModifierChanged(true)),
+            DrawingUpdate::StateOnly
+        );
+        assert!(!tools.snapshot().magnet_enabled);
+        assert!(tools.magnet_active());
+
+        assert_eq!(
+            tools.update(DrawingMessage::SelectTool(DrawingTool::Cursor)),
+            DrawingUpdate::Visual
+        );
+        assert!(!tools.magnet_active());
+
+        let restored = DrawingTools::from_parts(
+            DrawingTool::Trendline,
+            Vec::new(),
+            DrawingStyleDefaults::default(),
+            false,
+            false,
+        );
+        assert!(!restored.snapshot().magnet_enabled);
+        assert!(!restored.magnet_active());
     }
 }

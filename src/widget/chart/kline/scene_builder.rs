@@ -15,6 +15,7 @@ use exchange::{Kline, Timeframe, UnixMs};
 
 use iced::advanced::Layout;
 use iced::{Point, Rectangle, mouse};
+
 impl<'a, S> KlineWidget<'a, S>
 where
     S: KlineSeriesLike,

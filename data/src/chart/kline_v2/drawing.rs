@@ -1,6 +1,6 @@
 use super::YUnit;
 use super::composition::PanelId;
-use crate::config::theme::ThemeAccent;
+use crate::config::theme::{ThemeAccent, ThemeColorShade};
 use exchange::UnixMs;
 use serde::{Deserialize, Serialize};
 
@@ -56,6 +56,13 @@ impl DrawingTool {
         matches!(self, Self::Cursor)
     }
 
+    pub const fn supports_magnet(self) -> bool {
+        matches!(
+            self,
+            Self::Trendline | Self::Box | Self::HorizontalLine | Self::VerticalLine
+        )
+    }
+
     pub const fn all() -> &'static [Self] {
         &[
             Self::Cursor,
@@ -75,6 +82,17 @@ impl DrawingTool {
             Self::Trendline => "TL",
             Self::Box => "B",
             Self::Measure => "M",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Cursor => "Crosshair",
+            Self::Trendline => "Trendline",
+            Self::Box => "Box",
+            Self::HorizontalLine => "Horizontal line",
+            Self::VerticalLine => "Vertical line",
+            Self::Measure => "Measure",
         }
     }
 
@@ -109,13 +127,26 @@ impl DrawingTool {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum DrawingColor {
-    Accent { accent: ThemeAccent, alpha: f32 },
+    Accent {
+        accent: ThemeAccent,
+        #[serde(default)]
+        shade: ThemeColorShade,
+        alpha: f32,
+    },
     Custom(Rgba),
 }
 
 impl DrawingColor {
     pub const fn accent(accent: ThemeAccent, alpha: f32) -> Self {
-        Self::Accent { accent, alpha }
+        Self::themed(accent, ThemeColorShade::Base, alpha)
+    }
+
+    pub const fn themed(accent: ThemeAccent, shade: ThemeColorShade, alpha: f32) -> Self {
+        Self::Accent {
+            accent,
+            shade,
+            alpha,
+        }
     }
 
     pub fn accent_value(self) -> Option<ThemeAccent> {
@@ -125,10 +156,43 @@ impl DrawingColor {
         }
     }
 
+    pub fn shade_value(self) -> ThemeColorShade {
+        match self {
+            Self::Accent { shade, .. } => shade,
+            Self::Custom(_) => ThemeColorShade::Base,
+        }
+    }
+
+    pub fn with_accent(self, accent: ThemeAccent, alpha: f32) -> Self {
+        Self::themed(accent, self.shade_value(), alpha)
+    }
+
+    pub fn set_shade(&mut self, shade: ThemeColorShade) -> bool {
+        let Self::Accent {
+            shade: current_shade,
+            ..
+        } = self
+        else {
+            return false;
+        };
+
+        if *current_shade == shade {
+            return false;
+        }
+
+        *current_shade = shade;
+        true
+    }
+
     pub fn scale_alpha(self, factor: f32) -> Self {
         match self {
-            Self::Accent { accent, alpha } => Self::Accent {
+            Self::Accent {
                 accent,
+                shade,
+                alpha,
+            } => Self::Accent {
+                accent,
+                shade,
                 alpha: alpha * factor,
             },
             Self::Custom(color) => Self::Custom(color.scale_alpha(factor)),
@@ -145,6 +209,7 @@ pub struct DrawingAnchor {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum KlineWidgetDrawingEvent {
+    MagnetModifierChanged(bool),
     Selected(Option<DrawingId>),
     MarqueeSelected(Vec<DrawingId>),
     AnchorPressed(DrawingAnchor),
@@ -193,6 +258,7 @@ impl DrawingMeasure {
 #[derive(Debug, Clone, Copy)]
 pub struct DrawingSnapshot<'a> {
     pub active_tool: DrawingTool,
+    pub magnet_enabled: bool,
     pub entities: &'a [DrawingEntity],
     pub selected_drawings: &'a [DrawingId],
     pub drawing_draft: Option<&'a DrawingDraft>,
@@ -202,6 +268,7 @@ pub struct DrawingSnapshot<'a> {
 impl<'a> DrawingSnapshot<'a> {
     pub const fn new(
         active_tool: DrawingTool,
+        magnet_enabled: bool,
         entities: &'a [DrawingEntity],
         selected_drawings: &'a [DrawingId],
         drawing_draft: Option<&'a DrawingDraft>,
@@ -209,6 +276,7 @@ impl<'a> DrawingSnapshot<'a> {
     ) -> Self {
         Self {
             active_tool,
+            magnet_enabled,
             entities,
             selected_drawings,
             drawing_draft,
@@ -420,11 +488,7 @@ impl DrawingDraft {
                 current,
                 extend_right,
                 ..
-            } => DrawingObject::Box {
-                start: *start,
-                end: *current,
-                extend_right: *extend_right,
-            },
+            } => DrawingObject::normalized_box(*start, *current, *extend_right),
         }
     }
 
@@ -462,11 +526,7 @@ impl DrawingDraft {
                 }
 
                 Some((
-                    DrawingObject::Box {
-                        start,
-                        end,
-                        extend_right,
-                    },
+                    DrawingObject::normalized_box(start, end, extend_right),
                     style,
                 ))
             }
@@ -504,6 +564,22 @@ pub enum AxisLabelAnchor {
 }
 
 impl DrawingObject {
+    pub fn normalized_box(
+        mut start: DrawingAnchor,
+        mut end: DrawingAnchor,
+        extend_right: bool,
+    ) -> Self {
+        if extend_right && end.time < start.time {
+            std::mem::swap(&mut start.time, &mut end.time);
+        }
+
+        Self::Box {
+            start,
+            end,
+            extend_right,
+        }
+    }
+
     pub fn tool(&self) -> DrawingTool {
         match self {
             Self::Trendline { .. } => DrawingTool::Trendline,
@@ -560,11 +636,7 @@ impl DrawingObject {
                 extend_right,
             } => {
                 let panel_id = start.panel_id;
-                let left = if *extend_right {
-                    start.time
-                } else {
-                    start.time.min(end.time)
-                };
+                let left = start.time.min(end.time);
                 let top = YUnit(start.y_unit.0.max(end.y_unit.0));
                 let bottom = YUnit(start.y_unit.0.min(end.y_unit.0));
 

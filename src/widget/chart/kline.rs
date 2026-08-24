@@ -419,7 +419,7 @@ where
             footprints_enabled: false,
             footprint_cluster_kind: ClusterKind::default(),
             footprint_poc_config: FootprintPocConfig::default(),
-            drawings: DrawingSnapshot::new(DrawingTool::Cursor, &[], &[], None, None),
+            drawings: DrawingSnapshot::new(DrawingTool::Cursor, false, &[], &[], None, None),
             basis,
             horizontal_world: HorizontalWorld::new(DEFAULT_BAR_SPACING_PX, 1.0, 0.0),
             known_plot_width: None,
@@ -555,6 +555,11 @@ where
 
     fn is_command_modifier(modifiers: keyboard::Modifiers) -> bool {
         modifiers.intersects(keyboard::Modifiers::COMMAND)
+    }
+
+    fn drawing_magnet_enabled(&self, modifiers: keyboard::Modifiers) -> bool {
+        self.drawings.active_tool.supports_magnet()
+            && (self.drawings.magnet_enabled || Self::is_command_modifier(modifiers))
     }
 }
 
@@ -732,6 +737,12 @@ where
             Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
                 let state = tree.state.downcast_mut::<State>();
                 state.modifiers = *modifiers;
+                state.clear_overlay_caches();
+                shell.publish(M::from(KlineWidgetEvent::Drawing(
+                    KlineWidgetDrawingEvent::MagnetModifierChanged(Self::is_command_modifier(
+                        *modifiers,
+                    )),
+                )));
 
                 match key.as_ref() {
                     keyboard::Key::Named(keyboard::key::Named::Backspace)
@@ -755,10 +766,22 @@ where
             Event::Keyboard(keyboard::Event::KeyReleased { modifiers, .. }) => {
                 let state = tree.state.downcast_mut::<State>();
                 state.modifiers = *modifiers;
+                state.clear_overlay_caches();
+                shell.publish(M::from(KlineWidgetEvent::Drawing(
+                    KlineWidgetDrawingEvent::MagnetModifierChanged(Self::is_command_modifier(
+                        *modifiers,
+                    )),
+                )));
             }
             Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
                 let state = tree.state.downcast_mut::<State>();
                 state.modifiers = *modifiers;
+                state.clear_overlay_caches();
+                shell.publish(M::from(KlineWidgetEvent::Drawing(
+                    KlineWidgetDrawingEvent::MagnetModifierChanged(Self::is_command_modifier(
+                        *modifiers,
+                    )),
+                )));
             }
             Event::Mouse(mouse_event) => {
                 let state = tree.state.downcast_mut::<State>();
@@ -1352,10 +1375,11 @@ where
                                 state.last_cursor = None;
                             }
                         } else if !self.drawings.allows_panning() {
+                            let magnetic = self.drawing_magnet_enabled(state.modifiers);
                             let anchor = if let Some(panel_id) = self.drawings.draft_panel_id() {
                                 self.compute_scene(layout, cursor).and_then(|scene| {
-                                    self.drawing_anchor_from_scene_point(
-                                        &scene, panel_id, cursor_pos,
+                                    self.drawing_draft_anchor_from_scene_point(
+                                        &scene, panel_id, cursor_pos, magnetic,
                                     )
                                 })
                             } else if let LayoutHitZone::PanelPlot(panel_index) = zone {
@@ -1363,8 +1387,8 @@ where
 
                                 panel_id.and_then(|panel_id| {
                                     self.compute_scene(layout, cursor).and_then(|scene| {
-                                        self.drawing_anchor_from_scene_point(
-                                            &scene, panel_id, cursor_pos,
+                                        self.drawing_draft_anchor_from_scene_point(
+                                            &scene, panel_id, cursor_pos, magnetic,
                                         )
                                     })
                                 })
@@ -1583,10 +1607,11 @@ where
                             && Self::hit_corner_control(&corner_controls, cursor_pos).is_none()
                             && ticker_legend_hit.is_none()
                             && let Some(scene) = self.compute_scene(layout, cursor)
-                            && let Some(anchor) = self.drawing_anchor_from_scene_point(
+                            && let Some(anchor) = self.drawing_draft_anchor_from_scene_point(
                                 &scene,
                                 draft_panel_id,
                                 cursor_pos,
+                                self.drawing_magnet_enabled(state.modifiers),
                             )
                         {
                             shell.publish(M::from(KlineWidgetEvent::Drawing(
@@ -1754,6 +1779,7 @@ where
                 self.fill_x_axis_labels(frame, &scene, palette);
             });
 
+            let drawing_magnet = self.drawing_magnet_enabled(state.modifiers);
             let overlay_geom = state.overlay_cache.draw(r, bounds.size(), |frame| {
                 self.fill_overlay(
                     frame,
@@ -1761,6 +1787,7 @@ where
                     palette,
                     &generated_accents,
                     overlay_origin_in_window,
+                    drawing_magnet,
                 );
             });
 
@@ -1768,7 +1795,7 @@ where
                 state
                     .interaction_text_cache
                     .draw(r, bounds.size(), |frame| {
-                        self.fill_overlay_interaction_text(frame, &scene, palette);
+                        self.fill_overlay_interaction_text(frame, &scene, palette, drawing_magnet);
                     });
 
             let marquee_geom = state.marquee_cache.draw(r, bounds.size(), |frame| {

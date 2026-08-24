@@ -233,6 +233,39 @@ pub mod button {
         }
     }
 
+    pub fn magnet(theme: &Theme, status: Status, enabled: bool, active: bool) -> Style {
+        let palette = theme.extended_palette();
+        let enabled_color = palette.secondary.strong.color;
+
+        Style {
+            text_color: if enabled && !active {
+                enabled_color
+            } else {
+                palette.background.base.text
+            },
+            border: Border {
+                radius: 3.0.into(),
+                width: if enabled && !active { 1.0 } else { 0.0 },
+                color: enabled_color.scale_alpha(0.75),
+            },
+            background: match status {
+                Status::Active => {
+                    if active {
+                        Some(palette.background.weak.color.into())
+                    } else if enabled {
+                        Some(enabled_color.scale_alpha(0.14).into())
+                    } else {
+                        None
+                    }
+                }
+                Status::Pressed => Some(palette.background.weak.color.into()),
+                Status::Hovered => Some(palette.background.strong.color.into()),
+                Status::Disabled => Some(palette.background.strong.color.into()),
+            },
+            ..Default::default()
+        }
+    }
+
     pub fn modifier(theme: &Theme, status: Status, is_clicked: bool) -> Style {
         let palette = theme.extended_palette();
 

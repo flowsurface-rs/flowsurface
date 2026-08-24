@@ -46,6 +46,26 @@ pub(super) enum XAxis {
 }
 
 impl XAxis {
+    pub(super) fn bar_at_unit(
+        self,
+        bars: &[exchange::Kline],
+        target_unit: i64,
+    ) -> Option<&exchange::Kline> {
+        match self {
+            XAxis::Time { .. } => bars
+                .iter()
+                .find(|bar| self.unit_from_time(bar.time) == target_unit),
+            XAxis::Tick { .. } => {
+                let len = bars.len();
+                bars.iter().enumerate().find_map(|(index, bar)| {
+                    let from_latest = len.saturating_sub(1).saturating_sub(index) as u64;
+                    (self.unit_from_tick(TickIndex::from_u64(from_latest)) == target_unit)
+                        .then_some(bar)
+                })
+            }
+        }
+    }
+
     #[inline]
     pub(super) fn unit_from_time(self, value: UnixMs) -> i64 {
         match self {

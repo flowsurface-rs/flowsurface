@@ -4,8 +4,9 @@ use super::{
     KlinePanelKind, KlineSeriesLike, KlineWidget, TEXT_SIZE, Y_AXIS_LABEL_LEFT_INSET, YUnit,
 };
 use crate::style;
-use crate::widget::chart::kline::composition::PanelId;
+use crate::widget::chart::kline::composition::{MarkKind, PanelId};
 
+use data::config::theme::{ThemeColor, ThemeColorRole};
 use exchange::UnixMs;
 
 use iced::theme::palette::Extended;
@@ -43,11 +44,22 @@ pub use data::chart::kline_v2::drawing::{
     MAX_DRAWING_STROKE_WIDTH, MIN_DRAWING_STROKE_WIDTH, MeasureState,
 };
 
-fn iced_color(color: DrawingColor, generated_accents: &[iced::Color; 6]) -> iced::Color {
+fn iced_color(
+    color: DrawingColor,
+    palette: &Extended,
+    generated_accents: &[iced::Color; 6],
+) -> iced::Color {
     match color {
-        DrawingColor::Accent { accent, alpha } => {
-            generated_accents[accent.index()].scale_alpha(alpha)
-        }
+        DrawingColor::Accent {
+            accent,
+            shade,
+            alpha,
+        } => crate::widget::resolve_theme_color(
+            ThemeColor::with_accent(ThemeColorRole::Primary, Some(accent), shade),
+            palette,
+            generated_accents,
+        )
+        .scale_alpha(alpha),
         DrawingColor::Custom(color) => {
             iced::Color::from_rgba(color.red, color.green, color.blue, color.alpha)
         }
@@ -70,6 +82,12 @@ fn intersect_bounds(a: Rectangle, b: Rectangle) -> Option<Rectangle> {
         width: right - left,
         height: bottom - top,
     })
+}
+
+fn nearest_y_unit(target: YUnit, candidates: impl IntoIterator<Item = YUnit>) -> Option<YUnit> {
+    candidates
+        .into_iter()
+        .min_by_key(|candidate| candidate.0.abs_diff(target.0))
 }
 
 impl<'a, S> KlineWidget<'a, S>
@@ -180,6 +198,71 @@ where
         })
     }
 
+    pub(super) fn drawing_draft_anchor_from_scene_point(
+        &self,
+        scene: &Scene,
+        panel_id: PanelId,
+        cursor_local: Point,
+        magnetic: bool,
+    ) -> Option<DrawingAnchor> {
+        let anchor = self.drawing_anchor_from_scene_point(scene, panel_id, cursor_local)?;
+
+        if !magnetic {
+            return Some(anchor);
+        }
+
+        let x_plot = cursor_local.x - scene.layout.regions.plot.x;
+        let x_unit = scene.unit_from_plot_x(x_plot);
+        Some(
+            self.primary_magnetic_drawing_anchor(scene, x_unit, anchor)
+                .unwrap_or(anchor),
+        )
+    }
+
+    pub(super) fn primary_magnetic_drawing_anchor_at_cursor(
+        &self,
+        scene: &Scene,
+    ) -> Option<DrawingAnchor> {
+        let cursor = scene.interaction.cursor?;
+        let anchor = self.drawing_anchor_from_scene_cursor(scene)?;
+        self.primary_magnetic_drawing_anchor(scene, cursor.x_unit, anchor)
+    }
+
+    fn primary_magnetic_drawing_anchor(
+        &self,
+        scene: &Scene,
+        x_unit: i64,
+        mut anchor: DrawingAnchor,
+    ) -> Option<DrawingAnchor> {
+        if self.panel_index_for_id(anchor.panel_id) != Some(scene.primary.panel_index) {
+            return None;
+        }
+
+        let series = self.series.first()?;
+        let bar = scene.x.axis.bar_at_unit(series.bars(), x_unit)?;
+        let precision = self.panel_value_precision(scene.primary.panel_index);
+        let line_values = [bar.close.to_f32_lossy()];
+        let ohlc_values = [
+            bar.open.to_f32_lossy(),
+            bar.high.to_f32_lossy(),
+            bar.low.to_f32_lossy(),
+            bar.close.to_f32_lossy(),
+        ];
+        let values = if matches!(scene.primary.mark, MarkKind::Line) {
+            &line_values[..]
+        } else {
+            &ohlc_values[..]
+        };
+
+        anchor.y_unit = nearest_y_unit(
+            anchor.y_unit,
+            values
+                .iter()
+                .map(|value| self.panel_value_to_unit(precision, *value)),
+        )?;
+        Some(anchor)
+    }
+
     pub(super) fn panel_plot_bounds_in_overlay(
         &self,
         scene: &Scene,
@@ -270,7 +353,12 @@ where
         Some(scene.layout.regions.plot.x + x_plot)
     }
 
-    fn y_overlay_for_value(&self, scene: &Scene, panel_id: PanelId, y_unit: YUnit) -> Option<f32> {
+    pub(super) fn y_overlay_for_value(
+        &self,
+        scene: &Scene,
+        panel_id: PanelId,
+        y_unit: YUnit,
+    ) -> Option<f32> {
         let panel_index = self.panel_index_for_id(panel_id)?;
         let panel = scene.layout.panel(panel_index)?;
         let panel_precision = self.panel_value_precision(panel_index);
@@ -332,11 +420,7 @@ where
         let start_point = self.anchor_to_overlay_point(scene, start)?;
         let end_point = self.anchor_to_overlay_point(scene, end)?;
 
-        let left = if extend_right {
-            start_point.x
-        } else {
-            start_point.x.min(end_point.x)
-        };
+        let left = start_point.x.min(end_point.x);
         let right = if extend_right {
             clip_bounds.x + clip_bounds.width
         } else {
@@ -420,6 +504,7 @@ where
         scene: &Scene,
         object: &DrawingObject,
         style: DrawingStyle,
+        palette: &Extended,
         generated_accents: &[iced::Color; 6],
         selected: bool,
         overlay_origin_in_window: Point,
@@ -433,7 +518,7 @@ where
         let (stroke_width, stroke_width_phys) =
             Self::quantized_stroke_width(raw_stroke_width, pixel_ratio);
         let stroke = canvas::Stroke::default()
-            .with_color(iced_color(style.stroke_color, generated_accents))
+            .with_color(iced_color(style.stroke_color, palette, generated_accents))
             .with_width(stroke_width);
 
         match object {
@@ -519,7 +604,7 @@ where
                         frame.fill_rectangle(
                             Point::new(fill_left, fill_top),
                             Size::new(fill_width, fill_height),
-                            iced_color(fill, generated_accents),
+                            iced_color(fill, palette, generated_accents),
                         );
                     }
 
@@ -668,11 +753,7 @@ where
                     return Vec::new();
                 };
 
-                let left = if *extend_right {
-                    start_point.x
-                } else {
-                    start_point.x.min(end_point.x)
-                };
+                let left = start_point.x.min(end_point.x);
                 let right = start_point.x.max(end_point.x);
                 let top = start_point.y.min(end_point.y);
                 let bottom = start_point.y.max(end_point.y);
@@ -729,14 +810,14 @@ where
         scene: &Scene,
         palette: &Extended,
         pixel_ratio: f32,
-        drawing: &DrawingEntity,
+        object: &DrawingObject,
     ) {
-        let handles = self.drawing_handle_points(scene, &drawing.object);
+        let handles = self.drawing_handle_points(scene, object);
         if handles.is_empty() {
             return;
         }
 
-        let Some(clip_bounds) = self.drawing_handle_clip_bounds(scene, &drawing.object) else {
+        let Some(clip_bounds) = self.drawing_handle_clip_bounds(scene, object) else {
             return;
         };
 
@@ -815,6 +896,7 @@ where
                 scene,
                 &drawing.object,
                 drawing.style,
+                palette,
                 generated_accents,
                 selected,
                 overlay_origin_in_window,
@@ -828,7 +910,7 @@ where
                 scene,
                 palette,
                 pixel_ratio,
-                selected_drawing,
+                &selected_drawing.object,
             );
         }
 
@@ -839,16 +921,19 @@ where
                 style.fill_color = Some(fill.scale_alpha(0.5));
             }
 
+            let preview = draft.preview_object();
             self.draw_drawing_object(
                 frame,
                 scene,
-                &draft.preview_object(),
+                &preview,
                 style,
+                palette,
                 generated_accents,
                 false,
                 overlay_origin_in_window,
                 pixel_ratio,
             );
+            self.draw_selected_drawing_handles(frame, scene, palette, pixel_ratio, &preview);
         }
 
         if let Some(measure) = drawing_state.measure {
@@ -1228,11 +1313,7 @@ where
                 let Some(end_point) = self.anchor_to_overlay_point(scene, *end) else {
                     return Vec::new();
                 };
-                let left = if *extend_right {
-                    start_point.x
-                } else {
-                    start_point.x.min(end_point.x)
-                };
+                let left = start_point.x.min(end_point.x);
                 let right = start_point.x.max(end_point.x);
                 let top = start_point.y.min(end_point.y);
                 let bottom = start_point.y.max(end_point.y);
@@ -1516,5 +1597,17 @@ where
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nearest_y_unit_selects_the_closest_candidate() {
+        let snapped = nearest_y_unit(YUnit(105), [YUnit(100), YUnit(110), YUnit(120)]);
+
+        assert_eq!(snapped, Some(YUnit(100)));
     }
 }

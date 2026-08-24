@@ -1,3 +1,4 @@
+use super::layout::{label_bounds_overlap, place_non_overlapping_labels};
 use super::*;
 use crate::widget::chart::unit_ticks;
 
@@ -302,7 +303,42 @@ where
             }
         }
 
+        self.resolve_y_axis_label_overlaps(scene, &mut labels);
         labels
+    }
+
+    fn resolve_y_axis_label_overlaps(&self, scene: &Scene, labels: &mut Vec<(usize, String, f32)>) {
+        for panel_index in 0..scene.layout.panels.len() {
+            let Some(panel) = scene.layout.panel(panel_index) else {
+                continue;
+            };
+
+            let indices: Vec<usize> = labels
+                .iter()
+                .enumerate()
+                .filter_map(|(index, (label_panel, _, _))| {
+                    (*label_panel == panel_index).then_some(index)
+                })
+                .collect();
+            let desired_centers: Vec<f32> = indices.iter().map(|&index| labels[index].2).collect();
+            let placements = place_non_overlapping_labels(
+                &desired_centers,
+                panel.plot.y,
+                panel.plot.y + panel.plot.height,
+                TEXT_SIZE,
+                2.0,
+            );
+
+            for (index, placement) in indices.into_iter().zip(placements) {
+                if let Some(center) = placement {
+                    labels[index].2 = center;
+                } else {
+                    labels[index].1.clear();
+                }
+            }
+        }
+
+        labels.retain(|(_, text, _)| !text.is_empty());
     }
 
     pub(super) fn required_y_axis_gutter(&self, scene: &Scene) -> f32 {
@@ -345,10 +381,24 @@ where
         scene: &Scene,
         palette: &Extended,
     ) {
+        let ticker_label_centers: Vec<f32> = self
+            .primary_series_end_label_positions(scene)
+            .into_iter()
+            .map(|(_, center)| center)
+            .collect();
+
         for (panel_index, text, y) in self.y_axis_label_specs(scene) {
             let Some(axis) = scene.layout.panel(panel_index) else {
                 continue;
             };
+
+            let overlaps_ticker_label = panel_index == scene.primary.panel_index
+                && ticker_label_centers.iter().copied().any(|ticker_center| {
+                    label_bounds_overlap(y, TEXT_SIZE, ticker_center, TEXT_SIZE + 4.0, 2.0)
+                });
+            if overlaps_ticker_label {
+                continue;
+            }
 
             self.draw_y_axis_label(frame, axis, text, y, palette.background.base.text);
         }
