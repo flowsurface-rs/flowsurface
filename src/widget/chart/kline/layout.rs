@@ -1,9 +1,14 @@
+use super::Regions;
 use super::composition::{PanelRole, PanelSpec};
 use super::{KlineSeriesLike, KlineWidget, PANEL_SPLITTER_HEIGHT};
-use crate::chart::ticks::AXIS_DRAG_EDGE_GUARD;
-use crate::widget::chart::Regions;
 use iced::advanced::Layout;
 use iced::{Point, Rectangle};
+
+/// Guard area on the edges of the axis
+/// to prevent conflicts with pane state interactions
+///
+/// (e.g. pane split dragging when trying to interact with labels)
+const AXIS_DRAG_EDGE_GUARD: f32 = 4.0;
 
 const PANEL_SPLITTER_HIT_PX: f32 = 8.0;
 
@@ -99,7 +104,7 @@ pub(super) enum LayoutHitZone {
     Outside,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct PanelLayoutNode {
     pub(super) kind: KlinePanelKind,
     pub(super) plot: Rectangle,
@@ -117,7 +122,7 @@ impl PanelLayoutNode {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) struct PanelLayoutTree {
     pub(super) regions: Regions,
     pub(super) panels: Vec<PanelLayoutNode>,

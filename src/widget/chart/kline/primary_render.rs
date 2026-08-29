@@ -1,17 +1,16 @@
-use super::footprint::{draw_footprint_candle, draw_footprint_cluster_row};
+use super::footprint::{
+    FootprintColumnLayout, FootprintImbalance, draw_footprint_candle, draw_footprint_cluster_row,
+    footprint_text_column_is_enabled,
+};
 use super::scene::IndicatorPanelScene;
 use super::*;
-use data::chart::kline_v2::{
+use data::chart::kline::{
     IndicatorColorSlot, IndicatorFillGeometry, IndicatorFillSpec, LineStrokeStyle,
 };
 use data::util::abbr_large_numbers;
 
 const FOOTPRINT_MIN_COLUMN_WIDTH_PX: f32 = 24.0;
-const FOOTPRINT_MIN_ROW_HEIGHT_PX: f32 = 2.0;
 const FOOTPRINT_CELL_INSET_PX: f32 = 2.0;
-// Reserve a complete label on both sides before drawing text. Eight characters
-// covers the formatter's rounded `1000.00m` boundary without measuring values.
-const FOOTPRINT_TEXT_MIN_COLUMN_WIDTH_PX: f32 = 76.0;
 const TABLE_TEXT_MIN_COLUMN_WIDTH_PX: f32 = 48.0;
 const TABLE_TEXT_MIN_ROW_HEIGHT_PX: f32 = 9.0;
 const TABLE_CELL_INSET_PX: f32 = 1.0;
@@ -47,6 +46,10 @@ fn indicator_line_stroke(
 pub(super) enum PrimaryPlotDetail {
     CandleOnly,
     Footprint,
+}
+
+fn footprint_detail_enabled(footprints_enabled: bool, logical_bar_spacing: f32) -> bool {
+    footprints_enabled && logical_bar_spacing >= FOOTPRINT_MIN_COLUMN_WIDTH_PX
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -101,33 +104,7 @@ where
     S: KlineSeriesLike,
 {
     pub(super) fn primary_plot_detail(&self, scene: &Scene) -> PrimaryPlotDetail {
-        if !self.footprints_enabled {
-            return PrimaryPlotDetail::CandleOnly;
-        }
-
-        let Some(base_series) = self.series.first() else {
-            return PrimaryPlotDetail::CandleOnly;
-        };
-        let Some(last_bar) = base_series.bars().last() else {
-            return PrimaryPlotDetail::CandleOnly;
-        };
-
-        let tick_size = base_series.footprint_tick_size();
-        let row_height = self.footprint_row_height(
-            scene,
-            last_bar.close,
-            tick_size,
-            scene
-                .primary
-                .series_percent_anchors
-                .first()
-                .copied()
-                .flatten(),
-        );
-
-        if scene.logical_bar_spacing() >= FOOTPRINT_MIN_COLUMN_WIDTH_PX
-            && row_height >= FOOTPRINT_MIN_ROW_HEIGHT_PX
-        {
+        if footprint_detail_enabled(self.footprints_enabled, scene.logical_bar_spacing()) {
             PrimaryPlotDetail::Footprint
         } else {
             PrimaryPlotDetail::CandleOnly
@@ -157,58 +134,65 @@ where
         let mut segments = Vec::new();
         let mut segment = Vec::new();
 
-        self.for_each_bar_unit_index(scene.x.axis, |series_index, series, x_unit, bar| {
-            if series_index != 0 || x_unit < scene.x.min_unit || x_unit > scene.x.max_unit {
-                return;
-            }
+        self.for_each_scene_bar_unit_index(
+            scene,
+            |series_index, bar_index, series, x_unit, _bar| {
+                if series_index != 0 || x_unit < scene.x.min_unit || x_unit > scene.x.max_unit {
+                    return;
+                }
 
-            let Some(data) = self.indicator_data_for_series(series, Some(value_id), bar) else {
-                if !segment.is_empty() {
-                    segments.push(std::mem::take(&mut segment));
-                }
-                return;
-            };
+                let Some(data) =
+                    self.indicator_data_for_series_at(series, Some(value_id), bar_index)
+                else {
+                    if !segment.is_empty() {
+                        segments.push(std::mem::take(&mut segment));
+                    }
+                    return;
+                };
 
-            let Some(upper_value) = self.indicator_source_value(value_id, Some(data), fill.upper)
-            else {
-                if !segment.is_empty() {
-                    segments.push(std::mem::take(&mut segment));
-                }
-                return;
-            };
-            let Some(lower_value) = self.indicator_source_value(value_id, Some(data), fill.lower)
-            else {
-                if !segment.is_empty() {
-                    segments.push(std::mem::take(&mut segment));
-                }
-                return;
-            };
+                let Some(upper_value) =
+                    self.indicator_source_value(value_id, Some(data), fill.upper)
+                else {
+                    if !segment.is_empty() {
+                        segments.push(std::mem::take(&mut segment));
+                    }
+                    return;
+                };
+                let Some(lower_value) =
+                    self.indicator_source_value(value_id, Some(data), fill.lower)
+                else {
+                    if !segment.is_empty() {
+                        segments.push(std::mem::take(&mut segment));
+                    }
+                    return;
+                };
 
-            let Some(upper_y) = map_y(upper_value) else {
-                if !segment.is_empty() {
-                    segments.push(std::mem::take(&mut segment));
-                }
-                return;
-            };
-            let Some(lower_y) = map_y(lower_value) else {
-                if !segment.is_empty() {
-                    segments.push(std::mem::take(&mut segment));
-                }
-                return;
-            };
+                let Some(upper_y) = map_y(upper_value) else {
+                    if !segment.is_empty() {
+                        segments.push(std::mem::take(&mut segment));
+                    }
+                    return;
+                };
+                let Some(lower_y) = map_y(lower_value) else {
+                    if !segment.is_empty() {
+                        segments.push(std::mem::take(&mut segment));
+                    }
+                    return;
+                };
 
-            if !upper_y.is_finite() || !lower_y.is_finite() {
-                if !segment.is_empty() {
-                    segments.push(std::mem::take(&mut segment));
+                if !upper_y.is_finite() || !lower_y.is_finite() {
+                    if !segment.is_empty() {
+                        segments.push(std::mem::take(&mut segment));
+                    }
+                    return;
                 }
-                return;
-            }
 
-            segment.push(BandPoint {
-                upper: Point::new(scene.map_x_plot(x_unit), upper_y),
-                lower: Point::new(scene.map_x_plot(x_unit), lower_y),
-            });
-        });
+                segment.push(BandPoint {
+                    upper: Point::new(scene.map_x_plot(x_unit), upper_y),
+                    lower: Point::new(scene.map_x_plot(x_unit), lower_y),
+                });
+            },
+        );
 
         if !segment.is_empty() {
             segments.push(segment);
@@ -317,6 +301,9 @@ where
                 let Some(value_id) = layer.source.indicator_value_id() else {
                     continue;
                 };
+                if self.indicator_is_unavailable(Some(value_id)) {
+                    continue;
+                }
                 if !self.indicator_fill_visible(value_id) {
                     continue;
                 }
@@ -377,11 +364,11 @@ where
             CandlestickColorSlot::Bearish
         };
         Self::resolve_theme_color(
-            self.candlestick_config.colors.color_for(slot),
+            self.candlestick.colors.color_for(slot),
             palette,
             generated_accents,
         )
-        .scale_alpha(self.candlestick_config.opacity_ratio())
+        .scale_alpha(self.candlestick.opacity_ratio())
     }
 
     pub(super) fn fill_footprint_overlay(
@@ -407,7 +394,7 @@ where
         let mut max_cluster_qty = 0.0f64;
 
         if draw_clusters {
-            self.for_each_bar_unit_index(scene.x.axis, |series_index, series, x_unit, bar| {
+            self.for_each_scene_bar_unit_index(scene, |series_index, _, series, x_unit, bar| {
                 if series_index != 0 || !in_visible_range(x_unit) {
                     return;
                 }
@@ -418,7 +405,7 @@ where
 
                 for group in footprint.trades.values() {
                     max_cluster_qty = max_cluster_qty
-                        .max(group.max_cluster_qty(self.footprint_cluster_kind).to_f64());
+                        .max(group.max_cluster_qty(self.footprint.cluster_kind).to_f64());
                 }
             });
         }
@@ -426,12 +413,23 @@ where
         let primary_plot = *scene.primary_plot();
         let footprint_width =
             (scene.logical_bar_spacing() - FOOTPRINT_CELL_INSET_PX * 2.0).max(1.0);
-        let show_text = scene.logical_bar_spacing() >= FOOTPRINT_TEXT_MIN_COLUMN_WIDTH_PX;
-        let draw_candlesticks = self.candlesticks_visible
+        let imbalance = self.footprint.imbalance.show.then(|| {
+            (
+                self.footprint.imbalance.threshold_percent,
+                self.footprint.imbalance.ignore_zeros,
+                Self::resolve_theme_color(
+                    self.footprint.imbalance.color,
+                    palette,
+                    generated_accents,
+                ),
+            )
+        });
+        let show_text = footprint_text_column_is_enabled(footprint_width, imbalance.is_some());
+        let draw_candlesticks = self.candlestick.visible
             && matches!(scene.primary.mark, MarkKind::Candle | MarkKind::Bar(_));
 
         frame.with_clip(primary_plot, |frame| {
-            self.for_each_bar_unit_index(scene.x.axis, |series_index, series, x_unit, bar| {
+            self.for_each_scene_bar_unit_index(scene, |series_index, _, series, x_unit, bar| {
                 if series_index != 0 || !in_visible_range(x_unit) {
                     return;
                 }
@@ -452,10 +450,14 @@ where
                     scene.map_primary_plot_with_anchor(bar.close.to_f32_lossy(), series_anchor);
                 let Some(footprint) = series.footprint_for_bar(bar) else {
                     if draw_candlesticks {
-                        draw_footprint_candle(
-                            frame,
+                        let layout = FootprintColumnLayout::new(
                             scene.map_x_plot(x_unit),
                             footprint_width,
+                            false,
+                        );
+                        draw_footprint_candle(
+                            frame,
+                            layout,
                             y_open,
                             y_high,
                             y_low,
@@ -470,8 +472,14 @@ where
                     return;
                 };
                 let x_center = scene.map_x_plot(x_unit);
+                let layout =
+                    FootprintColumnLayout::new(x_center, footprint_width, imbalance.is_some());
+                let cluster_scale = self.footprint.cluster_scaling.effective_qty(
+                    max_cluster_qty,
+                    footprint.max_cluster_qty_all(self.footprint.cluster_kind),
+                );
 
-                if draw_clusters && max_cluster_qty > f64::EPSILON {
+                if draw_clusters && cluster_scale > f64::EPSILON {
                     for (price, group) in &footprint.trades {
                         let row_height = self
                             .footprint_row_height(scene, *price, tick_size, anchor)
@@ -479,16 +487,25 @@ where
                         let y = scene.map_primary_plot_with_anchor(price.to_f32_lossy(), anchor);
                         draw_footprint_cluster_row(
                             frame,
-                            self.footprint_cluster_kind,
-                            x_center,
+                            self.footprint.cluster_kind,
+                            layout,
                             y,
                             row_height,
-                            footprint_width,
                             group.sell_qty.to_f64(),
                             group.buy_qty.to_f64(),
-                            max_cluster_qty,
+                            cluster_scale,
                             show_text,
                             palette,
+                            imbalance.map(|(threshold_percent, ignore_zeros, color)| {
+                                FootprintImbalance::new(
+                                    footprint,
+                                    *price,
+                                    tick_size,
+                                    threshold_percent,
+                                    ignore_zeros,
+                                    color,
+                                )
+                            }),
                         );
                     }
                 }
@@ -496,8 +513,7 @@ where
                 if draw_candlesticks {
                     draw_footprint_candle(
                         frame,
-                        x_center,
-                        footprint_width,
+                        layout,
                         y_open,
                         y_high,
                         y_low,
@@ -651,11 +667,11 @@ where
         palette: &Extended,
         generated_accents: &[iced::Color; 6],
     ) {
-        if !self.footprints_visible {
+        if !self.footprint.visible {
             return;
         }
 
-        let config = self.footprint_poc_config;
+        let config = self.footprint.poc;
         if !config.show_poc && !config.show_npoc {
             return;
         }
@@ -1047,22 +1063,29 @@ where
                         .with_color(separator_color),
                 );
                 let mut values = Vec::new();
-                self.for_each_bar_unit_index(scene.x.axis, |series_index, series, x_unit, bar| {
-                    if series_index != 0 || x_unit < scene.x.min_unit || x_unit > scene.x.max_unit {
-                        return;
-                    }
-                    let Some(data) = self.indicator_data_for_series(series, Some(value_id), bar)
-                    else {
-                        return;
-                    };
-                    let Some(value) = Self::table_column_value(data, column.value) else {
-                        return;
-                    };
-                    let x = scene.map_x_plot(x_unit);
-                    if x >= panel_plot.x && x <= panel_plot.x + panel_plot.width {
-                        values.push((x, value));
-                    }
-                });
+                self.for_each_scene_bar_unit_index(
+                    scene,
+                    |series_index, bar_index, series, x_unit, _bar| {
+                        if series_index != 0
+                            || x_unit < scene.x.min_unit
+                            || x_unit > scene.x.max_unit
+                        {
+                            return;
+                        }
+                        let Some(data) =
+                            self.indicator_data_for_series_at(series, Some(value_id), bar_index)
+                        else {
+                            return;
+                        };
+                        let Some(value) = Self::table_column_value(data, column.value) else {
+                            return;
+                        };
+                        let x = scene.map_x_plot(x_unit);
+                        if x >= panel_plot.x && x <= panel_plot.x + panel_plot.width {
+                            values.push((x, value));
+                        }
+                    },
+                );
 
                 if show_text {
                     for (x, value) in values {
@@ -1143,7 +1166,7 @@ where
         generated_accents: &[iced::Color; 6],
         plot_origin_in_window: Point,
     ) {
-        let pixel_ratio = self.resolved_pixel_ratio();
+        let pixel_ratio = self.pixel_ratio_value();
         let plot_origin_x_global = plot_origin_in_window.x;
         let plot_origin_y_global = plot_origin_in_window.y;
         let primary_plot_detail = self.primary_plot_detail(scene);
@@ -1211,71 +1234,92 @@ where
             };
 
             frame.with_clip(panel_plot, |frame| {
-                self.for_each_bar_unit_index(scene.x.axis, |series_index, series, x_unit, bar| {
-                    if series_index != 0 || !in_visible_range(x_unit) {
-                        return;
-                    }
+                self.for_each_scene_bar_unit_index(
+                    scene,
+                    |series_index, bar_index, series, x_unit, _bar| {
+                        if series_index != 0 || !in_visible_range(x_unit) {
+                            return;
+                        }
 
-                    let Some(indicator_data) =
-                        self.indicator_data_for_series(series, indicator_panel.value_id, bar)
-                    else {
-                        return;
-                    };
+                        let Some(indicator_data) = self.indicator_data_for_series_at(
+                            series,
+                            indicator_panel.value_id,
+                            bar_index,
+                        ) else {
+                            return;
+                        };
 
-                    let indicator_value = indicator_data.value();
-                    let Some(y_indicator_value) =
-                        scene.map_indicator_plot(indicator_panel.panel_index, indicator_value)
-                    else {
-                        return;
-                    };
+                        let indicator_value = indicator_data.value();
+                        let Some(y_indicator_value) =
+                            scene.map_indicator_plot(indicator_panel.panel_index, indicator_value)
+                        else {
+                            return;
+                        };
 
-                    let x_plot = scene.map_x_plot(x_unit);
-                    let indicator_left = Self::centered_left_for_width_with_origin(
-                        x_plot,
-                        indicator_width_phys,
-                        pixel_ratio,
-                        plot_origin_x_global,
-                    );
-                    let indicator_top = y_indicator_value.min(y_indicator_baseline);
-                    let indicator_height =
-                        (y_indicator_baseline - y_indicator_value).abs().max(1.0);
+                        let x_plot = scene.map_x_plot(x_unit);
+                        let indicator_left = Self::centered_left_for_width_with_origin(
+                            x_plot,
+                            indicator_width_phys,
+                            pixel_ratio,
+                            plot_origin_x_global,
+                        );
+                        let indicator_top = y_indicator_value.min(y_indicator_baseline);
+                        let indicator_height =
+                            (y_indicator_baseline - y_indicator_value).abs().max(1.0);
 
-                    if matches!(indicator_panel.data_kind, LayerDataKind::Histogram)
-                        && matches!(
-                            indicator_panel.mark,
-                            MarkKind::Bar(BarMode::Histogram(HistogramMode::SignedOverlay))
-                        )
-                    {
-                        if let Some(overlay) = indicator_data.signed_overlay() {
-                            let base_color = self.indicator_color(
-                                indicator_panel.value_id,
-                                if overlay >= 0.0 {
-                                    IndicatorColorSlot::Positive
-                                } else {
-                                    IndicatorColorSlot::Negative
-                                },
-                                palette,
-                                generated_accents,
-                            );
+                        if matches!(indicator_panel.data_kind, LayerDataKind::Histogram)
+                            && matches!(
+                                indicator_panel.mark,
+                                MarkKind::Bar(BarMode::Histogram(HistogramMode::SignedOverlay))
+                            )
+                        {
+                            if let Some(overlay) = indicator_data.signed_overlay() {
+                                let base_color = self.indicator_color(
+                                    indicator_panel.value_id,
+                                    if overlay >= 0.0 {
+                                        IndicatorColorSlot::Positive
+                                    } else {
+                                        IndicatorColorSlot::Negative
+                                    },
+                                    palette,
+                                    generated_accents,
+                                );
 
-                            frame.fill_rectangle(
-                                Point::new(indicator_left, indicator_top),
-                                Size::new(indicator_width, indicator_height),
-                                base_color.scale_alpha(0.3),
-                            );
-
-                            let overlay_abs = overlay.abs();
-                            if overlay_abs > 0.0
-                                && let Some(y_overlay) = scene
-                                    .map_indicator_plot(indicator_panel.panel_index, overlay_abs)
-                            {
                                 frame.fill_rectangle(
-                                    Point::new(indicator_left, y_overlay.min(y_indicator_baseline)),
-                                    Size::new(
-                                        indicator_width,
-                                        (y_indicator_baseline - y_overlay).abs().max(1.0),
+                                    Point::new(indicator_left, indicator_top),
+                                    Size::new(indicator_width, indicator_height),
+                                    base_color.scale_alpha(0.3),
+                                );
+
+                                let overlay_abs = overlay.abs();
+                                if overlay_abs > 0.0
+                                    && let Some(y_overlay) = scene.map_indicator_plot(
+                                        indicator_panel.panel_index,
+                                        overlay_abs,
+                                    )
+                                {
+                                    frame.fill_rectangle(
+                                        Point::new(
+                                            indicator_left,
+                                            y_overlay.min(y_indicator_baseline),
+                                        ),
+                                        Size::new(
+                                            indicator_width,
+                                            (y_indicator_baseline - y_overlay).abs().max(1.0),
+                                        ),
+                                        base_color,
+                                    );
+                                }
+                            } else {
+                                frame.fill_rectangle(
+                                    Point::new(indicator_left, indicator_top),
+                                    Size::new(indicator_width, indicator_height),
+                                    self.indicator_color(
+                                        indicator_panel.value_id,
+                                        IndicatorColorSlot::Bars,
+                                        palette,
+                                        generated_accents,
                                     ),
-                                    base_color,
                                 );
                             }
                         } else {
@@ -1287,23 +1331,12 @@ where
                                     IndicatorColorSlot::Bars,
                                     palette,
                                     generated_accents,
-                                ),
+                                )
+                                .scale_alpha(0.5),
                             );
                         }
-                    } else {
-                        frame.fill_rectangle(
-                            Point::new(indicator_left, indicator_top),
-                            Size::new(indicator_width, indicator_height),
-                            self.indicator_color(
-                                indicator_panel.value_id,
-                                IndicatorColorSlot::Bars,
-                                palette,
-                                generated_accents,
-                            )
-                            .scale_alpha(0.5),
-                        );
-                    }
-                });
+                    },
+                );
             });
         }
 
@@ -1330,6 +1363,9 @@ where
                     let Some(value_id) = layer.source.indicator_value_id() else {
                         continue;
                     };
+                    if self.indicator_is_unavailable(Some(value_id)) {
+                        continue;
+                    }
 
                     for channel in self
                         .overlay_channels_for_panel_value(Some(value_id))
@@ -1343,16 +1379,18 @@ where
                             );
                         let mut point_count = 0usize;
                         let path = canvas::Path::new(|builder| {
-                            self.for_each_bar_unit_index(
-                                scene.x.axis,
-                                |series_index, series, x_unit, bar| {
+                            self.for_each_scene_bar_unit_index(
+                                scene,
+                                |series_index, bar_index, series, x_unit, _bar| {
                                     if series_index != 0 || !in_visible_range(x_unit) {
                                         return;
                                     }
 
-                                    let Some(data) =
-                                        self.indicator_data_for_series(series, Some(value_id), bar)
-                                    else {
+                                    let Some(data) = self.indicator_data_for_series_at(
+                                        series,
+                                        Some(value_id),
+                                        bar_index,
+                                    ) else {
                                         return;
                                     };
 
@@ -1412,73 +1450,79 @@ where
             });
         }
 
-        if self.candlesticks_visible
+        if self.candlestick.visible
             && matches!(primary_plot_detail, PrimaryPlotDetail::CandleOnly)
             && matches!(scene.primary.mark, MarkKind::Candle | MarkKind::Bar(_))
         {
             let primary_plot = *scene.primary_plot();
             frame.with_clip(primary_plot, |frame| {
-                self.for_each_bar_unit_index(scene.x.axis, |series_index, _series, x_unit, bar| {
-                    if series_index != 0 || !in_visible_range(x_unit) {
-                        return;
-                    }
+                self.for_each_scene_bar_unit_index(
+                    scene,
+                    |series_index, _, _series, x_unit, bar| {
+                        if series_index != 0 || !in_visible_range(x_unit) {
+                            return;
+                        }
 
-                    let series_anchor = scene
-                        .primary
-                        .series_percent_anchors
-                        .first()
-                        .copied()
-                        .flatten();
-                    let y_open =
-                        scene.map_primary_plot_with_anchor(bar.open.to_f32_lossy(), series_anchor);
-                    let y_high =
-                        scene.map_primary_plot_with_anchor(bar.high.to_f32_lossy(), series_anchor);
-                    let y_low =
-                        scene.map_primary_plot_with_anchor(bar.low.to_f32_lossy(), series_anchor);
-                    let y_close =
-                        scene.map_primary_plot_with_anchor(bar.close.to_f32_lossy(), series_anchor);
+                        let series_anchor = scene
+                            .primary
+                            .series_percent_anchors
+                            .first()
+                            .copied()
+                            .flatten();
+                        let y_open = scene
+                            .map_primary_plot_with_anchor(bar.open.to_f32_lossy(), series_anchor);
+                        let y_high = scene
+                            .map_primary_plot_with_anchor(bar.high.to_f32_lossy(), series_anchor);
+                        let y_low = scene
+                            .map_primary_plot_with_anchor(bar.low.to_f32_lossy(), series_anchor);
+                        let y_close = scene
+                            .map_primary_plot_with_anchor(bar.close.to_f32_lossy(), series_anchor);
 
-                    let color =
-                        self.candlestick_color(bar.close >= bar.open, palette, generated_accents);
+                        let color = self.candlestick_color(
+                            bar.close >= bar.open,
+                            palette,
+                            generated_accents,
+                        );
 
-                    let (body_top, body_h) = Self::snapped_span_with_origin(
-                        y_open,
-                        y_close,
-                        pixel_ratio,
-                        plot_origin_y_global,
-                    );
-                    let (wick_top, wick_h) = Self::snapped_span_with_origin(
-                        y_high,
-                        y_low,
-                        pixel_ratio,
-                        plot_origin_y_global,
-                    );
+                        let (body_top, body_h) = Self::snapped_span_with_origin(
+                            y_open,
+                            y_close,
+                            pixel_ratio,
+                            plot_origin_y_global,
+                        );
+                        let (wick_top, wick_h) = Self::snapped_span_with_origin(
+                            y_high,
+                            y_low,
+                            pixel_ratio,
+                            plot_origin_y_global,
+                        );
 
-                    let x_plot = scene.map_x_plot(x_unit);
-                    let candle_left = Self::centered_left_for_width_with_origin(
-                        x_plot,
-                        candle_body_width_phys,
-                        pixel_ratio,
-                        plot_origin_x_global,
-                    );
-                    let wick_left = Self::centered_left_for_width_with_origin(
-                        x_plot,
-                        wick_width_phys,
-                        pixel_ratio,
-                        plot_origin_x_global,
-                    );
+                        let x_plot = scene.map_x_plot(x_unit);
+                        let candle_left = Self::centered_left_for_width_with_origin(
+                            x_plot,
+                            candle_body_width_phys,
+                            pixel_ratio,
+                            plot_origin_x_global,
+                        );
+                        let wick_left = Self::centered_left_for_width_with_origin(
+                            x_plot,
+                            wick_width_phys,
+                            pixel_ratio,
+                            plot_origin_x_global,
+                        );
 
-                    frame.fill_rectangle(
-                        Point::new(candle_left, body_top),
-                        Size::new(candle_body_width, body_h),
-                        color,
-                    );
-                    frame.fill_rectangle(
-                        Point::new(wick_left, wick_top),
-                        Size::new(wick_width, wick_h),
-                        color.scale_alpha(0.85),
-                    );
-                });
+                        frame.fill_rectangle(
+                            Point::new(candle_left, body_top),
+                            Size::new(candle_body_width, body_h),
+                            color,
+                        );
+                        frame.fill_rectangle(
+                            Point::new(wick_left, wick_top),
+                            Size::new(wick_width, wick_h),
+                            color.scale_alpha(0.85),
+                        );
+                    },
+                );
             });
         }
 
@@ -1488,7 +1532,7 @@ where
                 scene,
                 palette,
                 generated_accents,
-                self.footprints_visible,
+                self.footprint.visible,
             );
         }
 
@@ -1503,9 +1547,9 @@ where
                 let mut point_count = 0usize;
 
                 let path = canvas::Path::new(|builder| {
-                    self.for_each_bar_unit_index(
-                        scene.x.axis,
-                        |iter_series_index, _series, x_unit, bar| {
+                    self.for_each_scene_bar_unit_index(
+                        scene,
+                        |iter_series_index, _, _series, x_unit, bar| {
                             if iter_series_index != series_index || !in_visible_range(x_unit) {
                                 return;
                             }
@@ -1554,7 +1598,7 @@ where
                 }
 
                 let line_color = self
-                    .series_line_color(&self.series[series_index], palette)
+                    .series_line_color(&self.series[series_index], palette, generated_accents)
                     .scale_alpha(if is_base_series { 0.85 } else { 0.96 });
 
                 frame.stroke(
@@ -1600,17 +1644,17 @@ where
                     let mut point_count = 0usize;
 
                     let path = canvas::Path::new(|builder| {
-                        self.for_each_bar_unit_index(
-                            scene.x.axis,
-                            |series_index, series, x_unit, bar| {
+                        self.for_each_scene_bar_unit_index(
+                            scene,
+                            |series_index, bar_index, series, x_unit, _bar| {
                                 if series_index != 0 || !in_visible_range(x_unit) {
                                     return;
                                 }
 
-                                let Some(indicator_data) = self.indicator_data_for_series(
+                                let Some(indicator_data) = self.indicator_data_for_series_at(
                                     series,
                                     indicator_panel.value_id,
-                                    bar,
+                                    bar_index,
                                 ) else {
                                     point_count = 0;
                                     return;

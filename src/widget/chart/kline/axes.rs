@@ -1,6 +1,5 @@
 use super::layout::{label_bounds_overlap, place_non_overlapping_labels};
 use super::*;
-use crate::widget::chart::unit_ticks;
 
 const MIN_X_TICK_PX: f32 = 80.0;
 
@@ -26,9 +25,10 @@ where
         scene: &Scene,
         cursor_x: f32,
         delta: f32,
+        zoom_mode: HorizontalWheelZoomMode,
     ) -> HorizontalWorld {
         let right_edge = scene.x_axis_plot_width().floor().max(1.0);
-        let anchor_x = self.horizontal_zoom_anchor(scene, cursor_x, right_edge);
+        let anchor_x = self.horizontal_zoom_anchor(scene, cursor_x, right_edge, zoom_mode);
         let right_unit = scene.effective_right_x_unit();
         self.horizontal_world
             .zoom_around_screen(right_unit, anchor_x, right_edge, delta)
@@ -39,9 +39,10 @@ where
         scene: &Scene,
         cursor_x: f32,
         right_edge: f32,
+        zoom_mode: HorizontalWheelZoomMode,
     ) -> f32 {
         let cursor_x = (cursor_x - scene.layout.regions.plot.x).clamp(0.0, right_edge);
-        if !self.primary_autoscale {
+        if matches!(zoom_mode, HorizontalWheelZoomMode::Cursor) {
             return cursor_x;
         }
 
@@ -237,7 +238,7 @@ where
                 let TickValue::Float(tick) = tick.value else {
                     continue;
                 };
-                let y = scene.primary_plot().y + (1.0 - ratio) * scene.primary_plot().height;
+                let y = scene.map_primary_plot_ratio(ratio);
                 labels.push((
                     scene.primary.panel_index,
                     scene.format_primary_axis_label(tick as f32, step),
@@ -473,7 +474,7 @@ where
         scene: &Scene,
         palette: &Extended,
     ) {
-        let pixel_ratio = self.resolved_pixel_ratio();
+        let pixel_ratio = self.pixel_ratio_value();
         let plot_width = scene.x_axis_plot_width();
 
         if let XAxis::Time { timeframe, .. } = scene.x.axis
@@ -551,42 +552,41 @@ where
             frame.with_clip(clip_region, |frame| {
                 let mut last_x: Option<f32> = None;
 
-                if let Some(base_series) = self.series.first() {
-                    for index in 0..base_series.bars().len() {
-                        let Some(unit) = self.tick_unit_for_index(scene.x.axis, index) else {
-                            continue;
-                        };
-                        let x = Self::snap_plot_x_to_cell(scene.map_x_plot(unit), pixel_ratio);
-
-                        if last_x.is_some_and(|previous| (x - previous).abs() < target_spacing) {
-                            continue;
-                        }
-
-                        let Some(time) = self.tick_time_for_unit(scene.x.axis, unit) else {
-                            continue;
-                        };
-                        let Some(content) = self.timezone.format_with_kind(
-                            time.as_u64() as i64,
-                            data::config::timezone::TimeLabelKind::Axis {
-                                timeframe: Timeframe::MS100,
-                            },
-                        ) else {
-                            continue;
-                        };
-
-                        frame.fill_text(canvas::Text {
-                            content,
-                            position: Point::new(x, scene.layout.regions.x_axis.height / 2.0),
-                            color: palette.background.base.text,
-                            size: TEXT_SIZE.into(),
-                            align_x: iced::Alignment::Center.into(),
-                            align_y: iced::Alignment::Center.into(),
-                            font: style::AZERET_MONO,
-                            ..Default::default()
-                        });
-                        last_x = Some(x);
+                self.for_each_scene_bar_unit_index(scene, |series_index, _, _, unit, _| {
+                    if series_index != 0 {
+                        return;
                     }
-                }
+
+                    let x = Self::snap_plot_x_to_cell(scene.map_x_plot(unit), pixel_ratio);
+
+                    if last_x.is_some_and(|previous| (x - previous).abs() < target_spacing) {
+                        return;
+                    }
+
+                    let Some(time) = self.tick_time_for_unit(scene.x.axis, unit) else {
+                        return;
+                    };
+                    let Some(content) = self.timezone.format_with_kind(
+                        time.as_u64() as i64,
+                        data::config::timezone::TimeLabelKind::Axis {
+                            timeframe: Timeframe::MS100,
+                        },
+                    ) else {
+                        return;
+                    };
+
+                    frame.fill_text(canvas::Text {
+                        content,
+                        position: Point::new(x, scene.layout.regions.x_axis.height / 2.0),
+                        color: palette.background.base.text,
+                        size: TEXT_SIZE.into(),
+                        align_x: iced::Alignment::Center.into(),
+                        align_y: iced::Alignment::Center.into(),
+                        font: style::AZERET_MONO,
+                        ..Default::default()
+                    });
+                    last_x = Some(x);
+                });
             });
             return;
         }
@@ -635,4 +635,56 @@ where
             }
         });
     }
+}
+
+fn div_ceil(value: i64, divisor: i64) -> i64 {
+    let quotient = value.div_euclid(divisor);
+    let remainder = value.rem_euclid(divisor);
+    if remainder == 0 {
+        quotient
+    } else {
+        quotient.saturating_add(1)
+    }
+}
+
+fn nice_step_units(rough: i64) -> i64 {
+    let rough = rough.max(1);
+    let mut magnitude = 1i64;
+
+    while magnitude <= rough / 10 {
+        magnitude = magnitude.saturating_mul(10);
+    }
+
+    let fraction = rough as f64 / magnitude as f64;
+    let multiplier = if fraction <= 1.0 {
+        1
+    } else if fraction <= 2.0 {
+        2
+    } else if fraction <= 5.0 {
+        5
+    } else {
+        10
+    };
+
+    multiplier * magnitude
+}
+
+fn unit_ticks(min_x: i64, max_x: i64, width_px: f32, min_tick_px: f32) -> (Vec<i64>, i64) {
+    let span = (max_x - min_x).max(1);
+    let target_ticks = (width_px / min_tick_px.max(1.0)).floor().max(2.0);
+    let rough_step = ((span as f32) / target_ticks).ceil().max(1.0) as i64;
+    let step = nice_step_units(rough_step);
+
+    let first = div_ceil(min_x, step).saturating_mul(step);
+    let mut ticks = Vec::new();
+    let mut current = first;
+    for _ in 0..=4096 {
+        if current > max_x {
+            break;
+        }
+        ticks.push(current);
+        current = current.saturating_add(step);
+    }
+
+    (ticks, step)
 }

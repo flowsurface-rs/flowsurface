@@ -17,6 +17,7 @@ palette.workspace = true
 enum-map.workspace = true
 rustc-hash.workspace = true
 url.workspace = true
+uuid.workspace = true
 exchange.workspace = true
 
 dirs-next = "2.0.0"

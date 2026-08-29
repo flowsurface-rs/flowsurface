@@ -1,4 +1,5 @@
 pub mod dashboard;
+pub mod sidebar;
 
 #[derive(thiserror::Error, Debug, Clone)]
 pub enum DashboardError {

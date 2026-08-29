@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::connector::client::{DataSources, ServerClient};
 
 pub use data::TradeFetchMode;
-pub use data::chart::kline_v2::FetchRange;
+pub use data::chart::kline::FetchRange;
 
 static TRADE_FETCH_MODE: RwLock<TradeFetchMode> = RwLock::new(TradeFetchMode::Off);
 
@@ -135,14 +135,6 @@ impl RequestHandler {
 
         self.requests.insert(id, request);
         Ok(Some(id))
-    }
-
-    /// Returns `true` when a request with the given range is currently
-    /// pending (in-flight and not yet completed or failed).
-    pub fn has_pending(&self, range: &FetchRange) -> bool {
-        self.requests
-            .values()
-            .any(|r| r.status == RequestStatus::Pending && r.same_with_range(range))
     }
 
     pub fn request_range(&self, id: Uuid) -> Option<FetchRange> {

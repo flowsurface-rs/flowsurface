@@ -7,12 +7,22 @@ use super::{
     KlineSeriesLike, KlineWidget, OverlayChannelColorRole, OverlayChannelSource,
     OverlayChannelSpec, PanelYViewport,
 };
-use data::chart::kline_v2::IndicatorColorSlot;
-use data::chart::kline_v2::{IndicatorInstance, KlineIndicator, LineStrokeStyle, SeriesColor};
+use data::chart::kline::IndicatorColorSlot;
+use data::chart::kline::{
+    IndicatorInstance, IndicatorReadoutSpec, KlineIndicator, LineStrokeStyle, SeriesColor,
+};
 use data::config::theme::{ThemeColor, ThemeColorRole, ThemeColorShade};
 
 use iced::Point;
 use iced::theme::palette::Extended;
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct IndicatorHeaderValue {
+    pub(super) label: &'static str,
+    pub(super) value: f32,
+    pub(super) color_role: OverlayChannelColorRole,
+    pub(super) color_slot: IndicatorColorSlot,
+}
 
 impl<'a, S> KlineWidget<'a, S>
 where
@@ -31,13 +41,17 @@ where
             .is_some_and(|instance| instance.style.fill_visible)
     }
 
-    pub(super) fn indicator_data_for_series(
+    pub(super) fn indicator_data_for_series_at(
         &self,
         series: &S,
         panel_value: Option<PanelValueId>,
-        bar: &exchange::Kline,
+        bar_index: usize,
     ) -> Option<IndicatorData> {
-        series.indicator_data_for_panel_value_opt(panel_value, bar)
+        if panel_value.is_some_and(|value_id| self.indicator_is_unavailable(Some(value_id))) {
+            return None;
+        }
+
+        series.indicator_data_for_panel_value_at(panel_value, bar_index)
     }
 
     pub(super) fn panel_count(&self) -> usize {
@@ -99,11 +113,7 @@ where
             return false;
         };
 
-        base_series.bars().iter().any(|bar| {
-            self.indicator_data_for_series(base_series, panel_value, bar)
-                .and_then(IndicatorData::signed_overlay)
-                .is_some()
-        })
+        panel_value.is_some_and(|value_id| base_series.indicator_produces_signed_overlay(value_id))
     }
 
     pub(super) fn normalized_panel_splits(&self) -> Vec<f32> {
@@ -201,11 +211,15 @@ where
             .unwrap_or_else(|| Self::default_data_kind_for_panel(panel_kind))
     }
 
-    pub(super) fn series_line_color(&self, series: &S, palette: &Extended) -> iced::Color {
+    pub(super) fn series_line_color(
+        &self,
+        series: &S,
+        palette: &Extended,
+        generated_accents: &[iced::Color; 6],
+    ) -> iced::Color {
         match series.series_color() {
             SeriesColor::Theme(color) => {
-                let generated_accents = data::config::theme::generated_theme_accents(palette);
-                Self::resolve_theme_color(color, palette, &generated_accents)
+                Self::resolve_theme_color(color, palette, generated_accents)
             }
             SeriesColor::Custom(color) => color,
         }
@@ -235,7 +249,9 @@ where
     pub(super) fn visible_primary_overlay_value_ids(&self) -> Vec<PanelValueId> {
         self.primary_overlay_entries()
             .into_iter()
-            .filter_map(|(value_id, visible)| visible.then_some(value_id))
+            .filter_map(|(value_id, visible)| {
+                (visible && !self.indicator_is_unavailable(Some(value_id))).then_some(value_id)
+            })
             .collect()
     }
 
@@ -256,6 +272,58 @@ where
         &DEFAULT_OVERLAY_CHANNELS
     }
 
+    pub(super) fn indicator_header_values(
+        &self,
+        panel_index: usize,
+        value_id: PanelValueId,
+        data: IndicatorData,
+    ) -> Vec<IndicatorHeaderValue> {
+        let mark = self.resolved_panel_mark(panel_index, KlinePanelKind::Indicator);
+        let readouts = self
+            .indicator_kind(value_id)
+            .map(KlineIndicator::readout_specs)
+            .unwrap_or_default()
+            .iter()
+            .copied()
+            .filter(|readout| readout.scope.matches(mark))
+            .collect::<Vec<_>>();
+
+        if !readouts.is_empty() {
+            let values = self.indicator_header_values_for_specs(value_id, data, &readouts);
+            if values.len() == readouts.len() {
+                return values;
+            }
+        }
+
+        let fallback_specs = self
+            .overlay_channels_for_panel_value(Some(value_id))
+            .iter()
+            .copied()
+            .map(IndicatorReadoutSpec::from_overlay_channel)
+            .collect::<Vec<_>>();
+        self.indicator_header_values_for_specs(value_id, data, &fallback_specs)
+    }
+
+    fn indicator_header_values_for_specs(
+        &self,
+        value_id: PanelValueId,
+        data: IndicatorData,
+        specs: &[IndicatorReadoutSpec],
+    ) -> Vec<IndicatorHeaderValue> {
+        specs
+            .iter()
+            .filter_map(|readout| {
+                self.indicator_source_value(value_id, Some(data), readout.source)
+                    .map(|value| IndicatorHeaderValue {
+                        label: readout.label,
+                        value,
+                        color_role: readout.color_role,
+                        color_slot: readout.color_slot,
+                    })
+            })
+            .collect()
+    }
+
     pub(super) fn line_channels_for_panel_value(
         &self,
         value_id: Option<PanelValueId>,
@@ -269,7 +337,7 @@ where
     pub(super) fn fill_specs_for_panel_value(
         &self,
         value_id: Option<PanelValueId>,
-    ) -> &'static [data::chart::kline_v2::IndicatorFillSpec] {
+    ) -> &'static [data::chart::kline::IndicatorFillSpec] {
         value_id
             .and_then(|id| self.indicator_kind(id))
             .map(KlineIndicator::fill_specs)
@@ -333,22 +401,34 @@ where
         palette: &Extended,
         generated_accents: &[iced::Color; 6],
     ) -> iced::Color {
+        self.indicator_value_color(
+            value_id,
+            channel.color_slot,
+            channel.color_role,
+            palette,
+            generated_accents,
+        )
+    }
+
+    pub(super) fn indicator_value_color(
+        &self,
+        value_id: Option<PanelValueId>,
+        color_slot: IndicatorColorSlot,
+        color_role: OverlayChannelColorRole,
+        palette: &Extended,
+        generated_accents: &[iced::Color; 6],
+    ) -> iced::Color {
         let configured = value_id.and_then(|id| {
             self.indicator_instance(id)
-                .map(|instance| instance.colors.color_for(channel.color_slot))
+                .map(|instance| instance.colors.color_for(color_slot))
         });
         let color = configured.unwrap_or_else(|| {
-            ThemeColor::new(
-                Self::theme_color_role(channel.color_role),
-                ThemeColorShade::Base,
-            )
+            ThemeColor::new(Self::theme_color_role(color_role), ThemeColorShade::Base)
         });
-        Self::resolve_theme_color(color, palette, generated_accents).scale_alpha(
-            match channel.color_role {
-                OverlayChannelColorRole::Neutral => 0.72,
-                _ => 0.78,
-            },
-        )
+        Self::resolve_theme_color(color, palette, generated_accents).scale_alpha(match color_role {
+            OverlayChannelColorRole::Neutral => 0.72,
+            _ => 0.78,
+        })
     }
 
     pub(super) fn indicator_color(
@@ -415,12 +495,8 @@ where
         width
     }
 
-    pub(super) fn resolved_pixel_ratio(&self) -> f32 {
-        if self.pixel_ratio.is_finite() && self.pixel_ratio > 0.0 {
-            self.pixel_ratio
-        } else {
-            1.0
-        }
+    pub(super) fn pixel_ratio_value(&self) -> f32 {
+        self.pixel_ratio.value()
     }
 
     pub(super) fn physical_px_to_logical(px: i32, pixel_ratio: f32) -> f32 {

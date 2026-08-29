@@ -1,12 +1,13 @@
 use crate::{
-    split_column,
     style::{self, Icon, icon_text},
-    tooltip,
-    widget::labeled_slider,
+    theme::ThemeAccents,
+    widget::{
+        inspector::{self, InspectorSection},
+        labeled_slider,
+    },
 };
 use data::chart::heatmap::{CLEANUP_THRESHOLD, HeatmapStudy, ProfileKind};
-use data::chart::kline::FootprintStudy;
-use data::chart::kline_v2::{
+use data::chart::kline::{
     KlineStudy, MAX_VOLUME_PROFILE_OPACITY_PERCENT, MAX_VOLUME_PROFILE_WIDTH_PERCENT,
     MIN_VOLUME_PROFILE_OPACITY_PERCENT, MIN_VOLUME_PROFILE_WIDTH_PERCENT, VolumeProfileColorConfig,
     VolumeProfileSchedule,
@@ -15,15 +16,11 @@ use exchange::TickMultiplier;
 use exchange::unit::{MinTicksize, PriceStep};
 use iced::{
     Element, Length, padding,
-    widget::{
-        button, checkbox, column, container, pick_list, row, rule, space, text,
-        tooltip::Position as TooltipPosition,
-    },
+    widget::{button, checkbox, column, container, pick_list, row, rule, space, text},
 };
 
 #[derive(Debug, Clone, Copy)]
 pub enum StudyMessage {
-    Footprint(Message<FootprintStudy>),
     Heatmap(Message<HeatmapStudy>),
 }
 
@@ -35,6 +32,7 @@ pub trait Study: Sized + Copy + 'static {
         basis: data::chart::Basis,
         footprint_tick_multiplier: Option<TickMultiplier>,
         min_ticksize: Option<MinTicksize>,
+        theme_accents: ThemeAccents,
         on_change: impl Fn(Self) -> Message<Self> + Copy + 'a,
     ) -> Element<'a, Message<Self>>;
 
@@ -43,9 +41,48 @@ pub trait Study: Sized + Copy + 'static {
         basis: data::chart::Basis,
         footprint_tick_multiplier: Option<TickMultiplier>,
         min_ticksize: Option<MinTicksize>,
+        theme_accents: ThemeAccents,
         on_change: impl Fn(Self) -> Message<Self> + Copy + 'a,
     ) -> Element<'a, Message<Self>> {
-        self.view_config(basis, footprint_tick_multiplier, min_ticksize, on_change)
+        self.view_config(
+            basis,
+            footprint_tick_multiplier,
+            min_ticksize,
+            theme_accents,
+            on_change,
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum StudyConfigLayout {
+    Card,
+    Inspector,
+}
+
+fn section_for_layout<'a, M>(
+    section: InspectorSection<'a, M>,
+    layout: StudyConfigLayout,
+) -> InspectorSection<'a, M>
+where
+    M: 'a,
+{
+    match layout {
+        StudyConfigLayout::Card => section,
+        StudyConfigLayout::Inspector => section.with_modal_container(),
+    }
+}
+
+fn element_for_layout<'a, M>(
+    content: impl Into<Element<'a, M>>,
+    layout: StudyConfigLayout,
+) -> Element<'a, M>
+where
+    M: 'a,
+{
+    match layout {
+        StudyConfigLayout::Card => content.into(),
+        StudyConfigLayout::Inspector => crate::widget::inspector::modal_container(content),
     }
 }
 
@@ -53,6 +90,7 @@ fn theme_color_setting_row<'a, M>(
     label: impl Into<Element<'a, M>>,
     color_choices: impl Into<Element<'a, M>>,
     shade_picklist: impl Into<Element<'a, M>>,
+    layout: StudyConfigLayout,
 ) -> Element<'a, M>
 where
     M: 'a,
@@ -60,10 +98,11 @@ where
     let label: Element<'a, M> = label.into();
     let color_choices: Element<'a, M> = color_choices.into();
     let shade_picklist: Element<'a, M> = shade_picklist.into();
-    column![label, color_choices, shade_picklist]
-        .width(Length::Fill)
-        .spacing(4)
-        .into()
+    section_for_layout(
+        InspectorSection::new(label, column![color_choices, shade_picklist].spacing(4)),
+        layout,
+    )
+    .into_element()
 }
 
 fn study_window_duration(datapoint_count: usize, interval_ms: u64) -> String {
@@ -84,6 +123,8 @@ fn study_window_duration(datapoint_count: usize, interval_ms: u64) -> String {
 fn volume_profile_color_section<'a>(
     colors: VolumeProfileColorConfig,
     schedule: VolumeProfileSchedule,
+    theme_accents: ThemeAccents,
+    layout: StudyConfigLayout,
     on_change: impl Fn(VolumeProfileColorConfig) -> Message<KlineStudy> + Copy + 'a,
 ) -> Element<'a, Message<KlineStudy>> {
     let controls = VolumeProfileColorConfig::color_specs_for(schedule)
@@ -91,30 +132,30 @@ fn volume_profile_color_section<'a>(
         .map(|spec| {
             let slot = spec.slot;
             let enabled = match slot {
-                data::chart::kline_v2::VolumeProfileColorSlot::NakedPoc => colors.show_npoc,
-                data::chart::kline_v2::VolumeProfileColorSlot::FilledPoc => colors.show_poc,
+                data::chart::kline::VolumeProfileColorSlot::NakedPoc => colors.show_npoc,
+                data::chart::kline::VolumeProfileColorSlot::FilledPoc => colors.show_poc,
                 _ => true,
             };
             let label: Element<'a, Message<KlineStudy>> = match slot {
-                data::chart::kline_v2::VolumeProfileColorSlot::NakedPoc => {
-                    checkbox(colors.show_npoc)
-                        .label(spec.label)
-                        .on_toggle(move |show| on_change(colors.with_show_npoc(show)))
-                        .width(Length::Fill)
-                        .into()
-                }
-                data::chart::kline_v2::VolumeProfileColorSlot::FilledPoc => {
-                    checkbox(colors.show_poc)
-                        .label(spec.label)
-                        .on_toggle(move |show| on_change(colors.with_show_poc(show)))
-                        .width(Length::Fill)
-                        .into()
-                }
-                _ => text(spec.label).width(Length::Fill).into(),
+                data::chart::kline::VolumeProfileColorSlot::NakedPoc => checkbox(colors.show_npoc)
+                    .label(spec.label)
+                    .text_size(crate::style::text_size::SECTION)
+                    .on_toggle(move |show| on_change(colors.with_show_npoc(show)))
+                    .width(Length::Fill)
+                    .into(),
+                data::chart::kline::VolumeProfileColorSlot::FilledPoc => checkbox(colors.show_poc)
+                    .label(spec.label)
+                    .text_size(crate::style::text_size::SECTION)
+                    .on_toggle(move |show| on_change(colors.with_show_poc(show)))
+                    .width(Length::Fill)
+                    .into(),
+                _ => crate::widget::text::section(spec.label)
+                    .width(Length::Fill)
+                    .into(),
             };
 
             if !enabled {
-                column![row![label]].spacing(4).into()
+                element_for_layout(column![row![label]].spacing(4), layout)
             } else {
                 let selected = colors.color_for(slot);
                 let send_color = move |accent| {
@@ -127,7 +168,8 @@ fn volume_profile_color_section<'a>(
                         ),
                     ))
                 };
-                let color_choices = crate::widget::theme_color_control(selected, send_color);
+                let color_choices =
+                    crate::widget::theme_color_control(selected, theme_accents, send_color);
                 let shade_picklist = pick_list(
                     data::config::theme::ThemeColorShade::ALL,
                     Some(selected.shade),
@@ -144,11 +186,15 @@ fn volume_profile_color_section<'a>(
                 )
                 .width(Length::Fill);
 
-                theme_color_setting_row(label, color_choices, shade_picklist)
+                theme_color_setting_row(label, color_choices, shade_picklist, layout)
             }
         });
 
-    column(controls).spacing(16).into()
+    let spacing = match layout {
+        StudyConfigLayout::Card => 16.0,
+        StudyConfigLayout::Inspector => inspector::MODAL_SECTION_SPACING,
+    };
+    column(controls).spacing(spacing).into()
 }
 
 fn volume_profile_width_section<'a>(
@@ -205,39 +251,60 @@ fn volume_profile_settings_sections<'a>(
     width_section: Element<'a, Message<KlineStudy>>,
     opacity_section: Element<'a, Message<KlineStudy>>,
     color_section: Element<'a, Message<KlineStudy>>,
+    layout: StudyConfigLayout,
 ) -> Element<'a, Message<KlineStudy>> {
-    if let Some(schedule) = schedule_section {
-        let schedule_row = row![
-            container(schedule).width(Length::Fill),
-            container(ticksize_section).width(Length::Fill),
-        ]
-        .spacing(12);
-        column![
-            schedule_row,
-            rule::horizontal(1.0).style(style::split_ruler),
-            column![width_section, opacity_section].spacing(8),
-            rule::horizontal(1.0).style(style::split_ruler),
-            color_section,
-        ]
-        .spacing(16)
-        .into()
+    let width_opacity_section =
+        element_for_layout(column![width_section, opacity_section].spacing(8), layout);
+    let content = if let Some(schedule) = schedule_section {
+        let schedule_row = match layout {
+            StudyConfigLayout::Card => row![
+                container(schedule).width(Length::Fill),
+                container(ticksize_section).width(Length::Fill),
+            ]
+            .spacing(12)
+            .into(),
+            StudyConfigLayout::Inspector => inspector::modal_row([schedule, ticksize_section]),
+        };
+
+        match layout {
+            StudyConfigLayout::Card => column![
+                schedule_row,
+                rule::horizontal(1.0).style(style::split_ruler),
+                width_opacity_section,
+                rule::horizontal(1.0).style(style::split_ruler),
+                color_section,
+            ]
+            .spacing(16),
+            StudyConfigLayout::Inspector => {
+                column![schedule_row, width_opacity_section, color_section,]
+                    .spacing(inspector::MODAL_SECTION_SPACING)
+            }
+        }
     } else {
-        column![
-            ticksize_section,
-            rule::horizontal(1.0).style(style::split_ruler),
-            column![width_section, opacity_section].spacing(8),
-            rule::horizontal(1.0).style(style::split_ruler),
-            color_section,
-        ]
-        .spacing(16)
-        .into()
-    }
+        match layout {
+            StudyConfigLayout::Card => column![
+                ticksize_section,
+                rule::horizontal(1.0).style(style::split_ruler),
+                width_opacity_section,
+                rule::horizontal(1.0).style(style::split_ruler),
+                color_section,
+            ]
+            .spacing(16),
+            StudyConfigLayout::Inspector => {
+                column![ticksize_section, width_opacity_section, color_section,]
+                    .spacing(inspector::MODAL_SECTION_SPACING)
+            }
+        }
+    };
+
+    content.into()
 }
 
 fn volume_profile_ticksize_section<'a>(
     tick_multiplier: Option<TickMultiplier>,
     footprint_tick_multiplier: Option<TickMultiplier>,
     min_ticksize: Option<MinTicksize>,
+    layout: StudyConfigLayout,
     on_change: impl Fn(Option<TickMultiplier>) -> Message<KlineStudy> + Copy + 'a,
 ) -> Element<'a, Message<KlineStudy>> {
     let floor = footprint_tick_multiplier.map_or(0, |multiplier| multiplier.0);
@@ -260,158 +327,24 @@ fn volume_profile_ticksize_section<'a>(
         on_change(Some(option))
     });
 
-    let label = text("Tick size").size(crate::style::text_size::SECTION);
-    let picker_row = row![
-        picker.width(Length::Fill),
-        tooltip(
-            button("i").style(style::button::info),
-            Some("Only coarser than the pane's footprint;\nthe smallest option inherits its tick size."),
-            TooltipPosition::Top,
-        ),
-    ]
-    .spacing(4)
-    .align_y(iced::Alignment::Center);
-
-    let mut column = column![label, picker_row].spacing(4).width(Length::Fill);
+    let mut setting = column![picker.width(Length::Fill)]
+        .spacing(4)
+        .width(Length::Fill);
 
     if let Some(min_tick) = min_ticksize {
         let step = selected.multiply_step(PriceStep::from(min_tick));
         let step_text = row![
             space::horizontal(),
-            text(format!("Step: {}", step.to_ui_string()))
-                .size(crate::style::text_size::SMALL)
-                .style(|theme: &iced::Theme| {
-                    iced::widget::text::Style {
-                        color: Some(theme.extended_palette().background.base.text),
-                    }
-                }),
+            crate::widget::text::small(format!("Step: {}", step.to_ui_string())),
         ];
-        column = column.push(step_text);
+        setting = setting.push(step_text);
     }
 
-    column.into()
-}
-
-impl Study for FootprintStudy {
-    fn is_same_type(&self, other: &Self) -> bool {
-        std::mem::discriminant(self) == std::mem::discriminant(other)
-    }
-
-    fn all() -> Vec<Self> {
-        FootprintStudy::ALL.to_vec()
-    }
-
-    fn view_config<'a>(
-        &self,
-        _basis: data::chart::Basis,
-        _footprint_tick_multiplier: Option<TickMultiplier>,
-        _min_ticksize: Option<MinTicksize>,
-        on_change: impl Fn(Self) -> Message<Self> + Copy + 'a,
-    ) -> Element<'a, Message<Self>> {
-        match *self {
-            FootprintStudy::NPoC { lookback } => {
-                let slider_ui = labeled_slider(
-                    "Lookback",
-                    10.0..=400.0,
-                    lookback as f32,
-                    move |new_value| {
-                        on_change(FootprintStudy::NPoC {
-                            lookback: new_value as usize,
-                        })
-                    },
-                    |value| format!("{value:.0} datapoints"),
-                    Some(10.0),
-                );
-
-                column![slider_ui].padding(8).spacing(4).into()
-            }
-            FootprintStudy::Imbalance {
-                threshold,
-                color_scale,
-                ignore_zeros,
-            } => {
-                let qty_threshold = {
-                    let threshold_slider = labeled_slider(
-                        "Ask:Bid threshold",
-                        100.0..=800.0,
-                        threshold as f32,
-                        move |new_value| {
-                            on_change(FootprintStudy::Imbalance {
-                                threshold: new_value as usize,
-                                color_scale,
-                                ignore_zeros,
-                            })
-                        },
-                        |value| format!("{value:.0}%"),
-                        Some(25.0),
-                    );
-
-                    column![threshold_slider].padding(8).spacing(4)
-                };
-
-                let color_scaling = {
-                    let color_scale_enabled = color_scale.is_some();
-                    let color_scale_value = color_scale.unwrap_or(100);
-
-                    let color_scale_checkbox = checkbox(color_scale_enabled)
-                        .label("Dynamic color scaling")
-                        .on_toggle(move |is_enabled| {
-                            on_change(FootprintStudy::Imbalance {
-                                threshold,
-                                color_scale: if is_enabled {
-                                    Some(color_scale_value)
-                                } else {
-                                    None
-                                },
-                                ignore_zeros,
-                            })
-                        });
-
-                    if color_scale_enabled {
-                        let scaling_slider = labeled_slider(
-                            "Opaque color at",
-                            50.0..=2000.0,
-                            color_scale_value as f32,
-                            move |new_value| {
-                                on_change(FootprintStudy::Imbalance {
-                                    threshold,
-                                    color_scale: Some(new_value as usize),
-                                    ignore_zeros,
-                                })
-                            },
-                            |value| format!("{value:.0}x"),
-                            Some(50.0),
-                        );
-
-                        column![color_scale_checkbox, scaling_slider]
-                            .padding(8)
-                            .spacing(8)
-                    } else {
-                        column![color_scale_checkbox].padding(8)
-                    }
-                };
-
-                let ignore_zeros_checkbox = {
-                    let cbox =
-                        checkbox(ignore_zeros)
-                            .label("Ignore zeros")
-                            .on_toggle(move |is_checked| {
-                                on_change(FootprintStudy::Imbalance {
-                                    threshold,
-                                    color_scale,
-                                    ignore_zeros: is_checked,
-                                })
-                            });
-
-                    column![cbox].padding(8).spacing(4)
-                };
-
-                split_column![qty_threshold, color_scaling, ignore_zeros_checkbox]
-                    .padding(4)
-                    .into()
-            }
-        }
-    }
+    section_for_layout(
+        InspectorSection::new(crate::widget::text::section("Tick size"), setting),
+        layout,
+    )
+    .into_element()
 }
 
 impl Study for HeatmapStudy {
@@ -428,6 +361,7 @@ impl Study for HeatmapStudy {
         basis: data::chart::Basis,
         _footprint_tick_multiplier: Option<TickMultiplier>,
         _min_ticksize: Option<MinTicksize>,
+        _theme_accents: ThemeAccents,
         on_change: impl Fn(Self) -> Message<Self> + Copy + 'a,
     ) -> Element<'a, Message<Self>> {
         let interval_ms = match basis {
@@ -495,8 +429,10 @@ fn kline_study_config_view<'a>(
     basis: data::chart::Basis,
     footprint_tick_multiplier: Option<TickMultiplier>,
     min_ticksize: Option<MinTicksize>,
+    theme_accents: ThemeAccents,
     on_change: impl Fn(KlineStudy) -> Message<KlineStudy> + Copy + 'a,
     include_reset: bool,
+    layout: StudyConfigLayout,
 ) -> Element<'a, Message<KlineStudy>> {
     match study {
         KlineStudy::VolumeProfile {
@@ -520,20 +456,27 @@ fn kline_study_config_view<'a>(
                         .on_press(on_change((*study).default_for_type_for_basis(basis))),
                 ]
             };
-            let color_section = volume_profile_color_section(colors, schedule, move |colors| {
-                on_change(KlineStudy::VolumeProfile {
-                    schedule,
-                    colors,
-                    width_percent,
-                    opacity_percent,
-                    visible,
-                    tick_multiplier,
-                })
-            });
+            let color_section = volume_profile_color_section(
+                colors,
+                schedule,
+                theme_accents,
+                layout,
+                move |colors| {
+                    on_change(KlineStudy::VolumeProfile {
+                        schedule,
+                        colors,
+                        width_percent,
+                        opacity_percent,
+                        visible,
+                        tick_multiplier,
+                    })
+                },
+            );
             let ticksize_section = volume_profile_ticksize_section(
                 tick_multiplier,
                 footprint_tick_multiplier,
                 min_ticksize,
+                layout,
                 move |new_multiplier| {
                     on_change(KlineStudy::VolumeProfile {
                         schedule,
@@ -584,9 +527,14 @@ fn kline_study_config_view<'a>(
                         width_section,
                         opacity_section,
                         color_section,
+                        layout,
                     ));
 
-                    content.padding(8).spacing(4).into()
+                    let content = match layout {
+                        StudyConfigLayout::Card => content.padding(8),
+                        StudyConfigLayout::Inspector => content,
+                    };
+                    content.spacing(4).into()
                 }
                 VolumeProfileSchedule::Recurring { interval } => {
                     if !basis.is_time() {
@@ -628,17 +576,22 @@ fn kline_study_config_view<'a>(
                             content = content.push(reset_row());
                         }
                         content = content.push(volume_profile_settings_sections(
-                            Some(
-                                text("No recurring interval is at least 4x the chart timeframe")
-                                    .into(),
-                            ),
+                            Some(element_for_layout(
+                                text("No recurring interval is at least 4x the chart timeframe"),
+                                layout,
+                            )),
                             ticksize_section,
                             width_section,
                             opacity_section,
                             color_section,
+                            layout,
                         ));
 
-                        return content.padding(8).spacing(4).into();
+                        let content = match layout {
+                            StudyConfigLayout::Card => content.padding(8),
+                            StudyConfigLayout::Inspector => content,
+                        };
+                        return content.spacing(4).into();
                     }
 
                     let selected_interval = intervals.contains(&interval).then_some(interval);
@@ -663,21 +616,27 @@ fn kline_study_config_view<'a>(
                     }
                     content = content.push(volume_profile_settings_sections(
                         Some(
-                            column![
-                                text("Interval").size(crate::style::text_size::SECTION),
-                                interval_picker,
-                            ]
-                            .spacing(4)
-                            .width(Length::Fill)
-                            .into(),
+                            section_for_layout(
+                                InspectorSection::new(
+                                    crate::widget::text::section("Interval"),
+                                    interval_picker,
+                                ),
+                                layout,
+                            )
+                            .into_element(),
                         ),
                         ticksize_section,
                         width_section,
                         opacity_section,
                         color_section,
+                        layout,
                     ));
 
-                    content.padding(8).spacing(4).into()
+                    let content = match layout {
+                        StudyConfigLayout::Card => content.padding(8),
+                        StudyConfigLayout::Inspector => content,
+                    };
+                    content.spacing(4).into()
                 }
             }
         }
@@ -698,6 +657,7 @@ impl Study for KlineStudy {
         basis: data::chart::Basis,
         footprint_tick_multiplier: Option<TickMultiplier>,
         min_ticksize: Option<MinTicksize>,
+        theme_accents: ThemeAccents,
         on_change: impl Fn(Self) -> Message<Self> + Copy + 'a,
     ) -> Element<'a, Message<Self>> {
         kline_study_config_view(
@@ -705,8 +665,10 @@ impl Study for KlineStudy {
             basis,
             footprint_tick_multiplier,
             min_ticksize,
+            theme_accents,
             on_change,
             true,
+            StudyConfigLayout::Card,
         )
     }
 
@@ -715,6 +677,7 @@ impl Study for KlineStudy {
         basis: data::chart::Basis,
         footprint_tick_multiplier: Option<TickMultiplier>,
         min_ticksize: Option<MinTicksize>,
+        theme_accents: ThemeAccents,
         on_change: impl Fn(Self) -> Message<Self> + Copy + 'a,
     ) -> Element<'a, Message<Self>> {
         kline_study_config_view(
@@ -722,8 +685,10 @@ impl Study for KlineStudy {
             basis,
             footprint_tick_multiplier,
             min_ticksize,
+            theme_accents,
             on_change,
             false,
+            StudyConfigLayout::Inspector,
         )
     }
 }
@@ -788,12 +753,14 @@ impl<S: Study + ToString> Configurator<S> {
         basis: data::chart::Basis,
         footprint_tick_multiplier: Option<TickMultiplier>,
         min_ticksize: Option<MinTicksize>,
+        theme_accents: ThemeAccents,
     ) -> Element<'a, Message<S>> {
         self.view_available(
             active_studies,
             basis,
             footprint_tick_multiplier,
             min_ticksize,
+            theme_accents,
             S::all(),
             &[],
         )
@@ -805,6 +772,7 @@ impl<S: Study + ToString> Configurator<S> {
         basis: data::chart::Basis,
         footprint_tick_multiplier: Option<TickMultiplier>,
         min_ticksize: Option<MinTicksize>,
+        theme_accents: ThemeAccents,
         available_studies: Vec<S>,
         disabled: &[S],
     ) -> Element<'a, Message<S>> {
@@ -817,6 +785,7 @@ impl<S: Study + ToString> Configurator<S> {
                 basis,
                 footprint_tick_multiplier,
                 min_ticksize,
+                theme_accents,
                 disabled,
             ));
         }
@@ -831,6 +800,7 @@ impl<S: Study + ToString> Configurator<S> {
         basis: data::chart::Basis,
         footprint_tick_multiplier: Option<TickMultiplier>,
         min_ticksize: Option<MinTicksize>,
+        theme_accents: ThemeAccents,
         disabled: &[S],
     ) -> Element<'a, Message<S>> {
         let (is_selected, study_config) = {
@@ -887,6 +857,7 @@ impl<S: Study + ToString> Configurator<S> {
                 basis,
                 footprint_tick_multiplier,
                 min_ticksize,
+                theme_accents,
                 Message::StudyValueChanged,
             ));
         }

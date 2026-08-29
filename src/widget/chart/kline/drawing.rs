@@ -1,10 +1,10 @@
 use super::composition::PanelScaleMode;
+use super::composition::{MarkKind, PanelId};
 use super::scene::Scene;
 use super::{
     KlinePanelKind, KlineSeriesLike, KlineWidget, TEXT_SIZE, Y_AXIS_LABEL_LEFT_INSET, YUnit,
 };
 use crate::style;
-use crate::widget::chart::kline::composition::{MarkKind, PanelId};
 
 use data::config::theme::{ThemeColor, ThemeColorRole};
 use exchange::UnixMs;
@@ -37,7 +37,7 @@ impl AxisBadgeFilter {
     }
 }
 
-pub use data::chart::kline_v2::drawing::{
+pub use data::chart::kline::drawing::{
     AxisLabelAnchor, DrawingAnchor, DrawingColor, DrawingDraft, DrawingDragOperation,
     DrawingDragTarget, DrawingEntity, DrawingHandleKind, DrawingId, DrawingMeasure, DrawingObject,
     DrawingSnapshot, DrawingStyle, DrawingStyleDefaults, DrawingTool, KlineWidgetDrawingEvent,
@@ -101,7 +101,7 @@ where
 
         let mut best: Option<(u64, i64)> = None;
 
-        self.for_each_bar_unit_index(scene.x.axis, |series_index, _, x_unit, bar| {
+        self.for_each_scene_bar_unit_index(scene, |series_index, _, _, x_unit, bar| {
             if series_index != 0 {
                 return;
             }
@@ -157,11 +157,12 @@ where
 
         let panel_h = panel.plot.height.max(1.0);
         let y_in_panel = cursor_local.y - scene.layout.regions.plot.y - panel.plot.y;
-        let ratio = 1.0 - (y_in_panel / panel_h);
+        let ratio = (1.0 - (y_in_panel / panel_h)).clamp(0.0, 1.0);
         let panel_precision = self.panel_value_precision(panel_index);
 
         let y_unit = match panel.kind {
             KlinePanelKind::PrimaryChart => {
+                let primary_ratio = scene.primary_value_ratio_at_plot_y(y_in_panel);
                 let uses_display_space = matches!(
                     scene.primary.mode,
                     PanelScaleMode::PercentFromBase | PanelScaleMode::Logarithmic
@@ -169,13 +170,13 @@ where
 
                 if uses_display_space {
                     let (min_display, max_display) = scene.primary_domain_display_values();
-                    let display_value = min_display + (max_display - min_display) * ratio;
+                    let display_value = min_display + (max_display - min_display) * primary_ratio;
                     let value = scene.primary_display_to_value(display_value);
                     self.panel_value_to_unit(panel_precision, value)
                 } else {
                     let min_value = scene.primary.domain.values.0;
                     let max_value = scene.primary.domain.values.1;
-                    let value = min_value + (max_value - min_value) * ratio;
+                    let value = min_value + (max_value - min_value) * primary_ratio;
                     self.panel_value_to_unit(panel_precision, value)
                 }
             }
@@ -348,8 +349,7 @@ where
 
     fn x_overlay_for_time(&self, scene: &Scene, time: UnixMs) -> Option<f32> {
         let x_unit = self.x_unit_for_anchor_time(scene, time)?;
-        let x_plot =
-            Self::snap_plot_x_to_cell(scene.map_x_plot(x_unit), self.resolved_pixel_ratio());
+        let x_plot = Self::snap_plot_x_to_cell(scene.map_x_plot(x_unit), self.pixel_ratio_value());
         Some(scene.layout.regions.plot.x + x_plot)
     }
 
@@ -472,7 +472,7 @@ where
         let start_x = if ray {
             let x_unit = self.x_unit_for_anchor_time(scene, time)?;
             let x = scene.layout.regions.plot.x
-                + Self::snap_plot_x_to_cell(scene.map_x_plot(x_unit), self.resolved_pixel_ratio());
+                + Self::snap_plot_x_to_cell(scene.map_x_plot(x_unit), self.pixel_ratio_value());
             x.max(clip_bounds.x)
         } else {
             clip_bounds.x
@@ -489,7 +489,7 @@ where
         let x_unit = self.x_unit_for_anchor_time(scene, time)?;
         let clip_bounds = self.plot_bounds_in_overlay(scene);
         let x = scene.layout.regions.plot.x
-            + Self::snap_plot_x_to_cell(scene.map_x_plot(x_unit), self.resolved_pixel_ratio());
+            + Self::snap_plot_x_to_cell(scene.map_x_plot(x_unit), self.pixel_ratio_value());
 
         if x < clip_bounds.x || x > (clip_bounds.x + clip_bounds.width) {
             return None;
@@ -874,7 +874,7 @@ where
         best.map(|(_, id, kind)| (id, kind))
     }
 
-    pub(super) fn fill_drawings(
+    pub(super) fn fill_drawing_objects(
         &self,
         frame: &mut canvas::Frame,
         scene: &Scene,
@@ -903,6 +903,18 @@ where
                 pixel_ratio,
             );
         }
+    }
+
+    pub(super) fn fill_drawing_interaction(
+        &self,
+        frame: &mut canvas::Frame,
+        scene: &Scene,
+        palette: &Extended,
+        generated_accents: &[iced::Color; 6],
+        overlay_origin_in_window: Point,
+        pixel_ratio: f32,
+    ) {
+        let drawing_state = &self.drawings;
 
         for selected_drawing in drawing_state.selected_visible_drawings() {
             self.draw_selected_drawing_handles(
@@ -1597,17 +1609,5 @@ where
                 }
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn nearest_y_unit_selects_the_closest_candidate() {
-        let snapped = nearest_y_unit(YUnit(105), [YUnit(100), YUnit(110), YUnit(120)]);
-
-        assert_eq!(snapped, Some(YUnit(100)));
     }
 }

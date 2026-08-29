@@ -1,17 +1,12 @@
 use exchange::{TickMultiplier, TickerInfo, Timeframe};
 use serde::{Deserialize, Serialize};
 
-use crate::chart::{heatmap, kline};
-use crate::panel::{ladder, timeandsales};
+use crate::chart::heatmap;
+use crate::panel::{ladder, timesales};
 use crate::stream::PersistStreamKind;
 use crate::util::ok_or_default;
 
-use crate::chart::{
-    Basis, ViewConfig,
-    heatmap::HeatmapStudy,
-    indicator::{HeatmapIndicator, KlineIndicator},
-    kline::KlineChartKind,
-};
+use crate::chart::{Basis, heatmap::HeatmapStudy};
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 pub enum Axis {
@@ -31,19 +26,6 @@ pub enum Pane {
         #[serde(deserialize_with = "ok_or_default", default)]
         link_group: Option<LinkGroup>,
     },
-    HeatmapChart {
-        layout: ViewConfig,
-        #[serde(deserialize_with = "ok_or_default", default)]
-        studies: Vec<HeatmapStudy>,
-        #[serde(deserialize_with = "ok_or_default", default)]
-        stream_type: Vec<PersistStreamKind>,
-        #[serde(deserialize_with = "ok_or_default")]
-        settings: Settings,
-        #[serde(deserialize_with = "ok_or_default", default)]
-        indicators: Vec<HeatmapIndicator>,
-        #[serde(deserialize_with = "ok_or_default", default)]
-        link_group: Option<LinkGroup>,
-    },
     ShaderHeatmap {
         #[serde(deserialize_with = "ok_or_default", default)]
         studies: Vec<HeatmapStudy>,
@@ -52,25 +34,11 @@ pub enum Pane {
         #[serde(deserialize_with = "ok_or_default")]
         settings: Settings,
         #[serde(deserialize_with = "ok_or_default", default)]
-        indicators: Vec<HeatmapIndicator>,
-        #[serde(deserialize_with = "ok_or_default", default)]
         link_group: Option<LinkGroup>,
     },
     KlineChart {
-        layout: ViewConfig,
-        kind: KlineChartKind,
-        #[serde(deserialize_with = "ok_or_default", default)]
-        stream_type: Vec<PersistStreamKind>,
-        #[serde(deserialize_with = "ok_or_default")]
-        settings: Settings,
-        #[serde(deserialize_with = "ok_or_default", default)]
-        indicators: Vec<KlineIndicator>,
-        #[serde(deserialize_with = "ok_or_default", default)]
-        link_group: Option<LinkGroup>,
-    },
-    KlineChartV2 {
         #[serde(default)]
-        layout: Option<Box<crate::chart::kline_v2::Config>>,
+        layout: Option<Box<crate::chart::kline::Config>>,
         #[serde(deserialize_with = "ok_or_default", default)]
         stream_type: Vec<PersistStreamKind>,
         #[serde(deserialize_with = "ok_or_default")]
@@ -154,8 +122,7 @@ impl std::fmt::Display for LinkGroup {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub enum VisualConfig {
     Heatmap(heatmap::Config),
-    TimeAndSales(timeandsales::Config),
-    Kline(kline::Config),
+    TimeAndSales(timesales::Config),
     Ladder(ladder::Config),
 }
 
@@ -167,16 +134,9 @@ impl VisualConfig {
         }
     }
 
-    pub fn time_and_sales(&self) -> Option<timeandsales::Config> {
+    pub fn time_and_sales(&self) -> Option<timesales::Config> {
         match self {
             Self::TimeAndSales(cfg) => Some(*cfg),
-            _ => None,
-        }
-    }
-
-    pub fn kline(&self) -> Option<kline::Config> {
-        match self {
-            Self::Kline(cfg) => Some(*cfg),
             _ => None,
         }
     }
@@ -192,23 +152,17 @@ impl VisualConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ContentKind {
     Starter,
-    HeatmapChart,
     ShaderHeatmap,
-    FootprintChart,
     CandlestickChart,
-    CandlestickChartV2,
     TimeAndSales,
     Ladder,
 }
 
 impl ContentKind {
-    pub const ALL: [ContentKind; 8] = [
+    pub const ALL: [ContentKind; 5] = [
         ContentKind::Starter,
-        ContentKind::HeatmapChart,
         ContentKind::ShaderHeatmap,
-        ContentKind::FootprintChart,
         ContentKind::CandlestickChart,
-        ContentKind::CandlestickChartV2,
         ContentKind::TimeAndSales,
         ContentKind::Ladder,
     ];
@@ -218,11 +172,8 @@ impl std::fmt::Display for ContentKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
             ContentKind::Starter => "Starter Pane",
-            ContentKind::HeatmapChart => "Heatmap Chart (Legacy)",
             ContentKind::ShaderHeatmap => "Heatmap Chart",
-            ContentKind::FootprintChart => "Footprint Chart",
             ContentKind::CandlestickChart => "Candlestick Chart",
-            ContentKind::CandlestickChartV2 => "Candlestick Chart (V2)",
             ContentKind::TimeAndSales => "Time&Sales",
             ContentKind::Ladder => "DOM/Ladder",
         };
@@ -257,34 +208,16 @@ impl PaneSetup {
 
         let basis =
             match content_kind {
-                ContentKind::HeatmapChart => {
-                    let current = current_basis.and_then(|b| match b {
-                        Basis::Time(tf) if exchange.supports_heatmap_timeframe(tf) => Some(b),
-                        _ => None,
-                    });
-
-                    Some(current.unwrap_or_else(|| Basis::default_heatmap_time(Some(base_ticker))))
-                }
                 ContentKind::Ladder => Some(
                     current_basis.unwrap_or_else(|| Basis::default_heatmap_time(Some(base_ticker))),
                 ),
                 ContentKind::ShaderHeatmap => Some(
                     current_basis.unwrap_or_else(|| Basis::default_heatmap_time(Some(base_ticker))),
                 ),
-                ContentKind::FootprintChart => {
+                ContentKind::CandlestickChart => {
                     let current = current_basis.and_then(|b| match b {
                         Basis::Time(tf) if exchange.supports_kline_timeframe(tf) => Some(b),
                         Basis::Tick(_) => Some(b),
-                        _ => None,
-                    });
-
-                    Some(current.unwrap_or_else(|| {
-                        Basis::default_kline_time(Some(base_ticker), Timeframe::M5)
-                    }))
-                }
-                ContentKind::CandlestickChart | ContentKind::CandlestickChartV2 => {
-                    let current = current_basis.and_then(|b| match b {
-                        Basis::Time(tf) if exchange.supports_kline_timeframe(tf) => Some(b),
                         _ => None,
                     });
 
@@ -296,7 +229,7 @@ impl PaneSetup {
             };
 
         let tick_multiplier = match content_kind {
-            ContentKind::HeatmapChart | ContentKind::Ladder | ContentKind::ShaderHeatmap => {
+            ContentKind::Ladder | ContentKind::ShaderHeatmap => {
                 let tm = if !is_client_aggr && prev_is_client_aggr {
                     TickMultiplier(10)
                 } else if let Some(tm) = current_tick_multiplier {
@@ -308,13 +241,9 @@ impl PaneSetup {
                 };
                 Some(tm)
             }
-            ContentKind::FootprintChart => {
-                Some(current_tick_multiplier.unwrap_or(TickMultiplier(50)))
+            ContentKind::CandlestickChart | ContentKind::TimeAndSales | ContentKind::Starter => {
+                current_tick_multiplier
             }
-            ContentKind::CandlestickChart
-            | ContentKind::CandlestickChartV2
-            | ContentKind::TimeAndSales
-            | ContentKind::Starter => current_tick_multiplier,
         };
 
         let price_step = match tick_multiplier {
@@ -325,7 +254,7 @@ impl PaneSetup {
         let depth_aggr = exchange.stream_ticksize(tick_multiplier, TickMultiplier(50));
 
         let push_freq = match content_kind {
-            ContentKind::HeatmapChart if exchange.is_custom_push_freq() => match basis {
+            ContentKind::ShaderHeatmap if exchange.is_custom_push_freq() => match basis {
                 Some(Basis::Time(tf)) if exchange.supports_heatmap_timeframe(tf) => {
                     exchange::PushFrequency::Custom(tf)
                 }

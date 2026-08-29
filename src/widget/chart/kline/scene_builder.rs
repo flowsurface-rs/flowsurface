@@ -1,20 +1,23 @@
 use super::chrome::{FootprintLegendHit, IndicatorLegendHit, StudyLegendHit, TickerLegendHit};
-use super::layout::{LayoutHitZone, PanelLayoutTree};
-use super::scene::{
-    ChromeScene, CursorInfo, IndicatorPanelScene, PrimaryPercentScaleState, PrimaryScale, Scene,
-    SceneInteraction, TickIndex, ValueDomain, XAxis, XViewport, Y_UNIT_STEP_FALLBACK,
-};
-use super::{BarSpacingPx, KlinePanelKind, KlineSeriesLike, KlineWidget, PanelYViewport, YUnit};
-use crate::widget::chart::kline::composition::{
+use super::composition::{
     BarMode, HistogramMode, LayerDataKind, MarkKind, PanelPresentation, PanelScaleMode,
     PanelValueId, PanelValuePrecision,
 };
+use super::layout::{LayoutHitZone, PanelLayoutTree};
+use super::scene::{
+    CursorInfo, IndicatorPanelScene, PrimaryPercentScaleState, PrimaryScale, Scene, SceneBase,
+    TickIndex, ValueDomain, XAxis, XViewport, Y_UNIT_STEP_FALLBACK,
+};
+use super::{
+    BarSpacingPx, KlinePanelKind, KlineSeriesLike, KlineWidget, PanelYViewport, State, YUnit,
+};
 
-use data::chart::kline_v2::ZOOM_SENSITIVITY;
+use data::chart::kline::ZOOM_SENSITIVITY;
 use exchange::{Kline, Timeframe, UnixMs};
 
 use iced::advanced::Layout;
 use iced::{Point, Rectangle, mouse};
+use std::sync::Arc;
 
 impl<'a, S> KlineWidget<'a, S>
 where
@@ -81,7 +84,11 @@ where
         let panel_h = panel.plot.height.max(1.0);
         let y_in_panel =
             (cursor_y - scene.layout.regions.plot.y - panel.plot.y).clamp(0.0, panel_h);
-        let anchor_ratio = (1.0 - (y_in_panel / panel_h)).clamp(0.0, 1.0);
+        let anchor_ratio = if panel.kind == KlinePanelKind::PrimaryChart {
+            scene.primary_value_ratio_at_plot_y(y_in_panel)
+        } else {
+            (1.0 - (y_in_panel / panel_h)).clamp(0.0, 1.0)
+        };
 
         let zoom_amount = scroll_delta.abs().clamp(0.0, 6.0);
         let zoom_scale = (zoom_amount / ZOOM_SENSITIVITY).exp();
@@ -151,7 +158,11 @@ where
 
         let panel = scene.layout.panel(panel_index)?;
         let panel_h = panel.plot.height.max(1.0);
-        let delta_ratio = dy_px / panel_h;
+        let delta_ratio = if scene.primary.inverted {
+            -dy_px / panel_h
+        } else {
+            dy_px / panel_h
+        };
 
         let (min_display, max_display) = scene.primary_domain_display_values();
         let display_viewport = PanelYViewport::normalized(min_display, max_display)?;
@@ -281,98 +292,87 @@ where
         x_axis: XAxis,
         target_unit: i64,
     ) -> Option<&'b Kline> {
-        let mut best: Option<(i64, &'b Kline)> = None;
+        self.bar_index_at_or_before_unit(series, x_axis, target_unit)
+            .and_then(|index| series.bars().get(index))
+    }
 
-        match x_axis {
-            XAxis::Time { .. } => {
-                for bar in series.bars() {
-                    let unit = x_axis.unit_from_time(bar.time);
-                    if unit == target_unit {
-                        return Some(bar);
-                    }
-
-                    if unit <= target_unit
-                        && best.map(|(best_unit, _)| unit > best_unit).unwrap_or(true)
-                    {
-                        best = Some((unit, bar));
-                    }
-                }
-            }
-            XAxis::Tick { .. } => {
-                let len = series.bars().len();
-                for (index, bar) in series.bars().iter().enumerate() {
-                    let from_latest = len.saturating_sub(1).saturating_sub(index) as u64;
-                    let unit = x_axis.unit_from_tick(TickIndex::from_u64(from_latest));
-
-                    if unit == target_unit {
-                        return Some(bar);
-                    }
-
-                    if unit <= target_unit
-                        && best.map(|(best_unit, _)| unit > best_unit).unwrap_or(true)
-                    {
-                        best = Some((unit, bar));
-                    }
-                }
-            }
+    pub(super) fn bar_index_at_or_before_unit(
+        &self,
+        series: &S,
+        x_axis: XAxis,
+        target_unit: i64,
+    ) -> Option<usize> {
+        let bars = series.bars();
+        if bars.is_empty() {
+            return None;
         }
 
-        best.map(|(_, bar)| bar)
+        match x_axis {
+            XAxis::Time { .. } => last_index_at_or_before(bars.len(), target_unit, |index| {
+                x_axis.unit_from_time(bars[index].time)
+            }),
+            XAxis::Tick { .. } => last_index_at_or_before(bars.len(), target_unit, |index| {
+                let from_latest = bars.len().saturating_sub(1).saturating_sub(index) as u64;
+                x_axis.unit_from_tick(TickIndex::from_u64(from_latest))
+            }),
+        }
     }
 
     fn compute_primary_scale_anchor(
         &self,
-        x_axis: XAxis,
+        bar_units: &[Vec<i64>],
         min_x_unit: i64,
         max_x_unit: i64,
     ) -> Option<f32> {
         let mut first_unit = i64::MAX;
         let mut base_close = None;
 
-        self.for_each_bar_unit_index(x_axis, |series_index, _, unit, bar| {
-            if series_index != 0 {
-                return;
-            }
+        self.for_each_bar_unit_index_with_units(
+            bar_units,
+            min_x_unit,
+            max_x_unit,
+            |series_index, _, _, unit, bar| {
+                if series_index != 0 {
+                    return;
+                }
 
-            if unit < min_x_unit || unit > max_x_unit {
-                return;
-            }
-
-            if unit < first_unit {
-                first_unit = unit;
-                base_close = Some(bar.close.to_f32_lossy());
-            }
-        });
+                if unit < first_unit {
+                    first_unit = unit;
+                    base_close = Some(bar.close.to_f32_lossy());
+                }
+            },
+        );
 
         base_close
     }
 
     fn compute_series_percent_anchors(
         &self,
-        x_axis: XAxis,
+        bar_units: &[Vec<i64>],
         min_x_unit: i64,
         max_x_unit: i64,
     ) -> Vec<Option<f32>> {
         let mut anchors = vec![None; self.series.len()];
         let mut first_units = vec![i64::MAX; self.series.len()];
 
-        self.for_each_bar_unit_index(x_axis, |series_index, _, unit, bar| {
-            if unit < min_x_unit || unit > max_x_unit {
-                return;
-            }
-
-            if unit < first_units[series_index] {
-                first_units[series_index] = unit;
-                anchors[series_index] = Some(bar.close.to_f32_lossy());
-            }
-        });
+        self.for_each_bar_unit_index_with_units(
+            bar_units,
+            min_x_unit,
+            max_x_unit,
+            |series_index, _, _, unit, bar| {
+                if unit < first_units[series_index] {
+                    first_units[series_index] = unit;
+                    anchors[series_index] = Some(bar.close.to_f32_lossy());
+                }
+            },
+        );
 
         anchors
     }
 
     fn compute_primary_percent_domain(
         &self,
-        x_axis: XAxis,
+        bar_units: &[Vec<i64>],
         min_x_unit: i64,
         max_x_unit: i64,
         primary_mark: MarkKind,
@@ -386,54 +386,73 @@ where
             .map(|value_id| self.overlay_channels_for_panel_value(Some(*value_id)))
             .collect();
         let include_primary_ohlc_range = self.uses_primary_ohlc_range(primary_mark);
-        self.for_each_bar_unit_index(x_axis, |series_index, series, unit, bar| {
-            if unit < min_x_unit || unit > max_x_unit {
-                return;
-            }
+        let include_footprint_range = self.footprints_enabled && self.footprint.visible;
+        let footprint_half_tick = self
+            .series
+            .first()
+            .map(|series| series.footprint_tick_size().to_f32_lossy() * 0.5)
+            .unwrap_or(0.0);
+        self.for_each_bar_unit_index_with_units(
+            bar_units,
+            min_x_unit,
+            max_x_unit,
+            |series_index, bar_index, series, _unit, bar| {
+                let Some(anchor) = anchors
+                    .get(series_index)
+                    .copied()
+                    .flatten()
+                    .filter(|anchor| anchor.abs() > f32::EPSILON)
+                else {
+                    return;
+                };
 
-            let Some(anchor) = anchors
-                .get(series_index)
-                .copied()
-                .flatten()
-                .filter(|anchor| anchor.abs() > f32::EPSILON)
-            else {
-                return;
-            };
+                let mut emit_pct = |value: f32| {
+                    let pct = ((value / anchor) - 1.0) * 100.0;
+                    min_pct = Some(min_pct.map_or(pct, |current| current.min(pct)));
+                    max_pct = Some(max_pct.map_or(pct, |current| current.max(pct)));
+                };
 
-            let mut emit_pct = |value: f32| {
-                let pct = ((value / anchor) - 1.0) * 100.0;
-                min_pct = Some(min_pct.map_or(pct, |current| current.min(pct)));
-                max_pct = Some(max_pct.map_or(pct, |current| current.max(pct)));
-            };
+                if series_index == 0 && include_primary_ohlc_range {
+                    emit_pct(bar.low.to_f32_lossy());
+                    emit_pct(bar.high.to_f32_lossy());
+                } else {
+                    emit_pct(bar.close.to_f32_lossy());
+                }
 
-            if series_index == 0 && include_primary_ohlc_range {
-                emit_pct(bar.low.to_f32_lossy());
-                emit_pct(bar.high.to_f32_lossy());
-            } else {
-                emit_pct(bar.close.to_f32_lossy());
-            }
+                if series_index == 0
+                    && include_footprint_range
+                    && let Some(footprint) = series.footprint_for_bar(bar)
+                {
+                    for price in footprint.trades.keys() {
+                        let price = price.to_f32_lossy();
+                        emit_pct(price - footprint_half_tick);
+                        emit_pct(price + footprint_half_tick);
+                    }
+                }
 
-            if series_index == 0 {
-                for (overlay_idx, value_id) in primary_overlay_value_ids.iter().enumerate() {
-                    let Some(data) = self.indicator_data_for_series(series, Some(*value_id), bar)
-                    else {
-                        continue;
-                    };
+                if series_index == 0 {
+                    for (overlay_idx, value_id) in primary_overlay_value_ids.iter().enumerate() {
+                        let Some(data) =
+                            self.indicator_data_for_series_at(series, Some(*value_id), bar_index)
+                        else {
+                            continue;
+                        };
 
-                    let Some(channels) = primary_overlay_channels.get(overlay_idx) else {
-                        continue;
-                    };
+                        let Some(channels) = primary_overlay_channels.get(overlay_idx) else {
+                            continue;
+                        };
 
-                    for channel in channels.iter().copied() {
-                        if let Some(channel_value) =
-                            self.overlay_channel_value(*value_id, data, channel)
-                        {
-                            emit_pct(channel_value);
+                        for channel in channels.iter().copied() {
+                            if let Some(channel_value) =
+                                self.overlay_channel_value(*value_id, data, channel)
+                            {
+                                emit_pct(channel_value);
+                            }
                         }
                     }
                 }
-            }
-        });
+            },
+        );
 
         let min_pct = min_pct?;
         let max_pct = max_pct?;
@@ -449,12 +468,12 @@ where
 
     fn uses_primary_ohlc_range(&self, primary_mark: MarkKind) -> bool {
         !matches!(primary_mark, MarkKind::Line)
-            || (self.footprints_enabled && self.footprints_visible)
+            || (self.footprints_enabled && self.footprint.visible)
     }
 
     fn compute_primary_percent_scale_state(
         &self,
-        x_axis: XAxis,
+        bar_units: &[Vec<i64>],
         min_x_unit: i64,
         max_x_unit: i64,
         primary_mark: MarkKind,
@@ -469,9 +488,9 @@ where
         }
 
         if primary_scale_mode.uses_series_percent_anchors(self.series.len()) {
-            let anchors = self.compute_series_percent_anchors(x_axis, min_x_unit, max_x_unit);
+            let anchors = self.compute_series_percent_anchors(bar_units, min_x_unit, max_x_unit);
             let domain_override = self.compute_primary_percent_domain(
-                x_axis,
+                bar_units,
                 min_x_unit,
                 max_x_unit,
                 primary_mark,
@@ -486,7 +505,7 @@ where
             });
         }
 
-        let base_anchor = self.compute_primary_scale_anchor(x_axis, min_x_unit, max_x_unit);
+        let base_anchor = self.compute_primary_scale_anchor(bar_units, min_x_unit, max_x_unit);
         Some(PrimaryPercentScaleState {
             primary_scale_anchor: base_anchor,
             series_percent_anchors: vec![base_anchor; self.series.len()],
@@ -500,7 +519,7 @@ where
                 let anchor = self
                     .series
                     .iter()
-                    .flat_map(|s| s.bars().iter())
+                    .filter_map(|series| series.bars().last())
                     .map(|bar| bar.time.floor_to(timeframe))
                     .max()?;
 
@@ -526,48 +545,79 @@ where
             .unwrap_or_default()
     }
 
-    pub(super) fn for_each_bar_unit_index(
-        &self,
-        x_axis: XAxis,
-        mut f: impl FnMut(usize, &S, i64, &Kline),
-    ) {
-        for (series_index, series) in self.series.iter().enumerate() {
-            match x_axis {
-                XAxis::Time { .. } => {
-                    for bar in series.bars() {
-                        f(series_index, series, x_axis.unit_from_time(bar.time), bar);
-                    }
-                }
+    fn build_bar_units(&self, x_axis: XAxis) -> Vec<Vec<i64>> {
+        self.series
+            .iter()
+            .map(|series| match x_axis {
+                XAxis::Time { .. } => series
+                    .bars()
+                    .iter()
+                    .map(|bar| x_axis.unit_from_time(bar.time))
+                    .collect(),
                 XAxis::Tick { .. } => {
                     let len = series.bars().len();
-                    for (index, bar) in series.bars().iter().enumerate() {
-                        let from_latest = len.saturating_sub(1).saturating_sub(index) as u64;
-                        f(
-                            series_index,
-                            series,
-                            x_axis.unit_from_tick(TickIndex::from_u64(from_latest)),
-                            bar,
-                        );
-                    }
+                    (0..len)
+                        .map(|index| {
+                            let from_latest = len.saturating_sub(1).saturating_sub(index) as u64;
+                            x_axis.unit_from_tick(TickIndex::from_u64(from_latest))
+                        })
+                        .collect()
                 }
+            })
+            .collect()
+    }
+
+    fn for_each_bar_unit_index_with_units(
+        &self,
+        bar_units: &[Vec<i64>],
+        min_x_unit: i64,
+        max_x_unit: i64,
+        mut f: impl FnMut(usize, usize, &S, i64, &Kline),
+    ) {
+        for (series_index, series) in self.series.iter().enumerate() {
+            let Some(units) = bar_units.get(series_index) else {
+                continue;
+            };
+            let (start, end) = bar_index_range_for_units(units, min_x_unit, max_x_unit);
+            let end = end.min(series.bars().len()).min(units.len());
+            if start >= end {
+                continue;
+            }
+
+            for (bar_index, &unit) in units.iter().enumerate().skip(start).take(end - start) {
+                let Some(bar) = series.bars().get(bar_index) else {
+                    break;
+                };
+                f(series_index, bar_index, series, unit, bar);
             }
         }
     }
 
-    fn for_each_bar_unit(&self, x_axis: XAxis, mut f: impl FnMut(&S, i64, &Kline)) {
-        self.for_each_bar_unit_index(x_axis, |_, series, unit, bar| f(series, unit, bar));
+    pub(super) fn for_each_scene_bar_unit_index(
+        &self,
+        scene: &Scene,
+        f: impl FnMut(usize, usize, &S, i64, &Kline),
+    ) {
+        self.for_each_bar_unit_index_with_units(
+            &scene.bar_units,
+            scene.x.min_unit,
+            scene.x.max_unit,
+            f,
+        );
     }
 
-    fn data_x_bounds(&self, x_axis: XAxis) -> Option<(i64, i64)> {
+    fn data_x_bounds(&self, bar_units: &[Vec<i64>]) -> Option<(i64, i64)> {
         let mut any = false;
         let mut min_unit = i64::MAX;
         let mut max_unit = i64::MIN;
 
-        self.for_each_bar_unit(x_axis, |_, unit, _| {
-            any = true;
-            min_unit = min_unit.min(unit);
-            max_unit = max_unit.max(unit);
-        });
+        for units in bar_units {
+            for &unit in units {
+                any = true;
+                min_unit = min_unit.min(unit);
+                max_unit = max_unit.max(unit);
+            }
+        }
 
         any.then_some((min_unit, max_unit))
     }
@@ -576,9 +626,8 @@ where
         self.horizontal_world.effective_spacing()
     }
 
-    fn compute_x_window(&self, plot_width: f32) -> Option<(XAxis, i64, i64, f32)> {
-        let x_axis = self.resolve_x_axis()?;
-        let (data_min_x, mut data_max_x) = self.data_x_bounds(x_axis)?;
+    fn compute_x_window(&self, data_bounds: (i64, i64), plot_width: f32) -> (i64, i64, f32) {
+        let (data_min_x, mut data_max_x) = data_bounds;
 
         if data_max_x == data_min_x {
             data_max_x = data_max_x.saturating_add(1);
@@ -595,19 +644,20 @@ where
         let right_unit = right.ceil() as i64;
 
         if right_unit <= left_unit {
-            return Some((x_axis, left_unit, left_unit.saturating_add(1), right));
+            return (left_unit, left_unit.saturating_add(1), right);
         }
 
-        Some((x_axis, left_unit, right_unit, right))
+        (left_unit, right_unit, right)
     }
 
     fn compute_primary_domain(
         &self,
-        x_axis: XAxis,
+        bar_units: &[Vec<i64>],
         min_x_unit: i64,
         max_x_unit: i64,
         primary_value_precision: Option<PanelValuePrecision>,
         primary_mark: MarkKind,
+        primary_plot_height: f32,
     ) -> Option<(YUnit, YUnit)> {
         let mut min_primary_unit: Option<YUnit> = None;
         let mut max_primary_unit: Option<YUnit> = None;
@@ -621,103 +671,133 @@ where
             .map(|value_id| self.fill_specs_for_panel_value(Some(*value_id)))
             .collect();
         let include_primary_ohlc_range = self.uses_primary_ohlc_range(primary_mark);
+        let include_footprint_range = self.footprints_enabled && self.footprint.visible;
+        let mut has_footprint_rows = false;
 
-        self.for_each_bar_unit_index(x_axis, |series_index, series, unit, bar| {
-            if unit < min_x_unit || unit > max_x_unit {
-                return;
-            }
+        self.for_each_bar_unit_index_with_units(
+            bar_units,
+            min_x_unit,
+            max_x_unit,
+            |series_index, bar_index, series, _unit, bar| {
+                let (low, high) = if series_index == 0 && include_primary_ohlc_range {
+                    (
+                        self.panel_value_to_unit(primary_value_precision, bar.low.to_f32_lossy()),
+                        self.panel_value_to_unit(primary_value_precision, bar.high.to_f32_lossy()),
+                    )
+                } else {
+                    let close =
+                        self.panel_value_to_unit(primary_value_precision, bar.close.to_f32_lossy());
+                    (close, close)
+                };
 
-            let (low, high) = if series_index == 0 && include_primary_ohlc_range {
-                (
-                    self.panel_value_to_unit(primary_value_precision, bar.low.to_f32_lossy()),
-                    self.panel_value_to_unit(primary_value_precision, bar.high.to_f32_lossy()),
-                )
-            } else {
-                let close =
-                    self.panel_value_to_unit(primary_value_precision, bar.close.to_f32_lossy());
-                (close, close)
-            };
+                min_primary_unit =
+                    Some(min_primary_unit.map_or(low, |value| YUnit(value.0.min(low.0))));
+                max_primary_unit =
+                    Some(max_primary_unit.map_or(high, |value| YUnit(value.0.max(high.0))));
 
-            min_primary_unit =
-                Some(min_primary_unit.map_or(low, |value| YUnit(value.0.min(low.0))));
-            max_primary_unit =
-                Some(max_primary_unit.map_or(high, |value| YUnit(value.0.max(high.0))));
-
-            if series_index == 0 {
-                for (overlay_idx, value_id) in primary_overlay_value_ids.iter().enumerate() {
-                    let Some(data) = self.indicator_data_for_series(series, Some(*value_id), bar)
-                    else {
-                        continue;
-                    };
-
-                    let Some(channels) = primary_overlay_channels.get(overlay_idx) else {
-                        continue;
-                    };
-
-                    for channel in channels.iter().copied() {
-                        if let Some(channel_value) =
-                            self.overlay_channel_value(*value_id, data, channel)
-                        {
-                            let channel_unit =
-                                self.panel_value_to_unit(primary_value_precision, channel_value);
-                            min_primary_unit =
-                                Some(min_primary_unit.map_or(channel_unit, |value| {
-                                    YUnit(value.0.min(channel_unit.0))
-                                }));
-                            max_primary_unit =
-                                Some(max_primary_unit.map_or(channel_unit, |value| {
-                                    YUnit(value.0.max(channel_unit.0))
-                                }));
-                        }
+                if series_index == 0
+                    && include_footprint_range
+                    && let Some(footprint) = series.footprint_for_bar(bar)
+                {
+                    for price in footprint.trades.keys() {
+                        has_footprint_rows = true;
+                        let price_unit =
+                            self.panel_value_to_unit(primary_value_precision, price.to_f32_lossy());
+                        min_primary_unit = Some(
+                            min_primary_unit
+                                .map_or(price_unit, |value| YUnit(value.0.min(price_unit.0))),
+                        );
+                        max_primary_unit = Some(
+                            max_primary_unit
+                                .map_or(price_unit, |value| YUnit(value.0.max(price_unit.0))),
+                        );
                     }
+                }
 
-                    if let Some(fills) = primary_fill_specs.get(overlay_idx) {
-                        for fill in fills.iter().copied() {
-                            for source in [fill.upper, fill.lower] {
-                                if let Some(fill_value) =
-                                    self.indicator_source_value(*value_id, Some(data), source)
-                                {
-                                    let fill_unit = self
-                                        .panel_value_to_unit(primary_value_precision, fill_value);
-                                    min_primary_unit =
-                                        Some(min_primary_unit.map_or(fill_unit, |value| {
-                                            YUnit(value.0.min(fill_unit.0))
-                                        }));
-                                    max_primary_unit =
-                                        Some(max_primary_unit.map_or(fill_unit, |value| {
-                                            YUnit(value.0.max(fill_unit.0))
-                                        }));
+                if series_index == 0 {
+                    for (overlay_idx, value_id) in primary_overlay_value_ids.iter().enumerate() {
+                        let Some(data) =
+                            self.indicator_data_for_series_at(series, Some(*value_id), bar_index)
+                        else {
+                            continue;
+                        };
+
+                        let Some(channels) = primary_overlay_channels.get(overlay_idx) else {
+                            continue;
+                        };
+
+                        for channel in channels.iter().copied() {
+                            if let Some(channel_value) =
+                                self.overlay_channel_value(*value_id, data, channel)
+                            {
+                                let channel_unit = self
+                                    .panel_value_to_unit(primary_value_precision, channel_value);
+                                min_primary_unit =
+                                    Some(min_primary_unit.map_or(channel_unit, |value| {
+                                        YUnit(value.0.min(channel_unit.0))
+                                    }));
+                                max_primary_unit =
+                                    Some(max_primary_unit.map_or(channel_unit, |value| {
+                                        YUnit(value.0.max(channel_unit.0))
+                                    }));
+                            }
+                        }
+
+                        if let Some(fills) = primary_fill_specs.get(overlay_idx) {
+                            for fill in fills.iter().copied() {
+                                for source in [fill.upper, fill.lower] {
+                                    if let Some(fill_value) =
+                                        self.indicator_source_value(*value_id, Some(data), source)
+                                    {
+                                        let fill_unit = self.panel_value_to_unit(
+                                            primary_value_precision,
+                                            fill_value,
+                                        );
+                                        min_primary_unit =
+                                            Some(min_primary_unit.map_or(fill_unit, |value| {
+                                                YUnit(value.0.min(fill_unit.0))
+                                            }));
+                                        max_primary_unit =
+                                            Some(max_primary_unit.map_or(fill_unit, |value| {
+                                                YUnit(value.0.max(fill_unit.0))
+                                            }));
+                                    }
                                 }
                             }
                         }
                     }
                 }
-            }
-        });
+            },
+        );
 
         let min_primary_unit = min_primary_unit?;
         let max_primary_unit = max_primary_unit?;
 
-        let min_i = min_primary_unit.0;
-        let max_i = max_primary_unit.0;
-        let span = max_i.abs_diff(min_i);
-        let pad = if span == 0 {
-            max_i.unsigned_abs().max(1).saturating_add(199) / 200
-        } else {
-            span.saturating_mul(5).saturating_add(99) / 100
-        }
-        .max(1);
-        let pad = i64::try_from(pad).unwrap_or(i64::MAX);
-
-        let padded_min = min_i.saturating_sub(pad);
-        let padded_max = max_i.saturating_add(pad);
+        let footprint_tick_units = has_footprint_rows.then(|| {
+            let zero_unit = self.panel_value_to_unit(primary_value_precision, 0.0);
+            let tick_value = self
+                .series
+                .first()
+                .map(|series| series.footprint_tick_size().to_f32_lossy())
+                .unwrap_or_default();
+            let tick_unit = self.panel_value_to_unit(primary_value_precision, tick_value);
+            i64::try_from(tick_unit.0.abs_diff(zero_unit.0))
+                .unwrap_or(i64::MAX)
+                .max(1)
+        });
+        let (padded_min, padded_max) = padded_primary_domain_units(
+            min_primary_unit.0,
+            max_primary_unit.0,
+            primary_plot_height,
+            footprint_tick_units,
+        );
 
         Some((YUnit(padded_min), YUnit(padded_max)))
     }
 
     fn compute_indicator_domain(
         &self,
-        x_axis: XAxis,
+        bar_units: &[Vec<i64>],
         min_x_unit: i64,
         max_x_unit: i64,
         panel_value_id: Option<PanelValueId>,
@@ -743,12 +823,9 @@ where
         let mut min_unit = i64::MAX;
         let mut max_unit = i64::MIN;
 
-        let mut visit_bar = |unit: i64, bar: &Kline| {
-            if unit < min_x_unit || unit > max_x_unit {
-                return;
-            }
-
-            let Some(indicator_data) = self.indicator_data_for_series(series, panel_value_id, bar)
+        let mut visit_bar = |bar_index: usize| {
+            let Some(indicator_data) =
+                self.indicator_data_for_series_at(series, panel_value_id, bar_index)
             else {
                 return;
             };
@@ -797,19 +874,11 @@ where
             }
         };
 
-        match x_axis {
-            XAxis::Time { .. } => {
-                for bar in series.bars() {
-                    visit_bar(x_axis.unit_from_time(bar.time), bar);
-                }
-            }
-            XAxis::Tick { .. } => {
-                let len = series.bars().len();
-                for (index, bar) in series.bars().iter().enumerate() {
-                    let from_latest = len.saturating_sub(1).saturating_sub(index) as u64;
-                    visit_bar(x_axis.unit_from_tick(TickIndex::from_u64(from_latest)), bar);
-                }
-            }
+        let units = bar_units.first()?;
+        let (start, end) = bar_index_range_for_units(units, min_x_unit, max_x_unit);
+        let end = end.min(series.bars().len()).min(units.len());
+        for bar_index in start.min(end)..end {
+            visit_bar(bar_index);
         }
 
         if !any {
@@ -969,7 +1038,7 @@ where
 
         let (y_primary_unit, y_indicator_unit, snapped_y_plot) = match panel.kind {
             KlinePanelKind::PrimaryChart => {
-                let value_ratio = 1.0 - (y_in_panel / panel.plot.height.max(1.0));
+                let value_ratio = scene.primary_value_ratio_at_plot_y(y_in_panel);
                 let uses_display_transform = scene
                     .primary
                     .mode
@@ -1039,8 +1108,45 @@ where
         });
     }
 
-    pub(super) fn compute_scene(&self, layout: Layout<'_>, cursor: mouse::Cursor) -> Option<Scene> {
+    pub(super) fn compute_scene_uncached(
+        &self,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+    ) -> Option<Scene> {
         let panel_layout = PanelLayoutTree::from_layout(layout, &self.composition.panels)?;
+        let base = self.compute_scene_base(panel_layout)?;
+        self.build_scene_from_base(&base, layout.bounds(), cursor)
+    }
+
+    pub(super) fn ensure_scene_base(&self, state: &mut State, layout: Layout<'_>) {
+        let Some(panel_layout) = PanelLayoutTree::from_layout(layout, &self.composition.panels)
+        else {
+            return;
+        };
+
+        let _ = state
+            .scene_cache
+            .get_or_build(self.version, panel_layout, |panel_layout| {
+                self.compute_scene_base(panel_layout)
+            });
+    }
+
+    pub(super) fn cached_scene(
+        &self,
+        state: &State,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+    ) -> Option<Scene> {
+        let root_bounds = layout.bounds();
+        let panel_layout = PanelLayoutTree::from_layout(layout, &self.composition.panels)?;
+        let Some(base) = state.scene_cache.get(self.version, &panel_layout) else {
+            return self.compute_scene_uncached(layout, cursor);
+        };
+
+        self.build_scene_from_base(base, root_bounds, cursor)
+    }
+
+    fn compute_scene_base(&self, panel_layout: PanelLayoutTree) -> Option<SceneBase> {
         let primary_panel = panel_layout
             .panels
             .iter()
@@ -1055,19 +1161,23 @@ where
         let x_axis_plot_width = panel_layout.primary_plot_width()?;
         let autoscale_plot_width = (x_axis_plot_width + self.autoscale_plot_width_offset).max(1.0);
 
-        let (x_axis, min_x_unit, max_x_unit, right_x_unit) =
-            self.compute_x_window(x_axis_plot_width)?;
-        let (autoscale_x_axis, autoscale_min_x_unit, autoscale_max_x_unit, _) =
-            self.compute_x_window(autoscale_plot_width)?;
+        let x_axis = self.resolve_x_axis()?;
+        let bar_units: Arc<[Vec<i64>]> = Arc::from(self.build_bar_units(x_axis));
+        let data_bounds = self.data_x_bounds(bar_units.as_ref())?;
+        let (min_x_unit, max_x_unit, right_x_unit) =
+            self.compute_x_window(data_bounds, x_axis_plot_width);
+        let (autoscale_min_x_unit, autoscale_max_x_unit, _) =
+            self.compute_x_window(data_bounds, autoscale_plot_width);
         let x_world = horizontal_world.axis_at_right_unit(right_x_unit);
         let fractional_x_offset = right_x_unit - max_x_unit as f32;
         let primary_value_precision = self.panel_value_precision(primary_panel);
         let (mut min_primary_unit, mut max_primary_unit) = self.compute_primary_domain(
-            autoscale_x_axis,
+            bar_units.as_ref(),
             autoscale_min_x_unit,
             autoscale_max_x_unit,
             primary_value_precision,
             primary_mark,
+            primary_plot.height,
         )?;
         let mut primary_domain_values = (
             self.panel_unit_to_value(primary_value_precision, min_primary_unit),
@@ -1112,7 +1222,7 @@ where
                         (YUnit(0), YUnit(1))
                     } else {
                         self.compute_indicator_domain(
-                            autoscale_x_axis,
+                            bar_units.as_ref(),
                             autoscale_min_x_unit,
                             autoscale_max_x_unit,
                             value_id,
@@ -1158,31 +1268,20 @@ where
             series_percent_anchors,
             primary_domain_display_override,
         } = self.compute_primary_percent_scale_state(
-            autoscale_x_axis,
+            bar_units.as_ref(),
             autoscale_min_x_unit,
             autoscale_max_x_unit,
             primary_mark,
             primary_scale_mode,
         )?;
 
-        let cursor_root_local = cursor.position_in(layout.bounds());
-        let show_legend_values = cursor_root_local
-            .map(|local| matches!(panel_layout.hit_test(local), LayoutHitZone::PanelPlot(_)))
-            .unwrap_or(false);
-
         let panel_controls = self.build_panel_control_hits(&panel_layout, primary_panel);
         let corner_controls = self.build_corner_control_hits(&panel_layout, primary_scale_mode);
-        let ticker_legend = self.build_ticker_legend_layout(
-            &panel_layout,
-            primary_panel,
-            show_legend_values,
-            false,
-        );
         let primary_value_step = self.panel_quantization_step(primary_value_precision);
         let primary_value_decimals = self.panel_value_decimals(primary_value_precision);
         let primary_unit_step = Scene::unit_step_or_default(primary_value_step);
 
-        let mut scene = Scene {
+        Some(SceneBase {
             layout: panel_layout,
             x: XViewport {
                 axis: x_axis,
@@ -1193,6 +1292,7 @@ where
                 min_unit: min_x_unit,
                 max_unit: max_x_unit,
             },
+            bar_units,
             primary: PrimaryScale {
                 panel_index: primary_panel,
                 domain: ValueDomain::new(
@@ -1203,37 +1303,49 @@ where
                 unit_step: primary_unit_step,
                 mark: primary_mark,
                 mode: primary_scale_mode,
+                inverted: self.primary_scale_inverted,
                 anchor: primary_scale_anchor,
                 value_step: primary_value_step,
                 value_decimals: primary_value_decimals,
                 series_percent_anchors,
             },
             indicator_panels,
-            chrome: ChromeScene {
-                panel_controls,
-                corner_controls,
-                ticker_legend,
-                footprint_legend: None,
-                study_legend: None,
-                indicator_legend: None,
-            },
-            interaction: SceneInteraction::default(),
-        };
+            panel_controls,
+            corner_controls,
+        })
+    }
+
+    fn build_scene_from_base(
+        &self,
+        base: &SceneBase,
+        root_bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Option<Scene> {
+        let primary_panel = base.primary.panel_index;
+        let primary_plot = base.layout.panel(primary_panel)?.plot;
+        let cursor_root_local = cursor.position_in(root_bounds);
+        let show_legend_values = cursor_root_local
+            .map(|local| matches!(base.layout.hit_test(local), LayoutHitZone::PanelPlot(_)))
+            .unwrap_or(false);
+
+        let mut scene = Scene::from_base(base);
+        scene.chrome.ticker_legend =
+            self.build_ticker_legend_layout(&base.layout, primary_panel, show_legend_values, false);
 
         if self.footprints_enabled {
             scene.chrome.footprint_legend = self.build_footprint_legend_layout(
-                &scene.layout,
+                &base.layout,
                 primary_panel,
                 self.tooltip_rows_before_studies(
                     scene.chrome.ticker_legend.as_ref(),
                     None,
                     show_legend_values,
                 ),
-                self.footprint_cluster_kind,
+                self.footprint.cluster_kind,
             );
         }
         scene.chrome.study_legend = self.build_study_legend_layout(
-            &scene.layout,
+            &base.layout,
             primary_panel,
             self.tooltip_rows_before_studies(
                 scene.chrome.ticker_legend.as_ref(),
@@ -1243,7 +1355,7 @@ where
             self.studies_legend_expanded,
         );
         scene.chrome.indicator_legend = self.build_indicator_legend_layout(
-            &scene.layout,
+            &base.layout,
             primary_panel,
             self.tooltip_rows_before_indicators(
                 scene.chrome.ticker_legend.as_ref(),
@@ -1263,16 +1375,6 @@ where
         Some(scene)
     }
 
-    pub(super) fn tick_unit_for_index(&self, x_axis: XAxis, index: usize) -> Option<i64> {
-        let series = self.series.first()?;
-        if index >= series.bars().len() {
-            return None;
-        }
-
-        let from_latest = series.bars().len().saturating_sub(1).saturating_sub(index) as u64;
-        Some(x_axis.unit_from_tick(TickIndex::from_u64(from_latest)))
-    }
-
     pub(super) fn tick_time_for_unit(&self, x_axis: XAxis, unit: i64) -> Option<UnixMs> {
         let from_latest = usize::try_from(x_axis.tick_from_unit(unit)?.as_u64()).ok()?;
         let series = self.series.first()?;
@@ -1288,11 +1390,15 @@ where
             XAxis::Time { .. } => x_axis.time_from_unit(unit).map_or_else(
                 || unit.to_string(),
                 |ts| {
-                    super::super::format_time_label(
-                        ts.as_u64(),
-                        x_axis.step_ms(step_units),
-                        self.timezone,
-                    )
+                    let ts_ms = ts.as_u64();
+                    let step_ms = x_axis.step_ms(step_units);
+
+                    self.timezone
+                        .format_with_kind(
+                            ts_ms as i64,
+                            data::config::timezone::TimeLabelKind::AxisStepMs { step_ms },
+                        )
+                        .unwrap_or_else(|| ts_ms.to_string())
                 },
             ),
             XAxis::Tick { .. } => self.tick_time_for_unit(x_axis, unit).map_or_else(
@@ -1335,4 +1441,87 @@ where
                 .unwrap_or_else(|| self.format_x_label(x_axis, unit, 1)),
         }
     }
+}
+
+fn first_unit_index(units: &[i64], mut matches: impl FnMut(i64) -> bool) -> usize {
+    let mut low = 0;
+    let mut high = units.len();
+    while low < high {
+        let middle = low + (high - low) / 2;
+        if matches(units[middle]) {
+            high = middle;
+        } else {
+            low = middle + 1;
+        }
+    }
+    low
+}
+
+fn last_index_at_or_before(
+    len: usize,
+    target_unit: i64,
+    mut unit_at: impl FnMut(usize) -> i64,
+) -> Option<usize> {
+    let mut low = 0;
+    let mut high = len;
+    while low < high {
+        let middle = low + (high - low) / 2;
+        if unit_at(middle) <= target_unit {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+    low.checked_sub(1)
+}
+
+fn bar_index_range_for_units(units: &[i64], min_x_unit: i64, max_x_unit: i64) -> (usize, usize) {
+    if units.is_empty() {
+        return (0, 0);
+    }
+
+    (
+        first_unit_index(units, |unit| unit >= min_x_unit),
+        last_unit_index_at_or_before(units, max_x_unit).map_or(0, |index| index.saturating_add(1)),
+    )
+}
+
+fn last_unit_index_at_or_before(units: &[i64], target_unit: i64) -> Option<usize> {
+    last_index_at_or_before(units.len(), target_unit, |index| units[index])
+}
+
+fn padded_primary_domain_units(
+    min_unit: i64,
+    max_unit: i64,
+    plot_height: f32,
+    footprint_tick_units: Option<i64>,
+) -> (i64, i64) {
+    let mut padded_min = min_unit.min(max_unit);
+    let mut padded_max = min_unit.max(max_unit);
+
+    if let Some(tick_units) = footprint_tick_units {
+        let half_tick_units = tick_units.saturating_add(1) / 2;
+        padded_min = padded_min.saturating_sub(half_tick_units);
+        padded_max = padded_max.saturating_add(half_tick_units);
+    }
+
+    let span = padded_min.abs_diff(padded_max);
+    let base_padding = if span == 0 {
+        padded_max.unsigned_abs().max(1).saturating_add(199) / 200
+    } else {
+        span.saturating_mul(5).saturating_add(99) / 100
+    };
+    let base_padding = i64::try_from(base_padding).unwrap_or(i64::MAX).max(1);
+
+    let outer_padding = if footprint_tick_units.is_some() && plot_height > f32::EPSILON {
+        let provisional_span = span.saturating_add((base_padding as u64).saturating_mul(2));
+        (4.0 * provisional_span as f32 / plot_height).ceil() as i64
+    } else {
+        0
+    };
+    let padding = base_padding.saturating_add(outer_padding);
+
+    padded_min = padded_min.saturating_sub(padding);
+    padded_max = padded_max.saturating_add(padding);
+    (padded_min, padded_max)
 }

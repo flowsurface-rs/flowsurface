@@ -13,11 +13,11 @@ where
         overlay_origin_in_window: Point,
         drawing_magnet: bool,
     ) {
-        let pixel_ratio = self.resolved_pixel_ratio();
+        let pixel_ratio = self.pixel_ratio_value();
         self.fill_corner_controls(frame, scene, palette);
         self.fill_panel_controls(frame, scene, palette);
         self.fill_primary_ticker_legend(frame, scene, palette, generated_accents);
-        self.fill_primary_series_end_labels(frame, scene, palette);
+        self.fill_primary_series_end_labels(frame, scene, palette, generated_accents);
         self.fill_footprint_legend(frame, scene, palette);
         self.fill_study_legend(frame, scene, palette);
         self.fill_indicator_legend(frame, scene, palette, generated_accents);
@@ -35,7 +35,7 @@ where
         }
 
         if self.drawings.has_state() {
-            self.fill_drawings(
+            self.fill_drawing_interaction(
                 frame,
                 scene,
                 palette,
@@ -188,7 +188,7 @@ where
             }
 
             let x_text = self.format_x_crosshair_label(scene.x.axis, cursor.x_unit);
-            let pixel_ratio = self.resolved_pixel_ratio();
+            let pixel_ratio = self.pixel_ratio_value();
             self.draw_x_axis_badge(
                 frame,
                 scene,

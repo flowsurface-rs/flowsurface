@@ -1,1 +1,1 @@
-pub use data::chart::kline_v2::composition::*;
+pub use data::chart::kline::composition::*;

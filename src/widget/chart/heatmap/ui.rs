@@ -2,8 +2,6 @@ pub mod axisx;
 pub mod axisy;
 pub mod overlay;
 
-pub use super::Message;
-
 const AXIS_TEXT_SIZE: f32 = crate::style::text_size::BODY;
 const PAUSED_CTRL_LABEL_TEXT_SIZE: f32 = crate::style::text_size::SMALL;
 

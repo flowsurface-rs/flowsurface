@@ -1,5 +1,8 @@
-use crate::widget::{labeled_slider, theme_color_control};
-use data::chart::kline_v2::{LineStrokeStyle, MAX_LINE_WIDTH, MIN_LINE_WIDTH, SeriesColor};
+use crate::{
+    theme::ThemeAccents,
+    widget::{labeled_slider, theme_color_control},
+};
+use data::chart::kline::{LineStrokeStyle, MAX_LINE_WIDTH, MIN_LINE_WIDTH, SeriesColor};
 use data::config::theme::{ThemeAccent, ThemeColorShade};
 use exchange::TickerInfo;
 use iced::widget::{column, pick_list, row};
@@ -94,7 +97,11 @@ impl TickerSeriesEditor {
             .map(|ticker| Change::ColorChanged(ticker, color))
     }
 
-    pub fn view<'a>(&'a self, entry: &SeriesStyleEntry) -> Element<'a, Message> {
+    pub(crate) fn view<'a>(
+        &'a self,
+        entry: &SeriesStyleEntry,
+        theme_accents: ThemeAccents,
+    ) -> Element<'a, Message> {
         let is_open_for_entry = self.is_open_for(entry.ticker);
         let color = is_open_for_entry
             .then_some(self.editing_color)
@@ -109,7 +116,8 @@ impl TickerSeriesEditor {
             .flatten()
             .unwrap_or(entry.stroke_style);
         let theme_color = color.theme_color().unwrap_or_default();
-        let color_choices = theme_color_control(theme_color, Message::ColorAccentChanged);
+        let color_choices =
+            theme_color_control(theme_color, theme_accents, Message::ColorAccentChanged);
 
         let color_controls = column![color_choices].width(Length::Fill).spacing(4);
 

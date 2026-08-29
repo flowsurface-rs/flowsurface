@@ -32,7 +32,7 @@ rustc-hash = "2.1.2"
 enum-map = { version = "2.7.3", features = ["serde"] }
 url = "2.5.8"
 rand = "0.10.1"
-uuid = { version = "1.23.1", features = ["v4"] }
+uuid = { version = "1.23.1", features = ["serde", "v4"] }
 data = { version = "0.8.10", path = "data", package = "flowsurface-data" }
 exchange = { version = "0.8.10", path = "exchange", package = "flowsurface-exchange" }
 arrow-ipc = { version = "59.1", default-features = false }

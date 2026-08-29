@@ -3,18 +3,19 @@ use super::chrome::{
     PanelControlHit, StudiesLegendIconKind, StudyLegendIconKind, StudyLegendLayout,
     TickerLegendIconKind, TickerLegendLayout,
 };
-use super::coord::{ChartCoord, ChartStepMs};
-use super::layout::PanelLayoutTree;
-use super::{BarSpacingPx, YUnit};
-use crate::widget::chart::kline::composition::{
+use super::composition::{
     LayerDataKind, MarkKind, PanelPresentation, PanelScaleMode, PanelValueId,
 };
+use super::layout::PanelLayoutTree;
+use super::{BarSpacingPx, YUnit};
+use data::chart::kline::viewport::{ChartCoord, ChartStepMs};
 
-use data::chart::kline_v2::WorldAxis;
+use data::chart::kline::WorldAxis;
 use data::chart::ticks::{Y_LABEL_DENSITY, y::YAxisScale, y_labels_that_fit};
 use exchange::{Timeframe, UnixMs};
 
 use iced::Rectangle;
+use std::sync::Arc;
 
 pub(super) const Y_UNIT_STEP_FALLBACK: f32 = 1e-4;
 
@@ -198,6 +199,7 @@ pub(super) struct PrimaryScale {
     pub(super) unit_step: f32,
     pub(super) mark: MarkKind,
     pub(super) mode: PanelScaleMode,
+    pub(super) inverted: bool,
     pub(super) anchor: Option<f32>,
     pub(super) value_step: Option<f32>,
     pub(super) value_decimals: Option<usize>,
@@ -263,14 +265,87 @@ pub(super) struct SceneInteraction {
     pub(super) cursor: Option<CursorInfo>,
 }
 
+#[derive(Debug)]
+pub(super) struct SceneBase {
+    pub(super) layout: PanelLayoutTree,
+    pub(super) x: XViewport,
+    pub(super) bar_units: Arc<[Vec<i64>]>,
+    pub(super) primary: PrimaryScale,
+    pub(super) indicator_panels: Vec<IndicatorPanelScene>,
+    pub(super) panel_controls: Vec<PanelControlHit>,
+    pub(super) corner_controls: Vec<CornerControlHit>,
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct Scene {
     pub(super) layout: PanelLayoutTree,
     pub(super) x: XViewport,
+    pub(super) bar_units: Arc<[Vec<i64>]>,
     pub(super) primary: PrimaryScale,
     pub(super) indicator_panels: Vec<IndicatorPanelScene>,
     pub(super) chrome: ChromeScene,
     pub(super) interaction: SceneInteraction,
+}
+
+impl Scene {
+    pub(super) fn from_base(base: &SceneBase) -> Self {
+        Self {
+            layout: base.layout.clone(),
+            x: base.x,
+            bar_units: Arc::clone(&base.bar_units),
+            primary: base.primary.clone(),
+            indicator_panels: base.indicator_panels.clone(),
+            chrome: ChromeScene {
+                panel_controls: base.panel_controls.clone(),
+                corner_controls: base.corner_controls.clone(),
+                ..ChromeScene::default()
+            },
+            interaction: SceneInteraction::default(),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub(super) struct SceneCache {
+    entry: Option<SceneCacheEntry>,
+}
+
+#[derive(Debug)]
+struct SceneCacheEntry {
+    version: u64,
+    base: SceneBase,
+}
+
+impl SceneCacheEntry {
+    fn matches(&self, version: u64, layout: &PanelLayoutTree) -> bool {
+        self.version == version && self.base.layout == *layout
+    }
+}
+
+impl SceneCache {
+    pub(super) fn get(&self, version: u64, layout: &PanelLayoutTree) -> Option<&SceneBase> {
+        let entry = self.entry.as_ref()?;
+        entry.matches(version, layout).then_some(&entry.base)
+    }
+
+    pub(super) fn get_or_build(
+        &mut self,
+        version: u64,
+        layout: PanelLayoutTree,
+        build: impl FnOnce(PanelLayoutTree) -> Option<SceneBase>,
+    ) -> Option<&SceneBase> {
+        let cache_hit = self
+            .entry
+            .as_ref()
+            .is_some_and(|entry| entry.matches(version, &layout));
+
+        if !cache_hit {
+            let base = build(layout)?;
+            self.entry = Some(SceneCacheEntry { version, base });
+        }
+
+        self.entry.as_ref().map(|entry| &entry.base)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -511,7 +586,7 @@ impl Scene {
             self.can_use_log_primary_scale(),
         ) {
             let value = self.quantized_primary_value(log_value);
-            return super::super::format_value(value, self.primary_format_step(value_step));
+            return format_value(value, self.primary_format_step(value_step));
         }
 
         let value = self.quantized_primary_value(display_value);
@@ -521,7 +596,7 @@ impl Scene {
             let fallback_decimals = Self::decimals_for_step(step);
             format!("{value:.fallback_decimals$}")
         } else {
-            super::super::format_value(value, self.primary_format_step(display_step))
+            format_value(value, self.primary_format_step(display_step))
         }
     }
 
@@ -550,7 +625,7 @@ impl Scene {
             let fallback_decimals = Self::decimals_for_step(step);
             format!("{quantized:.fallback_decimals$}")
         } else {
-            super::super::format_value(quantized, self.primary_format_step(0.01))
+            format_value(quantized, self.primary_format_step(0.01))
         }
     }
 
@@ -584,8 +659,20 @@ impl Scene {
     pub(super) fn map_primary_plot_value(&self, value: f32) -> f32 {
         let (min, max) = self.primary.domain.values;
         let ratio = (value - min) / (max - min).abs().max(1e-8);
-        let panel = self.primary_plot();
-        panel.y + (1.0 - ratio) * panel.height
+        self.map_primary_plot_ratio(ratio)
+    }
+
+    pub(super) fn map_primary_plot_ratio(&self, ratio: f32) -> f32 {
+        map_ratio_to_plot_y(*self.primary_plot(), ratio, self.primary.inverted)
+    }
+
+    pub(super) fn primary_value_ratio_at_plot_y(&self, y_in_panel: f32) -> f32 {
+        let screen_ratio = (y_in_panel / self.primary_plot().height.max(1.0)).clamp(0.0, 1.0);
+        if self.primary.inverted {
+            screen_ratio
+        } else {
+            1.0 - screen_ratio
+        }
     }
 
     pub(super) fn map_indicator_plot_unit(
@@ -622,8 +709,7 @@ impl Scene {
                 .mode
                 .value_to_display(value, display_anchor, log_scale_enabled);
         let ratio = (display_value - min_display) / range;
-        let panel = self.primary_plot();
-        panel.y + (1.0 - ratio) * panel.height
+        self.map_primary_plot_ratio(ratio)
     }
 
     pub(super) fn map_indicator_plot(
@@ -638,5 +724,22 @@ impl Scene {
                 .abs()
                 .max(1e-8);
         Some(panel.y + (1.0 - ratio) * panel.height)
+    }
+}
+
+fn map_ratio_to_plot_y(plot: Rectangle, ratio: f32, inverted: bool) -> f32 {
+    let screen_ratio = if inverted { ratio } else { 1.0 - ratio };
+    plot.y + screen_ratio * plot.height
+}
+
+fn format_value(value: f32, step: f32) -> String {
+    if step >= 10.0 {
+        format!("{value:.0}")
+    } else if step >= 1.0 {
+        format!("{value:.2}")
+    } else if step >= 0.1 {
+        format!("{value:.3}")
+    } else {
+        format!("{value:.4}")
     }
 }

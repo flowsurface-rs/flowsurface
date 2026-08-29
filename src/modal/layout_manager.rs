@@ -1,5 +1,6 @@
+use crate::connector::client::DataSources;
 use crate::layout::{Layout, LayoutId};
-use crate::screen::dashboard::Dashboard;
+use crate::screen::dashboard::{self, Dashboard};
 use crate::style::{Icon, icon_text};
 use crate::widget::column_drag::{self, DragEvent};
 use crate::widget::dragger_row;
@@ -45,17 +46,24 @@ pub struct LayoutManager {
 }
 
 impl LayoutManager {
-    pub fn new() -> Self {
-        let default_layout = LayoutId {
+    fn default_layout() -> (LayoutId, Layout) {
+        let id = LayoutId {
             unique: Uuid::new_v4(),
             name: "Layout 1".into(),
         };
+        let layout = Layout {
+            id: id.clone(),
+            dashboard: Dashboard::default(),
+        };
+
+        (id, layout)
+    }
+
+    pub fn new() -> Self {
+        let (default_layout, layout) = Self::default_layout();
 
         Self {
-            layouts: vec![Layout {
-                id: default_layout.clone(),
-                dashboard: Dashboard::default(),
-            }],
+            layouts: vec![layout],
             active_layout_id: Some(default_layout.unique),
             edit_mode: Editing::None,
         }
@@ -67,6 +75,17 @@ impl LayoutManager {
             active_layout_id: active_layout.map(|l| l.unique),
             edit_mode: Editing::None,
         }
+    }
+
+    pub(crate) fn ensure_layout(&mut self) {
+        if !self.layouts.is_empty() {
+            return;
+        }
+
+        let (default_layout, layout) = Self::default_layout();
+        self.layouts.push(layout);
+        self.active_layout_id = Some(default_layout.unique);
+        self.edit_mode = Editing::None;
     }
 
     pub fn get(&self, unique: Uuid) -> Option<&Layout> {
@@ -120,6 +139,22 @@ impl LayoutManager {
 
     pub fn mut_dashboard(&mut self, id: Uuid) -> Option<&mut Dashboard> {
         self.get_mut(id).map(|e| &mut e.dashboard)
+    }
+
+    pub(crate) fn update_dashboard(
+        &mut self,
+        message: dashboard::Message,
+        main_window: &crate::window::Window,
+        layout_id: &Uuid,
+        data_sources: &DataSources,
+    ) -> Option<(iced::Task<dashboard::Message>, Option<dashboard::Event>)> {
+        let layout_index = self
+            .layouts
+            .iter()
+            .position(|layout| layout.id.unique == *layout_id)?;
+        let dashboard = &mut self.layouts[layout_index].dashboard;
+
+        Some(dashboard.update(message, main_window, layout_id, data_sources))
     }
 
     pub fn park_inactive_layouts(&mut self, active_layout_id: Uuid, main_window: window::Id) {

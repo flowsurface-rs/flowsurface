@@ -1,7 +1,6 @@
 pub mod heatmap;
-pub mod indicator;
 pub mod kline;
-pub mod kline_v2;
+pub mod kline_data;
 pub mod ticks;
 
 use exchange::UnixMs;
@@ -9,13 +8,12 @@ use exchange::{Timeframe, unit::Price};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-use self::kline::KlineDataPoint;
+use self::kline_data::KlineDataPoint;
 use super::aggr::{
     self,
     ticks::TickAggr,
     time::{DataPoint, TimeSeries},
 };
-pub use kline::KlineChartKind;
 
 /// Source-of-truth chart data with aggregation metadata and domain behavior.
 ///
@@ -215,5 +213,4 @@ pub enum Autoscale {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub enum Study {
     Heatmap(Vec<heatmap::HeatmapStudy>),
-    Footprint(Vec<kline::FootprintStudy>),
 }

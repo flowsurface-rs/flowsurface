@@ -1,5 +1,5 @@
 use crate::aggr;
-use crate::chart::kline::{ClusterKind, KlineTrades, NPoc};
+use crate::chart::kline_data::{ClusterKind, KlineTrades, NPoc};
 use exchange::unit::Qty;
 use exchange::unit::price::{Price, PriceStep};
 use exchange::{Kline, Trade, Volume};
@@ -164,7 +164,6 @@ impl TickAggr {
             }
         }
 
-        self.update_poc_status();
         first_updated
     }
 

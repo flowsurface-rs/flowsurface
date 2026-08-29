@@ -1,3 +1,5 @@
+use super::PanelInteraction;
+use super::composition::{MarkKind, PanelScaleMode};
 use super::layout::{LayoutHitZone, PanelLayoutTree, place_non_overlapping_labels};
 use super::scene::Scene;
 use super::{
@@ -6,10 +8,8 @@ use super::{
     TOOLTIP_ROW_LEFT_PAD,
 };
 use crate::style;
-use crate::widget::chart::kline::PanelInteraction;
-use crate::widget::chart::kline::composition::{MarkKind, PanelScaleMode};
-use data::chart::kline::ClusterKind;
-use data::chart::kline_v2::KlineStudyId;
+use data::chart::kline::KlineStudyId;
+use data::chart::kline_data::ClusterKind;
 
 use exchange::TickerInfo;
 
@@ -57,6 +57,26 @@ fn legend_row_background(row: Rectangle, content_end_x: f32) -> Rectangle {
         width: (content_end_x - row.x).max(0.0),
         height: row.height,
     }
+}
+
+fn control_colors(palette: &Extended, hovered: bool, active: bool) -> (Color, Color) {
+    let fill_color = if hovered && active {
+        palette.primary.base.color
+    } else if hovered || active {
+        palette.primary.weak.color
+    } else {
+        palette.background.weak.color
+    };
+
+    let text_color = if hovered && active {
+        palette.primary.base.text
+    } else if hovered || active {
+        palette.primary.strong.text
+    } else {
+        palette.background.strong.text
+    };
+
+    (fill_color, text_color)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -365,6 +385,7 @@ where
         frame: &mut canvas::Frame,
         scene: &Scene,
         palette: &Extended,
+        generated_accents: &[iced::Color; 6],
     ) {
         let primary_plot = scene.primary_plot();
         let plot_origin = scene.layout.regions.plot;
@@ -387,7 +408,7 @@ where
                 .flatten();
             let color = iced::Color {
                 a: 1.0,
-                ..self.series_line_color(series, palette)
+                ..self.series_line_color(series, palette, generated_accents)
             };
             let text_color = if data::config::theme::is_dark(color) {
                 iced::Color::WHITE
@@ -1085,7 +1106,7 @@ where
         None
     }
 
-    fn indicator_label(
+    fn indicator_title(
         &self,
         panel_index: usize,
         primary_overlay: bool,
@@ -1093,11 +1114,9 @@ where
     ) -> String {
         if primary_overlay {
             return self
-                .overlay_channels_for_panel_value(Some(value_id))
-                .iter()
-                .map(|channel| channel.label)
-                .collect::<Vec<_>>()
-                .join(" ");
+                .indicator_kind(value_id)
+                .map(|indicator| indicator.to_string())
+                .unwrap_or_else(|| "Indicator".to_string());
         }
 
         self.resolved_panel_title(panel_index, super::KlinePanelKind::Indicator)
@@ -1111,13 +1130,15 @@ where
         value_id: super::PanelValueId,
         channel: OverlayChannelSpec,
     ) -> Option<String> {
-        let base_bar = scene.interaction.cursor.and_then(|cursor| {
-            self.series
-                .first()
-                .and_then(|series| self.bar_at_or_before_unit(series, scene.x.axis, cursor.x_unit))
-        })?;
+        if self.indicator_is_unavailable(Some(value_id)) {
+            return None;
+        }
+
         let series = self.series.first()?;
-        let data = self.indicator_data_for_series(series, Some(value_id), base_bar)?;
+        let bar_index = scene.interaction.cursor.and_then(|cursor| {
+            self.bar_index_at_or_before_unit(series, scene.x.axis, cursor.x_unit)
+        })?;
+        let data = self.indicator_data_for_series_at(series, Some(value_id), bar_index)?;
         let value = self.overlay_channel_value(value_id, data, channel)?;
         let primary_anchor = scene
             .primary
@@ -1142,6 +1163,18 @@ where
         }
     }
 
+    fn primary_overlay_channel_start_x(
+        &self,
+        row_x: f32,
+        primary_panel: usize,
+        value_id: super::PanelValueId,
+    ) -> f32 {
+        let title = self.indicator_title(primary_panel, true, value_id);
+        self.indicator_label_x(row_x, value_id)
+            + title.chars().count() as f32 * CHAR_W
+            + PANEL_TITLE_TO_CONTROLS_GAP
+    }
+
     fn primary_overlay_text_end_x(
         &self,
         scene: &Scene,
@@ -1149,8 +1182,16 @@ where
         value_id: super::PanelValueId,
         show_values: bool,
     ) -> f32 {
-        let mut x = self.indicator_label_x(row_rect.x, value_id);
-        let mut text_end_x = x;
+        let title = self.indicator_title(scene.primary.panel_index, true, value_id);
+        let title_x = self.indicator_label_x(row_rect.x, value_id);
+        let title_end_x = title_x + title.chars().count() as f32 * CHAR_W;
+        if !show_values {
+            return title_end_x;
+        }
+
+        let mut x =
+            self.primary_overlay_channel_start_x(row_rect.x, scene.primary.panel_index, value_id);
+        let mut text_end_x = title_end_x;
 
         for channel in self
             .overlay_channels_for_panel_value(Some(value_id))
@@ -1160,10 +1201,6 @@ where
             let label_width = channel.label.chars().count() as f32 * CHAR_W;
             text_end_x = x + label_width;
             x = text_end_x + 2.0;
-
-            if !show_values {
-                continue;
-            }
 
             let Some(value_text) = self.primary_overlay_value_text(scene, value_id, channel) else {
                 continue;
@@ -1190,7 +1227,7 @@ where
             return row_rect.x + TOOLTIP_ROW_LEFT_PAD;
         };
 
-        let label = self.indicator_label(panel_index, false, value_id);
+        let label = self.indicator_title(panel_index, false, value_id);
         let label_end_x =
             self.indicator_label_x(row_rect.x, value_id) + label.chars().count() as f32 * CHAR_W;
 
@@ -1204,7 +1241,8 @@ where
         let Some(series) = self.series.first() else {
             return label_end_x;
         };
-        let Some(base_bar) = self.bar_at_or_before_unit(series, scene.x.axis, cursor.x_unit) else {
+        let Some(bar_index) = self.bar_index_at_or_before_unit(series, scene.x.axis, cursor.x_unit)
+        else {
             return label_end_x;
         };
 
@@ -1218,7 +1256,8 @@ where
             return label_end_x;
         }
 
-        let Some(indicator_data) = self.indicator_data_for_series(series, Some(value_id), base_bar)
+        let Some(indicator_data) =
+            self.indicator_data_for_series_at(series, Some(value_id), bar_index)
         else {
             return label_end_x;
         };
@@ -1234,7 +1273,6 @@ where
         };
         let mut value_x = row_rect.x + TOOLTIP_ROW_LEFT_PAD + title_width + title_gap;
         let mut text_end_x = label_end_x;
-        let mut drew_channel = false;
         let mut max_x =
             scene.layout.regions.plot.x + panel.plot.x + panel.plot.width - PANEL_TITLE_LEFT_PAD;
         if scene.interaction.controls_visible_for_panel == Some(panel_index)
@@ -1249,20 +1287,12 @@ where
             max_x = max_x.min(scene.layout.regions.plot.x + left_control_x - 4.0);
         }
 
-        for channel in self
-            .overlay_channels_for_panel_value(Some(value_id))
-            .iter()
-            .copied()
-        {
-            let Some(value) = self.overlay_channel_value(value_id, indicator_data, channel) else {
-                continue;
-            };
-
+        for readout in self.indicator_header_values(panel_index, value_id, indicator_data) {
             if value_x >= max_x {
                 break;
             }
 
-            value_x += channel.label.chars().count() as f32 * CHAR_W + 2.0;
+            value_x += readout.label.chars().count() as f32 * CHAR_W + 2.0;
             if value_x >= max_x {
                 break;
             }
@@ -1270,20 +1300,10 @@ where
             let value_text = self.format_panel_header_value(
                 panel_index,
                 self.panel_value_precision(panel_index),
-                value,
+                readout.value,
             );
             text_end_x = value_x + value_text.chars().count() as f32 * CHAR_W;
             value_x = text_end_x + 6.0;
-            drew_channel = true;
-        }
-
-        if !drew_channel {
-            let value_text = self.format_panel_header_value(
-                panel_index,
-                self.panel_value_precision(panel_index),
-                indicator_data.value(),
-            );
-            text_end_x = value_x + value_text.chars().count() as f32 * CHAR_W;
         }
 
         text_end_x.max(label_end_x)
@@ -1335,7 +1355,7 @@ where
         }
 
         frame.fill_text(canvas::Text {
-            content: self.indicator_label(panel_index, false, row.value_id),
+            content: self.indicator_title(panel_index, false, row.value_id),
             position: Point::new(self.indicator_label_x(row_rect.x, row.value_id), title_y),
             color: palette.background.base.text.scale_alpha(row_alpha),
             size: TEXT_SIZE.into(),
@@ -1416,7 +1436,7 @@ where
                 continue;
             };
 
-            let label = self.indicator_label(panel_index, false, value_id);
+            let label = self.indicator_title(panel_index, false, value_id);
             let x_left = self.indicator_label_x(panel.plot.x, value_id);
             let text_end_x = x_left + label.chars().count() as f32 * CHAR_W;
             let y_center = panel.plot.y + PANEL_TITLE_TOP_PAD + TICKER_LEGEND_ROW_H * 0.5;
@@ -1448,9 +1468,9 @@ where
                     + TICKER_LEGEND_PADDING
                     + (preceding_rows + overlay_index) as f32 * TICKER_LEGEND_ROW_H;
                 let y_center = row_top + TICKER_LEGEND_ROW_H * 0.5;
-                let label = self.indicator_label(primary_panel, true, *value_id);
-                let x_left = self.indicator_label_x(panel.plot.x, *value_id);
-                let text_end_x = x_left + label.chars().count() as f32 * CHAR_W;
+                let title = self.indicator_title(primary_panel, true, *value_id);
+                let title_x = self.indicator_label_x(panel.plot.x, *value_id);
+                let text_end_x = title_x + title.chars().count() as f32 * CHAR_W;
                 let (_, visibility, settings, close, row_w) = Self::legend_controls(
                     panel.plot, text_end_x, y_center, false, true, true, true,
                 );
@@ -1610,8 +1630,12 @@ where
             return;
         };
 
-        let Some(base_bar) = self.bar_at_or_before_unit(base_series, scene.x.axis, cursor.x_unit)
+        let Some(base_bar_index) =
+            self.bar_index_at_or_before_unit(base_series, scene.x.axis, cursor.x_unit)
         else {
+            return;
+        };
+        let Some(base_bar) = base_series.bars().get(base_bar_index) else {
             return;
         };
 
@@ -1672,12 +1696,12 @@ where
                     };
 
                     let slot = if change_pct >= 0.0 {
-                        data::chart::kline_v2::CandlestickColorSlot::Bullish
+                        data::chart::kline::CandlestickColorSlot::Bullish
                     } else {
-                        data::chart::kline_v2::CandlestickColorSlot::Bearish
+                        data::chart::kline::CandlestickColorSlot::Bearish
                     };
                     let value_color = Self::resolve_theme_color(
-                        self.candlestick_config.colors.color_for(slot),
+                        self.candlestick.colors.color_for(slot),
                         palette,
                         generated_accents,
                     );
@@ -1729,7 +1753,7 @@ where
                 }
             } else if let Some(value_id) = self.panel_value_id(panel_index)
                 && let Some(indicator_data) =
-                    self.indicator_data_for_series(base_series, Some(value_id), base_bar)
+                    self.indicator_data_for_series_at(base_series, Some(value_id), base_bar_index)
             {
                 if matches!(
                     self.composition
@@ -1759,31 +1783,21 @@ where
                     continue;
                 }
 
-                let mut drew_any_channel = false;
-
-                for channel in self
-                    .overlay_channels_for_panel_value(Some(value_id))
-                    .iter()
-                    .copied()
-                {
-                    let Some(value) = self.overlay_channel_value(value_id, indicator_data, channel)
-                    else {
-                        continue;
-                    };
-
+                for readout in self.indicator_header_values(panel_index, value_id, indicator_data) {
                     if x >= max_x {
                         break;
                     }
 
                     let value_text =
-                        self.format_panel_header_value(panel_index, panel_precision, value);
-                    let label_color = self.overlay_channel_color(
+                        self.format_panel_header_value(panel_index, panel_precision, readout.value);
+                    let label_color = self.indicator_value_color(
                         Some(value_id),
-                        channel,
+                        readout.color_slot,
+                        readout.color_role,
                         palette,
                         generated_accents,
                     );
-                    let label_text = channel.label.to_string();
+                    let label_text = readout.label.to_string();
 
                     frame.fill_text(canvas::Text {
                         content: label_text.clone(),
@@ -1814,23 +1828,6 @@ where
                     });
 
                     x += value_text.chars().count() as f32 * CHAR_W + 6.0;
-                    drew_any_channel = true;
-                }
-
-                if !drew_any_channel {
-                    let value = indicator_data.value();
-                    let text = self.format_panel_header_value(panel_index, panel_precision, value);
-
-                    frame.fill_text(canvas::Text {
-                        content: text,
-                        position: Point::new(x, y),
-                        color: palette.background.base.text.scale_alpha(0.82),
-                        size: TEXT_SIZE.into(),
-                        align_x: iced::Alignment::Start.into(),
-                        align_y: iced::Alignment::Center.into(),
-                        font: style::AZERET_MONO,
-                        ..Default::default()
-                    });
                 }
             }
         }
@@ -1919,7 +1916,7 @@ where
                 .get(index)
                 .map(series_display_name)
                 .unwrap_or_else(|| row.ticker.ticker.symbol_and_exchange_string());
-            let row_alpha = if index == 0 && !self.candlesticks_visible {
+            let row_alpha = if index == 0 && !self.candlestick.visible {
                 HIDDEN_LEGEND_ALPHA
             } else {
                 1.0
@@ -1929,7 +1926,7 @@ where
             } else {
                 self.series
                     .get(index)
-                    .map(|series| self.series_line_color(series, palette))
+                    .map(|series| self.series_line_color(series, palette, generated_accents))
                     .unwrap_or(palette.background.base.text)
             }
             .scale_alpha(if index == 0 { 1.0 } else { 0.96 });
@@ -1962,12 +1959,12 @@ where
                             0.0
                         };
                         let slot = if change_pct >= 0.0 {
-                            data::chart::kline_v2::CandlestickColorSlot::Bullish
+                            data::chart::kline::CandlestickColorSlot::Bullish
                         } else {
-                            data::chart::kline_v2::CandlestickColorSlot::Bearish
+                            data::chart::kline::CandlestickColorSlot::Bearish
                         };
                         let value_color = Self::resolve_theme_color(
-                            self.candlestick_config.colors.color_for(slot),
+                            self.candlestick.colors.color_for(slot),
                             palette,
                             generated_accents,
                         );
@@ -2042,7 +2039,7 @@ where
                         TickerLegendIconKind::Close
                     };
                     let secondary_content = if index == 0 {
-                        secondary_kind.icon(self.candlesticks_visible)
+                        secondary_kind.icon(self.candlestick.visible)
                     } else {
                         secondary_kind.icon(true)
                     };
@@ -2110,7 +2107,7 @@ where
                 .background
                 .base
                 .text
-                .scale_alpha(if self.footprints_visible {
+                .scale_alpha(if self.footprint.visible {
                     1.0
                 } else {
                     HIDDEN_LEGEND_ALPHA
@@ -2142,7 +2139,7 @@ where
         Self::draw_legend_icon_button(
             frame,
             hide,
-            FootprintLegendIconKind::Hide.icon(self.footprints_visible),
+            FootprintLegendIconKind::Hide.icon(self.footprint.visible),
             hide_hovered,
             palette,
         );
@@ -2431,56 +2428,71 @@ where
                     });
                 }
 
-                let mut x = label_x;
+                let title = self.indicator_title(scene.primary.panel_index, true, row.value_id);
 
-                for channel in self
-                    .overlay_channels_for_panel_value(Some(row.value_id))
-                    .iter()
-                    .copied()
-                {
-                    let label_text = channel.label.to_string();
-                    let color = self
-                        .overlay_channel_color(
-                            Some(row.value_id),
-                            channel,
-                            palette,
-                            generated_accents,
-                        )
-                        .scale_alpha(row_alpha);
+                frame.fill_text(canvas::Text {
+                    content: title,
+                    position: Point::new(label_x, label_y),
+                    color: palette.background.base.text.scale_alpha(row_alpha),
+                    size: TEXT_SIZE.into(),
+                    align_x: iced::Alignment::Start.into(),
+                    align_y: iced::Alignment::Center.into(),
+                    font: style::AZERET_MONO,
+                    ..Default::default()
+                });
 
-                    frame.fill_text(canvas::Text {
-                        content: label_text.clone(),
-                        position: Point::new(x, label_y),
-                        color,
-                        size: TEXT_SIZE.into(),
-                        align_x: iced::Alignment::Start.into(),
-                        align_y: iced::Alignment::Center.into(),
-                        font: style::AZERET_MONO,
-                        ..Default::default()
-                    });
-                    x += label_text.chars().count() as f32 * CHAR_W + 2.0;
+                if !show_buttons {
+                    let mut x = self.primary_overlay_channel_start_x(
+                        row_rect.x,
+                        scene.primary.panel_index,
+                        row.value_id,
+                    );
 
-                    if show_buttons {
-                        continue;
+                    for channel in self
+                        .overlay_channels_for_panel_value(Some(row.value_id))
+                        .iter()
+                        .copied()
+                    {
+                        let label_text = channel.label.to_string();
+                        let color = self
+                            .overlay_channel_color(
+                                Some(row.value_id),
+                                channel,
+                                palette,
+                                generated_accents,
+                            )
+                            .scale_alpha(row_alpha);
+
+                        frame.fill_text(canvas::Text {
+                            content: label_text.clone(),
+                            position: Point::new(x, label_y),
+                            color,
+                            size: TEXT_SIZE.into(),
+                            align_x: iced::Alignment::Start.into(),
+                            align_y: iced::Alignment::Center.into(),
+                            font: style::AZERET_MONO,
+                            ..Default::default()
+                        });
+                        x += label_text.chars().count() as f32 * CHAR_W + 2.0;
+
+                        let Some(value_text) =
+                            self.primary_overlay_value_text(scene, row.value_id, channel)
+                        else {
+                            continue;
+                        };
+
+                        frame.fill_text(canvas::Text {
+                            content: value_text.clone(),
+                            position: Point::new(x, label_y),
+                            color,
+                            size: TEXT_SIZE.into(),
+                            align_x: iced::Alignment::Start.into(),
+                            align_y: iced::Alignment::Center.into(),
+                            font: style::AZERET_MONO,
+                            ..Default::default()
+                        });
+                        x += value_text.chars().count() as f32 * CHAR_W + 6.0;
                     }
-
-                    let Some(value_text) =
-                        self.primary_overlay_value_text(scene, row.value_id, channel)
-                    else {
-                        continue;
-                    };
-
-                    frame.fill_text(canvas::Text {
-                        content: value_text.clone(),
-                        position: Point::new(x, label_y),
-                        color,
-                        size: TEXT_SIZE.into(),
-                        align_x: iced::Alignment::Start.into(),
-                        align_y: iced::Alignment::Center.into(),
-                        font: style::AZERET_MONO,
-                        ..Default::default()
-                    });
-                    x += value_text.chars().count() as f32 * CHAR_W + 6.0;
                 }
             } else {
                 self.fill_indicator_panel_title(frame, scene, row, row_rect, palette);
@@ -2537,21 +2549,7 @@ where
                 .kind
                 .is_active(scene.primary.mode, self.primary_autoscale);
 
-            let fill_color = if hovered && active {
-                palette.primary.base.color
-            } else if hovered | active {
-                palette.primary.weak.color
-            } else {
-                palette.background.weak.color
-            };
-
-            let text_color = if hovered && active {
-                palette.primary.base.text
-            } else if hovered | active {
-                palette.primary.strong.text
-            } else {
-                palette.background.strong.text
-            };
+            let (fill_color, text_color) = control_colors(palette, hovered, active);
 
             frame.fill_rectangle(
                 Point::new(control.rect.x, control.rect.y),
@@ -2598,23 +2596,7 @@ where
                 .map(|hit| hit.panel_index == control.panel_index && hit.kind == control.kind)
                 .unwrap_or(false);
 
-            let is_close = matches!(control.kind, PanelControlKind::Close);
-
-            let fill_color = if hovered && is_close {
-                palette.danger.base.color.scale_alpha(0.22)
-            } else if hovered {
-                palette.background.strong.color
-            } else {
-                palette.background.base.color.scale_alpha(0.72)
-            };
-
-            let text_color = if hovered && is_close {
-                palette.danger.base.text
-            } else if hovered {
-                palette.background.strong.text
-            } else {
-                palette.background.base.text.scale_alpha(0.86)
-            };
+            let (fill_color, text_color) = control_colors(palette, hovered, false);
 
             let x = scene.layout.regions.plot.x + control.rect.x;
             let y = scene.layout.regions.plot.y + control.rect.y;

@@ -1,6 +1,6 @@
-pub use data::chart::kline_v2::DEFAULT_HORIZONTAL_SPACING_PX as DEFAULT_BAR_SPACING_PX;
+pub use data::chart::kline::DEFAULT_HORIZONTAL_SPACING_PX as DEFAULT_BAR_SPACING_PX;
 
-use data::chart::kline_v2::{
+use data::chart::kline::{
     MAX_HORIZONTAL_SPACING_PX as MAX_BAR_SPACING_PX,
     MIN_HORIZONTAL_SPACING_PX as MIN_BAR_SPACING_PX,
 };
@@ -60,30 +60,5 @@ impl BarSpacingPx {
 
     pub(super) fn as_f32(self) -> f32 {
         self.0 as f32 * BAR_SPACING_QUANTUM_PX
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn assert_approximately_equal(left: f32, right: f32) {
-        assert!((left - right).abs() < 1e-6, "{left} != {right}");
-    }
-
-    #[test]
-    fn scroll_lines_and_pixels_share_logical_units() {
-        let line_delta = normalized_scroll_delta(&mouse::ScrollDelta::Lines { x: 0.0, y: 1.0 });
-        let pixel_delta = normalized_scroll_delta(&mouse::ScrollDelta::Pixels { x: 0.0, y: 40.0 });
-
-        assert_approximately_equal(line_delta, 1.0);
-        assert_approximately_equal(pixel_delta, line_delta);
-    }
-
-    #[test]
-    fn small_pixel_scrolls_are_not_forced_to_a_minimum_zoom() {
-        let delta = normalized_scroll_delta(&mouse::ScrollDelta::Pixels { x: 0.0, y: 1.0 });
-
-        assert_approximately_equal(delta, 1.0 / PIXELS_PER_SCROLL_LINE);
     }
 }

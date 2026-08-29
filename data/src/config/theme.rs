@@ -8,10 +8,20 @@ use iced_core::{
     theme::{Custom, Palette},
 };
 use palette::{
-    Clamp, FromColor, Hsva, Oklab, Oklch, RgbHue, Srgb,
+    Clamp, FromColor, Hsva, IsWithinBounds, Oklab, Oklch, RgbHue, Srgb,
+    convert::FromColorUnclamped,
     rgb::{Rgb, Rgba},
 };
 use serde::{Deserialize, Serialize};
+
+const MIN_ACCENT_HUE_SEPARATION: f32 = 45.0;
+const MIN_CANDIDATE_PERCEPTUAL_DISTANCE: f32 = 0.001;
+const TARGET_ACCENT_CHROMA: f32 = 0.14;
+const SEMANTIC_EXCLUSION_DISTANCE: f32 = 0.08;
+const THEME_AFFINITY_WEIGHT: f32 = 0.6;
+const HUE_DIVERSITY_WEIGHT: f32 = 0.25;
+const COLOR_DIVERSITY_WEIGHT: f32 = 0.15;
+const SEMANTIC_COLLISION_WEIGHT: f32 = 0.25;
 
 #[derive(Debug, Clone)]
 pub struct Theme(pub iced_core::Theme);
@@ -55,11 +65,14 @@ impl std::fmt::Display for ThemeAccent {
 }
 
 pub fn generated_theme_accents(palette: &Extended) -> [Color; 6] {
-    const HUE_OFFSETS: [f32; 12] = [
-        -165.0, -135.0, -105.0, -75.0, -45.0, -15.0, 15.0, 45.0, 75.0, 105.0, 135.0, 165.0,
-    ];
-    const ANCHOR_COLORS: [usize; 5] = [0, 1, 2, 3, 4];
+    generate_theme_accents(palette)
+}
 
+fn generate_theme_accents(palette: &Extended) -> [Color; 6] {
+    const HUE_OFFSETS: [f32; 24] = [
+        -180.0, -165.0, -150.0, -135.0, -120.0, -105.0, -90.0, -75.0, -60.0, -45.0, -30.0, -15.0,
+        0.0, 15.0, 30.0, 45.0, 60.0, 75.0, 90.0, 105.0, 120.0, 135.0, 150.0, 165.0,
+    ];
     let anchors = [
         palette.primary.base.color,
         palette.secondary.strong.color,
@@ -67,36 +80,73 @@ pub fn generated_theme_accents(palette: &Extended) -> [Color; 6] {
         palette.danger.base.color,
         palette.warning.base.color,
     ];
-    let semantic_colors = [
+    let harmony_references = theme_hue_references(palette);
+    let semantic_references = [
         (to_oklab(palette.primary.base.color), 1.1),
         (to_oklab(palette.secondary.strong.color), 0.9),
-        (to_oklab(palette.success.base.color), 1.6),
-        (to_oklab(palette.danger.base.color), 1.6),
-        (to_oklab(palette.warning.base.color), 1.4),
+        (to_oklab(palette.background.base.color), 1.5),
+        (to_oklab(palette.success.base.color), 2.0),
+        (to_oklab(palette.danger.base.color), 2.0),
+        (to_oklab(palette.warning.base.color), 1.8),
     ];
-    let candidates = ANCHOR_COLORS
+    let harmony_reference_slice = harmony_references.as_slice();
+    let candidates = anchors
         .into_iter()
-        .flat_map(|anchor_index| {
+        .flat_map(|anchor| {
             HUE_OFFSETS.into_iter().map(move |hue_offset| {
-                generated_accent_candidate(anchors[anchor_index], hue_offset, palette)
+                generated_accent_candidate(anchor, hue_offset, palette, harmony_reference_slice)
             })
         })
         .collect::<Vec<_>>();
 
-    let mut selected = Vec::with_capacity(ThemeAccent::ALL.len());
+    let mut selected: Vec<GeneratedAccentCandidate> = Vec::with_capacity(ThemeAccent::ALL.len());
     for _ in ThemeAccent::ALL {
-        let next = candidates
+        let eligible = candidates
             .iter()
-            .max_by(|left, right| {
-                candidate_score(left, &semantic_colors, &selected, palette).total_cmp(
-                    &candidate_score(right, &semantic_colors, &selected, palette),
-                )
+            .filter(|candidate| {
+                selected.iter().all(|selected| {
+                    hue_distance(candidate.hue, selected.hue) >= MIN_ACCENT_HUE_SEPARATION
+                        && perceptual_distance(candidate.lab, selected.lab)
+                            >= MIN_CANDIDATE_PERCEPTUAL_DISTANCE
+                })
             })
+            .collect::<Vec<_>>();
+
+        let next =
+            if eligible.is_empty() {
+                candidates
+                    .iter()
+                    .filter(|candidate| {
+                        selected.iter().all(|selected| {
+                            perceptual_distance(candidate.lab, selected.lab)
+                                >= MIN_CANDIDATE_PERCEPTUAL_DISTANCE
+                        })
+                    })
+                    .max_by(|left, right| {
+                        minimum_hue_clearance(left, &selected)
+                            .total_cmp(&minimum_hue_clearance(right, &selected))
+                            .then_with(|| {
+                                candidate_score(left, &semantic_references, &selected).total_cmp(
+                                    &candidate_score(right, &semantic_references, &selected),
+                                )
+                            })
+                    })
+            } else {
+                eligible.into_iter().max_by(|left, right| {
+                    candidate_score(left, &semantic_references, &selected)
+                        .total_cmp(&candidate_score(right, &semantic_references, &selected))
+                })
+            }
             .unwrap_or(&candidates[0]);
-        selected.push(next.color);
+        selected.push(*next);
     }
 
-    selected.try_into().unwrap_or([Color::TRANSPARENT; 6])
+    selected
+        .into_iter()
+        .map(|candidate| candidate.color)
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap_or([Color::TRANSPARENT; 6])
 }
 
 pub fn generated_theme_accent(palette: &Extended, accent: ThemeAccent) -> Color {
@@ -107,50 +157,142 @@ pub fn generated_theme_accent(palette: &Extended, accent: ThemeAccent) -> Color 
 struct GeneratedAccentCandidate {
     color: Color,
     lab: Oklab,
+    hue: f32,
+    theme_affinity: f32,
+    contrast_bonus: f32,
 }
 
 fn generated_accent_candidate(
     source: Color,
     hue_offset: f32,
     palette: &Extended,
+    harmony_references: &[(f32, f32)],
 ) -> GeneratedAccentCandidate {
     let mut oklch = Oklch::from_color(Srgb::new(source.r, source.g, source.b));
     oklch.hue += hue_offset;
-    oklch.l = (oklch.l * 0.65 + (if palette.is_dark { 0.7 } else { 0.5 }) * 0.35).clamp(0.35, 0.8);
-    oklch.chroma = oklch.chroma.clamp(0.08, 0.18);
+    oklch.l = if palette.is_dark { 0.7 } else { 0.5 };
+    oklch.chroma = TARGET_ACCENT_CHROMA;
 
-    let rgb = Srgb::from_color(oklch).clamp();
+    let rgb = gamut_mapped_srgb(oklch);
     let color = Color {
         r: rgb.red,
         g: rgb.green,
         b: rgb.blue,
         a: 1.0,
     };
+    let hue = Oklch::from_color(rgb).hue.into_positive_degrees();
+    let contrast_bonus =
+        (contrast_ratio(color, palette.background.base.color) - 1.0).clamp(0.0, 3.0) * 0.01;
     GeneratedAccentCandidate {
         color,
         lab: to_oklab(color),
+        hue,
+        theme_affinity: theme_hue_affinity(hue, harmony_references),
+        contrast_bonus,
     }
 }
 
 fn candidate_score(
     candidate: &GeneratedAccentCandidate,
-    semantic_colors: &[(Oklab, f32); 5],
-    selected: &[Color],
-    palette: &Extended,
+    semantic_references: &[(Oklab, f32); 6],
+    selected: &[GeneratedAccentCandidate],
 ) -> f32 {
-    let semantic_clearance = semantic_colors
+    let semantic_collision_penalty = semantic_references
         .iter()
-        .map(|(color, weight)| perceptual_distance(candidate.lab, *color) / weight)
-        .fold(f32::INFINITY, f32::min);
-    let selected_clearance = selected
-        .iter()
-        .map(|color| perceptual_distance(candidate.lab, to_oklab(*color)))
-        .fold(f32::INFINITY, f32::min);
-    let contrast_bonus = (contrast_ratio(candidate.color, palette.background.base.color) - 1.0)
-        .clamp(0.0, 3.0)
-        * 0.01;
+        .map(|(color, weight)| {
+            ((SEMANTIC_EXCLUSION_DISTANCE - perceptual_distance(candidate.lab, *color)).max(0.0)
+                / SEMANTIC_EXCLUSION_DISTANCE)
+                / weight
+        })
+        .sum::<f32>();
 
-    semantic_clearance.min(selected_clearance) + contrast_bonus
+    let (hue_diversity, color_diversity) = if selected.is_empty() {
+        (1.0, 0.0)
+    } else {
+        let color_clearance = selected
+            .iter()
+            .map(|selected| perceptual_distance(candidate.lab, selected.lab))
+            .fold(f32::INFINITY, f32::min);
+
+        (
+            (minimum_hue_clearance(candidate, selected) / 180.0).clamp(0.0, 1.0),
+            (color_clearance / 0.25).clamp(0.0, 1.0),
+        )
+    };
+
+    candidate.theme_affinity * THEME_AFFINITY_WEIGHT
+        + hue_diversity * HUE_DIVERSITY_WEIGHT
+        + color_diversity * COLOR_DIVERSITY_WEIGHT
+        - semantic_collision_penalty * SEMANTIC_COLLISION_WEIGHT
+        + candidate.contrast_bonus
+}
+
+fn minimum_hue_clearance(
+    candidate: &GeneratedAccentCandidate,
+    selected: &[GeneratedAccentCandidate],
+) -> f32 {
+    selected
+        .iter()
+        .map(|selected| hue_distance(candidate.hue, selected.hue))
+        .fold(180.0, f32::min)
+}
+
+fn theme_hue_references(palette: &Extended) -> Vec<(f32, f32)> {
+    [
+        (palette.primary.base.color, 1.0),
+        (palette.secondary.strong.color, 0.8),
+        (palette.success.base.color, 0.35),
+        (palette.danger.base.color, 0.35),
+        (palette.warning.base.color, 0.35),
+    ]
+    .into_iter()
+    .filter_map(|(color, weight)| {
+        let oklch = to_oklch(color);
+        (oklch.chroma > 0.02).then_some((oklch.hue.into_positive_degrees(), weight))
+    })
+    .collect()
+}
+
+fn theme_hue_affinity(hue: f32, references: &[(f32, f32)]) -> f32 {
+    references
+        .iter()
+        .map(|(reference, weight)| (1.0 - hue_distance(hue, *reference) / 180.0) * weight)
+        .fold(0.0, f32::max)
+}
+
+fn hue_distance(first: f32, second: f32) -> f32 {
+    let distance = (first - second).abs().rem_euclid(360.0);
+    distance.min(360.0 - distance)
+}
+
+fn gamut_mapped_srgb(mut oklch: Oklch) -> Srgb {
+    let mut rgb = Srgb::from_color_unclamped(oklch);
+
+    if rgb.is_within_bounds() {
+        return rgb;
+    }
+
+    let mut lower_chroma = 0.0;
+    let mut upper_chroma = oklch.chroma;
+
+    for _ in 0..12 {
+        let chroma = (lower_chroma + upper_chroma) / 2.0;
+        oklch.chroma = chroma;
+        rgb = Srgb::from_color_unclamped(oklch);
+
+        if rgb.is_within_bounds() {
+            lower_chroma = chroma;
+        } else {
+            upper_chroma = chroma;
+        }
+    }
+
+    oklch.chroma = lower_chroma;
+    Srgb::from_color_unclamped(oklch).clamp()
+}
+
+fn to_oklch(color: Color) -> Oklch {
+    Oklch::from_color(Srgb::new(color.r, color.g, color.b))
 }
 
 fn to_oklab(color: Color) -> Oklab {
@@ -163,6 +305,48 @@ fn perceptual_distance(first: Oklab, second: Oklab) -> f32 {
     let delta_b = first.b - second.b;
 
     (delta_l * delta_l + delta_a * delta_a + delta_b * delta_b).sqrt()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn built_in_accents_have_separated_hues() {
+        for theme in iced_core::Theme::ALL {
+            let accents = generated_theme_accents(theme.extended_palette());
+            let hues = accents.map(|color| to_oklch(color).hue.into_positive_degrees());
+
+            for first_index in 0..hues.len() {
+                for second_index in first_index + 1..hues.len() {
+                    assert!(
+                        hue_distance(hues[first_index], hues[second_index])
+                            >= MIN_ACCENT_HUE_SEPARATION - 0.01,
+                        "{theme:?} generated accents are too close in hue: {:?}",
+                        hues
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn built_in_accents_have_perceptual_separation() {
+        for theme in iced_core::Theme::ALL {
+            let accents = generated_theme_accents(theme.extended_palette());
+            let labs = accents.map(to_oklab);
+
+            for first_index in 0..labs.len() {
+                for second_index in first_index + 1..labs.len() {
+                    assert!(
+                        perceptual_distance(labs[first_index], labs[second_index]) >= 0.07,
+                        "{theme:?} generated accents are too close perceptually: {:?}",
+                        accents
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
