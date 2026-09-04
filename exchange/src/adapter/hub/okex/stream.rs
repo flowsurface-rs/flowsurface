@@ -2,7 +2,7 @@ use crate::{
     Event, Kline, Price, PushFrequency, Ticker, TickerInfo, Timeframe, Trade, Volume,
     adapter::{
         MarketKind, StreamKind, StreamTicksize,
-        hub::{TradeBuffer, WsAdapter, WsSession, WsTransport},
+        hub::{HeartbeatPolicy, TradeBuffer, WsAdapter, WsSession, WsTransport},
     },
     depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
     serde_util::{self, de_string_to_number},
@@ -17,9 +17,14 @@ use rustc_hash::FxHashMap;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 const OKX_PING_PAYLOAD: &[u8] = b"ping";
+const OKX_HEARTBEAT: HeartbeatPolicy = HeartbeatPolicy::ping_after_idle_text(
+    OKX_PING_PAYLOAD,
+    Duration::from_secs(20),
+    Duration::from_secs(20),
+);
 
 #[derive(Deserialize, Debug)]
 struct SonicTrade {
@@ -154,6 +159,10 @@ struct TradeAdapter {
 }
 
 impl WsAdapter for TradeAdapter {
+    fn heartbeat_policy(&self) -> HeartbeatPolicy {
+        OKX_HEARTBEAT
+    }
+
     async fn connect(&mut self) -> Result<WsTransport, String> {
         connect_and_subscribe(&self.subscribe_message, "public", self.proxy_cfg.as_ref()).await
     }
@@ -263,7 +272,7 @@ pub fn connect_trade_stream(
         subscribe_message,
         proxy_cfg,
     };
-    let session = WsSession::with_text_ping(OKX_PING_PAYLOAD, stream_scope);
+    let session = WsSession::new(stream_scope);
 
     session.run(adapter)
 }
@@ -278,6 +287,10 @@ struct DepthAdapter {
 }
 
 impl WsAdapter for DepthAdapter {
+    fn heartbeat_policy(&self) -> HeartbeatPolicy {
+        OKX_HEARTBEAT
+    }
+
     async fn connect(&mut self) -> Result<WsTransport, String> {
         connect_and_subscribe(&self.subscribe_message, "public", self.proxy_cfg.as_ref()).await
     }
@@ -379,7 +392,7 @@ pub fn connect_depth_stream(
         proxy_cfg,
     };
 
-    WsSession::with_text_ping(OKX_PING_PAYLOAD, stream_scope).run(adapter)
+    WsSession::new(stream_scope).run(adapter)
 }
 
 struct KlineAdapter {
@@ -391,6 +404,10 @@ struct KlineAdapter {
 }
 
 impl WsAdapter for KlineAdapter {
+    fn heartbeat_policy(&self) -> HeartbeatPolicy {
+        OKX_HEARTBEAT
+    }
+
     async fn connect(&mut self) -> Result<WsTransport, String> {
         connect_and_subscribe(&self.subscribe_message, "business", self.proxy_cfg.as_ref()).await
     }
@@ -521,5 +538,5 @@ pub fn connect_kline_stream(
         market_type,
     };
 
-    WsSession::with_text_ping(OKX_PING_PAYLOAD, stream_scope).run(adapter)
+    WsSession::new(stream_scope).run(adapter)
 }

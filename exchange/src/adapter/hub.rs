@@ -11,4 +11,4 @@ use super::http::{FetchCommand, FetchCommandHandler, HttpHub, RequestPort};
 use super::http::{TickerMetadataMap, TickerStatsMap};
 
 use super::ws::TradeBuffer;
-use super::ws::{WsAdapter, WsSession, WsTransport};
+use super::ws::{HeartbeatPolicy, WsAdapter, WsSession, WsTransport};

@@ -2,7 +2,7 @@ use crate::{
     Event, Kline, Price, PushFrequency, Ticker, TickerInfo, Timeframe, Trade, Volume,
     adapter::{
         MarketKind, StreamKind, StreamTicksize,
-        hub::{TradeBuffer, WsAdapter, WsSession, WsTransport},
+        hub::{HeartbeatPolicy, TradeBuffer, WsAdapter, WsSession, WsTransport},
     },
     depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
     unit::qty::{QtyNormalization, SizeUnit, volume_size_unit},
@@ -21,10 +21,16 @@ use sonic_rs::{Deserialize, JsonValueTrait, to_object_iter_unchecked};
 use std::{
     collections::{HashMap, VecDeque},
     sync::Arc,
+    time::Duration,
 };
 use tokio::sync::oneshot::{self, error::TryRecvError};
 
 const PING_PAYLOAD: &[u8] = br#"{"method":"ping"}"#;
+const MEXC_HEARTBEAT: HeartbeatPolicy = HeartbeatPolicy::periodic_text(
+    PING_PAYLOAD,
+    Duration::from_secs(15),
+    Duration::from_secs(45),
+);
 
 #[derive(Deserialize, Debug)]
 struct SonicTrade {
@@ -239,6 +245,10 @@ struct TradeAdapter {
 }
 
 impl WsAdapter for TradeAdapter {
+    fn heartbeat_policy(&self) -> HeartbeatPolicy {
+        MEXC_HEARTBEAT
+    }
+
     async fn connect(&mut self) -> Result<WsTransport, String> {
         let mut websocket = connect_websocket(
             MEXC_FUTURES_WS_DOMAIN,
@@ -353,7 +363,7 @@ pub fn connect_trade_stream(
         proxy_cfg,
     };
 
-    WsSession::with_text_ping(PING_PAYLOAD, stream_scope).run(adapter)
+    WsSession::new(stream_scope).run(adapter)
 }
 
 struct DepthAdapter {
@@ -368,6 +378,10 @@ struct DepthAdapter {
 }
 
 impl WsAdapter for DepthAdapter {
+    fn heartbeat_policy(&self) -> HeartbeatPolicy {
+        MEXC_HEARTBEAT
+    }
+
     async fn connect(&mut self) -> Result<WsTransport, String> {
         let mut websocket = connect_websocket(
             MEXC_FUTURES_WS_DOMAIN,
@@ -658,7 +672,7 @@ pub fn connect_depth_stream(
         sync_machine: DepthSyncMachine::new(handle, ticker),
     };
 
-    WsSession::with_text_ping(PING_PAYLOAD, stream_scope).run(adapter)
+    WsSession::new(stream_scope).run(adapter)
 }
 
 struct KlineAdapter {
@@ -669,6 +683,10 @@ struct KlineAdapter {
 }
 
 impl WsAdapter for KlineAdapter {
+    fn heartbeat_policy(&self) -> HeartbeatPolicy {
+        MEXC_HEARTBEAT
+    }
+
     async fn connect(&mut self) -> Result<WsTransport, String> {
         let mut websocket = connect_websocket(
             MEXC_FUTURES_WS_DOMAIN,
@@ -818,5 +836,5 @@ pub fn connect_kline_stream(
         proxy_cfg,
     };
 
-    WsSession::with_text_ping(PING_PAYLOAD, stream_scope).run(adapter)
+    WsSession::new(stream_scope).run(adapter)
 }

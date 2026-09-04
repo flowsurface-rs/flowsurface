@@ -3,7 +3,7 @@ use crate::{
     Volume,
     adapter::{
         MarketKind, StreamKind, StreamTicksize,
-        hub::{TradeBuffer, WsAdapter, WsSession, WsTransport},
+        hub::{HeartbeatPolicy, TradeBuffer, WsAdapter, WsSession, WsTransport},
     },
     depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
     serde_util::de_string_to_number,
@@ -17,11 +17,16 @@ use futures::Stream;
 use rustc_hash::FxHashMap;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 const SIG_FIG_LIMIT: i32 = 5;
 const ALLOWED_MANTISSA: [i32; 3] = [1, 2, 5];
 const HYPERLIQUID_PING_PAYLOAD: &[u8] = br#"{"method":"ping"}"#;
+const HYPERLIQUID_HEARTBEAT: HeartbeatPolicy = HeartbeatPolicy::ping_after_idle_text(
+    HYPERLIQUID_PING_PAYLOAD,
+    Duration::from_secs(30),
+    Duration::from_secs(30),
+);
 
 #[derive(Clone, Copy, Debug)]
 struct DepthFeedConfig {
@@ -201,6 +206,10 @@ struct TradeAdapter {
 }
 
 impl WsAdapter for TradeAdapter {
+    fn heartbeat_policy(&self) -> HeartbeatPolicy {
+        HYPERLIQUID_HEARTBEAT
+    }
+
     async fn connect(&mut self) -> Result<WsTransport, String> {
         let mut websocket = connect_websocket(WS_DOMAIN, "/ws", self.proxy_cfg.as_ref())
             .await
@@ -322,7 +331,7 @@ pub fn connect_trade_stream(
         proxy_cfg,
     };
 
-    WsSession::with_text_ping(HYPERLIQUID_PING_PAYLOAD, stream_scope).run(adapter)
+    WsSession::new(stream_scope).run(adapter)
 }
 
 struct DepthAdapter {
@@ -338,6 +347,10 @@ struct DepthAdapter {
 }
 
 impl WsAdapter for DepthAdapter {
+    fn heartbeat_policy(&self) -> HeartbeatPolicy {
+        HYPERLIQUID_HEARTBEAT
+    }
+
     async fn connect(&mut self) -> Result<WsTransport, String> {
         let snapshot = self
             .handle
@@ -488,7 +501,7 @@ pub fn connect_depth_stream(
         proxy_cfg,
     };
 
-    WsSession::with_text_ping(HYPERLIQUID_PING_PAYLOAD, stream_scope).run(adapter)
+    WsSession::new(stream_scope).run(adapter)
 }
 
 struct KlineAdapter {
@@ -500,6 +513,10 @@ struct KlineAdapter {
 }
 
 impl WsAdapter for KlineAdapter {
+    fn heartbeat_policy(&self) -> HeartbeatPolicy {
+        HYPERLIQUID_HEARTBEAT
+    }
+
     async fn connect(&mut self) -> Result<WsTransport, String> {
         let mut websocket = connect_websocket(WS_DOMAIN, "/ws", self.proxy_cfg.as_ref())
             .await
@@ -615,5 +632,5 @@ pub fn connect_kline_stream(
         proxy_cfg,
     };
 
-    WsSession::with_text_ping(HYPERLIQUID_PING_PAYLOAD, stream_scope).run(adapter)
+    WsSession::new(stream_scope).run(adapter)
 }
