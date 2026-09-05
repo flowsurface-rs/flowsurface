@@ -99,12 +99,11 @@ impl From<&Dashboard> for data::Dashboard {
 
         data::Dashboard {
             pane: from_layout(&dashboard.panes, main_window_layout),
-            popout: {
-                popouts_layout
-                    .iter()
-                    .map(|(pane, window_spec)| (pane.clone(), *window_spec))
-                    .collect()
-            },
+            popout: popouts_layout
+                .iter()
+                .map(|(pane, window_spec)| (pane.clone(), *window_spec))
+                .collect(),
+            chart_settings: dashboard.chart_settings,
         }
     }
 }
@@ -249,6 +248,7 @@ pub fn load_saved_state() -> SavedState {
                 let dashboard = Dashboard::from_config(
                     configuration(layout.dashboard.pane.clone()),
                     popout_windows,
+                    layout.dashboard.chart_settings,
                     layout_id,
                 );
 

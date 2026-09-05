@@ -3,10 +3,11 @@ use crate::theme::ThemeAccents;
 use crate::widget::chart::kline::drawing::{
     DrawingAnchor, DrawingColor, DrawingDraft, DrawingDragOperation, DrawingDragTarget,
     DrawingEntity, DrawingId, DrawingMeasure, DrawingObject, DrawingSnapshot, DrawingStyle,
-    DrawingStyleDefaults, DrawingTool, KlineWidgetDrawingEvent, MAX_DRAWING_STROKE_WIDTH,
-    MIN_DRAWING_STROKE_WIDTH, MeasureState,
+    DrawingTool, KlineWidgetDrawingEvent, MAX_DRAWING_STROKE_WIDTH, MIN_DRAWING_STROKE_WIDTH,
+    MeasureState,
 };
 use crate::widget::{color_swatch_button, labeled_slider, tooltip};
+use data::chart::kline::DrawingSettings;
 use data::chart::kline::composition::{ChartComposition, PanelId, PanelRole};
 use data::config::theme::{ThemeAccent, ThemeColor, ThemeColorRole, ThemeColorShade};
 
@@ -243,9 +244,6 @@ impl DrawingUpdate {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct DrawingEditState {
     drawings: Vec<DrawingEntity>,
-    style_defaults: DrawingStyleDefaults,
-    horizontal_line_ray: bool,
-    box_extend_right: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -462,9 +460,6 @@ pub struct DrawingTools {
     selected_drawings: Vec<DrawingId>,
     interaction: DrawingInteraction,
     next_drawing_id: u64,
-    style_defaults: DrawingStyleDefaults,
-    horizontal_line_ray: bool,
-    box_extend_right: bool,
     magnet_enabled: bool,
     magnet_modifier_active: bool,
     box_style_target: BoxStyleTarget,
@@ -480,9 +475,6 @@ impl Default for DrawingTools {
             selected_drawings: Vec::new(),
             interaction: DrawingInteraction::Idle,
             next_drawing_id: 1,
-            style_defaults: DrawingStyleDefaults::default(),
-            horizontal_line_ray: false,
-            box_extend_right: false,
             magnet_enabled: false,
             magnet_modifier_active: false,
             box_style_target: BoxStyleTarget::default(),
@@ -495,17 +487,11 @@ impl DrawingTools {
     pub(super) fn edit_state(&self) -> DrawingEditState {
         DrawingEditState {
             drawings: self.drawings.clone(),
-            style_defaults: self.style_defaults,
-            horizontal_line_ray: self.horizontal_line_ray,
-            box_extend_right: self.box_extend_right,
         }
     }
 
     pub(super) fn restore_edit_state(&mut self, state: DrawingEditState) {
         self.drawings = state.drawings;
-        self.style_defaults = state.style_defaults;
-        self.horizontal_line_ray = state.horizontal_line_ray;
-        self.box_extend_right = state.box_extend_right;
         self.next_drawing_id = self
             .drawings
             .iter()
@@ -532,20 +518,12 @@ impl DrawingTools {
             || self.sidebar_page == SidebarPage::ObjectList
     }
 
-    pub fn from_parts(
-        active_tool: DrawingTool,
-        mut drawings: Vec<DrawingEntity>,
-        mut style_defaults: DrawingStyleDefaults,
-        horizontal_line_ray: bool,
-        box_extend_right: bool,
-    ) -> Self {
+    pub fn from_parts(active_tool: DrawingTool, mut drawings: Vec<DrawingEntity>) -> Self {
         for drawing in &mut drawings {
             if matches!(&drawing.object, DrawingObject::Box { .. }) {
                 ensure_box_fill_color(&mut drawing.style);
             }
         }
-        ensure_box_fill_color(&mut style_defaults.box_drawing);
-
         let next_drawing_id = drawings
             .iter()
             .map(|drawing| drawing.id.0)
@@ -561,9 +539,6 @@ impl DrawingTools {
             selected_drawings: Vec::new(),
             interaction: DrawingInteraction::Idle,
             next_drawing_id,
-            style_defaults,
-            horizontal_line_ray,
-            box_extend_right,
             magnet_enabled: false,
             magnet_modifier_active: false,
             box_style_target: BoxStyleTarget::default(),
@@ -573,18 +548,6 @@ impl DrawingTools {
 
     pub fn active_tool(&self) -> DrawingTool {
         self.active_tool
-    }
-
-    pub fn horizontal_line_ray(&self) -> bool {
-        self.horizontal_line_ray
-    }
-
-    pub fn style_defaults(&self) -> DrawingStyleDefaults {
-        self.style_defaults
-    }
-
-    pub fn box_extend_right(&self) -> bool {
-        self.box_extend_right
     }
 
     fn magnet_active(&self) -> bool {
@@ -701,7 +664,11 @@ impl DrawingTools {
         })
     }
 
-    pub fn update(&mut self, message: DrawingMessage) -> DrawingUpdate {
+    pub fn update(
+        &mut self,
+        message: DrawingMessage,
+        settings: &mut DrawingSettings,
+    ) -> DrawingUpdate {
         match message {
             DrawingMessage::SelectTool(tool) => {
                 if self.select_tool(tool) {
@@ -745,35 +712,35 @@ impl DrawingTools {
                 }
             }
             DrawingMessage::SetSelectedDrawingStrokeColor(color) => {
-                if self.update_selected_style(DrawingStyleChange::StrokeColor(color)) {
+                if self.update_selected_style(DrawingStyleChange::StrokeColor(color), settings) {
                     DrawingUpdate::AtomicEdit
                 } else {
                     DrawingUpdate::None
                 }
             }
             DrawingMessage::SetSelectedDrawingStrokeShade(shade) => {
-                if self.update_selected_style(DrawingStyleChange::StrokeShade(shade)) {
+                if self.update_selected_style(DrawingStyleChange::StrokeShade(shade), settings) {
                     DrawingUpdate::AtomicEdit
                 } else {
                     DrawingUpdate::None
                 }
             }
             DrawingMessage::SetSelectedDrawingFillColor(color) => {
-                if self.update_selected_style(DrawingStyleChange::FillColor(color)) {
+                if self.update_selected_style(DrawingStyleChange::FillColor(color), settings) {
                     DrawingUpdate::AtomicEdit
                 } else {
                     DrawingUpdate::None
                 }
             }
             DrawingMessage::SetSelectedDrawingFillShade(shade) => {
-                if self.update_selected_style(DrawingStyleChange::FillShade(shade)) {
+                if self.update_selected_style(DrawingStyleChange::FillShade(shade), settings) {
                     DrawingUpdate::AtomicEdit
                 } else {
                     DrawingUpdate::None
                 }
             }
             DrawingMessage::SetSelectedDrawingStrokeWidth(width) => {
-                if self.update_selected_style(DrawingStyleChange::StrokeWidth(width)) {
+                if self.update_selected_style(DrawingStyleChange::StrokeWidth(width), settings) {
                     DrawingUpdate::AtomicEdit
                 } else {
                     DrawingUpdate::None
@@ -796,14 +763,18 @@ impl DrawingTools {
                 }
             }
             DrawingMessage::SetHorizontalLineRay(ray) => {
-                if self.update_selected_object(DrawingObjectChange::HorizontalLineRay(ray)) {
+                if self
+                    .update_selected_object(DrawingObjectChange::HorizontalLineRay(ray), settings)
+                {
                     DrawingUpdate::AtomicEdit
                 } else {
                     DrawingUpdate::None
                 }
             }
             DrawingMessage::SetBoxExtendRight(extend) => {
-                if self.update_selected_object(DrawingObjectChange::BoxExtendRight(extend)) {
+                if self
+                    .update_selected_object(DrawingObjectChange::BoxExtendRight(extend), settings)
+                {
                     DrawingUpdate::AtomicEdit
                 } else {
                     DrawingUpdate::None
@@ -1167,7 +1138,11 @@ impl DrawingTools {
         )
     }
 
-    pub fn handle_widget_drawing_event(&mut self, event: KlineWidgetDrawingEvent) -> DrawingUpdate {
+    pub fn handle_widget_drawing_event(
+        &mut self,
+        event: KlineWidgetDrawingEvent,
+        settings: &DrawingSettings,
+    ) -> DrawingUpdate {
         match event {
             KlineWidgetDrawingEvent::MagnetModifierChanged(active) => {
                 if self.magnet_modifier_active != active {
@@ -1200,7 +1175,7 @@ impl DrawingTools {
                         DrawingUpdate::None
                     }
                 } else {
-                    let started = self.start_drawing_from_anchor(anchor);
+                    let started = self.start_drawing_from_anchor(anchor, settings);
                     let committed = started && self.drawing_draft().is_none();
                     if committed {
                         self.active_tool = DrawingTool::Cursor;
@@ -1364,7 +1339,11 @@ impl DrawingTools {
         changed
     }
 
-    fn update_selected_style(&mut self, change: DrawingStyleChange) -> bool {
+    fn update_selected_style(
+        &mut self,
+        change: DrawingStyleChange,
+        settings: &mut DrawingSettings,
+    ) -> bool {
         let capabilities = self.selection_capabilities();
         if !capabilities.has_editable() {
             return false;
@@ -1388,16 +1367,20 @@ impl DrawingTools {
         }
 
         for tool in changed_tools {
-            let mut default_style = self.style_defaults.style_for(tool);
+            let mut default_style = settings.style_defaults.style_for(tool);
             if change.apply(&mut default_style) {
-                self.style_defaults.set_style(tool, default_style);
+                settings.style_defaults.set_style(tool, default_style);
             }
         }
 
         changed
     }
 
-    fn update_selected_object(&mut self, change: DrawingObjectChange) -> bool {
+    fn update_selected_object(
+        &mut self,
+        change: DrawingObjectChange,
+        settings: &mut DrawingSettings,
+    ) -> bool {
         let mut has_compatible_drawing = false;
         let mut object_changed = false;
 
@@ -1440,13 +1423,13 @@ impl DrawingTools {
 
         let default_changed = match change {
             DrawingObjectChange::HorizontalLineRay(ray) => {
-                let changed = self.horizontal_line_ray != ray;
-                self.horizontal_line_ray = ray;
+                let changed = settings.horizontal_line_ray != ray;
+                settings.horizontal_line_ray = ray;
                 changed
             }
             DrawingObjectChange::BoxExtendRight(extend_right) => {
-                let changed = self.box_extend_right != extend_right;
-                self.box_extend_right = extend_right;
+                let changed = settings.box_extend_right != extend_right;
+                settings.box_extend_right = extend_right;
                 changed
             }
         };
@@ -1489,14 +1472,18 @@ impl DrawingTools {
         true
     }
 
-    pub fn start_drawing_from_anchor(&mut self, anchor: DrawingAnchor) -> bool {
+    pub fn start_drawing_from_anchor(
+        &mut self,
+        anchor: DrawingAnchor,
+        settings: &DrawingSettings,
+    ) -> bool {
         match self.active_tool {
             DrawingTool::Cursor | DrawingTool::Measure => false,
             DrawingTool::Trendline => {
                 self.interaction = DrawingInteraction::Drafting(DrawingDraft::Trendline {
                     start: anchor,
                     current: anchor,
-                    style: self.style_defaults.style_for(DrawingTool::Trendline),
+                    style: settings.style_defaults.style_for(DrawingTool::Trendline),
                 });
                 self.selected_drawings.clear();
                 true
@@ -1505,8 +1492,8 @@ impl DrawingTools {
                 self.interaction = DrawingInteraction::Drafting(DrawingDraft::Box {
                     start: anchor,
                     current: anchor,
-                    style: self.style_defaults.style_for(DrawingTool::Box),
-                    extend_right: self.box_extend_right,
+                    style: settings.style_defaults.style_for(DrawingTool::Box),
+                    extend_right: settings.box_extend_right,
                 });
                 self.selected_drawings.clear();
                 true
@@ -1516,11 +1503,13 @@ impl DrawingTools {
                     panel_id: anchor.panel_id,
                     y_unit: anchor.y_unit,
                     time: anchor.time,
-                    ray: self.horizontal_line_ray,
+                    ray: settings.horizontal_line_ray,
                 };
                 self.push_drawing(
                     object,
-                    self.style_defaults.style_for(DrawingTool::HorizontalLine),
+                    settings
+                        .style_defaults
+                        .style_for(DrawingTool::HorizontalLine),
                 );
                 true
             }
@@ -1528,7 +1517,7 @@ impl DrawingTools {
                 let object = DrawingObject::VerticalLine { time: anchor.time };
                 self.push_drawing(
                     object,
-                    self.style_defaults.style_for(DrawingTool::VerticalLine),
+                    settings.style_defaults.style_for(DrawingTool::VerticalLine),
                 );
                 true
             }

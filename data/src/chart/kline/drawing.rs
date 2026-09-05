@@ -414,6 +414,14 @@ impl DrawingStyleDefaults {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DrawingSettings {
+    pub style_defaults: DrawingStyleDefaults,
+    pub horizontal_line_ray: bool,
+    pub box_extend_right: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum DrawingObject {
     Trendline {

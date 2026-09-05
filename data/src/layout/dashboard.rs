@@ -1,6 +1,8 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
+use crate::chart::kline::ChartSettings;
+
 use super::{WindowSpec, pane::Pane};
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -9,6 +11,7 @@ pub struct Dashboard {
     pub pane: Pane,
     #[serde(deserialize_with = "deserialize_popouts", default)]
     pub popout: Vec<(Pane, WindowSpec)>,
+    pub chart_settings: ChartSettings,
 }
 
 fn deserialize_pane<'de, D>(deserializer: D) -> Result<Pane, D::Error>

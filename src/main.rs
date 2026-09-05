@@ -555,6 +555,7 @@ impl Flowsurface {
                             let dashboard = Dashboard::from_config(
                                 configuration(ser_dashboard.pane.clone()),
                                 popout_windows,
+                                ser_dashboard.chart_settings,
                                 old_id,
                             );
 

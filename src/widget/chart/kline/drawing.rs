@@ -40,8 +40,8 @@ impl AxisBadgeFilter {
 pub use data::chart::kline::drawing::{
     AxisLabelAnchor, DrawingAnchor, DrawingColor, DrawingDraft, DrawingDragOperation,
     DrawingDragTarget, DrawingEntity, DrawingHandleKind, DrawingId, DrawingMeasure, DrawingObject,
-    DrawingSnapshot, DrawingStyle, DrawingStyleDefaults, DrawingTool, KlineWidgetDrawingEvent,
-    MAX_DRAWING_STROKE_WIDTH, MIN_DRAWING_STROKE_WIDTH, MeasureState,
+    DrawingSnapshot, DrawingStyle, DrawingTool, KlineWidgetDrawingEvent, MAX_DRAWING_STROKE_WIDTH,
+    MIN_DRAWING_STROKE_WIDTH, MeasureState,
 };
 
 fn iced_color(

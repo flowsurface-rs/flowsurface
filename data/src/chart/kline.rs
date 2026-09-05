@@ -1022,12 +1022,6 @@ pub struct Config {
     pub drawings: Vec<DrawingConfig>,
     pub active_drawing_tool: DrawingTool,
     #[serde(default)]
-    pub drawing_style_defaults: DrawingStyleDefaults,
-    #[serde(default)]
-    pub horizontal_line_ray: bool,
-    #[serde(default)]
-    pub box_extend_right: bool,
-    #[serde(default)]
     pub floating_toolbar_position: FloatingToolbarPosition,
     #[serde(default = "default_drawing_sidebar_visible")]
     pub drawing_sidebar_visible: bool,
@@ -1069,9 +1063,6 @@ impl Default for Config {
             splits: Vec::new(),
             drawings: Vec::new(),
             active_drawing_tool: DrawingTool::Cursor,
-            drawing_style_defaults: DrawingStyleDefaults::default(),
-            horizontal_line_ray: false,
-            box_extend_right: false,
             floating_toolbar_position: FloatingToolbarPosition::default(),
             drawing_sidebar_visible: default_drawing_sidebar_visible(),
             studies: Vec::new(),
@@ -1106,6 +1097,11 @@ pub struct SettingsSnapshot {
     pub studies: Vec<KlineStudy>,
     pub study_configs: Vec<KlineStudy>,
     pub indicator_instances: Vec<IndicatorInstance>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct ChartSettings {
+    pub drawing: drawing::DrawingSettings,
 }
 
 impl Default for SettingsSnapshot {
@@ -1315,8 +1311,8 @@ pub enum ValuePrecision {
 }
 
 pub use drawing::{
-    DrawingAnchor, DrawingColor, DrawingEntity, DrawingObject, DrawingStyle, DrawingStyleDefaults,
-    DrawingTool, Rgba,
+    DrawingAnchor, DrawingColor, DrawingEntity, DrawingObject, DrawingSettings, DrawingStyle,
+    DrawingStyleDefaults, DrawingTool, Rgba,
 };
 pub type DrawingConfig = DrawingEntity;
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

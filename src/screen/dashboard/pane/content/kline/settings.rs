@@ -16,9 +16,9 @@ use crate::{
     },
 };
 use data::chart::kline::{
-    BarMode, CandlestickColorSlot, CandlestickConfig, FootprintConfig, FootprintImbalanceConfig,
-    FootprintPocColorConfig, FootprintPocColorSlot, FootprintPocConfig, HistogramMode,
-    IndicatorColorConfig, IndicatorColorSlot, IndicatorConfig, IndicatorSetting,
+    BarMode, CandlestickColorSlot, CandlestickConfig, ChartSettings, FootprintConfig,
+    FootprintImbalanceConfig, FootprintPocColorConfig, FootprintPocColorSlot, FootprintPocConfig,
+    HistogramMode, IndicatorColorConfig, IndicatorColorSlot, IndicatorConfig, IndicatorSetting,
     IndicatorSettingControl, IndicatorSettingValue, IndicatorSettingsContext, IndicatorStyleConfig,
     KlineIndicator, KlineStudy, KlineStudyId, LineStrokeStyle, MAX_CANDLESTICK_OPACITY_PERCENT,
     MAX_LINE_WIDTH, MIN_CANDLESTICK_OPACITY_PERCENT, MIN_LINE_WIDTH, MarkKind, ThemeAccent,
@@ -1253,6 +1253,7 @@ impl State {
         &mut self,
         chart: &mut KlineChart,
         message: Message,
+        chart_settings: &mut ChartSettings,
     ) -> Option<ChartAction> {
         if !matches!(
             &message,
@@ -1265,7 +1266,7 @@ impl State {
             Message::ResetRequested => self.request_reset_confirmation(chart),
             Message::ResetConfirmed => {
                 let message = self.confirmed_reset_message(chart)?;
-                return self.update(chart, message);
+                return self.update(chart, message, chart_settings);
             }
             Message::ResetCancelled => self.cancel_reset_confirmation(),
             Message::Indicator {
@@ -1403,7 +1404,7 @@ impl State {
             }
             Message::Study(message) => chart.update_study_configurator(message),
             Message::SeriesEditor(message) => {
-                return chart.update(ChartMessage::SeriesEditor(message));
+                return chart.update(ChartMessage::SeriesEditor(message), chart_settings);
             }
         }
 

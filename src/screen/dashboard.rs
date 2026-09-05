@@ -15,6 +15,7 @@ use crate::{
 };
 use data::{
     UserTimezone,
+    chart::kline::ChartSettings,
     layout::{WindowSpec, pane::ContentKind, pane::VisualConfig},
     stream::PersistStreamKind,
 };
@@ -58,6 +59,7 @@ pub struct Dashboard {
     pub focus: Option<(window::Id, pane_grid::Pane)>,
     pub popout: HashMap<window::Id, (pane_grid::State<pane::State>, WindowSpec)>,
     pub streams: UniqueStreams,
+    pub chart_settings: ChartSettings,
     layout_id: uuid::Uuid,
 }
 
@@ -68,6 +70,7 @@ impl Default for Dashboard {
             focus: None,
             streams: UniqueStreams::default(),
             popout: HashMap::new(),
+            chart_settings: ChartSettings::default(),
             layout_id: uuid::Uuid::new_v4(),
         }
     }
@@ -142,6 +145,7 @@ impl Dashboard {
     pub fn from_config(
         panes: Configuration<pane::State>,
         popout_windows: Vec<(Configuration<pane::State>, WindowSpec)>,
+        chart_settings: ChartSettings,
         layout_id: uuid::Uuid,
     ) -> Self {
         let panes = pane_grid::State::with_configuration(panes);
@@ -162,6 +166,7 @@ impl Dashboard {
             focus: None,
             streams: UniqueStreams::default(),
             popout,
+            chart_settings,
             layout_id,
         }
     }
@@ -398,9 +403,11 @@ impl Dashboard {
                         );
                     }
                     local => {
+                        let mut chart_settings = self.chart_settings;
                         let effect = self
                             .get_mut_pane(main_window.id, window, pane)
-                            .map(|state| state.update(local));
+                            .map(|state| state.update(local, &mut chart_settings));
+                        self.chart_settings = chart_settings;
                         let Some(effect) = effect.flatten() else {
                             return (Task::none(), None);
                         };

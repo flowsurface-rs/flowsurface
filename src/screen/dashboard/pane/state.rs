@@ -29,7 +29,11 @@ use crate::{
 };
 use data::{
     UserTimezone,
-    chart::{Basis, heatmap::HeatmapStudy, kline::KlineStudy},
+    chart::{
+        Basis,
+        heatmap::HeatmapStudy,
+        kline::{ChartSettings, KlineStudy},
+    },
     layout::pane::{ContentKind, LinkGroup, PaneSetup, Settings, VisualConfig},
     stream::PersistStreamKind,
 };
@@ -862,7 +866,7 @@ impl State {
         })
     }
 
-    pub fn update(&mut self, msg: Event) -> Option<Effect> {
+    pub fn update(&mut self, msg: Event, chart_settings: &mut ChartSettings) -> Option<Effect> {
         match msg {
             Event::ShowModal(requested_modal) => {
                 return self.show_modal_with_focus(requested_modal);
@@ -886,7 +890,7 @@ impl State {
             Event::OpenInspector(_) | Event::ToggleInspector(_) | Event::SyncKlineSettings => {}
             Event::KlineInteraction(message) => {
                 let action = match &mut self.content {
-                    Content::Kline { chart: Some(c), .. } => c.update(message),
+                    Content::Kline { chart: Some(c), .. } => c.update(message, chart_settings),
                     _ => None,
                 };
                 let trade_stream_changed = self.sync_kline_trade_stream();

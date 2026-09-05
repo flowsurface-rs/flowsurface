@@ -46,8 +46,8 @@ use data::chart::kline::composition::{
 
 use data::chart::Basis;
 use data::chart::kline::{
-    self as persisted, CandlestickConfig, FetchBatch, FetchPlanInput, FetchStage, FootprintConfig,
-    HorizontalWorld, IndicatorConfig, IndicatorInstanceId, IndicatorInstanceStore,
+    self as persisted, CandlestickConfig, ChartSettings, FetchBatch, FetchPlanInput, FetchStage,
+    FootprintConfig, HorizontalWorld, IndicatorConfig, IndicatorInstanceId, IndicatorInstanceStore,
     IndicatorStyleConfig, KlineStudy, KlineStudyId, SeriesColor, SettingsSnapshot, visible_window,
 };
 use exchange::adapter::StreamKind;
@@ -202,7 +202,11 @@ impl KlineChart {
         chart
     }
 
-    pub fn update(&mut self, message: Message) -> Option<Action> {
+    pub fn update(
+        &mut self,
+        message: Message,
+        chart_settings: &mut ChartSettings,
+    ) -> Option<Action> {
         match message {
             Message::ToggleDrawingSidebar => {
                 self.drawing_sidebar_visible = !self.drawing_sidebar_visible;
@@ -225,7 +229,7 @@ impl KlineChart {
             }
             Message::Settings(message) => {
                 let mut settings = std::mem::take(&mut self.settings);
-                let action = settings.update(self, message);
+                let action = settings.update(self, message, chart_settings);
                 self.settings = settings;
                 return action;
             }
@@ -250,7 +254,7 @@ impl KlineChart {
             }
             Message::Sidebar(message) => {
                 let before = self.drawing.edit_state();
-                let update = self.drawing.update(message);
+                let update = self.drawing.update(message, &mut chart_settings.drawing);
                 self.apply_drawing_update(update, before);
             }
             Message::Chart(event) => {
@@ -267,7 +271,9 @@ impl KlineChart {
                     }
                     KlineWidgetEvent::Drawing(event) => {
                         let before = self.drawing.edit_state();
-                        let update = self.drawing.handle_widget_drawing_event(event);
+                        let update = self
+                            .drawing
+                            .handle_widget_drawing_event(event, &chart_settings.drawing);
                         self.apply_drawing_update(update, before);
                     }
                     KlineWidgetEvent::PanelInteraction(interaction) => {
@@ -527,7 +533,10 @@ impl KlineChart {
                     }
                     KlineWidgetEvent::DeletePressed => {
                         let before = self.drawing.edit_state();
-                        let update = self.drawing.update(DrawingMessage::DeleteSelectedDrawing);
+                        let update = self.drawing.update(
+                            DrawingMessage::DeleteSelectedDrawing,
+                            &mut chart_settings.drawing,
+                        );
                         self.apply_drawing_update(update, before);
                     }
                 }
@@ -1717,13 +1726,7 @@ impl KlineChart {
             })
             .cloned()
             .collect();
-        self.drawing = DrawingTools::from_parts(
-            config.active_drawing_tool,
-            drawings,
-            config.drawing_style_defaults,
-            config.horizontal_line_ray,
-            config.box_extend_right,
-        );
+        self.drawing = DrawingTools::from_parts(config.active_drawing_tool, drawings);
 
         let active_indicators = self.layout.selected_indicators();
         self.data
@@ -2063,9 +2066,6 @@ impl KlineChart {
             splits: self.layout.composition().splits.clone(),
             drawings: self.drawing.drawings().to_vec(),
             active_drawing_tool: self.drawing.active_tool(),
-            drawing_style_defaults: self.drawing.style_defaults(),
-            horizontal_line_ray: self.drawing.horizontal_line_ray(),
-            box_extend_right: self.drawing.box_extend_right(),
             floating_toolbar_position: self.floating_toolbar.position,
             drawing_sidebar_visible: self.drawing_sidebar_visible,
             studies: self.studies.clone(),
