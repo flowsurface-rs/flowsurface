@@ -3,8 +3,8 @@ use crate::theme::ThemeAccents;
 use crate::widget::chart::kline::drawing::{
     DrawingAnchor, DrawingColor, DrawingDraft, DrawingDragOperation, DrawingDragTarget,
     DrawingEntity, DrawingId, DrawingMeasure, DrawingObject, DrawingSnapshot, DrawingStyle,
-    DrawingTool, KlineWidgetDrawingEvent, MAX_DRAWING_STROKE_WIDTH, MIN_DRAWING_STROKE_WIDTH,
-    MeasureState,
+    DrawingTool, DrawingX, KlineWidgetDrawingEvent, MAX_DRAWING_STROKE_WIDTH,
+    MIN_DRAWING_STROKE_WIDTH, MeasureState,
 };
 use crate::widget::{color_swatch_button, labeled_slider, tooltip};
 use data::chart::kline::DrawingSettings;
@@ -244,6 +244,7 @@ impl DrawingUpdate {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct DrawingEditState {
     drawings: Vec<DrawingEntity>,
+    inactive_drawings: Vec<DrawingEntity>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -457,6 +458,9 @@ pub struct DrawingTools {
     active_tool: DrawingTool,
     sidebar_page: SidebarPage,
     drawings: Vec<DrawingEntity>,
+    inactive_drawings: Vec<DrawingEntity>,
+    tick_mode: bool,
+    tick_sequence_id: Option<uuid::Uuid>,
     selected_drawings: Vec<DrawingId>,
     interaction: DrawingInteraction,
     next_drawing_id: u64,
@@ -472,6 +476,9 @@ impl Default for DrawingTools {
             active_tool: DrawingTool::Cursor,
             sidebar_page: SidebarPage::Tools,
             drawings: Vec::new(),
+            inactive_drawings: Vec::new(),
+            tick_mode: false,
+            tick_sequence_id: None,
             selected_drawings: Vec::new(),
             interaction: DrawingInteraction::Idle,
             next_drawing_id: 1,
@@ -487,14 +494,17 @@ impl DrawingTools {
     pub(super) fn edit_state(&self) -> DrawingEditState {
         DrawingEditState {
             drawings: self.drawings.clone(),
+            inactive_drawings: self.inactive_drawings.clone(),
         }
     }
 
     pub(super) fn restore_edit_state(&mut self, state: DrawingEditState) {
         self.drawings = state.drawings;
+        self.inactive_drawings = state.inactive_drawings;
         self.next_drawing_id = self
             .drawings
             .iter()
+            .chain(&self.inactive_drawings)
             .map(|drawing| drawing.id.0)
             .max()
             .unwrap_or(0)
@@ -519,6 +529,7 @@ impl DrawingTools {
     }
 
     pub fn from_parts(active_tool: DrawingTool, mut drawings: Vec<DrawingEntity>) -> Self {
+        drawings.retain(|drawing| drawing.object.coordinates_match(DrawingX::default()));
         for drawing in &mut drawings {
             if matches!(&drawing.object, DrawingObject::Box { .. }) {
                 ensure_box_fill_color(&mut drawing.style);
@@ -536,6 +547,9 @@ impl DrawingTools {
             active_tool,
             sidebar_page: SidebarPage::Tools,
             drawings,
+            inactive_drawings: Vec::new(),
+            tick_mode: false,
+            tick_sequence_id: None,
             selected_drawings: Vec::new(),
             interaction: DrawingInteraction::Idle,
             next_drawing_id,
@@ -554,8 +568,51 @@ impl DrawingTools {
         self.active_tool.supports_magnet() && (self.magnet_enabled || self.magnet_modifier_active)
     }
 
-    pub fn drawings(&self) -> &[DrawingEntity] {
-        &self.drawings
+    pub fn time_drawings(&self) -> &[DrawingEntity] {
+        if self.tick_mode {
+            &self.inactive_drawings
+        } else {
+            &self.drawings
+        }
+    }
+
+    pub fn set_basis(&mut self, basis: data::chart::Basis) {
+        let tick_mode = !basis.is_time();
+        if tick_mode != self.tick_mode {
+            std::mem::swap(&mut self.drawings, &mut self.inactive_drawings);
+            self.tick_mode = tick_mode;
+            self.clear_tick_drawings();
+        }
+        self.clear_interaction();
+    }
+
+    pub fn sync_tick_sequence(&mut self, sequence_id: Option<uuid::Uuid>) -> bool {
+        if self.tick_sequence_id == sequence_id {
+            return false;
+        }
+        self.clear_tick_drawings();
+        self.tick_sequence_id = sequence_id;
+        true
+    }
+
+    fn clear_tick_drawings(&mut self) {
+        if self.tick_mode {
+            self.drawings.clear();
+            self.clear_interaction();
+        } else {
+            self.inactive_drawings.clear();
+        }
+    }
+
+    fn clear_interaction(&mut self) {
+        self.selected_drawings.clear();
+        self.interaction = DrawingInteraction::Idle;
+        self.measure = None;
+        self.magnet_modifier_active = false;
+    }
+
+    fn accepts_anchor(&self, anchor: DrawingAnchor) -> bool {
+        anchor.x.is_valid() && anchor.x.is_time() != self.tick_mode
     }
 
     fn selected_editable_indices(&self) -> Vec<usize> {
@@ -1010,6 +1067,14 @@ impl DrawingTools {
             .push(header_nav)
             .push(iced::widget::rule::horizontal(1.0));
 
+        if self.tick_mode {
+            content = content.push(
+                iced::widget::text(
+                    "Tick drawings last until you leave tick mode or reset its data.",
+                )
+                .size(style::text_size::SMALL),
+            );
+        }
         if self.drawings.is_empty() {
             content =
                 content.push(iced::widget::text("No drawings").size(style::text_size::SECTION));
@@ -1477,6 +1542,9 @@ impl DrawingTools {
         anchor: DrawingAnchor,
         settings: &DrawingSettings,
     ) -> bool {
+        if !self.accepts_anchor(anchor) {
+            return false;
+        }
         match self.active_tool {
             DrawingTool::Cursor | DrawingTool::Measure => false,
             DrawingTool::Trendline => {
@@ -1502,7 +1570,7 @@ impl DrawingTools {
                 let object = DrawingObject::HorizontalLine {
                     panel_id: anchor.panel_id,
                     y_unit: anchor.y_unit,
-                    time: anchor.time,
+                    x: anchor.x,
                     ray: settings.horizontal_line_ray,
                 };
                 self.push_drawing(
@@ -1514,7 +1582,7 @@ impl DrawingTools {
                 true
             }
             DrawingTool::VerticalLine => {
-                let object = DrawingObject::VerticalLine { time: anchor.time };
+                let object = DrawingObject::VerticalLine { x: anchor.x };
                 self.push_drawing(
                     object,
                     settings.style_defaults.style_for(DrawingTool::VerticalLine),
@@ -1525,6 +1593,9 @@ impl DrawingTools {
     }
 
     pub fn update_drawing_draft_anchor(&mut self, anchor: DrawingAnchor) -> bool {
+        if !self.accepts_anchor(anchor) {
+            return false;
+        }
         let DrawingInteraction::Drafting(draft) = &mut self.interaction else {
             return false;
         };
@@ -1544,6 +1615,9 @@ impl DrawingTools {
     }
 
     pub fn commit_drawing_draft(&mut self, end: DrawingAnchor) -> Option<DrawingId> {
+        if !self.accepts_anchor(end) {
+            return None;
+        }
         let draft = self.take_draft()?;
         let (object, style) = draft.try_commit(end)?;
 
@@ -1560,11 +1634,12 @@ impl DrawingTools {
     }
 
     pub fn prune_panel_drawings(&mut self, panel_id: PanelId) -> bool {
-        let before = self.drawings.len();
+        let before = self.drawings.len() + self.inactive_drawings.len();
         self.drawings
             .retain(|drawing| !drawing.belongs_to_panel(panel_id));
-
-        let drawings_pruned = before != self.drawings.len();
+        self.inactive_drawings
+            .retain(|drawing| !drawing.belongs_to_panel(panel_id));
+        let drawings_pruned = before != self.drawings.len() + self.inactive_drawings.len();
 
         let mut changed = drawings_pruned;
 
@@ -1619,6 +1694,9 @@ impl DrawingTools {
     }
 
     fn measure_click(&mut self, anchor: DrawingAnchor) -> bool {
+        if !self.accepts_anchor(anchor) {
+            return false;
+        }
         match self.measure {
             None => {
                 self.measure = Some(DrawingMeasure::Pending(MeasureState {
@@ -1647,6 +1725,9 @@ impl DrawingTools {
     }
 
     fn measure_move(&mut self, anchor: DrawingAnchor) -> bool {
+        if !self.accepts_anchor(anchor) {
+            return false;
+        }
         let Some(DrawingMeasure::Pending(state)) = self.measure else {
             return false;
         };
@@ -1702,6 +1783,9 @@ impl DrawingTools {
         operation: DrawingDragOperation,
         anchor: DrawingAnchor,
     ) -> bool {
+        if !self.accepts_anchor(anchor) {
+            return false;
+        }
         let Some(index) = self.drawing_index(id) else {
             self.clear_drag();
             return false;
@@ -1778,6 +1862,9 @@ impl DrawingTools {
         target: DrawingDragTarget,
         anchor: DrawingAnchor,
     ) -> bool {
+        if !self.accepts_anchor(anchor) {
+            return false;
+        }
         let Some(drag_state) = self.active_drag(id).cloned() else {
             return false;
         };
@@ -1807,9 +1894,12 @@ impl DrawingTools {
                         self.clear_drag();
                         return false;
                     }
-                    let moved = dragged
+                    let Some(moved) = dragged
                         .origin_object
-                        .translated(drag_state.origin_anchor, anchor);
+                        .translated(drag_state.origin_anchor, anchor)
+                    else {
+                        return false;
+                    };
                     if self.drawings[index].object != moved {
                         self.drawings[index].object = moved;
                         changed = true;
@@ -1829,7 +1919,11 @@ impl DrawingTools {
                     self.clear_drag();
                     return false;
                 }
-                let Some(edited) = primary.origin_object.handle_dragged(handle, anchor) else {
+                let Some(edited) =
+                    primary
+                        .origin_object
+                        .handle_dragged(handle, drag_state.origin_anchor, anchor)
+                else {
                     return false;
                 };
                 if self.drawings[index].object != edited {
@@ -1949,6 +2043,135 @@ impl DrawingTools {
             }
             DrawingObject::HorizontalLine { panel_id, .. } => panel_exists(*panel_id),
             DrawingObject::VerticalLine { .. } => true,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use data::aggr::TickCount;
+    use data::chart::Basis;
+    use data::chart::kline::YUnit;
+    use exchange::{Timeframe, UnixMs};
+
+    fn anchor(x: DrawingX, y: i64) -> DrawingAnchor {
+        DrawingAnchor {
+            panel_id: PanelId(1),
+            x,
+            y_unit: YUnit(y),
+        }
+    }
+
+    #[test]
+    fn drawing_sessions_keep_time_storage_and_prune_both_collections() {
+        let settings = DrawingSettings::default();
+        let time = anchor(DrawingX::Time(UnixMs::new(60_000)), 100);
+        let tick = anchor(DrawingX::Tick(30.0), 100);
+        let mut tools = DrawingTools {
+            active_tool: DrawingTool::HorizontalLine,
+            ..DrawingTools::default()
+        };
+        assert!(tools.start_drawing_from_anchor(time, &settings));
+        let saved = tools.time_drawings().to_vec();
+        tools.set_basis(Basis::Tick(TickCount(10)));
+        assert!(tools.snapshot().entities.is_empty());
+        assert_eq!(tools.time_drawings(), saved);
+        assert!(!tools.start_drawing_from_anchor(time, &settings));
+        assert!(!tools.start_drawing_from_anchor(anchor(DrawingX::Tick(f64::NAN), 100), &settings));
+        assert!(tools.start_drawing_from_anchor(tick, &settings));
+        let both = tools.edit_state();
+        tools.set_basis(Basis::Tick(TickCount(20)));
+        assert_eq!(tools.edit_state(), both);
+        assert!(tools.snapshot().selected_drawings.is_empty());
+        assert!(tools.prune_panel_drawings(PanelId(1)));
+        assert!(tools.snapshot().entities.is_empty());
+        assert!(tools.time_drawings().is_empty());
+        tools.restore_edit_state(both);
+        assert_eq!(tools.snapshot().entities.len(), 1);
+        assert_eq!(tools.time_drawings(), saved);
+        tools.set_basis(Basis::Time(Timeframe::M1));
+        assert_eq!(tools.snapshot().entities, saved);
+        tools.set_basis(Basis::Time(Timeframe::M5));
+        assert_eq!(tools.snapshot().entities, saved);
+        tools.set_basis(Basis::Tick(TickCount(10)));
+        assert!(tools.snapshot().entities.is_empty());
+    }
+
+    #[test]
+    fn drawing_tools_edit_all_shapes_in_both_coordinate_spaces() {
+        for tick_mode in [false, true] {
+            let x = |position| {
+                if tick_mode {
+                    DrawingX::Tick(position as f64)
+                } else {
+                    DrawingX::Time(UnixMs::new(position))
+                }
+            };
+            for tool in [
+                DrawingTool::Trendline,
+                DrawingTool::Box,
+                DrawingTool::HorizontalLine,
+                DrawingTool::VerticalLine,
+            ] {
+                let mut tools = DrawingTools::default();
+                if tick_mode {
+                    tools.set_basis(Basis::Tick(TickCount(20)));
+                }
+                tools.active_tool = tool;
+                let settings = DrawingSettings {
+                    horizontal_line_ray: true,
+                    ..Default::default()
+                };
+                assert!(tools.start_drawing_from_anchor(anchor(x(30), 100), &settings));
+                if tools.drawing_draft().is_some() {
+                    assert!(tools.update_drawing_draft_anchor(anchor(x(60), 200)));
+                    assert!(tools.commit_drawing_draft(anchor(x(60), 200)).is_some());
+                }
+                let original = tools.drawings[0].object.clone();
+                let id = tools.drawings[0].id;
+                let origin = anchor(x(40), 100);
+                let current = anchor(x(60), 110);
+                assert!(tools.start_drawing_drag(
+                    id,
+                    DrawingDragTarget::Translate,
+                    DrawingDragOperation::Move,
+                    origin
+                ));
+                assert!(tools.update_drawing_drag(id, DrawingDragTarget::Translate, current));
+                assert_eq!(
+                    tools.drawings[0].object,
+                    original.translated(origin, current).unwrap()
+                );
+                assert!(tools.finish_drawing_drag(id));
+                let handle = match tool {
+                    DrawingTool::Trendline => {
+                        Some(data::chart::kline::drawing::DrawingHandleKind::TrendlineStart)
+                    }
+                    DrawingTool::Box => {
+                        Some(data::chart::kline::drawing::DrawingHandleKind::BoxTopLeft)
+                    }
+                    DrawingTool::HorizontalLine => {
+                        Some(data::chart::kline::drawing::DrawingHandleKind::HorizontalLineStart)
+                    }
+                    _ => None,
+                };
+                if let Some(handle) = handle {
+                    let target = DrawingDragTarget::Handle(handle);
+                    assert!(tools.start_drawing_drag(
+                        id,
+                        target,
+                        DrawingDragOperation::Move,
+                        origin
+                    ));
+                    assert!(tools.update_drawing_drag(id, target, current));
+                    assert!(tools.finish_drawing_drag(id));
+                }
+                assert!(tools.measure_click(origin));
+                assert!(tools.measure_move(current));
+                assert!(tools.measure_click(current));
+                assert!(matches!(tools.measure, Some(DrawingMeasure::Committed(_))));
+            }
         }
     }
 }

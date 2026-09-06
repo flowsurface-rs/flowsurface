@@ -200,10 +200,101 @@ impl DrawingColor {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DrawingX {
+    Time(UnixMs),
+    Tick(f64),
+}
+
+impl Default for DrawingX {
+    fn default() -> Self {
+        Self::Time(UnixMs::new(0))
+    }
+}
+
+impl Serialize for DrawingX {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Time(time) => time.serialize(serializer),
+            Self::Tick(_) => Err(serde::ser::Error::custom("tick drawings are session-only")),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for DrawingX {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        UnixMs::deserialize(deserializer).map(Self::Time)
+    }
+}
+
+impl PartialOrd for DrawingX {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        match (*self, *other) {
+            (Self::Time(a), Self::Time(b)) => a.partial_cmp(&b),
+            (Self::Tick(a), Self::Tick(b)) if a.is_finite() && b.is_finite() => a.partial_cmp(&b),
+            _ => None,
+        }
+    }
+}
+
+impl DrawingX {
+    pub fn is_time(self) -> bool {
+        matches!(self, Self::Time(_))
+    }
+
+    pub fn is_valid(self) -> bool {
+        match self {
+            Self::Time(_) => true,
+            Self::Tick(position) => position.is_finite(),
+        }
+    }
+
+    pub fn compatible(self, other: Self) -> bool {
+        self.partial_cmp(&other).is_some()
+    }
+
+    pub fn min(self, other: Self) -> Self {
+        if self <= other { self } else { other }
+    }
+
+    pub fn max(self, other: Self) -> Self {
+        if self >= other { self } else { other }
+    }
+
+    pub fn tick_bar_position(self, trades_per_bar: u64) -> Option<f64> {
+        match self {
+            Self::Tick(position) if position.is_finite() && trades_per_bar > 0 => {
+                Some(position / trades_per_bar as f64)
+            }
+            _ => None,
+        }
+    }
+
+    fn translated(self, origin: Self, current: Self) -> Option<Self> {
+        match (self, origin, current) {
+            (Self::Time(time), Self::Time(origin), Self::Time(current)) => {
+                Some(Self::Time(if current >= origin {
+                    time.saturating_add(current.saturating_diff(origin))
+                } else {
+                    time.saturating_sub(origin.saturating_diff(current))
+                }))
+            }
+            (Self::Tick(position), Self::Tick(origin), Self::Tick(current))
+                if position.is_finite() && origin.is_finite() && current.is_finite() =>
+            {
+                let translated = position + (current - origin);
+                translated.is_finite().then_some(Self::Tick(translated))
+            }
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct DrawingAnchor {
     pub panel_id: PanelId,
-    pub time: UnixMs,
+    #[serde(rename = "time")]
+    pub x: DrawingX,
     pub y_unit: YUnit,
 }
 
@@ -438,12 +529,14 @@ pub enum DrawingObject {
         panel_id: PanelId,
         y_unit: YUnit,
         #[serde(default)]
-        time: UnixMs,
+        #[serde(rename = "time")]
+        x: DrawingX,
         #[serde(default)]
         ray: bool,
     },
     VerticalLine {
-        time: UnixMs,
+        #[serde(rename = "time")]
+        x: DrawingX,
     },
 }
 
@@ -517,7 +610,7 @@ impl DrawingDraft {
     pub fn try_commit(self, end: DrawingAnchor) -> Option<(DrawingObject, DrawingStyle)> {
         match self {
             Self::Trendline { start, style, .. } => {
-                if end.panel_id != start.panel_id {
+                if end.panel_id != start.panel_id || !start.x.compatible(end.x) {
                     return None;
                 }
 
@@ -529,7 +622,7 @@ impl DrawingDraft {
                 extend_right,
                 ..
             } => {
-                if end.panel_id != start.panel_id {
+                if end.panel_id != start.panel_id || !start.x.compatible(end.x) {
                     return None;
                 }
 
@@ -567,7 +660,7 @@ pub enum DrawingDragOperation {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AxisLabelAnchor {
-    X { time: UnixMs },
+    X { x: DrawingX },
     Y { panel_id: PanelId, y_unit: YUnit },
 }
 
@@ -577,8 +670,8 @@ impl DrawingObject {
         mut end: DrawingAnchor,
         extend_right: bool,
     ) -> Self {
-        if extend_right && end.time < start.time {
-            std::mem::swap(&mut start.time, &mut end.time);
+        if extend_right && end.x < start.x {
+            std::mem::swap(&mut start.x, &mut end.x);
         }
 
         Self::Box {
@@ -627,12 +720,12 @@ impl DrawingObject {
     pub fn axis_label_anchors(&self) -> Vec<AxisLabelAnchor> {
         match self {
             Self::Trendline { start, end } => vec![
-                AxisLabelAnchor::X { time: start.time },
+                AxisLabelAnchor::X { x: start.x },
                 AxisLabelAnchor::Y {
                     panel_id: start.panel_id,
                     y_unit: start.y_unit,
                 },
-                AxisLabelAnchor::X { time: end.time },
+                AxisLabelAnchor::X { x: end.x },
                 AxisLabelAnchor::Y {
                     panel_id: end.panel_id,
                     y_unit: end.y_unit,
@@ -644,12 +737,12 @@ impl DrawingObject {
                 extend_right,
             } => {
                 let panel_id = start.panel_id;
-                let left = start.time.min(end.time);
+                let left = start.x.min(end.x);
                 let top = YUnit(start.y_unit.0.max(end.y_unit.0));
                 let bottom = YUnit(start.y_unit.0.min(end.y_unit.0));
 
                 let mut anchors = vec![
-                    AxisLabelAnchor::X { time: left },
+                    AxisLabelAnchor::X { x: left },
                     AxisLabelAnchor::Y {
                         panel_id,
                         y_unit: top,
@@ -662,7 +755,7 @@ impl DrawingObject {
 
                 if !extend_right {
                     anchors.push(AxisLabelAnchor::X {
-                        time: start.time.max(end.time),
+                        x: start.x.max(end.x),
                     });
                 }
 
@@ -671,12 +764,12 @@ impl DrawingObject {
             Self::HorizontalLine {
                 panel_id,
                 y_unit,
-                time,
+                x,
                 ray,
             } => {
                 let mut anchors = Vec::with_capacity(2);
                 if *ray {
-                    anchors.push(AxisLabelAnchor::X { time: *time });
+                    anchors.push(AxisLabelAnchor::X { x: *x });
                 }
                 anchors.push(AxisLabelAnchor::Y {
                     panel_id: *panel_id,
@@ -684,7 +777,7 @@ impl DrawingObject {
                 });
                 anchors
             }
-            Self::VerticalLine { time } => vec![AxisLabelAnchor::X { time: *time }],
+            Self::VerticalLine { x } => vec![AxisLabelAnchor::X { x: *x }],
         }
     }
 
@@ -701,45 +794,83 @@ impl DrawingObject {
         }
     }
 
-    pub fn translated(&self, origin_anchor: DrawingAnchor, current_anchor: DrawingAnchor) -> Self {
-        let (delta_ms, forward_in_time) = Self::time_delta(origin_anchor.time, current_anchor.time);
-        let delta_y = current_anchor
-            .y_unit
-            .0
-            .saturating_sub(origin_anchor.y_unit.0);
-
+    pub fn coordinates_match(&self, x: DrawingX) -> bool {
         match self {
+            Self::Trendline { start, end } | Self::Box { start, end, .. } => {
+                start.x.compatible(x) && end.x.compatible(x)
+            }
+            Self::HorizontalLine { x: origin, .. } | Self::VerticalLine { x: origin } => {
+                origin.compatible(x)
+            }
+        }
+    }
+
+    pub fn translated(&self, origin: DrawingAnchor, current: DrawingAnchor) -> Option<Self> {
+        let delta_y = current.y_unit.0.saturating_sub(origin.y_unit.0);
+        let shift = |anchor: DrawingAnchor| -> Option<DrawingAnchor> {
+            Some(DrawingAnchor {
+                x: anchor.x.translated(origin.x, current.x)?,
+                y_unit: Self::shift_y_by_delta(anchor.y_unit, delta_y),
+                ..anchor
+            })
+        };
+        Some(match self {
             Self::Trendline { start, end } => Self::Trendline {
-                start: Self::shift_anchor_by_delta(*start, delta_ms, forward_in_time, delta_y),
-                end: Self::shift_anchor_by_delta(*end, delta_ms, forward_in_time, delta_y),
+                start: shift(*start)?,
+                end: shift(*end)?,
             },
             Self::Box {
                 start,
                 end,
                 extend_right,
             } => Self::Box {
-                start: Self::shift_anchor_by_delta(*start, delta_ms, forward_in_time, delta_y),
-                end: Self::shift_anchor_by_delta(*end, delta_ms, forward_in_time, delta_y),
+                start: shift(*start)?,
+                end: shift(*end)?,
                 extend_right: *extend_right,
             },
             Self::HorizontalLine {
                 panel_id,
                 y_unit,
-                time,
+                x,
                 ray,
             } => Self::HorizontalLine {
                 panel_id: *panel_id,
                 y_unit: Self::shift_y_by_delta(*y_unit, delta_y),
-                time: Self::shift_time_by_delta_ms(*time, delta_ms, forward_in_time),
+                x: x.translated(origin.x, current.x)?,
                 ray: *ray,
             },
-            Self::VerticalLine { time } => Self::VerticalLine {
-                time: Self::shift_time_by_delta_ms(*time, delta_ms, forward_in_time),
+            Self::VerticalLine { x } => Self::VerticalLine {
+                x: x.translated(origin.x, current.x)?,
             },
-        }
+        })
     }
 
-    pub fn handle_dragged(&self, handle: DrawingHandleKind, anchor: DrawingAnchor) -> Option<Self> {
+    pub fn handle_dragged(
+        &self,
+        handle: DrawingHandleKind,
+        origin: DrawingAnchor,
+        mut anchor: DrawingAnchor,
+    ) -> Option<Self> {
+        if !self.coordinates_match(anchor.x) || !origin.x.compatible(anchor.x) {
+            return None;
+        }
+        if matches!(anchor.x, DrawingX::Tick(_)) {
+            let x = match (self, handle) {
+                (Self::Trendline { start, .. }, DrawingHandleKind::TrendlineStart) => start.x,
+                (Self::Trendline { end, .. }, DrawingHandleKind::TrendlineEnd) => end.x,
+                (Self::HorizontalLine { x, .. }, DrawingHandleKind::HorizontalLineStart) => *x,
+                (
+                    Self::Box { start, end, .. },
+                    DrawingHandleKind::BoxTopLeft | DrawingHandleKind::BoxBottomLeft,
+                ) => start.x.min(end.x),
+                (
+                    Self::Box { start, end, .. },
+                    DrawingHandleKind::BoxTopRight | DrawingHandleKind::BoxBottomRight,
+                ) => start.x.max(end.x),
+                _ => return None,
+            };
+            anchor.x = x.translated(origin.x, anchor.x)?;
+        }
         match (self, handle) {
             (Self::Trendline { start, end }, DrawingHandleKind::TrendlineStart) => {
                 Some(Self::Trendline {
@@ -769,7 +900,7 @@ impl DrawingObject {
             ) if anchor.panel_id == *panel_id => Some(Self::HorizontalLine {
                 panel_id: *panel_id,
                 y_unit: anchor.y_unit,
-                time: anchor.time,
+                x: anchor.x,
                 ray: true,
             }),
             (
@@ -804,35 +935,27 @@ impl DrawingObject {
             return Self::resized_extended_box(start, end, corner, anchor);
         }
 
-        let mut left = if start.time <= end.time {
-            start.time
-        } else {
-            end.time
-        };
-        let mut right = if start.time <= end.time {
-            end.time
-        } else {
-            start.time
-        };
+        let mut left = if start.x <= end.x { start.x } else { end.x };
+        let mut right = if start.x <= end.x { end.x } else { start.x };
 
         let mut top = start.y_unit.0.max(end.y_unit.0);
         let mut bottom = start.y_unit.0.min(end.y_unit.0);
 
         match corner {
             DrawingHandleKind::BoxTopLeft => {
-                left = anchor.time;
+                left = anchor.x;
                 top = anchor.y_unit.0;
             }
             DrawingHandleKind::BoxTopRight => {
-                right = anchor.time;
+                right = anchor.x;
                 top = anchor.y_unit.0;
             }
             DrawingHandleKind::BoxBottomRight => {
-                right = anchor.time;
+                right = anchor.x;
                 bottom = anchor.y_unit.0;
             }
             DrawingHandleKind::BoxBottomLeft => {
-                left = anchor.time;
+                left = anchor.x;
                 bottom = anchor.y_unit.0;
             }
             DrawingHandleKind::TrendlineStart
@@ -845,12 +968,12 @@ impl DrawingObject {
         Some(Self::Box {
             start: DrawingAnchor {
                 panel_id,
-                time: left,
+                x: left,
                 y_unit: YUnit(top),
             },
             end: DrawingAnchor {
                 panel_id,
-                time: right,
+                x: right,
                 y_unit: YUnit(bottom),
             },
             extend_right,
@@ -878,49 +1001,20 @@ impl DrawingObject {
         Some(Self::Box {
             start: DrawingAnchor {
                 panel_id: start.panel_id,
-                time: anchor.time,
+                x: anchor.x,
                 y_unit: YUnit(top),
             },
             end: DrawingAnchor {
                 panel_id: end.panel_id,
-                time: end.time,
+                x: end.x,
                 y_unit: YUnit(bottom),
             },
             extend_right: true,
         })
     }
 
-    fn shift_anchor_by_delta(
-        anchor: DrawingAnchor,
-        delta_ms: u64,
-        forward_in_time: bool,
-        delta_y: i64,
-    ) -> DrawingAnchor {
-        DrawingAnchor {
-            panel_id: anchor.panel_id,
-            time: Self::shift_time_by_delta_ms(anchor.time, delta_ms, forward_in_time),
-            y_unit: Self::shift_y_by_delta(anchor.y_unit, delta_y),
-        }
-    }
-
     fn shift_y_by_delta(y_unit: YUnit, delta_y: i64) -> YUnit {
         YUnit(y_unit.0.saturating_add(delta_y))
-    }
-
-    fn shift_time_by_delta_ms(time: UnixMs, delta_ms: u64, forward_in_time: bool) -> UnixMs {
-        if forward_in_time {
-            time.saturating_add(delta_ms)
-        } else {
-            time.saturating_sub(delta_ms)
-        }
-    }
-
-    fn time_delta(origin: UnixMs, current: UnixMs) -> (u64, bool) {
-        if current >= origin {
-            (current.saturating_diff(origin), true)
-        } else {
-            (origin.saturating_diff(current), false)
-        }
     }
 }
 

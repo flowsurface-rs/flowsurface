@@ -185,6 +185,8 @@ impl KlineChart {
         chart
             .data
             .configure_series_for_basis(chart.basis, &chart.indicators, &active_indicators);
+        chart.drawing.set_basis(basis);
+        chart.sync_tick_drawing_sequence();
         chart
             .layout
             .sync_comparison_sources(chart.data.base_ticker(), chart.data.selected_tickers());
@@ -787,7 +789,21 @@ impl KlineChart {
         self.request_fetch_action().map(ChartAction::RequestFetch)
     }
 
+    fn sync_tick_drawing_sequence(&mut self) {
+        let sequence_id = if self.basis.is_time() {
+            None
+        } else {
+            self.data
+                .base_series()
+                .map(|series| series.trade_sequence_id())
+        };
+        if self.drawing.sync_tick_sequence(sequence_id) {
+            self.history.clear();
+        }
+    }
+
     fn bump_rev(&mut self) {
+        self.sync_tick_drawing_sequence();
         self.prune_stale_panel_y_viewports();
         self.cache_rev = self.cache_rev.wrapping_add(1);
     }
@@ -946,6 +962,8 @@ impl KlineChart {
     }
 
     fn set_basis(&mut self, basis: Basis) -> Option<ChartAction> {
+        self.finish_pending_drawing_edit();
+        self.drawing.set_basis(basis);
         let preserve_raw_trades = matches!(
             (self.basis, basis),
             (Basis::Time(_), Basis::Time(_)) | (Basis::Tick(_), Basis::Tick(_))
@@ -964,6 +982,7 @@ impl KlineChart {
             &self.indicators,
             &active_indicators,
         );
+        self.sync_tick_drawing_sequence();
         self.configure_profile_caches();
 
         self.fetch.reset();
@@ -1727,6 +1746,7 @@ impl KlineChart {
             .cloned()
             .collect();
         self.drawing = DrawingTools::from_parts(config.active_drawing_tool, drawings);
+        self.drawing.set_basis(self.basis);
 
         let active_indicators = self.layout.selected_indicators();
         self.data
@@ -1774,6 +1794,7 @@ impl KlineChart {
         self.primary_autoscale = primary_autoscale;
         self.panel_y_viewports.replace(panel_y_viewports);
         self.drawing = drawing;
+        self.sync_tick_drawing_sequence();
         self.floating_toolbar = floating_toolbar;
         self.fetch.rebuild_handlers(self.data.selected_tickers());
 
@@ -2064,7 +2085,7 @@ impl KlineChart {
                 .map(persisted::panel_config_from_spec)
                 .collect(),
             splits: self.layout.composition().splits.clone(),
-            drawings: self.drawing.drawings().to_vec(),
+            drawings: self.drawing.time_drawings().to_vec(),
             active_drawing_tool: self.drawing.active_tool(),
             floating_toolbar_position: self.floating_toolbar.position,
             drawing_sidebar_visible: self.drawing_sidebar_visible,

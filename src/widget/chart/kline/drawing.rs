@@ -40,8 +40,8 @@ impl AxisBadgeFilter {
 pub use data::chart::kline::drawing::{
     AxisLabelAnchor, DrawingAnchor, DrawingColor, DrawingDraft, DrawingDragOperation,
     DrawingDragTarget, DrawingEntity, DrawingHandleKind, DrawingId, DrawingMeasure, DrawingObject,
-    DrawingSnapshot, DrawingStyle, DrawingTool, KlineWidgetDrawingEvent, MAX_DRAWING_STROKE_WIDTH,
-    MIN_DRAWING_STROKE_WIDTH, MeasureState,
+    DrawingSnapshot, DrawingStyle, DrawingTool, DrawingX, KlineWidgetDrawingEvent,
+    MAX_DRAWING_STROKE_WIDTH, MIN_DRAWING_STROKE_WIDTH, MeasureState,
 };
 
 fn iced_color(
@@ -94,50 +94,73 @@ impl<'a, S> KlineWidget<'a, S>
 where
     S: KlineSeriesLike,
 {
-    fn x_unit_for_anchor_time(&self, scene: &Scene, time: UnixMs) -> Option<i64> {
-        if let Some(unit) = scene.x_unit_for_time(time) {
-            return Some(unit);
+    fn x_unit_for_anchor(&self, scene: &Scene, x: DrawingX) -> Option<f64> {
+        match (self.basis, x) {
+            (data::chart::Basis::Time(_), DrawingX::Time(time)) => {
+                scene.x_unit_for_time(time).map(|unit| unit as f64)
+            }
+            (data::chart::Basis::Tick(interval), DrawingX::Tick(_)) => {
+                let count = self.series.first()?.bars().len();
+                let super::scene::XAxis::Tick { anchor } = scene.x.axis else {
+                    return None;
+                };
+                if count == 0 {
+                    return None;
+                }
+                Some(
+                    x.tick_bar_position(interval.0 as u64)? - (count - 1) as f64
+                        + anchor.as_u64() as f64,
+                )
+            }
+            _ => None,
         }
-
-        let mut best: Option<(u64, i64)> = None;
-
-        self.for_each_scene_bar_unit_index(scene, |series_index, _, _, x_unit, bar| {
-            if series_index != 0 {
-                return;
-            }
-
-            let delta = bar.time.as_u64().abs_diff(time.as_u64());
-
-            if best
-                .map(|(best_delta, _)| delta < best_delta)
-                .unwrap_or(true)
-            {
-                best = Some((delta, x_unit));
-            }
-        });
-
-        best.map(|(_, unit)| unit)
     }
 
-    fn anchor_time_for_cursor_unit(&self, scene: &Scene, x_unit: i64) -> Option<UnixMs> {
-        if let Some(time) = scene.time_for_x_unit(x_unit) {
-            return Some(time);
+    fn anchor_x_for_cursor_unit(&self, scene: &Scene, x_unit: i64) -> Option<DrawingX> {
+        match self.basis {
+            data::chart::Basis::Time(_) => scene.time_for_x_unit(x_unit).map(DrawingX::Time),
+            data::chart::Basis::Tick(interval) => {
+                let count = self.series.first()?.bars().len();
+                let super::scene::XAxis::Tick { anchor } = scene.x.axis else {
+                    return None;
+                };
+                if count == 0 {
+                    return None;
+                }
+                let index = x_unit as f64 + (count - 1) as f64 - anchor.as_u64() as f64;
+                let x = DrawingX::Tick(index * interval.0 as f64);
+                x.is_valid().then_some(x)
+            }
         }
+    }
 
-        let series = self.series.first()?;
-        self.bar_at_or_before_unit(series, scene.x.axis, x_unit)
-            .map(|bar| bar.time)
+    fn drawing_timestamp(&self, x: DrawingX) -> Option<UnixMs> {
+        match (self.basis, x) {
+            (data::chart::Basis::Time(_), DrawingX::Time(time)) => Some(time),
+            (data::chart::Basis::Tick(interval), DrawingX::Tick(_)) => {
+                let index = x.tick_bar_position(interval.0 as u64)?;
+                let series = self.series.first()?;
+                if index < 0.0 || index >= series.bars().len() as f64 {
+                    return None;
+                }
+                series
+                    .bars()
+                    .get(index.floor() as usize)
+                    .map(|point| point.time)
+            }
+            _ => None,
+        }
     }
 
     pub(super) fn drawing_anchor_from_scene_cursor(&self, scene: &Scene) -> Option<DrawingAnchor> {
         let cursor = scene.interaction.cursor?;
         let panel_id = self.panel_id(cursor.panel_index)?;
-        let time = self.anchor_time_for_cursor_unit(scene, cursor.x_unit)?;
+        let x = self.anchor_x_for_cursor_unit(scene, cursor.x_unit)?;
         let y_unit = cursor.y_primary_unit.or(cursor.y_indicator_unit)?;
 
         Some(DrawingAnchor {
             panel_id,
-            time,
+            x,
             y_unit,
         })
     }
@@ -153,7 +176,7 @@ where
 
         let x_plot = cursor_local.x - scene.layout.regions.plot.x;
         let x_unit = scene.unit_from_plot_x(x_plot);
-        let time = self.anchor_time_for_cursor_unit(scene, x_unit)?;
+        let x = self.anchor_x_for_cursor_unit(scene, x_unit)?;
 
         let panel_h = panel.plot.height.max(1.0);
         let y_in_panel = cursor_local.y - scene.layout.regions.plot.y - panel.plot.y;
@@ -194,7 +217,7 @@ where
 
         Some(DrawingAnchor {
             panel_id,
-            time,
+            x,
             y_unit,
         })
     }
@@ -347,9 +370,12 @@ where
         ))
     }
 
-    fn x_overlay_for_time(&self, scene: &Scene, time: UnixMs) -> Option<f32> {
-        let x_unit = self.x_unit_for_anchor_time(scene, time)?;
-        let x_plot = Self::snap_plot_x_to_cell(scene.map_x_plot(x_unit), self.pixel_ratio_value());
+    fn x_overlay_for_anchor(&self, scene: &Scene, x: DrawingX) -> Option<f32> {
+        let x_unit = self.x_unit_for_anchor(scene, x)?;
+        let x_plot = Self::snap_plot_x_to_cell(
+            scene.map_x_plot_f32(x_unit as f32),
+            self.pixel_ratio_value(),
+        );
         Some(scene.layout.regions.plot.x + x_plot)
     }
 
@@ -374,7 +400,7 @@ where
     }
 
     fn anchor_to_overlay_point(&self, scene: &Scene, anchor: DrawingAnchor) -> Option<Point> {
-        let x = self.x_overlay_for_time(scene, anchor.time)?;
+        let x = self.x_overlay_for_anchor(scene, anchor.x)?;
         let y = self.y_overlay_for_value(scene, anchor.panel_id, anchor.y_unit)?;
 
         Some(Point::new(x, y))
@@ -447,7 +473,7 @@ where
         scene: &Scene,
         panel_id: PanelId,
         y_unit: YUnit,
-        time: UnixMs,
+        x: DrawingX,
         ray: bool,
     ) -> Option<(Rectangle, f32, f32)> {
         let panel_index = self.panel_index_for_id(panel_id)?;
@@ -470,9 +496,12 @@ where
         }
 
         let start_x = if ray {
-            let x_unit = self.x_unit_for_anchor_time(scene, time)?;
+            let x_unit = self.x_unit_for_anchor(scene, x)?;
             let x = scene.layout.regions.plot.x
-                + Self::snap_plot_x_to_cell(scene.map_x_plot(x_unit), self.pixel_ratio_value());
+                + Self::snap_plot_x_to_cell(
+                    scene.map_x_plot_f32(x_unit as f32),
+                    self.pixel_ratio_value(),
+                );
             x.max(clip_bounds.x)
         } else {
             clip_bounds.x
@@ -484,12 +513,15 @@ where
     fn drawing_vertical_line_geometry(
         &self,
         scene: &Scene,
-        time: UnixMs,
+        x: DrawingX,
     ) -> Option<(Rectangle, f32)> {
-        let x_unit = self.x_unit_for_anchor_time(scene, time)?;
+        let x_unit = self.x_unit_for_anchor(scene, x)?;
         let clip_bounds = self.plot_bounds_in_overlay(scene);
         let x = scene.layout.regions.plot.x
-            + Self::snap_plot_x_to_cell(scene.map_x_plot(x_unit), self.pixel_ratio_value());
+            + Self::snap_plot_x_to_cell(
+                scene.map_x_plot_f32(x_unit as f32),
+                self.pixel_ratio_value(),
+            );
 
         if x < clip_bounds.x || x > (clip_bounds.x + clip_bounds.width) {
             return None;
@@ -641,11 +673,11 @@ where
             DrawingObject::HorizontalLine {
                 panel_id,
                 y_unit,
-                time,
+                x,
                 ray,
             } => {
                 let Some((bounds, y, start_x)) =
-                    self.drawing_horizontal_line_geometry(scene, *panel_id, *y_unit, *time, *ray)
+                    self.drawing_horizontal_line_geometry(scene, *panel_id, *y_unit, *x, *ray)
                 else {
                     return;
                 };
@@ -673,8 +705,8 @@ where
                     );
                 });
             }
-            DrawingObject::VerticalLine { time } => {
-                let Some((plot, x)) = self.drawing_vertical_line_geometry(scene, *time) else {
+            DrawingObject::VerticalLine { x } => {
+                let Some((plot, x)) = self.drawing_vertical_line_geometry(scene, *x) else {
                     return;
                 };
 
@@ -775,14 +807,14 @@ where
             DrawingObject::HorizontalLine {
                 panel_id,
                 y_unit,
-                time,
+                x,
                 ray: true,
             } => self
                 .anchor_to_overlay_point(
                     scene,
                     DrawingAnchor {
                         panel_id: *panel_id,
-                        time: *time,
+                        x: *x,
                         y_unit: *y_unit,
                     },
                 )
@@ -1001,14 +1033,14 @@ where
             palette.background.base.text
         };
 
-        let span_ms = state.start.time.as_u64().abs_diff(state.end.time.as_u64());
-        let bars = match (
-            self.x_unit_for_anchor_time(scene, state.start.time),
-            self.x_unit_for_anchor_time(scene, state.end.time),
-        ) {
-            (Some(start_unit), Some(end_unit)) => (start_unit - end_unit).unsigned_abs(),
-            _ => 0,
-        };
+        let span_ms = self
+            .drawing_timestamp(state.start.x)
+            .zip(self.drawing_timestamp(state.end.x))
+            .map(|(start, end)| start.as_u64().abs_diff(end.as_u64()));
+        let bars = self
+            .x_unit_for_anchor(scene, state.start.x)
+            .zip(self.x_unit_for_anchor(scene, state.end.x))
+            .map_or(0.0, |(start, end)| (start - end).abs());
 
         let sign = if delta > 1e-9 {
             "+"
@@ -1020,7 +1052,10 @@ where
         let delta_label =
             self.format_panel_axis_value(panel_index, panel_precision, delta.abs(), 0.01);
         let text1 = format!("{sign}{delta_label} ({sign}{:.2}%)", pct.abs());
-        let text2 = format!("{} ({}b)", data::util::format_duration_ms(span_ms), bars);
+        let text2 = match span_ms {
+            Some(span_ms) => format!("{} ({bars}b)", data::util::format_duration_ms(span_ms)),
+            None => format!("{bars}b"),
+        };
 
         let (_, stroke_width_phys) = Self::quantized_stroke_width(1.25, pixel_ratio);
         let start = Self::snap_point_for_stroke_with_origin(
@@ -1216,11 +1251,11 @@ where
             DrawingObject::HorizontalLine {
                 panel_id,
                 y_unit,
-                time,
+                x,
                 ray,
             } => {
                 let Some((bounds, y, start_x)) =
-                    self.drawing_horizontal_line_geometry(scene, *panel_id, *y_unit, *time, *ray)
+                    self.drawing_horizontal_line_geometry(scene, *panel_id, *y_unit, *x, *ray)
                 else {
                     return false;
                 };
@@ -1229,8 +1264,8 @@ where
                     && point.x <= (bounds.x + bounds.width + tolerance)
                     && (point.y - y).abs() <= tolerance
             }
-            DrawingObject::VerticalLine { time } => {
-                let Some((plot, x)) = self.drawing_vertical_line_geometry(scene, *time) else {
+            DrawingObject::VerticalLine { x } => {
+                let Some((plot, x)) = self.drawing_vertical_line_geometry(scene, *x) else {
                     return false;
                 };
 
@@ -1343,7 +1378,7 @@ where
             DrawingObject::HorizontalLine {
                 panel_id,
                 y_unit,
-                time,
+                x,
                 ray,
             } => {
                 if !*ray {
@@ -1353,7 +1388,7 @@ where
                     scene,
                     DrawingAnchor {
                         panel_id: *panel_id,
-                        time: *time,
+                        x: *x,
                         y_unit: *y_unit,
                     },
                 )
@@ -1580,15 +1615,20 @@ where
 
         for anchor in object.axis_label_anchors() {
             match anchor {
-                AxisLabelAnchor::X { time } => {
-                    let Some(x) = self.x_overlay_for_time(scene, time) else {
+                AxisLabelAnchor::X { x } => {
+                    let Some(screen_x) = self.x_overlay_for_anchor(scene, x) else {
                         continue;
                     };
-                    let Some(x_unit) = self.x_unit_for_anchor_time(scene, time) else {
+                    let Some(x_unit) = self.x_unit_for_anchor(scene, x) else {
                         continue;
                     };
-                    let x_text = self.format_x_label(scene.x.axis, x_unit, 1);
-                    self.draw_x_axis_badge(frame, scene, palette, x, &x_text, filter);
+                    let x_text = match (self.basis, x) {
+                        (data::chart::Basis::Tick(interval), DrawingX::Tick(_)) => {
+                            format!("{}b", x.tick_bar_position(interval.0 as u64).unwrap())
+                        }
+                        _ => self.format_x_label(scene.x.axis, x_unit as i64, 1),
+                    };
+                    self.draw_x_axis_badge(frame, scene, palette, screen_x, &x_text, filter);
                 }
                 AxisLabelAnchor::Y { panel_id, y_unit } => {
                     let Some(y) = self.y_overlay_for_value(scene, panel_id, y_unit) else {

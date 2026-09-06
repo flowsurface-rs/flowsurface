@@ -675,6 +675,7 @@ pub struct KlineSeries {
     pub footprints: Option<BTreeMap<UnixMs, KlineTrades>>,
     pub footprint_tick_size: PriceStep,
     raw_trades: Vec<Trade>,
+    trade_sequence_id: uuid::Uuid,
     pub tick_times: Vec<UnixMs>,
     tick_index_offset: u64,
     trade_values: BTreeMap<UnixMs, TradeBarValues>,
@@ -687,6 +688,10 @@ pub struct KlineSeries {
 }
 
 impl KlineSeries {
+    pub fn trade_sequence_id(&self) -> uuid::Uuid {
+        self.trade_sequence_id
+    }
+
     pub fn new(ticker_info: TickerInfo, color: SeriesColor) -> Self {
         Self {
             ticker_info,
@@ -698,6 +703,7 @@ impl KlineSeries {
             footprints: None,
             footprint_tick_size: ticker_info.min_ticksize.into(),
             raw_trades: Vec::new(),
+            trade_sequence_id: uuid::Uuid::new_v4(),
             tick_times: Vec::new(),
             tick_index_offset: 0,
             trade_values: BTreeMap::new(),
@@ -1017,6 +1023,7 @@ impl KlineSeries {
 
         if !preserve_raw_trades {
             self.raw_trades.clear();
+            self.trade_sequence_id = uuid::Uuid::new_v4();
         }
     }
 
