@@ -1,0 +1,13 @@
+language(1)
+indicator("Open Interest", id = "flowsurface.open-interest", value_precision = "base_ticker_min_qty", axis_label_mode = "abbreviated", header_label_mode = "commas")
+show_change_bars = input.bool(false, "Show change bars", group = "display")
+value = open_interest
+change = select(show_change_bars, open_interest - open_interest[1], na)
+plot(value, id = "value", title = "Open Interest", precision = "instrument", offset = -1, color_slot = "main", overlay = false)
+plot(change, id = "change", title = "OI change", precision = "instrument", scale = "independent", style = "histogram", mark = "regular_bar", offset = -1, color_slot = "change", overlay = false)
+
+style("main", title = "Line")
+style("change", title = "Change bars", role = "secondary")
+mark(title = "Line", source = "value", kind = "line", color_slot = "main")
+mark(title = "Bars", source = "value", kind = "regular_bar", color_slot = "main")
+mark(title = "Change bars", source = "change", kind = "regular_bar", color_slot = "change")

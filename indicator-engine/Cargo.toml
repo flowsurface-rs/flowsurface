@@ -1,0 +1,13 @@
+[package]
+name = "flowsurface-indicator-engine"
+description = "Aggr-level live scripting engine for FlowSurface indicator sources"
+version.workspace = true
+license = "GPL-3.0-or-later"
+edition.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+chrono.workspace = true
+serde = { version = "1.0.228", features = ["derive", "std"] }
+thiserror.workspace = true

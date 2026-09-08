@@ -1,0 +1,22 @@
+language(1)
+indicator("ADX / DMI", id = "flowsurface.adx-dmi", value_precision = "fixed_step:0.01", axis_label_mode = "compact", header_label_mode = "compact", max_decimals = 2)
+period = input.int(14, "Period", min = 2, max = 200)
+up_move = chart.high - chart.high[1]
+down_move = chart.low[1] - chart.low
+plus_dm = select(up_move > down_move && up_move > 0, up_move, 0)
+minus_dm = select(down_move > up_move && down_move > 0, down_move, 0)
+true_range = ta.tr(chart.high, chart.low, chart.close)
+average_range = ta.rma(true_range, period)
+plus = 100 * ta.rma(plus_dm, period) / average_range
+minus = 100 * ta.rma(minus_dm, period) / average_range
+directional_sum = plus + minus
+dx = 100 * math.abs(plus - minus) / directional_sum
+adx = ta.rma(dx, period)
+plot(adx, id = "adx", title = "ADX", precision = "decimals:2", color_slot = "adx", width = 1.2)
+plot(plus, id = "plus", title = "+DI", precision = "decimals:2", color_slot = "plus")
+plot(minus, id = "minus", title = "-DI", precision = "decimals:2", color_slot = "minus")
+
+style("adx", title = "ADX", role = "primary")
+style("plus", title = "+DI", role = "success")
+style("minus", title = "-DI", role = "danger")
+mark(title = "Line", source = "adx", kind = "line", color_slot = "adx")

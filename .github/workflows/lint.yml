@@ -52,5 +52,8 @@ jobs:
             - name: Fetch dependencies
               run: cargo fetch
 
+            - name: Test indicator engine
+              run: cargo test -p flowsurface-indicator-engine --locked
+
             - name: Run cargo clippy
               run: cargo clippy --workspace --all-targets --all-features -- -D warnings

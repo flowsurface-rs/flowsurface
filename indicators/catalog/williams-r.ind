@@ -1,0 +1,17 @@
+language(1)
+indicator("Williams %R", id = "flowsurface.williams-r", value_precision = "fixed_step:0.01", axis_label_mode = "compact", header_label_mode = "compact", max_decimals = 2)
+period = input.int(14, "Period", min = 1, max = 200)
+upper_band = input.float(-20.0, "Upper band", min = -99.0, max = -1.0, step = 1.0)
+lower_band = input.float(-80.0, "Lower band", min = -99.0, max = -1.0, step = 1.0)
+highest = ta.highest(chart.high, period)
+lowest = ta.lowest(chart.low, period)
+range = highest - lowest
+value = select(range <= 0, -50, -100 * (highest - chart.close) / range)
+plot(value, id = "value", title = "Williams %R", precision = "decimals:2", color_slot = "main", layer_title = "%R", width = 1.2)
+plot(upper_band, id = "upper", title = "Upper band", precision = "decimals:2", color_slot = "upper", layer_title = "Upper", width = 0.9)
+plot(lower_band, id = "lower", title = "Lower band", precision = "decimals:2", color_slot = "lower", layer_title = "Lower", width = 0.9)
+
+style("main", title = "Williams %R", role = "primary")
+style("upper", title = "Upper", role = "success")
+style("lower", title = "Lower", role = "danger")
+mark(title = "Line", source = "value", kind = "line", color_slot = "main")

@@ -1,0 +1,9 @@
+language(1)
+indicator("Trade Count", id = "flowsurface.trade-count", layer_name = "Trades", value_precision = "fixed_step:1", axis_label_mode = "abbreviated", header_label_mode = "commas", preferred_scale = "fit_visible_include_zero", max_decimals = 0)
+value = chart.trade.count
+plot(value, id = "value", title = "Trade count", precision = "decimals:0", style = "histogram", color_slot = "main", layer_title = "Trades", overlay = false)
+
+style("main", title = "Line")
+style("bars", title = "Bars", role = "secondary")
+mark(title = "Line", source = "value", kind = "line", color_slot = "main")
+mark(title = "Bars", source = "value", kind = "histogram", color_slot = "bars")

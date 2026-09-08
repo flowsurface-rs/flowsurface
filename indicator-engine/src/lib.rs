@@ -1,0 +1,1251 @@
+mod diagnostics;
+mod frame;
+mod hir;
+mod intrinsic;
+mod parser;
+mod runtime;
+mod scene;
+mod types;
+mod warmup;
+
+pub use diagnostics::{Diagnostic, Severity, Span};
+pub use frame::{
+    ChartFrame, FrameField, FrameOutput, HorizontalLevelOutput, IndicatorFrame, MarkerOutput,
+    OhlcOutput, PlotOutput, RangeOutput, SegmentOutput, TimeOrTick, TradeAggregate,
+};
+pub use hir::{
+    BarStateField, BinaryOperator, CallSiteId, ConstantId, ExprId, ExpressionKind, FunctionId,
+    HirFunction, HirProgram, IntrinsicId, LocalSlot, PlotId, SeriesSlot, StateSlot, StatementBlock,
+    StatementBlockId, StatementId, StatementKind, TypedExpression, TypedStatement, UnaryOperator,
+};
+use intrinsic::IntrinsicRegistry;
+pub use runtime::{IndicatorInstance, PlanningError, RuntimeError, RuntimeLimits};
+pub use scene::{
+    Color, IndicatorPresentation, OutputPrecision, PaneTarget, PlotDescriptor, PlotScale,
+    PlotStyle, PlotValueType, PresentationAxis, PresentationColumn, PresentationColumnColor,
+    PresentationDataKind, PresentationFill, PresentationGeometry, PresentationInputSource,
+    PresentationLabelMode, PresentationLayer, PresentationMark, PresentationMarkKind,
+    PresentationPrecision, PresentationReadout, PresentationScale, PresentationSegment,
+    PresentationStyle, PresentationViewKind, ReadoutBehavior,
+};
+pub use types::{
+    IndicatorConfig, IndicatorDescriptor, IndicatorId, InputDescriptor, InputOption, InputType,
+    InputValue, Qualifier, Type, Value, ValueType,
+};
+
+pub type Program = HirProgram;
+
+/// Host data activated by a compiled indicator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DataRequirements {
+    pub ohlc: bool,
+    pub directional_volume: bool,
+    pub trades: bool,
+    pub open_interest: bool,
+}
+
+impl DataRequirements {
+    pub const fn needs_directional_volume(self) -> bool {
+        self.directional_volume
+    }
+
+    pub const fn needs_open_interest(self) -> bool {
+        self.open_interest
+    }
+}
+
+use std::path::Path;
+use std::sync::Arc;
+
+/// A compiled source program and the metadata discovered from that source.
+#[derive(Debug, Clone)]
+pub struct CompiledIndicator {
+    pub descriptor: IndicatorDescriptor,
+    pub requirements: DataRequirements,
+    pub program: Program,
+    pub(crate) registry: intrinsic::IntrinsicRegistry,
+}
+
+/// Parse and type-check one source-owned indicator file.
+pub fn compile(source: &str, path: impl AsRef<Path>) -> Result<CompiledIndicator, Vec<Diagnostic>> {
+    compile_with_registry(source, path, IntrinsicRegistry::standard())
+}
+
+/// Read and compile one indicator source file.
+pub fn compile_file(path: impl AsRef<Path>) -> Result<CompiledIndicator, Vec<Diagnostic>> {
+    let path = path.as_ref();
+    let source = match std::fs::read_to_string(path) {
+        Ok(source) => source,
+        Err(error) => {
+            return Err(vec![Diagnostic::error(
+                path,
+                Span::new(0, 0),
+                format!("could not read source: {error}"),
+            )]);
+        }
+    };
+    compile(&source, path)
+}
+
+pub(crate) fn compile_with_registry(
+    source: &str,
+    path: impl AsRef<Path>,
+    registry: intrinsic::IntrinsicRegistry,
+) -> Result<CompiledIndicator, Vec<Diagnostic>> {
+    parser::compile_with_registry(source, path.as_ref(), registry)
+}
+
+impl CompiledIndicator {
+    pub(crate) fn plan(
+        &self,
+        config: IndicatorConfig,
+    ) -> Result<runtime::InstancePlan, PlanningError> {
+        runtime::InstancePlan::from_compiled(self, config)
+    }
+
+    /// Static bars of history the plotted values need before they are
+    /// meaningful, resolved from constants, inputs, and windowed intrinsics.
+    pub fn warmup_bars(&self, config: &IndicatorConfig) -> Option<usize> {
+        self.warmup_bars_with_limits(config, RuntimeLimits::default())
+    }
+
+    /// Resolve warmup using the same rolling-window policy as the runtime.
+    pub fn warmup_bars_with_limits(
+        &self,
+        config: &IndicatorConfig,
+        limits: RuntimeLimits,
+    ) -> Option<usize> {
+        warmup::warmup_bars(
+            &self.program,
+            &self.registry,
+            &self.descriptor,
+            config,
+            limits.max_window_length,
+        )
+    }
+
+    /// Earliest UTC boundary an anchored intrinsic needs data from, resolved
+    /// from the configuration. Returns `None` when the indicator has no
+    /// anchored calculations such as `ta.avwap`.
+    pub fn anchor_start(&self, config: &IndicatorConfig, reference_time: i64) -> Option<i64> {
+        warmup::anchor_start(
+            &self.program,
+            &self.registry,
+            &self.descriptor,
+            config,
+            reference_time,
+        )
+    }
+
+    /// Create an instance that evaluates only the frames supplied by the chart.
+    pub fn instantiate(&self, config: IndicatorConfig) -> Result<IndicatorInstance, PlanningError> {
+        self.instantiate_with_limits(config, RuntimeLimits::default())
+    }
+
+    pub fn instantiate_with_limits(
+        &self,
+        config: IndicatorConfig,
+        limits: RuntimeLimits,
+    ) -> Result<IndicatorInstance, PlanningError> {
+        let plan = self.plan(config)?;
+        Ok(IndicatorInstance::with_limits(
+            Arc::new(self.clone()),
+            plan,
+            limits,
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame(index: usize, time: i64, close: f64) -> IndicatorFrame {
+        IndicatorFrame {
+            index,
+            time,
+            basis: TimeOrTick::Time,
+            chart: ChartFrame {
+                open: Some(close),
+                high: Some(close),
+                low: Some(close),
+                close: Some(close),
+                volume: Some(1.0),
+                directional_volume_available: false,
+                buy_qty: 0.0,
+                sell_qty: 0.0,
+                trade: None,
+            },
+            open_interest: None,
+        }
+    }
+
+    fn plot_value<'a>(output: &'a FrameOutput, id: &str) -> &'a Value {
+        output
+            .plots
+            .iter()
+            .find(|plot| plot.id == id)
+            .map(|plot| &plot.value)
+            .expect("plot output should be present")
+    }
+
+    #[test]
+    fn warmup_produces_historical_values() {
+        let source = r#"
+            language(1)
+            indicator("Simple average", id = "test.sma", value_precision = "base_ticker_min_tick")
+            length = input.int(2, "Length", min = 1, max = 100)
+            plot(ta.sma(chart.close, length), id = "sma")
+        "#;
+        let compiled = compile(source, "sma.ind").expect("source should compile");
+        assert_eq!(compiled.warmup_bars(&IndicatorConfig::default()), Some(2));
+        let mut instance = compiled
+            .instantiate(IndicatorConfig::default())
+            .expect("inputs should bind");
+
+        assert_eq!(
+            plot_value(
+                &instance
+                    .evaluate_closed(frame(0, 1, 10.0))
+                    .expect("first frame should evaluate"),
+                "sma"
+            ),
+            &Value::Na
+        );
+        assert_eq!(
+            plot_value(
+                &instance
+                    .evaluate_closed(frame(1, 2, 20.0))
+                    .expect("second frame should evaluate"),
+                "sma"
+            ),
+            &Value::Float(15.0)
+        );
+    }
+
+    #[test]
+    fn history_indexing_reads_an_immutable_series_local() {
+        let source = r#"
+            language(1)
+            indicator("Lagged value", id = "test.lagged", value_precision = "base_ticker_min_tick")
+            value = chart.close * 2
+            plot(value[1], id = "lagged")
+        "#;
+        let compiled = compile(source, "lagged.ind").expect("source should compile");
+        let mut instance = compiled
+            .instantiate(IndicatorConfig::default())
+            .expect("inputs should bind");
+
+        assert_eq!(
+            plot_value(
+                &instance
+                    .evaluate_closed(frame(0, 1, 10.0))
+                    .expect("first frame should evaluate"),
+                "lagged"
+            ),
+            &Value::Na
+        );
+        assert_eq!(
+            plot_value(
+                &instance
+                    .evaluate_closed(frame(1, 2, 20.0))
+                    .expect("second frame should evaluate"),
+                "lagged"
+            ),
+            &Value::Float(20.0)
+        );
+    }
+
+    #[test]
+    fn preview_restarts_from_the_last_committed_state() {
+        let source = r#"
+            language(1)
+            indicator("Committed state", id = "test.state", value_precision = "base_ticker_min_tick")
+            state total = 0
+            total := total + chart.close
+            plot(total, id = "total")
+        "#;
+        let compiled = compile(source, "state.ind").expect("source should compile");
+        let mut instance = compiled
+            .instantiate(IndicatorConfig::default())
+            .expect("inputs should bind");
+        instance
+            .evaluate_closed(frame(0, 1, 1.0))
+            .expect("first frame should evaluate");
+        instance
+            .evaluate_closed(frame(1, 2, 2.0))
+            .expect("second frame should evaluate");
+
+        let first_preview = instance
+            .preview_open(frame(2, 3, 10.0))
+            .expect("preview should evaluate");
+        let second_preview = instance
+            .preview_open(frame(2, 3, 20.0))
+            .expect("preview should evaluate");
+        assert_eq!(plot_value(&first_preview, "total"), &Value::Float(13.0));
+        assert_eq!(plot_value(&second_preview, "total"), &Value::Float(23.0));
+
+        let committed = instance
+            .evaluate_closed(frame(2, 3, 20.0))
+            .expect("final open frame should commit");
+        assert_eq!(plot_value(&committed, "total"), &Value::Float(23.0));
+    }
+
+    #[test]
+    fn cumulative_volume_skips_missing_directional_samples() {
+        let source = r#"
+            language(1)
+            indicator("CVD", id = "test.cvd", value_precision = "base_ticker_min_qty")
+            delta = select(chart.directional_volume_available, chart.buy_qty - chart.sell_qty, na)
+            value = ta.cum(delta)
+            plot(value, id = "value")
+        "#;
+        let compiled = compile(source, "cvd.ind").expect("source should compile");
+        let mut instance = compiled
+            .instantiate(IndicatorConfig::default())
+            .expect("inputs should bind");
+
+        let mut first = frame(0, 1, 10.0);
+        first.chart.directional_volume_available = true;
+        first.chart.buy_qty = 5.0;
+        first.chart.sell_qty = 2.0;
+        let first_output = instance
+            .evaluate_closed(first)
+            .expect("first directional frame should evaluate");
+        assert_eq!(plot_value(&first_output, "value"), &Value::Float(3.0));
+
+        let mut second = frame(1, 2, 10.0);
+        second.chart.directional_volume_available = true;
+        second.chart.buy_qty = 4.0;
+        second.chart.sell_qty = 1.0;
+        let second_output = instance
+            .evaluate_closed(second)
+            .expect("second directional frame should evaluate");
+        assert_eq!(plot_value(&second_output, "value"), &Value::Float(6.0));
+
+        let missing_output = instance
+            .evaluate_closed(frame(2, 3, 10.0))
+            .expect("missing directional frame should evaluate");
+        assert_eq!(plot_value(&missing_output, "value"), &Value::Na);
+
+        let mut third = frame(3, 4, 10.0);
+        third.chart.directional_volume_available = true;
+        third.chart.buy_qty = 3.0;
+        third.chart.sell_qty = 1.0;
+        let third_output = instance
+            .evaluate_closed(third)
+            .expect("directional frame after gap should evaluate");
+        assert_eq!(plot_value(&third_output, "value"), &Value::Float(8.0));
+
+        let mut fourth = frame(4, 5, 10.0);
+        fourth.chart.directional_volume_available = true;
+        fourth.chart.buy_qty = 2.0;
+        fourth.chart.sell_qty = 1.0;
+        let fourth_output = instance
+            .evaluate_closed(fourth)
+            .expect("directional frame should resume after gap");
+        assert_eq!(plot_value(&fourth_output, "value"), &Value::Float(9.0));
+    }
+
+    #[test]
+    fn optional_trade_inputs_fall_back_to_candle_volume() {
+        let source = r#"
+            language(1)
+            indicator("Volume", id = "test.volume", optional_trades = true, value_precision = "base_ticker_min_qty")
+            has_directional_volume = chart.directional_volume_available
+            buy = select(has_directional_volume, chart.buy_qty, chart.volume / 2)
+            sell = select(has_directional_volume, chart.sell_qty, chart.volume / 2)
+            signed = select(has_directional_volume, buy - sell, na)
+            plot(buy, id = "buy")
+            plot(signed, id = "signed")
+        "#;
+        let compiled = compile(source, "volume.ind").expect("source should compile");
+        assert!(compiled.descriptor.optional_trades);
+        assert!(compiled.requirements.needs_directional_volume());
+        assert!(!compiled.requirements.trades);
+        let mut instance = compiled
+            .instantiate(IndicatorConfig::default())
+            .expect("inputs should bind");
+
+        let output = instance
+            .evaluate_closed(frame(0, 1, 10.0))
+            .expect("candle-only frame should evaluate");
+        assert_eq!(plot_value(&output, "buy"), &Value::Float(0.5));
+        assert_eq!(plot_value(&output, "signed"), &Value::Na);
+
+        let mut flow_frame = frame(1, 2, 10.0);
+        flow_frame.chart.directional_volume_available = true;
+        flow_frame.chart.buy_qty = 3.0;
+        flow_frame.chart.trade = Some(TradeAggregate {
+            buy_qty: 3.0,
+            sell_qty: 0.0,
+            buy_count: 2,
+            sell_count: 0,
+        });
+        let output = instance
+            .evaluate_closed(flow_frame)
+            .expect("trade frame should evaluate");
+        assert_eq!(plot_value(&output, "buy"), &Value::Float(3.0));
+        assert_eq!(plot_value(&output, "signed"), &Value::Float(3.0));
+    }
+
+    #[test]
+    fn removed_cross_ticker_inputs_fail_compilation() {
+        for (name, expression) in [
+            ("source", r#"source("BTCUSDT")"#),
+            ("sources", "sources"),
+            ("flow", "flow.trade.count"),
+        ] {
+            let source = format!(
+                "language(1)\nindicator(\"Removed\", id = \"test.removed.{name}\")\nplot({expression}, id = \"value\")"
+            );
+            assert!(
+                compile(&source, format!("{name}.ind")).is_err(),
+                "{name} should fail"
+            );
+        }
+    }
+
+    #[test]
+    fn chart_trade_fields_use_the_base_chart() {
+        let source = r#"
+            language(1)
+            indicator("Base trades", id = "test.base-trades", value_precision = "base_ticker_min_qty")
+            plot(chart.trade.available, id = "chart_available")
+            plot(chart.trade.buy_qty, id = "chart_buy")
+            plot(chart.trade.sell_qty, id = "chart_sell")
+            plot(chart.trade.buy_count, id = "chart_cbuy")
+            plot(chart.trade.sell_count, id = "chart_csell")
+            plot(chart.trade.count, id = "chart_trades")
+            plot(chart.directional_volume_available, id = "directional_available")
+            plot(chart.buy_qty, id = "buy_qty")
+            plot(chart.sell_qty, id = "sell_qty")
+        "#;
+        let compiled = compile(source, "base-trades.ind").expect("source should compile");
+        assert!(compiled.requirements.trades);
+        assert!(compiled.requirements.needs_directional_volume());
+
+        let mut instance = compiled
+            .instantiate(IndicatorConfig::default())
+            .expect("inputs should bind");
+        let trade = TradeAggregate {
+            buy_qty: 7.0,
+            sell_qty: 3.0,
+            buy_count: 3,
+            sell_count: 1,
+        };
+        let mut populated = frame(0, 1, 10.0);
+        populated.chart.directional_volume_available = true;
+        populated.chart.buy_qty = trade.buy_qty;
+        populated.chart.sell_qty = trade.sell_qty;
+        populated.chart.trade = Some(trade);
+
+        let populated_output = instance
+            .evaluate_closed(populated)
+            .expect("populated trade frame should evaluate");
+        assert_eq!(
+            plot_value(&populated_output, "chart_available"),
+            &Value::Bool(true)
+        );
+        assert_eq!(
+            plot_value(&populated_output, "chart_buy"),
+            &Value::Float(7.0)
+        );
+        assert_eq!(
+            plot_value(&populated_output, "chart_sell"),
+            &Value::Float(3.0)
+        );
+        assert_eq!(plot_value(&populated_output, "chart_cbuy"), &Value::Int(3));
+        assert_eq!(plot_value(&populated_output, "chart_csell"), &Value::Int(1));
+        assert_eq!(
+            plot_value(&populated_output, "chart_trades"),
+            &Value::Int(4)
+        );
+        assert_eq!(
+            plot_value(&populated_output, "directional_available"),
+            &Value::Bool(true)
+        );
+        assert_eq!(plot_value(&populated_output, "buy_qty"), &Value::Float(7.0));
+        assert_eq!(
+            plot_value(&populated_output, "sell_qty"),
+            &Value::Float(3.0)
+        );
+
+        for (name, expression) in [
+            ("bare-close", "close"),
+            ("bare-directional", "directional_volume_available"),
+            ("vbuy", "vbuy"),
+            ("vsell", "vsell"),
+            ("trades", "trades"),
+            ("cbuy", "cbuy"),
+            ("csell", "csell"),
+        ] {
+            let source = format!(
+                "language(1)\nindicator(\"Removed\", id = \"community.removed-{name}\", value_precision = \"base_ticker_min_qty\")\nplot({expression}, id = \"value\")"
+            );
+            assert!(
+                compile(&source, format!("{name}.ind")).is_err(),
+                "{name} should fail"
+            );
+        }
+    }
+
+    #[test]
+    fn removed_dsl_aliases_fail_compilation() {
+        for (name, statement) in [
+            ("minval", r#"input.int(14, "Period", minval = 1)"#),
+            ("plotshape", "plotshape(value)"),
+            ("plotchar", "plotchar(value)"),
+            ("hline", "hline(1)"),
+            ("cloud", "cloud(value, value)"),
+            (
+                "channel",
+                r#"readout(title = "Value", channel = "value", color_slot = "base")"#,
+            ),
+            (
+                "fill-offset",
+                r#"fill(upper = "value", lower = "value", color_slot = "base", upper_offset_bars = 1)"#,
+            ),
+            (
+                "fill-geometry",
+                r#"fill(upper = "value", lower = "value", color_slot = "base", geometry = "panel")"#,
+            ),
+            (
+                "plot-precision",
+                r#"plot(value, id = "second", precision = 2)"#,
+            ),
+            (
+                "plot-scale",
+                r#"plot(value, id = "second", scale = "separate")"#,
+            ),
+            (
+                "plot-style",
+                r#"plot(value, id = "second", style = "columns")"#,
+            ),
+            (
+                "plot-display",
+                r#"plot(value, id = "second", display = "hidden")"#,
+            ),
+            ("role", r#"style("secondary", role = "positive")"#),
+            ("shade", r#"style("secondary", shade = "intense")"#),
+            (
+                "mark",
+                r#"mark(title = "Histogram", source = "value", kind = "histogram_plain", color_slot = "base")"#,
+            ),
+        ] {
+            let source = format!(
+                "language(1)\nindicator(\"Removed\", id = \"community.removed-{name}\", value_precision = \"base_ticker_min_tick\")\nstyle(\"base\")\nvalue = chart.close\nplot(value, id = \"value\", color_slot = \"base\")\n{statement}\n"
+            );
+            assert!(
+                compile(&source, format!("{name}.ind")).is_err(),
+                "{name} should fail"
+            );
+        }
+
+        let indicator_aliases = [
+            ("overlay", r#", overlay = true"#),
+            ("kind", r#", kind = "plot""#),
+            ("shorttitle", r#", shorttitle = "Removed""#),
+            ("precision", r#", precision = 2"#),
+            ("layer-title", r#", layer_title = "Removed""#),
+            ("view", r#", view = "overlay""#),
+        ];
+        for (name, arguments) in indicator_aliases {
+            let source = format!(
+                "language(1)\nindicator(\"Removed\", id = \"community.removed-indicator-{name}\"{arguments}, value_precision = \"base_ticker_min_tick\")\nplot(chart.close, id = \"value\")\n"
+            );
+            assert!(
+                compile(&source, format!("indicator-{name}.ind")).is_err(),
+                "indicator {name} should fail"
+            );
+        }
+
+        let table = r#"
+            language(1)
+            indicator("Removed bool", id = "community.removed-bool", view = "table")
+            plot(chart.close, id = "value")
+            column(title = "Value", source = "value", format = "bool")
+        "#;
+        assert!(compile(table, "bool-format.ind").is_err());
+    }
+
+    #[test]
+    fn signed_table_columns_require_typed_color_bindings() {
+        let source = r#"
+            language(1)
+            indicator("Signed table", id = "test.signed-table", view = "table")
+            delta = chart.close - chart.open
+            plot(delta, id = "delta")
+            style("positive", title = "Positive values")
+            style("negative", title = "Negative values")
+            column(title = "Delta", source = "delta", color_mode = "signed",
+                positive_color_slot = "positive", negative_color_slot = "negative")
+        "#;
+        let compiled = compile(source, "signed-table.ind").expect("table should compile");
+        assert_eq!(compiled.descriptor.presentation.columns.len(), 1);
+        assert!(matches!(
+            compiled.descriptor.presentation.columns[0].color,
+            PresentationColumnColor::Signed {
+                ref positive_slot,
+                ref negative_slot
+            } if positive_slot == "positive" && negative_slot == "negative"
+        ));
+
+        for (source, expected_message) in [
+            (
+                r#"
+                    language(1)
+                    indicator("Invalid table", id = "test.invalid-table", view = "table")
+                    plot(chart.close, id = "value")
+                    style("positive")
+                    style("negative")
+                    column(title = "Value", source = "value", color_mode = "signed",
+                        color_slot = "positive", positive_color_slot = "positive",
+                        negative_color_slot = "negative")
+                "#,
+                "cannot provide color_slot",
+            ),
+            (
+                r#"
+                    language(1)
+                    indicator("Invalid table", id = "test.invalid-table", view = "table")
+                    plot(chart.close, id = "value")
+                    style("positive")
+                    column(title = "Value", source = "value", color_mode = "signed",
+                        positive_color_slot = "positive")
+                "#,
+                "require negative_color_slot",
+            ),
+        ] {
+            let diagnostics = compile(source, "invalid-table.ind")
+                .expect_err("invalid table colors should be diagnosed");
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.message.contains(expected_message))
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_execution_paths_are_rejected_at_compile_time() {
+        for (name, expression) in [
+            (
+                "request",
+                "request.security(\"ETHUSDT\", \"1h\", chart.close)",
+            ),
+            ("drawing", "box.new(1, 2, 3, 4)"),
+            ("map", "map.new()"),
+        ] {
+            let source = format!(
+                "language(1)\nindicator(\"Unsupported\", id = \"test.{name}\")\nvalue = {expression}\nplot(value)"
+            );
+            let diagnostics = compile(&source, format!("{name}.ind"))
+                .expect_err("unsupported paths must fail compilation");
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| { diagnostic.message.contains("not available") })
+            );
+        }
+
+        let diagnostics = compile(
+            "language(1)\nindicator(\"Intrabar\", id = \"test.intrabar\")\nvarip ticks = 0\nplot(ticks)",
+            "intrabar.ind",
+        )
+        .expect_err("varip must fail compilation");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("varip"))
+        );
+    }
+
+    #[test]
+    fn presentation_scene_is_compiled_with_owned_defaults() {
+        let source = r#"
+            language(1)
+            indicator("Scene", id = "community.scene", panel_title = "Panel",
+                layer_name = "Layer", preferred_scale = "fit_visible_include_zero",
+                value_precision = "fixed_step:0.5", axis_label_mode = "abbreviated",
+                header_label_mode = "commas", max_decimals = 2)
+            period = input.int(3, "Period", min = 1, max = 20, step = 1)
+            value = ta.sma(chart.close, period)
+            upper = value + 1
+            lower = value - 1
+            rising = value > value[1]
+            plot(value, id = "value", title = "Value", precision = "decimals:2",
+                width = 1.5, offset = 1, color_slot = "base", style_by = "rising",
+                true_color_slot = "bull", false_color_slot = "bear")
+            plot(upper, id = "upper", title = "Upper", color_slot = "band")
+            plot(lower, id = "lower", title = "Lower", color_slot = "band")
+            plot(rising, id = "rising", title = "Rising", layer = false)
+            style("base", title = "Base", role = "neutral", shade = "base")
+            style("bull", title = "Bull", role = "success", shade = "base")
+            style("bear", title = "Bear", role = "danger", shade = "base")
+            style("band", title = "Band", role = "secondary", shade = "soft")
+            mark(title = "Histogram", source = "value", kind = "histogram", color_slot = "base",
+                highlight_by = "rising", highlight_color_slot = "bull",
+                requires = "directional_volume", fallback = "line")
+            mark(title = "Line", source = "value", kind = "line", color_slot = "base")
+            fill(upper = "upper", lower = "lower", color_slot = "band", opacity = 0.2,
+                style_by = "rising", true_color_slot = "bull", false_color_slot = "bear")
+            readout(title = "Signal", source = "value", color_slot = "base")
+            segment(value, upper, bar_index, bar_index, id = "projection",
+                title = "Projection", color_slot = "band", width = 1.5)
+        "#;
+        let compiled = compile(source, "scene.ind").expect("presentation scene should compile");
+        let presentation = &compiled.descriptor.presentation;
+        assert!(!compiled.requirements.needs_directional_volume());
+        assert_eq!(
+            presentation.value_precision,
+            Some(PresentationPrecision::FixedStep(0.5))
+        );
+        assert_eq!(
+            compiled.descriptor.plots[0].output_precision,
+            Some(OutputPrecision::Decimals(2))
+        );
+        assert_eq!(presentation.panel_title.as_deref(), Some("Panel"));
+        assert_eq!(presentation.layer_name.as_deref(), Some("Layer"));
+        assert_eq!(presentation.styles.len(), 4);
+        assert_eq!(presentation.layers.len(), 3);
+        assert_eq!(
+            presentation
+                .layers
+                .iter()
+                .map(|layer| layer.channel.as_str())
+                .collect::<Vec<_>>(),
+            vec!["value", "upper", "lower"]
+        );
+        assert_eq!(
+            compiled.descriptor.plots[0].color_slot.as_deref(),
+            Some("base")
+        );
+        assert_eq!(compiled.descriptor.plots[0].offset_bars, 1);
+        assert_eq!(
+            compiled.descriptor.plots[3].readout,
+            ReadoutBehavior::Hidden,
+            "boolean plots are output-only by default"
+        );
+        assert_eq!(presentation.marks[0].kind, PresentationMarkKind::Histogram);
+        assert_eq!(
+            presentation.marks[0].required_input,
+            Some(PresentationInputSource::DirectionalVolume)
+        );
+        assert_eq!(
+            presentation.marks[0].fallback_mark,
+            Some(PresentationMarkKind::Line)
+        );
+        assert_eq!(
+            presentation.marks[0].highlight_by.as_deref(),
+            Some("rising")
+        );
+        assert_eq!(
+            presentation.marks[0].highlight_color_slot.as_deref(),
+            Some("bull")
+        );
+        assert_eq!(presentation.fills[0].style_by.as_deref(), Some("rising"));
+        assert_eq!(presentation.fills[0].opacity, 0.2);
+        assert_eq!(presentation.readouts[0].channel, "value");
+        assert_eq!(presentation.segments[0].id, "projection");
+    }
+
+    #[test]
+    fn mark_highlight_bindings_are_validated() {
+        let cases = [
+            (
+                "numeric",
+                r#"highlight_by = "value", highlight_color_slot = "warning""#,
+                "highlight_by must reference a boolean output",
+            ),
+            (
+                "missing-color",
+                r#"highlight_by = "rising""#,
+                "highlight_by requires highlight_color_slot",
+            ),
+            (
+                "line",
+                r#"highlight_by = "rising", highlight_color_slot = "warning""#,
+                "highlight_by requires a bar mark",
+            ),
+        ];
+
+        for (name, binding, expected_message) in cases {
+            let kind = if name == "line" { "line" } else { "histogram" };
+            let source = format!(
+                r#"
+                    language(1)
+                    indicator("Highlight", id = "community.highlight-{name}", value_precision = "base_ticker_min_tick")
+                    value = chart.close
+                    rising = chart.close > chart.open
+                    style("base")
+                    style("warning", role = "warning")
+                    plot(value, id = "value", title = "Value", color_slot = "base")
+                    plot(rising, id = "rising", layer = false)
+                    mark(title = "Mark", source = "value", kind = "{kind}", color_slot = "base", {binding})
+                "#
+            );
+            let diagnostics = compile(&source, format!("{name}.ind"))
+                .expect_err("invalid mark highlight binding should be diagnosed");
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.message.contains(expected_message)),
+                "expected {expected_message}, got {diagnostics:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn numeric_plot_panels_require_value_precision() {
+        let diagnostics = compile(
+            "language(1)\nindicator(\"Missing precision\", id = \"test.missing-precision\")\nplot(chart.close, id = \"value\")\n",
+            "missing-precision.ind",
+        )
+        .expect_err("numeric plot panels should require value precision");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| { diagnostic.message.contains("must declare value_precision") })
+        );
+
+        let explicit = compile(
+            "language(1)\nindicator(\"Explicit precision\", id = \"test.explicit-precision\", value_precision = \"fixed_step:0.01\")\nplot(chart.close, id = \"value\")\n",
+            "explicit-precision.ind",
+        )
+        .expect("numeric plot panels with value precision should compile");
+        assert_eq!(
+            explicit.descriptor.presentation.value_precision,
+            Some(PresentationPrecision::FixedStep(0.01))
+        );
+
+        compile(
+            "language(1)\nindicator(\"Overlay\", id = \"test.overlay\", view = \"primary_overlay\")\nplot(chart.close, id = \"value\")\n",
+            "overlay.ind",
+        )
+        .expect("primary overlays should not require panel precision");
+
+        compile(
+            "language(1)\nindicator(\"Table\", id = \"test.table\", view = \"table\")\nplot(chart.close, id = \"value\", display = \"none\", overlay = false, layer = false)\ncolumn(title = \"Value\", source = \"value\")\n",
+            "table.ind",
+        )
+        .expect("table views should not require panel precision");
+    }
+
+    #[test]
+    fn unknown_presentation_input_is_rejected_without_becoming_an_indicator_requirement() {
+        let diagnostics = compile(
+            r#"
+                language(1)
+                indicator("Unknown input", id = "community.unknown-input", value_precision = "base_ticker_min_tick")
+                value = chart.close
+                style("base", title = "Base")
+                plot(value, id = "value", title = "Value", color_slot = "base")
+                mark(title = "Bars", source = "value", kind = "histogram", color_slot = "base",
+                    requires = "not_a_real_input")
+            "#,
+            "unknown-input.ind",
+        )
+        .expect_err("unknown presentation input should be diagnosed");
+
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("unknown presentation input not_a_real_input")
+        }));
+    }
+
+    #[test]
+    fn invalid_presentation_fallbacks_are_rejected() {
+        let cases = [
+            (
+                "unknown",
+                r#"fallback = "not_a_real_mark""#,
+                "unknown presentation mark not_a_real_mark",
+            ),
+            (
+                "missing",
+                r#"fallback = "line""#,
+                "references unknown fallback mark",
+            ),
+            (
+                "self",
+                r#"fallback = "histogram""#,
+                "cannot fall back to itself",
+            ),
+        ];
+
+        for (name, fallback, expected_message) in cases {
+            let source = format!(
+                r#"
+                    language(1)
+                    indicator("Fallback", id = "community.fallback-{name}", value_precision = "base_ticker_min_tick")
+                    value = chart.close
+                    style("base")
+                    plot(value, id = "value", title = "Value", color_slot = "base")
+                    mark(title = "Histogram", source = "value", kind = "histogram",
+                        color_slot = "base", {fallback})
+                "#
+            );
+            let diagnostics = compile(&source, format!("{name}.ind"))
+                .expect_err("invalid presentation fallback should be diagnosed");
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.message.contains(expected_message))
+            );
+        }
+
+        let diagnostics = compile(
+            r#"
+                language(1)
+                indicator("Input fallback", id = "community.input-fallback", value_precision = "base_ticker_min_tick")
+                value = chart.close
+                style("base")
+                plot(value, id = "value", title = "Value", color_slot = "base")
+                mark(title = "Overlay", source = "value", kind = "histogram",
+                    color_slot = "base", requires = "directional_volume", fallback = "line")
+                mark(title = "Line", source = "value", kind = "line", color_slot = "base",
+                    requires = "trades")
+            "#,
+            "input-fallback.ind",
+        )
+        .expect_err("input-dependent fallback should be diagnosed");
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("fallback mark Line cannot require input")
+        }));
+    }
+
+    #[test]
+    fn sparse_plot_declarations_materialize_the_same_layer_defaults() {
+        let explicit = compile(
+            r#"
+                language(1)
+                indicator("Sparse", id = "community.sparse",
+                    view = "plot", panel_title = "Sparse", layer_name = "Sparse",
+                    data_kind = "scalar", mark = "line", axis = "secondary",
+                    value_precision = "base_ticker_min_tick", preferred_scale = "fit_visible")
+                value = chart.close
+                style("value", title = "value", role = "neutral", shade = "base")
+                plot(value, id = "value", title = "Value", pane = "indicator",
+                    scale = "price", style = "line", display = "value", width = 1,
+                    offset = 0, color_slot = "value", overlay = true,
+                    data_kind = "scalar", mark = "line", axis = "secondary", layer = true)
+            "#,
+            "explicit.ind",
+        )
+        .expect("explicit defaults should compile");
+        let sparse = compile(
+            r#"
+                language(1)
+                indicator("Sparse", id = "community.sparse", value_precision = "base_ticker_min_tick")
+                value = chart.close
+                style("value")
+                plot(value, id = "value", title = "Value")
+            "#,
+            "sparse.ind",
+        )
+        .expect("sparse declarations should compile");
+
+        assert_eq!(
+            explicit.descriptor.presentation.layers,
+            sparse.descriptor.presentation.layers
+        );
+        assert_eq!(
+            explicit.descriptor.presentation.styles,
+            sparse.descriptor.presentation.styles
+        );
+        assert_eq!(
+            explicit.descriptor.plots[0].pane,
+            sparse.descriptor.plots[0].pane
+        );
+        assert_eq!(
+            explicit.descriptor.plots[0].scale,
+            sparse.descriptor.plots[0].scale
+        );
+        assert_eq!(
+            explicit.descriptor.plots[0].width,
+            sparse.descriptor.plots[0].width
+        );
+        assert_eq!(
+            explicit.descriptor.plots[0].overlay,
+            sparse.descriptor.plots[0].overlay
+        );
+        assert_eq!(
+            explicit.descriptor.plots[0].layer,
+            sparse.descriptor.plots[0].layer
+        );
+    }
+
+    #[test]
+    fn table_columns_are_typed_and_require_a_table_view() {
+        let source = r#"
+            language(1)
+            indicator("Table", id = "community.table", view = "table")
+            style("main")
+            value = chart.close
+            trend = chart.close > chart.close[1]
+            plot(value, id = "value", layer = false)
+            plot(trend, id = "trend", layer = false)
+            column(title = "Value", source = "value", format = "quantity", color_slot = "main")
+            column(title = "Trend", source = "trend", format = "boolean", color_slot = "main")
+        "#;
+        let compiled = compile(source, "table.ind").expect("table scene should compile");
+        assert_eq!(compiled.descriptor.presentation.columns.len(), 2);
+        assert_eq!(
+            compiled.descriptor.presentation.view,
+            PresentationViewKind::Table
+        );
+    }
+
+    #[test]
+    fn na_comparisons_propagate_and_switch_falls_back() {
+        let source = r#"
+            language(1)
+            indicator("Missing values", id = "community.missing-values",
+                value_precision = "base_ticker_min_tick")
+            plot(na == na, id = "equal")
+            plot(switch na { na => 1, default => 2 }, id = "switch")
+        "#;
+        let compiled = compile(source, "missing-values.ind").expect("source should compile");
+        let mut instance = compiled
+            .instantiate(IndicatorConfig::default())
+            .expect("inputs should bind");
+        let output = instance
+            .evaluate_closed(frame(0, 1, 10.0))
+            .expect("frame should evaluate");
+
+        assert_eq!(plot_value(&output, "equal"), &Value::Na);
+        assert_eq!(plot_value(&output, "switch"), &Value::Int(2));
+    }
+
+    #[test]
+    fn state_initializers_retry_na_and_warm_up() {
+        let source = r#"
+            language(1)
+            indicator("State seed", id = "community.state-seed",
+                value_precision = "base_ticker_min_tick")
+            state average = ta.sma(chart.close, 2)
+            plot(average, id = "average")
+        "#;
+        let compiled = compile(source, "state-seed.ind").expect("source should compile");
+        assert_eq!(compiled.warmup_bars(&IndicatorConfig::default()), Some(2));
+        let mut instance = compiled
+            .instantiate(IndicatorConfig::default())
+            .expect("inputs should bind");
+
+        assert_eq!(
+            plot_value(
+                &instance
+                    .evaluate_closed(frame(0, 1, 10.0))
+                    .expect("first frame should evaluate"),
+                "average"
+            ),
+            &Value::Na
+        );
+        assert_eq!(
+            plot_value(
+                &instance
+                    .evaluate_closed(frame(1, 2, 20.0))
+                    .expect("second frame should evaluate"),
+                "average"
+            ),
+            &Value::Float(15.0)
+        );
+    }
+
+    #[test]
+    fn explicit_na_state_updates_remain_authoritative() {
+        let source = r#"
+            language(1)
+            indicator("Explicit missing", id = "community.explicit-missing",
+                value_precision = "base_ticker_min_tick")
+            state value = chart.close
+            if bar_index == 0 {
+                value := na
+            }
+            plot(value, id = "value")
+        "#;
+        let compiled = compile(source, "explicit-missing.ind").expect("source should compile");
+        let mut instance = compiled
+            .instantiate(IndicatorConfig::default())
+            .expect("inputs should bind");
+        instance
+            .evaluate_closed(frame(0, 1, 10.0))
+            .expect("first frame should evaluate");
+        let output = instance
+            .evaluate_closed(frame(1, 2, 20.0))
+            .expect("second frame should evaluate");
+
+        assert_eq!(plot_value(&output, "value"), &Value::Na);
+    }
+
+    #[test]
+    fn functions_are_numeric_and_typed_before_their_bodies_compile() {
+        let source = r#"
+            language(1)
+            indicator("Function", id = "community.function", value_precision = "base_ticker_min_tick")
+            plot(identity(chart.close), id = "value")
+            fn identity(value) {
+                return value
+            }
+        "#;
+        let compiled = compile(source, "function.ind").expect("numeric function should compile");
+        let mut instance = compiled
+            .instantiate(IndicatorConfig::default())
+            .expect("inputs should bind");
+        let output = instance
+            .evaluate_closed(frame(0, 1, 10.0))
+            .expect("frame should evaluate");
+        assert_eq!(plot_value(&output, "value"), &Value::Float(10.0));
+
+        let diagnostics = compile(
+            r#"
+                language(1)
+                indicator("Invalid function", id = "community.invalid-function",
+                    value_precision = "base_ticker_min_tick")
+                plot(identity(chart.close > chart.open), id = "value")
+                fn identity(value) {
+                    return value
+                }
+            "#,
+            "invalid-function.ind",
+        )
+        .expect_err("boolean function arguments should be rejected");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("must be numeric or na"))
+        );
+    }
+
+    #[test]
+    fn input_arguments_and_runtime_values_are_validated() {
+        for (source, message) in [
+            (
+                r#"
+                    language(1)
+                    indicator("Unknown input argument", id = "community.unknown-input")
+                    value = input.int(1, "Value", unknown = 2)
+                    plot(value, id = "value")
+                "#,
+                "unknown argument",
+            ),
+            (
+                r#"
+                    language(1)
+                    indicator("Duplicate options", id = "community.duplicate-options")
+                    value = input.string("a", "Value", options = ["a", "a"])
+                    plot(chart.close, id = "value")
+                "#,
+                "is duplicated",
+            ),
+        ] {
+            let diagnostics = compile(source, "invalid-input.ind")
+                .expect_err("invalid input declarations should be diagnosed");
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.message.contains(message))
+            );
+        }
+
+        let compiled = compile(
+            r#"
+                language(1)
+                indicator("Bounded input", id = "community.bounded-input",
+                    value_precision = "base_ticker_min_tick")
+                value = input.int(1, "Value", min = 1, max = 5)
+                plot(chart.close, id = "value")
+            "#,
+            "bounded-input.ind",
+        )
+        .expect("bounded input should compile");
+        let error = compiled
+            .instantiate(IndicatorConfig::default().with("value", InputValue::Int(6)))
+            .expect_err("out-of-range input should be rejected");
+        assert_eq!(error, PlanningError::InvalidInput("value".to_owned()));
+
+        let compiled = compile(
+            r#"
+                language(1)
+                indicator("Choice input", id = "community.choice-input",
+                    value_precision = "base_ticker_min_tick")
+                method = input.string("a", "Method", options = ["a", "b"])
+                plot(chart.close, id = "value")
+            "#,
+            "choice-input.ind",
+        )
+        .expect("choice input should compile");
+        let error = compiled
+            .instantiate(
+                IndicatorConfig::default().with("method", InputValue::String("other".to_owned())),
+            )
+            .expect_err("unknown option should be rejected");
+        assert_eq!(error, PlanningError::InvalidInput("method".to_owned()));
+    }
+
+    #[test]
+    fn transient_collection_values_obey_heap_limits() {
+        let source = r#"
+            language(1)
+            indicator("Collection", id = "community.collection",
+                value_precision = "base_ticker_min_tick")
+            plot(array.size(array.push(array.new(), "12345")), id = "size")
+        "#;
+        let compiled = compile(source, "collection.ind").expect("source should compile");
+        let limits = RuntimeLimits {
+            max_heap_bytes: 4,
+            ..RuntimeLimits::default()
+        };
+        let mut instance = compiled
+            .instantiate_with_limits(IndicatorConfig::default(), limits)
+            .expect("inputs should bind");
+        assert_eq!(
+            instance
+                .evaluate_closed(frame(0, 1, 10.0))
+                .expect_err("temporary string collection should hit the heap limit"),
+            RuntimeError::ResourceLimitExceeded("heap bytes")
+        );
+    }
+
+    #[test]
+    fn ta_window_limits_are_checked_without_counting_ta_state_as_collections() {
+        let source = r#"
+            language(1)
+            indicator("Window", id = "community.window",
+                value_precision = "base_ticker_min_tick")
+            value = ta.sma(chart.close, 6)
+            plot(value, id = "value")
+        "#;
+        let compiled = compile(source, "window.ind").expect("source should compile");
+        let limits = RuntimeLimits {
+            max_window_length: 5,
+            ..RuntimeLimits::default()
+        };
+        let mut instance = compiled
+            .instantiate_with_limits(IndicatorConfig::default(), limits)
+            .expect("inputs should bind");
+        assert_eq!(
+            instance
+                .evaluate_closed(frame(0, 1, 10.0))
+                .expect_err("oversized TA window should hit the window limit"),
+            RuntimeError::ResourceLimitExceeded("window length")
+        );
+
+        let source = source.replace("ta.sma(chart.close, 6)", "ta.sma(chart.close, 2)");
+        let compiled = compile(&source, "window-collection.ind").expect("source should compile");
+        let limits = RuntimeLimits {
+            max_collection_elements: 0,
+            ..RuntimeLimits::default()
+        };
+        let mut instance = compiled
+            .instantiate_with_limits(IndicatorConfig::default(), limits)
+            .expect("inputs should bind");
+        instance
+            .evaluate_closed(frame(0, 1, 10.0))
+            .expect("TA state should not consume collection elements");
+    }
+}

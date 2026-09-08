@@ -1,0 +1,14 @@
+language(1)
+indicator("Donchian Channels", id = "flowsurface.donchian-channels", view = "primary_overlay")
+period = input.int(20, "Period", min = 1, max = 500)
+upper = ta.highest(chart.high, period)
+lower = ta.lowest(chart.low, period)
+middle = (upper + lower) / 2
+plot(upper, id = "upper", title = "Upper", precision = "instrument", color_slot = "upper")
+plot(middle, id = "middle", title = "Middle", precision = "instrument", color_slot = "middle")
+plot(lower, id = "lower", title = "Lower", precision = "instrument", color_slot = "lower")
+
+style("upper", title = "Upper", role = "success")
+style("middle", title = "Middle")
+style("lower", title = "Lower", role = "danger")
+mark(title = "Line", source = "upper", kind = "line", color_slot = "upper")
