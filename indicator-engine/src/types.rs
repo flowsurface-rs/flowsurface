@@ -47,10 +47,17 @@ impl Value {
 
     pub fn as_float(&self) -> Option<f64> {
         match self {
-            Self::Float(value) => Some(*value),
+            Self::Float(value) if value.is_finite() => Some(*value),
             Self::Int(value) => Some(*value as f64),
             Self::Na => None,
             _ => None,
+        }
+    }
+
+    pub(crate) fn normalize_nonfinite(self) -> Self {
+        match self {
+            Self::Float(value) if !value.is_finite() => Self::Na,
+            value => value,
         }
     }
 

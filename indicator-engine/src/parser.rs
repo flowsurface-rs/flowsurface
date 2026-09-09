@@ -1402,6 +1402,50 @@ impl Compiler {
         }
     }
 
+    fn merge_binding_type(&mut self, name: &str, left: Type, right: Type, span: Span) -> Type {
+        match merge_types(left, right) {
+            Some(merged) => merged,
+            None => {
+                self.error(span, format!("binding {name} has incompatible types"));
+                left
+            }
+        }
+    }
+
+    fn merge_result_type(
+        &mut self,
+        left: ValueType,
+        right: ValueType,
+        span: Span,
+        context: &str,
+    ) -> ValueType {
+        match merge_value_types_checked(left, right) {
+            Some(value) => value,
+            None => {
+                self.error(span, format!("{context} have incompatible types"));
+                ValueType::Any
+            }
+        }
+    }
+
+    fn merge_visible_bindings<Slot: Copy>(
+        &mut self,
+        base: BTreeMap<String, (Slot, Type)>,
+        left: &BTreeMap<String, (Slot, Type)>,
+        right: &BTreeMap<String, (Slot, Type)>,
+        span: Span,
+    ) -> BTreeMap<String, (Slot, Type)> {
+        base.into_iter()
+            .map(|(name, (slot, base_type))| {
+                let left_type = left.get(&name).map_or(base_type, |(_, ty)| *ty);
+                let right_type = right.get(&name).map_or(base_type, |(_, ty)| *ty);
+                let merged = self.merge_binding_type(&name, base_type, left_type, span);
+                let merged = self.merge_binding_type(&name, merged, right_type, span);
+                (name, (slot, merged))
+            })
+            .collect()
+    }
+
     fn compile_program(
         &mut self,
         ast: AstProgram,
@@ -2645,14 +2689,24 @@ impl Compiler {
                 if !state && update {
                     let state_slot = self.states.get(&name).map(|(slot, _)| *slot);
                     let local_slot = self.values.get(&name).map(|(slot, _)| *slot);
+                    let current_type = if state_slot.is_some() {
+                        self.states.get(&name).map(|(_, ty)| *ty)
+                    } else {
+                        self.values.get(&name).map(|(_, ty)| *ty)
+                    };
                     if let Some(slot) = local_slot {
                         self.mutable_values.insert(slot.0);
                     }
                     let expression = self.compile_expression(&expression);
                     let expression_type = self.program.expressions[expression.0].ty;
+                    let merged_type = current_type.map(|current_type| {
+                        self.merge_binding_type(&name, current_type, expression_type, span)
+                    });
                     if let Some(slot) = state_slot {
-                        if let Some(entry) = self.states.get_mut(&name) {
-                            entry.1 = expression_type;
+                        if let Some(entry) = self.states.get_mut(&name)
+                            && let Some(merged_type) = merged_type
+                        {
+                            entry.1 = merged_type;
                         }
                         Some(self.push_statement(TypedStatement {
                             kind: StatementKind::StateUpdate {
@@ -2661,8 +2715,10 @@ impl Compiler {
                             },
                         }))
                     } else if let Some(slot) = local_slot {
-                        if let Some(entry) = self.values.get_mut(&name) {
-                            entry.1 = expression_type;
+                        if let Some(entry) = self.values.get_mut(&name)
+                            && let Some(merged_type) = merged_type
+                        {
+                            entry.1 = merged_type;
                         }
                         Some(self.push_statement(TypedStatement {
                             kind: StatementKind::LocalUpdate {
@@ -2815,11 +2871,17 @@ impl Compiler {
                 let saved_values = self.values.clone();
                 let saved_states = self.states.clone();
                 let then_branch = self.compile_scoped_statements(then_branch);
+                let then_values = self.values.clone();
+                let then_states = self.states.clone();
                 self.values = saved_values.clone();
                 self.states = saved_states.clone();
                 let else_branch = self.compile_scoped_statements(else_branch);
-                self.values = saved_values;
-                self.states = saved_states;
+                let else_values = self.values.clone();
+                let else_states = self.states.clone();
+                self.values =
+                    self.merge_visible_bindings(saved_values, &then_values, &else_values, span);
+                self.states =
+                    self.merge_visible_bindings(saved_states, &then_states, &else_states, span);
                 Some(self.push_statement(TypedStatement {
                     kind: StatementKind::If {
                         condition,
@@ -2841,8 +2903,20 @@ impl Compiler {
                 let saved_values = self.values.clone();
                 let saved_states = self.states.clone();
                 let body = self.compile_scoped_statements(body);
-                self.values = saved_values;
-                self.states = saved_states;
+                let body_values = self.values.clone();
+                let body_states = self.states.clone();
+                self.values = self.merge_visible_bindings(
+                    saved_values.clone(),
+                    &body_values,
+                    &saved_values,
+                    span,
+                );
+                self.states = self.merge_visible_bindings(
+                    saved_states.clone(),
+                    &body_states,
+                    &saved_states,
+                    span,
+                );
                 self.loop_depth = self.loop_depth.saturating_sub(1);
                 Some(self.push_statement(TypedStatement {
                     kind: StatementKind::While { condition, body },
@@ -2875,8 +2949,20 @@ impl Compiler {
                     .insert(name, (target, Type::series(ValueType::Int)));
                 self.loop_depth += 1;
                 let body = self.compile_scoped_statements(body);
-                self.values = saved_values;
-                self.states = saved_states;
+                let body_values = self.values.clone();
+                let body_states = self.states.clone();
+                self.values = self.merge_visible_bindings(
+                    saved_values.clone(),
+                    &body_values,
+                    &saved_values,
+                    span,
+                );
+                self.states = self.merge_visible_bindings(
+                    saved_states.clone(),
+                    &body_states,
+                    &saved_states,
+                    span,
+                );
                 self.loop_depth = self.loop_depth.saturating_sub(1);
                 Some(self.push_statement(TypedStatement {
                     kind: StatementKind::ForRange {
@@ -2919,8 +3005,20 @@ impl Compiler {
                 );
                 self.loop_depth += 1;
                 let body = self.compile_scoped_statements(body);
-                self.values = saved_values;
-                self.states = saved_states;
+                let body_values = self.values.clone();
+                let body_states = self.states.clone();
+                self.values = self.merge_visible_bindings(
+                    saved_values.clone(),
+                    &body_values,
+                    &saved_values,
+                    span,
+                );
+                self.states = self.merge_visible_bindings(
+                    saved_states.clone(),
+                    &body_states,
+                    &saved_states,
+                    span,
+                );
                 self.loop_depth = self.loop_depth.saturating_sub(1);
                 Some(self.push_statement(TypedStatement {
                     kind: StatementKind::ForEach {
@@ -4154,22 +4252,25 @@ impl Compiler {
                     Qualifier::Simple
                 };
                 let value = match operator {
-                    BinaryOperator::Equal
-                    | BinaryOperator::NotEqual
-                    | BinaryOperator::Less
+                    BinaryOperator::Equal | BinaryOperator::NotEqual => ValueType::Bool,
+                    BinaryOperator::And | BinaryOperator::Or => {
+                        if !is_boolean_type(left_type.value) || !is_boolean_type(right_type.value) {
+                            self.error(*span, "logical operands must be boolean");
+                        }
+                        ValueType::Bool
+                    }
+                    BinaryOperator::Less
                     | BinaryOperator::LessEqual
                     | BinaryOperator::Greater
-                    | BinaryOperator::GreaterEqual
-                    | BinaryOperator::And
-                    | BinaryOperator::Or => ValueType::Bool,
-                    _ if matches!(
-                        left_type.value,
-                        ValueType::Int | ValueType::Float | ValueType::Any
-                    ) && matches!(
-                        right_type.value,
-                        ValueType::Int | ValueType::Float | ValueType::Any
-                    ) =>
-                    {
+                    | BinaryOperator::GreaterEqual => {
+                        if !is_orderable_type(left_type.value)
+                            || !is_orderable_type(right_type.value)
+                        {
+                            self.error(*span, "ordering operands must be numeric or time");
+                        }
+                        ValueType::Bool
+                    }
+                    _ if is_numeric_type(left_type.value) && is_numeric_type(right_type.value) => {
                         if left_type.value == ValueType::Float
                             || right_type.value == ValueType::Float
                             || left_type.value == ValueType::Any
@@ -4286,8 +4387,12 @@ impl Compiler {
                     {
                         self.error(*span, "switch branch condition has the wrong type");
                     }
-                    result_type =
-                        merge_value_types(result_type, self.program.expressions[result.0].ty.value);
+                    result_type = self.merge_result_type(
+                        result_type,
+                        self.program.expressions[result.0].ty.value,
+                        *span,
+                        "switch result branches",
+                    );
                     qualifier = if qualifier == Qualifier::Series
                         || self.program.expressions[condition.0].ty.qualifier == Qualifier::Series
                         || self.program.expressions[result.0].ty.qualifier == Qualifier::Series
@@ -4505,7 +4610,7 @@ impl Compiler {
                         .filter(|decimals| *decimals <= 18)
                         .map(OutputPrecision::Decimals)
                 } else if let Some(step) = value.strip_prefix("step:") {
-                    step.parse::<f32>()
+                    step.parse::<f64>()
                         .ok()
                         .filter(|step| step.is_finite() && *step > 0.0)
                         .map(OutputPrecision::Step)
@@ -4769,7 +4874,7 @@ impl Compiler {
                 "base_ticker_min_qty" => Some(PresentationPrecision::BaseTickerMinQty),
                 value => value
                     .strip_prefix("fixed_step:")
-                    .and_then(|step| step.parse::<f32>().ok())
+                    .and_then(|step| step.parse::<f64>().ok())
                     .filter(|step| step.is_finite() && *step > 0.0)
                     .map(PresentationPrecision::FixedStep)
                     .or_else(|| {
@@ -5302,22 +5407,27 @@ impl Compiler {
             arguments.push(expression);
         }
         if name == "select" && arguments.len() >= 3 {
+            let value_type = self.merge_result_type(
+                branch_value_type.unwrap_or(ValueType::Any),
+                branch_fallback_type.unwrap_or(ValueType::Any),
+                call.span,
+                "select result branches",
+            );
             return self.push_expression(
                 ExpressionKind::Conditional {
                     condition: arguments[0],
                     when_true: arguments[1],
                     when_false: arguments[2],
                 },
-                Type::series(merge_value_types(
-                    branch_value_type.unwrap_or(ValueType::Any),
-                    branch_fallback_type.unwrap_or(ValueType::Any),
-                )),
+                Type::series(value_type),
             );
         }
         if name == "coalesce" && arguments.len() >= 2 {
-            let value_type = merge_value_types(
+            let value_type = self.merge_result_type(
                 self.program.expressions[arguments[0].0].ty.value,
                 self.program.expressions[arguments[1].0].ty.value,
+                call.span,
+                "coalesce result branches",
             );
             return self.push_expression(
                 ExpressionKind::Coalesce {
@@ -5330,9 +5440,11 @@ impl Compiler {
         let call_site = CallSiteId(self.next_call_site);
         self.next_call_site += 1;
         let result = if matches!(name.as_str(), "select" | "coalesce") {
-            let value_type = merge_value_types(
+            let value_type = self.merge_result_type(
                 branch_value_type.unwrap_or(ValueType::Any),
                 branch_fallback_type.unwrap_or(ValueType::Any),
+                call.span,
+                "result branches",
             );
             Type::series(value_type)
         } else {
@@ -5524,23 +5636,53 @@ fn argument_at<'a>(
 }
 
 fn merge_value_types(left: ValueType, right: ValueType) -> ValueType {
+    merge_value_types_checked(left, right).unwrap_or(ValueType::Any)
+}
+
+fn merge_value_types_checked(left: ValueType, right: ValueType) -> Option<ValueType> {
     if left == right {
-        return left;
+        return Some(left);
     }
     if matches!(left, ValueType::Any) {
-        return right;
+        return Some(right);
     }
     if matches!(right, ValueType::Any) {
-        return left;
+        return Some(left);
     }
     if matches!(
         (left, right),
         (ValueType::Int, ValueType::Float) | (ValueType::Float, ValueType::Int)
     ) {
-        ValueType::Float
+        Some(ValueType::Float)
     } else {
-        ValueType::Any
+        None
     }
+}
+
+fn merge_types(left: Type, right: Type) -> Option<Type> {
+    Some(Type {
+        value: merge_value_types_checked(left.value, right.value)?,
+        qualifier: if left.qualifier == Qualifier::Series || right.qualifier == Qualifier::Series {
+            Qualifier::Series
+        } else {
+            Qualifier::Simple
+        },
+    })
+}
+
+fn is_boolean_type(value: ValueType) -> bool {
+    matches!(value, ValueType::Bool | ValueType::Any)
+}
+
+fn is_numeric_type(value: ValueType) -> bool {
+    matches!(value, ValueType::Int | ValueType::Float | ValueType::Any)
+}
+
+fn is_orderable_type(value: ValueType) -> bool {
+    matches!(
+        value,
+        ValueType::Int | ValueType::Float | ValueType::Time | ValueType::Any
+    )
 }
 
 fn unsupported_call(name: &str) -> bool {

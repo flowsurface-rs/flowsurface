@@ -719,7 +719,7 @@ fn eval_abs(
     let Some(value) = args.first().and_then(Value::as_float) else {
         return Ok(Value::Na);
     };
-    Ok(Value::Float(value.abs()))
+    Ok(float_value(value.abs()))
 }
 
 fn eval_max(
@@ -746,7 +746,7 @@ fn fold_min_max(args: &[Value], operation: fn(f64, f64) -> f64) -> Result<Value,
     let Some(first) = values.next() else {
         return Ok(Value::Na);
     };
-    Ok(Value::Float(values.fold(first, operation)))
+    Ok(float_value(values.fold(first, operation)))
 }
 
 fn eval_nz(
@@ -1042,7 +1042,7 @@ fn eval_sma(
     if values.len() < length || values.iter().any(|value| value.is_none()) {
         Ok(Value::Na)
     } else {
-        Ok(Value::Float(
+        Ok(float_value(
             values.iter().flatten().sum::<f64>() / values.len() as f64,
         ))
     }
@@ -1076,8 +1076,11 @@ fn eval_ema(
         }
         None => source,
     };
+    if !next.is_finite() {
+        return Ok(Value::Na);
+    }
     *previous = Some(next);
-    Ok(Value::Float(next))
+    Ok(float_value(next))
 }
 
 fn eval_rma(
@@ -1105,8 +1108,11 @@ fn eval_rma(
         Some(previous) => (previous * (length as f64 - 1.0) + source) / length as f64,
         None => source,
     };
+    if !next.is_finite() {
+        return Ok(Value::Na);
+    }
     *previous = Some(next);
-    Ok(Value::Float(next))
+    Ok(float_value(next))
 }
 
 fn eval_vwma(
@@ -1141,7 +1147,7 @@ fn eval_vwma(
     Ok(if total == 0.0 {
         Value::Na
     } else {
-        Value::Float(weighted / total)
+        float_value(weighted / total)
     })
 }
 
@@ -1207,7 +1213,7 @@ fn eval_window(
                 .copied()
                 .fold(f64::INFINITY, f64::min)
         };
-        Ok(Value::Float(value))
+        Ok(float_value(value))
     }
 }
 
@@ -1228,8 +1234,12 @@ fn eval_cum(
             "ta.cum call site has incompatible state",
         ));
     };
-    *total += source;
-    Ok(Value::Float(*total))
+    let next = *total + source;
+    if !next.is_finite() {
+        return Ok(Value::Na);
+    }
+    *total = next;
+    Ok(float_value(next))
 }
 
 fn window_length(
@@ -1397,7 +1407,7 @@ fn eval_extreme_bars(
             best = candidate;
         }
     }
-    Ok(Value::Float((context.bar_index - best.1) as f64))
+    Ok(float_value((context.bar_index - best.1) as f64))
 }
 
 fn eval_true_range(
@@ -1475,8 +1485,13 @@ fn eval_anchored_vwap(
         args.first().and_then(Value::as_float),
         args.get(1).and_then(Value::as_float),
     ) {
-        *price_volume += source * volume_value;
-        *volume += volume_value;
+        let next_price_volume = *price_volume + source * volume_value;
+        let next_volume = *volume + volume_value;
+        if !next_price_volume.is_finite() || !next_volume.is_finite() {
+            return Ok(Value::Na);
+        }
+        *price_volume = next_price_volume;
+        *volume = next_volume;
     }
     if *volume > f64::EPSILON {
         Ok(float_value(*price_volume / *volume))

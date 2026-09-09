@@ -1147,6 +1147,7 @@ impl IndicatorInstance {
                 result
             }
         };
+        let value = value.normalize_nonfinite();
         self.enforce_value_limits(&value)?;
         if let Some(slot) = expression.series_slot
             && let Some(current) = self.working.current_series.get_mut(slot.0)
@@ -1350,14 +1351,15 @@ impl IndicatorInstance {
 fn unary(operator: crate::hir::UnaryOperator, value: Value) -> Result<Value, RuntimeError> {
     match operator {
         crate::hir::UnaryOperator::Plus => match value {
-            Value::Int(_) | Value::Float(_) | Value::Na => Ok(value),
+            Value::Int(_) | Value::Na => Ok(value),
+            Value::Float(value) => Ok(Value::Float(value).normalize_nonfinite()),
             _ => Err(RuntimeError::InvalidValue {
                 operation: "unary plus",
             }),
         },
         crate::hir::UnaryOperator::Minus => match value {
-            Value::Int(value) => Ok(Value::Int(-value)),
-            Value::Float(value) => Ok(Value::Float(-value)),
+            Value::Int(value) => Ok(value.checked_neg().map(Value::Int).unwrap_or(Value::Na)),
+            Value::Float(value) => Ok(Value::Float(-value).normalize_nonfinite()),
             Value::Na => Ok(Value::Na),
             _ => Err(RuntimeError::InvalidValue {
                 operation: "unary minus",
@@ -1430,7 +1432,7 @@ fn numeric_binary(
         BinaryOperator::Divide | BinaryOperator::Remainder => return Ok(Value::Na),
         _ => unreachable!(),
     };
-    Ok(Value::Float(value))
+    Ok(Value::Float(value).normalize_nonfinite())
 }
 
 #[cfg(test)]
@@ -1489,5 +1491,24 @@ mod tests {
 
         history.evict_before(3);
         assert_eq!(history.resource_usage(), (0, 0));
+    }
+
+    #[test]
+    fn arithmetic_overflow_is_missing_and_nonfinite_values_are_rejected() {
+        assert_eq!(Value::Float(f64::INFINITY).as_float(), None);
+        assert_eq!(
+            numeric_binary(
+                BinaryOperator::Multiply,
+                Value::Float(f64::MAX),
+                Value::Float(2.0),
+            )
+            .expect("numeric fallback should return a value"),
+            Value::Na
+        );
+        assert_eq!(
+            unary(crate::hir::UnaryOperator::Minus, Value::Int(i64::MIN))
+                .expect("integer unary fallback should return a value"),
+            Value::Na
+        );
     }
 }

@@ -1083,6 +1083,200 @@ mod tests {
     }
 
     #[test]
+    fn mutable_bindings_keep_compatible_types_across_updates_and_branches() {
+        for source in [
+            r#"
+                language(1)
+                indicator("Invalid state", id = "test.invalid-state")
+                state value = 0
+                value := true
+                plot(value, id = "value")
+            "#,
+            r#"
+                language(1)
+                indicator("Invalid local", id = "test.invalid-local")
+                value = 0
+                value := true
+                plot(value, id = "value")
+            "#,
+            r#"
+                language(1)
+                indicator("Invalid conditional", id = "test.invalid-conditional")
+                state value = 0
+                if true {
+                    value := true
+                }
+                plot(value, id = "value")
+            "#,
+        ] {
+            let diagnostics = compile(source, "invalid-binding.ind")
+                .expect_err("incompatible binding updates should fail");
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.message.contains("incompatible types"))
+            );
+        }
+
+        let source = r#"
+            language(1)
+            indicator("Widened state", id = "test.widened-state",
+                value_precision = "base_ticker_min_tick")
+            state value = 0
+            value := chart.close
+            value := na
+            plot(value, id = "value")
+        "#;
+        let compiled = compile(source, "widened-state.ind").expect("compatible updates compile");
+        assert_eq!(
+            compiled.descriptor.plots[0].value_type,
+            PlotValueType::Number
+        );
+
+        let source = r#"
+            language(1)
+            indicator("Conditional value", id = "test.conditional-value")
+            state value = na
+            if true {
+                value := true
+            } else {
+                value := false
+            }
+            plot(value, id = "value")
+        "#;
+        let compiled = compile(source, "conditional-value.ind").expect("Any should resolve");
+        assert_eq!(
+            compiled.descriptor.plots[0].value_type,
+            PlotValueType::Boolean
+        );
+
+        for source in [
+            r#"
+                language(1)
+                indicator("While value", id = "test.while-value")
+                state value = na
+                while false {
+                    value := true
+                }
+                plot(value, id = "value")
+            "#,
+            r#"
+                language(1)
+                indicator("For value", id = "test.for-value")
+                state value = na
+                for index = 0 to 1 {
+                    value := true
+                }
+                plot(value, id = "value")
+            "#,
+        ] {
+            let compiled = compile(source, "loop-value.ind").expect("loop joins compile");
+            assert_eq!(
+                compiled.descriptor.plots[0].value_type,
+                PlotValueType::Boolean
+            );
+        }
+    }
+
+    #[test]
+    fn result_branches_and_binary_operands_are_checked() {
+        for source in [
+            r#"
+                language(1)
+                indicator("Invalid select", id = "test.invalid-select")
+                plot(select(true, 1, false), id = "value")
+            "#,
+            r#"
+                language(1)
+                indicator("Invalid coalesce", id = "test.invalid-coalesce")
+                plot(coalesce(1, false), id = "value")
+            "#,
+            r#"
+                language(1)
+                indicator("Invalid switch", id = "test.invalid-switch")
+                plot(switch 1 { 1 => 1, default => false }, id = "value")
+            "#,
+            r#"
+                language(1)
+                indicator("Invalid order", id = "test.invalid-order")
+                plot(true < false, id = "value")
+            "#,
+            r#"
+                language(1)
+                indicator("Invalid logical", id = "test.invalid-logical")
+                plot(1 && true, id = "value")
+            "#,
+        ] {
+            let diagnostics = compile(source, "invalid-expression.ind")
+                .expect_err("invalid expression types should fail");
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.message.contains("incompatible")
+                        || diagnostic.message.contains("operands"))
+            );
+        }
+
+        let source = r#"
+            language(1)
+            indicator("Valid comparisons", id = "test.valid-comparisons")
+            plot(chart.close < chart.open, id = "numeric")
+            plot(chart.time < chart.time[1], id = "time")
+        "#;
+        let compiled = compile(source, "valid-comparisons.ind").expect("valid comparisons compile");
+        assert_eq!(
+            compiled.descriptor.plots[0].value_type,
+            PlotValueType::Boolean
+        );
+        assert_eq!(
+            compiled.descriptor.plots[1].value_type,
+            PlotValueType::Boolean
+        );
+    }
+
+    #[test]
+    fn cumulative_overflow_becomes_missing_without_poisoning_state() {
+        let source = r#"
+            language(1)
+            indicator("Cumulative overflow", id = "test.cumulative-overflow",
+                value_precision = "base_ticker_min_tick")
+            plot(ta.cum(chart.close), id = "value")
+        "#;
+        let compiled = compile(source, "cumulative-overflow.ind").expect("source should compile");
+        let mut instance = compiled
+            .instantiate(IndicatorConfig::default())
+            .expect("inputs should bind");
+
+        assert_eq!(
+            plot_value(
+                &instance
+                    .evaluate_closed(frame(0, 1, f64::MAX))
+                    .expect("first frame should evaluate"),
+                "value"
+            ),
+            &Value::Float(f64::MAX)
+        );
+        assert_eq!(
+            plot_value(
+                &instance
+                    .evaluate_closed(frame(1, 2, f64::MAX))
+                    .expect("overflow should remain recoverable"),
+                "value"
+            ),
+            &Value::Na
+        );
+        assert_eq!(
+            plot_value(
+                &instance
+                    .evaluate_closed(frame(2, 3, -f64::MAX))
+                    .expect("state should remain usable"),
+                "value"
+            ),
+            &Value::Float(0.0)
+        );
+    }
+
+    #[test]
     fn functions_are_numeric_and_typed_before_their_bodies_compile() {
         let source = r#"
             language(1)

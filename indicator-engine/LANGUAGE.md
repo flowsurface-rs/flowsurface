@@ -39,7 +39,10 @@ plot(average, id = "value", title = "Average")
 ```
 
 Inputs and output declarations must be top-level. `=` creates a local binding;
-`state` or `var` creates persistent state and `:=` updates it. Conditionals,
+`state` or `var` creates persistent state and `:=` updates it. A binding keeps
+its inferred concrete type across updates; integer/float updates widen to
+float, and `na` is compatible with any type. Incompatible concrete updates
+are compile errors. Conditionals,
 bounded `for`/`while` loops, non-recursive functions, tuples, arrays, records,
 destructuring, switch expressions, history indexing, and named arguments are
 supported.
@@ -65,7 +68,8 @@ is supplied).
 `options` accepts only a literal array of strings. Defaults, ranges, steps,
 labels, and option values, when supplied, must be compile-time literals.
 The host accepts a configured value only when it matches the declared type,
-numeric bounds, and string options.
+numeric bounds, and string options. Scripted `int` and `time` inputs retain
+signed 64-bit values through the host settings bridge.
 
 User functions are numeric in language version 1: parameters and return
 expressions must be numeric or `na`. Integer arguments can be used where a
@@ -74,7 +78,11 @@ float is expected, and parameters may have numeric or `na` defaults.
 `na` is a missing value, not an ordinary value. `==` and `!=` return `na` when
 either operand is `na`; a `switch` branch whose condition is `na` does not
 match. A `state` initializer is retried until it produces a non-`na` value,
-while an explicit `:= na` update remains authoritative.
+while an explicit `:= na` update remains authoritative. Logical operators
+require boolean operands, ordering operators accept numeric or time operands,
+and arithmetic remains numeric-only. `select`, `coalesce`, and `switch` result
+branches use the same compatibility rules. Non-finite numeric results are
+exposed as `na`.
 
 ## Declaration reference
 

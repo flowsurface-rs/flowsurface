@@ -88,7 +88,7 @@ pub enum PresentationAxis {
 pub enum PresentationPrecision {
     BaseTickerMinTick,
     BaseTickerMinQty,
-    FixedStep(f32),
+    FixedStep(f64),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -272,5 +272,5 @@ pub struct PlotDescriptor {
 pub enum OutputPrecision {
     Instrument,
     Decimals(u8),
-    Step(f32),
+    Step(f64),
 }

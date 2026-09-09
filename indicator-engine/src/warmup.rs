@@ -413,8 +413,10 @@ impl<'a> Evaluator<'a> {
             ExpressionKind::Unary { operator, operand } => {
                 let value = self.static_value(operand)?;
                 match operator {
-                    UnaryOperator::Plus => Some(value),
-                    UnaryOperator::Minus => value.as_float().map(|value| Value::Float(-value)),
+                    UnaryOperator::Plus => Some(value.normalize_nonfinite()),
+                    UnaryOperator::Minus => value
+                        .as_float()
+                        .map(|value| Value::Float(-value).normalize_nonfinite()),
                     UnaryOperator::Not => match value {
                         Value::Bool(value) => Some(Value::Bool(!value)),
                         _ => None,
@@ -484,7 +486,7 @@ fn static_binary(operator: BinaryOperator, left: Value, right: Value) -> Option<
                 Remainder if right != 0.0 => left % right,
                 _ => return None,
             };
-            Some(Value::Float(value))
+            Some(Value::Float(value).normalize_nonfinite())
         }
     }
 }
