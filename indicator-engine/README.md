@@ -9,10 +9,11 @@ installable unit is one flat `.ind` file. The source declares its identity,
 inputs, plots, panel placement, and runtime behavior. See
 [`LANGUAGE.md`](LANGUAGE.md) for the declaration reference.
 
-The host builds an `IndicatorFrame` from the primary chart and selected markets.
-It evaluates loaded closed bars once for bootstrap, then evaluates the current
-open bar as a preview from the last committed state. Missing aligned data is
-`na`.
+The host builds an `IndicatorFrame` from the primary chart. Selected markets
+provide comparison Kline series for presentation; the DSL frame, open interest,
+and trade data are base-ticker inputs. It evaluates loaded closed bars once for
+bootstrap, then evaluates the current open bar as a preview from the last
+committed state. Missing aligned data is `na`.
 
 The runtime intentionally excludes remote requests, other timeframes,
 strategies, alerts, correction replay, `varip`, mutable scene objects, and

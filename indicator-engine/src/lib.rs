@@ -833,6 +833,53 @@ mod tests {
     }
 
     #[test]
+    fn generic_plot_accepts_scalar_styles_and_structured_constructors() {
+        let scalar_source = r#"
+            language(1)
+            indicator("Scalar styles", id = "test.scalar-styles", value_precision = "base_ticker_min_tick")
+            plot(chart.close, id = "line", style = "line")
+            plot(chart.close, id = "step", style = "step")
+            plot(chart.close, id = "histogram", style = "histogram")
+            plot(chart.close, id = "area", style = "area")
+        "#;
+        compile(scalar_source, "scalar-styles.ind").expect("scalar plot styles should compile");
+
+        let structured_source = r#"
+            language(1)
+            indicator("Structured plots", id = "test.structured-plots", view = "primary_overlay", value_precision = "base_ticker_min_tick")
+            plotcandle(chart.open, chart.high, chart.low, chart.close, id = "candles")
+            plotohlc(chart.open, chart.high, chart.low, chart.close, id = "ohlc")
+            plotrange(chart.high, chart.low, id = "range")
+            broken_cloud(chart.high, chart.low, id = "broken")
+        "#;
+        compile(structured_source, "structured-plots.ind")
+            .expect("structured plot constructors should compile");
+    }
+
+    #[test]
+    fn generic_plot_rejects_structured_styles() {
+        for (style, constructors) in [
+            ("candles", "plotcandle or plotohlc"),
+            ("bars", "plotcandle or plotohlc"),
+            ("cloud", "plotrange or broken_cloud"),
+            ("broken_cloud", "plotrange or broken_cloud"),
+        ] {
+            let source = format!(
+                "language(1)\nindicator(\"Invalid plot\", id = \"test.invalid-{style}\", value_precision = \"base_ticker_min_tick\")\nplot(chart.close, id = \"value\", style = \"{style}\")"
+            );
+            let diagnostics = compile(&source, format!("invalid-{style}.ind"))
+                .expect_err("structured styles should not be accepted by generic plot");
+            assert!(diagnostics.iter().any(|diagnostic| {
+                diagnostic
+                    .message
+                    .contains(&format!("plot style '{style}'"))
+                    && diagnostic.message.contains("requires a structured plot")
+                    && diagnostic.message.contains(constructors)
+            }));
+        }
+    }
+
+    #[test]
     fn unknown_presentation_input_is_rejected_without_becoming_an_indicator_requirement() {
         let diagnostics = compile(
             r#"

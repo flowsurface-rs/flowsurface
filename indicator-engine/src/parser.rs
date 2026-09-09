@@ -3738,7 +3738,21 @@ impl Compiler {
         } else {
             PlotValueType::Number
         };
-        let descriptor = self.plot_descriptor(call, id, label, value_type);
+        let mut descriptor = self.plot_descriptor(call, id, label, value_type);
+        let structured_constructor = match descriptor.style {
+            PlotStyle::Candles => Some(("candles", "plotcandle or plotohlc")),
+            PlotStyle::Bars => Some(("bars", "plotcandle or plotohlc")),
+            PlotStyle::Cloud => Some(("cloud", "plotrange or broken_cloud")),
+            PlotStyle::BrokenCloud => Some(("broken_cloud", "plotrange or broken_cloud")),
+            PlotStyle::Line | PlotStyle::Step | PlotStyle::Histogram | PlotStyle::Area => None,
+        };
+        if let Some((style, constructors)) = structured_constructor {
+            self.error(
+                call.span,
+                format!("plot style '{style}' requires a structured plot; use {constructors}"),
+            );
+            descriptor.style = PlotStyle::Line;
+        }
         self.presentation_spans
             .plots
             .insert(descriptor.id.clone(), call.span);

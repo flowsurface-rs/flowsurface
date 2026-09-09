@@ -3,7 +3,6 @@ indicator("Ichimoku Cloud", id = "catalog.ichimoku-cloud", view = "primary_overl
 conversion_period = input.int(9, "Conversion period", min = 1, max = 200)
 base_period = input.int(26, "Base period", min = 1, max = 200)
 span_period = input.int(52, "Span period", min = 1, max = 400)
-displacement = input.int(26, "Displacement", min = 0, max = 200)
 conversion_high = ta.highest(chart.high, conversion_period)
 conversion_low = ta.lowest(chart.low, conversion_period)
 base_high = ta.highest(chart.high, base_period)

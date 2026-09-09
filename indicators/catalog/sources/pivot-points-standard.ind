@@ -1,6 +1,5 @@
 language(1)
 indicator("Pivot Points Standard", id = "catalog.pivot-points-standard", view = "primary_overlay", max_bars_back = 1, layer_name = "Pivot Points")
-timeframe = input.string("auto", "Pivot timeframe", options = ["auto", "D", "W", "M"])
 selected_high = ta.highest(chart.high, 24)
 selected_low = ta.lowest(chart.low, 24)
 selected_close = chart.close

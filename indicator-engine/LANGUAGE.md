@@ -142,11 +142,24 @@ offset is `0`, overlay and layer are `true`, and data kind, mark, and axis are
 inferred from the value type, style, pane, and scale. A numeric plot without a
 color slot gets a deterministic slot named after its output ID.
 
-Styles are `line`, `step`, `histogram`, `area`, `candles`, `bars`,
-`cloud`, and `broken_cloud`. Panes are `main`, `indicator`, or `named:<number>`;
+Generic `plot` styles are `line`, `step`, `histogram`, and `area`. Panes are
+`main`, `indicator`, or `named:<number>`;
 scales are `price` or `independent`; display is `value` or `none`; and precision
 is `instrument`, `decimals:<n>`, or `step:<number>`. Boolean plots
 are output-only unless a presentation declaration references them.
+
+Structured outputs use dedicated constructors instead of `plot` styles:
+
+```text
+plotcandle(open, high, low, close, id = "candles")
+plotohlc(open, high, low, close, id = "ohlc")
+plotrange(upper, lower, id = "range")
+broken_cloud(upper, lower, id = "broken")
+```
+
+`plotcandle` and `plotohlc` produce OHLC output; `plotrange` and
+`broken_cloud` produce range output. Using `candles`, `bars`, `cloud`, or
+`broken_cloud` as a generic `plot` style is invalid.
 
 ### `style`
 
@@ -302,7 +315,10 @@ fill(upper = "upper", lower = "lower", color_slot = "band")
 
 The host supplies one frame for each base-ticker chart bar. Every indicator
 reads that one chart frame; comparison tickers remain a chart presentation
-feature and are not visible to the DSL. A frame includes `chart.time`,
+feature and are not visible to the DSL. Kline history and live subscriptions
+may be requested for comparison tickers, but trade history and live trade
+subscriptions are requested only for the base ticker. A frame includes
+`chart.time`,
 `chart.open`, `chart.high`, `chart.low`, `chart.close`, `chart.volume`,
 `chart.directional_volume_available`, `chart.buy_qty`, `chart.sell_qty`,
 `chart.trade.*`, and `open_interest`. Missing aligned data is `na`.
