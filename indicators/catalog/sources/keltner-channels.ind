@@ -1,0 +1,18 @@
+language(1)
+indicator("Keltner Channels", id = "catalog.keltner-channels", view = "primary_overlay")
+period = input.int(20, "Middle period", min = 1, max = 200)
+range_period = input.int(10, "Range period", min = 1, max = 200)
+multiplier = input.float(2.0, "Multiplier", min = 0.1, max = 20.0, step = 0.1)
+middle = ta.ema(chart.close, period)
+true_range = ta.tr(chart.high, chart.low, chart.close)
+range = ta.rma(true_range, range_period)
+upper = middle + multiplier * range
+lower = middle - multiplier * range
+plot(middle, id = "middle", title = "Middle", precision = "instrument", color_slot = "middle")
+plot(upper, id = "upper", title = "Upper", precision = "instrument", color_slot = "upper")
+plot(lower, id = "lower", title = "Lower", precision = "instrument", color_slot = "lower")
+
+style("middle", title = "Middle")
+style("upper", title = "Upper", role = "success")
+style("lower", title = "Lower", role = "danger")
+mark(title = "Line", source = "middle", kind = "line", color_slot = "middle")

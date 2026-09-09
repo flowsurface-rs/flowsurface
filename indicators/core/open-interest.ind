@@ -1,5 +1,5 @@
 language(1)
-indicator("Open Interest", id = "flowsurface.open-interest", value_precision = "base_ticker_min_qty", axis_label_mode = "abbreviated", header_label_mode = "commas")
+indicator("Open Interest", id = "core.open-interest", value_precision = "base_ticker_min_qty", axis_label_mode = "abbreviated", header_label_mode = "commas")
 show_change_bars = input.bool(false, "Show change bars", group = "display")
 value = open_interest
 change = select(show_change_bars, open_interest - open_interest[1], na)

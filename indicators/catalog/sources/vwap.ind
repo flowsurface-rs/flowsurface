@@ -1,0 +1,8 @@
+language(1)
+indicator("Volume Weighted Average Price", id = "catalog.vwap", view = "primary_overlay", layer_name = "VWAP")
+period = input.int(20, "Lookback period", min = 1, max = 500)
+value = ta.vwma(chart.close, chart.volume, period)
+plot(value, id = "value", title = "VWAP", precision = "instrument", color_slot = "main", width = 1.2)
+
+style("main", title = "VWAP", role = "primary")
+mark(title = "Line", source = "value", kind = "line", color_slot = "main")

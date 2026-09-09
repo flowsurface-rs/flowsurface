@@ -1,8 +1,8 @@
 [package]
 name = "flowsurface-indicator-engine"
-description = "Aggr-level live scripting engine for FlowSurface indicator sources"
+description = "Aggr-level live scripting engine for Flowsurface indicator sources"
 version.workspace = true
-license = "GPL-3.0-or-later"
+license = "Apache-2.0"
 edition.workspace = true
 repository.workspace = true
 homepage.workspace = true

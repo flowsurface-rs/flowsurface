@@ -2,13 +2,35 @@
 
 An indicator is one installable `.ind` source file. The file name must be the
 final segment of its DSL ID, for example `rsi.ind` for
-`flowsurface.rsi`; the `id` declaration remains authoritative. Names are
+`catalog.rsi`; the `id` declaration remains authoritative. Names are
 case-sensitive, and the application rejects duplicate final segments across
 the complete startup catalog.
 
+## Namespaces
+
+Indicator IDs use one of three ownership namespaces:
+
+- `core.<indicator>` is reserved for the GPL-licensed sources bundled and
+  maintained by Flowsurface.
+- `catalog.<indicator>` identifies the Apache-2.0 public catalog curated by
+  Flowsurface contributors.
+
+The engine accepts all valid IDs. Collection policy is checked by the host and,
+when desired, by the CLI:
+
+```text
+cargo run -p flowsurface-indicator-engine --bin flowsurface-indicator -- check indicators/core --namespace core
+cargo run -p flowsurface-indicator-engine --bin flowsurface-indicator -- test indicators/catalog/sources --namespace catalog
+```
+
+The future `indicator-engine` repository will contain the library and
+`flowsurface-indicator` CLI. The future `flowsurface-indicators` repository will
+contain only the curated `catalog.*` sources and their documentation. Source
+licensing is independent of the Apache-2.0 engine license.
+
 ```text
 language(1)
-indicator("Relative strength", id = "community.rsi",
+indicator("Relative strength", id = "catalog.rsi",
           value_precision = "fixed_step:0.01")
 period = input.int(14, "Period", min = 2, max = 200)
 gain = select(chart.close > chart.close[1], chart.close - chart.close[1], 0)
@@ -130,7 +152,7 @@ The ID is required. Title defaults to the ID, role to `neutral`, and shade to
 
 ### `mark`
 
-```text
+````text
 mark(title = "Histogram", source = "value", kind = "histogram",
      color_slot = "base", true_color_slot = "bull",
      false_color_slot = "bear", requires = "directional_volume",
@@ -143,12 +165,13 @@ is true:
 mark(title = "Overlay bars", source = "value", kind = "histogram",
      color_slot = "base", highlight_by = "warning_signal",
      highlight_color_slot = "warning")
-```
+````
 
 `highlight_by` must reference a boolean output and is supported by regular and
 histogram bar marks. The outline is drawn without replacing the bar's normal
 fill or conditional colors.
-```
+
+````
 
 `title`, `source`, `kind`, and `color_slot` are required. A mark is a selectable
 alternate rendering of an output. Conditional slots are optional, but must be
@@ -167,7 +190,7 @@ fill(upper = "upper", lower = "lower", color_slot = "band",
      geometry = "series_band", opacity = 0.2, style_by = "rising",
      true_color_slot = "bull", false_color_slot = "bear",
      upper_offset = 0, lower_offset = 0)
-```
+````
 
 `upper`, `lower`, and `color_slot` are required. Geometry defaults to
 `panel_band` and can be `panel_band` or `series_band`; opacity defaults to `0.2`.
@@ -186,7 +209,7 @@ readout to a selected rendering.
 ### `column`
 
 ```text
-indicator("Status", id = "community.status", view = "table")
+indicator("Status", id = "catalog.status", view = "table")
 column(title = "Trend", source = "trend", format = "boolean",
        color_slot = "main")
 column(title = "Delta", source = "delta", color_mode = "signed",
@@ -218,7 +241,7 @@ metadata remains static.
 Ordinary plot:
 
 ```text
-indicator("Momentum", id = "community.momentum",
+indicator("Momentum", id = "catalog.momentum",
           value_precision = "base_ticker_min_tick")
 value = chart.close - chart.close[10]
 plot(value, id = "value", title = "Momentum")
@@ -227,7 +250,7 @@ plot(value, id = "value", title = "Momentum")
 Overlay:
 
 ```text
-indicator("Moving average", id = "community.ma", view = "primary_overlay")
+indicator("Moving average", id = "catalog.ma", view = "primary_overlay")
 average = ta.sma(chart.close, 20)
 plot(average, id = "average", title = "Average")
 ```
@@ -235,7 +258,7 @@ plot(average, id = "average", title = "Average")
 Table:
 
 ```text
-indicator("Status", id = "community.status", view = "table")
+indicator("Status", id = "catalog.status", view = "table")
 trend = chart.close > chart.close[1]
 plot(trend, id = "trend", title = "Trend", display = "none", overlay = false, layer = false)
 column(title = "Trend", source = "trend", format = "boolean")
@@ -244,7 +267,7 @@ column(title = "Trend", source = "trend", format = "boolean")
 Histogram:
 
 ```text
-indicator("Flow", id = "community.flow",
+indicator("Flow", id = "catalog.flow",
           value_precision = "base_ticker_min_tick")
 flow = chart.close - chart.open
 plot(flow, id = "flow", title = "Flow", style = "histogram")
@@ -253,7 +276,7 @@ plot(flow, id = "flow", title = "Flow", style = "histogram")
 Fill and conditional colors:
 
 ```text
-indicator("Band", id = "community.band",
+indicator("Band", id = "catalog.band",
           value_precision = "base_ticker_min_tick")
 upper = ta.sma(chart.close, 20) + 2 * ta.stdev(chart.close, 20)
 lower = ta.sma(chart.close, 20) - 2 * ta.stdev(chart.close, 20)
@@ -325,7 +348,7 @@ dependencies.
 The application loads `indicators/core/` first, then flat files in the installed
 directory, then explicit files supplied with repeated `--indicator-path`. For
 repository development, set `FLOWSURFACE_INDICATORS_PATH` to a root containing
-`core/` and `catalog/` to load those collections directly instead of the data
+`core/` and `catalog/sources/` to load those collections directly instead of the data
 directory. It does this once at startup; changing a source requires an
 application restart.
 Invalid installed files are diagnosed and skipped, while core errors are fatal.
@@ -333,15 +356,17 @@ After valid files are compiled, a duplicate short name in core, installed, or
 explicit development sources is a startup-fatal error. The application does
 not choose one source by precedence when their short names collide.
 
-Use the standalone workflow while developing:
+Use the standalone CLI workflow while developing:
 
-```text
-flowsurface-indicator new indicators/catalog --id community.example --title "Example"
-flowsurface-indicator check indicators/catalog/example.ind
-```
+    cargo run -p flowsurface-indicator-engine --bin flowsurface-indicator -- new indicators/catalog/sources --id catalog.example --title "Example"
+    cargo run -p flowsurface-indicator-engine --bin flowsurface-indicator -- check indicators/catalog/sources/example.ind --namespace catalog
+    cargo run -p flowsurface-indicator-engine --bin flowsurface-indicator -- test indicators/catalog/sources/example.ind --namespace catalog
 
-There are no JSON fixtures or presentation sidecars. Copy the resulting `.ind`
-file into the installed collection root or pass its path with
-`--indicator-path`, then restart the application. Existing full-ID filenames
-such as `community.example.ind` must be renamed manually; they are diagnosed
-and skipped.
+`check` also accepts a flat source directory. `test` runs the source with
+deterministic synthetic market frames after checking it, which catches runtime
+and resource-limit failures without requiring exchange data. There are no JSON
+fixtures or presentation sidecars. Copy the resulting `.ind` file into the
+installed collection root or pass its path with `--indicator-path`, then
+restart the application. Existing full-ID filenames such as
+`catalog.example.ind` must be renamed manually; they are diagnosed and
+skipped.

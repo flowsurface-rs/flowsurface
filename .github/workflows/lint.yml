@@ -55,5 +55,11 @@ jobs:
             - name: Test indicator engine
               run: cargo test -p flowsurface-indicator-engine --locked
 
+            - name: Smoke-test core indicator sources
+              run: cargo run --locked -p flowsurface-indicator-engine --bin flowsurface-indicator -- test indicators/core --namespace core
+
+            - name: Smoke-test catalog indicator sources
+              run: cargo run --locked -p flowsurface-indicator-engine --bin flowsurface-indicator -- test indicators/catalog/sources --namespace catalog
+
             - name: Run cargo clippy
               run: cargo clippy --workspace --all-targets --all-features -- -D warnings

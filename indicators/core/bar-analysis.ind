@@ -1,5 +1,5 @@
 language(1)
-indicator("Bar Analysis", id = "flowsurface.bar-analysis", view = "table")
+indicator("Bar Analysis", id = "core.bar-analysis", view = "table")
 has_trade_data = chart.trade.available
 buy = select(has_trade_data, chart.trade.buy_qty, na)
 sell = select(has_trade_data, chart.trade.sell_qty, na)
