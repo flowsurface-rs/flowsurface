@@ -16,18 +16,10 @@ The three namespaces are intentionally separate:
 
 ## Repository collections
 
-`indicators/core` contains the six sources that Flowsurface manages and
-guarantees at runtime:
-
-- `volume.ind`
-- `rsi.ind`
-- `moving-averages.ind`
-- `bar-analysis.ind`
-- `open-interest.ind`
-- `anchored-vwap.ind`
-
-The application embeds these sources as delivery templates and synchronizes
-them into its persistence `indicators/core` directory at startup.
+`indicators/core` is the source of truth for the app-managed first-party
+collection. Every immediate `.ind` file in this directory is embedded as a
+delivery template and synchronized into the persistence `indicators/core`
+directory at startup.
 
 `indicators/catalog/sources` contains the open catalog sources. It is not bundled
 automatically. Its standalone-repository preparation is documented in

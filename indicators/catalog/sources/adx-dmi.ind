@@ -1,5 +1,5 @@
 language(1)
-indicator("ADX / DMI", id = "catalog.adx-dmi", value_precision = "fixed_step:0.01", axis_label_mode = "compact", header_label_mode = "compact", max_decimals = 2)
+indicator("ADX / DMI", id = "catalog.adx-dmi", max_bars_back = 2, value_precision = "fixed_step:0.01", axis_label_mode = "compact", header_label_mode = "compact", max_decimals = 2)
 period = input.int(14, "Period", min = 2, max = 200)
 up_move = chart.high - chart.high[1]
 down_move = chart.low[1] - chart.low

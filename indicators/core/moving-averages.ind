@@ -1,5 +1,5 @@
 language(1)
-indicator("Moving Averages", id = "core.moving-averages", view = "primary_overlay")
+indicator("Moving Averages", id = "core.moving-averages", view = "primary_overlay", max_bars_back = 1)
 method = input.string("Sma", "Average method", options = ["Sma", "Ema", "Vwma"])
 fast_period = input.int(50, "Fast period", min = 1, max = 500)
 medium_period = input.int(150, "Medium period", min = 1, max = 500)

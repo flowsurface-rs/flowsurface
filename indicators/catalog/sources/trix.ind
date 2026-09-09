@@ -1,5 +1,5 @@
 language(1)
-indicator("TRIX", id = "catalog.trix", value_precision = "fixed_step:0.0001", axis_label_mode = "compact", header_label_mode = "compact", max_decimals = 4)
+indicator("TRIX", id = "catalog.trix", max_bars_back = 2, value_precision = "fixed_step:0.0001", axis_label_mode = "compact", header_label_mode = "compact", max_decimals = 4)
 period = input.int(15, "Period", min = 1, max = 200)
 first = ta.ema(chart.close, period)
 second = ta.ema(first, period)

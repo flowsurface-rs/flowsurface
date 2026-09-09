@@ -1,5 +1,5 @@
 language(1)
-indicator("RSI Divergence", id = "catalog.rsi-divergence", max_bars_back = 500, layer_name = "RSI", value_precision = "fixed_step:1", axis_label_mode = "abbreviated", header_label_mode = "commas", max_decimals = 2)
+indicator("RSI Divergence", id = "catalog.rsi-divergence", max_bars_back = 50, layer_name = "RSI", value_precision = "fixed_step:1", axis_label_mode = "abbreviated", header_label_mode = "commas", max_decimals = 2)
 
 period = input.int(14, "RSI period", min = 2, max = 200)
 pivot_left = input.int(5, "Pivot lookback left", min = 1, max = 50, group = "pivots")

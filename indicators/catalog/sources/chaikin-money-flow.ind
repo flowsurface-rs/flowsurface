@@ -1,5 +1,5 @@
 language(1)
-indicator("Chaikin Money Flow", id = "catalog.chaikin-money-flow", layer_name = "CMF", value_precision = "fixed_step:0.001", axis_label_mode = "compact", header_label_mode = "compact", max_decimals = 3)
+indicator("Chaikin Money Flow", id = "catalog.chaikin-money-flow", max_bars_back = 1, layer_name = "CMF", value_precision = "fixed_step:0.001", axis_label_mode = "compact", header_label_mode = "compact", max_decimals = 3)
 period = input.int(20, "Period", min = 1, max = 200)
 range = chart.high - chart.low
 multiplier = select(range <= 0, 0, ((chart.close - chart.low) - (chart.high - chart.close)) / range)

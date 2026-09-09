@@ -1,5 +1,5 @@
 language(1)
-indicator("Bollinger Bands", id = "catalog.bollinger-bands", view = "primary_overlay", layer_name = "Bollinger Basis")
+indicator("Bollinger Bands", id = "catalog.bollinger-bands", view = "primary_overlay", max_bars_back = 1, layer_name = "Bollinger Basis")
 period = input.int(20, "Period", min = 2, max = 200)
 method = input.string("Sma", "Average method", options = ["Sma", "Ema", "Vwma"])
 std_dev_multiplier = input.float(2.0, "Std. deviation", min = 0.0, max = 5.0, step = 0.1)

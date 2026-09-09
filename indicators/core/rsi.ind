@@ -1,5 +1,5 @@
 language(1)
-indicator("RSI", id = "core.rsi", value_precision = "fixed_step:1", axis_label_mode = "abbreviated", header_label_mode = "commas", max_decimals = 1)
+indicator("RSI", id = "core.rsi", max_bars_back = 2, value_precision = "fixed_step:1", axis_label_mode = "abbreviated", header_label_mode = "commas", max_decimals = 1)
 period = input.int(14, "Period", min = 2, max = 100)
 ema_signal = input.bool(true, "EMA signal", group = "ema")
 ema_period = input.int(9, "EMA period", min = 2, max = 50, group = "ema")

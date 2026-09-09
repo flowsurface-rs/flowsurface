@@ -1,5 +1,5 @@
 language(1)
-indicator("ZigZag", id = "catalog.zigzag", view = "primary_overlay", max_bars_back = 500)
+indicator("ZigZag", id = "catalog.zigzag", view = "primary_overlay", max_bars_back = 200)
 depth = input.int(12, "Pivot depth", min = 2, max = 200)
 window = depth * 2 + 1
 candidate_high = coalesce(chart.high[depth] == ta.highest(chart.high, window), false)

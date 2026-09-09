@@ -1,5 +1,5 @@
 language(1)
-indicator("Stochastic Oscillator", id = "catalog.stochastic", panel_title = "Stochastic", layer_name = "Stochastic", value_precision = "fixed_step:0.01", axis_label_mode = "compact", header_label_mode = "compact", max_decimals = 2)
+indicator("Stochastic Oscillator", id = "catalog.stochastic", max_bars_back = 1, panel_title = "Stochastic", layer_name = "Stochastic", value_precision = "fixed_step:0.01", axis_label_mode = "compact", header_label_mode = "compact", max_decimals = 2)
 period = input.int(14, "%K period", min = 1, max = 200)
 k_period = input.int(3, "K smoothing", min = 1, max = 100)
 d_period = input.int(3, "D smoothing", min = 1, max = 100)

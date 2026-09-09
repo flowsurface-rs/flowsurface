@@ -1,5 +1,5 @@
 language(1)
-indicator("Commodity Channel Index", id = "catalog.cci", layer_name = "CCI", value_precision = "fixed_step:0.01", axis_label_mode = "compact", header_label_mode = "compact", max_decimals = 2)
+indicator("Commodity Channel Index", id = "catalog.cci", max_bars_back = 1, layer_name = "CCI", value_precision = "fixed_step:0.01", axis_label_mode = "compact", header_label_mode = "compact", max_decimals = 2)
 period = input.int(20, "Period", min = 1, max = 200)
 upper_band = input.float(100.0, "Upper band", min = 1.0, max = 500.0, step = 1.0)
 lower_band = input.float(-100.0, "Lower band", min = -500.0, max = -1.0, step = 1.0)

@@ -12,30 +12,36 @@ use std::sync::Arc;
 use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq)]
-struct IndexedHistory<T> {
+struct IndexedHistory {
     first_index: usize,
     capacity: usize,
-    values: VecDeque<T>,
+    values: VecDeque<Value>,
+    resource_collections: usize,
+    resource_heap_bytes: usize,
 }
 
-impl<T> IndexedHistory<T> {
+impl IndexedHistory {
     fn new(capacity: usize) -> Self {
         Self {
             first_index: 0,
             capacity: capacity.max(1),
             values: VecDeque::new(),
+            resource_collections: 0,
+            resource_heap_bytes: 0,
         }
     }
 
-    fn get(&self, index: usize) -> Option<&T> {
+    fn get(&self, index: usize) -> Option<&Value> {
         let offset = index.checked_sub(self.first_index)?;
         self.values.get(offset)
     }
 
-    fn set(&mut self, index: usize, value: T) {
+    fn set(&mut self, index: usize, value: Value) {
+        let value_usage = value.resource_usage();
         if self.values.is_empty() {
             self.first_index = index;
             self.values.push_back(value);
+            self.add_usage(value_usage);
             return;
         }
 
@@ -46,14 +52,20 @@ impl<T> IndexedHistory<T> {
         let end_index = self.first_index.saturating_add(self.values.len());
         if index == end_index {
             self.values.push_back(value);
+            self.add_usage(value_usage);
         } else if let Some(existing) = self.values.get_mut(index - self.first_index) {
+            let previous_usage = existing.resource_usage();
             *existing = value;
+            self.subtract_usage(previous_usage);
+            self.add_usage(value_usage);
         } else {
             return;
         }
 
         while self.values.len() > self.capacity {
-            self.values.pop_front();
+            if let Some(evicted) = self.values.pop_front() {
+                self.subtract_usage(evicted.resource_usage());
+            }
             self.first_index = self.first_index.saturating_add(1);
         }
     }
@@ -66,8 +78,35 @@ impl<T> IndexedHistory<T> {
         let remove = index
             .saturating_sub(self.first_index)
             .min(self.values.len());
-        self.values.drain(..remove);
+        let removed_usage = self
+            .values
+            .drain(..remove)
+            .map(|value| value.resource_usage())
+            .fold(
+                (0usize, 0usize),
+                |(collections, bytes), (value_collections, value_bytes)| {
+                    (
+                        collections.saturating_add(value_collections),
+                        bytes.saturating_add(value_bytes),
+                    )
+                },
+            );
+        self.subtract_usage(removed_usage);
         self.first_index = self.first_index.saturating_add(remove);
+    }
+
+    fn resource_usage(&self) -> (usize, usize) {
+        (self.resource_collections, self.resource_heap_bytes)
+    }
+
+    fn add_usage(&mut self, (collections, bytes): (usize, usize)) {
+        self.resource_collections = self.resource_collections.saturating_add(collections);
+        self.resource_heap_bytes = self.resource_heap_bytes.saturating_add(bytes);
+    }
+
+    fn subtract_usage(&mut self, (collections, bytes): (usize, usize)) {
+        self.resource_collections = self.resource_collections.saturating_sub(collections);
+        self.resource_heap_bytes = self.resource_heap_bytes.saturating_sub(bytes);
     }
 }
 
@@ -155,7 +194,7 @@ pub enum RuntimeError {
 
 #[derive(Debug, Clone, PartialEq)]
 struct SeriesHistory {
-    values: Vec<IndexedHistory<Value>>,
+    values: Vec<IndexedHistory>,
 }
 
 impl SeriesHistory {
@@ -1261,14 +1300,14 @@ impl IndicatorInstance {
         }
 
         if include_history {
-            for value in self
+            for usage in self
                 .committed
                 .history
                 .values
                 .iter()
-                .flat_map(|history| history.values.iter())
+                .map(IndexedHistory::resource_usage)
             {
-                let (value_collections, value_bytes) = value.resource_usage();
+                let (value_collections, value_bytes) = usage;
                 collections = collections.saturating_add(value_collections);
                 heap_bytes = heap_bytes.saturating_add(value_bytes);
             }
@@ -1392,4 +1431,63 @@ fn numeric_binary(
         _ => unreachable!(),
     };
     Ok(Value::Float(value))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn history_resource_usage_obeys_limits() {
+        let compiled = crate::compile(
+            r#"
+                language(1)
+                indicator("History resource", id = "test.history-resource",
+                    value_precision = "base_ticker_min_tick")
+                plot(chart.close, id = "value")
+            "#,
+            "history-resource.ind",
+        )
+        .expect("history resource indicator should compile");
+        let mut instance = compiled
+            .instantiate(IndicatorConfig::default())
+            .expect("history resource indicator should instantiate");
+        instance
+            .committed
+            .history
+            .values
+            .first_mut()
+            .expect("plot expression should allocate series history")
+            .set(0, Value::String("12345".to_owned()));
+        instance.limits.max_heap_bytes = 4;
+
+        assert_eq!(instance.resource_limit_exceeded(false), None);
+        assert_eq!(instance.resource_limit_exceeded(true), Some("heap bytes"));
+    }
+
+    #[test]
+    fn indexed_history_tracks_nested_resource_usage() {
+        let mut history = IndexedHistory::new(2);
+        let array = Value::Array(vec![Value::String("first".to_owned())]);
+        let record = Value::Record(BTreeMap::from([(
+            "key".to_owned(),
+            Value::String("value".to_owned()),
+        )]));
+
+        history.set(0, array);
+        assert_eq!(history.resource_usage(), (1, 5));
+
+        history.set(1, record);
+        assert_eq!(history.resource_usage(), (2, 13));
+
+        history.set(1, Value::Int(1));
+        assert_eq!(history.resource_usage(), (1, 5));
+
+        history.set(2, Value::String("third".to_owned()));
+        assert_eq!(history.resource_usage(), (0, 5));
+
+        history.evict_before(3);
+        assert_eq!(history.resource_usage(), (0, 0));
+    }
 }

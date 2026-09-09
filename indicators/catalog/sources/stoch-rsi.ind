@@ -1,5 +1,5 @@
 language(1)
-indicator("Stoch RSI", id = "catalog.stoch-rsi", value_precision = "fixed_step:0.01", axis_label_mode = "compact", header_label_mode = "compact", max_decimals = 2)
+indicator("Stoch RSI", id = "catalog.stoch-rsi", max_bars_back = 2, value_precision = "fixed_step:0.01", axis_label_mode = "compact", header_label_mode = "compact", max_decimals = 2)
 rsi_length = input.int(14, "RSI length", min = 2, max = 200)
 stoch_length = input.int(14, "Stoch length", min = 1, max = 200)
 k_smoothing = input.int(3, "K", min = 1, max = 100)
