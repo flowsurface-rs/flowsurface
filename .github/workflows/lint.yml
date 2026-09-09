@@ -52,8 +52,8 @@ jobs:
             - name: Fetch dependencies
               run: cargo fetch
 
-            - name: Test indicator engine
-              run: cargo test -p flowsurface-indicator-engine --locked
+            - name: Validate repository indicator sources
+              run: cargo test -p flowsurface-data --lib --locked
 
             - name: Smoke-test core indicator sources
               run: cargo run --locked -p flowsurface-indicator-engine --bin flowsurface-indicator -- test indicators/core --namespace core
