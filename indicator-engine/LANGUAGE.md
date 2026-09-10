@@ -31,7 +31,8 @@ licensing is independent of the Apache-2.0 engine license.
 ```text
 language(1)
 indicator("Relative strength", id = "catalog.rsi",
-          value_precision = "fixed_step:0.01")
+          sourceable = true, max_bars_back = 5000)
+format(precision = "fixed_step:0.01")
 period = input.int(14, "Period", min = 2, max = 200)
 gain = select(chart.close > chart.close[1], chart.close - chart.close[1], 0)
 average = ta.rma(gain, period)
@@ -87,39 +88,59 @@ exposed as `na`.
 ## Declaration reference
 
 Named arguments are compile-time constants unless noted as series expressions.
-The minimal forms below are the recommended starting point. For plot views,
-`value_precision` is required because it controls the panel axis, domain
-quantization, and crosshair values. Table views and primary overlays do not
-use panel value precision. The remaining metadata can be added only when the
-inferred result is not what the indicator needs.
+The minimal forms below are the recommended starting point. Presentation
+metadata is split into `display` and `format`, and both declarations must be
+top-level and appear before the first output declaration. For numeric plot
+views, `format(precision = ...)` is required because it controls the panel
+axis, domain quantization, and crosshair values. Table views and primary
+overlays do not use panel value precision.
 
 ### `indicator`
 
 ```text
-indicator("Title", id = "namespace.name", view = "plot",
-          optional_trades = false, max_bars_back = 5000,
-          panel_title = "Title", layer_name = "Title",
-          data_kind = "scalar", mark = "line", axis = "secondary",
-          value_precision = "fixed_step:1",
-          axis_label_mode = "compact", header_label_mode = "commas",
-          preferred_scale = "fit_visible", max_decimals = 2)
+indicator("Title", id = "namespace.name",
+          sourceable = true, optional_trades = false, max_bars_back = 5000)
 ```
 
-`id` is the stable `namespace.name` identity. `view` defaults to `plot`,
-`optional_trades` to `false`, and `max_bars_back` to `5000`. Use
-`view = "primary_overlay"` for primary-chart placement and `view = "table"`
-for table panels. Panel and layer titles default to the indicator title. Data
-kind, mark, and axis default from the first numeric plot layer. Numeric plot
-panels must declare `value_precision`; axis labels default to `compact`,
-headers to `commas`, and scale to `fit_visible`.
+`id` is the stable `namespace.name` identity. `sourceable` and
+`optional_trades` default to `true` and `false`, respectively, and
+`max_bars_back` defaults to `5000`. `sourceable` is an indicator-level policy:
+when it is `false`, the indicator's visible numeric plots still render
+normally, but none of them can be used as another indicator's dependency
+input. `optional_trades` and `max_bars_back` remain indicator-level policies.
 
-Valid values are `plot`, `table`, `primary_overlay` for `view`; `scalar`,
-`histogram`, `ohlc`, `range` for `data_kind`; `line`, `step`, `area`, `point`,
-`cross`, `regular_bar`, `histogram`, `histogram_signed_overlay`,
-`horizontal_level`, and `candle` for `mark`; `primary` or `secondary` for
-`axis`; `compact`, `commas`, or `abbreviated` for label modes; and `absolute`,
-`fit_visible`, `fit_visible_include_zero`, `logarithmic`, or `percent_from_base`
-for `preferred_scale`.
+### `display`
+
+```text
+display(view = "plot", attachment = "panel",
+        panel_title = "Title", layer_name = "Title")
+```
+
+There can be at most one top-level `display` declaration. It must appear before
+the first output declaration. `view` defaults to `plot`; use `primary_overlay`
+for primary-chart placement and `table` for table panels. An `attachment` of
+`overlay` or `panel` is required when an indicator has an indicator-enabled
+source input. `overlay` lets attached output layers share the source panel's
+scale; `panel` keeps the indicator's normal standalone placement and scale.
+Panel and layer titles default to the indicator title. Valid views are `plot`,
+`table`, and `primary_overlay`; valid attachments are `overlay` and `panel`.
+
+### `format`
+
+```text
+format(precision = "fixed_step:1",
+       axis_labels = "compact", header_labels = "commas",
+       scale = "fit_visible", max_decimals = 2)
+```
+
+There can be at most one top-level `format` declaration. It must appear before
+the first output declaration. `precision` is required for numeric plot
+panels. Axis labels default to `compact`, headers to `commas`, and scale to
+`fit_visible`. Valid precision values are `base_ticker_min_tick`,
+`base_ticker_min_qty`, and `fixed_step:<positive number>`. Label modes are
+`compact`, `commas`, and `abbreviated`; scale values are `absolute`,
+`fit_visible`, `fit_visible_include_zero`, `logarithmic`, and
+`percent_from_base`. `max_decimals` is an integer from 0 to 18.
 
 ### `plot`
 
@@ -135,8 +156,8 @@ plot(value, id = "value", title = "Value", pane = "indicator",
 
 Only the value expression is required. The output ID defaults to the source
 identifier (or a generated ID), and the title defaults to `Plot`. Pane defaults
-to `main` for an indicator with `view = "primary_overlay"` and `indicator`
-otherwise. Scale is `price`,
+to `main` for an indicator with `display(view = "primary_overlay")` and
+`indicator` otherwise. Scale is `price`,
 style is `line`, display is `value` (`none` for boolean outputs), width is `1`,
 offset is `0`, overlay and layer are `true`, and data kind, mark, and axis are
 inferred from the value type, style, pane, and scale. A numeric plot without a
@@ -147,6 +168,10 @@ Generic `plot` styles are `line`, `step`, `histogram`, and `area`. Panes are
 scales are `price` or `independent`; display is `value` or `none`; and precision
 is `instrument`, `decimals:<n>`, or `step:<number>`. Boolean plots
 are output-only unless a presentation declaration references them.
+
+`layer = false` keeps a plot as a private output channel for marks, fills,
+readouts, or table columns. It is not a visible numeric plot and cannot be
+selected as an indicator dependency source.
 
 Structured outputs use dedicated constructors instead of `plot` styles:
 
@@ -230,7 +255,8 @@ readout to a selected rendering.
 ### `column`
 
 ```text
-indicator("Status", id = "catalog.status", view = "table")
+indicator("Status", id = "catalog.status")
+display(view = "table")
 column(title = "Trend", source = "trend", format = "boolean",
        color_slot = "main")
 column(title = "Delta", source = "delta", color_mode = "signed",
@@ -262,8 +288,8 @@ metadata remains static.
 Ordinary plot:
 
 ```text
-indicator("Momentum", id = "catalog.momentum",
-          value_precision = "base_ticker_min_tick")
+indicator("Momentum", id = "catalog.momentum", max_bars_back = 500)
+format(precision = "base_ticker_min_tick")
 value = chart.close - chart.close[10]
 plot(value, id = "value", title = "Momentum")
 ```
@@ -271,7 +297,8 @@ plot(value, id = "value", title = "Momentum")
 Overlay:
 
 ```text
-indicator("Moving average", id = "catalog.ma", view = "primary_overlay")
+indicator("Moving average", id = "catalog.ma")
+display(view = "primary_overlay")
 average = ta.sma(chart.close, 20)
 plot(average, id = "average", title = "Average")
 ```
@@ -279,7 +306,8 @@ plot(average, id = "average", title = "Average")
 Table:
 
 ```text
-indicator("Status", id = "catalog.status", view = "table")
+indicator("Status", id = "catalog.status")
+display(view = "table")
 trend = chart.close > chart.close[1]
 plot(trend, id = "trend", title = "Trend", display = "none", overlay = false, layer = false)
 column(title = "Trend", source = "trend", format = "boolean")
@@ -288,8 +316,8 @@ column(title = "Trend", source = "trend", format = "boolean")
 Histogram:
 
 ```text
-indicator("Flow", id = "catalog.flow",
-          value_precision = "base_ticker_min_tick")
+indicator("Flow", id = "catalog.flow")
+format(precision = "base_ticker_min_tick")
 flow = chart.close - chart.open
 plot(flow, id = "flow", title = "Flow", style = "histogram")
 ```
@@ -297,8 +325,8 @@ plot(flow, id = "flow", title = "Flow", style = "histogram")
 Fill and conditional colors:
 
 ```text
-indicator("Band", id = "catalog.band",
-          value_precision = "base_ticker_min_tick")
+indicator("Band", id = "catalog.band")
+format(precision = "base_ticker_min_tick")
 upper = ta.sma(chart.close, 20) + 2 * ta.stdev(chart.close, 20)
 lower = ta.sma(chart.close, 20) - 2 * ta.stdev(chart.close, 20)
 rising = upper > upper[1]
@@ -320,6 +348,7 @@ may be requested for comparison tickers, but trade history and live trade
 subscriptions are requested only for the base ticker. A frame includes
 `chart.time`,
 `chart.open`, `chart.high`, `chart.low`, `chart.close`, `chart.volume`,
+`chart.hl2`, `chart.hlc3`, `chart.ohlc4`, `chart.hlcc4`,
 `chart.directional_volume_available`, `chart.buy_qty`, `chart.sell_qty`,
 `chart.trade.*`, and `open_interest`. Missing aligned data is `na`.
 Open interest is aligned as-of: each bar receives the latest finite sample at
@@ -362,10 +391,47 @@ The `source` argument in `mark`, `readout`, and `column` declarations names an
 indicator output channel. It is presentation wiring and does not select a
 ticker. The DSL has no `sources`, `source("SOURCE_ID")`, or `flow.*` inputs.
 
+`input.source` declares a numeric series input and its chart-series default:
+
+```text
+source = input.source(chart.close, "Source")
+base_only = input.source(chart.close, "Base only", allow_indicator = false)
+```
+
+`allow_indicator` defaults to `true`. An indicator-enabled source input is the
+consumer side of composition; it requires `view = "plot"`, an `attachment` of
+`overlay` or `panel`, and at least one visible numeric plot layer. A base-only
+input with `allow_indicator = false` accepts the declared default and host
+base-series selections, but rejects indicator bindings and may be used by
+table or primary-overlay indicators. The engine and host support multiple
+source inputs; the minimal one-click attachment UI offers only indicators with
+exactly one indicator-enabled input.
+
+The standard price sources are also available as chart expressions for
+declared defaults: `chart.hl2`, `chart.hlc3`, `chart.ohlc4`, and
+`chart.hlcc4`. For example, CCI can preserve its typical-price default with:
+
+```text
+source = input.source(chart.hlc3, "Source")
+```
+
+The chart expression is the host-neutral fallback. A valid host binding
+replaces it with the same-index visible numeric plot output of another active,
+sourceable indicator; an unavailable or invalid binding evaluates as `na` and
+never falls back to the declared chart source.
+When no indicator binding exists, the host may select a standard base-chart
+source (`Open`, `High`, `Low`, `Close`, `HL2`, `HLC3`, `OHLC4`, or `HLCC4`)
+for the slot; the declared chart expression remains the default. Source inputs
+support history indexing and all numeric TA functions. Numeric
+plot layers in one indicator must share one resolved pane target. `pane` only
+controls placement; it is not a dependency selector. Cross-indicator source
+bindings are restricted to the same Kline pane and base series/timeframe. The
+indicator's `attachment` declaration controls only source-owned placement; it
+does not change dependency evaluation or the source binding itself.
+
 The language rejects remote requests, multi-timeframe contexts, strategies,
 alerts, `varip`, maps, mutable drawing objects, renderer-owned table handles,
-raw trade arrays, liquidations, depth, remote symbols, and cross-indicator
-dependencies.
+raw trade arrays, liquidations, depth, and remote symbols.
 
 ## Validation and startup
 

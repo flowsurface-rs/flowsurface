@@ -3,21 +3,21 @@ use crate::diagnostics::{Diagnostic, Span};
 use crate::frame::FrameField;
 use crate::hir::{
     BarStateField, BinaryOperator, CallSiteId, ConstantId, ExprId, ExpressionKind, FunctionId,
-    HirFunction, HirProgram, LocalSlot, SeriesSlot, StateSlot, StatementKind, TypedExpression,
-    TypedStatement, UnaryOperator,
+    HirFunction, HirProgram, LocalSlot, SeriesSlot, SourceInputSlot, StateSlot, StatementKind,
+    TypedExpression, TypedStatement, UnaryOperator,
 };
 use crate::intrinsic::IntrinsicRegistry;
 use crate::scene::{
     IndicatorPresentation, OutputPrecision, PaneTarget, PlotDescriptor, PlotScale, PlotStyle,
-    PlotValueType, PresentationAxis, PresentationColumn, PresentationColumnColor,
-    PresentationDataKind, PresentationFill, PresentationGeometry, PresentationInputSource,
-    PresentationLabelMode, PresentationLayer, PresentationMark, PresentationMarkKind,
-    PresentationPrecision, PresentationReadout, PresentationScale, PresentationSegment,
-    PresentationStyle, PresentationViewKind, ReadoutBehavior,
+    PlotValueType, PresentationAttachmentMode, PresentationAxis, PresentationColumn,
+    PresentationColumnColor, PresentationDataKind, PresentationFill, PresentationGeometry,
+    PresentationInputSource, PresentationLabelMode, PresentationLayer, PresentationMark,
+    PresentationMarkKind, PresentationPrecision, PresentationReadout, PresentationScale,
+    PresentationSegment, PresentationStyle, PresentationViewKind, ReadoutBehavior,
 };
 use crate::types::{
-    IndicatorDescriptor, IndicatorId, InputDescriptor, InputOption, InputValue, Qualifier, Type,
-    Value, ValueType,
+    IndicatorDescriptor, IndicatorId, InputDescriptor, InputOption, InputValue, Qualifier,
+    SeriesInputDescriptor, Type, Value, ValueType,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -1331,6 +1331,7 @@ struct Compiler {
     states: BTreeMap<String, (StateSlot, Type)>,
     inputs: BTreeMap<String, InputDescriptor>,
     input_spans: BTreeMap<String, Span>,
+    series_inputs: Vec<SeriesInputDescriptor>,
     local_definitions: Vec<Option<ExprId>>,
     mutable_values: BTreeSet<usize>,
     next_local: usize,
@@ -1359,6 +1360,8 @@ struct Compiler {
 #[derive(Debug, Default)]
 struct PresentationSpans {
     indicator: Option<Span>,
+    display: Option<Span>,
+    format: Option<Span>,
     plots: BTreeMap<String, Span>,
     styles: BTreeMap<String, Span>,
     marks: Vec<Span>,
@@ -1381,6 +1384,7 @@ impl Compiler {
             states: BTreeMap::new(),
             inputs: BTreeMap::new(),
             input_spans: BTreeMap::new(),
+            series_inputs: Vec::new(),
             local_definitions: Vec::new(),
             mutable_values: BTreeSet::new(),
             next_local: 0,
@@ -1513,6 +1517,7 @@ impl Compiler {
             descriptor.max_bars_back = 50_000;
         }
         descriptor.inputs = self.inputs.values().cloned().collect();
+        descriptor.series_inputs = self.series_inputs.clone();
         self.validate_inputs(&descriptor);
         self.ensure_default_plot_styles();
         let indicator_overlay =
@@ -1619,6 +1624,7 @@ impl Compiler {
                     .layer_title
                     .clone()
                     .unwrap_or_else(|| plot.label.clone()),
+                pane: plot.pane,
                 data_kind: Some(
                     plot.presentation_data_kind
                         .unwrap_or_else(|| default_data_kind_for_plot(plot)),
@@ -1688,19 +1694,40 @@ impl Compiler {
     }
 
     fn validate_presentation(&mut self, descriptor: &IndicatorDescriptor) {
+        let has_indicator_source_inputs = descriptor
+            .series_inputs
+            .iter()
+            .any(|input| input.allow_indicator);
+        if has_indicator_source_inputs && descriptor.presentation.attachment.is_none() {
+            self.error(
+                self.display_span(),
+                "display must declare attachment = \"overlay\" or \"panel\" when input.source allows indicator bindings",
+            );
+        }
+        if has_indicator_source_inputs
+            && !matches!(descriptor.presentation.view, PresentationViewKind::Plot)
+        {
+            self.error(
+                self.display_span(),
+                "input.source with allow_indicator = true requires display(view = \"plot\")",
+            );
+        }
+        if has_indicator_source_inputs
+            && !descriptor
+                .plots
+                .iter()
+                .any(|plot| plot.layer && matches!(plot.value_type, PlotValueType::Number))
+        {
+            self.error(
+                self.display_span(),
+                "input.source with allow_indicator = true requires at least one visible numeric plot layer",
+            );
+        }
         let output_types = descriptor
             .plots
             .iter()
             .map(|plot| (plot.id.as_str(), plot.value_type))
             .collect::<BTreeMap<_, _>>();
-        let expected_pane = if matches!(
-            descriptor.presentation.view,
-            PresentationViewKind::PrimaryOverlay
-        ) {
-            PaneTarget::Main
-        } else {
-            PaneTarget::Indicator
-        };
         let has_numeric_output = descriptor
             .plots
             .iter()
@@ -1710,19 +1737,42 @@ impl Compiler {
             && descriptor.presentation.value_precision.is_none()
         {
             self.error(
-                self.indicator_span(),
-                "numeric plot indicators must declare value_precision for panel axes and crosshair snapping",
+                self.format_span(),
+                "numeric plot indicators must declare format(precision = ...) for panel axes and crosshair snapping",
             );
         }
-        for plot in &descriptor.plots {
-            if plot.pane != expected_pane {
-                self.error(
-                    self.plot_span(&plot.id),
-                    format!(
-                        "plot '{}' uses pane {:?}, but this indicator's default pane is {:?}",
-                        plot.id, plot.pane, expected_pane
-                    ),
-                );
+        if matches!(
+            descriptor.presentation.view,
+            PresentationViewKind::PrimaryOverlay
+        ) {
+            for plot in &descriptor.plots {
+                if plot.pane != PaneTarget::Main {
+                    self.error(
+                        self.plot_span(&plot.id),
+                        format!(
+                            "primary_overlay plot '{}' must use pane main, got {:?}",
+                            plot.id, plot.pane
+                        ),
+                    );
+                }
+            }
+        } else if matches!(descriptor.presentation.view, PresentationViewKind::Plot) {
+            let mut layer_pane = None;
+            for plot in descriptor
+                .plots
+                .iter()
+                .filter(|plot| plot.layer && !matches!(plot.value_type, PlotValueType::Boolean))
+            {
+                if let Some(expected) = layer_pane {
+                    if expected != plot.pane {
+                        self.error(
+                            self.plot_span(&plot.id),
+                            "all numeric plot layers in one indicator must use the same pane",
+                        );
+                    }
+                } else {
+                    layer_pane = Some(plot.pane);
+                }
             }
         }
         let style_ids = descriptor
@@ -2288,18 +2338,15 @@ impl Compiler {
         {
             self.error(
                 self.column_span(0),
-                "table column declarations require indicator(view = \"table\")",
+                "table column declarations require display(view = \"table\")",
             );
         }
         if matches!(descriptor.presentation.view, PresentationViewKind::Table)
             && descriptor.presentation.columns.is_empty()
         {
             self.error(
-                descriptor
-                    .plots
-                    .first()
-                    .map_or_else(|| self.indicator_span(), |plot| self.plot_span(&plot.id)),
-                "indicator(view = \"table\") requires at least one column declaration",
+                self.display_span(),
+                "display(view = \"table\") requires at least one column declaration",
             );
         }
         if matches!(descriptor.presentation.view, PresentationViewKind::Plot)
@@ -2323,21 +2370,9 @@ impl Compiler {
         ) && descriptor.presentation.layers.is_empty()
         {
             self.error(
-                self.indicator_span(),
+                self.display_span(),
                 "primary_overlay view requires at least one numeric output layer",
             );
-        }
-        if let (Some(data_kind), Some(mark)) = (
-            descriptor.presentation.data_kind,
-            descriptor.presentation.mark,
-        ) && !presentation_mark_compatible(data_kind, mark)
-        {
-            let span = descriptor
-                .plots
-                .iter()
-                .find(|plot| plot.value_type != PlotValueType::Boolean)
-                .map_or_else(|| self.indicator_span(), |plot| self.plot_span(&plot.id));
-            self.error(span, "indicator mark is incompatible with its data kind");
         }
     }
 
@@ -2353,6 +2388,18 @@ impl Compiler {
         self.presentation_spans
             .indicator
             .unwrap_or_else(|| Span::new(0, 0))
+    }
+
+    fn display_span(&self) -> Span {
+        self.presentation_spans
+            .display
+            .unwrap_or_else(|| self.indicator_span())
+    }
+
+    fn format_span(&self) -> Span {
+        self.presentation_spans
+            .format
+            .unwrap_or_else(|| self.indicator_span())
     }
 
     fn style_span(&self, id: &str) -> Span {
@@ -2529,6 +2576,7 @@ impl Compiler {
             .unwrap_or("indicator")
             .to_owned();
         let mut id = format!("local.{title}");
+        let mut sourceable = true;
         let mut optional_trades = false;
         let mut max_bars_back = 5_000;
         if let Some(call) = call {
@@ -2537,19 +2585,9 @@ impl Compiler {
                 &[
                     "title",
                     "id",
+                    "sourceable",
                     "optional_trades",
                     "max_bars_back",
-                    "view",
-                    "panel_title",
-                    "layer_name",
-                    "data_kind",
-                    "mark",
-                    "axis",
-                    "value_precision",
-                    "axis_label_mode",
-                    "header_label_mode",
-                    "preferred_scale",
-                    "max_decimals",
                 ],
             );
             if let Some(value) = self.static_argument(call, 0, "indicator title") {
@@ -2571,6 +2609,13 @@ impl Compiler {
                     id = value;
                 } else {
                     self.error(call.span, "indicator ID must be a string literal");
+                }
+            }
+            if let Some(value) = self.static_named_value(call, "sourceable") {
+                if let Value::Bool(value) = value {
+                    sourceable = value;
+                } else {
+                    self.error(call.span, "indicator sourceable must be a boolean literal");
                 }
             }
             if let Some(value) = self.static_named_value(call, "optional_trades") {
@@ -2613,56 +2658,16 @@ impl Compiler {
                 IndicatorId::new("local.invalid").expect("static ID is valid")
             }
         };
-        let mut presentation = IndicatorPresentation::default();
-        if let Some(view) = call.and_then(|call| self.static_named_string(call, "view")) {
-            presentation.view = match view.to_ascii_lowercase().as_str() {
-                "plot" => PresentationViewKind::Plot,
-                "table" => PresentationViewKind::Table,
-                "primary_overlay" => PresentationViewKind::PrimaryOverlay,
-                value => {
-                    if let Some(call) = call {
-                        self.error(
-                            call.span,
-                            format!(
-                                "unknown indicator view {value}; use plot, table, or primary_overlay"
-                            ),
-                        );
-                    }
-                    presentation.view
-                }
-            };
-        }
-        if let Some(call) = call {
-            presentation.panel_title = self.static_named_string(call, "panel_title");
-            presentation.layer_name = self.static_named_string(call, "layer_name");
-            presentation.data_kind = self.parse_presentation_data_kind(call, "data_kind");
-            presentation.mark = self.parse_presentation_mark(call, "mark");
-            presentation.axis = self.parse_presentation_axis(call, "axis");
-            presentation.value_precision =
-                self.parse_presentation_precision(call, "value_precision");
-            presentation.axis_label_mode =
-                self.parse_presentation_label_mode(call, "axis_label_mode");
-            presentation.header_label_mode =
-                self.parse_presentation_label_mode(call, "header_label_mode");
-            presentation.preferred_scale = self.parse_presentation_scale(call, "preferred_scale");
-            presentation.max_decimals =
-                self.static_named_value(call, "max_decimals")
-                    .and_then(|value| match value {
-                        Value::Int(value) if (0..=18).contains(&value) => Some(value as u8),
-                        _ => {
-                            self.error(call.span, "max_decimals must be an integer from 0 to 18");
-                            None
-                        }
-                    });
-        }
         IndicatorDescriptor {
             id,
             title,
+            sourceable,
             optional_trades,
             max_bars_back,
             inputs: Vec::new(),
+            series_inputs: Vec::new(),
             plots: Vec::new(),
-            presentation,
+            presentation: IndicatorPresentation::default(),
         }
     }
 
@@ -2845,6 +2850,8 @@ impl Compiler {
                 "plotcandle" | "plotohlc" => self.compile_ohlc(&call),
                 "broken_cloud" | "plotrange" => self.compile_range(&call),
                 "emit" => self.compile_emit(&call),
+                "display" => self.compile_display_declaration(&call),
+                "format" => self.compile_format_declaration(&call),
                 "style" => self.compile_style_declaration(&call),
                 "mark" => self.compile_mark_declaration(&call),
                 "fill" => self.compile_fill_declaration(&call),
@@ -3089,11 +3096,14 @@ impl Compiler {
             self.error(span, "input declarations must be top-level");
             return None;
         }
-        self.validate_input_arguments(call);
         let Some(kind) = call.path.get(1).map(String::as_str) else {
             self.error(span, "input requires a type, for example input.int");
             return None;
         };
+        if kind == "source" {
+            return self.compile_source_input(name, call, span);
+        }
+        self.validate_input_arguments(call);
         let default_value = self.static_input_argument(call, 0, "input default");
         let (value_type, default) = match kind {
             "int" => (ValueType::Int, default_value),
@@ -3178,6 +3188,114 @@ impl Compiler {
         Some(self.push_statement(TypedStatement {
             kind: StatementKind::Binding {
                 target: slot,
+                expression,
+            },
+        }))
+    }
+
+    fn compile_source_input(
+        &mut self,
+        name: &str,
+        call: &AstCall,
+        _span: Span,
+    ) -> Option<crate::hir::StatementId> {
+        self.validate_positional_arguments(call, 2, "input.source");
+        self.validate_named_arguments(call, &["defval", "title", "allow_indicator"]);
+        let positional_count = call
+            .arguments
+            .iter()
+            .filter(|argument| argument.name.is_none())
+            .count();
+        if positional_count > 0
+            && call
+                .arguments
+                .iter()
+                .any(|argument| argument.name.as_deref() == Some("defval"))
+        {
+            self.error(call.span, "input.source default cannot be supplied twice");
+        }
+        if positional_count > 1
+            && call
+                .arguments
+                .iter()
+                .any(|argument| argument.name.as_deref() == Some("title"))
+        {
+            self.error(call.span, "input.source title cannot be supplied twice");
+        }
+        let Some(default_argument) = argument_at(call, 0, "defval") else {
+            self.error(call.span, "input.source requires a numeric chart source");
+            return None;
+        };
+        let default_field = match &default_argument.expression {
+            AstExpression::Identifier(path, _) => match path.join(".").as_str() {
+                "chart.open" => Some(FrameField::ChartOpen),
+                "chart.high" => Some(FrameField::ChartHigh),
+                "chart.low" => Some(FrameField::ChartLow),
+                "chart.close" => Some(FrameField::ChartClose),
+                "chart.hl2" => Some(FrameField::ChartHl2),
+                "chart.hlc3" => Some(FrameField::ChartHlc3),
+                "chart.ohlc4" => Some(FrameField::ChartOhlc4),
+                "chart.hlcc4" => Some(FrameField::ChartHlcc4),
+                "chart.volume" => Some(FrameField::ChartVolume),
+                "open_interest" => Some(FrameField::OpenInterest),
+                _ => None,
+            },
+            _ => None,
+        };
+        let Some(default_field) = default_field else {
+            self.error(
+                default_argument.expression.span(),
+                "input.source default must be chart.open, chart.high, chart.low, chart.close, chart.hl2, chart.hlc3, chart.ohlc4, chart.hlcc4, chart.volume, or open_interest",
+            );
+            return None;
+        };
+        match default_field {
+            FrameField::ChartOpen
+            | FrameField::ChartHigh
+            | FrameField::ChartLow
+            | FrameField::ChartClose
+            | FrameField::ChartHl2
+            | FrameField::ChartHlc3
+            | FrameField::ChartOhlc4
+            | FrameField::ChartHlcc4
+            | FrameField::ChartVolume => self.requirements.ohlc = true,
+            FrameField::OpenInterest => self.requirements.open_interest = true,
+            _ => {}
+        }
+        let label = self
+            .static_input_string(call, 1, "input.source title")
+            .unwrap_or_else(|| name.to_owned());
+        let allow_indicator = match self.static_named_value(call, "allow_indicator") {
+            Some(Value::Bool(value)) => value,
+            Some(_) => {
+                self.error(
+                    call.span,
+                    "input.source allow_indicator must be a boolean literal",
+                );
+                true
+            }
+            None => true,
+        };
+        self.series_inputs.push(SeriesInputDescriptor {
+            id: name.to_owned(),
+            label,
+            default_field,
+            allow_indicator,
+        });
+        let slot = SourceInputSlot(self.program.source_inputs.len());
+        self.program.source_inputs.push((slot, name.to_owned()));
+        let local = LocalSlot(self.next_local);
+        self.next_local += 1;
+        let expression = self.push_expression(
+            ExpressionKind::LoadSeriesInput(slot),
+            Type::series(ValueType::Float),
+        );
+        self.local_definitions.push(Some(expression));
+        self.values
+            .insert(name.to_owned(), (local, Type::series(ValueType::Float)));
+        Some(self.push_statement(TypedStatement {
+            kind: StatementKind::Binding {
+                target: local,
                 expression,
             },
         }))
@@ -3421,6 +3539,92 @@ impl Compiler {
         let true_slot = self.static_named_string(call, "true_color_slot");
         let false_slot = self.static_named_string(call, "false_color_slot");
         (true_slot, false_slot)
+    }
+
+    fn validate_metadata_declaration(
+        &mut self,
+        call: &AstCall,
+        name: &str,
+        previous: Option<Span>,
+    ) -> bool {
+        if !self.is_top_level_declaration() {
+            self.error(call.span, format!("{name} declarations must be top-level"));
+            return false;
+        }
+        if !self.program.plots.is_empty() {
+            self.error(
+                call.span,
+                format!("{name} declarations must appear before output declarations"),
+            );
+            return false;
+        }
+        if previous.is_some() {
+            self.error(call.span, format!("duplicate {name} declaration"));
+            return false;
+        }
+        true
+    }
+
+    fn compile_display_declaration(&mut self, call: &AstCall) -> Option<crate::hir::StatementId> {
+        if !self.validate_metadata_declaration(call, "display", self.presentation_spans.display) {
+            return None;
+        }
+        self.validate_positional_arguments(call, 0, "display");
+        self.validate_named_arguments(call, &["view", "attachment", "panel_title", "layer_name"]);
+        if let Some(view) = self.static_named_string(call, "view") {
+            self.presentation.view = match view.to_ascii_lowercase().as_str() {
+                "plot" => PresentationViewKind::Plot,
+                "table" => PresentationViewKind::Table,
+                "primary_overlay" => PresentationViewKind::PrimaryOverlay,
+                value => {
+                    self.error(
+                        call.span,
+                        format!(
+                            "unknown display view {value}; use plot, table, or primary_overlay"
+                        ),
+                    );
+                    self.presentation.view
+                }
+            };
+        }
+        self.presentation.attachment = self.parse_presentation_attachment(call, "attachment");
+        self.presentation.panel_title = self.static_named_string(call, "panel_title");
+        self.presentation.layer_name = self.static_named_string(call, "layer_name");
+        self.presentation_spans.display = Some(call.span);
+        None
+    }
+
+    fn compile_format_declaration(&mut self, call: &AstCall) -> Option<crate::hir::StatementId> {
+        if !self.validate_metadata_declaration(call, "format", self.presentation_spans.format) {
+            return None;
+        }
+        self.validate_positional_arguments(call, 0, "format");
+        self.validate_named_arguments(
+            call,
+            &[
+                "precision",
+                "axis_labels",
+                "header_labels",
+                "scale",
+                "max_decimals",
+            ],
+        );
+        self.presentation.value_precision = self.parse_presentation_precision(call, "precision");
+        self.presentation.axis_label_mode = self.parse_presentation_label_mode(call, "axis_labels");
+        self.presentation.header_label_mode =
+            self.parse_presentation_label_mode(call, "header_labels");
+        self.presentation.preferred_scale = self.parse_presentation_scale(call, "scale");
+        self.presentation.max_decimals =
+            self.static_named_value(call, "max_decimals")
+                .and_then(|value| match value {
+                    Value::Int(value) if (0..=18).contains(&value) => Some(value as u8),
+                    _ => {
+                        self.error(call.span, "max_decimals must be an integer from 0 to 18");
+                        None
+                    }
+                });
+        self.presentation_spans.format = Some(call.span);
+        None
     }
 
     fn compile_style_declaration(&mut self, call: &AstCall) -> Option<crate::hir::StatementId> {
@@ -4531,12 +4735,8 @@ impl Compiler {
                 "color",
             ],
         );
-        let default_pane = if self.descriptor.as_ref().is_some_and(|descriptor| {
-            matches!(
-                descriptor.presentation.view,
-                PresentationViewKind::PrimaryOverlay
-            )
-        }) {
+        let default_pane = if matches!(self.presentation.view, PresentationViewKind::PrimaryOverlay)
+        {
             PaneTarget::Main
         } else {
             PaneTarget::Indicator
@@ -4942,6 +5142,25 @@ impl Compiler {
         })
     }
 
+    fn parse_presentation_attachment(
+        &mut self,
+        call: &AstCall,
+        name: &str,
+    ) -> Option<PresentationAttachmentMode> {
+        let value = self.static_named_string(call, name)?;
+        Some(match value.to_ascii_lowercase().as_str() {
+            "overlay" => PresentationAttachmentMode::Overlay,
+            "panel" => PresentationAttachmentMode::Panel,
+            value => {
+                self.error(
+                    call.span,
+                    format!("unknown attachment {value}; use overlay or panel"),
+                );
+                PresentationAttachmentMode::Panel
+            }
+        })
+    }
+
     fn static_named_value(&mut self, call: &AstCall, name: &str) -> Option<Value> {
         let argument = call
             .arguments
@@ -5039,6 +5258,10 @@ impl Compiler {
             "chart.high" => Some((FrameField::ChartHigh, ValueType::Float)),
             "chart.low" => Some((FrameField::ChartLow, ValueType::Float)),
             "chart.close" => Some((FrameField::ChartClose, ValueType::Float)),
+            "chart.hl2" => Some((FrameField::ChartHl2, ValueType::Float)),
+            "chart.hlc3" => Some((FrameField::ChartHlc3, ValueType::Float)),
+            "chart.ohlc4" => Some((FrameField::ChartOhlc4, ValueType::Float)),
+            "chart.hlcc4" => Some((FrameField::ChartHlcc4, ValueType::Float)),
             "chart.volume" => Some((FrameField::ChartVolume, ValueType::Float)),
             "chart.directional_volume_available" => {
                 Some((FrameField::ChartDirectionalVolumeAvailable, ValueType::Bool))
@@ -5063,6 +5286,10 @@ impl Compiler {
                 | FrameField::ChartHigh
                 | FrameField::ChartLow
                 | FrameField::ChartClose
+                | FrameField::ChartHl2
+                | FrameField::ChartHlc3
+                | FrameField::ChartOhlc4
+                | FrameField::ChartHlcc4
                 | FrameField::ChartVolume => {
                     self.requirements.ohlc = true;
                 }

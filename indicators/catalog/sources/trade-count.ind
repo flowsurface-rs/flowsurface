@@ -1,5 +1,7 @@
 language(1)
-indicator("Trade Count", id = "catalog.trade-count", max_bars_back = 1, layer_name = "Trades", value_precision = "fixed_step:1", axis_label_mode = "abbreviated", header_label_mode = "commas", preferred_scale = "fit_visible_include_zero", max_decimals = 0)
+indicator("Trade Count", id = "catalog.trade-count", max_bars_back = 1)
+display(layer_name = "Trades")
+format(precision = "fixed_step:1", axis_labels = "abbreviated", header_labels = "commas", scale = "fit_visible_include_zero", max_decimals = 0)
 value = chart.trade.count
 plot(value, id = "value", title = "Trade count", precision = "decimals:0", style = "histogram", color_slot = "main", layer_title = "Trades", overlay = false)
 

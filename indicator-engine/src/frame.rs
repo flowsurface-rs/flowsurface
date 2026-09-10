@@ -1,5 +1,6 @@
 use crate::scene::Color;
 use crate::types::Value;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// The two bar bases understood by the live indicator runtime.
@@ -69,6 +70,10 @@ pub enum FrameField {
     ChartHigh,
     ChartLow,
     ChartClose,
+    ChartHl2,
+    ChartHlc3,
+    ChartOhlc4,
+    ChartHlcc4,
     ChartVolume,
     ChartDirectionalVolumeAvailable,
     ChartBuyQty,
@@ -84,6 +89,102 @@ pub enum FrameField {
     Chart,
 }
 
+/// Standard chart-derived numeric sources exposed by `input.source`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BaseSeriesSource {
+    Open,
+    High,
+    Low,
+    Close,
+    Hl2,
+    Hlc3,
+    Ohlc4,
+    Hlcc4,
+}
+
+impl BaseSeriesSource {
+    pub const ALL: [Self; 8] = [
+        Self::Open,
+        Self::High,
+        Self::Low,
+        Self::Close,
+        Self::Hl2,
+        Self::Hlc3,
+        Self::Ohlc4,
+        Self::Hlcc4,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Open => "Open",
+            Self::High => "High",
+            Self::Low => "Low",
+            Self::Close => "Close",
+            Self::Hl2 => "(H + L)/2",
+            Self::Hlc3 => "(H + L + C)/3",
+            Self::Ohlc4 => "(O + H + L + C)/4",
+            Self::Hlcc4 => "(H + L + C + C)/4",
+        }
+    }
+
+    pub fn value(self, frame: &IndicatorFrame) -> Option<f64> {
+        let finite = |value: Option<f64>| value.filter(|value| value.is_finite());
+        let average = |values: &[Option<f64>]| {
+            let sum = values
+                .iter()
+                .try_fold(0.0, |sum, value| Some(sum + finite(*value)?))?;
+            Some(sum / values.len() as f64).filter(|value| value.is_finite())
+        };
+
+        match self {
+            Self::Open => finite(frame.chart.open),
+            Self::High => finite(frame.chart.high),
+            Self::Low => finite(frame.chart.low),
+            Self::Close => finite(frame.chart.close),
+            Self::Hl2 => average(&[frame.chart.high, frame.chart.low]),
+            Self::Hlc3 => average(&[frame.chart.high, frame.chart.low, frame.chart.close]),
+            Self::Ohlc4 => average(&[
+                frame.chart.open,
+                frame.chart.high,
+                frame.chart.low,
+                frame.chart.close,
+            ]),
+            Self::Hlcc4 => average(&[
+                frame.chart.high,
+                frame.chart.low,
+                frame.chart.close,
+                frame.chart.close,
+            ]),
+        }
+    }
+}
+
+impl FrameField {
+    pub const fn source_input_label(self) -> Option<&'static str> {
+        match self {
+            Self::ChartOpen => Some(BaseSeriesSource::Open.label()),
+            Self::ChartHigh => Some(BaseSeriesSource::High.label()),
+            Self::ChartLow => Some(BaseSeriesSource::Low.label()),
+            Self::ChartClose => Some(BaseSeriesSource::Close.label()),
+            Self::ChartHl2 => Some(BaseSeriesSource::Hl2.label()),
+            Self::ChartHlc3 => Some(BaseSeriesSource::Hlc3.label()),
+            Self::ChartOhlc4 => Some(BaseSeriesSource::Ohlc4.label()),
+            Self::ChartHlcc4 => Some(BaseSeriesSource::Hlcc4.label()),
+            Self::ChartVolume => Some("Volume"),
+            Self::OpenInterest => Some("Open interest"),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SeriesInputValue {
+    Default,
+    Base(BaseSeriesSource),
+    Value(Option<f64>),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct IndicatorFrame {
     pub index: usize,
@@ -91,6 +192,7 @@ pub struct IndicatorFrame {
     pub basis: TimeOrTick,
     pub chart: ChartFrame,
     pub open_interest: Option<f64>,
+    pub series_inputs: Arc<[SeriesInputValue]>,
 }
 
 impl IndicatorFrame {
@@ -101,6 +203,18 @@ impl IndicatorFrame {
             FrameField::ChartHigh => optional_float(self.chart.high),
             FrameField::ChartLow => optional_float(self.chart.low),
             FrameField::ChartClose => optional_float(self.chart.close),
+            FrameField::ChartHl2 => BaseSeriesSource::Hl2
+                .value(self)
+                .map_or(Value::Na, Value::Float),
+            FrameField::ChartHlc3 => BaseSeriesSource::Hlc3
+                .value(self)
+                .map_or(Value::Na, Value::Float),
+            FrameField::ChartOhlc4 => BaseSeriesSource::Ohlc4
+                .value(self)
+                .map_or(Value::Na, Value::Float),
+            FrameField::ChartHlcc4 => BaseSeriesSource::Hlcc4
+                .value(self)
+                .map_or(Value::Na, Value::Float),
             FrameField::ChartVolume => optional_float(self.chart.volume),
             FrameField::ChartDirectionalVolumeAvailable => {
                 Value::Bool(self.chart.directional_volume_available)
@@ -127,6 +241,13 @@ impl IndicatorFrame {
 
     pub fn field(&self, field: FrameField) -> Value {
         self.primary_value(field)
+    }
+
+    pub fn series_input(&self, slot: usize) -> SeriesInputValue {
+        self.series_inputs
+            .get(slot)
+            .cloned()
+            .unwrap_or(SeriesInputValue::Default)
     }
 }
 

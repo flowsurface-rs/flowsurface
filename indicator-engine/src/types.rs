@@ -294,12 +294,22 @@ impl InputDescriptor {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct SeriesInputDescriptor {
+    pub id: String,
+    pub label: String,
+    pub default_field: crate::frame::FrameField,
+    pub allow_indicator: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct IndicatorDescriptor {
     pub id: IndicatorId,
     pub title: String,
+    pub sourceable: bool,
     pub optional_trades: bool,
     pub max_bars_back: usize,
     pub inputs: Vec<InputDescriptor>,
+    pub series_inputs: Vec<SeriesInputDescriptor>,
     pub plots: Vec<crate::scene::PlotDescriptor>,
     pub presentation: crate::scene::IndicatorPresentation,
 }

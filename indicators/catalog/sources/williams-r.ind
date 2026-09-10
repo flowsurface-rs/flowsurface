@@ -1,5 +1,6 @@
 language(1)
-indicator("Williams %R", id = "catalog.williams-r", max_bars_back = 1, value_precision = "fixed_step:0.01", axis_label_mode = "compact", header_label_mode = "compact", max_decimals = 2)
+indicator("Williams %R", id = "catalog.williams-r", max_bars_back = 1)
+format(precision = "fixed_step:0.01", axis_labels = "compact", header_labels = "compact", max_decimals = 2)
 period = input.int(14, "Period", min = 1, max = 200)
 upper_band = input.float(-20.0, "Upper band", min = -99.0, max = -1.0, step = 1.0)
 lower_band = input.float(-80.0, "Lower band", min = -99.0, max = -1.0, step = 1.0)

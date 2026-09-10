@@ -28,6 +28,9 @@ pub struct StateSlot(pub usize);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SeriesSlot(pub usize);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SourceInputSlot(pub usize);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CallSiteId(pub usize);
 
@@ -79,6 +82,7 @@ pub enum ExpressionKind {
     LoadState(StateSlot),
     LoadSeries(SeriesSlot),
     LoadInput(LocalSlot),
+    LoadSeriesInput(SourceInputSlot),
     LoadFrame(FrameField),
     RecordField {
         source: ExprId,
@@ -261,6 +265,7 @@ pub struct HirProgram {
     pub call_sites: usize,
     pub plots: Vec<PlotDescriptor>,
     pub inputs: Vec<(LocalSlot, String)>,
+    pub source_inputs: Vec<(SourceInputSlot, String)>,
     pub local_definitions: Vec<Option<ExprId>>,
     pub blocks: Vec<StatementBlock>,
     pub entry_point: StatementBlockId,
@@ -281,6 +286,7 @@ impl HirProgram {
             call_sites: 0,
             plots: Vec::new(),
             inputs: Vec::new(),
+            source_inputs: Vec::new(),
             local_definitions: Vec::new(),
             blocks: vec![StatementBlock {
                 statements: Vec::new(),

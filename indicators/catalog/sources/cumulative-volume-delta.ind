@@ -1,5 +1,7 @@
 language(1)
-indicator("CVD", id = "catalog.cumulative-volume-delta", max_bars_back = 1, layer_name = "Cumulative Volume Delta", value_precision = "base_ticker_min_qty", axis_label_mode = "abbreviated", header_label_mode = "commas")
+indicator("CVD", id = "catalog.cumulative-volume-delta", max_bars_back = 1)
+display(layer_name = "Cumulative Volume Delta")
+format(precision = "base_ticker_min_qty", axis_labels = "abbreviated", header_labels = "commas")
 delta = select(chart.directional_volume_available, chart.buy_qty - chart.sell_qty, na)
 value = ta.cum(delta)
 plot(value, id = "value", title = "CVD", precision = "instrument", color_slot = "main", layer_title = "Cumulative Volume Delta", overlay = false)

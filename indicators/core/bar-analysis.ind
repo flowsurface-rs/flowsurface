@@ -1,5 +1,6 @@
 language(1)
-indicator("Bar Analysis", id = "core.bar-analysis", view = "table", max_bars_back = 1)
+indicator("Bar Analysis", id = "core.bar-analysis", sourceable = false, max_bars_back = 1)
+display(view = "table")
 has_trade_data = chart.trade.available
 buy = select(has_trade_data, chart.trade.buy_qty, na)
 sell = select(has_trade_data, chart.trade.sell_qty, na)

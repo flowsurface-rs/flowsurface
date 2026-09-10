@@ -1,9 +1,12 @@
 use crate::CompiledIndicator;
 use crate::frame::{
     FrameOutput, HorizontalLevelOutput, IndicatorFrame, MarkerOutput, OhlcOutput, PlotOutput,
-    RangeOutput, SegmentOutput,
+    RangeOutput, SegmentOutput, SeriesInputValue,
 };
-use crate::hir::{BarStateField, BinaryOperator, ExprId, ExpressionKind, StateSlot, StatementKind};
+use crate::hir::{
+    BarStateField, BinaryOperator, ExprId, ExpressionKind, SourceInputSlot, StateSlot,
+    StatementKind,
+};
 use crate::intrinsic::{IntrinsicError, IntrinsicEvalContext, IntrinsicRegistry, IntrinsicState};
 use crate::scene::Color;
 use crate::types::{IndicatorConfig, InputType, InputValue, Value};
@@ -442,11 +445,45 @@ impl IndicatorInstance {
                 ExpressionKind::LoadFrame(field) => Some(frame.primary_value(*field)),
                 _ => None,
             };
+            let value = match &expression.kind {
+                ExpressionKind::LoadSeriesInput(slot) => {
+                    Some(self.series_input_value(*slot, frame))
+                }
+                _ => value,
+            };
             if let Some(value) = value
                 && let Some(current) = self.working.current_series.get_mut(slot.0)
             {
                 *current = Some(value);
             }
+        }
+    }
+
+    fn series_input_value(&self, slot: SourceInputSlot, frame: &IndicatorFrame) -> Value {
+        let Some((_, input_id)) = self
+            .compiled
+            .program
+            .source_inputs
+            .iter()
+            .find(|(candidate, _)| *candidate == slot)
+        else {
+            return Value::Na;
+        };
+        let Some(descriptor) = self
+            .compiled
+            .descriptor
+            .series_inputs
+            .iter()
+            .find(|descriptor| descriptor.id == *input_id)
+        else {
+            return Value::Na;
+        };
+        match frame.series_input(slot.0) {
+            SeriesInputValue::Default => frame.primary_value(descriptor.default_field),
+            SeriesInputValue::Base(source) => source.value(frame).map_or(Value::Na, Value::Float),
+            SeriesInputValue::Value(Some(value)) if value.is_finite() => Value::Float(value),
+            SeriesInputValue::Value(Some(_)) => Value::Na,
+            SeriesInputValue::Value(None) => Value::Na,
         }
     }
 
@@ -878,6 +915,10 @@ impl IndicatorInstance {
             ExpressionKind::LoadInput(slot) => {
                 self.plan.inputs.get(slot.0).cloned().unwrap_or(Value::Na)
             }
+            ExpressionKind::LoadSeriesInput(slot) => self
+                .current_frame
+                .as_ref()
+                .map_or(Value::Na, |frame| self.series_input_value(slot, frame)),
             ExpressionKind::LoadState(slot) => self.state_value(slot).unwrap_or(Value::Na),
             ExpressionKind::LoadBarIndex => Value::Int(self.current_bar_index as i64),
             ExpressionKind::LoadBarState(field) => Value::Bool(match field {
@@ -1445,8 +1486,8 @@ mod tests {
         let compiled = crate::compile(
             r#"
                 language(1)
-                indicator("History resource", id = "test.history-resource",
-                    value_precision = "base_ticker_min_tick")
+                indicator("History resource", id = "test.history-resource")
+                format(precision = "base_ticker_min_tick")
                 plot(chart.close, id = "value")
             "#,
             "history-resource.ind",

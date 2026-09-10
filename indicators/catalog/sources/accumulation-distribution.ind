@@ -1,5 +1,7 @@
 language(1)
-indicator("Accumulation / Distribution", id = "catalog.accumulation-distribution", max_bars_back = 1, layer_name = "A/D", value_precision = "base_ticker_min_qty", axis_label_mode = "abbreviated", header_label_mode = "commas")
+indicator("Accumulation / Distribution", id = "catalog.accumulation-distribution", max_bars_back = 1)
+display(layer_name = "A/D")
+format(precision = "base_ticker_min_qty", axis_labels = "abbreviated", header_labels = "commas")
 range = chart.high - chart.low
 flow = select(range <= 0, 0, ((chart.close - chart.low) - (chart.high - chart.close)) / range)
 state total = 0

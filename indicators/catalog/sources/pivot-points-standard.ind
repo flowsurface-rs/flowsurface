@@ -1,5 +1,6 @@
 language(1)
-indicator("Pivot Points Standard", id = "catalog.pivot-points-standard", view = "primary_overlay", max_bars_back = 1, layer_name = "Pivot Points")
+indicator("Pivot Points Standard", id = "catalog.pivot-points-standard", sourceable = false, max_bars_back = 1)
+display(view = "primary_overlay", layer_name = "Pivot Points")
 selected_high = ta.highest(chart.high, 24)
 selected_low = ta.lowest(chart.low, 24)
 selected_close = chart.close

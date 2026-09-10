@@ -10,27 +10,29 @@ mod warmup;
 
 pub use diagnostics::{Diagnostic, Severity, Span};
 pub use frame::{
-    ChartFrame, FrameField, FrameOutput, HorizontalLevelOutput, IndicatorFrame, MarkerOutput,
-    OhlcOutput, PlotOutput, RangeOutput, SegmentOutput, TimeOrTick, TradeAggregate,
+    BaseSeriesSource, ChartFrame, FrameField, FrameOutput, HorizontalLevelOutput, IndicatorFrame,
+    MarkerOutput, OhlcOutput, PlotOutput, RangeOutput, SegmentOutput, SeriesInputValue, TimeOrTick,
+    TradeAggregate,
 };
 pub use hir::{
     BarStateField, BinaryOperator, CallSiteId, ConstantId, ExprId, ExpressionKind, FunctionId,
-    HirFunction, HirProgram, IntrinsicId, LocalSlot, PlotId, SeriesSlot, StateSlot, StatementBlock,
-    StatementBlockId, StatementId, StatementKind, TypedExpression, TypedStatement, UnaryOperator,
+    HirFunction, HirProgram, IntrinsicId, LocalSlot, PlotId, SeriesSlot, SourceInputSlot,
+    StateSlot, StatementBlock, StatementBlockId, StatementId, StatementKind, TypedExpression,
+    TypedStatement, UnaryOperator,
 };
 use intrinsic::IntrinsicRegistry;
 pub use runtime::{IndicatorInstance, PlanningError, RuntimeError, RuntimeLimits};
 pub use scene::{
     Color, IndicatorPresentation, OutputPrecision, PaneTarget, PlotDescriptor, PlotScale,
-    PlotStyle, PlotValueType, PresentationAxis, PresentationColumn, PresentationColumnColor,
-    PresentationDataKind, PresentationFill, PresentationGeometry, PresentationInputSource,
-    PresentationLabelMode, PresentationLayer, PresentationMark, PresentationMarkKind,
-    PresentationPrecision, PresentationReadout, PresentationScale, PresentationSegment,
-    PresentationStyle, PresentationViewKind, ReadoutBehavior,
+    PlotStyle, PlotValueType, PresentationAttachmentMode, PresentationAxis, PresentationColumn,
+    PresentationColumnColor, PresentationDataKind, PresentationFill, PresentationGeometry,
+    PresentationInputSource, PresentationLabelMode, PresentationLayer, PresentationMark,
+    PresentationMarkKind, PresentationPrecision, PresentationReadout, PresentationScale,
+    PresentationSegment, PresentationStyle, PresentationViewKind, ReadoutBehavior,
 };
 pub use types::{
     IndicatorConfig, IndicatorDescriptor, IndicatorId, InputDescriptor, InputOption, InputType,
-    InputValue, Qualifier, Type, Value, ValueType,
+    InputValue, Qualifier, SeriesInputDescriptor, Type, Value, ValueType,
 };
 
 pub type Program = HirProgram;
@@ -177,6 +179,7 @@ mod tests {
                 trade: None,
             },
             open_interest: None,
+            series_inputs: Vec::new().into(),
         }
     }
 
@@ -193,7 +196,8 @@ mod tests {
     fn warmup_produces_historical_values() {
         let source = r#"
             language(1)
-            indicator("Simple average", id = "test.sma", value_precision = "base_ticker_min_tick")
+            indicator("Simple average", id = "test.sma")
+            format(precision = "base_ticker_min_tick")
             length = input.int(2, "Length", min = 1, max = 100)
             plot(ta.sma(chart.close, length), id = "sma")
         "#;
@@ -227,7 +231,8 @@ mod tests {
     fn history_indexing_reads_an_immutable_series_local() {
         let source = r#"
             language(1)
-            indicator("Lagged value", id = "test.lagged", value_precision = "base_ticker_min_tick")
+            indicator("Lagged value", id = "test.lagged")
+            format(precision = "base_ticker_min_tick")
             value = chart.close * 2
             plot(value[1], id = "lagged")
         "#;
@@ -257,10 +262,459 @@ mod tests {
     }
 
     #[test]
+    fn source_inputs_support_history_ta_and_host_overrides() {
+        let source = r#"
+            language(1)
+            indicator("Source input", id = "test.source-input")
+            display(attachment = "panel")
+            format(precision = "base_ticker_min_tick")
+            source = input.source(chart.close, "Source")
+            plot(source, id = "current")
+            plot(source[1], id = "lagged")
+            plot(ta.sma(source, 2), id = "average")
+        "#;
+        let compiled = compile(source, "source-input.ind").expect("source input should compile");
+        assert!(compiled.descriptor.sourceable);
+        assert_eq!(compiled.descriptor.series_inputs.len(), 1);
+        assert_eq!(compiled.descriptor.series_inputs[0].id, "source");
+        assert!(compiled.descriptor.series_inputs[0].allow_indicator);
+        assert_eq!(
+            compiled.descriptor.presentation.attachment,
+            Some(PresentationAttachmentMode::Panel)
+        );
+        assert_eq!(compiled.warmup_bars(&IndicatorConfig::default()), Some(2));
+        let mut instance = compiled
+            .instantiate(IndicatorConfig::default())
+            .expect("source input should bind");
+
+        let first = instance
+            .evaluate_closed(frame(0, 1, 10.0))
+            .expect("first frame should evaluate");
+        assert_eq!(plot_value(&first, "current"), &Value::Float(10.0));
+        assert_eq!(plot_value(&first, "lagged"), &Value::Na);
+        assert_eq!(plot_value(&first, "average"), &Value::Na);
+
+        let second = instance
+            .evaluate_closed(frame(1, 2, 20.0))
+            .expect("fallback frame should evaluate");
+        assert_eq!(plot_value(&second, "current"), &Value::Float(20.0));
+        assert_eq!(plot_value(&second, "lagged"), &Value::Float(10.0));
+        assert_eq!(plot_value(&second, "average"), &Value::Float(15.0));
+
+        let mut bound = frame(2, 3, 30.0);
+        bound.series_inputs = vec![SeriesInputValue::Value(Some(100.0))].into();
+        let bound = instance
+            .evaluate_closed(bound)
+            .expect("bound frame should evaluate");
+        assert_eq!(plot_value(&bound, "current"), &Value::Float(100.0));
+        assert_eq!(plot_value(&bound, "lagged"), &Value::Float(20.0));
+        assert_eq!(plot_value(&bound, "average"), &Value::Float(60.0));
+
+        let mut unavailable = frame(3, 4, 40.0);
+        unavailable.series_inputs = vec![SeriesInputValue::Value(None)].into();
+        let unavailable = instance
+            .evaluate_closed(unavailable)
+            .expect("unavailable frame should evaluate");
+        assert_eq!(plot_value(&unavailable, "current"), &Value::Na);
+        assert_eq!(plot_value(&unavailable, "lagged"), &Value::Float(100.0));
+        assert_eq!(plot_value(&unavailable, "average"), &Value::Na);
+
+        let mut selected = frame(4, 5, 50.0);
+        selected.chart.high = Some(9.0);
+        selected.chart.low = Some(3.0);
+        selected.series_inputs = vec![SeriesInputValue::Base(BaseSeriesSource::Hl2)].into();
+        let selected = instance
+            .evaluate_closed(selected)
+            .expect("base source selection should evaluate");
+        assert_eq!(plot_value(&selected, "current"), &Value::Float(6.0));
+    }
+
+    #[test]
+    fn chart_composite_sources_compile_and_evaluate() {
+        let source = r#"
+            language(1)
+            indicator("Composite sources", id = "test.composite-sources")
+            display(attachment = "panel")
+            format(precision = "base_ticker_min_tick")
+            source = input.source(chart.hlc3, "Source")
+            plot(chart.hl2, id = "hl2")
+            plot(chart.hlc3, id = "hlc3")
+            plot(chart.ohlc4, id = "ohlc4")
+            plot(chart.hlcc4, id = "hlcc4")
+            plot(source, id = "source")
+        "#;
+        let compiled = compile(source, "composite-sources.ind")
+            .expect("composite chart sources should compile");
+        assert!(compiled.requirements.ohlc);
+        assert_eq!(
+            compiled.descriptor.series_inputs[0].default_field,
+            FrameField::ChartHlc3
+        );
+
+        let mut complete = frame(0, 1, 5.0);
+        complete.chart.open = Some(1.0);
+        complete.chart.high = Some(8.0);
+        complete.chart.low = Some(3.0);
+        let mut instance = compiled
+            .instantiate(IndicatorConfig::default())
+            .expect("composite source instance should bind");
+        let output = instance
+            .evaluate_closed(complete)
+            .expect("complete composite frame should evaluate");
+        assert_eq!(plot_value(&output, "hl2"), &Value::Float(5.5));
+        assert_eq!(plot_value(&output, "hlc3"), &Value::Float(16.0 / 3.0));
+        assert_eq!(plot_value(&output, "ohlc4"), &Value::Float(17.0 / 4.0));
+        assert_eq!(plot_value(&output, "hlcc4"), &Value::Float(21.0 / 4.0));
+        assert_eq!(plot_value(&output, "source"), &Value::Float(16.0 / 3.0));
+
+        let mut incomplete = frame(1, 2, 5.0);
+        incomplete.chart.high = Some(8.0);
+        incomplete.chart.low = None;
+        let output = instance
+            .evaluate_closed(incomplete)
+            .expect("incomplete composite frame should evaluate");
+        assert_eq!(plot_value(&output, "hl2"), &Value::Na);
+        assert_eq!(plot_value(&output, "hlc3"), &Value::Na);
+        assert_eq!(plot_value(&output, "ohlc4"), &Value::Na);
+        assert_eq!(plot_value(&output, "hlcc4"), &Value::Na);
+        assert_eq!(plot_value(&output, "source"), &Value::Na);
+
+        let mut nonfinite = frame(2, 3, 5.0);
+        nonfinite.chart.high = Some(f64::NAN);
+        let output = instance
+            .evaluate_closed(nonfinite)
+            .expect("non-finite composite frame should evaluate");
+        assert_eq!(plot_value(&output, "source"), &Value::Na);
+    }
+
+    #[test]
+    fn source_input_requires_a_direct_chart_series_default() {
+        let diagnostics = compile(
+            r#"
+                language(1)
+                indicator("Invalid source", id = "test.invalid-source")
+                display(attachment = "panel")
+                format(precision = "base_ticker_min_tick")
+                source = input.source(chart.close + 1, "Source")
+                plot(source, id = "value")
+            "#,
+            "invalid-source.ind",
+        )
+        .expect_err("source defaults must be direct chart fields");
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("input.source default must be chart.open")
+        }));
+    }
+
+    #[test]
+    fn source_policies_map_and_allow_multiple_engine_inputs() {
+        let policy = compile(
+            r#"
+                language(1)
+                indicator("Policies", id = "test.policies", sourceable = false)
+                display(attachment = "panel")
+                format(precision = "base_ticker_min_tick")
+                base = input.source(chart.close, "Base", allow_indicator = false)
+                source = input.source(chart.close, "Source")
+                plot(base + source, id = "value")
+            "#,
+            "policies.ind",
+        )
+        .expect("source policies should compile");
+        assert!(!policy.descriptor.sourceable);
+        assert_eq!(policy.descriptor.series_inputs.len(), 2);
+        assert!(!policy.descriptor.series_inputs[0].allow_indicator);
+        assert!(policy.descriptor.series_inputs[1].allow_indicator);
+
+        let multiple = compile(
+            r#"
+                language(1)
+                indicator("Multiple sources", id = "test.multiple-sources")
+                display(attachment = "panel")
+                format(precision = "base_ticker_min_tick")
+                left = input.source(chart.close, "Left")
+                right = input.source(chart.open, "Right")
+                plot(left - right, id = "value")
+            "#,
+            "multiple-sources.ind",
+        )
+        .expect("multiple source inputs should compile");
+        assert_eq!(multiple.descriptor.series_inputs.len(), 2);
+        assert!(
+            multiple
+                .descriptor
+                .series_inputs
+                .iter()
+                .all(|input| input.allow_indicator)
+        );
+    }
+
+    #[test]
+    fn base_only_source_inputs_can_use_non_plot_views() {
+        let table = compile(
+            r#"
+                language(1)
+                indicator("Base table", id = "test.base-table")
+                display(view = "table")
+                source = input.source(chart.close, "Source", allow_indicator = false)
+                plot(source, id = "value", layer = false)
+                column(title = "Value", source = "value")
+            "#,
+            "base-table.ind",
+        )
+        .expect("base-only table source should compile");
+        assert_eq!(
+            table.descriptor.presentation.view,
+            PresentationViewKind::Table
+        );
+
+        let overlay = compile(
+            r#"
+                language(1)
+                indicator("Base overlay", id = "test.base-overlay")
+                display(view = "primary_overlay")
+                source = input.source(chart.close, "Source", allow_indicator = false)
+                plot(source, id = "value", pane = "main")
+            "#,
+            "base-overlay.ind",
+        )
+        .expect("base-only primary overlay source should compile");
+        assert_eq!(
+            overlay.descriptor.presentation.view,
+            PresentationViewKind::PrimaryOverlay
+        );
+    }
+
+    #[test]
+    fn indicator_enabled_source_inputs_require_plot_views_and_visible_numeric_layers() {
+        let table = compile(
+            r#"
+                language(1)
+                indicator("Invalid table", id = "test.invalid-table")
+                display(view = "table")
+                source = input.source(chart.close, "Source")
+                plot(source, id = "value", layer = false)
+                column(title = "Value", source = "value")
+            "#,
+            "invalid-table.ind",
+        )
+        .expect_err("indicator-enabled table source should fail");
+        assert!(table.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("allow_indicator = true requires display(view = \"plot\")")
+        }));
+        assert!(table.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("requires at least one visible numeric plot layer")
+        }));
+
+        let overlay = compile(
+            r#"
+                language(1)
+                indicator("Invalid overlay", id = "test.invalid-overlay")
+                display(view = "primary_overlay")
+                source = input.source(chart.close, "Source")
+                plot(source, id = "value", pane = "main")
+            "#,
+            "invalid-overlay.ind",
+        )
+        .expect_err("indicator-enabled primary overlay source should fail");
+        assert!(overlay.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("allow_indicator = true requires display(view = \"plot\")")
+        }));
+    }
+
+    #[test]
+    fn catalog_source_slots_preserve_declared_defaults() {
+        let migrated = [
+            (
+                "../indicators/core/rsi.ind",
+                "core.rsi",
+                Some(FrameField::ChartClose),
+            ),
+            (
+                "../indicators/core/moving-averages.ind",
+                "core.moving-averages",
+                Some(FrameField::ChartClose),
+            ),
+            (
+                "../indicators/catalog/sources/bollinger-bands.ind",
+                "catalog.bollinger-bands",
+                Some(FrameField::ChartClose),
+            ),
+            (
+                "../indicators/catalog/sources/cci.ind",
+                "catalog.cci",
+                Some(FrameField::ChartHlc3),
+            ),
+            (
+                "../indicators/catalog/sources/macd.ind",
+                "catalog.macd",
+                Some(FrameField::ChartClose),
+            ),
+            ("../indicators/catalog/sources/mfi.ind", "catalog.mfi", None),
+            (
+                "../indicators/catalog/sources/momentum.ind",
+                "catalog.momentum",
+                Some(FrameField::ChartClose),
+            ),
+            (
+                "../indicators/catalog/sources/obv.ind",
+                "catalog.obv",
+                Some(FrameField::ChartClose),
+            ),
+            (
+                "../indicators/catalog/sources/roc.ind",
+                "catalog.roc",
+                Some(FrameField::ChartClose),
+            ),
+            (
+                "../indicators/catalog/sources/stoch-rsi.ind",
+                "catalog.stoch-rsi",
+                Some(FrameField::ChartClose),
+            ),
+            (
+                "../indicators/catalog/sources/trix.ind",
+                "catalog.trix",
+                Some(FrameField::ChartClose),
+            ),
+        ];
+
+        for (relative_path, expected_id, default_field) in migrated {
+            let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative_path);
+            let compiled = compile_file(&path).expect("migrated source should compile");
+            assert_eq!(compiled.descriptor.id.as_str(), expected_id);
+            match default_field {
+                Some(default_field) => {
+                    assert_eq!(compiled.descriptor.series_inputs.len(), 1);
+                    let source = &compiled.descriptor.series_inputs[0];
+                    assert_eq!(source.id, "source");
+                    assert_eq!(source.label, "Source");
+                    assert_eq!(source.default_field, default_field);
+                }
+                None => assert!(compiled.descriptor.series_inputs.is_empty()),
+            }
+        }
+    }
+
+    #[test]
+    fn source_indicators_require_an_explicit_attachment_mode() {
+        let overlay = compile(
+            r#"
+                language(1)
+                indicator("Overlay source", id = "test.overlay-source")
+                display(attachment = "overlay")
+                format(precision = "base_ticker_min_tick")
+                source = input.source(chart.close, "Source")
+                plot(source, id = "value")
+            "#,
+            "overlay-source.ind",
+        )
+        .expect("overlay source should compile");
+        assert_eq!(
+            overlay.descriptor.presentation.attachment,
+            Some(PresentationAttachmentMode::Overlay)
+        );
+
+        let missing = compile(
+            r#"
+                language(1)
+                indicator("Missing attachment", id = "test.missing-attachment")
+                format(precision = "base_ticker_min_tick")
+                source = input.source(chart.close, "Source")
+                plot(source, id = "value")
+            "#,
+            "missing-attachment.ind",
+        )
+        .expect_err("source indicators must declare an attachment mode");
+        assert!(missing.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("display must declare attachment")
+        }));
+
+        let invalid = compile(
+            r#"
+                language(1)
+                indicator("Invalid attachment", id = "test.invalid-attachment")
+                display(attachment = "split")
+                format(precision = "base_ticker_min_tick")
+                source = input.source(chart.close, "Source")
+                plot(source, id = "value")
+            "#,
+            "invalid-attachment.ind",
+        )
+        .expect_err("unknown attachment modes must be rejected");
+        assert!(
+            invalid
+                .iter()
+                .any(|diagnostic| { diagnostic.message.contains("unknown attachment split") })
+        );
+    }
+
+    #[test]
+    fn named_panes_and_numeric_layer_targets_are_validated_by_the_compiler() {
+        let named = compile(
+            r#"
+                language(1)
+                indicator("Named", id = "test.named")
+                format(precision = "base_ticker_min_tick")
+                plot(chart.close, id = "value", pane = "named:7")
+            "#,
+            "named.ind",
+        )
+        .expect("named pane should compile");
+        assert_eq!(named.descriptor.plots[0].pane, PaneTarget::Named(7));
+        assert_eq!(
+            named.descriptor.presentation.layers[0].pane,
+            PaneTarget::Named(7)
+        );
+
+        let primary_overlay = compile(
+            r#"
+                language(1)
+                indicator("Overlay", id = "test.named-overlay")
+                display(view = "primary_overlay")
+                plot(chart.close, id = "value", pane = "named:7")
+            "#,
+            "named-overlay.ind",
+        )
+        .expect_err("primary overlays must target the main pane");
+        assert!(primary_overlay.iter().any(|diagnostic| {
+            diagnostic.message.contains("primary_overlay")
+                && diagnostic.message.contains("pane main")
+        }));
+
+        let mixed = compile(
+            r#"
+                language(1)
+                indicator("Mixed", id = "test.mixed")
+                format(precision = "base_ticker_min_tick")
+                plot(chart.close, id = "main", pane = "main")
+                plot(chart.close, id = "indicator", pane = "indicator")
+            "#,
+            "mixed.ind",
+        )
+        .expect_err("numeric layers must share a pane target");
+        assert!(mixed.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("all numeric plot layers in one indicator must use the same pane")
+        }));
+    }
+
+    #[test]
     fn preview_restarts_from_the_last_committed_state() {
         let source = r#"
             language(1)
-            indicator("Committed state", id = "test.state", value_precision = "base_ticker_min_tick")
+            indicator("Committed state", id = "test.state")
+            format(precision = "base_ticker_min_tick")
             state total = 0
             total := total + chart.close
             plot(total, id = "total")
@@ -295,7 +749,8 @@ mod tests {
     fn cumulative_volume_skips_missing_directional_samples() {
         let source = r#"
             language(1)
-            indicator("CVD", id = "test.cvd", value_precision = "base_ticker_min_qty")
+            indicator("CVD", id = "test.cvd")
+            format(precision = "base_ticker_min_qty")
             delta = select(chart.directional_volume_available, chart.buy_qty - chart.sell_qty, na)
             value = ta.cum(delta)
             plot(value, id = "value")
@@ -351,7 +806,8 @@ mod tests {
     fn optional_trade_inputs_fall_back_to_candle_volume() {
         let source = r#"
             language(1)
-            indicator("Volume", id = "test.volume", optional_trades = true, value_precision = "base_ticker_min_qty")
+            indicator("Volume", id = "test.volume", optional_trades = true)
+            format(precision = "base_ticker_min_qty")
             has_directional_volume = chart.directional_volume_available
             buy = select(has_directional_volume, chart.buy_qty, chart.volume / 2)
             sell = select(has_directional_volume, chart.sell_qty, chart.volume / 2)
@@ -410,7 +866,8 @@ mod tests {
     fn chart_trade_fields_use_the_base_chart() {
         let source = r#"
             language(1)
-            indicator("Base trades", id = "test.base-trades", value_precision = "base_ticker_min_qty")
+            indicator("Base trades", id = "test.base-trades")
+            format(precision = "base_ticker_min_qty")
             plot(chart.trade.available, id = "chart_available")
             plot(chart.trade.buy_qty, id = "chart_buy")
             plot(chart.trade.sell_qty, id = "chart_sell")
@@ -481,7 +938,7 @@ mod tests {
             ("csell", "csell"),
         ] {
             let source = format!(
-                "language(1)\nindicator(\"Removed\", id = \"community.removed-{name}\", value_precision = \"base_ticker_min_qty\")\nplot({expression}, id = \"value\")"
+                "language(1)\nindicator(\"Removed\", id = \"community.removed-{name}\")\nformat(precision = \"base_ticker_min_qty\")\nplot({expression}, id = \"value\")"
             );
             assert!(
                 compile(&source, format!("{name}.ind")).is_err(),
@@ -534,7 +991,7 @@ mod tests {
             ),
         ] {
             let source = format!(
-                "language(1)\nindicator(\"Removed\", id = \"community.removed-{name}\", value_precision = \"base_ticker_min_tick\")\nstyle(\"base\")\nvalue = chart.close\nplot(value, id = \"value\", color_slot = \"base\")\n{statement}\n"
+                "language(1)\nindicator(\"Removed\", id = \"community.removed-{name}\")\nformat(precision = \"base_ticker_min_tick\")\nstyle(\"base\")\nvalue = chart.close\nplot(value, id = \"value\", color_slot = \"base\")\n{statement}\n"
             );
             assert!(
                 compile(&source, format!("{name}.ind")).is_err(),
@@ -549,10 +1006,24 @@ mod tests {
             ("precision", r#", precision = 2"#),
             ("layer-title", r#", layer_title = "Removed""#),
             ("view", r#", view = "overlay""#),
+            ("attachment", r#", attachment = "panel""#),
+            ("panel-title", r#", panel_title = "Removed""#),
+            ("layer-name", r#", layer_name = "Removed""#),
+            ("data-kind", r#", data_kind = "scalar""#),
+            ("mark", r#", mark = "line""#),
+            ("axis", r#", axis = "primary""#),
+            (
+                "value-precision",
+                r#", value_precision = "base_ticker_min_tick""#,
+            ),
+            ("axis-label-mode", r#", axis_label_mode = "compact""#),
+            ("header-label-mode", r#", header_label_mode = "compact""#),
+            ("preferred-scale", r#", preferred_scale = "fit_visible""#),
+            ("max-decimals", r#", max_decimals = 2""#),
         ];
         for (name, arguments) in indicator_aliases {
             let source = format!(
-                "language(1)\nindicator(\"Removed\", id = \"community.removed-indicator-{name}\"{arguments}, value_precision = \"base_ticker_min_tick\")\nplot(chart.close, id = \"value\")\n"
+                "language(1)\nindicator(\"Removed\", id = \"community.removed-indicator-{name}\"{arguments})\nformat(precision = \"base_ticker_min_tick\")\nplot(chart.close, id = \"value\")\n"
             );
             assert!(
                 compile(&source, format!("indicator-{name}.ind")).is_err(),
@@ -562,7 +1033,8 @@ mod tests {
 
         let table = r#"
             language(1)
-            indicator("Removed bool", id = "community.removed-bool", view = "table")
+            indicator("Removed bool", id = "community.removed-bool")
+            display(view = "table")
             plot(chart.close, id = "value")
             column(title = "Value", source = "value", format = "bool")
         "#;
@@ -573,7 +1045,8 @@ mod tests {
     fn signed_table_columns_require_typed_color_bindings() {
         let source = r#"
             language(1)
-            indicator("Signed table", id = "test.signed-table", view = "table")
+            indicator("Signed table", id = "test.signed-table")
+            display(view = "table")
             delta = chart.close - chart.open
             plot(delta, id = "delta")
             style("positive", title = "Positive values")
@@ -595,7 +1068,8 @@ mod tests {
             (
                 r#"
                     language(1)
-                    indicator("Invalid table", id = "test.invalid-table", view = "table")
+                    indicator("Invalid table", id = "test.invalid-table")
+                    display(view = "table")
                     plot(chart.close, id = "value")
                     style("positive")
                     style("negative")
@@ -608,7 +1082,8 @@ mod tests {
             (
                 r#"
                     language(1)
-                    indicator("Invalid table", id = "test.invalid-table", view = "table")
+                    indicator("Invalid table", id = "test.invalid-table")
+                    display(view = "table")
                     plot(chart.close, id = "value")
                     style("positive")
                     column(title = "Value", source = "value", color_mode = "signed",
@@ -665,10 +1140,10 @@ mod tests {
     fn presentation_scene_is_compiled_with_owned_defaults() {
         let source = r#"
             language(1)
-            indicator("Scene", id = "community.scene", panel_title = "Panel",
-                layer_name = "Layer", preferred_scale = "fit_visible_include_zero",
-                value_precision = "fixed_step:0.5", axis_label_mode = "abbreviated",
-                header_label_mode = "commas", max_decimals = 2)
+            indicator("Scene", id = "community.scene")
+            display(panel_title = "Panel", layer_name = "Layer")
+            format(scale = "fit_visible_include_zero", precision = "fixed_step:0.5",
+                axis_labels = "abbreviated", header_labels = "commas", max_decimals = 2)
             period = input.int(3, "Period", min = 1, max = 20, step = 1)
             value = ta.sma(chart.close, period)
             upper = value + 1
@@ -775,7 +1250,8 @@ mod tests {
             let source = format!(
                 r#"
                     language(1)
-                    indicator("Highlight", id = "community.highlight-{name}", value_precision = "base_ticker_min_tick")
+                    indicator("Highlight", id = "community.highlight-{name}")
+                    format(precision = "base_ticker_min_tick")
                     value = chart.close
                     rising = chart.close > chart.open
                     style("base")
@@ -797,7 +1273,7 @@ mod tests {
     }
 
     #[test]
-    fn numeric_plot_panels_require_value_precision() {
+    fn numeric_plot_panels_require_format_precision() {
         let diagnostics = compile(
             "language(1)\nindicator(\"Missing precision\", id = \"test.missing-precision\")\nplot(chart.close, id = \"value\")\n",
             "missing-precision.ind",
@@ -806,11 +1282,11 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|diagnostic| { diagnostic.message.contains("must declare value_precision") })
+                .any(|diagnostic| { diagnostic.message.contains("must declare format(precision") })
         );
 
         let explicit = compile(
-            "language(1)\nindicator(\"Explicit precision\", id = \"test.explicit-precision\", value_precision = \"fixed_step:0.01\")\nplot(chart.close, id = \"value\")\n",
+            "language(1)\nindicator(\"Explicit precision\", id = \"test.explicit-precision\")\nformat(precision = \"fixed_step:0.01\")\nplot(chart.close, id = \"value\")\n",
             "explicit-precision.ind",
         )
         .expect("numeric plot panels with value precision should compile");
@@ -820,23 +1296,54 @@ mod tests {
         );
 
         compile(
-            "language(1)\nindicator(\"Overlay\", id = \"test.overlay\", view = \"primary_overlay\")\nplot(chart.close, id = \"value\")\n",
+            "language(1)\nindicator(\"Overlay\", id = \"test.overlay\")\ndisplay(view = \"primary_overlay\")\nplot(chart.close, id = \"value\")\n",
             "overlay.ind",
         )
         .expect("primary overlays should not require panel precision");
 
         compile(
-            "language(1)\nindicator(\"Table\", id = \"test.table\", view = \"table\")\nplot(chart.close, id = \"value\", display = \"none\", overlay = false, layer = false)\ncolumn(title = \"Value\", source = \"value\")\n",
+            "language(1)\nindicator(\"Table\", id = \"test.table\")\ndisplay(view = \"table\")\nplot(chart.close, id = \"value\", display = \"none\", overlay = false, layer = false)\ncolumn(title = \"Value\", source = \"value\")\n",
             "table.ind",
         )
         .expect("table views should not require panel precision");
     }
 
     #[test]
+    fn display_and_format_declarations_are_unique_and_precede_outputs() {
+        for (source, message) in [
+            (
+                "language(1)\nindicator(\"Duplicate display\", id = \"test.duplicate-display\")\ndisplay()\ndisplay()\nplot(chart.close, id = \"value\")\n",
+                "duplicate display declaration",
+            ),
+            (
+                "language(1)\nindicator(\"Duplicate format\", id = \"test.duplicate-format\")\nformat(precision = \"base_ticker_min_tick\")\nformat(precision = \"base_ticker_min_tick\")\nplot(chart.close, id = \"value\")\n",
+                "duplicate format declaration",
+            ),
+            (
+                "language(1)\nindicator(\"Late display\", id = \"test.late-display\")\nformat(precision = \"base_ticker_min_tick\")\nplot(chart.close, id = \"value\")\ndisplay()\n",
+                "display declarations must appear before output declarations",
+            ),
+            (
+                "language(1)\nindicator(\"Late format\", id = \"test.late-format\")\nplot(chart.close, id = \"value\")\nformat(precision = \"base_ticker_min_tick\")\n",
+                "format declarations must appear before output declarations",
+            ),
+        ] {
+            let diagnostics = compile(source, "metadata.ind")
+                .expect_err("invalid metadata declarations should be diagnosed");
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.message.contains(message))
+            );
+        }
+    }
+
+    #[test]
     fn generic_plot_accepts_scalar_styles_and_structured_constructors() {
         let scalar_source = r#"
             language(1)
-            indicator("Scalar styles", id = "test.scalar-styles", value_precision = "base_ticker_min_tick")
+            indicator("Scalar styles", id = "test.scalar-styles")
+            format(precision = "base_ticker_min_tick")
             plot(chart.close, id = "line", style = "line")
             plot(chart.close, id = "step", style = "step")
             plot(chart.close, id = "histogram", style = "histogram")
@@ -846,7 +1353,9 @@ mod tests {
 
         let structured_source = r#"
             language(1)
-            indicator("Structured plots", id = "test.structured-plots", view = "primary_overlay", value_precision = "base_ticker_min_tick")
+            indicator("Structured plots", id = "test.structured-plots")
+            display(view = "primary_overlay")
+            format(precision = "base_ticker_min_tick")
             plotcandle(chart.open, chart.high, chart.low, chart.close, id = "candles")
             plotohlc(chart.open, chart.high, chart.low, chart.close, id = "ohlc")
             plotrange(chart.high, chart.low, id = "range")
@@ -865,7 +1374,7 @@ mod tests {
             ("broken_cloud", "plotrange or broken_cloud"),
         ] {
             let source = format!(
-                "language(1)\nindicator(\"Invalid plot\", id = \"test.invalid-{style}\", value_precision = \"base_ticker_min_tick\")\nplot(chart.close, id = \"value\", style = \"{style}\")"
+                "language(1)\nindicator(\"Invalid plot\", id = \"test.invalid-{style}\")\nformat(precision = \"base_ticker_min_tick\")\nplot(chart.close, id = \"value\", style = \"{style}\")"
             );
             let diagnostics = compile(&source, format!("invalid-{style}.ind"))
                 .expect_err("structured styles should not be accepted by generic plot");
@@ -884,7 +1393,8 @@ mod tests {
         let diagnostics = compile(
             r#"
                 language(1)
-                indicator("Unknown input", id = "community.unknown-input", value_precision = "base_ticker_min_tick")
+                indicator("Unknown input", id = "community.unknown-input")
+                format(precision = "base_ticker_min_tick")
                 value = chart.close
                 style("base", title = "Base")
                 plot(value, id = "value", title = "Value", color_slot = "base")
@@ -926,7 +1436,8 @@ mod tests {
             let source = format!(
                 r#"
                     language(1)
-                    indicator("Fallback", id = "community.fallback-{name}", value_precision = "base_ticker_min_tick")
+                    indicator("Fallback", id = "community.fallback-{name}")
+                    format(precision = "base_ticker_min_tick")
                     value = chart.close
                     style("base")
                     plot(value, id = "value", title = "Value", color_slot = "base")
@@ -946,7 +1457,8 @@ mod tests {
         let diagnostics = compile(
             r#"
                 language(1)
-                indicator("Input fallback", id = "community.input-fallback", value_precision = "base_ticker_min_tick")
+                indicator("Input fallback", id = "community.input-fallback")
+                format(precision = "base_ticker_min_tick")
                 value = chart.close
                 style("base")
                 plot(value, id = "value", title = "Value", color_slot = "base")
@@ -970,10 +1482,9 @@ mod tests {
         let explicit = compile(
             r#"
                 language(1)
-                indicator("Sparse", id = "community.sparse",
-                    view = "plot", panel_title = "Sparse", layer_name = "Sparse",
-                    data_kind = "scalar", mark = "line", axis = "secondary",
-                    value_precision = "base_ticker_min_tick", preferred_scale = "fit_visible")
+                indicator("Sparse", id = "community.sparse")
+                display(view = "plot", panel_title = "Sparse", layer_name = "Sparse")
+                format(precision = "base_ticker_min_tick", scale = "fit_visible")
                 value = chart.close
                 style("value", title = "value", role = "neutral", shade = "base")
                 plot(value, id = "value", title = "Value", pane = "indicator",
@@ -987,7 +1498,8 @@ mod tests {
         let sparse = compile(
             r#"
                 language(1)
-                indicator("Sparse", id = "community.sparse", value_precision = "base_ticker_min_tick")
+                indicator("Sparse", id = "community.sparse")
+                format(precision = "base_ticker_min_tick")
                 value = chart.close
                 style("value")
                 plot(value, id = "value", title = "Value")
@@ -1030,7 +1542,8 @@ mod tests {
     fn table_columns_are_typed_and_require_a_table_view() {
         let source = r#"
             language(1)
-            indicator("Table", id = "community.table", view = "table")
+            indicator("Table", id = "community.table")
+            display(view = "table")
             style("main")
             value = chart.close
             trend = chart.close > chart.close[1]
@@ -1051,8 +1564,8 @@ mod tests {
     fn na_comparisons_propagate_and_switch_falls_back() {
         let source = r#"
             language(1)
-            indicator("Missing values", id = "community.missing-values",
-                value_precision = "base_ticker_min_tick")
+            indicator("Missing values", id = "community.missing-values")
+            format(precision = "base_ticker_min_tick")
             plot(na == na, id = "equal")
             plot(switch na { na => 1, default => 2 }, id = "switch")
         "#;
@@ -1072,8 +1585,8 @@ mod tests {
     fn state_initializers_retry_na_and_warm_up() {
         let source = r#"
             language(1)
-            indicator("State seed", id = "community.state-seed",
-                value_precision = "base_ticker_min_tick")
+            indicator("State seed", id = "community.state-seed")
+            format(precision = "base_ticker_min_tick")
             state average = ta.sma(chart.close, 2)
             plot(average, id = "average")
         "#;
@@ -1107,8 +1620,8 @@ mod tests {
     fn explicit_na_state_updates_remain_authoritative() {
         let source = r#"
             language(1)
-            indicator("Explicit missing", id = "community.explicit-missing",
-                value_precision = "base_ticker_min_tick")
+            indicator("Explicit missing", id = "community.explicit-missing")
+            format(precision = "base_ticker_min_tick")
             state value = chart.close
             if bar_index == 0 {
                 value := na
@@ -1167,8 +1680,8 @@ mod tests {
 
         let source = r#"
             language(1)
-            indicator("Widened state", id = "test.widened-state",
-                value_precision = "base_ticker_min_tick")
+            indicator("Widened state", id = "test.widened-state")
+            format(precision = "base_ticker_min_tick")
             state value = 0
             value := chart.close
             value := na
@@ -1285,8 +1798,8 @@ mod tests {
     fn cumulative_overflow_becomes_missing_without_poisoning_state() {
         let source = r#"
             language(1)
-            indicator("Cumulative overflow", id = "test.cumulative-overflow",
-                value_precision = "base_ticker_min_tick")
+            indicator("Cumulative overflow", id = "test.cumulative-overflow")
+            format(precision = "base_ticker_min_tick")
             plot(ta.cum(chart.close), id = "value")
         "#;
         let compiled = compile(source, "cumulative-overflow.ind").expect("source should compile");
@@ -1327,7 +1840,8 @@ mod tests {
     fn functions_are_numeric_and_typed_before_their_bodies_compile() {
         let source = r#"
             language(1)
-            indicator("Function", id = "community.function", value_precision = "base_ticker_min_tick")
+            indicator("Function", id = "community.function")
+            format(precision = "base_ticker_min_tick")
             plot(identity(chart.close), id = "value")
             fn identity(value) {
                 return value
@@ -1345,8 +1859,8 @@ mod tests {
         let diagnostics = compile(
             r#"
                 language(1)
-                indicator("Invalid function", id = "community.invalid-function",
-                    value_precision = "base_ticker_min_tick")
+                indicator("Invalid function", id = "community.invalid-function")
+                format(precision = "base_ticker_min_tick")
                 plot(identity(chart.close > chart.open), id = "value")
                 fn identity(value) {
                     return value
@@ -1396,8 +1910,8 @@ mod tests {
         let compiled = compile(
             r#"
                 language(1)
-                indicator("Bounded input", id = "community.bounded-input",
-                    value_precision = "base_ticker_min_tick")
+                indicator("Bounded input", id = "community.bounded-input")
+                format(precision = "base_ticker_min_tick")
                 value = input.int(1, "Value", min = 1, max = 5)
                 plot(chart.close, id = "value")
             "#,
@@ -1412,8 +1926,8 @@ mod tests {
         let compiled = compile(
             r#"
                 language(1)
-                indicator("Choice input", id = "community.choice-input",
-                    value_precision = "base_ticker_min_tick")
+                indicator("Choice input", id = "community.choice-input")
+                format(precision = "base_ticker_min_tick")
                 method = input.string("a", "Method", options = ["a", "b"])
                 plot(chart.close, id = "value")
             "#,
@@ -1432,8 +1946,8 @@ mod tests {
     fn transient_collection_values_obey_heap_limits() {
         let source = r#"
             language(1)
-            indicator("Collection", id = "community.collection",
-                value_precision = "base_ticker_min_tick")
+            indicator("Collection", id = "community.collection")
+            format(precision = "base_ticker_min_tick")
             plot(array.size(array.push(array.new(), "12345")), id = "size")
         "#;
         let compiled = compile(source, "collection.ind").expect("source should compile");
@@ -1456,8 +1970,8 @@ mod tests {
     fn ta_window_limits_are_checked_without_counting_ta_state_as_collections() {
         let source = r#"
             language(1)
-            indicator("Window", id = "community.window",
-                value_precision = "base_ticker_min_tick")
+            indicator("Window", id = "community.window")
+            format(precision = "base_ticker_min_tick")
             value = ta.sma(chart.close, 6)
             plot(value, id = "value")
         "#;

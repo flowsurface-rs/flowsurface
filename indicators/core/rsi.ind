@@ -1,11 +1,14 @@
 language(1)
-indicator("RSI", id = "core.rsi", max_bars_back = 2, value_precision = "fixed_step:1", axis_label_mode = "abbreviated", header_label_mode = "commas", max_decimals = 1)
+indicator("RSI", id = "core.rsi", max_bars_back = 2)
+display(attachment = "panel")
+format(precision = "fixed_step:1", axis_labels = "abbreviated", header_labels = "commas", max_decimals = 1)
 period = input.int(14, "Period", min = 2, max = 100)
 ema_signal = input.bool(true, "EMA signal", group = "ema")
 ema_period = input.int(9, "EMA period", min = 2, max = 50, group = "ema")
 upper_band = input.float(70.0, "Upper band", min = 1.0, max = 99.0, step = 1.0)
 lower_band = input.float(30.0, "Lower band", min = 1.0, max = 99.0, step = 1.0)
-delta = chart.close - chart.close[1]
+source = input.source(chart.close, "Source")
+delta = source - source[1]
 gain = select(delta >= 0, delta, 0)
 loss = select(delta < 0, math.abs(delta), 0)
 avg_gain = ta.rma(gain, period)

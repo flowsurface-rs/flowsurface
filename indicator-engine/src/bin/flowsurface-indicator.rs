@@ -78,7 +78,7 @@ fn command_new(arguments: &[String]) -> Result<(), String> {
     fs::create_dir_all(&options.directory)
         .map_err(|error| format!("cannot create {}: {error}", options.directory.display()))?;
     let indicator_line = format!(
-        "indicator(\"{}\", id = \"{}\", value_precision = \"base_ticker_min_tick\")",
+        "indicator(\"{}\", id = \"{}\")\nformat(precision = \"base_ticker_min_tick\")",
         escape_string(&options.title),
         id.as_str()
     );
@@ -321,6 +321,7 @@ fn smoke_frame(index: usize) -> IndicatorFrame {
             }),
         },
         open_interest: Some(10_000.0 + step * 2.0),
+        series_inputs: Vec::new().into(),
     }
 }
 
@@ -606,7 +607,7 @@ mod tests {
         let path = mismatch.join("community.example.ind");
         fs::write(
             &path,
-            "language(1)\nindicator(\"Example\", id = \"community.example\", view = \"plot\", value_precision = \"base_ticker_min_tick\")\nplot(chart.close, id = \"value\")\n",
+            "language(1)\nindicator(\"Example\", id = \"community.example\")\ndisplay(view = \"plot\")\nformat(precision = \"base_ticker_min_tick\")\nplot(chart.close, id = \"value\")\n",
         )
         .expect("source should exist");
         let check_error = command_check(&[path.to_string_lossy().into_owned()], "check")
@@ -626,12 +627,12 @@ mod tests {
         fs::create_dir_all(&root).expect("temporary directory should exist");
         fs::write(
             root.join("first.ind"),
-            "language(1)\nindicator(\"First\", id = \"test.first\", value_precision = \"base_ticker_min_tick\")\nplot(chart.close, id = \"value\")\n",
+            "language(1)\nindicator(\"First\", id = \"test.first\")\nformat(precision = \"base_ticker_min_tick\")\nplot(chart.close, id = \"value\")\n",
         )
         .expect("first source should be written");
         fs::write(
             root.join("second.ind"),
-            "language(1)\nindicator(\"Second\", id = \"test.second\", value_precision = \"base_ticker_min_tick\")\nplot(chart.close, id = \"value\")\n",
+            "language(1)\nindicator(\"Second\", id = \"test.second\")\nformat(precision = \"base_ticker_min_tick\")\nplot(chart.close, id = \"value\")\n",
         )
         .expect("second source should be written");
 
@@ -654,7 +655,7 @@ mod tests {
         fs::create_dir_all(&second).expect("second duplicate directory should exist");
         let first_path = first.join("same.ind");
         let second_path = second.join("same.ind");
-        let source = "language(1)\nindicator(\"Same\", id = \"test.same\", value_precision = \"base_ticker_min_tick\")\nplot(chart.close, id = \"value\")\n";
+        let source = "language(1)\nindicator(\"Same\", id = \"test.same\")\nformat(precision = \"base_ticker_min_tick\")\nplot(chart.close, id = \"value\")\n";
         fs::write(&first_path, source).expect("first duplicate source should be written");
         fs::write(&second_path, source).expect("second duplicate source should be written");
         let report = load_sources(&[first_path, second_path], None);
@@ -673,12 +674,12 @@ mod tests {
         let short_second_path = short_second.join("shared.ind");
         fs::write(
             &short_first_path,
-            "language(1)\nindicator(\"One\", id = \"test.one\", value_precision = \"base_ticker_min_tick\")\nplot(chart.close, id = \"value\")\n",
+            "language(1)\nindicator(\"One\", id = \"test.one\")\nformat(precision = \"base_ticker_min_tick\")\nplot(chart.close, id = \"value\")\n",
         )
         .expect("first short-name source should be written");
         fs::write(
             &short_second_path,
-            "language(1)\nindicator(\"Two\", id = \"other.one\", value_precision = \"base_ticker_min_tick\")\nplot(chart.close, id = \"value\")\n",
+            "language(1)\nindicator(\"Two\", id = \"other.one\")\nformat(precision = \"base_ticker_min_tick\")\nplot(chart.close, id = \"value\")\n",
         )
         .expect("second short-name source should be written");
         let report = load_sources(&[short_first_path, short_second_path], None);
@@ -714,7 +715,7 @@ mod tests {
         let type_path = root.join("type-error.ind");
         fs::write(
             &type_path,
-            "language(1)\nindicator(\"Type error\", id = \"test.type-error\", value_precision = \"base_ticker_min_tick\")\nvalue = chart.close + true\nplot(value, id = \"value\")\n",
+            "language(1)\nindicator(\"Type error\", id = \"test.type-error\")\nformat(precision = \"base_ticker_min_tick\")\nvalue = chart.close + true\nplot(value, id = \"value\")\n",
         )
         .expect("type-error source should be written");
         let report = load_sources(&[type_path], None);
@@ -739,14 +740,14 @@ mod tests {
 
         fs::write(
             root.join("smoke.ind"),
-            "language(1)\nindicator(\"Smoke\", id = \"test.smoke\", value_precision = \"base_ticker_min_tick\")\nlength = input.int(2, \"Length\", min = 1, max = 10)\nplot(ta.sma(chart.close, length), id = \"value\")\n",
+            "language(1)\nindicator(\"Smoke\", id = \"test.smoke\")\nformat(precision = \"base_ticker_min_tick\")\nlength = input.int(2, \"Length\", min = 1, max = 10)\nplot(ta.sma(chart.close, length), id = \"value\")\n",
         )
         .expect("smoke source should be written");
         command_test(&[root.to_string_lossy().into_owned()]).expect("TA smoke source should pass");
 
         fs::write(
             root.join("smoke.ind"),
-            "language(1)\nindicator(\"Smoke\", id = \"test.smoke\", value_precision = \"base_ticker_min_tick\")\nwhile true {}\nplot(chart.close, id = \"value\")\n",
+            "language(1)\nindicator(\"Smoke\", id = \"test.smoke\")\nformat(precision = \"base_ticker_min_tick\")\nwhile true {}\nplot(chart.close, id = \"value\")\n",
         )
         .expect("runtime failure source should be written");
         let error = command_test(&[root.to_string_lossy().into_owned()])
@@ -767,7 +768,7 @@ mod tests {
         let path = root.join("valid.ind");
         fs::write(
             &path,
-            "language(1)\nindicator(\"Valid\", id = \"catalog.valid\", value_precision = \"base_ticker_min_tick\")\nplot(chart.close, id = \"value\")\n",
+            "language(1)\nindicator(\"Valid\", id = \"catalog.valid\")\nformat(precision = \"base_ticker_min_tick\")\nplot(chart.close, id = \"value\")\n",
         )
         .expect("source should be written");
         command_check(
@@ -782,7 +783,7 @@ mod tests {
 
         fs::write(
             &path,
-            "language(1)\nindicator(\"Valid\", id = \"core.valid\", value_precision = \"base_ticker_min_tick\")\nplot(chart.close, id = \"value\")\n",
+            "language(1)\nindicator(\"Valid\", id = \"core.valid\")\nformat(precision = \"base_ticker_min_tick\")\nplot(chart.close, id = \"value\")\n",
         )
         .expect("source should be rewritten");
         let report = load_sources(&[path], Some("catalog"));

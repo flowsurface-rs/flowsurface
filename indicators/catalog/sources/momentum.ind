@@ -1,7 +1,10 @@
 language(1)
-indicator("Momentum", id = "catalog.momentum", max_bars_back = 500, value_precision = "base_ticker_min_tick", axis_label_mode = "compact", header_label_mode = "compact")
+indicator("Momentum", id = "catalog.momentum", max_bars_back = 500)
+display(attachment = "panel")
+format(precision = "base_ticker_min_tick", axis_labels = "compact", header_labels = "compact")
 period = input.int(10, "Period", min = 1, max = 500)
-value = chart.close - chart.close[period]
+source = input.source(chart.close, "Source")
+value = source - source[period]
 plot(value, id = "value", title = "Momentum", precision = "instrument", color_slot = "main", width = 1.2)
 
 style("main", title = "Momentum", role = "primary")

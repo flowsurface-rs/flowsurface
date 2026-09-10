@@ -197,6 +197,7 @@ impl<'a> Evaluator<'a> {
             | ExpressionKind::LoadBarState(_)
             | ExpressionKind::LoadSeries(_)
             | ExpressionKind::LoadInput(_)
+            | ExpressionKind::LoadSeriesInput(_)
             | ExpressionKind::LoadState(_)
             | ExpressionKind::LoadFrame(_) => 0,
             ExpressionKind::RecordField { source, .. } => self.warmup(source),
@@ -507,7 +508,8 @@ mod tests {
     fn warmup_tracks_offsets_lengths_and_function_intrinsics() {
         let source = r#"
             language(1)
-            indicator("Warmup", id = "community.warmup", value_precision = "base_ticker_min_tick")
+            indicator("Warmup", id = "community.warmup")
+            format(precision = "base_ticker_min_tick")
             length = input.int(2, "Length", min = 1, max = 200)
             average = ta.sma(chart.close, length)
             shifted = chart.close[3]
@@ -522,8 +524,8 @@ mod tests {
 
         let capped = r#"
             language(1)
-            indicator("Capped warmup", id = "community.capped-warmup", max_bars_back = 3,
-                value_precision = "base_ticker_min_tick")
+            indicator("Capped warmup", id = "community.capped-warmup", max_bars_back = 3)
+            format(precision = "base_ticker_min_tick")
             length = input.int(2, "Length", min = 1)
             plot(ta.sma(chart.close, length), id = "average")
         "#;
@@ -534,8 +536,8 @@ mod tests {
 
         let wide = r#"
             language(1)
-            indicator("Wide warmup", id = "community.wide-warmup", max_bars_back = 50000,
-                value_precision = "base_ticker_min_tick")
+            indicator("Wide warmup", id = "community.wide-warmup", max_bars_back = 50000)
+            format(precision = "base_ticker_min_tick")
             length = input.int(2, "Length", min = 1)
             plot(ta.sma(chart.close, length), id = "average")
         "#;
@@ -555,8 +557,8 @@ mod tests {
 
         let chained = r#"
             language(1)
-            indicator("Chained warmup", id = "community.chained-warmup",
-                value_precision = "base_ticker_min_tick")
+            indicator("Chained warmup", id = "community.chained-warmup")
+            format(precision = "base_ticker_min_tick")
             first = ta.sma(chart.close, 5000)
             plot(ta.sma(first, 5000), id = "average")
         "#;
@@ -569,7 +571,8 @@ mod tests {
 
         let source = r#"
             language(1)
-            indicator("Function warmup", id = "community.function-warmup", value_precision = "base_ticker_min_tick")
+            indicator("Function warmup", id = "community.function-warmup")
+            format(precision = "base_ticker_min_tick")
             fn average(value) {
                 return ta.sma(value, 7)
             }
@@ -584,8 +587,8 @@ mod tests {
     fn dynamic_history_uses_the_declared_history_bound() {
         let source = r#"
             language(1)
-            indicator("Dynamic history", id = "community.dynamic-history",
-                max_bars_back = 7, value_precision = "base_ticker_min_tick")
+            indicator("Dynamic history", id = "community.dynamic-history", max_bars_back = 7)
+            format(precision = "base_ticker_min_tick")
             offset = bar_index % 5
             plot(chart.close[offset], id = "value")
         "#;
@@ -599,7 +602,8 @@ mod tests {
     fn anchor_start_resolves_day_and_week_boundaries_from_config() {
         let source = r#"
             language(1)
-            indicator("VWAP", id = "community.vwap", value_precision = "base_ticker_min_tick")
+            indicator("VWAP", id = "community.vwap")
+            format(precision = "base_ticker_min_tick")
             anchor = input.string("Day", "Anchor", options = ["Day", "Week", "Month"])
             value = ta.avwap(chart.close, chart.volume, anchor)
             plot(value, id = "value")
@@ -618,7 +622,8 @@ mod tests {
         );
         let plain = r#"
             language(1)
-            indicator("Plain", id = "community.plain", value_precision = "base_ticker_min_tick")
+            indicator("Plain", id = "community.plain")
+            format(precision = "base_ticker_min_tick")
             plot(chart.close)
         "#;
         let compiled = compile(plain, Path::new("plain.ind")).expect("plain source should compile");

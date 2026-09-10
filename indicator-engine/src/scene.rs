@@ -48,6 +48,12 @@ pub enum PresentationViewKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PresentationAttachmentMode {
+    Overlay,
+    Panel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PresentationDataKind {
     Scalar,
     Histogram,
@@ -125,6 +131,7 @@ pub struct PresentationStyle {
 pub struct PresentationLayer {
     pub channel: String,
     pub name: String,
+    pub pane: PaneTarget,
     pub data_kind: Option<PresentationDataKind>,
     pub mark: Option<PresentationMarkKind>,
     pub axis: Option<PresentationAxis>,
@@ -200,11 +207,9 @@ pub struct PresentationColumn {
 #[derive(Debug, Clone, PartialEq)]
 pub struct IndicatorPresentation {
     pub view: PresentationViewKind,
+    pub attachment: Option<PresentationAttachmentMode>,
     pub panel_title: Option<String>,
     pub layer_name: Option<String>,
-    pub data_kind: Option<PresentationDataKind>,
-    pub mark: Option<PresentationMarkKind>,
-    pub axis: Option<PresentationAxis>,
     pub value_precision: Option<PresentationPrecision>,
     pub axis_label_mode: Option<PresentationLabelMode>,
     pub header_label_mode: Option<PresentationLabelMode>,
@@ -223,11 +228,9 @@ impl Default for IndicatorPresentation {
     fn default() -> Self {
         Self {
             view: PresentationViewKind::Plot,
+            attachment: None,
             panel_title: None,
             layer_name: None,
-            data_kind: None,
-            mark: None,
-            axis: None,
             value_precision: None,
             axis_label_mode: None,
             header_label_mode: None,

@@ -1,5 +1,6 @@
 language(1)
-indicator("Ultimate Oscillator", id = "catalog.ultimate-oscillator", max_bars_back = 2, value_precision = "fixed_step:0.01", axis_label_mode = "compact", header_label_mode = "compact", max_decimals = 2)
+indicator("Ultimate Oscillator", id = "catalog.ultimate-oscillator", max_bars_back = 2)
+format(precision = "fixed_step:0.01", axis_labels = "compact", header_labels = "compact", max_decimals = 2)
 previous_close = chart.close[1]
 true_low = math.min(chart.low, previous_close)
 true_high = math.max(chart.high, previous_close)
