@@ -244,18 +244,18 @@ impl SeriesHistory {
 
 #[derive(Debug, Clone, PartialEq)]
 struct CommittedState {
-    states: Vec<StateValue>,
-    function_states: BTreeMap<crate::hir::CallSiteId, StateValue>,
+    states: Arc<Vec<StateValue>>,
+    function_states: Arc<BTreeMap<crate::hir::CallSiteId, StateValue>>,
     history: SeriesHistory,
-    intrinsics: BTreeMap<crate::hir::CallSiteId, IntrinsicState>,
+    intrinsics: Arc<BTreeMap<crate::hir::CallSiteId, IntrinsicState>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 struct WorkingState {
-    states: Vec<StateValue>,
-    function_states: BTreeMap<crate::hir::CallSiteId, StateValue>,
+    states: Arc<Vec<StateValue>>,
+    function_states: Arc<BTreeMap<crate::hir::CallSiteId, StateValue>>,
     current_series: Vec<Option<Value>>,
-    intrinsics: BTreeMap<crate::hir::CallSiteId, IntrinsicState>,
+    intrinsics: Arc<BTreeMap<crate::hir::CallSiteId, IntrinsicState>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -280,11 +280,27 @@ impl StateValue {
 impl WorkingState {
     fn from_committed(committed: &CommittedState, series_count: usize) -> Self {
         Self {
-            states: committed.states.clone(),
-            function_states: committed.function_states.clone(),
+            states: Arc::clone(&committed.states),
+            function_states: Arc::clone(&committed.function_states),
             current_series: vec![None; series_count],
-            intrinsics: committed.intrinsics.clone(),
+            intrinsics: Arc::clone(&committed.intrinsics),
         }
+    }
+
+    fn reset_from_committed(&mut self, committed: &CommittedState, series_count: usize) {
+        self.states = Arc::clone(&committed.states);
+        self.function_states = Arc::clone(&committed.function_states);
+        self.intrinsics = Arc::clone(&committed.intrinsics);
+        if self.current_series.len() != series_count {
+            self.current_series.clear();
+            self.current_series.resize(series_count, None);
+        } else {
+            self.current_series.fill(None);
+        }
+    }
+
+    fn clear_current_series(&mut self) {
+        self.current_series.fill(None);
     }
 }
 
@@ -469,6 +485,7 @@ pub struct IndicatorInstance {
     call_site_stack: Vec<crate::hir::CallSiteId>,
     max_bars_back: usize,
     quarantined: Option<RuntimeError>,
+    resource_check_dirty: bool,
 }
 
 impl std::fmt::Debug for IndicatorInstance {
@@ -488,13 +505,13 @@ impl IndicatorInstance {
         limits: RuntimeLimits,
     ) -> Self {
         let committed = CommittedState {
-            states: vec![StateValue::Uninitialized; compiled.program.states],
-            function_states: BTreeMap::new(),
+            states: Arc::new(vec![StateValue::Uninitialized; compiled.program.states]),
+            function_states: Arc::new(BTreeMap::new()),
             history: SeriesHistory::new(
                 compiled.program.series,
                 compiled.descriptor.max_bars_back.saturating_add(1),
             ),
-            intrinsics: BTreeMap::new(),
+            intrinsics: Arc::new(BTreeMap::new()),
         };
         Self {
             working: WorkingState::from_committed(&committed, compiled.program.series),
@@ -513,6 +530,7 @@ impl IndicatorInstance {
             call_site_stack: Vec::new(),
             max_bars_back: compiled.descriptor.max_bars_back,
             quarantined: None,
+            resource_check_dirty: false,
             compiled,
             plan,
             committed,
@@ -539,11 +557,14 @@ impl IndicatorInstance {
         self.continue_requested = false;
         self.return_requested = false;
         self.return_value = None;
-        self.working = WorkingState::from_committed(&self.committed, self.compiled.program.series);
+        self.working
+            .reset_from_committed(&self.committed, self.compiled.program.series);
+        self.resource_check_dirty = false;
         self.seed_frame_series(&frame);
 
         let mut output = OutputBuffer::new(self.limits.max_output_items);
         let result = (|| {
+            self.enforce_resource_limits(false)?;
             let entry_point = self
                 .compiled
                 .program
@@ -557,6 +578,7 @@ impl IndicatorInstance {
             self.complete_outputs(&mut output)?;
             self.enforce_output_limits(&output)?;
             self.enforce_resource_limits(false)?;
+            self.resource_check_dirty = false;
             if !previewing {
                 self.commit(index);
                 self.enforce_resource_limits(true)?;
@@ -572,6 +594,7 @@ impl IndicatorInstance {
         {
             self.quarantined = Some(error.clone());
         }
+        self.working.clear_current_series();
         self.current_frame = None;
         result
     }
@@ -712,6 +735,15 @@ impl IndicatorInstance {
                 }
                 _ => {}
             }
+        }
+        Ok(())
+    }
+
+    fn checkpoint(&mut self, output: &OutputBuffer) -> Result<(), RuntimeError> {
+        self.enforce_output_limits(output)?;
+        if self.resource_check_dirty {
+            self.enforce_resource_limits(false)?;
+            self.resource_check_dirty = false;
         }
         Ok(())
     }
@@ -947,6 +979,7 @@ impl IndicatorInstance {
                         break;
                     }
                 }
+                self.checkpoint(output)?;
             }
             StatementKind::While { condition, body } => {
                 let mut iterations = 0usize;
@@ -964,6 +997,7 @@ impl IndicatorInstance {
                             break;
                         }
                     }
+                    self.checkpoint(output)?;
                     if self.return_requested {
                         break;
                     }
@@ -1002,6 +1036,7 @@ impl IndicatorInstance {
                             break;
                         }
                     }
+                    self.checkpoint(output)?;
                     if self.return_requested {
                         break;
                     }
@@ -1038,6 +1073,7 @@ impl IndicatorInstance {
                             break;
                         }
                     }
+                    self.checkpoint(output)?;
                     if self.return_requested {
                         break;
                     }
@@ -1057,8 +1093,7 @@ impl IndicatorInstance {
                 self.return_requested = true;
             }
         }
-        self.enforce_output_limits(output)?;
-        self.enforce_resource_limits(false)
+        Ok(())
     }
 
     fn evaluate_expression(&mut self, expression_id: ExprId) -> Result<Value, RuntimeError> {
@@ -1243,11 +1278,14 @@ impl IndicatorInstance {
                     .get(intrinsic)
                     .ok_or(RuntimeError::UnknownIntrinsic(intrinsic))?;
                 let evaluator = definition.evaluator;
+                if definition.effects.stateful {
+                    self.resource_check_dirty = true;
+                }
                 let state_call_site = self.state_call_site(call_site);
                 if let Some(factory) = definition.state_factory
                     && !self.working.intrinsics.contains_key(&state_call_site)
                 {
-                    self.working.intrinsics.insert(state_call_site, factory());
+                    Arc::make_mut(&mut self.working.intrinsics).insert(state_call_site, factory());
                 }
                 let (result, state_heap_exceeded) = {
                     let mut context = IntrinsicEvalContext {
@@ -1256,7 +1294,7 @@ impl IndicatorInstance {
                         max_heap_bytes: self.limits.max_heap_bytes,
                         max_window_length: self.limits.max_window_length,
                         max_collection_elements: self.limits.max_collection_elements,
-                        states: &mut self.working.intrinsics,
+                        states: Arc::make_mut(&mut self.working.intrinsics),
                     };
                     let result = evaluator(&mut context, state_call_site, &values);
                     let state_heap_exceeded = context
@@ -1345,6 +1383,7 @@ impl IndicatorInstance {
                             break;
                         }
                     }
+                    self.checkpoint(&nested_output)?;
                     Ok::<(), RuntimeError>(())
                 })();
                 self.call_depth = self.call_depth.saturating_sub(1);
@@ -1417,13 +1456,14 @@ impl IndicatorInstance {
             .get(slot.0)
             .copied()
             .unwrap_or(crate::hir::CallSiteId(slot.0));
+        self.resource_check_dirty = true;
         if self.state_owner(slot).is_some() && !self.call_site_stack.is_empty() {
-            self.working
-                .function_states
-                .insert(self.state_call_site(call_site), StateValue::Value(value));
+            let state_call_site = self.state_call_site(call_site);
+            Arc::make_mut(&mut self.working.function_states)
+                .insert(state_call_site, StateValue::Value(value));
             return;
         }
-        if let Some(state) = self.working.states.get_mut(slot.0) {
+        if let Some(state) = Arc::make_mut(&mut self.working.states).get_mut(slot.0) {
             *state = StateValue::Value(value);
         }
     }
@@ -1484,11 +1524,14 @@ impl IndicatorInstance {
         Ok(())
     }
 
-    fn enforce_value_limits(&self, value: &Value) -> Result<(), RuntimeError> {
+    fn enforce_value_limits(&mut self, value: &Value) -> Result<(), RuntimeError> {
         if value.has_string_over(self.limits.max_string_bytes) {
             return Err(RuntimeError::ResourceLimitExceeded("string bytes"));
         }
         let (collections, heap_bytes) = value.resource_usage();
+        if collections > 0 || heap_bytes > 0 {
+            self.resource_check_dirty = true;
+        }
         if collections > self.limits.max_collection_elements {
             return Err(RuntimeError::ResourceLimitExceeded("collection elements"));
         }
@@ -1499,6 +1542,12 @@ impl IndicatorInstance {
     }
 
     fn resource_limit_exceeded(&self, include_history: bool) -> Option<&'static str> {
+        let shared_states = Arc::ptr_eq(&self.committed.states, &self.working.states);
+        let shared_function_states = Arc::ptr_eq(
+            &self.committed.function_states,
+            &self.working.function_states,
+        );
+        let shared_intrinsics = Arc::ptr_eq(&self.committed.intrinsics, &self.working.intrinsics);
         let mut collections = 0usize;
         let mut heap_bytes = size_of::<CommittedState>()
             .saturating_add(size_of::<WorkingState>())
@@ -1511,12 +1560,6 @@ impl IndicatorInstance {
             .saturating_add(self.locals.capacity().saturating_mul(size_of::<Value>()))
             .saturating_add(
                 self.committed
-                    .states
-                    .capacity()
-                    .saturating_mul(size_of::<StateValue>()),
-            )
-            .saturating_add(
-                self.working
                     .states
                     .capacity()
                     .saturating_mul(size_of::<StateValue>()),
@@ -1539,52 +1582,103 @@ impl IndicatorInstance {
                     .capacity()
                     .saturating_mul(size_of::<crate::hir::CallSiteId>()),
             );
-        for map in [
-            &self.committed.function_states,
-            &self.working.function_states,
-        ] {
+        if !shared_states {
+            heap_bytes = heap_bytes.saturating_add(
+                self.working
+                    .states
+                    .capacity()
+                    .saturating_mul(size_of::<StateValue>()),
+            );
+        }
+        heap_bytes = heap_bytes
+            .saturating_add(size_of::<BTreeMap<crate::hir::CallSiteId, StateValue>>())
+            .saturating_add(
+                self.committed
+                    .function_states
+                    .len()
+                    .saturating_mul(size_of::<(crate::hir::CallSiteId, StateValue)>()),
+            );
+        if !shared_function_states {
             heap_bytes = heap_bytes
                 .saturating_add(size_of::<BTreeMap<crate::hir::CallSiteId, StateValue>>())
                 .saturating_add(
-                    map.len()
+                    self.working
+                        .function_states
+                        .len()
                         .saturating_mul(size_of::<(crate::hir::CallSiteId, StateValue)>()),
                 );
         }
-        for map in [&self.committed.intrinsics, &self.working.intrinsics] {
+        heap_bytes = heap_bytes
+            .saturating_add(size_of::<BTreeMap<crate::hir::CallSiteId, IntrinsicState>>())
+            .saturating_add(
+                self.committed
+                    .intrinsics
+                    .len()
+                    .saturating_mul(size_of::<(crate::hir::CallSiteId, IntrinsicState)>()),
+            );
+        if !shared_intrinsics {
             heap_bytes = heap_bytes
                 .saturating_add(size_of::<BTreeMap<crate::hir::CallSiteId, IntrinsicState>>())
                 .saturating_add(
-                    map.len()
+                    self.working
+                        .intrinsics
+                        .len()
                         .saturating_mul(size_of::<(crate::hir::CallSiteId, IntrinsicState)>()),
                 );
         }
-        for value in self
-            .plan
-            .inputs
-            .iter()
-            .chain(self.locals.iter())
-            .chain(self.committed.states.iter().filter_map(StateValue::value))
-            .chain(
-                self.committed
-                    .function_states
-                    .values()
-                    .filter_map(StateValue::value),
-            )
-            .chain(self.working.states.iter().filter_map(StateValue::value))
-            .chain(
-                self.working
-                    .function_states
-                    .values()
-                    .filter_map(StateValue::value),
-            )
-            .chain(self.working.current_series.iter().flatten())
-        {
+        let mut inspect_value = |value: &Value| -> Option<&'static str> {
             if value.has_string_over(self.limits.max_string_bytes) {
                 return Some("string bytes");
             }
             let (value_collections, value_bytes) = value.resource_usage();
             collections = collections.saturating_add(value_collections);
             heap_bytes = heap_bytes.saturating_add(value_bytes);
+            None
+        };
+
+        for value in self.plan.inputs.iter().chain(self.locals.iter()) {
+            if inspect_value(value).is_some() {
+                return Some("string bytes");
+            }
+        }
+        for value in self.committed.states.iter().filter_map(StateValue::value) {
+            if inspect_value(value).is_some() {
+                return Some("string bytes");
+            }
+        }
+        for value in self
+            .committed
+            .function_states
+            .values()
+            .filter_map(StateValue::value)
+        {
+            if inspect_value(value).is_some() {
+                return Some("string bytes");
+            }
+        }
+        if !shared_states {
+            for value in self.working.states.iter().filter_map(StateValue::value) {
+                if inspect_value(value).is_some() {
+                    return Some("string bytes");
+                }
+            }
+        }
+        if !shared_function_states {
+            for value in self
+                .working
+                .function_states
+                .values()
+                .filter_map(StateValue::value)
+            {
+                if inspect_value(value).is_some() {
+                    return Some("string bytes");
+                }
+            }
+        }
+        for value in self.working.current_series.iter().flatten() {
+            if inspect_value(value).is_some() {
+                return Some("string bytes");
+            }
         }
 
         if include_history {
@@ -1609,13 +1703,13 @@ impl IndicatorInstance {
                 });
         }
 
-        for state in self
-            .committed
-            .intrinsics
-            .values()
-            .chain(self.working.intrinsics.values())
-        {
+        for state in self.committed.intrinsics.values() {
             heap_bytes = heap_bytes.saturating_add(state.heap_bytes());
+        }
+        if !shared_intrinsics {
+            for state in self.working.intrinsics.values() {
+                heap_bytes = heap_bytes.saturating_add(state.heap_bytes());
+            }
         }
 
         if collections > self.limits.max_collection_elements {
@@ -1633,9 +1727,10 @@ impl IndicatorInstance {
                 .history
                 .set(slot, bar_index, value.clone().unwrap_or(Value::Na));
         }
-        self.committed.states = self.working.states.clone();
-        self.committed.function_states = self.working.function_states.clone();
-        self.committed.intrinsics = self.working.intrinsics.clone();
+        self.committed.states = Arc::clone(&self.working.states);
+        self.committed.function_states = Arc::clone(&self.working.function_states);
+        self.committed.intrinsics = Arc::clone(&self.working.intrinsics);
+        self.working.clear_current_series();
         let first_retained = bar_index.saturating_sub(self.max_bars_back);
         for values in &mut self.committed.history.values {
             values.evict_before(first_retained);
