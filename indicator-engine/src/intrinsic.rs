@@ -1,10 +1,11 @@
 use crate::hir::{CallSiteId, IntrinsicId};
-use crate::types::{Qualifier, Type, Value, ValueType};
+use crate::types::{ArrayValue, Qualifier, Type, Value, ValueType};
 use chrono::{Datelike, TimeZone, Utc};
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::fmt::{Display, Formatter};
 use std::mem::size_of;
+use std::sync::Arc;
 
 pub type QualifiedName = &'static str;
 
@@ -23,6 +24,10 @@ pub enum IntrinsicState {
         values: VecDeque<Option<(f64, f64)>>,
     },
     Window {
+        maximum: bool,
+        values: VecDeque<Option<f64>>,
+    },
+    Pivot {
         maximum: bool,
         values: VecDeque<Option<f64>>,
     },
@@ -60,6 +65,7 @@ impl IntrinsicState {
             | Self::AnchoredVwap { .. } => state_bytes,
             Self::Sma { values }
             | Self::Window { values, .. }
+            | Self::Pivot { values, .. }
             | Self::Stdev { values }
             | Self::Dev { values } => state_bytes
                 .saturating_add(values.capacity().saturating_mul(size_of::<Option<f64>>())),
@@ -83,9 +89,16 @@ pub struct IntrinsicSignature {
     pub result: Type,
     pub variadic: bool,
     pub min_arguments: usize,
-    /// Argument index of the rolling window length, when the intrinsic is a
-    /// windowed calculation. Used by static warmup analysis.
-    pub window: Option<usize>,
+    pub(crate) warmup: Option<WarmupSpec>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum WarmupSpec {
+    Window(usize),
+    Centered {
+        left_argument: usize,
+        right_argument: usize,
+    },
 }
 
 impl IntrinsicSignature {
@@ -95,7 +108,15 @@ impl IntrinsicSignature {
     }
 
     pub(crate) fn windowed(mut self, argument: usize) -> Self {
-        self.window = Some(argument);
+        self.warmup = Some(WarmupSpec::Window(argument));
+        self
+    }
+
+    pub(crate) fn centered(mut self, left: usize, right: usize) -> Self {
+        self.warmup = Some(WarmupSpec::Centered {
+            left_argument: left,
+            right_argument: right,
+        });
         self
     }
 }
@@ -259,6 +280,26 @@ impl IntrinsicRegistry {
                 values: VecDeque::new(),
             }),
             eval_lowest,
+        );
+        registry.register(
+            "ta.pivothigh",
+            ta_pivot(),
+            IntrinsicEffects::STATEFUL,
+            Some(|| IntrinsicState::Pivot {
+                maximum: true,
+                values: VecDeque::new(),
+            }),
+            eval_pivothigh,
+        );
+        registry.register(
+            "ta.pivotlow",
+            ta_pivot(),
+            IntrinsicEffects::STATEFUL,
+            Some(|| IntrinsicState::Pivot {
+                maximum: false,
+                values: VecDeque::new(),
+            }),
+            eval_pivotlow,
         );
         registry.register(
             "ta.cum",
@@ -530,7 +571,7 @@ fn signature(
         result,
         variadic,
         min_arguments: 0,
-        window: None,
+        warmup: None,
     }
 }
 
@@ -619,6 +660,25 @@ fn ta_window() -> IntrinsicSignature {
         false,
     )
     .windowed(1)
+}
+
+fn ta_pivot() -> IntrinsicSignature {
+    signature(
+        vec![
+            number("source", Qualifier::Series),
+            ArgumentSignature {
+                name: "left",
+                ty: Type::simple(ValueType::Int),
+            },
+            ArgumentSignature {
+                name: "right",
+                ty: Type::simple(ValueType::Int),
+            },
+        ],
+        Type::series(ValueType::Float),
+        false,
+    )
+    .centered(1, 2)
 }
 
 fn ta_cum() -> IntrinsicSignature {
@@ -861,12 +921,10 @@ fn eval_array_new(
     _site: CallSiteId,
     args: &[Value],
 ) -> Result<Value, IntrinsicError> {
-    check_collection_limits(
-        context,
-        collection_elements(args),
-        collection_heap_bytes(args, args.len()),
-    )?;
-    Ok(Value::Array(args.to_vec()))
+    let array = ArrayValue::new(args.to_vec());
+    let (elements, heap_bytes) = array.resource_usage();
+    check_collection_limits(context, elements, heap_bytes)?;
+    Ok(Value::Array(Arc::new(array)))
 }
 
 fn eval_array_push(
@@ -880,15 +938,10 @@ fn eval_array_push(
         ));
     };
     let value = args.get(1).cloned().unwrap_or(Value::Na);
-    let projected = collection_elements(values)
-        .saturating_add(1)
-        .saturating_add(value.resource_usage().0);
-    let projected_heap = collection_heap_bytes(values, values.capacity())
-        .saturating_add(size_of::<Value>())
-        .saturating_add(value.resource_usage().1);
+    let (projected, projected_heap) = values.projected_push_usage(&value);
     check_collection_limits(context, projected, projected_heap)?;
-    let mut values = values.clone();
-    values.push(value);
+    let mut values = Arc::clone(values);
+    Arc::make_mut(&mut values).push(value);
     Ok(Value::Array(values))
 }
 
@@ -992,21 +1045,6 @@ fn eval_record_get(
         ));
     };
     Ok(values.get(key).cloned().unwrap_or(Value::Na))
-}
-
-fn collection_elements(values: &[Value]) -> usize {
-    values.iter().fold(0usize, |total, value| {
-        total
-            .saturating_add(1)
-            .saturating_add(value.resource_usage().0)
-    })
-}
-
-fn collection_heap_bytes(values: &[Value], capacity: usize) -> usize {
-    values.iter().fold(
-        size_of::<Vec<Value>>().saturating_add(capacity.saturating_mul(size_of::<Value>())),
-        |total, value| total.saturating_add(value.resource_usage().1),
-    )
 }
 
 fn record_elements(values: &BTreeMap<String, Value>) -> usize {
@@ -1187,6 +1225,113 @@ fn eval_lowest(
     args: &[Value],
 ) -> Result<Value, IntrinsicError> {
     eval_window(context, site, args, false)
+}
+
+fn eval_pivothigh(
+    context: &mut IntrinsicEvalContext<'_>,
+    site: CallSiteId,
+    args: &[Value],
+) -> Result<Value, IntrinsicError> {
+    eval_pivot(context, site, args, true)
+}
+
+fn eval_pivotlow(
+    context: &mut IntrinsicEvalContext<'_>,
+    site: CallSiteId,
+    args: &[Value],
+) -> Result<Value, IntrinsicError> {
+    eval_pivot(context, site, args, false)
+}
+
+fn eval_pivot(
+    context: &mut IntrinsicEvalContext<'_>,
+    site: CallSiteId,
+    args: &[Value],
+    maximum: bool,
+) -> Result<Value, IntrinsicError> {
+    let left = pivot_leg(context, args, 1)?;
+    let right = pivot_leg(context, args, 2)?;
+    let length = left
+        .checked_add(right)
+        .and_then(|length| length.checked_add(1))
+        .ok_or(IntrinsicError::LimitExceeded("pivot window"))?;
+    if length > context.max_window_length {
+        return Err(IntrinsicError::LimitExceeded("pivot window"));
+    }
+    let source = args.first().and_then(Value::as_float);
+    let state = context
+        .states
+        .entry(site)
+        .or_insert_with(|| IntrinsicState::Pivot {
+            maximum,
+            values: VecDeque::new(),
+        });
+    let IntrinsicState::Pivot {
+        maximum: state_maximum,
+        values,
+    } = state
+    else {
+        return Err(IntrinsicError::InvalidState(
+            "pivot call site has incompatible state",
+        ));
+    };
+    if *state_maximum != maximum {
+        return Err(IntrinsicError::InvalidState(
+            "pivot mode changed at a call site",
+        ));
+    }
+    values.push_back(source);
+    while values.len() > context.max_window_length {
+        values.pop_front();
+    }
+    if values.len() < length {
+        return Ok(Value::Na);
+    }
+    let candidate_index = values.len() - 1 - right;
+    let Some(candidate) = values[candidate_index] else {
+        return Ok(Value::Na);
+    };
+    let window_start = values.len() - length;
+    let window = values.iter().skip(window_start).take(length);
+    if window.clone().any(Option::is_none) {
+        return Ok(Value::Na);
+    }
+    let extreme = if maximum {
+        window.flatten().copied().fold(f64::NEG_INFINITY, f64::max)
+    } else {
+        window.flatten().copied().fold(f64::INFINITY, f64::min)
+    };
+    Ok(if candidate == extreme {
+        float_value(candidate)
+    } else {
+        Value::Na
+    })
+}
+
+fn pivot_leg(
+    context: &IntrinsicEvalContext<'_>,
+    args: &[Value],
+    index: usize,
+) -> Result<usize, IntrinsicError> {
+    let value = match args.get(index) {
+        Some(Value::Int(value)) => *value,
+        _ => {
+            return Err(IntrinsicError::InvalidArguments(
+                "pivot legs must be integers",
+            ));
+        }
+    };
+    if value <= 0 {
+        return Err(IntrinsicError::InvalidArguments(
+            "pivot legs must be positive",
+        ));
+    }
+    let value = usize::try_from(value)
+        .map_err(|_| IntrinsicError::InvalidArguments("pivot leg is too large"))?;
+    if value > context.max_window_length {
+        return Err(IntrinsicError::LimitExceeded("pivot window"));
+    }
+    Ok(value)
 }
 
 fn eval_window(

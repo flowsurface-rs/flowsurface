@@ -1,7 +1,7 @@
 use crate::CompiledIndicator;
 use crate::frame::{
     FrameOutput, HorizontalLevelOutput, IndicatorFrame, MarkerOutput, OhlcOutput, PlotOutput,
-    RangeOutput, SegmentOutput, SeriesInputValue,
+    RangeOutput, RegionOutput, RegionUpdate, SegmentOutput, SeriesInputValue,
 };
 use crate::hir::{
     BarStateField, BinaryOperator, ExprId, ExpressionKind, SourceInputSlot, StateSlot,
@@ -9,7 +9,7 @@ use crate::hir::{
 };
 use crate::intrinsic::{IntrinsicError, IntrinsicEvalContext, IntrinsicRegistry, IntrinsicState};
 use crate::scene::Color;
-use crate::types::{IndicatorConfig, InputType, InputValue, Value};
+use crate::types::{ArrayValue, IndicatorConfig, InputType, InputValue, Value};
 use std::collections::{BTreeMap, VecDeque};
 use std::mem::size_of;
 use std::sync::Arc;
@@ -313,6 +313,8 @@ struct OutputBuffer {
     levels: Vec<HorizontalLevelOutput>,
     ohlc: Vec<OhlcOutput>,
     ranges: Vec<RangeOutput>,
+    regions: Vec<RegionOutput>,
+    region_updates: Vec<RegionUpdate>,
 }
 
 impl OutputBuffer {
@@ -326,6 +328,8 @@ impl OutputBuffer {
             levels: Vec::new(),
             ohlc: Vec::new(),
             ranges: Vec::new(),
+            regions: Vec::new(),
+            region_updates: Vec::new(),
         }
     }
 
@@ -373,6 +377,40 @@ impl OutputBuffer {
         Ok(())
     }
 
+    fn push_region(&mut self, value: RegionOutput) -> Result<(), RuntimeError> {
+        if let Some(existing) = self
+            .regions
+            .iter_mut()
+            .find(|region| region.id == value.id && region.key == value.key)
+        {
+            *existing = value;
+            return Ok(());
+        }
+        self.reserve()?;
+        self.regions.push(value);
+        Ok(())
+    }
+
+    fn push_region_update(&mut self, value: RegionUpdate) -> Result<(), RuntimeError> {
+        let (id, key) = match &value {
+            RegionUpdate::Upsert(region) => (&region.id, region.key),
+            RegionUpdate::Remove { id, key } => (id, *key),
+        };
+        if let Some(existing) = self.region_updates.iter_mut().find(|update| {
+            let (existing_id, existing_key) = match update {
+                RegionUpdate::Upsert(region) => (&region.id, region.key),
+                RegionUpdate::Remove { id, key } => (id, *key),
+            };
+            existing_id == id && existing_key == key
+        }) {
+            *existing = value;
+            return Ok(());
+        }
+        self.reserve()?;
+        self.region_updates.push(value);
+        Ok(())
+    }
+
     fn resource_usage(&self) -> (usize, usize) {
         let mut bytes = size_of::<Self>()
             .saturating_add(
@@ -400,7 +438,17 @@ impl OutputBuffer {
                 self.ranges
                     .capacity()
                     .saturating_mul(size_of::<RangeOutput>()),
+            )
+            .saturating_add(
+                self.regions
+                    .capacity()
+                    .saturating_mul(size_of::<RegionOutput>()),
             );
+        bytes = bytes.saturating_add(
+            self.region_updates
+                .capacity()
+                .saturating_mul(size_of::<RegionUpdate>()),
+        );
         for plot in &self.plots {
             bytes = bytes
                 .saturating_add(plot.id.capacity())
@@ -424,6 +472,37 @@ impl OutputBuffer {
         }
         for range in &self.ranges {
             bytes = bytes.saturating_add(range.id.capacity());
+        }
+        for region in &self.regions {
+            bytes = bytes
+                .saturating_add(region.id.capacity())
+                .saturating_add(
+                    region
+                        .border_color_slot
+                        .as_ref()
+                        .map_or(0, String::capacity),
+                )
+                .saturating_add(region.fill_color_slot.as_ref().map_or(0, String::capacity));
+        }
+        for update in &self.region_updates {
+            match update {
+                RegionUpdate::Upsert(region) => {
+                    bytes = bytes
+                        .saturating_add(region.id.capacity())
+                        .saturating_add(
+                            region
+                                .border_color_slot
+                                .as_ref()
+                                .map_or(0, String::capacity),
+                        )
+                        .saturating_add(
+                            region.fill_color_slot.as_ref().map_or(0, String::capacity),
+                        );
+                }
+                RegionUpdate::Remove { id, .. } => {
+                    bytes = bytes.saturating_add(id.capacity());
+                }
+            }
         }
         (self.items, bytes)
     }
@@ -449,6 +528,31 @@ impl OutputBuffer {
             || self.levels.iter().any(|level| level.id.capacity() > limit)
             || self.ohlc.iter().any(|ohlc| ohlc.id.capacity() > limit)
             || self.ranges.iter().any(|range| range.id.capacity() > limit)
+            || self.regions.iter().any(|region| {
+                region.id.capacity() > limit
+                    || region
+                        .border_color_slot
+                        .as_ref()
+                        .is_some_and(|slot| slot.capacity() > limit)
+                    || region
+                        .fill_color_slot
+                        .as_ref()
+                        .is_some_and(|slot| slot.capacity() > limit)
+            })
+            || self.region_updates.iter().any(|update| match update {
+                RegionUpdate::Upsert(region) => {
+                    region.id.capacity() > limit
+                        || region
+                            .border_color_slot
+                            .as_ref()
+                            .is_some_and(|slot| slot.capacity() > limit)
+                        || region
+                            .fill_color_slot
+                            .as_ref()
+                            .is_some_and(|slot| slot.capacity() > limit)
+                }
+                RegionUpdate::Remove { id, .. } => id.capacity() > limit,
+            })
     }
 
     fn finish(self, index: usize, time: i64) -> FrameOutput {
@@ -461,6 +565,8 @@ impl OutputBuffer {
             levels: self.levels.into(),
             ohlc: self.ohlc.into(),
             ranges: self.ranges.into(),
+            regions: self.regions.into(),
+            region_updates: self.region_updates.into(),
         }
     }
 }
@@ -780,9 +886,11 @@ impl IndicatorInstance {
                 self.locals[target.0] = value;
             }
             StatementKind::LocalUpdate { target, expression } => {
-                let value = self.evaluate_expression(expression)?;
-                if let Some(local) = self.locals.get_mut(target.0) {
-                    *local = value;
+                if !self.try_push_array(target, expression)? {
+                    let value = self.evaluate_expression(expression)?;
+                    if let Some(local) = self.locals.get_mut(target.0) {
+                        *local = value;
+                    }
                 }
             }
             StatementKind::Destructure {
@@ -791,7 +899,8 @@ impl IndicatorInstance {
             } => {
                 let value = self.evaluate_expression(expression)?;
                 let values = match value {
-                    Value::Tuple(values) | Value::Array(values) => values,
+                    Value::Tuple(values) => values,
+                    Value::Array(values) => values.as_slice().to_vec(),
                     _ => Vec::new(),
                 };
                 for (index, target) in targets.into_iter().enumerate() {
@@ -912,6 +1021,81 @@ impl IndicatorInstance {
                     color: self.evaluate_color(color)?,
                     text,
                 })?;
+            }
+            StatementKind::Region {
+                id,
+                key,
+                upper,
+                lower,
+                left_index,
+                right_index,
+                visible,
+                border_color,
+                fill_color,
+                border_color_slot,
+                fill_color_slot,
+                extend_right,
+                persistent,
+                width,
+            } => {
+                let visible = visible
+                    .map(|expression| self.evaluate_expression(expression))
+                    .transpose()?
+                    .is_none_or(|value| value.is_truthy());
+                if !visible {
+                    return Ok(());
+                }
+                let Some(key) = self.evaluate_expression(key)?.as_int() else {
+                    return Ok(());
+                };
+                let Some(left_index) = self
+                    .evaluate_expression(left_index)?
+                    .as_int()
+                    .and_then(|value| usize::try_from(value).ok())
+                else {
+                    return Ok(());
+                };
+                let Some(right_index) = self
+                    .evaluate_expression(right_index)?
+                    .as_int()
+                    .and_then(|value| usize::try_from(value).ok())
+                else {
+                    return Ok(());
+                };
+                let (Some(upper), Some(lower)) = (
+                    self.evaluate_expression(upper)?.as_float(),
+                    self.evaluate_expression(lower)?.as_float(),
+                ) else {
+                    return Ok(());
+                };
+                let region = RegionOutput {
+                    id,
+                    key,
+                    left_index,
+                    right_index,
+                    upper,
+                    lower,
+                    border_color: self.evaluate_color(border_color)?,
+                    fill_color: self.evaluate_color(fill_color)?,
+                    border_color_slot,
+                    fill_color_slot,
+                    extend_right: extend_right
+                        .map(|expression| self.evaluate_expression(expression))
+                        .transpose()?
+                        .is_some_and(|value| value.is_truthy()),
+                    width,
+                };
+                if persistent {
+                    output.push_region_update(RegionUpdate::Upsert(region))?;
+                } else {
+                    output.push_region(region)?;
+                }
+            }
+            StatementKind::RegionRemove { id, key } => {
+                let Some(key) = self.evaluate_expression(key)?.as_int() else {
+                    return Ok(());
+                };
+                output.push_region_update(RegionUpdate::Remove { id, key })?;
             }
             StatementKind::HorizontalLevel {
                 id,
@@ -1059,7 +1243,8 @@ impl IndicatorInstance {
                 body,
             } => {
                 let values = match self.evaluate_expression(collection)? {
-                    Value::Array(values) | Value::Tuple(values) => values,
+                    Value::Array(values) => values.as_slice().to_vec(),
+                    Value::Tuple(values) => values,
                     _ => Vec::new(),
                 };
                 for value in values {
@@ -1094,6 +1279,61 @@ impl IndicatorInstance {
             }
         }
         Ok(())
+    }
+
+    fn try_push_array(
+        &mut self,
+        target: crate::hir::LocalSlot,
+        expression: ExprId,
+    ) -> Result<bool, RuntimeError> {
+        let Some(ExpressionKind::IntrinsicCall {
+            intrinsic,
+            arguments,
+            ..
+        }) = self
+            .compiled
+            .program
+            .expressions
+            .get(expression.0)
+            .map(|expression| expression.kind.clone())
+        else {
+            return Ok(false);
+        };
+        if self
+            .registry
+            .get(intrinsic)
+            .is_none_or(|definition| definition.name != "array.push")
+            || arguments.len() != 2
+            || !matches!(
+                self.compiled
+                    .program
+                    .expressions
+                    .get(arguments[0].0)
+                .map(|expression| &expression.kind),
+                Some(ExpressionKind::LoadLocal(source)) if *source == target
+            )
+            || !matches!(self.locals.get(target.0), Some(Value::Array(_)))
+        {
+            return Ok(false);
+        }
+        self.charge()?;
+        let value = self.evaluate_expression(arguments[1])?;
+        let Some(Value::Array(values)) = self.locals.get_mut(target.0) else {
+            return Ok(false);
+        };
+        let aliased = Arc::strong_count(values) > 1;
+        Arc::make_mut(values).push(value);
+        let (collections, heap_bytes) = self.locals[target.0].resource_usage();
+        if collections > self.limits.max_collection_elements {
+            return Err(RuntimeError::ResourceLimitExceeded("collection elements"));
+        }
+        if heap_bytes > self.limits.max_heap_bytes {
+            return Err(RuntimeError::ResourceLimitExceeded("heap bytes"));
+        }
+        if aliased {
+            self.resource_check_dirty = true;
+        }
+        Ok(true)
     }
 
     fn evaluate_expression(&mut self, expression_id: ExprId) -> Result<Value, RuntimeError> {
@@ -1137,12 +1377,12 @@ impl IndicatorInstance {
                     .map(|expression| self.evaluate_expression(*expression))
                     .collect::<Result<Vec<_>, _>>()?,
             ),
-            ExpressionKind::Array(expressions) => Value::Array(
+            ExpressionKind::Array(expressions) => Value::Array(Arc::new(ArrayValue::new(
                 expressions
                     .iter()
                     .map(|expression| self.evaluate_expression(*expression))
                     .collect::<Result<Vec<_>, _>>()?,
-            ),
+            ))),
             ExpressionKind::Record(fields) => {
                 let mut values = BTreeMap::new();
                 for (name, expression) in fields {
@@ -1214,7 +1454,10 @@ impl IndicatorInstance {
                 let source = self.evaluate_expression(source)?;
                 let index = self.evaluate_expression(index)?.as_int();
                 match (source, index.and_then(|index| usize::try_from(index).ok())) {
-                    (Value::Tuple(values), Some(index)) | (Value::Array(values), Some(index)) => {
+                    (Value::Tuple(values), Some(index)) => {
+                        values.get(index).cloned().unwrap_or(Value::Na)
+                    }
+                    (Value::Array(values), Some(index)) => {
                         values.get(index).cloned().unwrap_or(Value::Na)
                     }
                     _ => Value::Na,
@@ -1270,19 +1513,22 @@ impl IndicatorInstance {
                     .iter()
                     .map(|argument| self.evaluate_expression(*argument))
                     .collect::<Result<Vec<_>, _>>()?;
-                self.charge_by(values.iter().fold(0usize, |work, value| {
-                    work.saturating_add(value.resource_usage().0)
-                }))?;
-                let definition = self
+                let (stateful, state_factory, evaluator) = self
                     .registry
                     .get(intrinsic)
+                    .map(|definition| {
+                        (
+                            definition.effects.stateful,
+                            definition.state_factory,
+                            definition.evaluator,
+                        )
+                    })
                     .ok_or(RuntimeError::UnknownIntrinsic(intrinsic))?;
-                let evaluator = definition.evaluator;
-                if definition.effects.stateful {
+                if stateful {
                     self.resource_check_dirty = true;
                 }
                 let state_call_site = self.state_call_site(call_site);
-                if let Some(factory) = definition.state_factory
+                if let Some(factory) = state_factory
                     && !self.working.intrinsics.contains_key(&state_call_site)
                 {
                     Arc::make_mut(&mut self.working.intrinsics).insert(state_call_site, factory());
@@ -1529,7 +1775,7 @@ impl IndicatorInstance {
             return Err(RuntimeError::ResourceLimitExceeded("string bytes"));
         }
         let (collections, heap_bytes) = value.resource_usage();
-        if collections > 0 || heap_bytes > 0 {
+        if !matches!(value, Value::Tuple(_)) && (collections > 0 || heap_bytes > 0) {
             self.resource_check_dirty = true;
         }
         if collections > self.limits.max_collection_elements {
@@ -1723,6 +1969,16 @@ impl IndicatorInstance {
 
     fn commit(&mut self, bar_index: usize) {
         for (slot, value) in self.working.current_series.iter().enumerate() {
+            if !self
+                .compiled
+                .program
+                .retained_series
+                .get(slot)
+                .copied()
+                .unwrap_or(false)
+            {
+                continue;
+            }
             self.committed
                 .history
                 .set(slot, bar_index, value.clone().unwrap_or(Value::Na));

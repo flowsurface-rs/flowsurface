@@ -25,6 +25,12 @@ impl TradeAggregate {
     }
 }
 
+/// Stable metadata shared by all bars for one instrument evaluation.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct InstrumentContext {
+    pub min_tick: Option<f64>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChartFrame {
     pub open: Option<f64>,
@@ -85,6 +91,7 @@ pub enum FrameField {
     ChartTradeBuyCount,
     ChartTradeSellCount,
     ChartTradeCount,
+    InstrumentMinTick,
     OpenInterest,
     Chart,
 }
@@ -190,6 +197,7 @@ pub struct IndicatorFrame {
     pub index: usize,
     pub time: i64,
     pub basis: TimeOrTick,
+    pub instrument: InstrumentContext,
     pub chart: ChartFrame,
     pub open_interest: Option<f64>,
     pub series_inputs: Arc<[SeriesInputValue]>,
@@ -234,6 +242,7 @@ impl IndicatorFrame {
                 trade_int(self.chart.trade, |trade| trade.sell_count)
             }
             FrameField::ChartTradeCount => trade_int(self.chart.trade, TradeAggregate::trade_count),
+            FrameField::InstrumentMinTick => optional_float(self.instrument.min_tick),
             FrameField::OpenInterest => optional_float(self.open_interest),
             FrameField::Chart => self.chart.to_value(),
         }
@@ -302,6 +311,28 @@ pub struct RangeOutput {
     pub color: Option<Color>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct RegionOutput {
+    pub id: String,
+    pub key: i64,
+    pub left_index: usize,
+    pub right_index: usize,
+    pub upper: f64,
+    pub lower: f64,
+    pub border_color: Option<Color>,
+    pub fill_color: Option<Color>,
+    pub border_color_slot: Option<String>,
+    pub fill_color_slot: Option<String>,
+    pub extend_right: bool,
+    pub width: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RegionUpdate {
+    Upsert(RegionOutput),
+    Remove { id: String, key: i64 },
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct FrameOutput {
     pub index: usize,
@@ -312,6 +343,8 @@ pub struct FrameOutput {
     pub levels: Arc<[HorizontalLevelOutput]>,
     pub ohlc: Arc<[OhlcOutput]>,
     pub ranges: Arc<[RangeOutput]>,
+    pub regions: Arc<[RegionOutput]>,
+    pub region_updates: Arc<[RegionUpdate]>,
 }
 
 fn optional_float(value: Option<f64>) -> Value {

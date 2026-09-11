@@ -39,7 +39,9 @@ average = ta.rma(gain, period)
 plot(average, id = "value", title = "Average")
 ```
 
-Inputs and output declarations must be top-level. `=` creates a local binding;
+Inputs and ordinary output declarations must be top-level. `region` is the
+exception: it may be emitted from top-level bounded control-flow blocks. `=`
+creates a local binding;
 `state` or `var` creates persistent state and `:=` updates it. A binding keeps
 its inferred concrete type across updates; integer/float updates widen to
 float, and `na` is compatible with any type. Incompatible concrete updates
@@ -192,6 +194,20 @@ broken_cloud(upper, lower, id = "broken")
 `broken_cloud` produce range output. Using `candles`, `bars`, `cloud`, or
 `broken_cloud` as a generic `plot` style is invalid.
 
+Rolling pivot intrinsics return the confirmed center value, or `na`:
+
+```text
+high_pivot = ta.pivothigh(chart.high, left, right)
+low_pivot = ta.pivotlow(chart.low, left, right)
+```
+
+The center bar is confirmed `right` bars later. The inclusive window contains
+`left + right + 1` samples; equal highs and lows are accepted, and missing
+samples produce `na`. Both legs must be positive integers and the complete
+window must fit the runtime window limit. Legs may be simple runtime inputs,
+so the selected window is checked on every evaluation. A preview evaluates
+from the last committed intrinsic state and never commits its pivot history.
+
 ### `style`
 
 ```text
@@ -289,6 +305,52 @@ generated value, title defaults to the ID, color slot to `main`, and width to
 `1`. Visibility, color, and text are runtime expressions or labels; the scene
 metadata remains static.
 
+### `region`
+
+```text
+region(key = zone_key, upper = top, lower = bottom,
+       left_index = left, right_index = bar_index,
+       border_color = border, fill_color = fill,
+       extend_right = true, visible = active, persistent = false,
+       id = "order_blocks", width = 1.0)
+```
+
+Static style slots can be used instead of runtime colors:
+
+```text
+style("bullish", title = "Bullish", role = "success")
+region(..., border_color_slot = "bullish", fill_color_slot = "bullish")
+```
+
+Color slots refer to declared semantic styles and use the indicator accent
+controls. Runtime colors remain available when a region needs per-bar color
+values. A region cannot provide both a runtime color and a style slot for the
+same edge.
+
+`region` emits non-interactive price-zone scene data. `id` and `width` are
+compile-time constants; `key` is a stable runtime integer used with `id` to
+update a zone. The geometry and visibility expressions may be emitted from
+bounded top-level `if` and `for` blocks, but not from user functions. Regions
+are price overlays only and do not create plot channels, drawing objects,
+handles, labels, or hit-testing.
+
+By default, each closed-bar evaluation emits a complete active-set snapshot. A
+repeated `id` and `key` updates that region and the last emission wins; keys
+omitted by the next snapshot disappear. `extend_right` reaches the primary
+plot clip. With the literal `persistent = true`, the call emits an incremental
+upsert instead; omission on later bars does not remove the region. Persistent
+regions remain until a `region_remove` call or indicator rebuild.
+
+```text
+region_remove(id = "flat_open_zones", key = zone_key)
+```
+
+`region_remove` emits an incremental deletion for the `(id, key)` pair. Both
+persistent updates and removals use last-write-wins ordering within a bar.
+Open-bar previews apply persistent updates transactionally and never mutate
+the committed region store. Persistent regions are retained oldest-first up to
+the runtime output limit; older entries are evicted deterministically.
+
 ## Common patterns
 
 Ordinary plot:
@@ -357,6 +419,9 @@ subscriptions are requested only for the base ticker. A frame includes
 `chart.hl2`, `chart.hlc3`, `chart.ohlc4`, `chart.hlcc4`,
 `chart.directional_volume_available`, `chart.buy_qty`, `chart.sell_qty`,
 `chart.trade.*`, and `open_interest`. Missing aligned data is `na`.
+The stable base-instrument minimum price increment is available as
+`instrument.min_tick`. It is simple instrument metadata, not a chart series,
+and is `na` when unavailable.
 Open interest is aligned as-of: each bar receives the latest finite sample at
 or before its timestamp, and bars before the first sample receive `na`. Plot
 offsets are presentation metadata and do not change input alignment.

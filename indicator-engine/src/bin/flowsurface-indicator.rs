@@ -1,6 +1,6 @@
 use flowsurface_indicator_engine::{
     ChartFrame, CompileLimits, CompiledIndicator, Diagnostic, FrameOutput, IndicatorConfig,
-    IndicatorFrame, IndicatorId, Severity, TimeOrTick, TradeAggregate, compile,
+    IndicatorFrame, IndicatorId, InstrumentContext, Severity, TimeOrTick, TradeAggregate, compile,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -323,6 +323,9 @@ fn smoke_frame(index: usize) -> IndicatorFrame {
         index,
         time: (index as i64).saturating_mul(60_000),
         basis: TimeOrTick::Time,
+        instrument: InstrumentContext {
+            min_tick: Some(0.1),
+        },
         chart: ChartFrame {
             open: Some(close - 0.5),
             high: Some(close + 1.0),

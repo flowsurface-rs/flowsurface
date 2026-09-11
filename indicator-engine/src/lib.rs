@@ -11,8 +11,8 @@ mod warmup;
 pub use diagnostics::{Diagnostic, Severity, Span};
 pub use frame::{
     BaseSeriesSource, ChartFrame, FrameField, FrameOutput, HorizontalLevelOutput, IndicatorFrame,
-    MarkerOutput, OhlcOutput, PlotOutput, RangeOutput, SegmentOutput, SeriesInputValue, TimeOrTick,
-    TradeAggregate,
+    InstrumentContext, MarkerOutput, OhlcOutput, PlotOutput, RangeOutput, RegionOutput,
+    RegionUpdate, SegmentOutput, SeriesInputValue, TimeOrTick, TradeAggregate,
 };
 pub use hir::{
     BarStateField, BinaryOperator, CallSiteId, ConstantId, ExprId, ExpressionKind, FunctionId,
@@ -31,8 +31,8 @@ pub use scene::{
     PresentationSegment, PresentationStyle, PresentationViewKind, ReadoutBehavior,
 };
 pub use types::{
-    IndicatorConfig, IndicatorDescriptor, IndicatorId, InputDescriptor, InputOption, InputType,
-    InputValue, Qualifier, SeriesInputDescriptor, Type, Value, ValueType,
+    ArrayValue, IndicatorConfig, IndicatorDescriptor, IndicatorId, InputDescriptor, InputOption,
+    InputType, InputValue, Qualifier, SeriesInputDescriptor, Type, Value, ValueType,
 };
 
 pub type Program = HirProgram;
@@ -240,6 +240,9 @@ mod tests {
             index,
             time,
             basis: TimeOrTick::Time,
+            instrument: InstrumentContext {
+                min_tick: Some(0.1),
+            },
             chart: ChartFrame {
                 open: Some(close),
                 high: Some(close),
@@ -254,6 +257,23 @@ mod tests {
             open_interest: None,
             series_inputs: Vec::new().into(),
         }
+    }
+
+    fn market_frame(
+        index: usize,
+        high: Option<f64>,
+        low: Option<f64>,
+        close: Option<f64>,
+        volume: Option<f64>,
+    ) -> IndicatorFrame {
+        let close_value = close.unwrap_or(0.0);
+        let mut frame = frame(index, index as i64, close_value);
+        frame.chart.open = close;
+        frame.chart.high = high;
+        frame.chart.low = low;
+        frame.chart.close = close;
+        frame.chart.volume = volume;
+        frame
     }
 
     fn plot_value<'a>(output: &'a FrameOutput, id: &str) -> &'a Value {
@@ -298,6 +318,550 @@ mod tests {
             ),
             &Value::Float(15.0)
         );
+    }
+
+    #[test]
+    fn pivots_confirm_after_the_right_leg_and_accept_ties() {
+        let source = r#"
+            language(1)
+            indicator("Pivots", id = "test.pivots")
+            format(precision = "base_ticker_min_tick")
+            left = input.int(1, "Left", min = 1, max = 10)
+            right = input.int(1, "Right", min = 1, max = 10)
+            plot(ta.pivothigh(chart.high, left, right), id = "high")
+            plot(ta.pivotlow(chart.low, left, right), id = "low")
+        "#;
+        let compiled = compile(source, "pivots.ind").expect("pivots should compile");
+        assert_eq!(compiled.warmup_bars(&IndicatorConfig::default()), Some(3));
+        let mut instance = compiled
+            .instantiate(IndicatorConfig::default())
+            .expect("inputs should bind");
+
+        let values = [(1.0, 3.0), (3.0, 3.0), (2.0, 2.0)];
+        let first = instance
+            .evaluate_closed(market_frame(0, Some(1.0), Some(3.0), Some(1.0), Some(1.0)))
+            .expect("first frame should evaluate");
+        assert_eq!(plot_value(&first, "high"), &Value::Na);
+        assert_eq!(plot_value(&first, "low"), &Value::Na);
+        let second = instance
+            .evaluate_closed(market_frame(1, Some(3.0), Some(3.0), Some(3.0), Some(1.0)))
+            .expect("second frame should evaluate");
+        assert_eq!(plot_value(&second, "high"), &Value::Na);
+        let third = instance
+            .evaluate_closed(market_frame(2, Some(2.0), Some(2.0), Some(2.0), Some(1.0)))
+            .expect("third frame should evaluate");
+        assert_eq!(plot_value(&third, "high"), &Value::Float(values[1].0));
+        assert_eq!(plot_value(&third, "low"), &Value::Na);
+
+        let mut preview_instance = compiled
+            .instantiate(IndicatorConfig::default())
+            .expect("preview inputs should bind");
+        preview_instance
+            .evaluate_closed(market_frame(0, Some(1.0), Some(1.0), Some(1.0), Some(1.0)))
+            .expect("first preview frame should evaluate");
+        preview_instance
+            .evaluate_closed(market_frame(1, Some(3.0), Some(3.0), Some(3.0), Some(1.0)))
+            .expect("second preview frame should evaluate");
+        let preview = preview_instance
+            .preview_open(market_frame(2, Some(2.0), Some(2.0), Some(2.0), Some(1.0)))
+            .expect("pivot preview should evaluate");
+        assert_eq!(plot_value(&preview, "high"), &Value::Float(3.0));
+        let closed_after_preview = preview_instance
+            .evaluate_closed(market_frame(2, Some(1.0), Some(1.0), Some(1.0), Some(1.0)))
+            .expect("closed frame after preview should evaluate");
+        assert_eq!(
+            plot_value(&closed_after_preview, "high"),
+            &Value::Float(3.0)
+        );
+    }
+
+    #[test]
+    fn pivots_return_na_for_missing_samples_and_dynamic_legs() {
+        let source = r#"
+            language(1)
+            indicator("Dynamic pivots", id = "test.dynamic-pivots")
+            format(precision = "base_ticker_min_tick")
+            left = input.int(1, "Left", min = 1, max = 10)
+            right = input.int(2, "Right", min = 1, max = 10)
+            plot(ta.pivothigh(chart.high, left, right), id = "high")
+        "#;
+        let compiled = compile(source, "dynamic-pivots.ind").expect("pivots should compile");
+        assert_eq!(compiled.warmup_bars(&IndicatorConfig::default()), Some(4));
+        let mut instance = compiled
+            .instantiate(IndicatorConfig::default().with("right", InputValue::Int(2)))
+            .expect("inputs should bind");
+        for (index, high) in [Some(1.0), None, Some(2.0), Some(1.0)]
+            .into_iter()
+            .enumerate()
+        {
+            let output = instance
+                .evaluate_closed(market_frame(index, high, high, high, Some(1.0)))
+                .expect("frame should evaluate");
+            assert_eq!(plot_value(&output, "high"), &Value::Na);
+        }
+
+        let mut instance = compiled
+            .instantiate(IndicatorConfig::default().with("right", InputValue::Int(1)))
+            .expect("dynamic input should bind");
+        for (index, high) in [Some(1.0), Some(4.0), Some(2.0)].into_iter().enumerate() {
+            let output = instance
+                .evaluate_closed(market_frame(index, high, high, high, Some(1.0)))
+                .expect("frame should evaluate");
+            if index == 2 {
+                assert_eq!(plot_value(&output, "high"), &Value::Float(4.0));
+            }
+        }
+    }
+
+    #[test]
+    fn pivots_reject_non_positive_legs_and_bounded_windows() {
+        let invalid = r#"
+            language(1)
+            indicator("Invalid pivot", id = "test.invalid-pivot")
+            format(precision = "base_ticker_min_tick")
+            plot(ta.pivothigh(chart.high, 0, 1), id = "high")
+        "#;
+        let invalid =
+            compile(invalid, "invalid-pivot.ind").expect("leg values are checked at runtime");
+        let result = invalid
+            .instantiate(IndicatorConfig::default())
+            .expect("invalid leg source should still plan")
+            .evaluate_closed(frame(0, 0, 1.0));
+        assert!(result.is_err());
+
+        let bounded = r#"
+            language(1)
+            indicator("Bounded pivot", id = "test.bounded-pivot")
+            format(precision = "base_ticker_min_tick")
+            left = input.int(2, "Left", min = 1, max = 10)
+            right = input.int(2, "Right", min = 1, max = 10)
+            plot(ta.pivotlow(chart.low, left, right), id = "low")
+        "#;
+        let compiled = compile(bounded, "bounded-pivot.ind").expect("pivot should compile");
+        let limits = RuntimeLimits {
+            max_window_length: 3,
+            ..Default::default()
+        };
+        let result = compiled
+            .instantiate_with_limits(IndicatorConfig::default(), limits)
+            .expect("bounded source should plan")
+            .evaluate_closed(frame(0, 0, 1.0));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn regions_emit_loop_snapshots_last_write_wins_and_preview_isolated() {
+        let source = r#"
+            language(1)
+            indicator("Regions", id = "test.regions")
+            display(view = "primary_overlay")
+            plot(na, id = "anchor", display = "none", pane = "main", layer = true)
+            state threshold = chart.close
+            if chart.close > threshold {
+                for index = 0 to 1 {
+                    region(key = 7, upper = 10 + index, lower = 5,
+                           left_index = 0, right_index = bar_index,
+                           extend_right = true, id = "zones")
+                }
+            }
+            threshold := chart.close
+        "#;
+        let compiled = compile(source, "regions.ind").expect("regions should compile");
+        let mut instance = compiled
+            .instantiate(IndicatorConfig::default())
+            .expect("inputs should bind");
+        let first = instance
+            .evaluate_closed(frame(0, 0, 10.0))
+            .expect("first frame should evaluate");
+        assert!(first.regions.is_empty());
+
+        let preview = instance
+            .preview_open(frame(1, 1, 20.0))
+            .expect("preview should evaluate");
+        assert_eq!(preview.regions.len(), 1);
+        assert_eq!(preview.regions[0].key, 7);
+        assert_eq!(preview.regions[0].upper, 11.0);
+
+        let closed = instance
+            .evaluate_closed(frame(1, 1, 15.0))
+            .expect("closed frame should evaluate");
+        assert_eq!(closed.regions.len(), 1);
+        assert_eq!(closed.regions[0].upper, 11.0);
+
+        let removed = instance
+            .evaluate_closed(frame(2, 2, 5.0))
+            .expect("region removal should evaluate");
+        assert!(removed.regions.is_empty());
+    }
+
+    #[test]
+    fn persistent_regions_emit_updates_and_last_write_wins() {
+        let source = r#"
+            language(1)
+            indicator("Persistent regions", id = "test.persistent-regions")
+            display(view = "primary_overlay")
+            plot(na, id = "anchor", display = "none", pane = "main", layer = true)
+            if chart.close > 0 {
+                region(key = 7, upper = 10, lower = 5,
+                       left_index = 0, right_index = bar_index,
+                       extend_right = true, persistent = true, id = "zones")
+                region(key = 7, upper = 12, lower = 5,
+                       left_index = 0, right_index = bar_index,
+                       extend_right = false, persistent = true, id = "zones")
+                region_remove(id = "zones", key = 8)
+            }
+        "#;
+        let compiled = compile(source, "persistent-regions.ind")
+            .expect("persistent region source should compile");
+        let mut instance = compiled
+            .instantiate(IndicatorConfig::default())
+            .expect("inputs should bind");
+        let output = instance
+            .evaluate_closed(frame(0, 0, 1.0))
+            .expect("persistent region should evaluate");
+        assert_eq!(output.regions.len(), 0);
+        assert_eq!(output.region_updates.len(), 2);
+        assert!(matches!(
+            &output.region_updates[0],
+            RegionUpdate::Upsert(region)
+                if region.key == 7 && region.upper == 12.0 && !region.extend_right
+        ));
+        assert!(matches!(
+            &output.region_updates[1],
+            RegionUpdate::Remove { id, key } if id == "zones" && *key == 8
+        ));
+
+        let omitted = instance
+            .evaluate_closed(frame(1, 1, -1.0))
+            .expect("omitted persistent regions should evaluate");
+        assert!(omitted.region_updates.is_empty());
+    }
+
+    #[test]
+    fn arrays_support_tuple_storage_push_get_and_size() {
+        let source = r#"
+            language(1)
+            indicator("Array zones", id = "test.array-zones")
+            format(precision = "base_ticker_min_tick")
+            active = array.new()
+            active := array.push(active, (7, 10.0, 5.0, 3, 2))
+            active := array.push(active, (8, 20.5, 15.0, 4, 1))
+            (key, upper, lower, left, count) = array.get(active, 1)
+            plot(array.size(active), id = "size")
+            plot(upper, id = "upper")
+            plot(left, id = "left")
+            plot(count, id = "count")
+        "#;
+        let compiled = compile(source, "array-zones.ind").expect("array source should compile");
+        let mut instance = compiled
+            .instantiate(IndicatorConfig::default())
+            .expect("inputs should bind");
+        let output = instance
+            .evaluate_closed(frame(0, 0, 1.0))
+            .expect("array source should evaluate");
+        assert_eq!(plot_value(&output, "size"), &Value::Int(2));
+        assert_eq!(plot_value(&output, "upper"), &Value::Float(20.5));
+        assert_eq!(plot_value(&output, "left"), &Value::Int(4));
+        assert_eq!(plot_value(&output, "count"), &Value::Int(1));
+    }
+
+    #[test]
+    fn array_push_evaluates_side_effecting_arguments_once_when_aliased() {
+        let source = r#"
+            language(1)
+            indicator("Array alias", id = "test.array-alias")
+            format(precision = "base_ticker_min_tick")
+            active = array.new()
+            alias = active
+            active := array.push(active, (7, ta.cum(1), 0.0, 0, 0))
+            (_, upper, _, _, _) = array.get(active, 0)
+            plot(upper, id = "upper")
+        "#;
+        let compiled = compile(source, "array-alias.ind").expect("aliased array should compile");
+        let mut instance = compiled
+            .instantiate(IndicatorConfig::default())
+            .expect("inputs should bind");
+        let output = instance
+            .evaluate_closed(frame(0, 0, 1.0))
+            .expect("aliased array push should evaluate");
+        assert_eq!(plot_value(&output, "upper"), &Value::Float(1.0));
+    }
+
+    #[test]
+    fn self_pushed_arrays_obey_collection_limits() {
+        let source = r#"
+            language(1)
+            indicator("Bounded array", id = "test.bounded-array")
+            format(precision = "base_ticker_min_tick")
+            active = array.new()
+            active := array.push(active, (7, 10.0))
+            plot(array.size(active), id = "size")
+        "#;
+        let compiled = compile(source, "bounded-array.ind").expect("array source should compile");
+        let limits = RuntimeLimits {
+            max_collection_elements: 0,
+            ..RuntimeLimits::default()
+        };
+        let mut instance = compiled
+            .instantiate_with_limits(IndicatorConfig::default(), limits)
+            .expect("inputs should bind");
+        assert_eq!(
+            instance
+                .evaluate_closed(frame(0, 0, 1.0))
+                .expect_err("self-pushed array should hit the collection limit"),
+            RuntimeError::ResourceLimitExceeded("collection elements")
+        );
+    }
+
+    #[test]
+    fn large_array_reads_stay_within_untrusted_execution_limits() {
+        let source = r#"
+            language(1)
+            indicator("Large array reads", id = "test.large-array-reads")
+            format(precision = "base_ticker_min_tick")
+            values = array.new()
+            for index = 0 to 255 {
+                values := array.push(values, (index, index))
+            }
+            for index = 0 to array.size(values) - 1 {
+                (key, value) = array.get(values, index)
+            }
+            plot(array.size(values), id = "size")
+        "#;
+        let compiled =
+            compile(source, "large-array-reads.ind").expect("array source should compile");
+        let mut instance = compiled
+            .instantiate_with_limits(IndicatorConfig::default(), RuntimeLimits::untrusted())
+            .expect("inputs should bind");
+        let output = instance
+            .evaluate_closed(frame(0, 0, 1.0))
+            .expect("large array reads should remain within limits");
+        assert_eq!(plot_value(&output, "size"), &Value::Int(256));
+    }
+
+    #[test]
+    fn flat_open_zones_emit_only_creation_and_completion_updates() {
+        let compiled = compile(
+            include_str!("../../indicators/catalog/sources/flat-open-zones.ind"),
+            "flat-open-zones.ind",
+        )
+        .expect("flat open source should compile");
+        let mut instance = compiled
+            .instantiate(IndicatorConfig::default())
+            .expect("flat open source should instantiate");
+        let flat_frame = |index: usize, open: f64, high: f64, low: f64, close: f64| {
+            let mut frame = frame(index, index as i64, close);
+            frame.chart.open = Some(open);
+            frame.chart.high = Some(high);
+            frame.chart.low = Some(low);
+            frame.chart.close = Some(close);
+            frame
+        };
+
+        let mut invalidated = compiled
+            .instantiate(IndicatorConfig::default())
+            .expect("flat open source should instantiate");
+        assert!(
+            invalidated
+                .evaluate_closed(flat_frame(0, 100.0, 100.1, 99.95, 99.95))
+                .expect("invalidated setup bar should evaluate")
+                .region_updates
+                .is_empty()
+        );
+        assert!(
+            invalidated
+                .evaluate_closed(flat_frame(1, 100.0, 101.0, 99.9, 101.0))
+                .expect("invalidated creation bar should evaluate")
+                .region_updates
+                .is_empty()
+        );
+
+        assert!(
+            instance
+                .evaluate_closed(flat_frame(0, 100.0, 101.0, 99.0, 100.0))
+                .expect("first bar should evaluate")
+                .region_updates
+                .is_empty()
+        );
+        let created = instance
+            .evaluate_closed(flat_frame(1, 100.0, 101.0, 99.9, 101.0))
+            .expect("creation bar should evaluate");
+        assert!(matches!(
+            created.region_updates.as_ref(),
+            [RegionUpdate::Upsert(region)] if region.left_index == 1 && region.extend_right
+        ));
+        for index in 2..4 {
+            assert!(
+                instance
+                    .evaluate_closed(flat_frame(index, 100.5, 102.0, 99.5, 99.5))
+                    .expect("inside bar should evaluate")
+                    .region_updates
+                    .is_empty()
+            );
+        }
+        let completed = instance
+            .evaluate_closed(flat_frame(4, 100.5, 102.0, 99.5, 99.5))
+            .expect("completion bar should evaluate");
+        assert!(matches!(
+            completed.region_updates.as_ref(),
+            [RegionUpdate::Upsert(region)]
+                if region.left_index == 1 && region.right_index == 4 && !region.extend_right
+        ));
+    }
+
+    #[test]
+    fn flat_open_zones_handle_dense_10k_history_under_untrusted_limits() {
+        let compiled = compile(
+            include_str!("../../indicators/catalog/sources/flat-open-zones.ind"),
+            "flat-open-zones.ind",
+        )
+        .expect("flat open source should compile");
+        let mut instance = compiled
+            .instantiate_with_limits(IndicatorConfig::default(), RuntimeLimits::untrusted())
+            .expect("flat open source should instantiate");
+        for index in 0..10_000 {
+            let open = 100.0 + index as f64 * 0.2;
+            let mut bar = frame(index, index as i64, open + 0.5);
+            bar.chart.open = Some(open);
+            bar.chart.high = Some(open + 1.0);
+            bar.chart.low = Some(open - 0.1);
+            bar.chart.close = Some(open + 0.5);
+            instance
+                .evaluate_closed(bar)
+                .expect("dense flat-open history should remain within limits");
+        }
+    }
+
+    #[test]
+    fn volume_pivot_zones_handle_dense_10k_history_under_untrusted_limits() {
+        let compiled = compile(
+            include_str!("../../indicators/catalog/sources/volume-pivot-zones.ind"),
+            "volume-pivot-zones.ind",
+        )
+        .expect("volume pivot source should compile");
+        let mut instance = compiled
+            .instantiate_with_limits(IndicatorConfig::default(), RuntimeLimits::untrusted())
+            .expect("volume pivot source should instantiate");
+        for index in 0..10_000 {
+            let base = 100.0 + index as f64 * 0.2;
+            instance
+                .evaluate_closed(market_frame(
+                    index,
+                    Some(base + 1.0),
+                    Some(base),
+                    Some(base + 0.75),
+                    Some(if index % 11 == 5 { 1_000.0 } else { 1.0 }),
+                ))
+                .expect("dense volume-pivot history should remain within limits");
+        }
+    }
+
+    #[test]
+    fn flat_open_zones_remove_oldest_active_zones_at_the_configured_cap() {
+        let compiled = compile(
+            include_str!("../../indicators/catalog/sources/flat-open-zones.ind"),
+            "flat-open-zones.ind",
+        )
+        .expect("flat open source should compile");
+        let mut instance = compiled
+            .instantiate_with_limits(
+                IndicatorConfig::default().with("max_active_zones", InputValue::Int(16)),
+                RuntimeLimits::untrusted(),
+            )
+            .expect("flat open source should instantiate");
+        let mut removed = false;
+        for index in 0..64 {
+            let open = 100.0 + index as f64 * 0.2;
+            let mut bar = frame(index, index as i64, open + 0.5);
+            bar.chart.open = Some(open);
+            bar.chart.high = Some(open + 1.0);
+            bar.chart.low = Some(open - 0.1);
+            bar.chart.close = Some(open + 0.5);
+            let output = instance
+                .evaluate_closed(bar)
+                .expect("capped flat-open history should evaluate");
+            removed |= output
+                .region_updates
+                .iter()
+                .any(|update| matches!(update, RegionUpdate::Remove { .. }));
+        }
+        assert!(removed, "the active-zone cap should retire old regions");
+    }
+
+    #[test]
+    fn flat_open_zones_apply_one_cap_across_bullish_and_bearish_zones() {
+        let compiled = compile(
+            include_str!("../../indicators/catalog/sources/flat-open-zones.ind"),
+            "flat-open-zones.ind",
+        )
+        .expect("flat open source should compile");
+        let mut instance = compiled
+            .instantiate_with_limits(
+                IndicatorConfig::default().with("max_active_zones", InputValue::Int(16)),
+                RuntimeLimits::untrusted(),
+            )
+            .expect("flat open source should instantiate");
+        let mut removed = false;
+        let mut first = frame(0, 0, 100.0);
+        first.chart.open = Some(100.0);
+        first.chart.high = Some(100.1);
+        first.chart.low = Some(99.95);
+        first.chart.close = Some(100.0);
+        instance
+            .evaluate_closed(first)
+            .expect("setup bar should evaluate");
+        for index in 1..24 {
+            let bullish = index % 2 == 1;
+            let mut bar = frame(index, index as i64, 100.0);
+            bar.chart.open = Some(100.0);
+            bar.chart.high = Some(100.1);
+            bar.chart.low = Some(if bullish { 100.0 } else { 99.95 });
+            bar.chart.close = Some(if bullish { 100.05 } else { 99.95 });
+            let output = instance
+                .evaluate_closed(bar)
+                .expect("mixed flat open should evaluate");
+            removed |= output
+                .region_updates
+                .iter()
+                .any(|update| matches!(update, RegionUpdate::Remove { .. }));
+        }
+        assert!(
+            removed,
+            "the global active-zone cap should retire old regions"
+        );
+    }
+
+    #[test]
+    fn volume_pivot_zones_remove_oldest_active_zones_at_the_configured_cap() {
+        let compiled = compile(
+            include_str!("../../indicators/catalog/sources/volume-pivot-zones.ind"),
+            "volume-pivot-zones.ind",
+        )
+        .expect("volume pivot source should compile");
+        let mut instance = compiled
+            .instantiate_with_limits(
+                IndicatorConfig::default().with("max_active_zones", InputValue::Int(16)),
+                RuntimeLimits::untrusted(),
+            )
+            .expect("volume pivot source should instantiate");
+        let mut removed = false;
+        for index in 0..300 {
+            let base = 100.0 + index as f64 * 0.2;
+            let output = instance
+                .evaluate_closed(market_frame(
+                    index,
+                    Some(base + 1.0),
+                    Some(base),
+                    Some(base + 0.75),
+                    Some(if index % 11 == 5 { 1_000.0 } else { 1.0 }),
+                ))
+                .expect("dense volume-pivot history should evaluate");
+            removed |= output
+                .region_updates
+                .iter()
+                .any(|update| matches!(update, RegionUpdate::Remove { .. }));
+        }
+        assert!(removed, "the active-zone cap should retire old regions");
     }
 
     #[test]

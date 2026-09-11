@@ -2465,6 +2465,7 @@ struct PresentationSpans {
     styles: BTreeMap<String, Span>,
     marks: Vec<Span>,
     segments: BTreeMap<String, Span>,
+    region_style_slots: BTreeMap<String, Span>,
     fills: Vec<Span>,
     readouts: Vec<Span>,
     columns: Vec<Span>,
@@ -2632,6 +2633,7 @@ impl Compiler {
         self.program.state_call_sites = self.state_call_sites.clone();
         self.program.state_functions = self.state_functions.clone();
         self.program.series = self.next_series;
+        self.program.retained_series = self.retained_series();
         self.program.call_sites = self.next_call_site;
         self.program.local_definitions = self.local_definitions.clone();
         (descriptor, self.program.clone(), self.requirements)
@@ -2995,6 +2997,20 @@ impl Compiler {
                 self.error(
                     self.style_span(&style.id),
                     format!("duplicate style ID '{}'", style.id),
+                );
+            }
+        }
+        for slot in &descriptor.presentation.region_style_slots {
+            if !style_ids.contains(slot.as_str()) {
+                let span = self
+                    .presentation_spans
+                    .region_style_slots
+                    .get(slot)
+                    .copied()
+                    .unwrap_or(Span::new(0, 0));
+                self.error(
+                    span,
+                    format!("region references unknown style slot '{slot}'"),
                 );
             }
         }
@@ -3950,6 +3966,8 @@ impl Compiler {
                 "plot" => self.compile_plot(&call),
                 "marker" => self.compile_marker(&call),
                 "segment" => self.compile_segment(&call),
+                "region" => self.compile_region(&call),
+                "region_remove" => self.compile_region_remove(&call),
                 "level" => self.compile_level(&call),
                 "plotcandle" | "plotohlc" => self.compile_ohlc(&call),
                 "broken_cloud" | "plotrange" => self.compile_range(&call),
@@ -5309,6 +5327,203 @@ impl Compiler {
         }))
     }
 
+    fn compile_region(&mut self, call: &AstCall) -> Option<crate::hir::StatementId> {
+        if self.current_function.is_some() {
+            self.error(
+                call.span,
+                "region declarations are not valid inside functions",
+            );
+            return None;
+        }
+        self.validate_positional_arguments(call, 5, "region");
+        self.validate_named_arguments(
+            call,
+            &[
+                "key",
+                "upper",
+                "lower",
+                "left_index",
+                "right_index",
+                "visible",
+                "border_color",
+                "fill_color",
+                "border_color_slot",
+                "fill_color_slot",
+                "extend_right",
+                "persistent",
+                "id",
+                "width",
+            ],
+        );
+        let argument = |name: &str, index: usize| argument_at(call, index, name);
+        let Some(key_argument) = argument("key", 0) else {
+            self.error(call.span, "region expects a key expression");
+            return None;
+        };
+        let Some(upper_argument) = argument("upper", 1) else {
+            self.error(call.span, "region expects an upper expression");
+            return None;
+        };
+        let Some(lower_argument) = argument("lower", 2) else {
+            self.error(call.span, "region expects a lower expression");
+            return None;
+        };
+        let Some(left_index_argument) = argument("left_index", 3) else {
+            self.error(call.span, "region expects a left_index expression");
+            return None;
+        };
+        let Some(right_index_argument) = argument("right_index", 4) else {
+            self.error(call.span, "region expects a right_index expression");
+            return None;
+        };
+        let key = self.compile_expression(&key_argument.expression);
+        let upper = self.compile_expression(&upper_argument.expression);
+        let lower = self.compile_expression(&lower_argument.expression);
+        let left_index = self.compile_expression(&left_index_argument.expression);
+        let right_index = self.compile_expression(&right_index_argument.expression);
+        for (argument, expression, label) in [
+            (key_argument, key, "key"),
+            (left_index_argument, left_index, "left_index"),
+            (right_index_argument, right_index, "right_index"),
+        ] {
+            if !matches!(
+                self.program.expressions[expression.0].ty.value,
+                ValueType::Int | ValueType::Any
+            ) {
+                self.error(
+                    argument.expression.span(),
+                    format!("region {label} must be an integer"),
+                );
+            }
+        }
+        for (argument, expression, label) in [
+            (upper_argument, upper, "upper"),
+            (lower_argument, lower, "lower"),
+        ] {
+            if !matches!(
+                self.program.expressions[expression.0].ty.value,
+                ValueType::Int | ValueType::Float | ValueType::Any
+            ) {
+                self.error(
+                    argument.expression.span(),
+                    format!("region {label} must be numeric"),
+                );
+            }
+        }
+        let compile_optional = |compiler: &mut Self, name: &str| {
+            call.arguments
+                .iter()
+                .find(|argument| argument.name.as_deref() == Some(name))
+                .map(|argument| compiler.compile_expression(&argument.expression))
+        };
+        let visible = compile_optional(self, "visible");
+        let extend_right = compile_optional(self, "extend_right");
+        for (expression, label) in [(visible, "visibility"), (extend_right, "extend_right")] {
+            if let Some(expression) = expression
+                && !matches!(
+                    self.program.expressions[expression.0].ty.value,
+                    ValueType::Bool | ValueType::Any
+                )
+            {
+                self.error(call.span, format!("region {label} must be boolean"));
+            }
+        }
+        let border_color = self.compile_color_named_argument(call, "border_color");
+        let fill_color = self.compile_color_named_argument(call, "fill_color");
+        let border_color_slot = self.static_named_string(call, "border_color_slot");
+        let fill_color_slot = self.static_named_string(call, "fill_color_slot");
+        if border_color.is_some() && border_color_slot.is_some() {
+            self.error(
+                call.span,
+                "region cannot provide both border_color and border_color_slot",
+            );
+        }
+        if fill_color.is_some() && fill_color_slot.is_some() {
+            self.error(
+                call.span,
+                "region cannot provide both fill_color and fill_color_slot",
+            );
+        }
+        for slot in [border_color_slot.as_ref(), fill_color_slot.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            if !self.presentation.region_style_slots.contains(slot) {
+                self.presentation.region_style_slots.push(slot.clone());
+                self.presentation_spans
+                    .region_style_slots
+                    .insert(slot.clone(), call.span);
+            }
+        }
+        let id = self
+            .static_named_string(call, "id")
+            .unwrap_or_else(|| format!("region_{}", self.region_count()));
+        let persistent = match self.static_named_value(call, "persistent") {
+            Some(Value::Bool(value)) => value,
+            Some(_) => {
+                self.error(call.span, "region persistent must be a boolean literal");
+                false
+            }
+            None => false,
+        };
+        let width = self.presentation_float(call, "width", 1.0);
+        let valid_width = width.is_finite() && (0.0..=64.0).contains(&width) && width > 0.0;
+        if !valid_width {
+            self.error(call.span, "region width must be a positive number up to 64");
+        }
+        Some(self.push_statement(TypedStatement {
+            kind: StatementKind::Region {
+                id,
+                key,
+                upper,
+                lower,
+                left_index,
+                right_index,
+                visible,
+                border_color,
+                fill_color,
+                border_color_slot,
+                fill_color_slot,
+                extend_right,
+                persistent,
+                width: if valid_width { width } else { 1.0 },
+            },
+        }))
+    }
+
+    fn compile_region_remove(&mut self, call: &AstCall) -> Option<crate::hir::StatementId> {
+        if self.current_function.is_some() {
+            self.error(
+                call.span,
+                "region_remove declarations are not valid inside functions",
+            );
+            return None;
+        }
+        self.validate_positional_arguments(call, 0, "region_remove");
+        self.validate_named_arguments(call, &["id", "key"]);
+        let Some(id) = self.static_named_string(call, "id") else {
+            self.error(call.span, "region_remove expects a static id");
+            return None;
+        };
+        let Some(key_argument) = argument_at(call, 0, "key") else {
+            self.error(call.span, "region_remove expects a key expression");
+            return None;
+        };
+        let key = self.compile_expression(&key_argument.expression);
+        if !matches!(
+            self.program.expressions[key.0].ty.value,
+            ValueType::Int | ValueType::Any
+        ) {
+            self.error(
+                key_argument.expression.span(),
+                "region_remove key must be an integer",
+            );
+        }
+        Some(self.push_statement(TypedStatement {
+            kind: StatementKind::RegionRemove { id, key },
+        }))
+    }
+
     fn compile_level(&mut self, call: &AstCall) -> Option<crate::hir::StatementId> {
         if !self.is_top_level_declaration() {
             self.error(call.span, "level declarations must be top-level");
@@ -5462,19 +5677,47 @@ impl Compiler {
     }
 
     fn compile_color_argument(&mut self, call: &AstCall) -> Option<ExprId> {
+        self.compile_color_named_argument(call, "color")
+    }
+
+    fn compile_color_named_argument(&mut self, call: &AstCall, name: &str) -> Option<ExprId> {
         let argument = call
             .arguments
             .iter()
-            .find(|argument| argument.name.as_deref() == Some("color"))?;
+            .find(|argument| argument.name.as_deref() == Some(name))?;
         let expression = self.compile_expression(&argument.expression);
         let value_type = self.program.expressions[expression.0].ty.value;
         if !matches!(value_type, ValueType::Color | ValueType::Any) {
             self.error(
                 argument.expression.span(),
-                "plot color must be a color value",
+                format!("{name} must be a color value"),
             );
         }
         Some(expression)
+    }
+
+    fn retained_series(&self) -> Vec<bool> {
+        let mut retained = vec![false; self.next_series];
+        for (history, _) in &self.history_expressions {
+            let Some(ExpressionKind::History { source, .. }) = self
+                .program
+                .expressions
+                .get(history.0)
+                .map(|expression| &expression.kind)
+            else {
+                continue;
+            };
+            if let Some(slot) = self
+                .program
+                .expressions
+                .get(source.0)
+                .and_then(|expression| expression.series_slot)
+                && let Some(retained) = retained.get_mut(slot.0)
+            {
+                *retained = true;
+            }
+        }
+        retained
     }
 
     fn is_top_level_declaration(&self) -> bool {
@@ -5494,6 +5737,14 @@ impl Compiler {
             .statements
             .iter()
             .filter(|statement| matches!(statement.kind, StatementKind::Segment { .. }))
+            .count()
+    }
+
+    fn region_count(&self) -> usize {
+        self.program
+            .statements
+            .iter()
+            .filter(|statement| matches!(statement.kind, StatementKind::Region { .. }))
             .count()
     }
 
@@ -6390,6 +6641,7 @@ impl Compiler {
             "chart.trade.buy_count" => Some((FrameField::ChartTradeBuyCount, ValueType::Int)),
             "chart.trade.sell_count" => Some((FrameField::ChartTradeSellCount, ValueType::Int)),
             "chart.trade.count" => Some((FrameField::ChartTradeCount, ValueType::Int)),
+            "instrument.min_tick" => Some((FrameField::InstrumentMinTick, ValueType::Float)),
             "open_interest" => Some((FrameField::OpenInterest, ValueType::Float)),
             _ => None,
         };
@@ -6408,6 +6660,7 @@ impl Compiler {
                 | FrameField::ChartVolume => {
                     self.requirements.ohlc = true;
                 }
+                FrameField::InstrumentMinTick => {}
                 FrameField::ChartTrade
                 | FrameField::ChartTradeAvailable
                 | FrameField::ChartTradeBuyQty
@@ -6424,8 +6677,12 @@ impl Compiler {
                 }
                 FrameField::OpenInterest => self.requirements.open_interest = true,
             }
-            return self
-                .push_expression(ExpressionKind::LoadFrame(field), Type::series(value_type));
+            let value_type = if matches!(field, FrameField::InstrumentMinTick) {
+                Type::simple(value_type)
+            } else {
+                Type::series(value_type)
+            };
+            return self.push_expression(ExpressionKind::LoadFrame(field), value_type);
         }
         let bar_state = match name.as_str() {
             "barstate.isfirst" => Some(BarStateField::IsFirst),
@@ -7110,6 +7367,43 @@ fn constant_value(expression: &AstExpression) -> Option<Value> {
         AstExpression::String(value, _) => Some(Value::String(value.clone())),
         AstExpression::Boolean(value, _) => Some(Value::Bool(*value)),
         AstExpression::Na(_) => Some(Value::Na),
+        AstExpression::Identifier(path, _) => match path.join(".").as_str() {
+            "color.red" => Some(Value::Color(0xffff_0000)),
+            "color.green" => Some(Value::Color(0xff00_ff00)),
+            "color.blue" => Some(Value::Color(0xff00_00ff)),
+            "color.white" => Some(Value::Color(0xffff_ffff)),
+            "color.black" => Some(Value::Color(0xff00_0000)),
+            _ => None,
+        },
+        AstExpression::Call(call) if call.path.join(".") == "color.rgb" => {
+            if call
+                .arguments
+                .iter()
+                .any(|argument| argument.name.is_some())
+                || !(3..=4).contains(&call.arguments.len())
+            {
+                return None;
+            }
+            let mut components = [0_u32; 4];
+            for (index, argument) in call.arguments.iter().enumerate() {
+                let Value::Int(value) = constant_value(&argument.expression)? else {
+                    return None;
+                };
+                if !(0..=255).contains(&value) {
+                    return None;
+                }
+                components[index] = value as u32;
+            }
+            if call.arguments.len() == 3 {
+                components[3] = 255;
+            }
+            Some(Value::Color(
+                (components[3] << 24)
+                    | (components[0] << 16)
+                    | (components[1] << 8)
+                    | components[2],
+            ))
+        }
         AstExpression::Unary {
             operator,
             expression,

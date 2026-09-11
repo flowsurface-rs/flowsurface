@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt::{Display, Formatter};
 use std::mem::size_of;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -11,29 +12,124 @@ pub enum Value {
     String(String),
     Color(u32),
     Tuple(Vec<Value>),
-    Array(Vec<Value>),
+    Array(Arc<ArrayValue>),
     Record(BTreeMap<String, Value>),
     Na,
+}
+
+#[derive(Debug)]
+pub struct ArrayValue {
+    values: Vec<Value>,
+    collection_elements: usize,
+    heap_bytes: usize,
+    max_string_capacity: usize,
+}
+
+impl ArrayValue {
+    pub fn new(values: Vec<Value>) -> Self {
+        let (nested_elements, nested_bytes, max_string_capacity) = values.iter().fold(
+            (0usize, 0usize, 0usize),
+            |(elements, bytes, max_string_capacity), value| {
+                let (value_elements, value_bytes) = value.resource_usage();
+                (
+                    elements.saturating_add(value_elements),
+                    bytes.saturating_add(value_bytes),
+                    max_string_capacity.max(value.max_string_capacity()),
+                )
+            },
+        );
+        Self {
+            collection_elements: values.len().saturating_add(nested_elements),
+            heap_bytes: Self::container_heap_bytes(values.capacity()).saturating_add(nested_bytes),
+            max_string_capacity,
+            values,
+        }
+    }
+
+    pub fn as_slice(&self) -> &[Value] {
+        &self.values
+    }
+
+    pub fn get(&self, index: usize) -> Option<&Value> {
+        self.values.get(index)
+    }
+
+    pub fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
+    pub(crate) fn push(&mut self, value: Value) {
+        let (value_elements, value_bytes) = value.resource_usage();
+        let value_max_string_capacity = value.max_string_capacity();
+        let previous_capacity = self.values.capacity();
+        self.values.push(value);
+        let capacity_growth = self
+            .values
+            .capacity()
+            .saturating_sub(previous_capacity)
+            .saturating_mul(size_of::<Value>());
+        self.collection_elements = self
+            .collection_elements
+            .saturating_add(1)
+            .saturating_add(value_elements);
+        self.heap_bytes = self
+            .heap_bytes
+            .saturating_add(value_bytes)
+            .saturating_add(capacity_growth);
+        self.max_string_capacity = self.max_string_capacity.max(value_max_string_capacity);
+    }
+
+    pub(crate) fn projected_push_usage(&self, value: &Value) -> (usize, usize) {
+        let (value_elements, value_bytes) = value.resource_usage();
+        (
+            self.collection_elements
+                .saturating_add(1)
+                .saturating_add(value_elements),
+            self.heap_bytes
+                .saturating_add(size_of::<Value>())
+                .saturating_add(value_bytes),
+        )
+    }
+
+    pub(crate) fn resource_usage(&self) -> (usize, usize) {
+        (self.collection_elements, self.heap_bytes)
+    }
+
+    fn container_heap_bytes(capacity: usize) -> usize {
+        size_of::<Vec<Value>>().saturating_add(capacity.saturating_mul(size_of::<Value>()))
+    }
+}
+
+impl Clone for ArrayValue {
+    fn clone(&self) -> Self {
+        let values = self.values.clone();
+        let old_container_bytes = Self::container_heap_bytes(self.values.capacity());
+        let nested_bytes = self.heap_bytes.saturating_sub(old_container_bytes);
+        Self {
+            collection_elements: self.collection_elements,
+            heap_bytes: Self::container_heap_bytes(values.capacity()).saturating_add(nested_bytes),
+            max_string_capacity: self.max_string_capacity,
+            values,
+        }
+    }
+}
+
+impl PartialEq for ArrayValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.values == other.values
+    }
 }
 
 impl Value {
     pub(crate) fn resource_usage(&self) -> (usize, usize) {
         match self {
             Self::String(value) => (0, size_of::<String>().saturating_add(value.capacity())),
-            Self::Tuple(values) | Self::Array(values) => values.iter().fold(
-                (
-                    values.len(),
-                    size_of::<Vec<Value>>()
-                        .saturating_add(values.capacity().saturating_mul(size_of::<Value>())),
-                ),
-                |(elements, bytes), value| {
-                    let (nested_elements, nested_bytes) = value.resource_usage();
-                    (
-                        elements.saturating_add(nested_elements),
-                        bytes.saturating_add(nested_bytes),
-                    )
-                },
-            ),
+            Self::Tuple(values) => collection_resource_usage(values, values.capacity()),
+            Self::Array(values) => values.resource_usage(),
             Self::Record(values) => values.iter().fold(
                 (
                     values.len(),
@@ -56,16 +152,7 @@ impl Value {
     }
 
     pub(crate) fn has_string_over(&self, limit: usize) -> bool {
-        match self {
-            Self::String(value) => value.capacity() > limit,
-            Self::Tuple(values) | Self::Array(values) => {
-                values.iter().any(|value| value.has_string_over(limit))
-            }
-            Self::Record(values) => values
-                .iter()
-                .any(|(key, value)| key.capacity() > limit || value.has_string_over(limit)),
-            _ => false,
-        }
+        self.max_string_capacity() > limit
     }
 
     pub fn as_float(&self) -> Option<f64> {
@@ -113,13 +200,44 @@ impl Value {
             (Self::Bool(left), Self::Bool(right)) => left == right,
             (Self::String(left), Self::String(right)) => left == right,
             (Self::Color(left), Self::Color(right)) => left == right,
-            (Self::Tuple(left), Self::Tuple(right)) | (Self::Array(left), Self::Array(right)) => {
-                left == right
-            }
+            (Self::Tuple(left), Self::Tuple(right)) => left == right,
+            (Self::Array(left), Self::Array(right)) => left == right,
             (Self::Record(left), Self::Record(right)) => left == right,
             _ => false,
         })
     }
+
+    fn max_string_capacity(&self) -> usize {
+        match self {
+            Self::String(value) => value.capacity(),
+            Self::Tuple(values) => values
+                .iter()
+                .map(Self::max_string_capacity)
+                .max()
+                .unwrap_or(0),
+            Self::Array(values) => values.max_string_capacity,
+            Self::Record(values) => values.iter().fold(0usize, |maximum, (key, value)| {
+                maximum.max(key.capacity()).max(value.max_string_capacity())
+            }),
+            _ => 0,
+        }
+    }
+}
+
+fn collection_resource_usage(values: &[Value], capacity: usize) -> (usize, usize) {
+    values.iter().fold(
+        (
+            values.len(),
+            size_of::<Vec<Value>>().saturating_add(capacity.saturating_mul(size_of::<Value>())),
+        ),
+        |(elements, bytes), value| {
+            let (nested_elements, nested_bytes) = value.resource_usage();
+            (
+                elements.saturating_add(nested_elements),
+                bytes.saturating_add(nested_bytes),
+            )
+        },
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

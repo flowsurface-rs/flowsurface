@@ -1,0 +1,128 @@
+language(1)
+indicator("Flat Open Zones", id = "catalog.flat-open-zones", max_bars_back = 2)
+display(view = "primary_overlay")
+
+style("bullish", title = "Bullish flat open", role = "success", shade = "base")
+style("bearish", title = "Bearish flat open", role = "danger", shade = "base")
+
+tick_multiplier = input.int(
+    1,
+    "Tick multiplier",
+    min = 1,
+    max = 100,
+    step = 1,
+    tooltip = "Maximum open-to-wick distance in minimum ticks"
+)
+
+max_active_zones = input.int(
+    256,
+    "Maximum active zones",
+    min = 16,
+    max = 1024,
+    step = 1,
+    tooltip = "Retain the newest zones while they are active"
+)
+
+plot(na, id = "anchor", title = "Flat open zones", display = "none", pane = "main", layer = true)
+
+has_ohlc = !na(chart.open) && !na(chart.high) && !na(chart.low) && !na(chart.close)
+has_tick = !na(instrument.min_tick) && instrument.min_tick > 0
+tick_tolerance = 0.000001
+tick_threshold = instrument.min_tick * (tick_multiplier + tick_tolerance)
+inside_close_limit = 3
+bullish_flat_open = has_ohlc && has_tick && !na(chart.low[1]) && chart.open < chart.close && chart.open - chart.low <= tick_threshold
+bearish_flat_open = has_ohlc && has_tick && !na(chart.high[1]) && chart.close < chart.open && chart.high - chart.open <= tick_threshold
+
+state next_key = 0
+state zones = array.new()
+next_zones = array.new()
+
+if bullish_flat_open {
+    next_key := next_key + 1
+    bull_upper = math.max(chart.open, chart.low[1])
+    bull_lower = math.min(chart.open, chart.low[1])
+    bull_created_invalidated = !na(chart.low) && chart.low < bull_lower
+    if !bull_created_invalidated {
+        region(
+            key = next_key,
+            upper = bull_upper,
+            lower = bull_lower,
+            left_index = bar_index,
+            right_index = bar_index,
+            border_color_slot = "bullish",
+            fill_color_slot = "bullish",
+            extend_right = true,
+            persistent = true,
+            id = "flat_open_zones",
+            width = 1.0
+        )
+        next_zones := array.push(next_zones, (next_key, bull_upper, bull_lower, bar_index, 0, true))
+    }
+}
+
+if bearish_flat_open {
+    next_key := next_key + 1
+    bear_upper = math.max(chart.open, chart.high[1])
+    bear_lower = math.min(chart.open, chart.high[1])
+    bear_created_invalidated = !na(chart.high) && chart.high > bear_upper
+    if !bear_created_invalidated {
+        region(
+            key = next_key,
+            upper = bear_upper,
+            lower = bear_lower,
+            left_index = bar_index,
+            right_index = bar_index,
+            border_color_slot = "bearish",
+            fill_color_slot = "bearish",
+            extend_right = true,
+            persistent = true,
+            id = "flat_open_zones",
+            width = 1.0
+        )
+        next_zones := array.push(next_zones, (next_key, bear_upper, bear_lower, bar_index, 0, false))
+    }
+}
+
+for index = 0 to array.size(zones) - 1 {
+    (zone_key, zone_upper, zone_lower, zone_left, zone_count, zone_bullish) = array.get(zones, index)
+    zone_invalidated = select(zone_bullish, !na(chart.low) && chart.low < zone_lower, !na(chart.high) && chart.high > zone_upper)
+    zone_inside = !na(chart.close) && chart.close >= zone_lower && chart.close <= zone_upper
+    zone_next_count = select(!zone_invalidated, select(zone_inside, zone_count + 1, 0), zone_count)
+    zone_cut = zone_invalidated || zone_next_count >= inside_close_limit
+    if zone_cut {
+        if zone_bullish == true {
+            region(
+                key = zone_key,
+                upper = zone_upper,
+                lower = zone_lower,
+                left_index = zone_left,
+                right_index = bar_index,
+                border_color_slot = "bullish",
+                fill_color_slot = "bullish",
+                extend_right = false,
+                persistent = true,
+                id = "flat_open_zones",
+                width = 1.0
+            )
+        } else {
+            region(
+                key = zone_key,
+                upper = zone_upper,
+                lower = zone_lower,
+                left_index = zone_left,
+                right_index = bar_index,
+                border_color_slot = "bearish",
+                fill_color_slot = "bearish",
+                extend_right = false,
+                persistent = true,
+                id = "flat_open_zones",
+                width = 1.0
+            )
+        }
+    } else if array.size(next_zones) < max_active_zones {
+        next_zones := array.push(next_zones, (zone_key, zone_upper, zone_lower, zone_left, zone_next_count, zone_bullish))
+    } else {
+        region_remove(id = "flat_open_zones", key = zone_key)
+    }
+}
+zones := next_zones

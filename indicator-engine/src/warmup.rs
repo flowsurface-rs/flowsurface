@@ -8,7 +8,7 @@ use crate::hir::{
     BinaryOperator, ExprId, ExpressionKind, HirProgram, LocalSlot, StatementId, StatementKind,
     UnaryOperator,
 };
-use crate::intrinsic::IntrinsicRegistry;
+use crate::intrinsic::{IntrinsicRegistry, WarmupSpec};
 use crate::types::{IndicatorConfig, IndicatorDescriptor, Value};
 use std::collections::{BTreeMap, HashSet};
 
@@ -154,6 +154,31 @@ impl<'a> Evaluator<'a> {
                 color,
                 ..
             } => self.warmup_all([Some(upper), Some(lower), color]),
+            StatementKind::Region {
+                key,
+                upper,
+                lower,
+                left_index,
+                right_index,
+                visible,
+                border_color,
+                fill_color,
+                border_color_slot: _,
+                fill_color_slot: _,
+                extend_right,
+                ..
+            } => self.warmup_all([
+                Some(key),
+                Some(upper),
+                Some(lower),
+                Some(left_index),
+                Some(right_index),
+                visible,
+                border_color,
+                fill_color,
+                extend_right,
+            ]),
+            StatementKind::RegionRemove { key, .. } => self.warmup(key),
             StatementKind::If {
                 condition,
                 then_branch,
@@ -279,17 +304,34 @@ impl<'a> Evaluator<'a> {
                     .map(|id| self.warmup(*id))
                     .max()
                     .unwrap_or(0);
-                if let Some(window) = definition.signature.window
-                    && let Some(length) = arguments.get(window).copied()
-                {
-                    let length = self
-                        .static_value(length)
-                        .and_then(|value| value.as_float())
-                        .filter(|value| *value >= 1.0)
-                        .map(|value| value as usize)
-                        .unwrap_or(1)
-                        .min(self.max_window_length);
-                    warmup = warmup.saturating_add(length);
+                if let Some(spec) = &definition.signature.warmup {
+                    let additional = match spec {
+                        WarmupSpec::Window(argument) => arguments
+                            .get(*argument)
+                            .and_then(|id| self.static_value(*id))
+                            .and_then(|value| value.as_float())
+                            .filter(|value| *value >= 1.0)
+                            .map(|value| value as usize)
+                            .unwrap_or(1),
+                        WarmupSpec::Centered {
+                            left_argument,
+                            right_argument,
+                        } => {
+                            let mut leg = |argument: usize| {
+                                arguments
+                                    .get(argument)
+                                    .and_then(|id| self.static_value(*id))
+                                    .and_then(|value| value.as_float())
+                                    .filter(|value| *value >= 1.0)
+                                    .map(|value| value as usize)
+                                    .unwrap_or(1)
+                            };
+                            leg(*left_argument)
+                                .saturating_add(leg(*right_argument))
+                                .saturating_add(1)
+                        }
+                    };
+                    warmup = warmup.saturating_add(additional.min(self.max_window_length));
                 }
                 warmup
             }
