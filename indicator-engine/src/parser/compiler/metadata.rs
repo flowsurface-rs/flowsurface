@@ -186,26 +186,24 @@ impl LoweringContext {
         let group = self.static_named_string(call, "group");
         let inline = self.static_named_string(call, "inline");
         let tooltip = self.static_named_string(call, "tooltip");
-        self.declarations.inputs.insert(
-            name.to_owned(),
-            InputDescriptor {
-                id: name.to_owned(),
-                label,
-                value_type,
-                default,
-                min,
-                max,
-                step,
-                group,
-                inline,
-                tooltip,
-                options,
-            },
-        );
+        self.declarations.inputs.push(InputDescriptor {
+            id: name.to_owned(),
+            label,
+            value_type,
+            default,
+            min,
+            max,
+            step,
+            group,
+            inline,
+            tooltip,
+            options,
+        });
         self.declarations.input_spans.insert(name.to_owned(), span);
         let slot = LocalSlot(self.scope.next_local);
         self.scope.next_local += 1;
         self.scope.local_definitions.push(None);
+        self.scope.mutable_values.push(false);
         self.scope
             .values
             .insert(name.to_owned(), (slot, Type::simple(value_type)));
@@ -318,6 +316,7 @@ impl LoweringContext {
             Type::series(ValueType::Float),
         );
         self.scope.local_definitions.push(Some(expression));
+        self.scope.mutable_values.push(false);
         self.scope
             .values
             .insert(name.to_owned(), (local, Type::series(ValueType::Float)));

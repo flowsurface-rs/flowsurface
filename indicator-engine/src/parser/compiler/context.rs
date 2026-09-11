@@ -26,7 +26,7 @@ pub(super) struct ScopeState {
     pub(super) values: BTreeMap<String, (LocalSlot, Type)>,
     pub(super) states: BTreeMap<String, (StateSlot, Type)>,
     pub(super) local_definitions: Vec<Option<ExprId>>,
-    pub(super) mutable_values: BTreeSet<usize>,
+    pub(super) mutable_values: Vec<bool>,
     pub(super) next_local: usize,
     pub(super) next_state: usize,
     pub(super) loop_depth: usize,
@@ -35,15 +35,15 @@ pub(super) struct ScopeState {
 
 pub(super) struct FunctionState {
     pub(super) by_name: BTreeMap<String, FunctionId>,
-    pub(super) signatures: BTreeMap<FunctionId, (Vec<String>, usize)>,
+    pub(super) signatures: Vec<(Vec<String>, usize)>,
     pub(super) current: Option<FunctionId>,
     pub(super) active: Vec<FunctionId>,
-    pub(super) call_edges: BTreeMap<FunctionId, BTreeSet<FunctionId>>,
+    pub(super) call_edges: Vec<Vec<FunctionId>>,
 }
 
 pub(super) struct DeclarationState {
     pub(super) descriptor: Option<IndicatorDescriptor>,
-    pub(super) inputs: BTreeMap<String, InputDescriptor>,
+    pub(super) inputs: Vec<InputDescriptor>,
     pub(super) input_spans: BTreeMap<String, Span>,
     pub(super) series_inputs: Vec<SeriesInputDescriptor>,
     pub(super) requirements: DataRequirements,
@@ -99,7 +99,7 @@ impl LoweringContext {
                 values: BTreeMap::new(),
                 states: BTreeMap::new(),
                 local_definitions: Vec::new(),
-                mutable_values: BTreeSet::new(),
+                mutable_values: Vec::new(),
                 next_local: 0,
                 next_state: 0,
                 loop_depth: 0,
@@ -107,14 +107,14 @@ impl LoweringContext {
             },
             function: FunctionState {
                 by_name: BTreeMap::new(),
-                signatures: BTreeMap::new(),
+                signatures: Vec::new(),
                 current: None,
                 active: Vec::new(),
-                call_edges: BTreeMap::new(),
+                call_edges: Vec::new(),
             },
             declarations: DeclarationState {
                 descriptor: None,
-                inputs: BTreeMap::new(),
+                inputs: Vec::new(),
                 input_spans: BTreeMap::new(),
                 series_inputs: Vec::new(),
                 requirements: DataRequirements::default(),

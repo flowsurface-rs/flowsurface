@@ -855,7 +855,7 @@ impl LoweringContext {
             .collect::<Vec<_>>();
         for function in function_ids {
             let mut path = Vec::new();
-            let mut visited = BTreeSet::new();
+            let mut visited = vec![false; self.ir.program.functions.len()];
             if self.function_reaches(function, function, &mut path, &mut visited) {
                 self.error(
                     Span::new(0, 0),
@@ -877,18 +877,26 @@ impl LoweringContext {
         start: FunctionId,
         current: FunctionId,
         path: &mut Vec<FunctionId>,
-        visited: &mut BTreeSet<FunctionId>,
+        visited: &mut [bool],
     ) -> bool {
-        if !visited.insert(current) {
+        let Some(seen) = visited.get_mut(current.0) else {
+            return false;
+        };
+        if *seen {
             return false;
         }
+        *seen = true;
         path.push(current);
-        let reaches = self.function.call_edges.get(&current).is_some_and(|edges| {
-            edges.iter().any(|next| {
-                (path.len() > 1 && *next == start)
-                    || self.function_reaches(start, *next, path, visited)
-            })
-        });
+        let reaches = self
+            .function
+            .call_edges
+            .get(current.0)
+            .is_some_and(|edges| {
+                edges.iter().any(|next| {
+                    (path.len() > 1 && *next == start)
+                        || self.function_reaches(start, *next, path, visited)
+                })
+            });
         path.pop();
         reaches
     }
@@ -921,7 +929,13 @@ impl LoweringContext {
         };
         let is_mutable_local = matches!(
             &expression.kind,
-            ExpressionKind::LoadLocal(slot) if self.scope.mutable_values.contains(&slot.0)
+            ExpressionKind::LoadLocal(slot)
+                if self
+                    .scope
+                    .mutable_values
+                    .get(slot.0)
+                    .copied()
+                    .unwrap_or(false)
         );
         expression.series_slot.is_some()
             && !matches!(&expression.kind, ExpressionKind::FunctionCall { .. })

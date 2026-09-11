@@ -51,6 +51,7 @@ pub(super) fn compile(ast: AstProgram, path: &Path, registry: IntrinsicRegistry)
     ctx.function.by_name = index.by_name;
     ctx.function.signatures = index.signatures;
     ctx.ir.program.functions = index.stubs;
+    ctx.function.call_edges = vec![Vec::new(); ctx.ir.program.functions.len()];
 
     for statement in statements {
         if let Some(statement) = ctx.compile_statement(statement) {
@@ -75,7 +76,7 @@ pub(super) fn compile(ast: AstProgram, path: &Path, registry: IntrinsicRegistry)
         );
         descriptor.max_bars_back = 50_000;
     }
-    descriptor.inputs = ctx.declarations.inputs.values().cloned().collect();
+    descriptor.inputs = std::mem::take(&mut ctx.declarations.inputs);
     descriptor.series_inputs = ctx.declarations.series_inputs.clone();
     ctx.validate_inputs(&descriptor);
     ctx.ensure_default_plot_styles();

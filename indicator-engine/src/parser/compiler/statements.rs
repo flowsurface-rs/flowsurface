@@ -21,6 +21,7 @@ impl LoweringContext {
             let slot = LocalSlot(self.scope.next_local);
             self.scope.next_local += 1;
             self.scope.local_definitions.push(None);
+            self.scope.mutable_values.push(false);
             parameter_slots.push(slot);
             self.scope.values.insert(
                 parameter.name.clone(),
@@ -104,7 +105,7 @@ impl LoweringContext {
                         self.scope.values.get(&name).map(|(_, ty)| *ty)
                     };
                     if let Some(slot) = local_slot {
-                        self.scope.mutable_values.insert(slot.0);
+                        self.scope.mutable_values[slot.0] = true;
                     }
                     let expression = self.compile_expression(&expression);
                     let expression_type = self.ir.program.expressions[expression.0].ty;
@@ -177,6 +178,7 @@ impl LoweringContext {
                     let slot = LocalSlot(self.scope.next_local);
                     self.scope.next_local += 1;
                     self.scope.local_definitions.push(Some(expression_id));
+                    self.scope.mutable_values.push(false);
                     self.scope.values.insert(name, (slot, ty));
                     Some(self.push_statement(TypedStatement {
                         kind: StatementKind::Binding {
@@ -202,7 +204,7 @@ impl LoweringContext {
                         return None;
                     };
                     for target in &targets {
-                        self.scope.mutable_values.insert(target.0);
+                        self.scope.mutable_values[target.0] = true;
                     }
                     let expression = self.compile_expression(&expression);
                     if !matches!(
@@ -238,6 +240,7 @@ impl LoweringContext {
                             let slot = LocalSlot(self.scope.next_local);
                             self.scope.next_local += 1;
                             self.scope.local_definitions.push(None);
+                            self.scope.mutable_values.push(false);
                             self.scope
                                 .values
                                 .insert(name, (slot, Type::series(ValueType::Any)));
@@ -364,10 +367,11 @@ impl LoweringContext {
                 let target = LocalSlot(self.scope.next_local);
                 self.scope.next_local += 1;
                 self.scope.local_definitions.push(None);
+                self.scope.mutable_values.push(false);
                 self.scope
                     .values
                     .insert(name, (target, Type::series(ValueType::Int)));
-                self.scope.mutable_values.insert(target.0);
+                self.scope.mutable_values[target.0] = true;
                 self.scope.loop_depth += 1;
                 let body = self.compile_scoped_statements(body);
                 let body_values = self.scope.values.clone();
@@ -417,6 +421,7 @@ impl LoweringContext {
                 let target = LocalSlot(self.scope.next_local);
                 self.scope.next_local += 1;
                 self.scope.local_definitions.push(None);
+                self.scope.mutable_values.push(false);
                 self.scope.values.insert(
                     name,
                     (
@@ -424,7 +429,7 @@ impl LoweringContext {
                         Type::series(self.collection_element_type(collection)),
                     ),
                 );
-                self.scope.mutable_values.insert(target.0);
+                self.scope.mutable_values[target.0] = true;
                 self.scope.loop_depth += 1;
                 let body = self.compile_scoped_statements(body);
                 let body_values = self.scope.values.clone();

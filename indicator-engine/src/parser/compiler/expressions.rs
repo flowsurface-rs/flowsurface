@@ -335,7 +335,14 @@ impl LoweringContext {
             let series_slot = (ty.qualifier == Qualifier::Series)
                 .then(|| self.scope.local_definitions.get(slot.0).copied().flatten())
                 .flatten()
-                .filter(|_| !self.scope.mutable_values.contains(&slot.0))
+                .filter(|_| {
+                    !self
+                        .scope
+                        .mutable_values
+                        .get(slot.0)
+                        .copied()
+                        .unwrap_or(false)
+                })
                 .and_then(|definition| self.ir.program.expressions[definition.0].series_slot);
             return self.push_expression_with_series_slot(
                 ExpressionKind::LoadLocal(slot),
@@ -577,12 +584,11 @@ impl LoweringContext {
             return self.push_constant(Value::Na, Type::simple(ValueType::Any));
         }
         if let Some(function) = self.function.by_name.get(&name).copied() {
-            if let Some(caller) = self.function.current {
-                self.function
-                    .call_edges
-                    .entry(caller)
-                    .or_default()
-                    .insert(function);
+            if let Some(caller) = self.function.current
+                && let Some(edges) = self.function.call_edges.get_mut(caller.0)
+                && let Err(index) = edges.binary_search(&function)
+            {
+                edges.insert(index, function);
             }
             if self.function.active.contains(&function) {
                 self.error(
@@ -612,7 +618,7 @@ impl LoweringContext {
             let (parameter_names, required) = if parameter_names.is_empty() {
                 self.function
                     .signatures
-                    .get(&function)
+                    .get(function.0)
                     .cloned()
                     .unwrap_or((parameter_names, required))
             } else {

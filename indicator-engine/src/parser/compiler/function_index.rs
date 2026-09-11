@@ -7,7 +7,7 @@ use std::path::Path;
 
 pub(super) struct FunctionIndex {
     pub(super) by_name: BTreeMap<String, FunctionId>,
-    pub(super) signatures: BTreeMap<FunctionId, (Vec<String>, usize)>,
+    pub(super) signatures: Vec<(Vec<String>, usize)>,
     pub(super) source_ids: Vec<FunctionId>,
     pub(super) stubs: Vec<HirFunction>,
     pub(super) diagnostics: Vec<Diagnostic>,
@@ -16,7 +16,7 @@ pub(super) struct FunctionIndex {
 pub(super) fn index_functions(functions: &[AstFunction], path: &Path) -> FunctionIndex {
     let mut index = FunctionIndex {
         by_name: BTreeMap::new(),
-        signatures: BTreeMap::new(),
+        signatures: Vec::new(),
         source_ids: Vec::with_capacity(functions.len()),
         stubs: Vec::new(),
         diagnostics: Vec::new(),
@@ -33,21 +33,18 @@ pub(super) fn index_functions(functions: &[AstFunction], path: &Path) -> Functio
         }
         let id = FunctionId(index.stubs.len());
         index.by_name.insert(function.name.clone(), id);
-        index.signatures.insert(
-            id,
-            (
-                function
-                    .parameters
-                    .iter()
-                    .map(|parameter| parameter.name.clone())
-                    .collect(),
-                function
-                    .parameters
-                    .iter()
-                    .filter(|parameter| parameter.default.is_none())
-                    .count(),
-            ),
-        );
+        index.signatures.push((
+            function
+                .parameters
+                .iter()
+                .map(|parameter| parameter.name.clone())
+                .collect(),
+            function
+                .parameters
+                .iter()
+                .filter(|parameter| parameter.default.is_none())
+                .count(),
+        ));
         index.stubs.push(HirFunction {
             id,
             name: function.name.clone(),
