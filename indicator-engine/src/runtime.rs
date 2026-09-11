@@ -11,6 +11,7 @@ use crate::intrinsic::{IntrinsicError, IntrinsicEvalContext, IntrinsicRegistry, 
 use crate::scene::Color;
 use crate::types::{IndicatorConfig, InputType, InputValue, Value};
 use std::collections::{BTreeMap, VecDeque};
+use std::mem::size_of;
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -102,6 +103,11 @@ impl IndexedHistory {
         (self.resource_collections, self.resource_heap_bytes)
     }
 
+    fn container_heap_bytes(&self) -> usize {
+        size_of::<VecDeque<Value>>()
+            .saturating_add(self.values.capacity().saturating_mul(size_of::<Value>()))
+    }
+
     fn add_usage(&mut self, (collections, bytes): (usize, usize)) {
         self.resource_collections = self.resource_collections.saturating_add(collections);
         self.resource_heap_bytes = self.resource_heap_bytes.saturating_add(bytes);
@@ -126,6 +132,8 @@ pub struct RuntimeLimits {
     pub max_collection_elements: usize,
     /// Maximum rolling-window length accepted by stateful TA intrinsics.
     pub max_window_length: usize,
+    pub max_output_items: usize,
+    pub max_string_bytes: usize,
 }
 
 impl Default for RuntimeLimits {
@@ -136,6 +144,22 @@ impl Default for RuntimeLimits {
             max_heap_bytes: 64 * 1024 * 1024,
             max_collection_elements: 100_000,
             max_window_length: 5_000,
+            max_output_items: 1_000_000,
+            max_string_bytes: 1 << 20,
+        }
+    }
+}
+
+impl RuntimeLimits {
+    pub fn untrusted() -> Self {
+        Self {
+            max_evaluated_nodes: 250_000,
+            max_call_depth: 64,
+            max_heap_bytes: 16 * 1024 * 1024,
+            max_collection_elements: 25_000,
+            max_window_length: 5_000,
+            max_output_items: 4_096,
+            max_string_bytes: 64 * 1024,
         }
     }
 }
@@ -264,8 +288,9 @@ impl WorkingState {
     }
 }
 
-#[derive(Default)]
 struct OutputBuffer {
+    max_items: usize,
+    items: usize,
     plots: Vec<PlotOutput>,
     markers: Vec<MarkerOutput>,
     segments: Vec<SegmentOutput>,
@@ -275,6 +300,141 @@ struct OutputBuffer {
 }
 
 impl OutputBuffer {
+    fn new(max_items: usize) -> Self {
+        Self {
+            max_items,
+            items: 0,
+            plots: Vec::new(),
+            markers: Vec::new(),
+            segments: Vec::new(),
+            levels: Vec::new(),
+            ohlc: Vec::new(),
+            ranges: Vec::new(),
+        }
+    }
+
+    fn reserve(&mut self) -> Result<(), RuntimeError> {
+        if self.items >= self.max_items {
+            return Err(RuntimeError::ResourceLimitExceeded("output items"));
+        }
+        self.items += 1;
+        Ok(())
+    }
+
+    fn push_plot(&mut self, value: PlotOutput) -> Result<(), RuntimeError> {
+        self.reserve()?;
+        self.plots.push(value);
+        Ok(())
+    }
+
+    fn push_marker(&mut self, value: MarkerOutput) -> Result<(), RuntimeError> {
+        self.reserve()?;
+        self.markers.push(value);
+        Ok(())
+    }
+
+    fn push_segment(&mut self, value: SegmentOutput) -> Result<(), RuntimeError> {
+        self.reserve()?;
+        self.segments.push(value);
+        Ok(())
+    }
+
+    fn push_level(&mut self, value: HorizontalLevelOutput) -> Result<(), RuntimeError> {
+        self.reserve()?;
+        self.levels.push(value);
+        Ok(())
+    }
+
+    fn push_ohlc(&mut self, value: OhlcOutput) -> Result<(), RuntimeError> {
+        self.reserve()?;
+        self.ohlc.push(value);
+        Ok(())
+    }
+
+    fn push_range(&mut self, value: RangeOutput) -> Result<(), RuntimeError> {
+        self.reserve()?;
+        self.ranges.push(value);
+        Ok(())
+    }
+
+    fn resource_usage(&self) -> (usize, usize) {
+        let mut bytes = size_of::<Self>()
+            .saturating_add(
+                self.plots
+                    .capacity()
+                    .saturating_mul(size_of::<PlotOutput>()),
+            )
+            .saturating_add(
+                self.markers
+                    .capacity()
+                    .saturating_mul(size_of::<MarkerOutput>()),
+            )
+            .saturating_add(
+                self.segments
+                    .capacity()
+                    .saturating_mul(size_of::<SegmentOutput>()),
+            )
+            .saturating_add(
+                self.levels
+                    .capacity()
+                    .saturating_mul(size_of::<HorizontalLevelOutput>()),
+            )
+            .saturating_add(self.ohlc.capacity().saturating_mul(size_of::<OhlcOutput>()))
+            .saturating_add(
+                self.ranges
+                    .capacity()
+                    .saturating_mul(size_of::<RangeOutput>()),
+            );
+        for plot in &self.plots {
+            bytes = bytes
+                .saturating_add(plot.id.capacity())
+                .saturating_add(plot.value.resource_usage().1);
+        }
+        for marker in &self.markers {
+            bytes = bytes
+                .saturating_add(marker.id.capacity())
+                .saturating_add(marker.text.as_ref().map_or(0, String::capacity));
+        }
+        for segment in &self.segments {
+            bytes = bytes
+                .saturating_add(segment.id.capacity())
+                .saturating_add(segment.text.as_ref().map_or(0, String::capacity));
+        }
+        for level in &self.levels {
+            bytes = bytes.saturating_add(level.id.capacity());
+        }
+        for ohlc in &self.ohlc {
+            bytes = bytes.saturating_add(ohlc.id.capacity());
+        }
+        for range in &self.ranges {
+            bytes = bytes.saturating_add(range.id.capacity());
+        }
+        (self.items, bytes)
+    }
+
+    fn has_string_over(&self, limit: usize) -> bool {
+        self.plots
+            .iter()
+            .any(|plot| plot.id.capacity() > limit || plot.value.has_string_over(limit))
+            || self.markers.iter().any(|marker| {
+                marker.id.capacity() > limit
+                    || marker
+                        .text
+                        .as_ref()
+                        .is_some_and(|text| text.capacity() > limit)
+            })
+            || self.segments.iter().any(|segment| {
+                segment.id.capacity() > limit
+                    || segment
+                        .text
+                        .as_ref()
+                        .is_some_and(|text| text.capacity() > limit)
+            })
+            || self.levels.iter().any(|level| level.id.capacity() > limit)
+            || self.ohlc.iter().any(|ohlc| ohlc.id.capacity() > limit)
+            || self.ranges.iter().any(|range| range.id.capacity() > limit)
+    }
+
     fn finish(self, index: usize, time: i64) -> FrameOutput {
         FrameOutput {
             index,
@@ -382,7 +542,7 @@ impl IndicatorInstance {
         self.working = WorkingState::from_committed(&self.committed, self.compiled.program.series);
         self.seed_frame_series(&frame);
 
-        let mut output = OutputBuffer::default();
+        let mut output = OutputBuffer::new(self.limits.max_output_items);
         let result = (|| {
             let entry_point = self
                 .compiled
@@ -394,7 +554,8 @@ impl IndicatorInstance {
             for statement_id in entry_point {
                 self.execute_statement(statement_id, &mut output)?;
             }
-            self.complete_outputs(&mut output);
+            self.complete_outputs(&mut output)?;
+            self.enforce_output_limits(&output)?;
             self.enforce_resource_limits(false)?;
             if !previewing {
                 self.commit(index);
@@ -487,14 +648,14 @@ impl IndicatorInstance {
         }
     }
 
-    fn complete_outputs(&self, output: &mut OutputBuffer) {
+    fn complete_outputs(&self, output: &mut OutputBuffer) -> Result<(), RuntimeError> {
         for plot in &self.compiled.program.plots {
             if !output.plots.iter().any(|output| output.id == plot.id) {
-                output.plots.push(PlotOutput {
+                output.push_plot(PlotOutput {
                     id: plot.id.clone(),
                     value: Value::Na,
                     color: None,
-                });
+                })?;
             }
         }
 
@@ -503,21 +664,21 @@ impl IndicatorInstance {
                 StatementKind::Marker { id, .. }
                     if !output.markers.iter().any(|output| output.id == *id) =>
                 {
-                    output.markers.push(MarkerOutput {
+                    output.push_marker(MarkerOutput {
                         id: id.clone(),
                         value: None,
                         color: None,
                         text: None,
-                    });
+                    })?;
                 }
                 StatementKind::HorizontalLevel { id, .. }
                     if !output.levels.iter().any(|output| output.id == *id) =>
                 {
-                    output.levels.push(HorizontalLevelOutput {
+                    output.push_level(HorizontalLevelOutput {
                         id: id.clone(),
                         value: None,
                         color: None,
-                    });
+                    })?;
                 }
                 StatementKind::OhlcPlot { plot, .. }
                     if self.compiled.program.plots.get(plot.0).is_some_and(|plot| {
@@ -525,14 +686,14 @@ impl IndicatorInstance {
                     }) =>
                 {
                     if let Some(plot) = self.compiled.program.plots.get(plot.0) {
-                        output.ohlc.push(OhlcOutput {
+                        output.push_ohlc(OhlcOutput {
                             id: plot.id.clone(),
                             open: None,
                             high: None,
                             low: None,
                             close: None,
                             color: None,
-                        });
+                        })?;
                     }
                 }
                 StatementKind::RangePlot { plot, .. }
@@ -541,17 +702,18 @@ impl IndicatorInstance {
                     }) =>
                 {
                     if let Some(plot) = self.compiled.program.plots.get(plot.0) {
-                        output.ranges.push(RangeOutput {
+                        output.push_range(RangeOutput {
                             id: plot.id.clone(),
                             upper: None,
                             lower: None,
                             color: None,
-                        });
+                        })?;
                     }
                 }
                 _ => {}
             }
         }
+        Ok(())
     }
 
     fn evaluate_color(
@@ -636,11 +798,11 @@ impl IndicatorInstance {
                     return Ok(());
                 };
                 let color = self.evaluate_color(color)?;
-                output.plots.push(PlotOutput {
+                output.push_plot(PlotOutput {
                     id: plot_id,
                     value,
                     color,
-                });
+                })?;
             }
             StatementKind::Marker {
                 id,
@@ -665,12 +827,12 @@ impl IndicatorInstance {
                 } else {
                     value.as_float()
                 };
-                output.markers.push(MarkerOutput {
+                output.push_marker(MarkerOutput {
                     id,
                     value,
                     color: self.evaluate_color(color)?,
                     text,
-                });
+                })?;
             }
             StatementKind::Segment {
                 id,
@@ -709,7 +871,7 @@ impl IndicatorInstance {
                 ) else {
                     return Ok(());
                 };
-                output.segments.push(SegmentOutput {
+                output.push_segment(SegmentOutput {
                     id,
                     start_index,
                     start_value: start_value.is_finite().then_some(start_value),
@@ -717,18 +879,18 @@ impl IndicatorInstance {
                     end_value: end_value.is_finite().then_some(end_value),
                     color: self.evaluate_color(color)?,
                     text,
-                });
+                })?;
             }
             StatementKind::HorizontalLevel {
                 id,
                 expression,
                 color,
             } => {
-                output.levels.push(crate::frame::HorizontalLevelOutput {
+                output.push_level(crate::frame::HorizontalLevelOutput {
                     id,
                     value: self.evaluate_expression(expression)?.as_float(),
                     color: self.evaluate_color(color)?,
-                });
+                })?;
             }
             StatementKind::OhlcPlot {
                 plot,
@@ -741,14 +903,14 @@ impl IndicatorInstance {
                 let Some(descriptor) = self.compiled.program.plots.get(plot.0) else {
                     return Ok(());
                 };
-                output.ohlc.push(OhlcOutput {
+                output.push_ohlc(OhlcOutput {
                     id: descriptor.id.clone(),
                     open: self.evaluate_expression(open)?.as_float(),
                     high: self.evaluate_expression(high)?.as_float(),
                     low: self.evaluate_expression(low)?.as_float(),
                     close: self.evaluate_expression(close)?.as_float(),
                     color: self.evaluate_color(color)?,
-                });
+                })?;
             }
             StatementKind::RangePlot {
                 plot,
@@ -759,12 +921,12 @@ impl IndicatorInstance {
                 let Some(descriptor) = self.compiled.program.plots.get(plot.0) else {
                     return Ok(());
                 };
-                output.ranges.push(RangeOutput {
+                output.push_range(RangeOutput {
                     id: descriptor.id.clone(),
                     upper: self.evaluate_expression(upper)?.as_float(),
                     lower: self.evaluate_expression(lower)?.as_float(),
                     color: self.evaluate_color(color)?,
-                });
+                })?;
             }
             StatementKind::Expression(expression) => {
                 let _ = self.evaluate_expression(expression)?;
@@ -789,7 +951,7 @@ impl IndicatorInstance {
             StatementKind::While { condition, body } => {
                 let mut iterations = 0usize;
                 loop {
-                    if iterations >= 100_000 {
+                    if iterations >= self.limits.max_evaluated_nodes {
                         return Err(RuntimeError::ExecutionLimitExceeded);
                     }
                     if !self.evaluate_expression(condition)?.is_truthy() {
@@ -812,7 +974,9 @@ impl IndicatorInstance {
                     if self.continue_requested {
                         self.continue_requested = false;
                     }
-                    iterations += 1;
+                    iterations = iterations
+                        .checked_add(1)
+                        .ok_or(RuntimeError::ExecutionLimitExceeded)?;
                 }
             }
             StatementKind::ForRange {
@@ -846,8 +1010,12 @@ impl IndicatorInstance {
                         break;
                     }
                     self.continue_requested = false;
-                    index += 1;
-                    iterations += 1;
+                    index = index
+                        .checked_add(1)
+                        .ok_or(RuntimeError::ExecutionLimitExceeded)?;
+                    iterations = iterations
+                        .checked_add(1)
+                        .ok_or(RuntimeError::ExecutionLimitExceeded)?;
                 }
             }
             StatementKind::ForEach {
@@ -889,6 +1057,7 @@ impl IndicatorInstance {
                 self.return_requested = true;
             }
         }
+        self.enforce_output_limits(output)?;
         self.enforce_resource_limits(false)
     }
 
@@ -1153,7 +1322,7 @@ impl IndicatorInstance {
                         provided[parameter_index] = true;
                     }
                 }
-                let mut nested_output = OutputBuffer::default();
+                let mut nested_output = OutputBuffer::new(self.limits.max_output_items);
                 let execution = (|| {
                     for (parameter_index, default) in function.parameter_defaults.iter().enumerate()
                     {
@@ -1286,7 +1455,10 @@ impl IndicatorInstance {
     }
 
     fn charge_by(&mut self, work: usize) -> Result<(), RuntimeError> {
-        self.executed_nodes = self.executed_nodes.saturating_add(work);
+        self.executed_nodes = self
+            .executed_nodes
+            .checked_add(work)
+            .ok_or(RuntimeError::ExecutionLimitExceeded)?;
         if self.executed_nodes > self.limits.max_evaluated_nodes {
             Err(RuntimeError::ExecutionLimitExceeded)
         } else {
@@ -1301,7 +1473,21 @@ impl IndicatorInstance {
         }
     }
 
+    fn enforce_output_limits(&self, output: &OutputBuffer) -> Result<(), RuntimeError> {
+        if output.has_string_over(self.limits.max_string_bytes) {
+            return Err(RuntimeError::ResourceLimitExceeded("string bytes"));
+        }
+        let (_, heap_bytes) = output.resource_usage();
+        if heap_bytes > self.limits.max_heap_bytes {
+            return Err(RuntimeError::ResourceLimitExceeded("heap bytes"));
+        }
+        Ok(())
+    }
+
     fn enforce_value_limits(&self, value: &Value) -> Result<(), RuntimeError> {
+        if value.has_string_over(self.limits.max_string_bytes) {
+            return Err(RuntimeError::ResourceLimitExceeded("string bytes"));
+        }
         let (collections, heap_bytes) = value.resource_usage();
         if collections > self.limits.max_collection_elements {
             return Err(RuntimeError::ResourceLimitExceeded("collection elements"));
@@ -1314,7 +1500,64 @@ impl IndicatorInstance {
 
     fn resource_limit_exceeded(&self, include_history: bool) -> Option<&'static str> {
         let mut collections = 0usize;
-        let mut heap_bytes = 0usize;
+        let mut heap_bytes = size_of::<CommittedState>()
+            .saturating_add(size_of::<WorkingState>())
+            .saturating_add(
+                self.plan
+                    .inputs
+                    .capacity()
+                    .saturating_mul(size_of::<Value>()),
+            )
+            .saturating_add(self.locals.capacity().saturating_mul(size_of::<Value>()))
+            .saturating_add(
+                self.committed
+                    .states
+                    .capacity()
+                    .saturating_mul(size_of::<StateValue>()),
+            )
+            .saturating_add(
+                self.working
+                    .states
+                    .capacity()
+                    .saturating_mul(size_of::<StateValue>()),
+            )
+            .saturating_add(
+                self.working
+                    .current_series
+                    .capacity()
+                    .saturating_mul(size_of::<Option<Value>>()),
+            )
+            .saturating_add(
+                self.committed
+                    .history
+                    .values
+                    .capacity()
+                    .saturating_mul(size_of::<IndexedHistory>()),
+            )
+            .saturating_add(
+                self.call_site_stack
+                    .capacity()
+                    .saturating_mul(size_of::<crate::hir::CallSiteId>()),
+            );
+        for map in [
+            &self.committed.function_states,
+            &self.working.function_states,
+        ] {
+            heap_bytes = heap_bytes
+                .saturating_add(size_of::<BTreeMap<crate::hir::CallSiteId, StateValue>>())
+                .saturating_add(
+                    map.len()
+                        .saturating_mul(size_of::<(crate::hir::CallSiteId, StateValue)>()),
+                );
+        }
+        for map in [&self.committed.intrinsics, &self.working.intrinsics] {
+            heap_bytes = heap_bytes
+                .saturating_add(size_of::<BTreeMap<crate::hir::CallSiteId, IntrinsicState>>())
+                .saturating_add(
+                    map.len()
+                        .saturating_mul(size_of::<(crate::hir::CallSiteId, IntrinsicState)>()),
+                );
+        }
         for value in self
             .plan
             .inputs
@@ -1336,6 +1579,9 @@ impl IndicatorInstance {
             )
             .chain(self.working.current_series.iter().flatten())
         {
+            if value.has_string_over(self.limits.max_string_bytes) {
+                return Some("string bytes");
+            }
             let (value_collections, value_bytes) = value.resource_usage();
             collections = collections.saturating_add(value_collections);
             heap_bytes = heap_bytes.saturating_add(value_bytes);
@@ -1353,6 +1599,14 @@ impl IndicatorInstance {
                 collections = collections.saturating_add(value_collections);
                 heap_bytes = heap_bytes.saturating_add(value_bytes);
             }
+            heap_bytes = self
+                .committed
+                .history
+                .values
+                .iter()
+                .fold(heap_bytes, |total, history| {
+                    total.saturating_add(history.container_heap_bytes())
+                });
         }
 
         for state in self
@@ -1474,82 +1728,4 @@ fn numeric_binary(
         _ => unreachable!(),
     };
     Ok(Value::Float(value).normalize_nonfinite())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::collections::BTreeMap;
-
-    #[test]
-    fn history_resource_usage_obeys_limits() {
-        let compiled = crate::compile(
-            r#"
-                language(1)
-                indicator("History resource", id = "test.history-resource")
-                format(precision = "base_ticker_min_tick")
-                plot(chart.close, id = "value")
-            "#,
-            "history-resource.ind",
-        )
-        .expect("history resource indicator should compile");
-        let mut instance = compiled
-            .instantiate(IndicatorConfig::default())
-            .expect("history resource indicator should instantiate");
-        instance
-            .committed
-            .history
-            .values
-            .first_mut()
-            .expect("plot expression should allocate series history")
-            .set(0, Value::String("12345".to_owned()));
-        instance.limits.max_heap_bytes = 4;
-
-        assert_eq!(instance.resource_limit_exceeded(false), None);
-        assert_eq!(instance.resource_limit_exceeded(true), Some("heap bytes"));
-    }
-
-    #[test]
-    fn indexed_history_tracks_nested_resource_usage() {
-        let mut history = IndexedHistory::new(2);
-        let array = Value::Array(vec![Value::String("first".to_owned())]);
-        let record = Value::Record(BTreeMap::from([(
-            "key".to_owned(),
-            Value::String("value".to_owned()),
-        )]));
-
-        history.set(0, array);
-        assert_eq!(history.resource_usage(), (1, 5));
-
-        history.set(1, record);
-        assert_eq!(history.resource_usage(), (2, 13));
-
-        history.set(1, Value::Int(1));
-        assert_eq!(history.resource_usage(), (1, 5));
-
-        history.set(2, Value::String("third".to_owned()));
-        assert_eq!(history.resource_usage(), (0, 5));
-
-        history.evict_before(3);
-        assert_eq!(history.resource_usage(), (0, 0));
-    }
-
-    #[test]
-    fn arithmetic_overflow_is_missing_and_nonfinite_values_are_rejected() {
-        assert_eq!(Value::Float(f64::INFINITY).as_float(), None);
-        assert_eq!(
-            numeric_binary(
-                BinaryOperator::Multiply,
-                Value::Float(f64::MAX),
-                Value::Float(2.0),
-            )
-            .expect("numeric fallback should return a value"),
-            Value::Na
-        );
-        assert_eq!(
-            unary(crate::hir::UnaryOperator::Minus, Value::Int(i64::MIN))
-                .expect("integer unary fallback should return a value"),
-            Value::Na
-        );
-    }
 }

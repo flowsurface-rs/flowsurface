@@ -1,4 +1,3 @@
-use crate::DataRequirements;
 use crate::diagnostics::{Diagnostic, Span};
 use crate::frame::FrameField;
 use crate::hir::{
@@ -19,6 +18,7 @@ use crate::types::{
     IndicatorDescriptor, IndicatorId, InputDescriptor, InputOption, InputValue, Qualifier,
     SeriesInputDescriptor, Type, Value, ValueType,
 };
+use crate::{CompileLimits, DataRequirements};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -57,6 +57,9 @@ enum TokenKind {
     Semicolon,
     End,
 }
+
+const MAX_PARSER_NESTING_DEPTH: usize = 256;
+const HISTORY_RETENTION_ERROR: &str = "history indexing requires an immutable retained series; mutable locals, function parameters, and function results cannot be indexed";
 
 #[derive(Debug, Clone, PartialEq)]
 struct Token {
@@ -134,6 +137,25 @@ struct AstCall {
 struct AstArgument {
     name: Option<String>,
     expression: AstExpression,
+}
+
+struct ParsedExpression {
+    expression: AstExpression,
+    depth: usize,
+}
+
+impl ParsedExpression {
+    fn leaf(expression: AstExpression) -> Self {
+        Self {
+            expression,
+            depth: 0,
+        }
+    }
+}
+
+struct ParsedArgument {
+    name: Option<String>,
+    expression: ParsedExpression,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -220,13 +242,18 @@ pub(crate) fn compile_with_registry(
     source: &str,
     path: &Path,
     registry: IntrinsicRegistry,
+    limits: CompileLimits,
 ) -> Result<crate::CompiledIndicator, Vec<Diagnostic>> {
-    let mut lexer = Lexer::new(source, path.to_path_buf());
+    let mut lexer = Lexer::new(source, path.to_path_buf(), limits);
     let tokens = lexer.lex();
     let mut diagnostics = lexer.diagnostics;
     let mut parser = Parser::new(tokens, path.to_path_buf());
     let ast = parser.parse_program();
     diagnostics.extend(parser.diagnostics);
+    if !diagnostics.is_empty() {
+        return Err(diagnostics);
+    }
+    validate_ast_limits(&ast, path, limits, &mut diagnostics);
     if !diagnostics.is_empty() {
         return Err(diagnostics);
     }
@@ -249,21 +276,249 @@ pub(crate) fn compile_with_registry(
     }
 }
 
+fn is_output_declaration(path: &[String]) -> bool {
+    matches!(
+        path.join(".").as_str(),
+        "plot"
+            | "emit"
+            | "marker"
+            | "segment"
+            | "level"
+            | "horizontal_level"
+            | "plotcandle"
+            | "plotohlc"
+            | "plotrange"
+            | "broken_cloud"
+    )
+}
+
+#[derive(Default)]
+struct AstCounts {
+    expressions: usize,
+    statements: usize,
+    outputs: usize,
+}
+
+fn count_expression_tree(expression: &AstExpression, counts: &mut AstCounts) {
+    let mut pending = vec![expression];
+    while let Some(expression) = pending.pop() {
+        counts.expressions = counts.expressions.saturating_add(1);
+        match expression {
+            AstExpression::Unary { expression, .. } | AstExpression::Field { expression, .. } => {
+                pending.push(expression)
+            }
+            AstExpression::Binary { left, right, .. } => {
+                pending.push(left);
+                pending.push(right);
+            }
+            AstExpression::Call(call) => {
+                for argument in &call.arguments {
+                    pending.push(&argument.expression);
+                }
+            }
+            AstExpression::Index {
+                expression, index, ..
+            } => {
+                pending.push(expression);
+                pending.push(index);
+            }
+            AstExpression::Tuple(values, _) | AstExpression::Array(values, _) => {
+                pending.extend(values.iter());
+            }
+            AstExpression::Record(values, _) => {
+                pending.extend(values.iter().map(|(_, value)| value));
+            }
+            AstExpression::Switch {
+                operand,
+                branches,
+                fallback,
+                ..
+            } => {
+                pending.push(operand);
+                pending.extend(
+                    branches
+                        .iter()
+                        .flat_map(|(condition, result)| [condition, result]),
+                );
+                if let Some(fallback) = fallback.as_deref() {
+                    pending.push(fallback);
+                }
+            }
+            AstExpression::Number(_, _)
+            | AstExpression::String(_, _)
+            | AstExpression::Boolean(_, _)
+            | AstExpression::Na(_)
+            | AstExpression::Identifier(_, _) => {}
+        }
+    }
+}
+
+fn count_statement_tree(statements: &[AstStatement], counts: &mut AstCounts) {
+    let mut pending = statements.iter().collect::<Vec<_>>();
+    while let Some(statement) = pending.pop() {
+        counts.statements = counts.statements.saturating_add(1);
+        match statement {
+            AstStatement::Binding { expression, .. }
+            | AstStatement::Destructure { expression, .. } => {
+                count_expression_tree(expression, counts);
+            }
+            AstStatement::Call { call } => {
+                if is_output_declaration(&call.path) {
+                    counts.outputs = counts.outputs.saturating_add(1);
+                }
+                counts.expressions = counts.expressions.saturating_add(1);
+                for argument in &call.arguments {
+                    count_expression_tree(&argument.expression, counts);
+                }
+            }
+            AstStatement::If {
+                condition,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                count_expression_tree(condition, counts);
+                pending.extend(then_branch.iter());
+                pending.extend(else_branch.iter());
+            }
+            AstStatement::While {
+                condition, body, ..
+            } => {
+                count_expression_tree(condition, counts);
+                pending.extend(body.iter());
+            }
+            AstStatement::ForRange {
+                start, end, body, ..
+            } => {
+                count_expression_tree(start, counts);
+                count_expression_tree(end, counts);
+                pending.extend(body.iter());
+            }
+            AstStatement::ForEach {
+                collection, body, ..
+            } => {
+                count_expression_tree(collection, counts);
+                pending.extend(body.iter());
+            }
+            AstStatement::Return { expression, .. } => {
+                if let Some(expression) = expression {
+                    count_expression_tree(expression, counts);
+                }
+            }
+            AstStatement::Break(_) | AstStatement::Continue(_) => {}
+        }
+    }
+}
+
+fn count_ast(ast: &AstProgram) -> AstCounts {
+    let mut counts = AstCounts::default();
+    if let Some(indicator) = &ast.indicator {
+        counts.expressions = counts.expressions.saturating_add(1);
+        for argument in &indicator.arguments {
+            count_expression_tree(&argument.expression, &mut counts);
+        }
+    }
+    for function in &ast.functions {
+        for parameter in &function.parameters {
+            if let Some(default) = &parameter.default {
+                count_expression_tree(default, &mut counts);
+            }
+        }
+        count_statement_tree(&function.body, &mut counts);
+    }
+    count_statement_tree(&ast.statements, &mut counts);
+    counts
+}
+
+fn validate_ast_limits(
+    ast: &AstProgram,
+    path: &Path,
+    limits: CompileLimits,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let span = ast
+        .indicator
+        .as_ref()
+        .map_or(Span::new(0, 0), |indicator| indicator.span);
+    let counts = count_ast(ast);
+    for (actual, limit, label) in [
+        (counts.expressions, limits.max_expressions, "expressions"),
+        (counts.statements, limits.max_statements, "statements"),
+        (ast.functions.len(), limits.max_functions, "functions"),
+        (
+            counts.outputs,
+            limits.max_output_channels,
+            "output channels",
+        ),
+    ] {
+        if actual > limit {
+            diagnostics.push(Diagnostic::error(
+                path,
+                span,
+                format!("source exceeds compile limit of {limit} {label}"),
+            ));
+        }
+    }
+}
+
 struct Lexer {
     source: Vec<char>,
     path: PathBuf,
     index: usize,
     diagnostics: Vec<Diagnostic>,
+    max_tokens: usize,
+    token_limit_reported: bool,
 }
 
 impl Lexer {
-    fn new(source: &str, path: PathBuf) -> Self {
+    fn new(source: &str, path: PathBuf, limits: CompileLimits) -> Self {
         Self {
             source: source.chars().collect(),
             path,
             index: 0,
             diagnostics: Vec::new(),
+            max_tokens: limits.max_tokens,
+            token_limit_reported: false,
         }
+    }
+
+    fn push_token(&mut self, tokens: &mut Vec<Token>, token: Token) {
+        if matches!(token.kind, TokenKind::End) || tokens.len() < self.max_tokens {
+            tokens.push(token);
+        } else if !self.token_limit_reported {
+            self.token_limit_reported = true;
+            self.diagnostics.push(Diagnostic::error(
+                self.path.clone(),
+                token.span,
+                format!("source exceeds compile limit of {} tokens", self.max_tokens),
+            ));
+            self.index = self.source.len();
+        }
+    }
+
+    fn push_single(&mut self, tokens: &mut Vec<Token>, kind: TokenKind) {
+        let token = self.single(kind);
+        self.push_token(tokens, token);
+    }
+
+    fn push_double(&mut self, tokens: &mut Vec<Token>, kind: TokenKind) {
+        let token = self.double(kind);
+        self.push_token(tokens, token);
+    }
+
+    fn push_string(&mut self, tokens: &mut Vec<Token>) {
+        let token = self.string_token();
+        self.push_token(tokens, token);
+    }
+
+    fn push_number(&mut self, tokens: &mut Vec<Token>) {
+        let token = self.number_token();
+        self.push_token(tokens, token);
+    }
+
+    fn push_identifier(&mut self, tokens: &mut Vec<Token>) {
+        let token = self.identifier_token();
+        self.push_token(tokens, token);
     }
 
     fn lex(&mut self) -> Vec<Token> {
@@ -274,17 +529,23 @@ impl Lexer {
                 ' ' | '\t' | '\r' => self.index += 1,
                 '\n' => {
                     self.index += 1;
-                    tokens.push(Token {
-                        kind: TokenKind::Newline,
-                        span: Span::new(start, self.index),
-                    });
+                    self.push_token(
+                        &mut tokens,
+                        Token {
+                            kind: TokenKind::Newline,
+                            span: Span::new(start, self.index),
+                        },
+                    );
                 }
                 ';' => {
                     self.index += 1;
-                    tokens.push(Token {
-                        kind: TokenKind::Semicolon,
-                        span: Span::new(start, self.index),
-                    });
+                    self.push_token(
+                        &mut tokens,
+                        Token {
+                            kind: TokenKind::Semicolon,
+                            span: Span::new(start, self.index),
+                        },
+                    );
                 }
                 '/' if self.peek(1) == Some('/') => {
                     self.index += 2;
@@ -292,39 +553,49 @@ impl Lexer {
                         self.index += 1;
                     }
                 }
-                '"' => tokens.push(self.string_token()),
-                character if character.is_ascii_digit() => tokens.push(self.number_token()),
+                '"' => self.push_string(&mut tokens),
+                character if character.is_ascii_digit() => self.push_number(&mut tokens),
                 character if character.is_ascii_alphabetic() || character == '_' => {
-                    tokens.push(self.identifier_token())
+                    self.push_identifier(&mut tokens)
                 }
-                '+' => tokens.push(self.single(TokenKind::Plus)),
-                '-' => tokens.push(self.single(TokenKind::Minus)),
-                '*' => tokens.push(self.single(TokenKind::Star)),
-                '/' => tokens.push(self.single(TokenKind::Slash)),
-                '%' => tokens.push(self.single(TokenKind::Percent)),
-                '(' => tokens.push(self.single(TokenKind::LeftParen)),
-                ')' => tokens.push(self.single(TokenKind::RightParen)),
-                '[' => tokens.push(self.single(TokenKind::LeftBracket)),
-                ']' => tokens.push(self.single(TokenKind::RightBracket)),
-                '{' => tokens.push(self.single(TokenKind::LeftBrace)),
-                '}' => tokens.push(self.single(TokenKind::RightBrace)),
-                ',' => tokens.push(self.single(TokenKind::Comma)),
-                '.' => tokens.push(self.single(TokenKind::Dot)),
-                '!' if self.peek(1) == Some('=') => tokens.push(self.double(TokenKind::BangEqual)),
-                '!' => tokens.push(self.single(TokenKind::Bang)),
-                '=' if self.peek(1) == Some('=') => tokens.push(self.double(TokenKind::EqualEqual)),
-                '=' if self.peek(1) == Some('>') => tokens.push(self.double(TokenKind::Arrow)),
-                '=' => tokens.push(self.single(TokenKind::Equal)),
-                ':' if self.peek(1) == Some('=') => tokens.push(self.double(TokenKind::ColonEqual)),
-                ':' => tokens.push(self.single(TokenKind::Colon)),
-                '<' if self.peek(1) == Some('=') => tokens.push(self.double(TokenKind::LessEqual)),
-                '<' => tokens.push(self.single(TokenKind::Less)),
+                '+' => self.push_single(&mut tokens, TokenKind::Plus),
+                '-' => self.push_single(&mut tokens, TokenKind::Minus),
+                '*' => self.push_single(&mut tokens, TokenKind::Star),
+                '/' => self.push_single(&mut tokens, TokenKind::Slash),
+                '%' => self.push_single(&mut tokens, TokenKind::Percent),
+                '(' => self.push_single(&mut tokens, TokenKind::LeftParen),
+                ')' => self.push_single(&mut tokens, TokenKind::RightParen),
+                '[' => self.push_single(&mut tokens, TokenKind::LeftBracket),
+                ']' => self.push_single(&mut tokens, TokenKind::RightBracket),
+                '{' => self.push_single(&mut tokens, TokenKind::LeftBrace),
+                '}' => self.push_single(&mut tokens, TokenKind::RightBrace),
+                ',' => self.push_single(&mut tokens, TokenKind::Comma),
+                '.' => self.push_single(&mut tokens, TokenKind::Dot),
+                '!' if self.peek(1) == Some('=') => {
+                    self.push_double(&mut tokens, TokenKind::BangEqual)
+                }
+                '!' => self.push_single(&mut tokens, TokenKind::Bang),
+                '=' if self.peek(1) == Some('=') => {
+                    self.push_double(&mut tokens, TokenKind::EqualEqual)
+                }
+                '=' if self.peek(1) == Some('>') => self.push_double(&mut tokens, TokenKind::Arrow),
+                '=' => self.push_single(&mut tokens, TokenKind::Equal),
+                ':' if self.peek(1) == Some('=') => {
+                    self.push_double(&mut tokens, TokenKind::ColonEqual)
+                }
+                ':' => self.push_single(&mut tokens, TokenKind::Colon),
+                '<' if self.peek(1) == Some('=') => {
+                    self.push_double(&mut tokens, TokenKind::LessEqual)
+                }
+                '<' => self.push_single(&mut tokens, TokenKind::Less),
                 '>' if self.peek(1) == Some('=') => {
-                    tokens.push(self.double(TokenKind::GreaterEqual))
+                    self.push_double(&mut tokens, TokenKind::GreaterEqual)
                 }
-                '>' => tokens.push(self.single(TokenKind::Greater)),
-                '&' if self.peek(1) == Some('&') => tokens.push(self.double(TokenKind::AndAnd)),
-                '|' if self.peek(1) == Some('|') => tokens.push(self.double(TokenKind::OrOr)),
+                '>' => self.push_single(&mut tokens, TokenKind::Greater),
+                '&' if self.peek(1) == Some('&') => {
+                    self.push_double(&mut tokens, TokenKind::AndAnd)
+                }
+                '|' if self.peek(1) == Some('|') => self.push_double(&mut tokens, TokenKind::OrOr),
                 character => {
                     self.index += 1;
                     self.diagnostics.push(Diagnostic::error(
@@ -335,10 +606,13 @@ impl Lexer {
                 }
             }
         }
-        tokens.push(Token {
-            kind: TokenKind::End,
-            span: Span::new(self.index, self.index),
-        });
+        self.push_token(
+            &mut tokens,
+            Token {
+                kind: TokenKind::End,
+                span: Span::new(self.index, self.index),
+            },
+        );
         tokens
     }
 
@@ -456,6 +730,152 @@ struct Parser {
     path: PathBuf,
     index: usize,
     diagnostics: Vec<Diagnostic>,
+    nesting_limit_reported: bool,
+}
+
+enum ExpressionTask {
+    Parse {
+        minimum_precedence: u8,
+        depth: usize,
+    },
+    ParsePrefix {
+        depth: usize,
+    },
+    AfterPrefix {
+        minimum_precedence: u8,
+        depth: usize,
+    },
+    Continue {
+        expression: ParsedExpression,
+        minimum_precedence: u8,
+        depth: usize,
+    },
+    FinishUnary {
+        operator: UnaryOperator,
+        start: usize,
+    },
+    FinishBinary {
+        left: ParsedExpression,
+        operator: BinaryOperator,
+        minimum_precedence: u8,
+        depth: usize,
+    },
+    FinishIndex {
+        expression: ParsedExpression,
+        minimum_precedence: u8,
+        depth: usize,
+    },
+    FinishParenthesized {
+        start: usize,
+        values: Vec<ParsedExpression>,
+        depth: usize,
+    },
+    FinishArray {
+        start: usize,
+        values: Vec<ParsedExpression>,
+        depth: usize,
+    },
+    ParseCallArguments {
+        start: usize,
+        path: Vec<String>,
+        arguments: Vec<ParsedArgument>,
+        depth: usize,
+    },
+    FinishCallArgument {
+        start: usize,
+        path: Vec<String>,
+        arguments: Vec<ParsedArgument>,
+        named: Option<String>,
+        depth: usize,
+    },
+    ParseRecordFields {
+        start: usize,
+        fields: Vec<(String, ParsedExpression)>,
+        depth: usize,
+    },
+    FinishRecordField {
+        start: usize,
+        fields: Vec<(String, ParsedExpression)>,
+        name: String,
+        depth: usize,
+    },
+    FinishSwitchOperand {
+        start: usize,
+        depth: usize,
+    },
+    ParseSwitchBranches {
+        start: usize,
+        operand: ParsedExpression,
+        branches: Vec<(ParsedExpression, ParsedExpression)>,
+        fallback: Option<Box<ParsedExpression>>,
+        depth: usize,
+    },
+    FinishSwitchCondition {
+        start: usize,
+        operand: ParsedExpression,
+        branches: Vec<(ParsedExpression, ParsedExpression)>,
+        fallback: Option<Box<ParsedExpression>>,
+        depth: usize,
+    },
+    FinishSwitchResult {
+        start: usize,
+        operand: ParsedExpression,
+        branches: Vec<(ParsedExpression, ParsedExpression)>,
+        fallback: Option<Box<ParsedExpression>>,
+        condition: Option<ParsedExpression>,
+        depth: usize,
+    },
+}
+
+enum StatementTask {
+    ParseStatement {
+        depth: usize,
+    },
+    ParseBody {
+        depth: usize,
+    },
+    ParseBlock {
+        depth: usize,
+        statements: Vec<AstStatement>,
+    },
+    AppendStatement,
+    BodyFromStatement,
+    FinishIfThen {
+        start: usize,
+        condition: AstExpression,
+        body_depth: usize,
+    },
+    FinishIfElse {
+        start: usize,
+        condition: AstExpression,
+        then_branch: Vec<AstStatement>,
+    },
+    FinishBody {
+        pending: PendingBody,
+    },
+}
+
+enum PendingBody {
+    While {
+        start: usize,
+        condition: AstExpression,
+    },
+    ForRange {
+        start: usize,
+        name: String,
+        initial: AstExpression,
+        end: AstExpression,
+    },
+    ForEach {
+        start: usize,
+        name: String,
+        collection: AstExpression,
+    },
+}
+
+enum StatementResult {
+    Statement(Option<AstStatement>),
+    Body(Option<Vec<AstStatement>>),
 }
 
 impl Parser {
@@ -465,6 +885,7 @@ impl Parser {
             path,
             index: 0,
             diagnostics: Vec::new(),
+            nesting_limit_reported: false,
         }
     }
 
@@ -647,75 +1068,10 @@ impl Parser {
     }
 
     fn parse_statement(&mut self) -> Option<AstStatement> {
-        self.skip_boundaries();
-        if self.consume_keyword("if") {
-            return self.parse_if_statement();
+        match self.run_statement_tasks(StatementTask::ParseStatement { depth: 0 })? {
+            StatementResult::Statement(statement) => statement,
+            StatementResult::Body(_) => None,
         }
-        if self.consume_keyword("while") {
-            return self.parse_while_statement();
-        }
-        if self.consume_keyword("for") {
-            return self.parse_for_statement();
-        }
-        if self.consume_keyword("break") {
-            return Some(AstStatement::Break(self.previous_span()));
-        }
-        if self.consume_keyword("continue") {
-            return Some(AstStatement::Continue(self.previous_span()));
-        }
-        if self.consume_keyword("return") {
-            let span = self.previous_span();
-            if matches!(
-                self.current().kind,
-                TokenKind::Newline | TokenKind::Semicolon | TokenKind::RightBrace | TokenKind::End
-            ) {
-                return Some(AstStatement::Return {
-                    expression: None,
-                    span,
-                });
-            }
-            let expression = self.parse_expression(0)?;
-            return Some(AstStatement::Return {
-                span: Span::new(span.start, expression.span().end),
-                expression: Some(expression),
-            });
-        }
-        if self.check(&TokenKind::LeftParen) && self.looks_like_destructure() {
-            return self.parse_destructure_statement();
-        }
-        let intrabar = self.consume_keyword("varip");
-        let state = intrabar || self.consume_keyword("state") || self.consume_keyword("var");
-        let Token {
-            kind: TokenKind::Identifier(name),
-            span,
-        } = self.current().clone()
-        else {
-            if !self.at_end() {
-                self.error(self.current().span, "expected a binding or call");
-            }
-            return None;
-        };
-        if self.peek_kind(1) == Some(&TokenKind::Equal)
-            || self.peek_kind(1) == Some(&TokenKind::ColonEqual)
-        {
-            self.index += 2;
-            let update = self.tokens[self.index - 1].kind == TokenKind::ColonEqual;
-            let expression = self.parse_expression(0)?;
-            return Some(AstStatement::Binding {
-                name,
-                expression,
-                state,
-                intrabar,
-                update,
-                span: Span::new(span.start, self.previous_span().end),
-            });
-        }
-        if state {
-            self.error(span, "state declarations require a name and expression");
-            return None;
-        }
-        let call = self.parse_call()?;
-        Some(AstStatement::Call { call })
     }
 
     fn looks_like_destructure(&self) -> bool {
@@ -780,99 +1136,342 @@ impl Parser {
         })
     }
 
-    fn parse_if_statement(&mut self) -> Option<AstStatement> {
-        let start = self.tokens[self.index.saturating_sub(1)].span.start;
-        let condition = self.parse_expression(0)?;
-        let then_branch = self.parse_block_or_statement()?;
-        self.skip_boundaries();
-        let else_branch = if self.consume_keyword("else") {
-            self.parse_block_or_statement()?
-        } else {
-            Vec::new()
-        };
-        let end = self.previous_span().end;
-        Some(AstStatement::If {
-            condition,
-            then_branch,
-            else_branch,
-            span: Span::new(start, end),
-        })
-    }
-
-    fn parse_while_statement(&mut self) -> Option<AstStatement> {
-        let start = self.tokens[self.index.saturating_sub(1)].span.start;
-        let condition = self.parse_expression(0)?;
-        let body = self.parse_block_or_statement()?;
-        let end = self.previous_span().end;
-        Some(AstStatement::While {
-            condition,
-            body,
-            span: Span::new(start, end),
-        })
-    }
-
-    fn parse_for_statement(&mut self) -> Option<AstStatement> {
-        let start = self.tokens[self.index.saturating_sub(1)].span.start;
-        let TokenKind::Identifier(name) = self.current().kind.clone() else {
-            self.error(self.current().span, "expected a loop variable");
-            return None;
-        };
-        self.index += 1;
-        if self.consume_keyword("in") {
-            let collection = self.parse_expression(0)?;
-            let body = self.parse_block_or_statement()?;
-            return Some(AstStatement::ForEach {
-                name,
-                collection,
-                span: Span::new(start, self.previous_span().end),
-                body,
-            });
+    fn run_statement_tasks(&mut self, root: StatementTask) -> Option<StatementResult> {
+        let mut tasks = vec![root];
+        let mut results = Vec::new();
+        while let Some(task) = tasks.pop() {
+            match task {
+                StatementTask::ParseStatement { depth } => {
+                    self.skip_boundaries();
+                    if self.consume_keyword("if") {
+                        let start = self.previous_span().start;
+                        let Some(condition) = self.parse_expression(0) else {
+                            results.push(StatementResult::Statement(None));
+                            continue;
+                        };
+                        let body_depth = depth.saturating_add(1);
+                        tasks.push(StatementTask::FinishIfThen {
+                            start,
+                            condition,
+                            body_depth,
+                        });
+                        tasks.push(StatementTask::ParseBody { depth: body_depth });
+                        continue;
+                    }
+                    if self.consume_keyword("while") {
+                        let start = self.previous_span().start;
+                        let Some(condition) = self.parse_expression(0) else {
+                            results.push(StatementResult::Statement(None));
+                            continue;
+                        };
+                        let body_depth = depth.saturating_add(1);
+                        tasks.push(StatementTask::FinishBody {
+                            pending: PendingBody::While { start, condition },
+                        });
+                        tasks.push(StatementTask::ParseBody { depth: body_depth });
+                        continue;
+                    }
+                    if self.consume_keyword("for") {
+                        let start = self.previous_span().start;
+                        let TokenKind::Identifier(name) = self.current().kind.clone() else {
+                            self.error(self.current().span, "expected a loop variable");
+                            results.push(StatementResult::Statement(None));
+                            continue;
+                        };
+                        self.index += 1;
+                        let body_depth = depth.saturating_add(1);
+                        if self.consume_keyword("in") {
+                            let Some(collection) = self.parse_expression(0) else {
+                                results.push(StatementResult::Statement(None));
+                                continue;
+                            };
+                            tasks.push(StatementTask::FinishBody {
+                                pending: PendingBody::ForEach {
+                                    start,
+                                    name,
+                                    collection,
+                                },
+                            });
+                            tasks.push(StatementTask::ParseBody { depth: body_depth });
+                            continue;
+                        }
+                        if !self.consume_kind(TokenKind::Equal) {
+                            self.error(
+                                self.current().span,
+                                "loops require '=' for a range or 'in' for a collection",
+                            );
+                            results.push(StatementResult::Statement(None));
+                            continue;
+                        }
+                        let Some(initial) = self.parse_expression(0) else {
+                            results.push(StatementResult::Statement(None));
+                            continue;
+                        };
+                        if !self.consume_keyword("to") {
+                            self.error(
+                                self.current().span,
+                                "range loops require 'to' and an end expression",
+                            );
+                            results.push(StatementResult::Statement(None));
+                            continue;
+                        }
+                        let Some(end) = self.parse_expression(0) else {
+                            results.push(StatementResult::Statement(None));
+                            continue;
+                        };
+                        tasks.push(StatementTask::FinishBody {
+                            pending: PendingBody::ForRange {
+                                start,
+                                name,
+                                initial,
+                                end,
+                            },
+                        });
+                        tasks.push(StatementTask::ParseBody { depth: body_depth });
+                        continue;
+                    }
+                    if self.consume_keyword("break") {
+                        results.push(StatementResult::Statement(Some(AstStatement::Break(
+                            self.previous_span(),
+                        ))));
+                        continue;
+                    }
+                    if self.consume_keyword("continue") {
+                        results.push(StatementResult::Statement(Some(AstStatement::Continue(
+                            self.previous_span(),
+                        ))));
+                        continue;
+                    }
+                    if self.consume_keyword("return") {
+                        let span = self.previous_span();
+                        if matches!(
+                            self.current().kind,
+                            TokenKind::Newline
+                                | TokenKind::Semicolon
+                                | TokenKind::RightBrace
+                                | TokenKind::End
+                        ) {
+                            results.push(StatementResult::Statement(Some(AstStatement::Return {
+                                expression: None,
+                                span,
+                            })));
+                            continue;
+                        }
+                        let Some(expression) = self.parse_expression(0) else {
+                            results.push(StatementResult::Statement(None));
+                            continue;
+                        };
+                        results.push(StatementResult::Statement(Some(AstStatement::Return {
+                            span: Span::new(span.start, expression.span().end),
+                            expression: Some(expression),
+                        })));
+                        continue;
+                    }
+                    if self.check(&TokenKind::LeftParen) && self.looks_like_destructure() {
+                        results.push(StatementResult::Statement(
+                            self.parse_destructure_statement(),
+                        ));
+                        continue;
+                    }
+                    let intrabar = self.consume_keyword("varip");
+                    let state =
+                        intrabar || self.consume_keyword("state") || self.consume_keyword("var");
+                    let Token {
+                        kind: TokenKind::Identifier(name),
+                        span,
+                    } = self.current().clone()
+                    else {
+                        if !self.at_end() {
+                            self.error(self.current().span, "expected a binding or call");
+                        }
+                        results.push(StatementResult::Statement(None));
+                        continue;
+                    };
+                    if self.peek_kind(1) == Some(&TokenKind::Equal)
+                        || self.peek_kind(1) == Some(&TokenKind::ColonEqual)
+                    {
+                        self.index += 2;
+                        let update = self.tokens[self.index - 1].kind == TokenKind::ColonEqual;
+                        let Some(expression) = self.parse_expression(0) else {
+                            results.push(StatementResult::Statement(None));
+                            continue;
+                        };
+                        results.push(StatementResult::Statement(Some(AstStatement::Binding {
+                            name,
+                            expression,
+                            state,
+                            intrabar,
+                            update,
+                            span: Span::new(span.start, self.previous_span().end),
+                        })));
+                        continue;
+                    }
+                    if state {
+                        self.error(span, "state declarations require a name and expression");
+                        results.push(StatementResult::Statement(None));
+                        continue;
+                    }
+                    let Some(call) = self.parse_call() else {
+                        results.push(StatementResult::Statement(None));
+                        continue;
+                    };
+                    results.push(StatementResult::Statement(Some(AstStatement::Call {
+                        call,
+                    })));
+                }
+                StatementTask::ParseBody { depth } => {
+                    if depth > MAX_PARSER_NESTING_DEPTH {
+                        self.report_nesting_limit();
+                        return None;
+                    }
+                    self.skip_boundaries();
+                    if self.consume_kind(TokenKind::LeftBrace) {
+                        self.skip_boundaries();
+                        tasks.push(StatementTask::ParseBlock {
+                            depth,
+                            statements: Vec::new(),
+                        });
+                    } else {
+                        tasks.push(StatementTask::BodyFromStatement);
+                        tasks.push(StatementTask::ParseStatement { depth });
+                    }
+                }
+                StatementTask::ParseBlock { depth, statements } => {
+                    self.skip_boundaries();
+                    if self.consume_kind(TokenKind::RightBrace) {
+                        results.push(StatementResult::Body(Some(statements)));
+                    } else if self.at_end() {
+                        self.error(self.current().span, "expected a closing brace");
+                        results.push(StatementResult::Body(Some(statements)));
+                    } else {
+                        tasks.push(StatementTask::ParseBlock { depth, statements });
+                        tasks.push(StatementTask::AppendStatement);
+                        tasks.push(StatementTask::ParseStatement { depth });
+                    }
+                }
+                StatementTask::AppendStatement => {
+                    let Some(StatementResult::Statement(statement)) = results.pop() else {
+                        return None;
+                    };
+                    let Some(StatementTask::ParseBlock {
+                        depth,
+                        mut statements,
+                    }) = tasks.pop()
+                    else {
+                        return None;
+                    };
+                    if let Some(statement) = statement {
+                        statements.push(statement);
+                    } else {
+                        self.synchronize_statement();
+                    }
+                    tasks.push(StatementTask::ParseBlock { depth, statements });
+                }
+                StatementTask::BodyFromStatement => {
+                    let Some(StatementResult::Statement(statement)) = results.pop() else {
+                        return None;
+                    };
+                    results.push(StatementResult::Body(
+                        statement.map(|statement| vec![statement]),
+                    ));
+                }
+                StatementTask::FinishIfThen {
+                    start,
+                    condition,
+                    body_depth,
+                } => {
+                    let Some(StatementResult::Body(then_branch)) = results.pop() else {
+                        return None;
+                    };
+                    let Some(then_branch) = then_branch else {
+                        results.push(StatementResult::Statement(None));
+                        continue;
+                    };
+                    self.skip_boundaries();
+                    if self.consume_keyword("else") {
+                        tasks.push(StatementTask::FinishIfElse {
+                            start,
+                            condition,
+                            then_branch,
+                        });
+                        tasks.push(StatementTask::ParseBody { depth: body_depth });
+                    } else {
+                        results.push(StatementResult::Statement(Some(AstStatement::If {
+                            condition,
+                            then_branch,
+                            else_branch: Vec::new(),
+                            span: Span::new(start, self.previous_span().end),
+                        })));
+                    }
+                }
+                StatementTask::FinishIfElse {
+                    start,
+                    condition,
+                    then_branch,
+                } => {
+                    let Some(StatementResult::Body(else_branch)) = results.pop() else {
+                        return None;
+                    };
+                    let Some(else_branch) = else_branch else {
+                        results.push(StatementResult::Statement(None));
+                        continue;
+                    };
+                    results.push(StatementResult::Statement(Some(AstStatement::If {
+                        condition,
+                        then_branch,
+                        else_branch,
+                        span: Span::new(start, self.previous_span().end),
+                    })));
+                }
+                StatementTask::FinishBody { pending } => {
+                    let Some(StatementResult::Body(body)) = results.pop() else {
+                        return None;
+                    };
+                    let Some(body) = body else {
+                        results.push(StatementResult::Statement(None));
+                        continue;
+                    };
+                    let end = self.previous_span().end;
+                    let statement = match pending {
+                        PendingBody::While { start, condition } => AstStatement::While {
+                            condition,
+                            body,
+                            span: Span::new(start, end),
+                        },
+                        PendingBody::ForRange {
+                            start,
+                            name,
+                            initial,
+                            end: range_end,
+                        } => AstStatement::ForRange {
+                            name,
+                            start: initial,
+                            end: range_end,
+                            body,
+                            span: Span::new(start, end),
+                        },
+                        PendingBody::ForEach {
+                            start,
+                            name,
+                            collection,
+                        } => AstStatement::ForEach {
+                            name,
+                            collection,
+                            body,
+                            span: Span::new(start, end),
+                        },
+                    };
+                    results.push(StatementResult::Statement(Some(statement)));
+                }
+            }
         }
-        if !self.consume_kind(TokenKind::Equal) {
-            self.error(
-                self.current().span,
-                "loops require '=' for a range or 'in' for a collection",
-            );
-            return None;
-        }
-        let initial = self.parse_expression(0)?;
-        if !self.consume_keyword("to") {
-            self.error(
-                self.current().span,
-                "range loops require 'to' and an end expression",
-            );
-            return None;
-        }
-        let end = self.parse_expression(0)?;
-        let body = self.parse_block_or_statement()?;
-        Some(AstStatement::ForRange {
-            name,
-            start: initial,
-            end,
-            span: Span::new(start, self.previous_span().end),
-            body,
-        })
+        results.pop()
     }
 
     fn parse_block_or_statement(&mut self) -> Option<Vec<AstStatement>> {
-        self.skip_boundaries();
-        if self.consume_kind(TokenKind::LeftBrace) {
-            let mut statements = Vec::new();
-            self.skip_boundaries();
-            while !self.check(&TokenKind::RightBrace) && !self.at_end() {
-                if let Some(statement) = self.parse_statement() {
-                    statements.push(statement);
-                } else {
-                    self.synchronize_statement();
-                }
-                self.skip_boundaries();
-            }
-            if !self.consume_kind(TokenKind::RightBrace) {
-                self.error(self.current().span, "expected a closing brace");
-            }
-            Some(statements)
-        } else {
-            self.parse_statement().map(|statement| vec![statement])
+        match self.run_statement_tasks(StatementTask::ParseBody { depth: 0 })? {
+            StatementResult::Body(body) => body,
+            StatementResult::Statement(_) => None,
         }
     }
 
@@ -895,281 +1494,769 @@ impl Parser {
     }
 
     fn parse_expression(&mut self, minimum_precedence: u8) -> Option<AstExpression> {
-        let mut expression = self.parse_prefix()?;
-        loop {
-            if self.consume_kind(TokenKind::LeftBracket) {
-                let index = self.parse_expression(0)?;
-                let end = self.current().span;
-                if !self.consume_kind(TokenKind::RightBracket) {
-                    self.error(
-                        self.current().span,
-                        "expected a closing bracket after history index",
-                    );
-                }
-                expression = AstExpression::Index {
-                    span: Span::new(expression.span().start, end.end),
-                    expression: Box::new(expression),
-                    index: Box::new(index),
-                };
-                continue;
-            }
-            if self.consume_kind(TokenKind::Dot) {
-                let Token {
-                    kind: TokenKind::Identifier(field),
-                    span,
-                } = self.current().clone()
-                else {
-                    self.error(self.current().span, "expected a field name after a dot");
-                    break;
-                };
-                self.index += 1;
-                expression = AstExpression::Field {
-                    span: Span::new(expression.span().start, span.end),
-                    expression: Box::new(expression),
-                    field,
-                };
-                continue;
-            }
-            let Some((operator, precedence)) = self.binary_operator() else {
-                break;
-            };
-            if precedence < minimum_precedence {
-                break;
-            }
-            self.index += 1;
-            let right = self.parse_expression(precedence + 1)?;
-            expression = AstExpression::Binary {
-                span: Span::new(expression.span().start, right.span().end),
-                left: Box::new(expression),
-                operator,
-                right: Box::new(right),
-            };
-        }
-        Some(expression)
+        self.parse_expression_with_depth(minimum_precedence)
+            .map(|parsed| parsed.expression)
     }
 
-    fn parse_prefix(&mut self) -> Option<AstExpression> {
-        let token = self.current().clone();
-        match token.kind {
-            TokenKind::Number(value) => {
-                self.index += 1;
-                Some(AstExpression::Number(value, token.span))
-            }
-            TokenKind::String(value) => {
-                self.index += 1;
-                Some(AstExpression::String(value, token.span))
-            }
-            TokenKind::Identifier(name) => {
-                self.index += 1;
-                if name == "switch" && !self.check(&TokenKind::Dot) {
-                    return self.parse_switch_expression(token.span.start);
+    fn parsed_expression(
+        &mut self,
+        expression: AstExpression,
+        child_depth: usize,
+    ) -> Option<ParsedExpression> {
+        let depth = child_depth.saturating_add(1);
+        if depth > MAX_PARSER_NESTING_DEPTH {
+            self.report_nesting_limit();
+            return None;
+        }
+        Some(ParsedExpression { expression, depth })
+    }
+
+    fn parsed_expression_from_children(
+        &mut self,
+        expression: AstExpression,
+        child_depths: impl IntoIterator<Item = usize>,
+    ) -> Option<ParsedExpression> {
+        self.parsed_expression(expression, child_depths.into_iter().max().unwrap_or(0))
+    }
+
+    fn parse_expression_with_depth(&mut self, minimum_precedence: u8) -> Option<ParsedExpression> {
+        let mut tasks = vec![ExpressionTask::Parse {
+            minimum_precedence,
+            depth: 0,
+        }];
+        let mut values = Vec::new();
+        while let Some(task) = tasks.pop() {
+            match task {
+                ExpressionTask::Parse {
+                    minimum_precedence,
+                    depth,
+                } => {
+                    if depth > MAX_PARSER_NESTING_DEPTH {
+                        self.report_nesting_limit();
+                        return None;
+                    }
+                    tasks.push(ExpressionTask::AfterPrefix {
+                        minimum_precedence,
+                        depth,
+                    });
+                    tasks.push(ExpressionTask::ParsePrefix { depth });
                 }
-                let mut path = vec![name];
-                while self.consume_kind(TokenKind::Dot) {
-                    match self.current().kind.clone() {
-                        TokenKind::Identifier(segment) => {
-                            path.push(segment);
+                ExpressionTask::ParsePrefix { depth } => {
+                    let token = self.current().clone();
+                    match token.kind {
+                        TokenKind::Number(value) => {
                             self.index += 1;
+                            values.push(ParsedExpression::leaf(AstExpression::Number(
+                                value, token.span,
+                            )));
+                        }
+                        TokenKind::String(value) => {
+                            self.index += 1;
+                            values.push(ParsedExpression::leaf(AstExpression::String(
+                                value, token.span,
+                            )));
+                        }
+                        TokenKind::Identifier(name) => {
+                            self.index += 1;
+                            if name == "switch" && !self.check(&TokenKind::Dot) {
+                                tasks.push(ExpressionTask::FinishSwitchOperand {
+                                    start: token.span.start,
+                                    depth,
+                                });
+                                tasks.push(ExpressionTask::Parse {
+                                    minimum_precedence: 0,
+                                    depth: depth.saturating_add(1),
+                                });
+                                continue;
+                            }
+                            let mut path = vec![name];
+                            while self.consume_kind(TokenKind::Dot) {
+                                match self.current().kind.clone() {
+                                    TokenKind::Identifier(segment) => {
+                                        path.push(segment);
+                                        self.index += 1;
+                                    }
+                                    _ => {
+                                        self.error(
+                                            self.current().span,
+                                            "expected a name after a dot",
+                                        );
+                                        break;
+                                    }
+                                }
+                            }
+                            if self.check(&TokenKind::LeftParen) {
+                                let start = token.span.start;
+                                self.index += 1;
+                                self.skip_inline_boundaries();
+                                if self.consume_kind(TokenKind::RightParen) {
+                                    let call = AstExpression::Call(AstCall {
+                                        path,
+                                        arguments: Vec::new(),
+                                        span: Span::new(start, self.previous_span().end),
+                                    });
+                                    values.push(self.parsed_expression(call, 0)?);
+                                } else {
+                                    tasks.push(ExpressionTask::ParseCallArguments {
+                                        start,
+                                        path,
+                                        arguments: Vec::new(),
+                                        depth,
+                                    });
+                                }
+                            } else {
+                                let end = self.previous_span().end;
+                                let expression = match path.as_slice() {
+                                    [name] if name == "true" => {
+                                        AstExpression::Boolean(true, token.span)
+                                    }
+                                    [name] if name == "false" => {
+                                        AstExpression::Boolean(false, token.span)
+                                    }
+                                    [name] if name == "na" => AstExpression::Na(token.span),
+                                    _ => AstExpression::Identifier(
+                                        path,
+                                        Span::new(token.span.start, end),
+                                    ),
+                                };
+                                values.push(ParsedExpression::leaf(expression));
+                            }
+                        }
+                        TokenKind::Minus | TokenKind::Plus | TokenKind::Bang => {
+                            self.index += 1;
+                            let operator = match token.kind {
+                                TokenKind::Minus => UnaryOperator::Minus,
+                                TokenKind::Plus => UnaryOperator::Plus,
+                                TokenKind::Bang => UnaryOperator::Not,
+                                _ => unreachable!(),
+                            };
+                            tasks.push(ExpressionTask::FinishUnary {
+                                operator,
+                                start: token.span.start,
+                            });
+                            tasks.push(ExpressionTask::Parse {
+                                minimum_precedence: 7,
+                                depth: depth.saturating_add(1),
+                            });
+                        }
+                        TokenKind::LeftParen => {
+                            self.index += 1;
+                            self.skip_inline_boundaries();
+                            if self.consume_kind(TokenKind::RightParen) {
+                                self.error(token.span, "empty parentheses are not an expression");
+                                return None;
+                            }
+                            tasks.push(ExpressionTask::FinishParenthesized {
+                                start: token.span.start,
+                                values: Vec::new(),
+                                depth,
+                            });
+                            tasks.push(ExpressionTask::Parse {
+                                minimum_precedence: 0,
+                                depth: depth.saturating_add(1),
+                            });
+                        }
+                        TokenKind::LeftBracket => {
+                            self.index += 1;
+                            self.skip_inline_boundaries();
+                            if self.consume_kind(TokenKind::RightBracket) {
+                                let array = AstExpression::Array(
+                                    Vec::new(),
+                                    Span::new(token.span.start, self.previous_span().end),
+                                );
+                                values.push(self.parsed_expression(array, 0)?);
+                            } else {
+                                tasks.push(ExpressionTask::FinishArray {
+                                    start: token.span.start,
+                                    values: Vec::new(),
+                                    depth,
+                                });
+                                tasks.push(ExpressionTask::Parse {
+                                    minimum_precedence: 0,
+                                    depth: depth.saturating_add(1),
+                                });
+                            }
+                        }
+                        TokenKind::LeftBrace => {
+                            self.index += 1;
+                            self.skip_boundaries();
+                            if self.consume_kind(TokenKind::RightBrace) {
+                                let record = AstExpression::Record(
+                                    Vec::new(),
+                                    Span::new(token.span.start, self.previous_span().end),
+                                );
+                                values.push(self.parsed_expression(record, 0)?);
+                            } else {
+                                tasks.push(ExpressionTask::ParseRecordFields {
+                                    start: token.span.start,
+                                    fields: Vec::new(),
+                                    depth,
+                                });
+                            }
                         }
                         _ => {
-                            self.error(self.current().span, "expected a name after a dot");
-                            break;
+                            self.error(token.span, "expected an expression");
+                            return None;
                         }
                     }
                 }
-                if self.check(&TokenKind::LeftParen) {
-                    let start = token.span.start;
-                    self.index += 1;
-                    let arguments = self.parse_call_arguments()?;
-                    Some(AstExpression::Call(AstCall {
-                        path,
-                        arguments,
-                        span: Span::new(start, self.previous_span().end),
-                    }))
-                } else {
-                    let end = self.previous_span().end;
-                    let value = match path.as_slice() {
-                        [name] if name == "true" => AstExpression::Boolean(true, token.span),
-                        [name] if name == "false" => AstExpression::Boolean(false, token.span),
-                        [name] if name == "na" => AstExpression::Na(token.span),
-                        _ => AstExpression::Identifier(path, Span::new(token.span.start, end)),
+                ExpressionTask::AfterPrefix {
+                    minimum_precedence,
+                    depth,
+                } => {
+                    let expression = values.pop()?;
+                    tasks.push(ExpressionTask::Continue {
+                        expression,
+                        minimum_precedence,
+                        depth,
+                    });
+                }
+                ExpressionTask::Continue {
+                    expression,
+                    minimum_precedence,
+                    depth,
+                } => {
+                    if expression.depth > MAX_PARSER_NESTING_DEPTH {
+                        self.report_nesting_limit();
+                        return None;
+                    }
+                    if self.consume_kind(TokenKind::LeftBracket) {
+                        tasks.push(ExpressionTask::FinishIndex {
+                            expression,
+                            minimum_precedence,
+                            depth,
+                        });
+                        tasks.push(ExpressionTask::Parse {
+                            minimum_precedence: 0,
+                            depth: depth.saturating_add(1),
+                        });
+                    } else if self.consume_kind(TokenKind::Dot) {
+                        let Token {
+                            kind: TokenKind::Identifier(field),
+                            span,
+                        } = self.current().clone()
+                        else {
+                            self.error(self.current().span, "expected a field name after a dot");
+                            values.push(expression);
+                            continue;
+                        };
+                        self.index += 1;
+                        let base_depth = expression.depth;
+                        let field = AstExpression::Field {
+                            span: Span::new(expression.expression.span().start, span.end),
+                            expression: Box::new(expression.expression),
+                            field,
+                        };
+                        let expression = self.parsed_expression(field, base_depth)?;
+                        tasks.push(ExpressionTask::Continue {
+                            expression,
+                            minimum_precedence,
+                            depth: depth.saturating_add(1),
+                        });
+                    } else if let Some((operator, precedence)) = self.binary_operator() {
+                        if precedence < minimum_precedence {
+                            values.push(expression);
+                        } else {
+                            self.index += 1;
+                            tasks.push(ExpressionTask::FinishBinary {
+                                left: expression,
+                                operator,
+                                minimum_precedence,
+                                depth,
+                            });
+                            tasks.push(ExpressionTask::Parse {
+                                minimum_precedence: precedence + 1,
+                                depth: depth.saturating_add(1),
+                            });
+                        }
+                    } else {
+                        values.push(expression);
+                    }
+                }
+                ExpressionTask::FinishUnary { operator, start } => {
+                    let expression = values.pop()?;
+                    let end = expression.expression.span().end;
+                    let child_depth = expression.depth;
+                    let unary = AstExpression::Unary {
+                        operator,
+                        expression: Box::new(expression.expression),
+                        span: Span::new(start, end),
                     };
-                    Some(value)
+                    values.push(self.parsed_expression(unary, child_depth)?);
                 }
-            }
-            TokenKind::Minus | TokenKind::Plus | TokenKind::Bang => {
-                self.index += 1;
-                let operator = match token.kind {
-                    TokenKind::Minus => UnaryOperator::Minus,
-                    TokenKind::Plus => UnaryOperator::Plus,
-                    TokenKind::Bang => UnaryOperator::Not,
-                    _ => unreachable!(),
-                };
-                let expression = self.parse_expression(7)?;
-                Some(AstExpression::Unary {
-                    span: Span::new(token.span.start, expression.span().end),
+                ExpressionTask::FinishBinary {
+                    left,
                     operator,
-                    expression: Box::new(expression),
-                })
-            }
-            TokenKind::LeftParen => {
-                self.index += 1;
-                self.skip_inline_boundaries();
-                if self.consume_kind(TokenKind::RightParen) {
-                    self.error(token.span, "empty parentheses are not an expression");
-                    return None;
+                    minimum_precedence,
+                    depth,
+                } => {
+                    let right = values.pop()?;
+                    let left_depth = left.depth;
+                    let right_depth = right.depth;
+                    let expression = AstExpression::Binary {
+                        span: Span::new(left.expression.span().start, right.expression.span().end),
+                        left: Box::new(left.expression),
+                        operator,
+                        right: Box::new(right.expression),
+                    };
+                    let expression = self
+                        .parsed_expression_from_children(expression, [left_depth, right_depth])?;
+                    tasks.push(ExpressionTask::Continue {
+                        expression,
+                        minimum_precedence,
+                        depth: depth.saturating_add(1),
+                    });
                 }
-                let first = self.parse_expression(0)?;
-                let mut expressions = vec![first];
-                self.skip_inline_boundaries();
-                while self.consume_kind(TokenKind::Comma) {
+                ExpressionTask::FinishIndex {
+                    expression,
+                    minimum_precedence,
+                    depth,
+                } => {
+                    let index = values.pop()?;
+                    let end = self.current().span;
+                    if !self.consume_kind(TokenKind::RightBracket) {
+                        self.error(
+                            self.current().span,
+                            "expected a closing bracket after history index",
+                        );
+                    }
+                    let expression_depth = expression.depth;
+                    let index_depth = index.depth;
+                    let expression = AstExpression::Index {
+                        span: Span::new(expression.expression.span().start, end.end),
+                        expression: Box::new(expression.expression),
+                        index: Box::new(index.expression),
+                    };
+                    let expression = self.parsed_expression_from_children(
+                        expression,
+                        [expression_depth, index_depth],
+                    )?;
+                    tasks.push(ExpressionTask::Continue {
+                        expression,
+                        minimum_precedence,
+                        depth: depth.saturating_add(1),
+                    });
+                }
+                ExpressionTask::FinishParenthesized {
+                    start,
+                    values: mut expressions,
+                    depth,
+                } => {
+                    expressions.push(values.pop()?);
                     self.skip_inline_boundaries();
-                    expressions.push(self.parse_expression(0)?);
+                    if self.consume_kind(TokenKind::Comma) {
+                        self.skip_inline_boundaries();
+                        tasks.push(ExpressionTask::FinishParenthesized {
+                            start,
+                            values: expressions,
+                            depth,
+                        });
+                        tasks.push(ExpressionTask::Parse {
+                            minimum_precedence: 0,
+                            depth: depth.saturating_add(1),
+                        });
+                    } else {
+                        if !self.consume_kind(TokenKind::RightParen) {
+                            self.error(self.current().span, "expected a closing parenthesis");
+                        }
+                        if expressions.len() == 1 {
+                            values.push(expressions.pop().expect("parenthesized value exists"));
+                        } else {
+                            let tuple_depth = expressions
+                                .iter()
+                                .map(|expression| expression.depth)
+                                .max()
+                                .unwrap_or(0);
+                            let tuple = AstExpression::Tuple(
+                                expressions
+                                    .into_iter()
+                                    .map(|expression| expression.expression)
+                                    .collect(),
+                                Span::new(start, self.previous_span().end),
+                            );
+                            values.push(self.parsed_expression(tuple, tuple_depth)?);
+                        }
+                    }
+                }
+                ExpressionTask::FinishArray {
+                    start,
+                    values: mut expressions,
+                    depth,
+                } => {
+                    expressions.push(values.pop()?);
                     self.skip_inline_boundaries();
+                    if self.consume_kind(TokenKind::Comma) {
+                        self.skip_inline_boundaries();
+                        if self.consume_kind(TokenKind::RightBracket) {
+                            let array_depth = expressions
+                                .iter()
+                                .map(|expression| expression.depth)
+                                .max()
+                                .unwrap_or(0);
+                            let array = AstExpression::Array(
+                                expressions
+                                    .into_iter()
+                                    .map(|expression| expression.expression)
+                                    .collect(),
+                                Span::new(start, self.previous_span().end),
+                            );
+                            values.push(self.parsed_expression(array, array_depth)?);
+                        } else {
+                            tasks.push(ExpressionTask::FinishArray {
+                                start,
+                                values: expressions,
+                                depth,
+                            });
+                            tasks.push(ExpressionTask::Parse {
+                                minimum_precedence: 0,
+                                depth: depth.saturating_add(1),
+                            });
+                        }
+                    } else {
+                        if !self.consume_kind(TokenKind::RightBracket) {
+                            self.error(
+                                self.current().span,
+                                "expected a closing bracket after array literal",
+                            );
+                        }
+                        let array_depth = expressions
+                            .iter()
+                            .map(|expression| expression.depth)
+                            .max()
+                            .unwrap_or(0);
+                        let array = AstExpression::Array(
+                            expressions
+                                .into_iter()
+                                .map(|expression| expression.expression)
+                                .collect(),
+                            Span::new(start, self.previous_span().end),
+                        );
+                        values.push(self.parsed_expression(array, array_depth)?);
+                    }
                 }
-                if !self.consume_kind(TokenKind::RightParen) {
-                    self.error(self.current().span, "expected a closing parenthesis");
-                }
-                if expressions.len() == 1 {
-                    Some(expressions.remove(0))
-                } else {
-                    Some(AstExpression::Tuple(
-                        expressions,
-                        Span::new(token.span.start, self.previous_span().end),
-                    ))
-                }
-            }
-            TokenKind::LeftBracket => {
-                self.index += 1;
-                let mut expressions = Vec::new();
-                self.skip_inline_boundaries();
-                while !self.check(&TokenKind::RightBracket) && !self.at_end() {
-                    expressions.push(self.parse_expression(0)?);
+                ExpressionTask::ParseCallArguments {
+                    start,
+                    path,
+                    arguments,
+                    depth,
+                } => {
                     self.skip_inline_boundaries();
-                    if !self.consume_kind(TokenKind::Comma) {
-                        break;
+                    if self.consume_kind(TokenKind::RightParen) {
+                        let call = AstExpression::Call(AstCall {
+                            path,
+                            arguments: Vec::new(),
+                            span: Span::new(start, self.previous_span().end),
+                        });
+                        values.push(self.parsed_expression(call, 0)?);
+                    } else {
+                        let named = match (self.current().kind.clone(), self.peek_kind(1)) {
+                            (TokenKind::Identifier(name), Some(TokenKind::Equal)) => {
+                                self.index += 2;
+                                Some(name)
+                            }
+                            _ => None,
+                        };
+                        tasks.push(ExpressionTask::FinishCallArgument {
+                            start,
+                            path,
+                            arguments,
+                            named,
+                            depth,
+                        });
+                        tasks.push(ExpressionTask::Parse {
+                            minimum_precedence: 0,
+                            depth: depth.saturating_add(1),
+                        });
+                    }
+                }
+                ExpressionTask::FinishCallArgument {
+                    start,
+                    path,
+                    mut arguments,
+                    named,
+                    depth,
+                } => {
+                    let expression = values.pop()?;
+                    arguments.push(ParsedArgument {
+                        name: named,
+                        expression,
+                    });
+                    self.skip_inline_boundaries();
+                    if self.consume_kind(TokenKind::Comma) {
+                        self.skip_inline_boundaries();
+                        tasks.push(ExpressionTask::ParseCallArguments {
+                            start,
+                            path,
+                            arguments,
+                            depth,
+                        });
+                    } else if self.consume_kind(TokenKind::RightParen) {
+                        let call_depth = arguments
+                            .iter()
+                            .map(|argument| argument.expression.depth)
+                            .max()
+                            .unwrap_or(0);
+                        let call = AstExpression::Call(AstCall {
+                            path,
+                            arguments: arguments
+                                .into_iter()
+                                .map(|argument| AstArgument {
+                                    name: argument.name,
+                                    expression: argument.expression.expression,
+                                })
+                                .collect(),
+                            span: Span::new(start, self.previous_span().end),
+                        });
+                        values.push(self.parsed_expression(call, call_depth)?);
+                    } else {
+                        self.error(
+                            self.current().span,
+                            "expected a closing parenthesis after arguments",
+                        );
+                        return None;
+                    }
+                }
+                ExpressionTask::ParseRecordFields {
+                    start,
+                    fields,
+                    depth,
+                } => {
+                    self.skip_boundaries();
+                    if self.consume_kind(TokenKind::RightBrace) {
+                        let field_depth = fields
+                            .iter()
+                            .map(|(_, field)| field.depth)
+                            .max()
+                            .unwrap_or(0);
+                        let record = AstExpression::Record(
+                            fields
+                                .into_iter()
+                                .map(|(name, field)| (name, field.expression))
+                                .collect(),
+                            Span::new(start, self.previous_span().end),
+                        );
+                        values.push(self.parsed_expression(record, field_depth)?);
+                    } else {
+                        let TokenKind::Identifier(name) = self.current().kind.clone() else {
+                            self.error(self.current().span, "record fields require a name");
+                            return None;
+                        };
+                        self.index += 1;
+                        if !self.consume_kind(TokenKind::Colon) {
+                            self.error(self.current().span, "record fields require ':'");
+                            return None;
+                        }
+                        tasks.push(ExpressionTask::FinishRecordField {
+                            start,
+                            fields,
+                            name,
+                            depth,
+                        });
+                        tasks.push(ExpressionTask::Parse {
+                            minimum_precedence: 0,
+                            depth: depth.saturating_add(1),
+                        });
+                    }
+                }
+                ExpressionTask::FinishRecordField {
+                    start,
+                    mut fields,
+                    name,
+                    depth,
+                } => {
+                    fields.push((name, values.pop()?));
+                    self.skip_inline_boundaries();
+                    if self.consume_kind(TokenKind::Comma) {
+                        self.skip_boundaries();
+                        tasks.push(ExpressionTask::ParseRecordFields {
+                            start,
+                            fields,
+                            depth,
+                        });
+                    } else {
+                        self.skip_boundaries();
+                        if !self.consume_kind(TokenKind::RightBrace) {
+                            self.error(
+                                self.current().span,
+                                "expected a comma between record fields",
+                            );
+                            return None;
+                        }
+                        let field_depth = fields
+                            .iter()
+                            .map(|(_, field)| field.depth)
+                            .max()
+                            .unwrap_or(0);
+                        let record = AstExpression::Record(
+                            fields
+                                .into_iter()
+                                .map(|(name, field)| (name, field.expression))
+                                .collect(),
+                            Span::new(start, self.previous_span().end),
+                        );
+                        values.push(self.parsed_expression(record, field_depth)?);
+                    }
+                }
+                ExpressionTask::FinishSwitchOperand { start, depth } => {
+                    let operand = values.pop()?;
+                    self.skip_boundaries();
+                    if !self.consume_kind(TokenKind::LeftBrace) {
+                        self.error(self.current().span, "switch requires a branch block");
+                        return None;
+                    }
+                    self.skip_boundaries();
+                    tasks.push(ExpressionTask::ParseSwitchBranches {
+                        start,
+                        operand,
+                        branches: Vec::new(),
+                        fallback: None,
+                        depth,
+                    });
+                }
+                ExpressionTask::ParseSwitchBranches {
+                    start,
+                    operand,
+                    branches,
+                    fallback,
+                    depth,
+                } => {
+                    self.skip_boundaries();
+                    if self.consume_kind(TokenKind::RightBrace) {
+                        let switch_depth =
+                            std::iter::once(operand.depth)
+                                .chain(branches.iter().flat_map(|(condition, result)| {
+                                    [condition.depth, result.depth]
+                                }))
+                                .chain(fallback.iter().map(|result| result.depth))
+                                .max()
+                                .unwrap_or(0);
+                        let switch = AstExpression::Switch {
+                            operand: Box::new(operand.expression),
+                            branches: branches
+                                .into_iter()
+                                .map(|(condition, result)| {
+                                    (condition.expression, result.expression)
+                                })
+                                .collect(),
+                            fallback: fallback.map(|result| Box::new(result.expression)),
+                            span: Span::new(start, self.previous_span().end),
+                        };
+                        values.push(self.parsed_expression(switch, switch_depth)?);
+                    } else if self.is_named("default") {
+                        self.index += 1;
+                        if !self.consume_kind(TokenKind::Arrow) {
+                            self.error(self.current().span, "switch branches require '=>' ");
+                            return None;
+                        }
+                        tasks.push(ExpressionTask::FinishSwitchResult {
+                            start,
+                            operand,
+                            branches,
+                            fallback,
+                            condition: None,
+                            depth,
+                        });
+                        tasks.push(ExpressionTask::Parse {
+                            minimum_precedence: 0,
+                            depth: depth.saturating_add(1),
+                        });
+                    } else {
+                        tasks.push(ExpressionTask::FinishSwitchCondition {
+                            start,
+                            operand,
+                            branches,
+                            fallback,
+                            depth,
+                        });
+                        tasks.push(ExpressionTask::Parse {
+                            minimum_precedence: 0,
+                            depth: depth.saturating_add(1),
+                        });
+                    }
+                }
+                ExpressionTask::FinishSwitchCondition {
+                    start,
+                    operand,
+                    branches,
+                    fallback,
+                    depth,
+                } => {
+                    let condition = values.pop()?;
+                    if !self.consume_kind(TokenKind::Arrow) {
+                        self.error(self.current().span, "switch branches require '=>' ");
+                        return None;
+                    }
+                    tasks.push(ExpressionTask::FinishSwitchResult {
+                        start,
+                        operand,
+                        branches,
+                        fallback,
+                        condition: Some(condition),
+                        depth,
+                    });
+                    tasks.push(ExpressionTask::Parse {
+                        minimum_precedence: 0,
+                        depth: depth.saturating_add(1),
+                    });
+                }
+                ExpressionTask::FinishSwitchResult {
+                    start,
+                    operand,
+                    mut branches,
+                    mut fallback,
+                    condition,
+                    depth,
+                } => {
+                    let result = values.pop()?;
+                    if let Some(condition) = condition {
+                        branches.push((condition, result));
+                    } else {
+                        fallback = Some(Box::new(result));
                     }
                     self.skip_inline_boundaries();
+                    if self.consume_kind(TokenKind::Comma) {
+                        self.skip_boundaries();
+                        tasks.push(ExpressionTask::ParseSwitchBranches {
+                            start,
+                            operand,
+                            branches,
+                            fallback,
+                            depth,
+                        });
+                    } else {
+                        self.skip_boundaries();
+                        if !self.consume_kind(TokenKind::RightBrace) {
+                            self.error(
+                                self.current().span,
+                                "expected a comma between switch branches",
+                            );
+                            return None;
+                        }
+                        let switch_depth =
+                            std::iter::once(operand.depth)
+                                .chain(branches.iter().flat_map(|(condition, result)| {
+                                    [condition.depth, result.depth]
+                                }))
+                                .chain(fallback.iter().map(|result| result.depth))
+                                .max()
+                                .unwrap_or(0);
+                        let switch = AstExpression::Switch {
+                            operand: Box::new(operand.expression),
+                            branches: branches
+                                .into_iter()
+                                .map(|(condition, result)| {
+                                    (condition.expression, result.expression)
+                                })
+                                .collect(),
+                            fallback: fallback.map(|result| Box::new(result.expression)),
+                            span: Span::new(start, self.previous_span().end),
+                        };
+                        values.push(self.parsed_expression(switch, switch_depth)?);
+                    }
                 }
-                if !self.consume_kind(TokenKind::RightBracket) {
-                    self.error(
-                        self.current().span,
-                        "expected a closing bracket after array literal",
-                    );
-                }
-                Some(AstExpression::Array(
-                    expressions,
-                    Span::new(token.span.start, self.previous_span().end),
-                ))
-            }
-            TokenKind::LeftBrace => {
-                self.index += 1;
-                self.parse_record_literal(token.span.start)
-            }
-            _ => {
-                self.error(token.span, "expected an expression");
-                None
             }
         }
-    }
-
-    fn parse_record_literal(&mut self, start: usize) -> Option<AstExpression> {
-        let mut fields = Vec::new();
-        self.skip_boundaries();
-        while !self.check(&TokenKind::RightBrace) && !self.at_end() {
-            let TokenKind::Identifier(name) = self.current().kind.clone() else {
-                self.error(self.current().span, "record fields require a name");
-                return None;
-            };
-            self.index += 1;
-            if !self.consume_kind(TokenKind::Colon) {
-                self.error(self.current().span, "record fields require ':'");
-                return None;
-            }
-            let expression = self.parse_expression(0)?;
-            fields.push((name, expression));
-            self.skip_inline_boundaries();
-            if !self.consume_kind(TokenKind::Comma) {
-                self.skip_boundaries();
-                if self.check(&TokenKind::RightBrace) {
-                    break;
-                }
-                self.error(
-                    self.current().span,
-                    "expected a comma between record fields",
-                );
-                return None;
-            }
-            self.skip_boundaries();
-        }
-        if !self.consume_kind(TokenKind::RightBrace) {
-            self.error(
-                self.current().span,
-                "expected a closing brace after record fields",
-            );
-            return None;
-        }
-        Some(AstExpression::Record(
-            fields,
-            Span::new(start, self.previous_span().end),
-        ))
-    }
-
-    fn parse_switch_expression(&mut self, start: usize) -> Option<AstExpression> {
-        let operand = self.parse_expression(0)?;
-        self.skip_boundaries();
-        if !self.consume_kind(TokenKind::LeftBrace) {
-            self.error(self.current().span, "switch requires a branch block");
-            return None;
-        }
-        let mut branches = Vec::new();
-        let mut fallback = None;
-        self.skip_boundaries();
-        while !self.check(&TokenKind::RightBrace) && !self.at_end() {
-            let is_default = self.is_named("default");
-            let condition = if is_default {
-                self.index += 1;
-                None
-            } else {
-                Some(self.parse_expression(0)?)
-            };
-            if !self.consume_kind(TokenKind::Arrow) {
-                self.error(self.current().span, "switch branches require '=>' ");
-                return None;
-            }
-            let result = self.parse_expression(0)?;
-            if let Some(condition) = condition {
-                branches.push((condition, result));
-            } else {
-                fallback = Some(Box::new(result));
-            }
-            self.skip_inline_boundaries();
-            if !self.consume_kind(TokenKind::Comma) {
-                self.skip_boundaries();
-                if self.check(&TokenKind::RightBrace) {
-                    break;
-                }
-                self.error(
-                    self.current().span,
-                    "expected a comma between switch branches",
-                );
-                return None;
-            }
-            self.skip_boundaries();
-        }
-        if !self.consume_kind(TokenKind::RightBrace) {
-            self.error(
-                self.current().span,
-                "expected a closing brace after switch branches",
-            );
-            return None;
-        }
-        Some(AstExpression::Switch {
-            operand: Box::new(operand),
-            branches,
-            fallback,
-            span: Span::new(start, self.previous_span().end),
-        })
+        values.pop()
     }
 
     fn parse_call_arguments(&mut self) -> Option<Vec<AstArgument>> {
@@ -1314,6 +2401,17 @@ impl Parser {
         matches!(self.current().kind, TokenKind::End)
     }
 
+    fn report_nesting_limit(&mut self) {
+        if !self.nesting_limit_reported {
+            self.error(
+                self.current().span,
+                format!("source exceeds parser nesting limit of {MAX_PARSER_NESTING_DEPTH}"),
+            );
+            self.nesting_limit_reported = true;
+        }
+        self.index = self.tokens.len().saturating_sub(1);
+    }
+
     fn error(&mut self, span: Span, message: impl Into<String>) {
         self.diagnostics
             .push(Diagnostic::error(self.path.clone(), span, message));
@@ -1334,6 +2432,7 @@ struct Compiler {
     series_inputs: Vec<SeriesInputDescriptor>,
     local_definitions: Vec<Option<ExprId>>,
     mutable_values: BTreeSet<usize>,
+    history_expressions: Vec<(ExprId, Span)>,
     next_local: usize,
     next_state: usize,
     state_call_sites: Vec<CallSiteId>,
@@ -1387,6 +2486,7 @@ impl Compiler {
             series_inputs: Vec::new(),
             local_definitions: Vec::new(),
             mutable_values: BTreeSet::new(),
+            history_expressions: Vec::new(),
             next_local: 0,
             next_state: 0,
             state_call_sites: Vec::new(),
@@ -1507,6 +2607,7 @@ impl Compiler {
         for function in ast.functions {
             self.compile_function(function);
         }
+        self.validate_history_sources();
         self.reject_recursive_functions();
         let mut descriptor = self.descriptor.take().expect("descriptor is initialized");
         if descriptor.max_bars_back > 50_000 {
@@ -2795,6 +3896,9 @@ impl Compiler {
                         self.error(span, "destructuring update references an unknown local");
                         return None;
                     };
+                    for target in &targets {
+                        self.mutable_values.insert(target.0);
+                    }
                     let expression = self.compile_expression(&expression);
                     if !matches!(
                         self.program.expressions[expression.0].ty.value,
@@ -2954,6 +4058,7 @@ impl Compiler {
                 self.local_definitions.push(None);
                 self.values
                     .insert(name, (target, Type::series(ValueType::Int)));
+                self.mutable_values.insert(target.0);
                 self.loop_depth += 1;
                 let body = self.compile_scoped_statements(body);
                 let body_values = self.values.clone();
@@ -3010,6 +4115,7 @@ impl Compiler {
                         Type::series(self.collection_element_type(collection)),
                     ),
                 );
+                self.mutable_values.insert(target.0);
                 self.loop_depth += 1;
                 let body = self.compile_scoped_statements(body);
                 let body_values = self.values.clone();
@@ -4675,7 +5781,16 @@ impl Compiler {
                     ),
                     _ => {}
                 }
-                self.push_expression(ExpressionKind::History { source, offset }, source_type)
+                let needs_history = !matches!(constant_value(index), Some(Value::Int(0)));
+                let history =
+                    self.push_expression(ExpressionKind::History { source, offset }, source_type);
+                if source_type.qualifier == Qualifier::Series
+                    && offset_type.value == ValueType::Int
+                    && needs_history
+                {
+                    self.history_expressions.push((history, *span));
+                }
+                history
             }
             AstExpression::Field {
                 expression,
@@ -5382,6 +6497,40 @@ impl Compiler {
         self.push_constant(Value::Na, Type::series(ValueType::Any))
     }
 
+    fn validate_history_sources(&mut self) {
+        let invalid_spans = self
+            .history_expressions
+            .iter()
+            .filter_map(|(history, span)| {
+                let Some(ExpressionKind::History { source, .. }) = self
+                    .program
+                    .expressions
+                    .get(history.0)
+                    .map(|expression| &expression.kind)
+                else {
+                    return None;
+                };
+                (!self.history_source_is_retained(*source)).then_some(*span)
+            })
+            .collect::<Vec<_>>();
+        for span in invalid_spans {
+            self.error(span, HISTORY_RETENTION_ERROR);
+        }
+    }
+
+    fn history_source_is_retained(&self, source: ExprId) -> bool {
+        let Some(expression) = self.program.expressions.get(source.0) else {
+            return false;
+        };
+        let is_mutable_local = matches!(
+            &expression.kind,
+            ExpressionKind::LoadLocal(slot) if self.mutable_values.contains(&slot.0)
+        );
+        expression.series_slot.is_some()
+            && !matches!(&expression.kind, ExpressionKind::FunctionCall { .. })
+            && !is_mutable_local
+    }
+
     fn record_field_for_expression(&self, source: ExprId, name: &str) -> Option<RecordField> {
         if self.is_trade_record_expression(source) {
             return trade_field(name);
@@ -5579,6 +6728,15 @@ impl Compiler {
                 format!(
                     "{name} expects {} arguments, got {}",
                     signature.arguments.len(),
+                    call.arguments.len()
+                ),
+            );
+        } else if signature.variadic && call.arguments.len() < signature.min_arguments {
+            self.error(
+                call.span,
+                format!(
+                    "{name} expects at least {} arguments, got {}",
+                    signature.min_arguments,
                     call.arguments.len()
                 ),
             );

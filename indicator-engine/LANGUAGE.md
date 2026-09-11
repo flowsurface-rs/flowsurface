@@ -85,6 +85,12 @@ and arithmetic remains numeric-only. `select`, `coalesce`, and `switch` result
 branches use the same compatibility rules. Non-finite numeric results are
 exposed as `na`.
 
+History indexing such as `source[1]` requires an immutable retained series.
+Direct chart series and immutable series locals are retained automatically;
+`source[0]` does not need history storage. Mutable locals, function parameters,
+and function-call results cannot be indexed historically and are compile-time
+errors. Use an immutable top-level series binding when a value needs history.
+
 ## Declaration reference
 
 Named arguments are compile-time constants unless noted as series expressions.

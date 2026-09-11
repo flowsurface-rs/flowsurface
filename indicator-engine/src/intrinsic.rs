@@ -82,12 +82,18 @@ pub struct IntrinsicSignature {
     pub arguments: Vec<ArgumentSignature>,
     pub result: Type,
     pub variadic: bool,
+    pub min_arguments: usize,
     /// Argument index of the rolling window length, when the intrinsic is a
     /// windowed calculation. Used by static warmup analysis.
     pub window: Option<usize>,
 }
 
 impl IntrinsicSignature {
+    pub(crate) fn at_least(mut self, arguments: usize) -> Self {
+        self.min_arguments = arguments;
+        self
+    }
+
     pub(crate) fn windowed(mut self, argument: usize) -> Self {
         self.window = Some(argument);
         self
@@ -523,6 +529,7 @@ fn signature(
         arguments,
         result,
         variadic,
+        min_arguments: 0,
         window: None,
     }
 }
@@ -554,6 +561,7 @@ fn math_min_max(variadic: bool) -> IntrinsicSignature {
         Type::series(ValueType::Float),
         variadic,
     )
+    .at_least(2)
 }
 
 fn ta_average() -> IntrinsicSignature {
@@ -709,6 +717,7 @@ fn color_rgb_signature() -> IntrinsicSignature {
         Type::series(ValueType::Color),
         true,
     )
+    .at_least(3)
 }
 
 fn eval_abs(
@@ -855,7 +864,7 @@ fn eval_array_new(
     check_collection_limits(
         context,
         collection_elements(args),
-        collection_heap_bytes(args),
+        collection_heap_bytes(args, args.len()),
     )?;
     Ok(Value::Array(args.to_vec()))
 }
@@ -874,7 +883,9 @@ fn eval_array_push(
     let projected = collection_elements(values)
         .saturating_add(1)
         .saturating_add(value.resource_usage().0);
-    let projected_heap = collection_heap_bytes(values).saturating_add(value.resource_usage().1);
+    let projected_heap = collection_heap_bytes(values, values.capacity())
+        .saturating_add(size_of::<Value>())
+        .saturating_add(value.resource_usage().1);
     check_collection_limits(context, projected, projected_heap)?;
     let mut values = values.clone();
     values.push(value);
@@ -944,7 +955,11 @@ fn eval_record_set(
         .unwrap_or(0);
     let previous_heap = values
         .get(key)
-        .map(|value| key.len().saturating_add(value.resource_usage().1))
+        .map(|value| {
+            size_of::<String>()
+                .saturating_add(key.capacity())
+                .saturating_add(value.resource_usage().1)
+        })
         .unwrap_or(0);
     let projected = record_elements(values)
         .saturating_sub(previous)
@@ -952,7 +967,8 @@ fn eval_record_set(
         .saturating_add(value.resource_usage().0);
     let projected_heap = record_heap_bytes(values)
         .saturating_sub(previous_heap)
-        .saturating_add(key.len())
+        .saturating_add(size_of::<String>())
+        .saturating_add(key.capacity())
         .saturating_add(value.resource_usage().1);
     check_collection_limits(context, projected, projected_heap)?;
     let mut values = values.clone();
@@ -986,10 +1002,11 @@ fn collection_elements(values: &[Value]) -> usize {
     })
 }
 
-fn collection_heap_bytes(values: &[Value]) -> usize {
-    values.iter().fold(0usize, |total, value| {
-        total.saturating_add(value.resource_usage().1)
-    })
+fn collection_heap_bytes(values: &[Value], capacity: usize) -> usize {
+    values.iter().fold(
+        size_of::<Vec<Value>>().saturating_add(capacity.saturating_mul(size_of::<Value>())),
+        |total, value| total.saturating_add(value.resource_usage().1),
+    )
 }
 
 fn record_elements(values: &BTreeMap<String, Value>) -> usize {
@@ -999,11 +1016,16 @@ fn record_elements(values: &BTreeMap<String, Value>) -> usize {
 }
 
 fn record_heap_bytes(values: &BTreeMap<String, Value>) -> usize {
-    values.iter().fold(0usize, |total, (key, value)| {
-        total
-            .saturating_add(key.len())
-            .saturating_add(value.resource_usage().1)
-    })
+    values.iter().fold(
+        size_of::<BTreeMap<String, Value>>()
+            .saturating_add(values.len().saturating_mul(size_of::<(String, Value)>())),
+        |total, (key, value)| {
+            total
+                .saturating_add(size_of::<String>())
+                .saturating_add(key.capacity())
+                .saturating_add(value.resource_usage().1)
+        },
+    )
 }
 
 fn check_collection_limits(

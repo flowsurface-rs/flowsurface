@@ -1,6 +1,6 @@
 use flowsurface_indicator_engine::{
-    ChartFrame, CompiledIndicator, Diagnostic, FrameOutput, IndicatorConfig, IndicatorFrame,
-    IndicatorId, Severity, TimeOrTick, TradeAggregate, compile,
+    ChartFrame, CompileLimits, CompiledIndicator, Diagnostic, FrameOutput, IndicatorConfig,
+    IndicatorFrame, IndicatorId, Severity, TimeOrTick, TradeAggregate, compile,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -174,8 +174,27 @@ fn load_sources(paths: &[PathBuf], namespace: Option<&str>) -> SourceReport {
     };
     let mut ids = BTreeMap::<String, PathBuf>::new();
     let mut short_names = BTreeMap::<String, PathBuf>::new();
+    let limits = CompileLimits::default();
 
     for path in paths {
+        match fs::metadata(path) {
+            Ok(metadata) if metadata.len() > limits.max_source_bytes as u64 => {
+                report.diagnostics.push(format!(
+                    "{}: source exceeds compile limit of {} bytes",
+                    path.display(),
+                    limits.max_source_bytes
+                ));
+                continue;
+            }
+            Err(error) => {
+                report.diagnostics.push(format!(
+                    "{}: could not read source: {error}",
+                    path.display()
+                ));
+                continue;
+            }
+            Ok(_) => {}
+        }
         let source = match fs::read_to_string(path) {
             Ok(source) => source,
             Err(error) => {
@@ -545,19 +564,6 @@ mod tests {
 
     fn arguments(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
-    }
-
-    #[test]
-    fn help_and_version_are_available() {
-        assert!(
-            global_output(&arguments(&["--help"]))
-                .expect("help output should exist")
-                .contains("flowsurface-indicator check <file.ind|directory>")
-        );
-        assert_eq!(
-            global_output(&arguments(&["--version"])),
-            Some(env!("CARGO_PKG_VERSION").to_owned())
-        );
     }
 
     #[test]

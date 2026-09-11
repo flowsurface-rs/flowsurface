@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt::{Display, Formatter};
+use std::mem::size_of;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -18,30 +19,52 @@ pub enum Value {
 impl Value {
     pub(crate) fn resource_usage(&self) -> (usize, usize) {
         match self {
-            Self::String(value) => (0, value.len()),
-            Self::Tuple(values) | Self::Array(values) => {
-                values
-                    .iter()
-                    .fold((values.len(), 0usize), |(elements, bytes), value| {
-                        let (nested_elements, nested_bytes) = value.resource_usage();
-                        (
-                            elements.saturating_add(nested_elements),
-                            bytes.saturating_add(nested_bytes),
-                        )
-                    })
-            }
-            Self::Record(values) => {
-                values
-                    .iter()
-                    .fold((values.len(), 0usize), |(elements, bytes), (key, value)| {
-                        let (nested_elements, nested_bytes) = value.resource_usage();
-                        (
-                            elements.saturating_add(nested_elements),
-                            bytes.saturating_add(key.len()).saturating_add(nested_bytes),
-                        )
-                    })
-            }
+            Self::String(value) => (0, size_of::<String>().saturating_add(value.capacity())),
+            Self::Tuple(values) | Self::Array(values) => values.iter().fold(
+                (
+                    values.len(),
+                    size_of::<Vec<Value>>()
+                        .saturating_add(values.capacity().saturating_mul(size_of::<Value>())),
+                ),
+                |(elements, bytes), value| {
+                    let (nested_elements, nested_bytes) = value.resource_usage();
+                    (
+                        elements.saturating_add(nested_elements),
+                        bytes.saturating_add(nested_bytes),
+                    )
+                },
+            ),
+            Self::Record(values) => values.iter().fold(
+                (
+                    values.len(),
+                    size_of::<BTreeMap<String, Value>>()
+                        .saturating_add(values.len().saturating_mul(size_of::<(String, Value)>())),
+                ),
+                |(elements, bytes), (key, value)| {
+                    let (nested_elements, nested_bytes) = value.resource_usage();
+                    (
+                        elements.saturating_add(nested_elements),
+                        bytes
+                            .saturating_add(size_of::<String>())
+                            .saturating_add(key.capacity())
+                            .saturating_add(nested_bytes),
+                    )
+                },
+            ),
             _ => (0, 0),
+        }
+    }
+
+    pub(crate) fn has_string_over(&self, limit: usize) -> bool {
+        match self {
+            Self::String(value) => value.capacity() > limit,
+            Self::Tuple(values) | Self::Array(values) => {
+                values.iter().any(|value| value.has_string_over(limit))
+            }
+            Self::Record(values) => values
+                .iter()
+                .any(|(key, value)| key.capacity() > limit || value.has_string_over(limit)),
+            _ => false,
         }
     }
 

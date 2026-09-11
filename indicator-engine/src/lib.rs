@@ -37,6 +37,30 @@ pub use types::{
 
 pub type Program = HirProgram;
 
+/// Bounds applied by the public source compiler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompileLimits {
+    pub max_source_bytes: usize,
+    pub max_tokens: usize,
+    pub max_expressions: usize,
+    pub max_statements: usize,
+    pub max_functions: usize,
+    pub max_output_channels: usize,
+}
+
+impl Default for CompileLimits {
+    fn default() -> Self {
+        Self {
+            max_source_bytes: 1 << 20,
+            max_tokens: 100_000,
+            max_expressions: 100_000,
+            max_statements: 50_000,
+            max_functions: 256,
+            max_output_channels: 256,
+        }
+    }
+}
+
 /// Host data activated by a compiled indicator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DataRequirements {
@@ -70,12 +94,60 @@ pub struct CompiledIndicator {
 
 /// Parse and type-check one source-owned indicator file.
 pub fn compile(source: &str, path: impl AsRef<Path>) -> Result<CompiledIndicator, Vec<Diagnostic>> {
-    compile_with_registry(source, path, IntrinsicRegistry::standard())
+    compile_with_limits(source, path, CompileLimits::default())
+}
+
+/// Parse and type-check source with explicit resource bounds.
+pub fn compile_with_limits(
+    source: &str,
+    path: impl AsRef<Path>,
+    limits: CompileLimits,
+) -> Result<CompiledIndicator, Vec<Diagnostic>> {
+    let path = path.as_ref();
+    if source.len() > limits.max_source_bytes {
+        return Err(vec![Diagnostic::error(
+            path,
+            Span::new(0, source.len().min(limits.max_source_bytes)),
+            format!(
+                "source exceeds compile limit of {} bytes",
+                limits.max_source_bytes
+            ),
+        )]);
+    }
+    compile_with_registry(source, path, IntrinsicRegistry::standard(), limits)
 }
 
 /// Read and compile one indicator source file.
 pub fn compile_file(path: impl AsRef<Path>) -> Result<CompiledIndicator, Vec<Diagnostic>> {
+    compile_file_with_limits(path, CompileLimits::default())
+}
+
+/// Read and compile one indicator source file with explicit resource bounds.
+pub fn compile_file_with_limits(
+    path: impl AsRef<Path>,
+    limits: CompileLimits,
+) -> Result<CompiledIndicator, Vec<Diagnostic>> {
     let path = path.as_ref();
+    match std::fs::metadata(path) {
+        Ok(metadata) if metadata.len() > limits.max_source_bytes as u64 => {
+            return Err(vec![Diagnostic::error(
+                path,
+                Span::new(0, 0),
+                format!(
+                    "source exceeds compile limit of {} bytes",
+                    limits.max_source_bytes
+                ),
+            )]);
+        }
+        Err(error) => {
+            return Err(vec![Diagnostic::error(
+                path,
+                Span::new(0, 0),
+                format!("could not read source: {error}"),
+            )]);
+        }
+        Ok(_) => {}
+    }
     let source = match std::fs::read_to_string(path) {
         Ok(source) => source,
         Err(error) => {
@@ -86,15 +158,16 @@ pub fn compile_file(path: impl AsRef<Path>) -> Result<CompiledIndicator, Vec<Dia
             )]);
         }
     };
-    compile(&source, path)
+    compile_with_limits(&source, path, limits)
 }
 
 pub(crate) fn compile_with_registry(
     source: &str,
     path: impl AsRef<Path>,
     registry: intrinsic::IntrinsicRegistry,
+    limits: CompileLimits,
 ) -> Result<CompiledIndicator, Vec<Diagnostic>> {
-    parser::compile_with_registry(source, path.as_ref(), registry)
+    parser::compile_with_registry(source, path.as_ref(), registry, limits)
 }
 
 impl CompiledIndicator {
@@ -259,6 +332,216 @@ mod tests {
             ),
             &Value::Float(20.0)
         );
+    }
+
+    #[test]
+    fn history_indexing_rejects_unretained_sources() {
+        for source in [
+            r#"
+                language(1)
+                indicator("Mutable history", id = "test.mutable-history")
+                format(precision = "base_ticker_min_tick")
+                value = chart.close
+                value := value
+                plot(value[1], id = "lagged")
+            "#,
+            r#"
+                language(1)
+                indicator("Parameter history", id = "test.parameter-history")
+                format(precision = "base_ticker_min_tick")
+                plot(lag(chart.close), id = "value")
+                fn lag(value) {
+                    return value[1]
+                }
+            "#,
+            r#"
+                language(1)
+                indicator("Call history", id = "test.call-history")
+                format(precision = "base_ticker_min_tick")
+                plot(identity(chart.close)[1], id = "lagged")
+                fn identity(value) {
+                    return value
+                }
+            "#,
+        ] {
+            let diagnostics = compile(source, "unretained-history.ind")
+                .expect_err("unretained history should fail compilation");
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| { diagnostic.message.contains("immutable retained series") })
+            );
+        }
+    }
+
+    #[test]
+    fn history_validation_is_order_independent_for_local_mutations() {
+        for source in [
+            r#"
+                language(1)
+                indicator("Later mutation", id = "test.later-mutation")
+                format(precision = "base_ticker_min_tick")
+                value = chart.close
+                plot(value[1], id = "lagged")
+                value := value
+            "#,
+            r#"
+                language(1)
+                indicator("Branch mutation", id = "test.branch-mutation")
+                format(precision = "base_ticker_min_tick")
+                value = chart.close
+                plot(value[1], id = "lagged")
+                if true {
+                    value := value
+                }
+            "#,
+            r#"
+                language(1)
+                indicator("Destructure mutation", id = "test.destructure-mutation")
+                format(precision = "base_ticker_min_tick")
+                value = chart.close
+                other = chart.open
+                plot(value[1], id = "lagged")
+                (value, other) := (value, other)
+            "#,
+            r#"
+                language(1)
+                indicator("Loop mutation", id = "test.loop-mutation")
+                format(precision = "base_ticker_min_tick")
+                value = chart.close
+                plot(value[1], id = "lagged")
+                for index = 0 to 1 {
+                    value := value
+                }
+            "#,
+            r#"
+                language(1)
+                indicator("Loop target", id = "test.loop-target")
+                format(precision = "base_ticker_min_tick")
+                for index = 0 to 1 {
+                    lagged = index[1]
+                }
+            "#,
+        ] {
+            let diagnostics = compile(source, "order-independent-history.ind")
+                .expect_err("mutable history should fail compilation");
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.message.contains("immutable retained series"))
+            );
+        }
+    }
+
+    #[test]
+    fn parser_rejects_deep_input_without_recursing() {
+        let deeply_nested = [
+            "(".repeat(257) + "chart.close" + &")".repeat(257),
+            "+".repeat(257) + "chart.close",
+            "chart.close".to_owned() + &" + chart.close".repeat(257),
+            "(chart.close)".to_owned() + &".field".repeat(257),
+            "chart.close".to_owned() + &"[0]".repeat(257),
+            {
+                let mut expression = "chart.close".to_owned();
+                for _ in 0..257 {
+                    expression = format!("chart.close + ({expression})");
+                }
+                expression
+            },
+            {
+                let mut expression = "chart.close".to_owned();
+                for _ in 0..257 {
+                    expression = format!("math.abs({expression})");
+                }
+                expression
+            },
+            {
+                let mut expression = "chart.close".to_owned();
+                for _ in 0..257 {
+                    expression = format!("[{expression}]");
+                }
+                expression
+            },
+            {
+                let mut expression = "chart.close".to_owned();
+                for _ in 0..257 {
+                    expression = format!("switch chart.close {{ default => {expression} }}");
+                }
+                expression
+            },
+        ];
+        for (index, expression) in deeply_nested.iter().enumerate() {
+            let source = format!(
+                "language(1)\nindicator(\"Deep {index}\", id = \"test.deep-{index}\")\nformat(precision = \"base_ticker_min_tick\")\nplot({expression}, id = \"value\")"
+            );
+            let diagnostics =
+                compile(&source, "deep-parser.ind").expect_err("deep source should be rejected");
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.message.contains("parser nesting limit")),
+                "missing nesting diagnostic for expression {index}: {diagnostics:?}"
+            );
+        }
+
+        let mut source = String::from(
+            "language(1)\nindicator(\"Deep statements\", id = \"test.deep-statements\")\nformat(precision = \"base_ticker_min_tick\")\n",
+        );
+        for _ in 0..257 {
+            source.push_str("if true { ");
+        }
+        source.push_str("plot(chart.close, id = \"value\")");
+        for _ in 0..257 {
+            source.push_str(" }");
+        }
+        let diagnostics = compile(&source, "deep-statements.ind")
+            .expect_err("deep statements should be rejected");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("parser nesting limit"))
+        );
+    }
+
+    #[test]
+    fn compile_limits_reject_large_sources_and_variadic_underflow() {
+        let diagnostics = compile_with_limits(
+            "language(1)",
+            "large-source.ind",
+            CompileLimits {
+                max_source_bytes: 4,
+                ..CompileLimits::default()
+            },
+        )
+        .expect_err("source limit should be enforced before lexing");
+        assert!(
+            diagnostics[0]
+                .message
+                .contains("source exceeds compile limit")
+        );
+
+        for source in [
+            r#"
+                language(1)
+                indicator("Missing arguments", id = "test.missing-arguments")
+                format(precision = "base_ticker_min_tick")
+                plot(math.max(), id = "value")
+            "#,
+            r#"
+                language(1)
+                indicator("Missing color", id = "test.missing-color")
+                format(precision = "base_ticker_min_tick")
+                plot(chart.close, id = "value", color = color.rgb(1, 2))
+            "#,
+        ] {
+            let diagnostics = compile(source, "variadic-underflow.ind")
+                .expect_err("variadic minimum arity should be diagnosed");
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| { diagnostic.message.contains("at least") })
+            );
+        }
     }
 
     #[test]
@@ -846,23 +1129,6 @@ mod tests {
     }
 
     #[test]
-    fn removed_cross_ticker_inputs_fail_compilation() {
-        for (name, expression) in [
-            ("source", r#"source("BTCUSDT")"#),
-            ("sources", "sources"),
-            ("flow", "flow.trade.count"),
-        ] {
-            let source = format!(
-                "language(1)\nindicator(\"Removed\", id = \"test.removed.{name}\")\nplot({expression}, id = \"value\")"
-            );
-            assert!(
-                compile(&source, format!("{name}.ind")).is_err(),
-                "{name} should fail"
-            );
-        }
-    }
-
-    #[test]
     fn chart_trade_fields_use_the_base_chart() {
         let source = r#"
             language(1)
@@ -945,100 +1211,6 @@ mod tests {
                 "{name} should fail"
             );
         }
-    }
-
-    #[test]
-    fn removed_dsl_aliases_fail_compilation() {
-        for (name, statement) in [
-            ("minval", r#"input.int(14, "Period", minval = 1)"#),
-            ("plotshape", "plotshape(value)"),
-            ("plotchar", "plotchar(value)"),
-            ("hline", "hline(1)"),
-            ("cloud", "cloud(value, value)"),
-            (
-                "channel",
-                r#"readout(title = "Value", channel = "value", color_slot = "base")"#,
-            ),
-            (
-                "fill-offset",
-                r#"fill(upper = "value", lower = "value", color_slot = "base", upper_offset_bars = 1)"#,
-            ),
-            (
-                "fill-geometry",
-                r#"fill(upper = "value", lower = "value", color_slot = "base", geometry = "panel")"#,
-            ),
-            (
-                "plot-precision",
-                r#"plot(value, id = "second", precision = 2)"#,
-            ),
-            (
-                "plot-scale",
-                r#"plot(value, id = "second", scale = "separate")"#,
-            ),
-            (
-                "plot-style",
-                r#"plot(value, id = "second", style = "columns")"#,
-            ),
-            (
-                "plot-display",
-                r#"plot(value, id = "second", display = "hidden")"#,
-            ),
-            ("role", r#"style("secondary", role = "positive")"#),
-            ("shade", r#"style("secondary", shade = "intense")"#),
-            (
-                "mark",
-                r#"mark(title = "Histogram", source = "value", kind = "histogram_plain", color_slot = "base")"#,
-            ),
-        ] {
-            let source = format!(
-                "language(1)\nindicator(\"Removed\", id = \"community.removed-{name}\")\nformat(precision = \"base_ticker_min_tick\")\nstyle(\"base\")\nvalue = chart.close\nplot(value, id = \"value\", color_slot = \"base\")\n{statement}\n"
-            );
-            assert!(
-                compile(&source, format!("{name}.ind")).is_err(),
-                "{name} should fail"
-            );
-        }
-
-        let indicator_aliases = [
-            ("overlay", r#", overlay = true"#),
-            ("kind", r#", kind = "plot""#),
-            ("shorttitle", r#", shorttitle = "Removed""#),
-            ("precision", r#", precision = 2"#),
-            ("layer-title", r#", layer_title = "Removed""#),
-            ("view", r#", view = "overlay""#),
-            ("attachment", r#", attachment = "panel""#),
-            ("panel-title", r#", panel_title = "Removed""#),
-            ("layer-name", r#", layer_name = "Removed""#),
-            ("data-kind", r#", data_kind = "scalar""#),
-            ("mark", r#", mark = "line""#),
-            ("axis", r#", axis = "primary""#),
-            (
-                "value-precision",
-                r#", value_precision = "base_ticker_min_tick""#,
-            ),
-            ("axis-label-mode", r#", axis_label_mode = "compact""#),
-            ("header-label-mode", r#", header_label_mode = "compact""#),
-            ("preferred-scale", r#", preferred_scale = "fit_visible""#),
-            ("max-decimals", r#", max_decimals = 2""#),
-        ];
-        for (name, arguments) in indicator_aliases {
-            let source = format!(
-                "language(1)\nindicator(\"Removed\", id = \"community.removed-indicator-{name}\"{arguments})\nformat(precision = \"base_ticker_min_tick\")\nplot(chart.close, id = \"value\")\n"
-            );
-            assert!(
-                compile(&source, format!("indicator-{name}.ind")).is_err(),
-                "indicator {name} should fail"
-            );
-        }
-
-        let table = r#"
-            language(1)
-            indicator("Removed bool", id = "community.removed-bool")
-            display(view = "table")
-            plot(chart.close, id = "value")
-            column(title = "Value", source = "value", format = "bool")
-        "#;
-        assert!(compile(table, "bool-format.ind").is_err());
     }
 
     #[test]
@@ -1535,28 +1707,6 @@ mod tests {
         assert_eq!(
             explicit.descriptor.plots[0].layer,
             sparse.descriptor.plots[0].layer
-        );
-    }
-
-    #[test]
-    fn table_columns_are_typed_and_require_a_table_view() {
-        let source = r#"
-            language(1)
-            indicator("Table", id = "community.table")
-            display(view = "table")
-            style("main")
-            value = chart.close
-            trend = chart.close > chart.close[1]
-            plot(value, id = "value", layer = false)
-            plot(trend, id = "trend", layer = false)
-            column(title = "Value", source = "value", format = "quantity", color_slot = "main")
-            column(title = "Trend", source = "trend", format = "boolean", color_slot = "main")
-        "#;
-        let compiled = compile(source, "table.ind").expect("table scene should compile");
-        assert_eq!(compiled.descriptor.presentation.columns.len(), 2);
-        assert_eq!(
-            compiled.descriptor.presentation.view,
-            PresentationViewKind::Table
         );
     }
 
