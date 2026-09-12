@@ -93,6 +93,19 @@ Direct chart series and immutable series locals are retained automatically;
 and function-call results cannot be indexed historically and are compile-time
 errors. Use an immutable top-level series binding when a value needs history.
 
+Record literals use named fields and can be read with either `record.get` or
+dot access:
+
+```text
+zone = { upper: chart.high, lower: chart.low, bullish: chart.close >= chart.open }
+top = zone.upper
+```
+
+Dot access on a user record, or on an `Any` value obtained from an array or
+`for ... in` loop, is dynamic and has type `Any`. A missing field or a value
+that is not a record evaluates to `na`. The built-in `chart.*` and
+`chart.trade.*` fields remain a strict, compile-time-checked API.
+
 ## Declaration reference
 
 Named arguments are compile-time constants unless noted as series expressions.
@@ -208,6 +221,23 @@ window must fit the runtime window limit. Legs may be simple runtime inputs,
 so the selected window is checked on every evaluation. A preview evaluates
 from the last committed intrinsic state and never commits its pivot history.
 
+Stateful RSI and previous-event helpers are available for common indicator
+patterns:
+
+```text
+rsi = ta.rsi(chart.close, period)
+previous_pivot = ta.previous_when(pivot_confirmed, pivot_value)
+previous_pivot_bar = ta.previous_when(pivot_confirmed, pivot_bar)
+```
+
+`ta.rsi` seeds its average gain and average loss with an arithmetic mean of
+the first `period` valid adjacent price changes, then applies Wilder's
+recursive smoothing. With uninterrupted input, the first value appears after
+`period + 1` contiguous valid prices. A missing source returns `na` and breaks
+the next price adjacency while retaining the accumulated seed or smoothing
+averages. When both averages are exactly zero RSI is `50`; when only average
+loss is zero it is `100`, and when only average gain is zero it is `0`.
+
 ### `style`
 
 ```text
@@ -321,6 +351,18 @@ Static style slots can be used instead of runtime colors:
 style("bullish", title = "Bullish", role = "success")
 region(..., border_color_slot = "bullish", fill_color_slot = "bullish")
 ```
+
+One boolean expression can select both emitted edge slots:
+
+```text
+region(..., style_by = zone_bullish,
+       true_color_slot = "bullish", false_color_slot = "bearish")
+```
+
+`style_by` is evaluated per bar; `na` selects the false slot. The true and
+false slots are static, must be supplied as a pair, must name declared styles,
+and are registered for theme configuration. Conditional slots cannot be mixed
+with `border_color`, `fill_color`, `border_color_slot`, or `fill_color_slot`.
 
 Color slots refer to declared semantic styles and use the indicator accent
 controls. Runtime colors remain available when a region needs per-bar color

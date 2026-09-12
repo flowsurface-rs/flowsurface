@@ -63,7 +63,13 @@ if new_bullish_zone {
             id = "volume_pivot_zones",
             width = 1.0
         )
-        next_zones := array.push(next_zones, (next_key, bull_upper, bull_lower, bar_index - length, true))
+        next_zones := array.push(next_zones, {
+            key: next_key,
+            upper: bull_upper,
+            lower: bull_lower,
+            left: bar_index - length,
+            bullish: true
+        })
     }
 }
 
@@ -86,12 +92,22 @@ if new_bearish_zone {
             id = "volume_pivot_zones",
             width = 1.0
         )
-        next_zones := array.push(next_zones, (next_key, bear_upper, bear_lower, bar_index - length, false))
+        next_zones := array.push(next_zones, {
+            key: next_key,
+            upper: bear_upper,
+            lower: bear_lower,
+            left: bar_index - length,
+            bullish: false
+        })
     }
 }
 
-for index = 0 to array.size(zones) - 1 {
-    (zone_key, zone_upper, zone_lower, zone_left, zone_bullish) = array.get(zones, index)
+for zone in zones {
+    zone_key = zone.key
+    zone_upper = zone.upper
+    zone_lower = zone.lower
+    zone_left = zone.left
+    zone_bullish = zone.bullish
     zone_mitigated = select(
         zone_bullish,
         !na(bull_target) && bull_target < zone_lower,
@@ -100,7 +116,13 @@ for index = 0 to array.size(zones) - 1 {
     if zone_mitigated {
         region_remove(id = "volume_pivot_zones", key = zone_key)
     } else if array.size(next_zones) < max_active_zones {
-        next_zones := array.push(next_zones, (zone_key, zone_upper, zone_lower, zone_left, zone_bullish))
+        next_zones := array.push(next_zones, {
+            key: zone_key,
+            upper: zone_upper,
+            lower: zone_lower,
+            left: zone_left,
+            bullish: zone_bullish
+        })
     } else {
         region_remove(id = "volume_pivot_zones", key = zone_key)
     }

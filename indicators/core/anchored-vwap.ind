@@ -3,7 +3,14 @@ indicator("Anchored VWAP", id = "core.anchored-vwap", max_bars_back = 1)
 display(view = "primary_overlay")
 anchor = input.string("Day", "Anchor", options = ["Day", "Week", "Month"])
 source_name = input.string("Hlc3", "Price source", options = ["Open", "High", "Low", "Close", "Hlc3", "Ohlc4"])
-price = select(source_name == "Open", chart.open, select(source_name == "High", chart.high, select(source_name == "Low", chart.low, select(source_name == "Close", chart.close, select(source_name == "Hlc3", (chart.high + chart.low + chart.close) / 3, (chart.open + chart.high + chart.low + chart.close) / 4)))))
+price = switch source_name {
+    "Open" => chart.open,
+    "High" => chart.high,
+    "Low" => chart.low,
+    "Close" => chart.close,
+    "Hlc3" => chart.hlc3,
+    default => chart.ohlc4
+}
 value = ta.avwap(price, chart.volume, anchor)
 plot(value, id = "value", title = "VWAP", precision = "instrument", color_slot = "main", width = 1.2)
 

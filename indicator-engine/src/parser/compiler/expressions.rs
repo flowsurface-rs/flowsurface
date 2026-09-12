@@ -304,10 +304,15 @@ impl LoweringContext {
             } => {
                 let source = self.compile_expression(expression);
                 let source_type = self.ir.program.expressions[source.0].ty;
-                let Some(field_kind) = self.record_field_for_expression(source, field) else {
-                    self.error(*span, format!("unknown record field {field}"));
-                    return self.push_constant(Value::Na, Type::series(ValueType::Any));
-                };
+                let value_type =
+                    if let Some(field_kind) = self.record_field_for_expression(source, field) {
+                        record_field_type(field_kind)
+                    } else if self.dynamic_record_field_allowed(source) {
+                        ValueType::Any
+                    } else {
+                        self.error(*span, format!("unknown record field {field}"));
+                        return self.push_constant(Value::Na, Type::series(ValueType::Any));
+                    };
                 if !matches!(source_type.value, ValueType::Record | ValueType::Any) {
                     self.error(*span, "field access requires a record");
                 }
@@ -316,7 +321,7 @@ impl LoweringContext {
                         source,
                         field: field.clone(),
                     },
-                    Type::series(record_field_type(field_kind)),
+                    Type::series(value_type),
                 )
             }
         }
@@ -353,36 +358,72 @@ impl LoweringContext {
         if let Some((slot, ty)) = self.scope.states.get(&name).copied() {
             return self.push_expression(ExpressionKind::LoadState(slot), ty);
         }
-        if path.len() == 2
-            && let Some(field_kind) = record_field(&path[1])
-        {
-            let source = if let Some((slot, ty)) = self.scope.values.get(&path[0]).copied() {
-                if !matches!(ty.value, ValueType::Record | ValueType::Any) {
-                    self.error(span, "field access requires a record");
+        if path.len() >= 2 {
+            let source = self
+                .scope
+                .values
+                .get(&path[0])
+                .copied()
+                .map(|(slot, ty)| {
+                    (
+                        self.push_expression(ExpressionKind::LoadLocal(slot), ty),
+                        ty,
+                    )
+                })
+                .or_else(|| {
+                    self.scope.states.get(&path[0]).copied().map(|(slot, ty)| {
+                        (
+                            self.push_expression(ExpressionKind::LoadState(slot), ty),
+                            ty,
+                        )
+                    })
+                });
+            if let Some((mut source, _)) = source {
+                for field in &path[1..] {
+                    let source_type = self.ir.program.expressions[source.0].ty;
+                    if !matches!(source_type.value, ValueType::Record | ValueType::Any) {
+                        self.error(span, "field access requires a record");
+                        return self.push_constant(Value::Na, Type::series(ValueType::Any));
+                    }
+                    if let Some(field_kind) = self.record_field_for_expression(source, field) {
+                        source = self.push_expression(
+                            ExpressionKind::RecordField {
+                                source,
+                                field: field.clone(),
+                            },
+                            Type::series(record_field_type(field_kind)),
+                        );
+                    } else {
+                        if !self.dynamic_record_field_allowed(source) {
+                            self.error(span, format!("unknown record field {field}"));
+                            return self.push_constant(Value::Na, Type::series(ValueType::Any));
+                        }
+                        let Some((intrinsic, result)) =
+                            self.registry
+                                .find("record.get")
+                                .map(|(intrinsic, definition)| {
+                                    (intrinsic, definition.signature.result)
+                                })
+                        else {
+                            return self.push_constant(Value::Na, Type::series(ValueType::Any));
+                        };
+                        let key = self.push_constant(
+                            Value::String(field.clone()),
+                            Type::simple(ValueType::String),
+                        );
+                        let call_site = CallSiteId(self.ir.next_call_site);
+                        self.ir.next_call_site += 1;
+                        source = self.push_expression(
+                            ExpressionKind::IntrinsicCall {
+                                intrinsic,
+                                call_site,
+                                arguments: vec![source, key],
+                            },
+                            result,
+                        );
+                    }
                 }
-                Some((
-                    self.push_expression(ExpressionKind::LoadLocal(slot), ty),
-                    ty,
-                ))
-            } else if let Some((slot, ty)) = self.scope.states.get(&path[0]).copied() {
-                if !matches!(ty.value, ValueType::Record | ValueType::Any) {
-                    self.error(span, "field access requires a record");
-                }
-                Some((
-                    self.push_expression(ExpressionKind::LoadState(slot), ty),
-                    ty,
-                ))
-            } else {
-                None
-            };
-            if let Some((source, _)) = source {
-                return self.push_expression(
-                    ExpressionKind::RecordField {
-                        source,
-                        field: path[1].clone(),
-                    },
-                    Type::series(record_field_type(field_kind)),
-                );
+                return source;
             }
         }
         let frame = match name.as_str() {
@@ -465,54 +506,6 @@ impl LoweringContext {
                 Type::series(ValueType::Bool),
             );
         }
-        if path.len() == 2 {
-            let source = self
-                .scope
-                .values
-                .get(&path[0])
-                .copied()
-                .map(|(slot, ty)| {
-                    (
-                        self.push_expression(ExpressionKind::LoadLocal(slot), ty),
-                        ty,
-                    )
-                })
-                .or_else(|| {
-                    self.scope.states.get(&path[0]).copied().map(|(slot, ty)| {
-                        (
-                            self.push_expression(ExpressionKind::LoadState(slot), ty),
-                            ty,
-                        )
-                    })
-                });
-            if let Some((source, source_type)) = source {
-                let namespace = match source_type.value {
-                    ValueType::Record => Some("record"),
-                    _ => None,
-                };
-                if let Some(namespace) = namespace
-                    && let Some((intrinsic, result)) = self
-                        .registry
-                        .find(&format!("{namespace}.get"))
-                        .map(|(intrinsic, definition)| (intrinsic, definition.signature.result))
-                {
-                    let key = self.push_constant(
-                        Value::String(path[1].clone()),
-                        Type::simple(ValueType::String),
-                    );
-                    let call_site = CallSiteId(self.ir.next_call_site);
-                    self.ir.next_call_site += 1;
-                    return self.push_expression(
-                        ExpressionKind::IntrinsicCall {
-                            intrinsic,
-                            call_site,
-                            arguments: vec![source, key],
-                        },
-                        result,
-                    );
-                }
-            }
-        }
         self.error(span, format!("unknown name {name}"));
         self.push_constant(Value::Na, Type::series(ValueType::Any))
     }
@@ -521,20 +514,77 @@ impl LoweringContext {
         source: ExprId,
         name: &str,
     ) -> Option<RecordField> {
-        if self.is_trade_record_expression(source) {
-            return trade_field(name);
+        match self.record_origin(source) {
+            RecordOrigin::Chart => record_field(name),
+            RecordOrigin::Trade => trade_field(name),
+            RecordOrigin::Dynamic => None,
         }
-        record_field(name)
     }
 
-    pub(super) fn is_trade_record_expression(&self, expression: ExprId) -> bool {
-        matches!(
-            self.ir.program
-            .expressions
-                .get(expression.0)
-                .map(|expression| &expression.kind),
-            Some(ExpressionKind::RecordField { field, .. }) if field == "trade"
+    pub(super) fn dynamic_record_field_allowed(&self, source: ExprId) -> bool {
+        let Some(expression) = self.ir.program.expressions.get(source.0) else {
+            return false;
+        };
+        if !matches!(expression.ty.value, ValueType::Record | ValueType::Any) {
+            return false;
+        }
+        !matches!(
+            self.record_origin(source),
+            RecordOrigin::Chart | RecordOrigin::Trade
         )
+    }
+
+    fn record_origin(&self, expression: ExprId) -> RecordOrigin {
+        let mut current = expression;
+        let mut trade_projections = 0usize;
+        let max_steps = self.ir.program.expressions.len();
+
+        for _ in 0..max_steps {
+            let Some(expression) = self.ir.program.expressions.get(current.0) else {
+                return RecordOrigin::Dynamic;
+            };
+            match &expression.kind {
+                ExpressionKind::LoadFrame(FrameField::Chart) => {
+                    return match trade_projections {
+                        0 => RecordOrigin::Chart,
+                        1 => RecordOrigin::Trade,
+                        _ => RecordOrigin::Dynamic,
+                    };
+                }
+                ExpressionKind::LoadFrame(FrameField::ChartTrade) => {
+                    return if trade_projections == 0 {
+                        RecordOrigin::Trade
+                    } else {
+                        RecordOrigin::Dynamic
+                    };
+                }
+                ExpressionKind::RecordField { source, field } if field == "trade" => {
+                    trade_projections = trade_projections.saturating_add(1).min(2);
+                    if trade_projections == 2 {
+                        return RecordOrigin::Dynamic;
+                    }
+                    current = *source;
+                }
+                ExpressionKind::LoadLocal(slot)
+                    if !self
+                        .scope
+                        .mutable_values
+                        .get(slot.0)
+                        .copied()
+                        .unwrap_or(true) =>
+                {
+                    let Some(definition) =
+                        self.scope.local_definitions.get(slot.0).copied().flatten()
+                    else {
+                        return RecordOrigin::Dynamic;
+                    };
+                    current = definition;
+                }
+                _ => return RecordOrigin::Dynamic,
+            }
+        }
+
+        RecordOrigin::Dynamic
     }
 
     pub(super) fn collection_element_type(&self, source: ExprId) -> ValueType {
@@ -833,7 +883,16 @@ impl LoweringContext {
         }
         let call_site = CallSiteId(self.ir.next_call_site);
         self.ir.next_call_site += 1;
-        let result = if matches!(name.as_str(), "select" | "coalesce") {
+        let result = if name == "ta.previous_when" && arguments.len() >= 2 {
+            let source_type = self.ir.program.expressions[arguments[1].0].ty.value;
+            if !matches!(
+                source_type,
+                ValueType::Int | ValueType::Float | ValueType::Any
+            ) {
+                self.error(call.span, "ta.previous_when source must be numeric");
+            }
+            Type::series(source_type)
+        } else if matches!(name.as_str(), "select" | "coalesce") {
             let value_type = self.merge_result_type(
                 branch_value_type.unwrap_or(ValueType::Any),
                 branch_fallback_type.unwrap_or(ValueType::Any),
@@ -853,6 +912,13 @@ impl LoweringContext {
             result,
         )
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RecordOrigin {
+    Chart,
+    Trade,
+    Dynamic,
 }
 
 pub(super) fn unsupported_call(name: &str) -> bool {

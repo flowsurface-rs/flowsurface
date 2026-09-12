@@ -13,17 +13,7 @@ show_hidden_bullish = input.bool(false, "Hidden bullish", group = "signals")
 show_regular_bearish = input.bool(true, "Regular bearish", group = "signals")
 show_hidden_bearish = input.bool(false, "Hidden bearish", group = "signals")
 
-delta = chart.close - chart.close[1]
-gain = select(delta >= 0, delta, 0)
-loss = select(delta < 0, math.abs(delta), 0)
-average_gain = ta.rma(gain, period)
-average_loss = ta.rma(loss, period)
-relative_strength = average_gain / average_loss
-rsi = select(
-    average_gain <= 0.000001,
-    select(average_loss <= 0.000001, 50, 0),
-    select(average_loss <= 0.000001, 100, 100 - 100 / (1 + relative_strength))
-)
+rsi = ta.rsi(chart.close, period)
 
 pivot_window = pivot_left + pivot_right + 1
 pivot_low = coalesce(rsi[pivot_right] == ta.lowest(rsi, pivot_window), false)
@@ -34,14 +24,14 @@ pivot_high_rsi = rsi[pivot_right]
 pivot_low_price = chart.low[pivot_right]
 pivot_high_price = chart.high[pivot_right]
 
-state has_previous_low = false
-state previous_low_rsi = 0.0
-state previous_low_price = 0.0
-state previous_low_bar = -1
-state has_previous_high = false
-state previous_high_rsi = 0.0
-state previous_high_price = 0.0
-state previous_high_bar = -1
+previous_low_rsi = ta.previous_when(pivot_low, pivot_low_rsi)
+previous_low_price = ta.previous_when(pivot_low, pivot_low_price)
+previous_low_bar = ta.previous_when(pivot_low, pivot_bar)
+previous_high_rsi = ta.previous_when(pivot_high, pivot_high_rsi)
+previous_high_price = ta.previous_when(pivot_high, pivot_high_price)
+previous_high_bar = ta.previous_when(pivot_high, pivot_bar)
+has_previous_low = !na(previous_low_bar)
+has_previous_high = !na(previous_high_bar)
 
 low_range = pivot_bar - previous_low_bar
 high_range = pivot_bar - previous_high_bar
@@ -115,15 +105,6 @@ segment(
     visible = show_hidden_bearish && hidden_bearish,
     text = "H Bear"
 )
-
-previous_low_rsi := select(pivot_low, pivot_low_rsi, previous_low_rsi)
-previous_low_price := select(pivot_low, pivot_low_price, previous_low_price)
-previous_low_bar := select(pivot_low, pivot_bar, previous_low_bar)
-has_previous_low := has_previous_low || pivot_low
-previous_high_rsi := select(pivot_high, pivot_high_rsi, previous_high_rsi)
-previous_high_price := select(pivot_high, pivot_high_price, previous_high_price)
-previous_high_bar := select(pivot_high, pivot_bar, previous_high_bar)
-has_previous_high := has_previous_high || pivot_high
 
 style("rsi", title = "RSI")
 style("middle", title = "Middle line", role = "secondary")

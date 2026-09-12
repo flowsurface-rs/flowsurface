@@ -326,6 +326,9 @@ impl LoweringContext {
                 "fill_color",
                 "border_color_slot",
                 "fill_color_slot",
+                "style_by",
+                "true_color_slot",
+                "false_color_slot",
                 "extend_right",
                 "persistent",
                 "id",
@@ -409,6 +412,40 @@ impl LoweringContext {
         let fill_color = self.compile_color_named_argument(call, "fill_color");
         let border_color_slot = self.static_named_string(call, "border_color_slot");
         let fill_color_slot = self.static_named_string(call, "fill_color_slot");
+        let style_by = compile_optional(self, "style_by");
+        let true_color_slot = self.static_named_string(call, "true_color_slot");
+        let false_color_slot = self.static_named_string(call, "false_color_slot");
+        if let Some(style_by) = style_by
+            && !matches!(
+                self.ir.program.expressions[style_by.0].ty.value,
+                ValueType::Bool | ValueType::Any
+            )
+        {
+            self.error(call.span, "region style_by must be boolean");
+        }
+        if true_color_slot.is_some() != false_color_slot.is_some() {
+            self.error(
+                call.span,
+                "region must provide both true_color_slot and false_color_slot",
+            );
+        }
+        if style_by.is_some() != true_color_slot.is_some() {
+            self.error(
+                call.span,
+                "region style_by requires both true_color_slot and false_color_slot",
+            );
+        }
+        if (style_by.is_some() || true_color_slot.is_some() || false_color_slot.is_some())
+            && (border_color.is_some()
+                || fill_color.is_some()
+                || border_color_slot.is_some()
+                || fill_color_slot.is_some())
+        {
+            self.error(
+                call.span,
+                "region conditional styling cannot be combined with color arguments",
+            );
+        }
         if border_color.is_some() && border_color_slot.is_some() {
             self.error(
                 call.span,
@@ -421,9 +458,14 @@ impl LoweringContext {
                 "region cannot provide both fill_color and fill_color_slot",
             );
         }
-        for slot in [border_color_slot.as_ref(), fill_color_slot.as_ref()]
-            .into_iter()
-            .flatten()
+        for slot in [
+            border_color_slot.as_ref(),
+            fill_color_slot.as_ref(),
+            true_color_slot.as_ref(),
+            false_color_slot.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
         {
             if !self.presentation.data.region_style_slots.contains(slot) {
                 self.presentation.data.region_style_slots.push(slot.clone());
@@ -462,6 +504,9 @@ impl LoweringContext {
                 fill_color,
                 border_color_slot,
                 fill_color_slot,
+                style_by,
+                true_color_slot,
+                false_color_slot,
                 extend_right,
                 persistent,
                 width: if valid_width { width } else { 1.0 },

@@ -11,6 +11,9 @@ pub type QualifiedName = &'static str;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum IntrinsicState {
+    PreviousWhen {
+        value: Option<Value>,
+    },
     Ema {
         previous: Option<f64>,
     },
@@ -47,6 +50,14 @@ pub enum IntrinsicState {
     TrueRange {
         previous_close: Option<f64>,
     },
+    Rsi {
+        previous_source: Option<f64>,
+        initial_gain_sum: f64,
+        initial_loss_sum: f64,
+        initial_count: usize,
+        average_gain: Option<f64>,
+        average_loss: Option<f64>,
+    },
     AnchoredVwap {
         anchor: i64,
         price_volume: f64,
@@ -58,11 +69,18 @@ impl IntrinsicState {
     pub(crate) fn heap_bytes(&self) -> usize {
         let state_bytes = size_of::<Self>();
         match self {
-            Self::Ema { .. }
+            Self::Rsi { .. }
+            | Self::Ema { .. }
             | Self::Rma { .. }
             | Self::Cum { .. }
             | Self::TrueRange { .. }
             | Self::AnchoredVwap { .. } => state_bytes,
+            Self::PreviousWhen { value } => state_bytes.saturating_add(
+                value
+                    .as_ref()
+                    .map(|value| value.resource_usage().1)
+                    .unwrap_or(0),
+            ),
             Self::Sma { values }
             | Self::Window { values, .. }
             | Self::Pivot { values, .. }
@@ -94,7 +112,10 @@ pub struct IntrinsicSignature {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum WarmupSpec {
-    Window(usize),
+    Window {
+        argument: usize,
+        preceding: usize,
+    },
     Centered {
         left_argument: usize,
         right_argument: usize,
@@ -108,7 +129,18 @@ impl IntrinsicSignature {
     }
 
     pub(crate) fn windowed(mut self, argument: usize) -> Self {
-        self.warmup = Some(WarmupSpec::Window(argument));
+        self.warmup = Some(WarmupSpec::Window {
+            argument,
+            preceding: 0,
+        });
+        self
+    }
+
+    pub(crate) fn windowed_with_history(mut self, argument: usize, preceding: usize) -> Self {
+        self.warmup = Some(WarmupSpec::Window {
+            argument,
+            preceding,
+        });
         self
     }
 
@@ -251,6 +283,27 @@ impl IntrinsicRegistry {
             IntrinsicEffects::STATEFUL,
             Some(|| IntrinsicState::Rma { previous: None }),
             eval_rma,
+        );
+        registry.register(
+            "ta.rsi",
+            ta_rsi_signature(),
+            IntrinsicEffects::STATEFUL,
+            Some(|| IntrinsicState::Rsi {
+                previous_source: None,
+                initial_gain_sum: 0.0,
+                initial_loss_sum: 0.0,
+                initial_count: 0,
+                average_gain: None,
+                average_loss: None,
+            }),
+            eval_rsi,
+        );
+        registry.register(
+            "ta.previous_when",
+            ta_previous_when_signature(),
+            IntrinsicEffects::STATEFUL,
+            Some(|| IntrinsicState::PreviousWhen { value: None }),
+            eval_previous_when,
         );
         registry.register(
             "ta.vwma",
@@ -618,6 +671,24 @@ fn ta_average() -> IntrinsicSignature {
         false,
     )
     .windowed(1)
+}
+
+fn ta_rsi_signature() -> IntrinsicSignature {
+    ta_average().windowed_with_history(1, 1)
+}
+
+fn ta_previous_when_signature() -> IntrinsicSignature {
+    signature(
+        vec![
+            ArgumentSignature {
+                name: "condition",
+                ty: Type::series(ValueType::Bool),
+            },
+            number("source", Qualifier::Series),
+        ],
+        Type::series(ValueType::Any),
+        false,
+    )
 }
 
 fn nz_signature() -> IntrinsicSignature {
@@ -1035,9 +1106,7 @@ fn eval_record_get(
     args: &[Value],
 ) -> Result<Value, IntrinsicError> {
     let Some(Value::Record(values)) = args.first() else {
-        return Err(IntrinsicError::InvalidArguments(
-            "record.get expects a record",
-        ));
+        return Ok(Value::Na);
     };
     let Some(Value::String(key)) = args.get(1) else {
         return Err(IntrinsicError::InvalidArguments(
@@ -1173,6 +1242,124 @@ fn eval_rma(
     }
     *previous = Some(next);
     Ok(float_value(next))
+}
+
+fn eval_rsi(
+    context: &mut IntrinsicEvalContext<'_>,
+    site: CallSiteId,
+    args: &[Value],
+) -> Result<Value, IntrinsicError> {
+    let length = window_length(context, args, 1)?;
+    let source = args.first().and_then(Value::as_float);
+    let state = context
+        .states
+        .entry(site)
+        .or_insert_with(|| IntrinsicState::Rsi {
+            previous_source: None,
+            initial_gain_sum: 0.0,
+            initial_loss_sum: 0.0,
+            initial_count: 0,
+            average_gain: None,
+            average_loss: None,
+        });
+    let IntrinsicState::Rsi {
+        previous_source,
+        initial_gain_sum,
+        initial_loss_sum,
+        initial_count,
+        average_gain,
+        average_loss,
+    } = state
+    else {
+        return Err(IntrinsicError::InvalidState(
+            "ta.rsi call site has incompatible state",
+        ));
+    };
+
+    let Some(source) = source else {
+        *previous_source = None;
+        return Ok(Value::Na);
+    };
+    let Some(previous) = *previous_source else {
+        *previous_source = Some(source);
+        return Ok(Value::Na);
+    };
+    *previous_source = Some(source);
+
+    let delta = source - previous;
+    if !delta.is_finite() {
+        return Ok(Value::Na);
+    }
+    let gain = delta.max(0.0);
+    let loss = (-delta).max(0.0);
+    let (next_gain, next_loss) = match (*average_gain, *average_loss) {
+        (Some(previous_gain), Some(previous_loss)) => (
+            (previous_gain * (length as f64 - 1.0) + gain) / length as f64,
+            (previous_loss * (length as f64 - 1.0) + loss) / length as f64,
+        ),
+        (None, None) => {
+            let next_gain_sum = *initial_gain_sum + gain;
+            let next_loss_sum = *initial_loss_sum + loss;
+            if !next_gain_sum.is_finite() || !next_loss_sum.is_finite() {
+                return Ok(Value::Na);
+            }
+            *initial_gain_sum = next_gain_sum;
+            *initial_loss_sum = next_loss_sum;
+            *initial_count = initial_count.saturating_add(1);
+            if *initial_count < length {
+                return Ok(Value::Na);
+            }
+            (next_gain_sum / length as f64, next_loss_sum / length as f64)
+        }
+        _ => {
+            return Err(IntrinsicError::InvalidState(
+                "ta.rsi call site has incomplete average state",
+            ));
+        }
+    };
+    if !next_gain.is_finite() || !next_loss.is_finite() {
+        return Ok(Value::Na);
+    }
+    *average_gain = Some(next_gain);
+    *average_loss = Some(next_loss);
+
+    let value = if next_gain == 0.0 {
+        if next_loss == 0.0 { 50.0 } else { 0.0 }
+    } else if next_loss == 0.0 {
+        100.0
+    } else {
+        let relative_strength = next_gain / next_loss;
+        100.0 - 100.0 / (1.0 + relative_strength)
+    };
+    Ok(float_value(value))
+}
+
+fn eval_previous_when(
+    context: &mut IntrinsicEvalContext<'_>,
+    site: CallSiteId,
+    args: &[Value],
+) -> Result<Value, IntrinsicError> {
+    let condition = args.first().is_some_and(Value::is_truthy);
+    let source = args.get(1).cloned().unwrap_or(Value::Na);
+    if !matches!(source, Value::Int(_) | Value::Float(_) | Value::Na) {
+        return Err(IntrinsicError::InvalidArguments(
+            "ta.previous_when source must be numeric",
+        ));
+    }
+    let state = context
+        .states
+        .entry(site)
+        .or_insert_with(|| IntrinsicState::PreviousWhen { value: None });
+    let IntrinsicState::PreviousWhen { value } = state else {
+        return Err(IntrinsicError::InvalidState(
+            "ta.previous_when call site has incompatible state",
+        ));
+    };
+    let previous = value.clone().unwrap_or(Value::Na);
+    if condition {
+        *value = Some(source);
+    }
+    Ok(previous)
 }
 
 fn eval_vwma(

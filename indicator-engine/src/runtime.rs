@@ -1034,6 +1034,9 @@ impl IndicatorInstance {
                 fill_color,
                 border_color_slot,
                 fill_color_slot,
+                style_by,
+                true_color_slot,
+                false_color_slot,
                 extend_right,
                 persistent,
                 width,
@@ -1067,6 +1070,16 @@ impl IndicatorInstance {
                     self.evaluate_expression(lower)?.as_float(),
                 ) else {
                     return Ok(());
+                };
+                let (border_color_slot, fill_color_slot) = if let Some(style_by) = style_by {
+                    let selected = if self.evaluate_expression(style_by)?.is_truthy() {
+                        true_color_slot
+                    } else {
+                        false_color_slot
+                    };
+                    (selected.clone(), selected)
+                } else {
+                    (border_color_slot, fill_color_slot)
                 };
                 let region = RegionOutput {
                     id,

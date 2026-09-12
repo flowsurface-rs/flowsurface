@@ -56,7 +56,14 @@ if bullish_flat_open {
             id = "flat_open_zones",
             width = 1.0
         )
-        next_zones := array.push(next_zones, (next_key, bull_upper, bull_lower, bar_index, 0, true))
+        next_zones := array.push(next_zones, {
+            key: next_key,
+            upper: bull_upper,
+            lower: bull_lower,
+            left: bar_index,
+            count: 0,
+            bullish: true
+        })
     }
 }
 
@@ -79,48 +86,52 @@ if bearish_flat_open {
             id = "flat_open_zones",
             width = 1.0
         )
-        next_zones := array.push(next_zones, (next_key, bear_upper, bear_lower, bar_index, 0, false))
+        next_zones := array.push(next_zones, {
+            key: next_key,
+            upper: bear_upper,
+            lower: bear_lower,
+            left: bar_index,
+            count: 0,
+            bullish: false
+        })
     }
 }
 
-for index = 0 to array.size(zones) - 1 {
-    (zone_key, zone_upper, zone_lower, zone_left, zone_count, zone_bullish) = array.get(zones, index)
+for zone in zones {
+    zone_key = zone.key
+    zone_upper = zone.upper
+    zone_lower = zone.lower
+    zone_left = zone.left
+    zone_count = zone.count
+    zone_bullish = zone.bullish
     zone_invalidated = select(zone_bullish, !na(chart.low) && chart.low < zone_lower, !na(chart.high) && chart.high > zone_upper)
     zone_inside = !na(chart.close) && chart.close >= zone_lower && chart.close <= zone_upper
     zone_next_count = select(!zone_invalidated, select(zone_inside, zone_count + 1, 0), zone_count)
     zone_cut = zone_invalidated || zone_next_count >= inside_close_limit
     if zone_cut {
-        if zone_bullish == true {
-            region(
-                key = zone_key,
-                upper = zone_upper,
-                lower = zone_lower,
-                left_index = zone_left,
-                right_index = bar_index,
-                border_color_slot = "bullish",
-                fill_color_slot = "bullish",
-                extend_right = false,
-                persistent = true,
-                id = "flat_open_zones",
-                width = 1.0
-            )
-        } else {
-            region(
-                key = zone_key,
-                upper = zone_upper,
-                lower = zone_lower,
-                left_index = zone_left,
-                right_index = bar_index,
-                border_color_slot = "bearish",
-                fill_color_slot = "bearish",
-                extend_right = false,
-                persistent = true,
-                id = "flat_open_zones",
-                width = 1.0
-            )
-        }
+        region(
+            key = zone_key,
+            upper = zone_upper,
+            lower = zone_lower,
+            left_index = zone_left,
+            right_index = bar_index,
+            style_by = zone_bullish,
+            true_color_slot = "bullish",
+            false_color_slot = "bearish",
+            extend_right = false,
+            persistent = true,
+            id = "flat_open_zones",
+            width = 1.0
+        )
     } else if array.size(next_zones) < max_active_zones {
-        next_zones := array.push(next_zones, (zone_key, zone_upper, zone_lower, zone_left, zone_next_count, zone_bullish))
+        next_zones := array.push(next_zones, {
+            key: zone_key,
+            upper: zone_upper,
+            lower: zone_lower,
+            left: zone_left,
+            count: zone_next_count,
+            bullish: zone_bullish
+        })
     } else {
         region_remove(id = "flat_open_zones", key = zone_key)
     }

@@ -234,6 +234,7 @@ impl CompiledIndicator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write as _;
 
     fn frame(index: usize, time: i64, close: f64) -> IndicatorFrame {
         IndicatorFrame {
@@ -317,6 +318,273 @@ mod tests {
                 "sma"
             ),
             &Value::Float(15.0)
+        );
+    }
+
+    #[test]
+    fn record_origin_alias_chain_is_bounded() {
+        const ALIAS_COUNT: usize = 24_000;
+        let mut source = String::from(
+            "language(1)\nindicator(\"Long aliases\", id = \"test.long-aliases\")\nformat(precision = \"base_ticker_min_tick\")\nalias0 = chart\n",
+        );
+        for index in 1..ALIAS_COUNT {
+            writeln!(&mut source, "alias{index} = alias{}", index - 1)
+                .expect("writing an in-memory source should succeed");
+        }
+        writeln!(
+            &mut source,
+            "plot(alias{}.close, id = \"value\")",
+            ALIAS_COUNT - 1
+        )
+        .expect("writing an in-memory source should succeed");
+
+        let result = std::thread::Builder::new()
+            .name("record-origin-regression".to_owned())
+            .stack_size(2 * 1024 * 1024)
+            .spawn(move || compile(&source, "long-aliases.ind"))
+            .expect("regression thread should start")
+            .join()
+            .expect("record-origin traversal should not overflow the stack");
+        assert!(
+            result.is_ok(),
+            "long immutable alias chains should compile: {result:?}"
+        );
+    }
+
+    #[test]
+    fn record_field_classification_preserves_builtin_and_dynamic_records() {
+        let chart_alias = compile(
+            r#"
+                language(1)
+                indicator("Chart alias", id = "test.chart-alias")
+                format(precision = "base_ticker_min_tick")
+                chart_alias = chart
+                plot(chart_alias.close, id = "value")
+            "#,
+            "chart-alias.ind",
+        )
+        .expect("an aliased chart should retain strict fields");
+        assert!(chart_alias.requirements.ohlc);
+
+        let trade_alias = compile(
+            r#"
+                language(1)
+                indicator("Trade aliases", id = "test.trade-aliases")
+                format(precision = "base_ticker_min_qty")
+                chart_alias = chart
+                chart_trade = chart.trade
+                aliased_trade = chart_alias.trade
+                plot(chart_trade.count, id = "direct")
+                plot(aliased_trade.count, id = "aliased")
+            "#,
+            "trade-aliases.ind",
+        )
+        .expect("chart.trade aliases should retain strict trade fields");
+        assert!(trade_alias.requirements.trades);
+
+        for source in [
+            r#"
+                language(1)
+                indicator("Invalid chart field", id = "test.invalid-chart-field")
+                format(precision = "base_ticker_min_tick")
+                chart_alias = chart
+                plot(chart_alias.missing, id = "value")
+            "#,
+            r#"
+                language(1)
+                indicator("Invalid trade field", id = "test.invalid-trade-field")
+                format(precision = "base_ticker_min_qty")
+                trade_alias = chart.trade
+                plot(trade_alias.close, id = "value")
+            "#,
+        ] {
+            let diagnostics = compile(source, "invalid-record-field.ind")
+                .expect_err("unknown built-in fields should remain strict");
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| { diagnostic.message.contains("unknown record field") })
+            );
+        }
+
+        let nested = compile(
+            r#"
+                language(1)
+                indicator("Nested user record", id = "test.nested-user-record")
+                format(precision = "base_ticker_min_tick")
+                value = { trade: { close: 7 } }
+                plot(value.trade.close, id = "value")
+            "#,
+            "nested-user-record.ind",
+        )
+        .expect("user records named trade should stay dynamic");
+        let mut nested_instance = nested
+            .instantiate(IndicatorConfig::default())
+            .expect("nested user record should instantiate");
+        let nested_output = nested_instance
+            .evaluate_closed(frame(0, 1, 10.0))
+            .expect("nested user record should evaluate");
+        assert_eq!(plot_value(&nested_output, "value"), &Value::Int(7));
+
+        let mutable = compile(
+            r#"
+                language(1)
+                indicator("Mutable record", id = "test.mutable-record")
+                format(precision = "base_ticker_min_tick")
+                value = chart
+                value := { close: 9 }
+                plot(value.close, id = "value")
+            "#,
+            "mutable-record.ind",
+        )
+        .expect("mutable records should use dynamic field access");
+        let mut mutable_instance = mutable
+            .instantiate(IndicatorConfig::default())
+            .expect("mutable record should instantiate");
+        let mutable_output = mutable_instance
+            .evaluate_closed(frame(0, 1, 10.0))
+            .expect("mutable record should evaluate");
+        assert_eq!(plot_value(&mutable_output, "value"), &Value::Int(9));
+    }
+
+    #[test]
+    fn rsi_uses_wilder_seed_and_exact_zero_edges() {
+        let source = r#"
+            language(1)
+            indicator("RSI", id = "test.rsi")
+            format(precision = "base_ticker_min_tick")
+            period = input.int(3, "Period", min = 1, max = 100)
+            plot(ta.rsi(chart.close, period), id = "value")
+        "#;
+        let compiled = compile(source, "rsi.ind").expect("RSI source should compile");
+        assert_eq!(compiled.warmup_bars(&IndicatorConfig::default()), Some(4));
+
+        let evaluate = |values: &[Option<f64>]| {
+            let mut instance = compiled
+                .clone()
+                .instantiate(IndicatorConfig::default())
+                .expect("RSI inputs should bind");
+            values
+                .iter()
+                .enumerate()
+                .map(|(index, close)| {
+                    plot_value(
+                        &instance
+                            .evaluate_closed(market_frame(index, *close, *close, *close, Some(1.0)))
+                            .expect("RSI frame should evaluate"),
+                        "value",
+                    )
+                    .clone()
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let alternating = evaluate(&[Some(1.0), Some(2.0), Some(1.0), Some(2.0), Some(1.0)]);
+        assert_eq!(&alternating[..3], &[Value::Na, Value::Na, Value::Na]);
+        assert!(
+            matches!(alternating[3], Value::Float(value) if (value - 66.6666666667).abs() < 1e-9)
+        );
+        assert!(
+            matches!(alternating[4], Value::Float(value) if (value - 44.4444444444).abs() < 1e-9)
+        );
+
+        for (values, expected) in [
+            (&[Some(1.0), Some(2.0), Some(3.0), Some(4.0)][..], 100.0),
+            (&[Some(4.0), Some(3.0), Some(2.0), Some(1.0)][..], 0.0),
+            (&[Some(1.0), Some(1.0), Some(1.0), Some(1.0)][..], 50.0),
+            (
+                &[
+                    Some(1.0),
+                    Some(1.0 + 1e-12),
+                    Some(1.0 + 2e-12),
+                    Some(1.0 + 3e-12),
+                ][..],
+                100.0,
+            ),
+        ] {
+            let output = evaluate(values);
+            assert!(matches!(output[3], Value::Float(value) if (value - expected).abs() < 1e-9));
+        }
+    }
+
+    #[test]
+    fn rsi_gaps_retain_state_and_previews_do_not_commit() {
+        let source = r#"
+            language(1)
+            indicator("RSI gaps", id = "test.rsi-gaps")
+            format(precision = "base_ticker_min_tick")
+            period = input.int(3, "Period", min = 1, max = 100)
+            plot(ta.rsi(chart.close, period), id = "value")
+        "#;
+        let compiled = compile(source, "rsi-gaps.ind").expect("RSI source should compile");
+
+        let mut instance = compiled
+            .clone()
+            .instantiate(IndicatorConfig::default())
+            .expect("RSI inputs should bind");
+        for (index, close) in [Some(1.0), Some(2.0)].into_iter().enumerate() {
+            instance
+                .evaluate_closed(market_frame(index, close, close, close, Some(1.0)))
+                .expect("seed frame should evaluate");
+        }
+        let preview = instance
+            .preview_open(market_frame(2, Some(1.0), Some(1.0), Some(1.0), Some(1.0)))
+            .expect("RSI preview should evaluate");
+        assert_eq!(plot_value(&preview, "value"), &Value::Na);
+        let second_preview = instance
+            .preview_open(market_frame(2, Some(2.0), Some(2.0), Some(2.0), Some(1.0)))
+            .expect("repeated RSI preview should evaluate");
+        assert_eq!(plot_value(&second_preview, "value"), &Value::Na);
+        let committed = instance
+            .evaluate_closed(market_frame(2, Some(1.0), Some(1.0), Some(1.0), Some(1.0)))
+            .expect("RSI commit should evaluate");
+        assert_eq!(plot_value(&committed, "value"), &Value::Na);
+        let committed = instance
+            .evaluate_closed(market_frame(3, Some(2.0), Some(2.0), Some(2.0), Some(1.0)))
+            .expect("RSI seeded output should evaluate");
+        assert!(
+            matches!(plot_value(&committed, "value"), Value::Float(value) if (*value - 66.6666666667).abs() < 1e-9)
+        );
+
+        let mut gap_instance = compiled
+            .instantiate(IndicatorConfig::default())
+            .expect("RSI gap inputs should bind");
+        let values = [Some(1.0), Some(2.0), None, Some(1.0), Some(2.0), Some(1.0)];
+        let outputs = values
+            .iter()
+            .enumerate()
+            .map(|(index, close)| {
+                plot_value(
+                    &gap_instance
+                        .evaluate_closed(market_frame(index, *close, *close, *close, Some(1.0)))
+                        .expect("RSI gap frame should evaluate"),
+                    "value",
+                )
+                .clone()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(outputs[2], Value::Na);
+        assert!(matches!(outputs[5], Value::Float(value) if (value - 66.6666666667).abs() < 1e-9));
+
+        let mut seeded_gap_instance = compiled
+            .instantiate(IndicatorConfig::default())
+            .expect("seeded RSI gap inputs should bind");
+        for (index, close) in [Some(1.0), Some(2.0), Some(1.0), Some(2.0), None, Some(3.0)]
+            .into_iter()
+            .enumerate()
+        {
+            let output = seeded_gap_instance
+                .evaluate_closed(market_frame(index, close, close, close, Some(1.0)))
+                .expect("seeded RSI gap frame should evaluate");
+            if index == 4 || index == 5 {
+                assert_eq!(plot_value(&output, "value"), &Value::Na);
+            }
+        }
+        let output = seeded_gap_instance
+            .evaluate_closed(market_frame(6, Some(2.0), Some(2.0), Some(2.0), Some(1.0)))
+            .expect("post-gap RSI frame should evaluate");
+        assert!(
+            matches!(plot_value(&output, "value"), Value::Float(value) if (value - 44.4444444444).abs() < 1e-9)
         );
     }
 

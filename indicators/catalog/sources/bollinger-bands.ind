@@ -6,10 +6,11 @@ period = input.int(20, "Period", min = 2, max = 200)
 method = input.string("Sma", "Average method", options = ["Sma", "Ema", "Vwma"])
 std_dev_multiplier = input.float(2.0, "Std. deviation", min = 0.0, max = 5.0, step = 0.1)
 source = input.source(chart.close, "Source")
-basis_sma = ta.sma(source, period)
-basis_ema = ta.ema(source, period)
-basis_vwma = ta.vwma(source, chart.volume, period)
-basis = select(method == "Sma", basis_sma, select(method == "Ema", basis_ema, basis_vwma))
+basis = switch method {
+    "Sma" => ta.sma(source, period),
+    "Ema" => ta.ema(source, period),
+    default => ta.vwma(source, chart.volume, period)
+}
 deviation = ta.stdev(source, period) * std_dev_multiplier
 plot(basis, id = "value", title = "Basis", precision = "instrument", color_slot = "main", layer_title = "BB", width = 1.1, pane = "main")
 plot(basis + deviation, id = "bollinger.upper", title = "Upper", precision = "instrument", color_slot = "upper", layer_title = "U", pane = "main")

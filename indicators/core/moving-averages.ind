@@ -7,18 +7,21 @@ fast_period = input.int(50, "Fast period", min = 1, max = 500)
 medium_period = input.int(150, "Medium period", min = 1, max = 500)
 slow_period = input.int(250, "Slow period", min = 1, max = 500)
 source = input.source(chart.close, "Source")
-fast_sma = ta.sma(source, fast_period)
-fast_ema = ta.ema(source, fast_period)
-fast_vwma = ta.vwma(source, chart.volume, fast_period)
-fast = select(method == "Sma", fast_sma, select(method == "Ema", fast_ema, fast_vwma))
-medium_sma = ta.sma(source, medium_period)
-medium_ema = ta.ema(source, medium_period)
-medium_vwma = ta.vwma(source, chart.volume, medium_period)
-medium = select(method == "Sma", medium_sma, select(method == "Ema", medium_ema, medium_vwma))
-slow_sma = ta.sma(source, slow_period)
-slow_ema = ta.ema(source, slow_period)
-slow_vwma = ta.vwma(source, chart.volume, slow_period)
-slow = select(method == "Sma", slow_sma, select(method == "Ema", slow_ema, slow_vwma))
+fast = switch method {
+    "Sma" => ta.sma(source, fast_period),
+    "Ema" => ta.ema(source, fast_period),
+    default => ta.vwma(source, chart.volume, fast_period)
+}
+medium = switch method {
+    "Sma" => ta.sma(source, medium_period),
+    "Ema" => ta.ema(source, medium_period),
+    default => ta.vwma(source, chart.volume, medium_period)
+}
+slow = switch method {
+    "Sma" => ta.sma(source, slow_period),
+    "Ema" => ta.ema(source, slow_period),
+    default => ta.vwma(source, chart.volume, slow_period)
+}
 plot(fast, id = "value", title = "Fast", precision = "instrument", color_slot = "fast", width = 1.1, pane = "main")
 plot(medium, id = "moving_averages.medium", title = "Medium", precision = "instrument", color_slot = "medium", pane = "main")
 plot(slow, id = "moving_averages.slow", title = "Slow", precision = "instrument", color_slot = "slow", pane = "main")

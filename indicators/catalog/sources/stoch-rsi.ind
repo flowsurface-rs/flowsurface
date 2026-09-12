@@ -9,13 +9,7 @@ d_smoothing = input.int(3, "D", min = 1, max = 100)
 source = input.source(chart.close, "Source")
 upper_band = input.float(80.0, "Upper band", min = 1.0, max = 99.0, step = 1.0)
 lower_band = input.float(20.0, "Lower band", min = 1.0, max = 99.0, step = 1.0)
-delta = source - source[1]
-gain = select(delta >= 0, delta, 0)
-loss = select(delta < 0, math.abs(delta), 0)
-avg_gain = ta.rma(gain, rsi_length)
-avg_loss = ta.rma(loss, rsi_length)
-rs = avg_gain / avg_loss
-rsi = select(avg_gain <= 0.000001, select(avg_loss <= 0.000001, 50, 0), select(avg_loss <= 0.000001, 100, 100 - 100 / (1 + rs)))
+rsi = ta.rsi(source, rsi_length)
 lowest = ta.lowest(rsi, stoch_length)
 highest = ta.highest(rsi, stoch_length)
 range = highest - lowest

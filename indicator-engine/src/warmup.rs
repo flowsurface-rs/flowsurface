@@ -165,6 +165,9 @@ impl<'a> Evaluator<'a> {
                 fill_color,
                 border_color_slot: _,
                 fill_color_slot: _,
+                style_by,
+                true_color_slot: _,
+                false_color_slot: _,
                 extend_right,
                 ..
             } => self.warmup_all([
@@ -176,6 +179,7 @@ impl<'a> Evaluator<'a> {
                 visible,
                 border_color,
                 fill_color,
+                style_by,
                 extend_right,
             ]),
             StatementKind::RegionRemove { key, .. } => self.warmup(key),
@@ -306,13 +310,18 @@ impl<'a> Evaluator<'a> {
                     .unwrap_or(0);
                 if let Some(spec) = &definition.signature.warmup {
                     let additional = match spec {
-                        WarmupSpec::Window(argument) => arguments
+                        WarmupSpec::Window {
+                            argument,
+                            preceding,
+                        } => arguments
                             .get(*argument)
                             .and_then(|id| self.static_value(*id))
                             .and_then(|value| value.as_float())
                             .filter(|value| *value >= 1.0)
                             .map(|value| value as usize)
-                            .unwrap_or(1),
+                            .unwrap_or(1)
+                            .min(self.max_window_length)
+                            .saturating_add(*preceding),
                         WarmupSpec::Centered {
                             left_argument,
                             right_argument,
@@ -329,9 +338,10 @@ impl<'a> Evaluator<'a> {
                             leg(*left_argument)
                                 .saturating_add(leg(*right_argument))
                                 .saturating_add(1)
+                                .min(self.max_window_length)
                         }
                     };
-                    warmup = warmup.saturating_add(additional.min(self.max_window_length));
+                    warmup = warmup.saturating_add(additional);
                 }
                 warmup
             }
