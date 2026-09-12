@@ -391,6 +391,7 @@ pub struct InputDescriptor {
     pub group: Option<String>,
     pub inline: Option<String>,
     pub tooltip: Option<String>,
+    pub visible_when: Option<String>,
     pub options: Vec<InputOption>,
 }
 

@@ -21,6 +21,29 @@ impl LoweringContext {
                 .get(&input.id)
                 .copied()
                 .unwrap_or_else(|| Span::new(0, 0));
+            if let Some(dependency) = &input.visible_when {
+                match descriptor
+                    .inputs
+                    .iter()
+                    .find(|candidate| candidate.id == *dependency)
+                {
+                    Some(candidate) if candidate.value_type == ValueType::Bool => {}
+                    Some(_) => self.error(
+                        span,
+                        format!(
+                            "input '{}' visible_when must reference a boolean input '{}'",
+                            input.id, dependency
+                        ),
+                    ),
+                    None => self.error(
+                        span,
+                        format!(
+                            "input '{}' visible_when references unknown input '{}'",
+                            input.id, dependency
+                        ),
+                    ),
+                }
+            }
             if let (Some(min), Some(max)) = (input.min, input.max)
                 && min > max
             {

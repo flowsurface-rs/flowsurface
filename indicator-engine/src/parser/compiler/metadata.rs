@@ -186,6 +186,7 @@ impl LoweringContext {
         let group = self.static_named_string(call, "group");
         let inline = self.static_named_string(call, "inline");
         let tooltip = self.static_named_string(call, "tooltip");
+        let visible_when = self.static_named_string(call, "visible_when");
         self.declarations.inputs.push(InputDescriptor {
             id: name.to_owned(),
             label,
@@ -197,6 +198,7 @@ impl LoweringContext {
             group,
             inline,
             tooltip,
+            visible_when,
             options,
         });
         self.declarations.input_spans.insert(name.to_owned(), span);
@@ -363,7 +365,16 @@ impl LoweringContext {
         self.validate_named_arguments(
             call,
             &[
-                "defval", "title", "min", "max", "step", "options", "group", "inline", "tooltip",
+                "defval",
+                "title",
+                "min",
+                "max",
+                "step",
+                "options",
+                "group",
+                "inline",
+                "tooltip",
+                "visible_when",
             ],
         );
         let positional_count = call

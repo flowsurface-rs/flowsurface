@@ -60,6 +60,8 @@ length = input.int(14, "Length", min = 1, max = 200, step = 1,
                    group = "period", inline = "length", tooltip = "Bars")
 multiplier = input.float(2.0, "Multiplier", min = 0.1, max = 10.0, step = 0.1)
 enabled = input.bool(true, "Enabled")
+advanced_length = input.int(20, "Advanced length", min = 1, max = 200,
+                            visible_when = "enabled")
 method = input.string("Sma", "Method", options = ["Sma", "Ema"])
 anchor = input.time(0, "Anchor")
 color = input.color()
@@ -72,7 +74,9 @@ is supplied).
 labels, and option values, when supplied, must be compile-time literals.
 The host accepts a configured value only when it matches the declared type,
 numeric bounds, and string options. Scripted `int` and `time` inputs retain
-signed 64-bit values through the host settings bridge.
+signed 64-bit values through the host settings bridge. `visible_when` hides an
+input unless the named input is true; it must reference an existing boolean
+input, and hidden values remain in the persisted configuration.
 
 User functions are numeric in language version 1: parameters and return
 expressions must be numeric or `na`. Integer arguments can be used where a

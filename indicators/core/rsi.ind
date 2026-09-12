@@ -1,26 +1,78 @@
 language(1)
-indicator("RSI", id = "core.rsi", max_bars_back = 2)
+indicator("RSI", id = "core.rsi", max_bars_back = 50)
 display(attachment = "panel")
 format(precision = "fixed_step:1", axis_labels = "abbreviated", header_labels = "commas", max_decimals = 1)
-period = input.int(14, "Period", min = 2, max = 100)
+period = input.int(14, "Period", min = 2, max = 200)
 ema_signal = input.bool(true, "EMA signal", group = "ema")
 ema_period = input.int(9, "EMA period", min = 2, max = 50, group = "ema")
 upper_band = input.float(70.0, "Upper band", min = 1.0, max = 99.0, step = 1.0)
 lower_band = input.float(30.0, "Lower band", min = 1.0, max = 99.0, step = 1.0)
 source = input.source(chart.close, "Source")
+
+// Divergence compares RSI(source) with base-chart price pivots.
+show_divergence = input.bool(false, "Show divergence", group = "divergence")
+pivot_left = input.int(5, "Pivot lookback left", min = 1, max = 50, group = "divergence", visible_when = "show_divergence")
+pivot_right = input.int(5, "Pivot lookback right", min = 1, max = 50, group = "divergence", visible_when = "show_divergence")
+range_lower = input.int(5, "Minimum pivot range", min = 1, max = 200, group = "divergence", visible_when = "show_divergence")
+range_upper = input.int(60, "Maximum pivot range", min = 1, max = 500, group = "divergence", visible_when = "show_divergence")
+show_regular_bullish = input.bool(true, "Regular bullish", group = "divergence", visible_when = "show_divergence")
+show_hidden_bullish = input.bool(false, "Hidden bullish", group = "divergence", visible_when = "show_divergence")
+show_regular_bearish = input.bool(true, "Regular bearish", group = "divergence", visible_when = "show_divergence")
+show_hidden_bearish = input.bool(false, "Hidden bearish", group = "divergence", visible_when = "show_divergence")
+
 raw = ta.rsi(source, period)
 signal_value = ta.ema(raw, ema_period)
 signal = select(ema_signal, signal_value, na)
+pivot_window = pivot_left + pivot_right + 1
+pivot_low = show_divergence && coalesce(raw[pivot_right] == ta.lowest(raw, pivot_window), false)
+pivot_high = show_divergence && coalesce(raw[pivot_right] == ta.highest(raw, pivot_window), false)
+pivot_bar = select(show_divergence, bar_index - pivot_right, na)
+pivot_low_rsi = select(show_divergence, raw[pivot_right], na)
+pivot_high_rsi = select(show_divergence, raw[pivot_right], na)
+pivot_low_price = select(show_divergence, chart.low[pivot_right], na)
+pivot_high_price = select(show_divergence, chart.high[pivot_right], na)
+previous_low_rsi = select(show_divergence, ta.previous_when(pivot_low, pivot_low_rsi), na)
+previous_low_price = select(show_divergence, ta.previous_when(pivot_low, pivot_low_price), na)
+previous_low_bar = select(show_divergence, ta.previous_when(pivot_low, pivot_bar), na)
+previous_high_rsi = select(show_divergence, ta.previous_when(pivot_high, pivot_high_rsi), na)
+previous_high_price = select(show_divergence, ta.previous_when(pivot_high, pivot_high_price), na)
+previous_high_bar = select(show_divergence, ta.previous_when(pivot_high, pivot_bar), na)
+has_previous_low = !na(previous_low_bar)
+has_previous_high = !na(previous_high_bar)
+low_range = pivot_bar - previous_low_bar
+high_range = pivot_bar - previous_high_bar
+low_in_range = show_divergence && has_previous_low && low_range >= range_lower && low_range <= range_upper
+high_in_range = show_divergence && has_previous_high && high_range >= range_lower && high_range <= range_upper
+regular_bullish = show_divergence && pivot_low && low_in_range && pivot_low_price < previous_low_price && pivot_low_rsi > previous_low_rsi
+hidden_bullish = show_divergence && pivot_low && low_in_range && pivot_low_price > previous_low_price && pivot_low_rsi < previous_low_rsi
+regular_bearish = show_divergence && pivot_high && high_in_range && pivot_high_price > previous_high_price && pivot_high_rsi < previous_high_rsi
+hidden_bearish = show_divergence && pivot_high && high_in_range && pivot_high_price < previous_high_price && pivot_high_rsi > previous_high_rsi
+bullish_divergence = show_divergence && (show_regular_bullish && regular_bullish || show_hidden_bullish && hidden_bullish)
+bearish_divergence = show_divergence && (show_regular_bearish && regular_bearish || show_hidden_bearish && hidden_bearish)
+
 plot(raw, id = "value", title = "RSI", precision = "decimals:2", color_slot = "main", width = 1.2)
 plot(signal, id = "signal", title = "Signal", precision = "decimals:2", color_slot = "signal", layer_title = "S")
 plot(upper_band, id = "upper_band", title = "Overbought", precision = "decimals:2", color_slot = "upper", layer_title = "OB", width = 0.9)
 plot(lower_band, id = "lower_band", title = "Oversold", precision = "decimals:2", color_slot = "lower", layer_title = "OS", width = 0.9)
+plot(bullish_divergence, id = "bullish_divergence", title = "Bullish signal", display = "none", overlay = false, layer = false)
+plot(bearish_divergence, id = "bearish_divergence", title = "Bearish signal", display = "none", overlay = false, layer = false)
+plot(regular_bullish, id = "regular_bullish", title = "Regular bullish signal", display = "none", overlay = false, layer = false)
+plot(hidden_bullish, id = "hidden_bullish", title = "Hidden bullish signal", display = "none", overlay = false, layer = false)
+plot(regular_bearish, id = "regular_bearish", title = "Regular bearish signal", display = "none", overlay = false, layer = false)
+plot(hidden_bearish, id = "hidden_bearish", title = "Hidden bearish signal", display = "none", overlay = false, layer = false)
+
+segment(start_value = previous_low_rsi, end_value = pivot_low_rsi, start_index = previous_low_bar, end_index = pivot_bar, id = "regular_bullish", title = "Regular bullish", color_slot = "bullish", width = 1.4, visible = show_divergence && show_regular_bullish && regular_bullish, text = "Bull")
+segment(start_value = previous_low_rsi, end_value = pivot_low_rsi, start_index = previous_low_bar, end_index = pivot_bar, id = "hidden_bullish", title = "Hidden bullish", color_slot = "bullish", width = 1.4, visible = show_divergence && show_hidden_bullish && hidden_bullish, text = "H Bull")
+segment(start_value = previous_high_rsi, end_value = pivot_high_rsi, start_index = previous_high_bar, end_index = pivot_bar, id = "regular_bearish", title = "Regular bearish", color_slot = "bearish", width = 1.4, visible = show_divergence && show_regular_bearish && regular_bearish, text = "Bear")
+segment(start_value = previous_high_rsi, end_value = pivot_high_rsi, start_index = previous_high_bar, end_index = pivot_bar, id = "hidden_bearish", title = "Hidden bearish", color_slot = "bearish", width = 1.4, visible = show_divergence && show_hidden_bearish && hidden_bearish, text = "H Bear")
 
 style("main", title = "RSI")
 style("signal", title = "Signal", role = "warning")
 style("fill", title = "Background fill", role = "primary", shade = "faint")
 style("upper", title = "Overbought", role = "success")
 style("lower", title = "Oversold", role = "danger")
+style("bullish", title = "Bullish divergence", role = "success", shade = "strong")
+style("bearish", title = "Bearish divergence", role = "danger", shade = "strong")
 mark(title = "Line", source = "value", kind = "line", color_slot = "main")
 mark(title = "Bars", source = "value", kind = "regular_bar", color_slot = "main")
 fill(upper = "upper_band", lower = "lower_band", color_slot = "fill", opacity = 0.12)
