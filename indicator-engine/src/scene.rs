@@ -279,3 +279,12 @@ pub enum OutputPrecision {
     Decimals(u8),
     Step(f64),
 }
+
+impl OutputPrecision {
+    pub const fn is_valid(self) -> bool {
+        match self {
+            Self::Instrument | Self::Decimals(_) => true,
+            Self::Step(step) => step.is_finite() && step > 0.0,
+        }
+    }
+}
