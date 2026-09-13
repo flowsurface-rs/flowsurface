@@ -7,11 +7,11 @@ style("bearish", title = "Bearish flat open", role = "danger", shade = "base")
 
 tick_multiplier = input.int(
     1,
-    "Tick multiplier",
+    "Tolerance (in tick multiplier)",
     min = 1,
     max = 100,
     step = 1,
-    tooltip = "Maximum open-to-wick distance in minimum ticks"
+    tooltip = "Open-to-wick distance to qualify"
 )
 
 max_active_zones = input.int(
