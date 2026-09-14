@@ -10,7 +10,7 @@ use crate::hir::{
 };
 use crate::intrinsic::{IntrinsicRegistry, WarmupSpec};
 use crate::types::{IndicatorConfig, IndicatorDescriptor, Value};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub(super) fn warmup_bars(
     program: &HirProgram,
@@ -65,6 +65,8 @@ struct Evaluator<'a> {
     config: &'a IndicatorConfig,
     max_window_length: usize,
     visiting: HashSet<ExprId>,
+    warmup_cache: HashMap<ExprId, usize>,
+    static_value_cache: HashMap<ExprId, Option<Value>>,
     parameter_warmups: Vec<BTreeMap<LocalSlot, usize>>,
     parameter_values: Vec<BTreeMap<LocalSlot, Value>>,
 }
@@ -84,6 +86,8 @@ impl<'a> Evaluator<'a> {
             config,
             max_window_length,
             visiting: HashSet::new(),
+            warmup_cache: HashMap::new(),
+            static_value_cache: HashMap::new(),
             parameter_warmups: Vec::new(),
             parameter_values: Vec::new(),
         }
@@ -98,10 +102,10 @@ impl<'a> Evaluator<'a> {
     }
 
     fn warmup_statement(&mut self, statement: StatementId) -> usize {
-        let Some(statement) = self.program.statements.get(statement.0).cloned() else {
+        let Some(statement) = self.program.statements.get(statement.0) else {
             return 0;
         };
-        match statement.kind {
+        match &statement.kind {
             StatementKind::Binding { expression, .. }
             | StatementKind::LocalUpdate { expression, .. }
             | StatementKind::StateDeclaration {
@@ -111,19 +115,19 @@ impl<'a> Evaluator<'a> {
             | StatementKind::StateUpdate { expression, .. }
             | StatementKind::Expression(expression)
             | StatementKind::Return(Some(expression))
-            | StatementKind::Destructure { expression, .. } => self.warmup(expression),
+            | StatementKind::Destructure { expression, .. } => self.warmup(*expression),
             StatementKind::Plot {
                 expression, color, ..
             }
             | StatementKind::HorizontalLevel {
                 expression, color, ..
-            } => self.warmup_all([Some(expression), color]),
+            } => self.warmup_all([Some(*expression), *color]),
             StatementKind::Marker {
                 expression,
                 visible,
                 color,
                 ..
-            } => self.warmup_all([Some(expression), visible, color]),
+            } => self.warmup_all([Some(*expression), *visible, *color]),
             StatementKind::Segment {
                 start_value,
                 end_value,
@@ -133,12 +137,12 @@ impl<'a> Evaluator<'a> {
                 color,
                 ..
             } => self.warmup_all([
-                Some(start_value),
-                Some(end_value),
-                Some(start_index),
-                Some(end_index),
-                visible,
-                color,
+                Some(*start_value),
+                Some(*end_value),
+                Some(*start_index),
+                Some(*end_index),
+                *visible,
+                *color,
             ]),
             StatementKind::OhlcPlot {
                 open,
@@ -147,13 +151,13 @@ impl<'a> Evaluator<'a> {
                 close,
                 color,
                 ..
-            } => self.warmup_all([Some(open), Some(high), Some(low), Some(close), color]),
+            } => self.warmup_all([Some(*open), Some(*high), Some(*low), Some(*close), *color]),
             StatementKind::RangePlot {
                 upper,
                 lower,
                 color,
                 ..
-            } => self.warmup_all([Some(upper), Some(lower), color]),
+            } => self.warmup_all([Some(*upper), Some(*lower), *color]),
             StatementKind::Region {
                 key,
                 upper,
@@ -171,38 +175,38 @@ impl<'a> Evaluator<'a> {
                 extend_right,
                 ..
             } => self.warmup_all([
-                Some(key),
-                Some(upper),
-                Some(lower),
-                Some(left_index),
-                Some(right_index),
-                visible,
-                border_color,
-                fill_color,
-                style_by,
-                extend_right,
+                Some(*key),
+                Some(*upper),
+                Some(*lower),
+                Some(*left_index),
+                Some(*right_index),
+                *visible,
+                *border_color,
+                *fill_color,
+                *style_by,
+                *extend_right,
             ]),
-            StatementKind::RegionRemove { key, .. } => self.warmup(key),
+            StatementKind::RegionRemove { key, .. } => self.warmup(*key),
             StatementKind::If {
                 condition,
                 then_branch,
                 else_branch,
             } => self
-                .warmup(condition)
-                .max(self.warmup_block(&then_branch))
-                .max(self.warmup_block(&else_branch)),
+                .warmup(*condition)
+                .max(self.warmup_block(then_branch))
+                .max(self.warmup_block(else_branch)),
             StatementKind::While { condition, body } => {
-                self.warmup(condition).max(self.warmup_block(&body))
+                self.warmup(*condition).max(self.warmup_block(body))
             }
             StatementKind::ForRange {
                 start, end, body, ..
             } => self
-                .warmup(start)
-                .max(self.warmup(end))
-                .max(self.warmup_block(&body)),
+                .warmup(*start)
+                .max(self.warmup(*end))
+                .max(self.warmup_block(body)),
             StatementKind::ForEach {
                 collection, body, ..
-            } => self.warmup(collection).max(self.warmup_block(&body)),
+            } => self.warmup(*collection).max(self.warmup_block(body)),
             StatementKind::Break | StatementKind::Continue | StatementKind::Return(None) => 0,
         }
     }
@@ -217,10 +221,14 @@ impl<'a> Evaluator<'a> {
     }
 
     fn warmup(&mut self, expr: ExprId) -> usize {
-        let Some(expression) = self.program.expressions.get(expr.0).cloned() else {
+        let root_context = self.parameter_warmups.is_empty() && self.parameter_values.is_empty();
+        if root_context && let Some(warmup) = self.warmup_cache.get(&expr) {
+            return *warmup;
+        }
+        let Some(expression) = self.program.expressions.get(expr.0) else {
             return 0;
         };
-        match expression.kind {
+        let warmup = match &expression.kind {
             ExpressionKind::Constant(_)
             | ExpressionKind::LoadBarIndex
             | ExpressionKind::LoadBarState(_)
@@ -229,9 +237,9 @@ impl<'a> Evaluator<'a> {
             | ExpressionKind::LoadSeriesInput(_)
             | ExpressionKind::LoadState(_)
             | ExpressionKind::LoadFrame(_) => 0,
-            ExpressionKind::RecordField { source, .. } => self.warmup(source),
+            ExpressionKind::RecordField { source, .. } => self.warmup(*source),
             ExpressionKind::LoadLocal(slot) => {
-                if let Some(warmup) = self.parameter_warmup(slot) {
+                if let Some(warmup) = self.parameter_warmup(*slot) {
                     return warmup;
                 }
                 let Some(Some(definition)) = self.program.local_definitions.get(slot.0) else {
@@ -245,11 +253,14 @@ impl<'a> Evaluator<'a> {
                 warmup
             }
             ExpressionKind::History { source, offset } => {
-                let offset = match self.static_value(offset).and_then(|value| value.as_float()) {
+                let offset = match self
+                    .static_value(*offset)
+                    .and_then(|value| value.as_float())
+                {
                     Some(value) if value >= 0.0 => value as usize,
                     _ => self.descriptor.max_bars_back,
                 };
-                offset.saturating_add(self.warmup(source))
+                offset.saturating_add(self.warmup(*source))
             }
             ExpressionKind::Tuple(expressions) | ExpressionKind::Array(expressions) => expressions
                 .iter()
@@ -266,37 +277,41 @@ impl<'a> Evaluator<'a> {
                 branches,
                 fallback,
             } => {
-                let mut warmup = self.warmup(operand);
+                let mut warmup = self.warmup(*operand);
                 for (condition, result) in branches {
-                    warmup = warmup.max(self.warmup(condition)).max(self.warmup(result));
+                    warmup = warmup
+                        .max(self.warmup(*condition))
+                        .max(self.warmup(*result));
                 }
                 if let Some(fallback) = fallback {
-                    warmup = warmup.max(self.warmup(fallback));
+                    warmup = warmup.max(self.warmup(*fallback));
                 }
                 warmup
             }
             ExpressionKind::CollectionIndex { source, index } => {
-                self.warmup(source).max(self.warmup(index))
+                self.warmup(*source).max(self.warmup(*index))
             }
-            ExpressionKind::Unary { operand, .. } => self.warmup(operand),
-            ExpressionKind::Binary { left, right, .. } => self.warmup(left).max(self.warmup(right)),
+            ExpressionKind::Unary { operand, .. } => self.warmup(*operand),
+            ExpressionKind::Binary { left, right, .. } => {
+                self.warmup(*left).max(self.warmup(*right))
+            }
             ExpressionKind::Conditional {
                 condition,
                 when_true,
                 when_false,
             } => self
-                .warmup(condition)
-                .max(self.warmup(when_true))
-                .max(self.warmup(when_false)),
+                .warmup(*condition)
+                .max(self.warmup(*when_true))
+                .max(self.warmup(*when_false)),
             ExpressionKind::Coalesce { source, fallback } => {
-                self.warmup(source).max(self.warmup(fallback))
+                self.warmup(*source).max(self.warmup(*fallback))
             }
             ExpressionKind::IntrinsicCall {
                 intrinsic,
                 arguments,
                 ..
             } => {
-                let Some(definition) = self.registry.get(intrinsic) else {
+                let Some(definition) = self.registry.get(*intrinsic) else {
                     return arguments
                         .iter()
                         .map(|id| self.warmup(*id))
@@ -350,8 +365,12 @@ impl<'a> Evaluator<'a> {
                 arguments,
                 argument_slots,
                 ..
-            } => self.warmup_function(function, &arguments, &argument_slots),
+            } => self.warmup_function(*function, arguments, argument_slots),
+        };
+        if root_context {
+            self.warmup_cache.insert(expr, warmup);
         }
+        warmup
     }
 
     fn warmup_function(
@@ -368,7 +387,7 @@ impl<'a> Evaluator<'a> {
             .iter()
             .map(|argument| self.static_value(*argument))
             .collect::<Vec<_>>();
-        let Some(function) = self.program.functions.get(function_id.0).cloned() else {
+        let Some(function) = self.program.functions.get(function_id.0) else {
             return argument_warmups.into_iter().max().unwrap_or(0);
         };
         let mut parameter_warmups = BTreeMap::new();
@@ -444,12 +463,16 @@ impl<'a> Evaluator<'a> {
     }
 
     fn static_value(&mut self, expr: ExprId) -> Option<Value> {
-        let expression = self.program.expressions.get(expr.0)?.clone();
-        match expression.kind {
+        let root_context = self.parameter_warmups.is_empty() && self.parameter_values.is_empty();
+        if root_context && let Some(value) = self.static_value_cache.get(&expr) {
+            return value.clone();
+        }
+        let expression = self.program.expressions.get(expr.0)?;
+        let value = match &expression.kind {
             ExpressionKind::Constant(constant) => self.program.constants.get(constant.0).cloned(),
-            ExpressionKind::LoadInput(slot) => self.input_value(slot),
+            ExpressionKind::LoadInput(slot) => self.input_value(*slot),
             ExpressionKind::LoadLocal(slot) => {
-                if let Some(value) = self.parameter_value(slot) {
+                if let Some(value) = self.parameter_value(*slot) {
                     return Some(value);
                 }
                 if let Some(Some(definition)) = self.program.local_definitions.get(slot.0) {
@@ -460,11 +483,11 @@ impl<'a> Evaluator<'a> {
                     self.visiting.remove(&expr);
                     value
                 } else {
-                    self.input_value(slot)
+                    self.input_value(*slot)
                 }
             }
             ExpressionKind::Unary { operator, operand } => {
-                let value = self.static_value(operand)?;
+                let value = self.static_value(*operand)?;
                 match operator {
                     UnaryOperator::Plus => Some(value.normalize_nonfinite()),
                     UnaryOperator::Minus => value
@@ -481,21 +504,25 @@ impl<'a> Evaluator<'a> {
                 left,
                 right,
             } => {
-                let left = self.static_value(left)?;
-                let right = self.static_value(right)?;
-                static_binary(operator, left, right)
+                let left = self.static_value(*left)?;
+                let right = self.static_value(*right)?;
+                static_binary(*operator, left, right)
             }
             ExpressionKind::Conditional {
                 condition,
                 when_true,
                 when_false,
-            } => match self.static_value(condition)? {
-                Value::Bool(true) => self.static_value(when_true),
-                Value::Bool(false) => self.static_value(when_false),
+            } => match self.static_value(*condition)? {
+                Value::Bool(true) => self.static_value(*when_true),
+                Value::Bool(false) => self.static_value(*when_false),
                 _ => None,
             },
             _ => None,
+        };
+        if root_context {
+            self.static_value_cache.insert(expr, value.clone());
         }
+        value
     }
 }
 
@@ -612,7 +639,9 @@ mod tests {
             indicator("Chained warmup", id = "community.chained-warmup")
             format(precision = "base_ticker_min_tick")
             first = ta.sma(chart.close, 5000)
+            shared = first + first
             plot(ta.sma(first, 5000), id = "average")
+            plot(shared, id = "shared")
         "#;
         let compiled = compile(chained, Path::new("chained-warmup.ind"))
             .expect("chained warmup should compile");
@@ -633,6 +662,22 @@ mod tests {
         let compiled = compile(source, Path::new("function-warmup.ind"))
             .expect("function source should compile");
         assert_eq!(compiled.warmup_bars(&IndicatorConfig::default()), Some(7));
+
+        let source = r#"
+            language(1)
+            indicator("Parameterized warmup", id = "community.parameterized-warmup")
+            format(precision = "base_ticker_min_tick")
+            fn average(value) {
+                return ta.sma(value, 7)
+            }
+            short = average(chart.close)
+            long = average(ta.sma(chart.close, 3))
+            plot(short, id = "short")
+            plot(long, id = "long")
+        "#;
+        let compiled = compile(source, Path::new("parameterized-warmup.ind"))
+            .expect("parameterized function source should compile");
+        assert_eq!(compiled.warmup_bars(&IndicatorConfig::default()), Some(10));
     }
 
     #[test]
