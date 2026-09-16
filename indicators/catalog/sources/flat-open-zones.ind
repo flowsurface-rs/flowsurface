@@ -1,5 +1,5 @@
 language(1)
-indicator("Flat Open Zones", id = "catalog.flat-open-zones", max_bars_back = 2)
+indicator("Flat Open Zones", id = "catalog.flat-open-zones", author = "akenshaw", author_url = "https://github.com/akenshaw", max_bars_back = 2)
 display(view = "primary_overlay")
 
 style("bullish", title = "Bullish flat open", role = "success", shade = "base")

@@ -350,6 +350,12 @@ impl Display for IndicatorId {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndicatorAuthor {
+    pub name: String,
+    pub url: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputValue {
     Int(i64),
@@ -448,6 +454,9 @@ pub struct SeriesInputDescriptor {
 pub struct IndicatorDescriptor {
     pub id: IndicatorId,
     pub title: String,
+    pub author: Option<IndicatorAuthor>,
+    pub description: Option<String>,
+    pub source: Option<String>,
     pub sourceable: bool,
     pub optional_trades: bool,
     pub max_bars_back: usize,

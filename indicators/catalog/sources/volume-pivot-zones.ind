@@ -1,5 +1,5 @@
 language(1)
-indicator("Volume Pivot Zones", id = "catalog.volume-pivot-zones", max_bars_back = 101)
+indicator("Volume Pivot Zones", id = "catalog.volume-pivot-zones", author = "akenshaw", author_url = "https://github.com/akenshaw", max_bars_back = 101)
 display(view = "primary_overlay")
 
 style("bullish", title = "Bullish", role = "success", shade = "base")

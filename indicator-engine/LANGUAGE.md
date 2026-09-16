@@ -31,6 +31,8 @@ licensing is independent of the Apache-2.0 engine license.
 ```text
 language(1)
 indicator("Relative strength", id = "catalog.rsi",
+          author = "Example author", author_url = "https://example.com",
+          description = "A momentum oscillator", source = "https://example.com/source",
           sourceable = true, max_bars_back = 5000)
 format(precision = "fixed_step:0.01")
 period = input.int(14, "Period", min = 2, max = 200)
@@ -129,12 +131,16 @@ overlays do not use panel value precision.
 
 ```text
 indicator("Title", id = "namespace.name",
+          author = "Name", author_url = "https://example.com",
+          description = "Description", source = "https://example.com/source",
           sourceable = true, optional_trades = false, max_bars_back = 5000)
 ```
 
 `id` is the stable `namespace.name` identity. `sourceable` and
 `optional_trades` default to `true` and `false`, respectively, and
-`max_bars_back` defaults to `5000`. `sourceable` is an indicator-level policy:
+`max_bars_back` defaults to `5000`. `author` and `author_url` are optional but
+must be provided together. `description` and `source` are optional; `source`
+must be an absolute `http` or `https` URL. `sourceable` is an indicator-level policy:
 when it is `false`, the indicator's visible numeric plots still render
 normally, but none of them can be used as another indicator's dependency
 input. `optional_trades` and `max_bars_back` remain indicator-level policies.

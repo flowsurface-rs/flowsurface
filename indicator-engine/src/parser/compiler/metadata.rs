@@ -7,6 +7,11 @@ use crate::scene::*;
 use crate::types::*;
 use std::collections::BTreeSet;
 
+fn is_valid_http_url(value: &str) -> bool {
+    url::Url::parse(value)
+        .is_ok_and(|url| matches!(url.scheme(), "http" | "https") && url.host_str().is_some())
+}
+
 impl LoweringContext {
     pub(super) fn compile_descriptor(&mut self, call: Option<&AstCall>) -> IndicatorDescriptor {
         self.presentation.spans.indicator = call.map(|call| call.span);
@@ -17,6 +22,9 @@ impl LoweringContext {
             .unwrap_or("indicator")
             .to_owned();
         let mut id = format!("local.{title}");
+        let mut author = None;
+        let mut description = None;
+        let mut source = None;
         let mut sourceable = true;
         let mut optional_trades = false;
         let mut max_bars_back = 5_000;
@@ -26,6 +34,10 @@ impl LoweringContext {
                 &[
                     "title",
                     "id",
+                    "author",
+                    "author_url",
+                    "description",
+                    "source",
                     "sourceable",
                     "optional_trades",
                     "max_bars_back",
@@ -50,6 +62,51 @@ impl LoweringContext {
                     id = value;
                 } else {
                     self.error(call.span, "indicator ID must be a string literal");
+                }
+            }
+            let has_author = call
+                .arguments
+                .iter()
+                .any(|argument| argument.name.as_deref() == Some("author"));
+            let has_author_url = call
+                .arguments
+                .iter()
+                .any(|argument| argument.name.as_deref() == Some("author_url"));
+            if has_author || has_author_url {
+                if !has_author {
+                    self.error(call.span, "indicator author_url requires author");
+                }
+                if !has_author_url {
+                    self.error(call.span, "indicator author requires author_url");
+                }
+                if let (Some(name), Some(url)) = (
+                    self.static_named_string(call, "author"),
+                    self.static_named_string(call, "author_url"),
+                ) {
+                    if name.trim().is_empty() {
+                        self.error(call.span, "indicator author must not be empty");
+                    }
+                    if !is_valid_http_url(&url) {
+                        self.error(call.span, "indicator author_url must be a valid URL");
+                    }
+                    author = Some(IndicatorAuthor { name, url });
+                }
+            }
+            if let Some(value) = self.static_named_value(call, "description") {
+                if let Value::String(value) = value {
+                    description = Some(value);
+                } else {
+                    self.error(call.span, "indicator description must be a string literal");
+                }
+            }
+            if let Some(value) = self.static_named_value(call, "source") {
+                if let Value::String(value) = value {
+                    if !is_valid_http_url(&value) {
+                        self.error(call.span, "indicator source must be a valid URL");
+                    }
+                    source = Some(value);
+                } else {
+                    self.error(call.span, "indicator source must be a string literal");
                 }
             }
             if let Some(value) = self.static_named_value(call, "sourceable") {
@@ -102,6 +159,9 @@ impl LoweringContext {
         IndicatorDescriptor {
             id,
             title,
+            author,
+            description,
+            source,
             sourceable,
             optional_trades,
             max_bars_back,

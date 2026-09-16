@@ -11,3 +11,4 @@ homepage.workspace = true
 chrono.workspace = true
 serde = { version = "1.0.228", features = ["derive", "std"] }
 thiserror.workspace = true
+url.workspace = true

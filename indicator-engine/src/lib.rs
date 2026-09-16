@@ -31,8 +31,9 @@ pub use scene::{
     PresentationSegment, PresentationStyle, PresentationViewKind, ReadoutBehavior,
 };
 pub use types::{
-    ArrayValue, IndicatorConfig, IndicatorDescriptor, IndicatorId, InputDescriptor, InputOption,
-    InputType, InputValue, Qualifier, SeriesInputDescriptor, Type, Value, ValueType,
+    ArrayValue, IndicatorAuthor, IndicatorConfig, IndicatorDescriptor, IndicatorId,
+    InputDescriptor, InputOption, InputType, InputValue, Qualifier, SeriesInputDescriptor, Type,
+    Value, ValueType,
 };
 
 pub type Program = HirProgram;
@@ -2310,6 +2311,31 @@ mod tests {
             "table.ind",
         )
         .expect("table views should not require panel precision");
+    }
+
+    #[test]
+    fn indicator_author_metadata_is_compiled() {
+        let compiled = compile(
+            "language(1)\nindicator(\"Author\", id = \"test.author\", author = \"Ada\", author_url = \"https://example.com/ada\", description = \"A sample indicator\", source = \"https://example.com/source\")\nformat(precision = \"base_ticker_min_tick\")\nplot(chart.close, id = \"value\")\n",
+            "author.ind",
+        )
+        .expect("author metadata should compile");
+
+        assert_eq!(
+            compiled.descriptor.author,
+            Some(IndicatorAuthor {
+                name: "Ada".to_owned(),
+                url: "https://example.com/ada".to_owned(),
+            })
+        );
+        assert_eq!(
+            compiled.descriptor.description.as_deref(),
+            Some("A sample indicator")
+        );
+        assert_eq!(
+            compiled.descriptor.source.as_deref(),
+            Some("https://example.com/source")
+        );
     }
 
     #[test]

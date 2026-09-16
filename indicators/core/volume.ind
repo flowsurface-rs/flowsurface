@@ -1,5 +1,9 @@
 language(1)
-indicator("Volume", id = "core.volume", optional_trades = true, max_bars_back = 1)
+indicator(
+    "Volume", id = "core.volume",
+    description = "Displays total or buy/sell volume, with optional highlighting when candle direction conflicts with volume.",
+    source = "https://github.com/flowsurface-rs/flowsurface/blob/main/indicators/core/volume.ind",
+    optional_trades = true, max_bars_back = 1)
 format(precision = "base_ticker_min_qty", axis_labels = "abbreviated", header_labels = "commas", scale = "fit_visible_include_zero")
 highlight_divergence = input.bool(false, "Highlight candle/volume divergence", group = "display", requires = "directional_volume")
 has_directional_volume = chart.directional_volume_available
