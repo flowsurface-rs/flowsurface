@@ -13,13 +13,12 @@ impl LoweringContext {
             .collect::<BTreeSet<_>>();
         let mut generated = Vec::new();
         for plot in &mut self.ir.program.plots {
-            if !matches!(plot.value_type, PlotValueType::Number) {
+            if !matches!(plot.value_type, PlotValueType::Number)
+                || (plot.readout == ReadoutBehavior::Hidden && plot.color_slot.is_none())
+            {
                 continue;
             }
-            // An omitted slot receives the deterministic plot-ID style. An
-            // explicitly named slot is a source contract and must already
-            // be declared with `style`; silently inventing it would hide a
-            // typo and defeat missing-style diagnostics.
+
             let generated_slot = plot.color_slot.is_none();
             let slot = plot
                 .color_slot
