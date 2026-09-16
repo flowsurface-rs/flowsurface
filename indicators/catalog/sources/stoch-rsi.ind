@@ -1,5 +1,5 @@
 language(1)
-indicator("Stoch RSI", id = "catalog.stoch-rsi", max_bars_back = 2)
+indicator("Stoch RSI", id = "catalog.stoch-rsi", sourceable = true, max_bars_back = 2)
 display(attachment = "panel")
 format(precision = "fixed_step:0.01", axis_labels = "compact", header_labels = "compact", max_decimals = 2)
 rsi_length = input.int(14, "RSI length", min = 2, max = 200)

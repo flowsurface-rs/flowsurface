@@ -1,5 +1,5 @@
 language(1)
-indicator("RSI", id = "core.rsi", max_bars_back = 50)
+indicator("RSI", id = "core.rsi", sourceable = true, max_bars_back = 50)
 display(attachment = "panel")
 format(precision = "fixed_step:1", axis_labels = "abbreviated", header_labels = "commas", max_decimals = 1)
 period = input.int(14, "Period", min = 2, max = 200)

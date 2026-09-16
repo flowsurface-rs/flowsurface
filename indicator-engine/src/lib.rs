@@ -1380,7 +1380,7 @@ mod tests {
     fn source_inputs_support_history_ta_and_host_overrides() {
         let source = r#"
             language(1)
-            indicator("Source input", id = "test.source-input")
+            indicator("Source input", id = "test.source-input", sourceable = true)
             display(attachment = "panel")
             format(precision = "base_ticker_min_tick")
             source = input.source(chart.close, "Source")
@@ -1564,6 +1564,37 @@ mod tests {
                 .iter()
                 .all(|input| input.allow_indicator)
         );
+    }
+
+    #[test]
+    fn sourceable_defaults_to_false_and_requires_visible_numeric_output() {
+        let default = compile(
+            r#"
+                language(1)
+                indicator("Default source policy", id = "test.default-source-policy")
+                format(precision = "base_ticker_min_tick")
+                plot(chart.close, id = "value")
+            "#,
+            "default-source-policy.ind",
+        )
+        .expect("default source policy should compile");
+        assert!(!default.descriptor.sourceable);
+
+        let hidden = compile(
+            r#"
+                language(1)
+                indicator("Private source", id = "test.private-source", sourceable = true)
+                display(view = "primary_overlay")
+                plot(na, id = "private", pane = "main", layer = false)
+            "#,
+            "private-source.ind",
+        )
+        .expect_err("sourceable indicators need a visible numeric output");
+        assert!(hidden.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("sourceable = true requires at least one visible numeric plot layer")
+        }));
     }
 
     #[test]

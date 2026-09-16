@@ -1,5 +1,5 @@
 language(1)
-indicator("On-Balance Volume", id = "catalog.obv", max_bars_back = 2)
+indicator("On-Balance Volume", id = "catalog.obv", sourceable = true, max_bars_back = 2)
 display(attachment = "panel", layer_name = "OBV")
 format(precision = "base_ticker_min_qty", axis_labels = "abbreviated", header_labels = "commas")
 source = input.source(chart.close, "Source")

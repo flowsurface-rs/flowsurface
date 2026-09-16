@@ -25,7 +25,7 @@ impl LoweringContext {
         let mut author = None;
         let mut description = None;
         let mut source = None;
-        let mut sourceable = true;
+        let mut sourceable = false;
         let mut optional_trades = false;
         let mut max_bars_back = 5_000;
         if let Some(call) = call {

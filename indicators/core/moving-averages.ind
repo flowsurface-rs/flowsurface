@@ -1,5 +1,5 @@
 language(1)
-indicator("Moving Averages", id = "core.moving-averages", max_bars_back = 1)
+indicator("Moving Averages", id = "core.moving-averages", sourceable = true, max_bars_back = 1)
 display(view = "plot", attachment = "overlay")
 format(precision = "base_ticker_min_tick")
 method = input.string("Sma", "Average method", options = ["Sma", "Ema", "Vwma"])

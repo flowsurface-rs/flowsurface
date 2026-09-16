@@ -1,6 +1,7 @@
 language(1)
 indicator(
     "Flat Open Zones", id = "catalog.flat-open-zones",
+    sourceable = false,
     author = "akenshaw",
     author_url = "https://github.com/akenshaw",
     description = "Highlights zones for candles with small or no tails until price invalidates them.

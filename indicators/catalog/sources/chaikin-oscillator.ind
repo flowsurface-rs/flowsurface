@@ -1,5 +1,5 @@
 language(1)
-indicator("Chaikin Oscillator", id = "catalog.chaikin-oscillator", max_bars_back = 1)
+indicator("Chaikin Oscillator", id = "catalog.chaikin-oscillator", sourceable = true, max_bars_back = 1)
 format(precision = "base_ticker_min_qty", axis_labels = "abbreviated", header_labels = "commas")
 fast_period = input.int(3, "Fast period", min = 1, max = 100)
 slow_period = input.int(10, "Slow period", min = 2, max = 200)

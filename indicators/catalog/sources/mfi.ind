@@ -1,5 +1,5 @@
 language(1)
-indicator("Money Flow Index", id = "catalog.mfi", max_bars_back = 2)
+indicator("Money Flow Index", id = "catalog.mfi", sourceable = true, max_bars_back = 2)
 display(attachment = "panel", layer_name = "MFI")
 format(precision = "fixed_step:0.01", axis_labels = "compact", header_labels = "compact", max_decimals = 2)
 period = input.int(14, "Period", min = 1, max = 200)

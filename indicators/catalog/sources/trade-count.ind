@@ -1,5 +1,5 @@
 language(1)
-indicator("Trade Count", id = "catalog.trade-count", max_bars_back = 1)
+indicator("Trade Count", id = "catalog.trade-count", sourceable = true, max_bars_back = 1)
 display(layer_name = "Trades")
 format(precision = "fixed_step:1", axis_labels = "abbreviated", header_labels = "commas", scale = "fit_visible_include_zero", max_decimals = 0)
 value = chart.trade.count

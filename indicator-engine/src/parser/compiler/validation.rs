@@ -92,6 +92,10 @@ impl LoweringContext {
             .series_inputs
             .iter()
             .any(|input| input.allow_indicator);
+        let has_visible_numeric_plot_layer = descriptor
+            .plots
+            .iter()
+            .any(|plot| plot.layer && matches!(plot.value_type, PlotValueType::Number));
         if has_indicator_source_inputs && descriptor.presentation.attachment.is_none() {
             self.error(
                 self.display_span(),
@@ -106,15 +110,16 @@ impl LoweringContext {
                 "input.source with allow_indicator = true requires display(view = \"plot\")",
             );
         }
-        if has_indicator_source_inputs
-            && !descriptor
-                .plots
-                .iter()
-                .any(|plot| plot.layer && matches!(plot.value_type, PlotValueType::Number))
-        {
+        if has_indicator_source_inputs && !has_visible_numeric_plot_layer {
             self.error(
                 self.display_span(),
                 "input.source with allow_indicator = true requires at least one visible numeric plot layer",
+            );
+        }
+        if descriptor.sourceable && !has_visible_numeric_plot_layer {
+            self.error(
+                self.indicator_span(),
+                "indicator sourceable = true requires at least one visible numeric plot layer",
             );
         }
         let output_types = descriptor

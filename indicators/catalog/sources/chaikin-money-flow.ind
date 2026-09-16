@@ -1,5 +1,5 @@
 language(1)
-indicator("Chaikin Money Flow", id = "catalog.chaikin-money-flow", max_bars_back = 1)
+indicator("Chaikin Money Flow", id = "catalog.chaikin-money-flow", sourceable = true, max_bars_back = 1)
 display(layer_name = "CMF")
 format(precision = "fixed_step:0.001", axis_labels = "compact", header_labels = "compact", max_decimals = 3)
 period = input.int(20, "Period", min = 1, max = 200)

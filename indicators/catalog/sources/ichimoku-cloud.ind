@@ -1,5 +1,5 @@
 language(1)
-indicator("Ichimoku Cloud", id = "catalog.ichimoku-cloud", max_bars_back = 1)
+indicator("Ichimoku Cloud", id = "catalog.ichimoku-cloud", sourceable = true, max_bars_back = 1)
 display(view = "primary_overlay")
 conversion_period = input.int(9, "Conversion period", min = 1, max = 200)
 base_period = input.int(26, "Base period", min = 1, max = 200)

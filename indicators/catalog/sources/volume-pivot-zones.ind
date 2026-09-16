@@ -1,6 +1,7 @@
 language(1)
 indicator(
     "Volume Pivot Zones", id = "catalog.volume-pivot-zones",
+    sourceable = false,
     author = "akenshaw",
     author_url = "https://github.com/akenshaw",
     description = "Finds bars with the highest volume within the selected length on both sides.

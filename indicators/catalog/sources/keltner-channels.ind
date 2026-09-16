@@ -1,5 +1,5 @@
 language(1)
-indicator("Keltner Channels", id = "catalog.keltner-channels", max_bars_back = 1)
+indicator("Keltner Channels", id = "catalog.keltner-channels", sourceable = true, max_bars_back = 1)
 display(view = "primary_overlay")
 period = input.int(20, "Middle period", min = 1, max = 200)
 range_period = input.int(10, "Range period", min = 1, max = 200)

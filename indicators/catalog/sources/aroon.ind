@@ -1,5 +1,5 @@
 language(1)
-indicator("Aroon", id = "catalog.aroon", max_bars_back = 1)
+indicator("Aroon", id = "catalog.aroon", sourceable = true, max_bars_back = 1)
 format(precision = "fixed_step:0.01", axis_labels = "compact", header_labels = "compact", max_decimals = 2)
 period = input.int(25, "Period", min = 1, max = 500)
 high_bars = ta.highestbars(chart.high, period)

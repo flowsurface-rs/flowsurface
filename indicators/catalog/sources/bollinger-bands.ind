@@ -1,5 +1,5 @@
 language(1)
-indicator("Bollinger Bands", id = "catalog.bollinger-bands", max_bars_back = 1)
+indicator("Bollinger Bands", id = "catalog.bollinger-bands", sourceable = true, max_bars_back = 1)
 display(view = "plot", attachment = "overlay", layer_name = "Bollinger Basis")
 format(precision = "base_ticker_min_tick")
 period = input.int(20, "Period", min = 2, max = 200)

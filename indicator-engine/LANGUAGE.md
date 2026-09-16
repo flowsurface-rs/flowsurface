@@ -137,7 +137,7 @@ indicator("Title", id = "namespace.name",
 ```
 
 `id` is the stable `namespace.name` identity. `sourceable` and
-`optional_trades` default to `true` and `false`, respectively, and
+`optional_trades` default to `false` and `false`, respectively, and
 `max_bars_back` defaults to `5000`. `author` and `author_url` are optional but
 must be provided together. `description` and `source` are optional; `source`
 must be an absolute `http` or `https` URL. `sourceable` is an indicator-level policy:
