@@ -1,5 +1,12 @@
 language(1)
-indicator("Flat Open Zones", id = "catalog.flat-open-zones", author = "akenshaw", author_url = "https://github.com/akenshaw", max_bars_back = 2)
+indicator(
+    "Flat Open Zones", id = "catalog.flat-open-zones",
+    author = "akenshaw",
+    author_url = "https://github.com/akenshaw",
+    description = "Highlights zones for candles with small or no tails until price invalidates them.
+\nInvalidation happens after three consecutive closes inside the box or when price passes through it.",
+    max_bars_back = 2
+)
 display(view = "primary_overlay")
 
 style("bullish", title = "Bullish flat open", role = "success", shade = "base")
@@ -12,6 +19,13 @@ tick_multiplier = input.int(
     max = 100,
     step = 1,
     tooltip = "Open-to-wick distance to qualify"
+)
+
+show_active_only = input.bool(
+    true,
+    "Show active zones only",
+    group = "display",
+    tooltip = "Hide zones after they become inactive"
 )
 
 max_active_zones = input.int(
@@ -109,20 +123,24 @@ for zone in zones {
     zone_next_count = select(!zone_invalidated, select(zone_inside, zone_count + 1, 0), zone_count)
     zone_cut = zone_invalidated || zone_next_count >= inside_close_limit
     if zone_cut {
-        region(
-            key = zone_key,
-            upper = zone_upper,
-            lower = zone_lower,
-            left_index = zone_left,
-            right_index = bar_index,
-            style_by = zone_bullish,
-            true_color_slot = "bullish",
-            false_color_slot = "bearish",
-            extend_right = false,
-            persistent = true,
-            id = "flat_open_zones",
-            width = 1.0
-        )
+        if show_active_only {
+            region_remove(id = "flat_open_zones", key = zone_key)
+        } else {
+            region(
+                key = zone_key,
+                upper = zone_upper,
+                lower = zone_lower,
+                left_index = zone_left,
+                right_index = bar_index,
+                style_by = zone_bullish,
+                true_color_slot = "bullish",
+                false_color_slot = "bearish",
+                extend_right = false,
+                persistent = true,
+                id = "flat_open_zones",
+                width = 1.0
+            )
+        }
     } else if array.size(next_zones) < max_active_zones {
         next_zones := array.push(next_zones, {
             key: zone_key,

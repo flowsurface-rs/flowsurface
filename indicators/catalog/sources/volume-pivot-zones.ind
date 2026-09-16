@@ -1,5 +1,12 @@
 language(1)
-indicator("Volume Pivot Zones", id = "catalog.volume-pivot-zones", author = "akenshaw", author_url = "https://github.com/akenshaw", max_bars_back = 101)
+indicator(
+    "Volume Pivot Zones", id = "catalog.volume-pivot-zones",
+    author = "akenshaw",
+    author_url = "https://github.com/akenshaw",
+    description = "Finds bars with the highest volume within the selected length on both sides.
+\nBullish structure holds above a confirmed low; bearish structure holds below a confirmed high. These pivots form support or resistance zones until wick- or close-based mitigation.",
+    max_bars_back = 101
+)
 display(view = "primary_overlay")
 
 style("bullish", title = "Bullish", role = "success", shade = "base")
@@ -7,6 +14,12 @@ style("bearish", title = "Bearish", role = "danger", shade = "base")
 
 length = input.int(5, "Volume pivot length", min = 1, max = 100)
 mitigation = input.string("Wick", "Mitigation", options = ["Wick", "Close"])
+show_active_only = input.bool(
+    true,
+    "Show active zones only",
+    group = "display",
+    tooltip = "Hide zones after they become inactive"
+)
 max_active_zones = input.int(
     256,
     "Maximum active zones",
@@ -114,7 +127,24 @@ for zone in zones {
         !na(bear_target) && bear_target > zone_upper
     )
     if zone_mitigated {
-        region_remove(id = "volume_pivot_zones", key = zone_key)
+        if show_active_only {
+            region_remove(id = "volume_pivot_zones", key = zone_key)
+        } else {
+            region(
+                key = zone_key,
+                upper = zone_upper,
+                lower = zone_lower,
+                left_index = zone_left,
+                right_index = bar_index,
+                style_by = zone_bullish,
+                true_color_slot = "bullish",
+                false_color_slot = "bearish",
+                extend_right = false,
+                persistent = true,
+                id = "volume_pivot_zones",
+                width = 1.0
+            )
+        }
     } else if array.size(next_zones) < max_active_zones {
         next_zones := array.push(next_zones, {
             key: zone_key,

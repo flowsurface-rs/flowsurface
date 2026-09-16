@@ -973,8 +973,7 @@ mod tests {
             .expect("completion bar should evaluate");
         assert!(matches!(
             completed.region_updates.as_ref(),
-            [RegionUpdate::Upsert(region)]
-                if region.left_index == 1 && region.right_index == 4 && !region.extend_right
+            [RegionUpdate::Remove { id, .. }] if id == "flat_open_zones"
         ));
     }
 
