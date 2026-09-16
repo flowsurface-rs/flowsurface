@@ -250,7 +250,7 @@ impl LoweringContext {
             return None;
         }
         self.validate_positional_arguments(call, 2, "style");
-        self.validate_named_arguments(call, &["id", "title", "role", "shade"]);
+        self.validate_named_arguments(call, &["id", "title", "role", "shade", "requires"]);
         let id = self.presentation_string(call, "id", Some(0))?;
         let label = if call
             .arguments
@@ -274,12 +274,14 @@ impl LoweringContext {
         let shade = self
             .presentation_shade(call)
             .unwrap_or_else(|| "base".to_owned());
+        let required_input = self.parse_presentation_input(call, "requires");
         self.presentation.spans.styles.insert(id.clone(), call.span);
         self.presentation.data.styles.push(PresentationStyle {
             id,
             label,
             role,
             shade,
+            required_input,
         });
         None
     }

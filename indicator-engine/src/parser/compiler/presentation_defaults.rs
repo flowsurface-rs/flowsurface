@@ -35,6 +35,7 @@ impl LoweringContext {
                     label: plot.label.clone(),
                     role: "neutral".to_owned(),
                     shade: "base".to_owned(),
+                    required_input: None,
                 });
             }
         }
@@ -57,6 +58,7 @@ impl LoweringContext {
                 label: "Main".to_owned(),
                 role: "neutral".to_owned(),
                 shade: "base".to_owned(),
+                required_input: None,
             });
         }
         self.presentation.data.styles.extend(generated);

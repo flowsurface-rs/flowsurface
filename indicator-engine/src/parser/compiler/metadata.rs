@@ -187,6 +187,7 @@ impl LoweringContext {
         let inline = self.static_named_string(call, "inline");
         let tooltip = self.static_named_string(call, "tooltip");
         let visible_when = self.static_named_string(call, "visible_when");
+        let required_input = self.parse_presentation_input(call, "requires");
         self.declarations.inputs.push(InputDescriptor {
             id: name.to_owned(),
             label,
@@ -199,6 +200,7 @@ impl LoweringContext {
             inline,
             tooltip,
             visible_when,
+            required_input,
             options,
         });
         self.declarations.input_spans.insert(name.to_owned(), span);
@@ -375,6 +377,7 @@ impl LoweringContext {
                 "inline",
                 "tooltip",
                 "visible_when",
+                "requires",
             ],
         );
         let positional_count = call

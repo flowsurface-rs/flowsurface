@@ -62,6 +62,8 @@ multiplier = input.float(2.0, "Multiplier", min = 0.1, max = 10.0, step = 0.1)
 enabled = input.bool(true, "Enabled")
 advanced_length = input.int(20, "Advanced length", min = 1, max = 200,
                             visible_when = "enabled")
+directional_only = input.bool(false, "Directional-only feature",
+                              requires = "directional_volume")
 method = input.string("Sma", "Method", options = ["Sma", "Ema"])
 anchor = input.time(0, "Anchor")
 color = input.color()
@@ -76,7 +78,10 @@ The host accepts a configured value only when it matches the declared type,
 numeric bounds, and string options. Scripted `int` and `time` inputs retain
 signed 64-bit values through the host settings bridge. `visible_when` hides an
 input unless the named input is true; it must reference an existing boolean
-input, and hidden values remain in the persisted configuration.
+input. `requires` hides an input when the named host input has no known
+coverage; use `klines`, `directional_volume`, `trades`, or `open_interest`.
+Empty coverage is treated as pending, and hidden values remain in the
+persisted configuration.
 
 User functions are numeric in language version 1: parameters and return
 expressions must be numeric or `na`. Integer arguments can be used where a
@@ -245,12 +250,15 @@ loss is zero it is `100`, and when only average gain is zero it is `0`.
 ### `style`
 
 ```text
-style("bull", title = "Bullish", role = "success", shade = "base")
+style("bull", title = "Bullish", role = "success", shade = "base",
+      requires = "directional_volume")
 ```
 
 The ID is required. Title defaults to the ID, role to `neutral`, and shade to
 `base`. Roles are `neutral`, `secondary`, `primary`, `success`, `danger`, and
 `warning`. Shades are `faint`, `soft`, `base`, `strong`, and `vivid`.
+`requires` is optional and hides the style from host style controls when the
+named host input has no known coverage. Empty coverage is treated as pending.
 
 ### `mark`
 

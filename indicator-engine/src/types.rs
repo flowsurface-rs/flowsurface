@@ -392,6 +392,7 @@ pub struct InputDescriptor {
     pub inline: Option<String>,
     pub tooltip: Option<String>,
     pub visible_when: Option<String>,
+    pub required_input: Option<crate::scene::PresentationInputSource>,
     pub options: Vec<InputOption>,
 }
 

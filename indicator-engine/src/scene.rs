@@ -125,6 +125,7 @@ pub struct PresentationStyle {
     pub label: String,
     pub role: String,
     pub shade: String,
+    pub required_input: Option<PresentationInputSource>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
