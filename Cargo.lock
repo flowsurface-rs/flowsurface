@@ -1180,6 +1180,7 @@ dependencies = [
  "fern",
  "flowsurface-data",
  "flowsurface-exchange",
+ "flowsurface-indicator-engine",
  "iced",
  "iced_core",
  "iced_wgpu",
@@ -1192,6 +1193,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
  "url",
  "uuid",
 ]
@@ -1204,6 +1206,7 @@ dependencies = [
  "dirs-next",
  "enum-map",
  "flowsurface-exchange",
+ "flowsurface-indicator-engine",
  "iced_core",
  "keyring",
  "log",

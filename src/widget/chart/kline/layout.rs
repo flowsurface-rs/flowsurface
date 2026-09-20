@@ -1,6 +1,6 @@
 use super::Regions;
 use super::composition::{PanelRole, PanelSpec};
-use super::{KlineSeriesLike, KlineWidget, PANEL_SPLITTER_HEIGHT};
+use super::{KlineWidget, PANEL_SPLITTER_HEIGHT};
 use iced::advanced::Layout;
 use iced::{Point, Rectangle};
 
@@ -11,6 +11,12 @@ use iced::{Point, Rectangle};
 const AXIS_DRAG_EDGE_GUARD: f32 = 4.0;
 
 const PANEL_SPLITTER_HIT_PX: f32 = 8.0;
+
+/// Inclusive edge test: rects that share a boundary both own it, so hit tests
+/// stay continuous across plot, axis, and splitter seams.
+pub(super) fn contains_inclusive(rect: Rectangle, p: Point) -> bool {
+    p.x >= rect.x && p.x <= rect.x + rect.width && p.y >= rect.y && p.y <= rect.y + rect.height
+}
 
 pub(super) fn place_non_overlapping_labels(
     desired_centers: &[f32],
@@ -212,12 +218,8 @@ impl PanelLayoutTree {
         )
     }
 
-    pub(super) fn contains(rect: Rectangle, p: Point) -> bool {
-        p.x >= rect.x && p.x <= rect.x + rect.width && p.y >= rect.y && p.y <= rect.y + rect.height
-    }
-
     pub(super) fn plot_local_point(&self, root_local: Point) -> Option<Point> {
-        self.regions.is_in_plot(root_local).then_some(Point::new(
+        contains_inclusive(self.regions.plot, root_local).then_some(Point::new(
             root_local.x - self.regions.plot.x,
             root_local.y - self.regions.plot.y,
         ))
@@ -236,7 +238,7 @@ impl PanelLayoutTree {
     }
 
     pub(super) fn hit_test(&self, root_local: Point) -> LayoutHitZone {
-        if self.regions.is_in_y_axis(root_local) {
+        if contains_inclusive(self.regions.y_axis, root_local) {
             let panel_local_y = root_local.y - self.regions.plot.y;
 
             for (index, panel) in self.panels.iter().enumerate() {
@@ -256,8 +258,8 @@ impl PanelLayoutTree {
             return LayoutHitZone::Outside;
         }
 
-        if self.regions.is_in_x_axis(root_local) {
-            if Self::contains(self.regions.x_axis.shrink(AXIS_DRAG_EDGE_GUARD), root_local) {
+        if contains_inclusive(self.regions.x_axis, root_local) {
+            if contains_inclusive(self.regions.x_axis.shrink(AXIS_DRAG_EDGE_GUARD), root_local) {
                 return LayoutHitZone::BottomXAxis;
             }
 
@@ -269,18 +271,18 @@ impl PanelLayoutTree {
         };
 
         for (index, splitter) in self.splitters.iter().copied().enumerate() {
-            if Self::contains(Self::splitter_hit_rect(splitter), plot_local) {
+            if contains_inclusive(Self::splitter_hit_rect(splitter), plot_local) {
                 return LayoutHitZone::Splitter(index);
             }
         }
 
         for (index, panel) in self.panels.iter().enumerate() {
-            if Self::contains(panel.plot, plot_local) {
+            if contains_inclusive(panel.plot, plot_local) {
                 return LayoutHitZone::PanelPlot(index);
             }
 
             if panel.x_axis.height > 0.0
-                && Self::contains(panel.x_axis.shrink(AXIS_DRAG_EDGE_GUARD), plot_local)
+                && contains_inclusive(panel.x_axis.shrink(AXIS_DRAG_EDGE_GUARD), plot_local)
             {
                 return LayoutHitZone::PanelXAxis(index);
             }
@@ -290,10 +292,7 @@ impl PanelLayoutTree {
     }
 }
 
-impl<'a, S> KlineWidget<'a, S>
-where
-    S: KlineSeriesLike,
-{
+impl<'a> KlineWidget<'a> {
     pub(super) fn panel_plot_heights(
         &self,
         panel_stack_height: f32,

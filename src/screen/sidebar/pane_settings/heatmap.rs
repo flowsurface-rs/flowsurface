@@ -4,13 +4,12 @@ use crate::widget::study_configurator as study;
 use crate::widget::{
     classic_slider_row,
     inspector::{InspectorContent, InspectorSection},
-    labeled_slider,
 };
 use data::chart::heatmap;
 use data::chart::heatmap::HeatmapStudy;
 use data::layout::pane::VisualConfig;
 use data::util::format_with_commas;
-use iced::widget::{checkbox, column, row, slider, space};
+use iced::widget::{checkbox, column, row, space, text};
 
 pub fn heatmap_shader_cfg_view<'a>(
     cfg: heatmap::Config,
@@ -21,8 +20,8 @@ pub fn heatmap_shader_cfg_view<'a>(
 ) -> InspectorContent<'a, Message> {
     let trade_size_slider = {
         let filter = cfg.trade_size_filter;
-        labeled_slider(
-            "Trade",
+        classic_slider_row(
+            Some(text("Trade")),
             0.0..=50000.0,
             filter,
             move |value| Message::VisualConfigChanged {
@@ -39,8 +38,8 @@ pub fn heatmap_shader_cfg_view<'a>(
 
     let order_size_slider = {
         let filter = cfg.order_size_filter;
-        labeled_slider(
-            "Order",
+        classic_slider_row(
+            Some(text("Order")),
             0.0..=500_000.0,
             filter,
             move |value| Message::VisualConfigChanged {
@@ -57,19 +56,18 @@ pub fn heatmap_shader_cfg_view<'a>(
 
     let circle_scaling_slider = cfg.trade_size_scale.map(|radius_scale| {
         classic_slider_row(
-            crate::widget::text::body("Circle radius scaling"),
-            slider(10..=200, radius_scale, move |value| {
-                Message::VisualConfigChanged {
-                    config: VisualConfig::Heatmap(heatmap::Config {
-                        trade_size_scale: Some(value),
-                        ..cfg
-                    }),
-                    sync_all: false,
-                }
-            })
-            .step(10)
-            .into(),
-            Some(crate::widget::text::emphasis(format!("{}%", radius_scale))),
+            Some(crate::widget::text::body("Circle radius scaling")),
+            10..=200,
+            radius_scale,
+            move |value| Message::VisualConfigChanged {
+                config: VisualConfig::Heatmap(heatmap::Config {
+                    trade_size_scale: Some(value),
+                    ..cfg
+                }),
+                sync_all: false,
+            },
+            |value| format!("{}%", value),
+            Some(10),
         )
     });
 

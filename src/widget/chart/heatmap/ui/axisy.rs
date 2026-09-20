@@ -168,6 +168,17 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
             let step = PriceStep {
                 units: self.step.units.max(1),
             };
+            let price_at_step = |offset: i64| {
+                base_price
+                    .checked_add_steps(offset, step)
+                    .unwrap_or_else(|| {
+                        Price::from_units(if offset.is_negative() {
+                            i64::MIN
+                        } else {
+                            i64::MAX
+                        })
+                    })
+            };
 
             let step_at_top = super::step_center_pos_from_world_y(y_world_top, row_h);
             let step_at_bottom = super::step_center_pos_from_world_y(y_world_bottom, row_h);
@@ -175,8 +186,8 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
             let lowest_step = step_at_top.min(step_at_bottom).floor() as i64;
             let highest_step = step_at_top.max(step_at_bottom).ceil() as i64;
 
-            let lowest_price = base_price.add_steps(lowest_step, step);
-            let highest_price = base_price.add_steps(highest_step, step);
+            let lowest_price = price_at_step(lowest_step);
+            let highest_price = price_at_step(highest_step);
 
             let labels_can_fit = (bounds.height / LABEL_TARGET_PX).floor() as i32;
 
@@ -222,7 +233,7 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
                             super::world_y_for_step_center(step_at_cursor, row_h);
                         let y_px = self.world_to_px_y(y_world_for_step, bounds);
 
-                        let price_at_cursor = base_price.add_steps(step_at_cursor, step);
+                        let price_at_cursor = price_at_step(step_at_cursor);
                         let label_at_cursor = axis.format(price_at_cursor);
 
                         LabelKind::Cursor {
@@ -237,7 +248,7 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
             let y_world_base = super::world_y_for_step_center(base_step, row_h);
             let y_px_base = self.world_to_px_y(y_world_base, bounds);
 
-            let price_base = base_price.add_steps(base_step, step);
+            let price_base = price_at_step(base_step);
             let label_base = axis.format(price_base);
 
             let base_label = LabelKind::Base {

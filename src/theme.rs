@@ -1,9 +1,9 @@
-use data::config::theme::generated_theme_accents;
+use data::config::theme::{ACCENT_COUNT, generated_theme_accents};
 use iced_core::{Color, Theme};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ThemeAccents {
-    colors: [Color; 6],
+    colors: [Color; ACCENT_COUNT],
     generation: u64,
 }
 
@@ -15,7 +15,7 @@ impl ThemeAccents {
         }
     }
 
-    pub(crate) fn as_array(&self) -> &[Color; 6] {
+    pub(crate) fn as_array(&self) -> &[Color; ACCENT_COUNT] {
         &self.colors
     }
 

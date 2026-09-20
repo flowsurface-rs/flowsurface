@@ -106,16 +106,16 @@ impl DrawingTool {
                 style.stroke_width = 1.2;
             }
             Self::Box => {
-                style.stroke_color = DrawingColor::accent(ThemeAccent::Two, 1.0);
+                style.stroke_color = DrawingColor::accent(ThemeAccent::One, 1.0);
                 style.stroke_width = 1.2;
-                style.fill_color = Some(DrawingColor::accent(ThemeAccent::Two, 0.16));
+                style.fill_color = Some(DrawingColor::accent(ThemeAccent::One, 0.16));
             }
             Self::HorizontalLine => {
-                style.stroke_color = DrawingColor::accent(ThemeAccent::Three, 1.0);
+                style.stroke_color = DrawingColor::accent(ThemeAccent::One, 1.0);
                 style.stroke_width = 1.0;
             }
             Self::VerticalLine => {
-                style.stroke_color = DrawingColor::accent(ThemeAccent::Four, 1.0);
+                style.stroke_color = DrawingColor::accent(ThemeAccent::One, 1.0);
                 style.stroke_width = 1.0;
             }
         }

@@ -1,127 +1,105 @@
-use std::time::{Duration, Instant};
-
 use crate::connector::fetcher::{FetchSpec, RequestHandler};
 use data::chart::Basis;
-use data::chart::kline::{FetchRange, TradeCoverage};
+use data::chart::kline::FetchRange;
 use exchange::{TickerInfo, adapter::StreamKind};
 use iced::task::Handle;
 use rustc_hash::FxHashMap;
 
-const VIEWPORT_FETCH_COALESCE_INTERVAL: Duration = Duration::from_millis(250);
-
 pub enum FetchUpdate {
     Failed(uuid::Uuid),
-    TradeFetchNoData(uuid::Uuid),
-    TradeFetchHandle(Handle),
+    TradeFetchNoData {
+        ticker_info: TickerInfo,
+        req_id: uuid::Uuid,
+    },
+    FetchHandle {
+        req_id: uuid::Uuid,
+        handle: Handle,
+    },
 }
 
-#[derive(Default)]
-pub(super) struct ViewportFetchSchedule {
-    pending_since: Option<Instant>,
-}
-
-impl ViewportFetchSchedule {
-    pub(super) fn schedule(&mut self, now: Instant) {
-        let _ = self.pending_since.get_or_insert(now);
-    }
-
-    pub(super) fn clear(&mut self) {
-        self.pending_since = None;
-    }
-
-    pub(super) fn is_pending(&self) -> bool {
-        self.pending_since.is_some()
-    }
-
-    pub(super) fn is_due(&self, now: Instant) -> bool {
-        self.pending_since.is_some_and(|pending_since| {
-            now.duration_since(pending_since) >= VIEWPORT_FETCH_COALESCE_INTERVAL
-        })
-    }
-
-    pub(super) fn take_due(&mut self, now: Instant) -> bool {
-        if !self.is_due(now) {
-            return false;
-        }
-
-        self.clear();
-        true
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FetchActivity {
+    Kline,
+    Trades { fetched: usize },
+    OpenInterest,
 }
 
 pub struct FetchCoordinator {
     request_handlers: FxHashMap<TickerInfo, RequestHandler>,
-    trade_fetch_handle: Option<Handle>,
-    trade_fetch_in_flight: bool,
-    trade_coverage: Vec<TradeCoverage>,
+    fetch_handles: FxHashMap<uuid::Uuid, Handle>,
 }
 
 impl FetchCoordinator {
     pub fn new(tickers: &[TickerInfo]) -> Self {
         let mut coordinator = Self {
             request_handlers: FxHashMap::default(),
-            trade_fetch_handle: None,
-            trade_fetch_in_flight: false,
-            trade_coverage: Vec::new(),
+            fetch_handles: FxHashMap::default(),
         };
         coordinator.rebuild_handlers(tickers);
         coordinator
     }
 
     pub fn reset(&mut self) {
-        self.clear_trade_fetch_state();
-        self.trade_coverage.clear();
+        self.clear_fetch_state();
+        self.request_handlers.clear();
     }
 
-    pub fn set_handle(&mut self, handle: Handle) {
-        self.trade_fetch_handle = Some(handle);
-    }
-
-    pub fn mark_trade_fetch_no_data(&mut self, base_ticker: TickerInfo, req_id: uuid::Uuid) {
-        if let Some(handler) = self.request_handlers.get_mut(&base_ticker) {
-            let range = handler.request_range(req_id);
-            handler.mark_no_data(req_id);
-            self.record_trade_coverage(range);
-        }
-        self.clear_trade_fetch_state();
-    }
-
-    pub fn mark_failed(&mut self, req_id: uuid::Uuid) {
-        let is_trade_fetch = self
-            .request_handlers
+    pub fn accepts_data(&self, req_id: uuid::Uuid) -> bool {
+        self.request_handlers
             .values()
-            .find_map(|handler| handler.request_range(req_id))
-            .is_some_and(|range| matches!(range, FetchRange::Trades(..)));
+            .any(|handler| handler.is_pending(req_id))
+    }
+
+    pub fn set_handle(&mut self, req_id: uuid::Uuid, handle: Handle) -> bool {
+        if self.accepts_data(req_id) {
+            self.fetch_handles.insert(req_id, handle);
+            true
+        } else {
+            handle.abort();
+            false
+        }
+    }
+
+    pub fn mark_failed(&mut self, req_id: uuid::Uuid) -> bool {
+        if !self.accepts_data(req_id) {
+            log::debug!("Ignoring stale fetch error: {:?}", req_id);
+            return false;
+        }
 
         if self
             .request_handlers
             .values_mut()
             .any(|handler| handler.mark_failed(req_id))
         {
-            if is_trade_fetch {
-                self.clear_trade_fetch_state();
-            }
-            return;
+            self.fetch_handles.remove(&req_id);
+            return true;
         }
 
-        log::warn!("Kline request not found: {:?}", req_id);
+        log::debug!("Ignoring stale kline request: {:?}", req_id);
+        true
     }
 
     pub fn mark_completed(&mut self, ticker_info: TickerInfo, req_id: uuid::Uuid) {
-        if let Some(handler) = self.request_handlers.get_mut(&ticker_info) {
+        self.finish_request(ticker_info, req_id, |handler| {
             handler.mark_completed(req_id);
-        }
+            true
+        });
     }
 
     pub fn mark_failed_for(&mut self, ticker_info: TickerInfo, req_id: uuid::Uuid) {
-        if let Some(handler) = self.request_handlers.get_mut(&ticker_info) {
-            handler.mark_failed(req_id);
-        }
+        self.finish_request(ticker_info, req_id, |handler| handler.mark_failed(req_id));
+    }
+
+    pub fn mark_no_data(&mut self, ticker_info: TickerInfo, req_id: uuid::Uuid) -> bool {
+        self.finish_request(ticker_info, req_id, |handler| {
+            handler.mark_no_data(req_id);
+            true
+        })
     }
 
     pub fn complete_trade_fetch(
         &mut self,
-        base_ticker: TickerInfo,
+        ticker_info: TickerInfo,
         req_id: Option<uuid::Uuid>,
         is_batches_done: bool,
     ) {
@@ -129,14 +107,26 @@ impl FetchCoordinator {
             return;
         }
 
-        if let Some(req_id) = req_id
-            && let Some(handler) = self.request_handlers.get_mut(&base_ticker)
-        {
-            let range = handler.request_range(req_id);
-            handler.mark_completed(req_id);
-            self.record_trade_coverage(range);
-            self.clear_trade_fetch_state();
+        if let Some(req_id) = req_id {
+            self.mark_completed(ticker_info, req_id);
         }
+    }
+
+    fn finish_request(
+        &mut self,
+        ticker_info: TickerInfo,
+        req_id: uuid::Uuid,
+        finish: impl FnOnce(&mut RequestHandler) -> bool,
+    ) -> bool {
+        let Some(handler) = self.request_handlers.get_mut(&ticker_info) else {
+            return false;
+        };
+        if !handler.is_pending(req_id) || !finish(handler) {
+            return false;
+        }
+
+        self.fetch_handles.remove(&req_id);
+        true
     }
 
     pub fn add_ticker(&mut self, ticker_info: TickerInfo) {
@@ -144,19 +134,84 @@ impl FetchCoordinator {
     }
 
     pub fn remove_ticker(&mut self, ticker_info: TickerInfo) {
-        self.request_handlers.remove(&ticker_info);
+        if let Some(handler) = self.request_handlers.remove(&ticker_info) {
+            for req_id in handler.request_ids() {
+                self.fetch_handles.remove(&req_id);
+            }
+        }
     }
 
     pub fn rebuild_handlers(&mut self, tickers: &[TickerInfo]) {
         self.reset();
-        self.request_handlers.clear();
         for &ticker in tickers {
             self.add_ticker(ticker);
         }
     }
 
-    pub fn trade_coverage(&self) -> &[TradeCoverage] {
-        &self.trade_coverage
+    /// Open Interest is a disposable input cache. Once its last consumer is
+    /// removed, completed request markers must be discarded as well so a
+    /// later consumer can reacquire the same viewport range.
+    pub fn clear_open_interest_requests(&mut self) {
+        let request_ids = self
+            .request_handlers
+            .values_mut()
+            .flat_map(RequestHandler::clear_open_interest_requests)
+            .collect::<Vec<_>>();
+        for req_id in request_ids {
+            if let Some(handle) = self.fetch_handles.remove(&req_id) {
+                handle.abort();
+            }
+        }
+    }
+
+    pub fn pending_requests(&self) -> impl Iterator<Item = (TickerInfo, FetchRange)> + '_ {
+        self.request_handlers
+            .iter()
+            .flat_map(|(&ticker_info, handler)| {
+                handler
+                    .pending_ranges()
+                    .map(move |range| (ticker_info, range))
+            })
+    }
+
+    pub(super) fn pending_activity(&self) -> Vec<FetchActivity> {
+        let mut has_klines = false;
+        let mut trade_count: Option<usize> = None;
+        let mut has_open_interest = false;
+
+        for handler in self.request_handlers.values() {
+            for range in handler.pending_ranges() {
+                match range {
+                    FetchRange::Kline(..) => has_klines = true,
+                    FetchRange::Trades(..) => {}
+                    FetchRange::OpenInterest { .. } => has_open_interest = true,
+                }
+            }
+
+            if let Some(count) = handler.pending_trade_count() {
+                trade_count = Some(trade_count.unwrap_or_default().saturating_add(count));
+            }
+        }
+
+        let mut activity = Vec::with_capacity(3);
+        if has_klines {
+            activity.push(FetchActivity::Kline);
+        }
+        if let Some(fetched) = trade_count {
+            activity.push(FetchActivity::Trades { fetched });
+        }
+        if has_open_interest {
+            activity.push(FetchActivity::OpenInterest);
+        }
+        activity
+    }
+
+    pub(super) fn record_trade_batch(&mut self, req_id: uuid::Uuid, count: usize) {
+        for handler in self.request_handlers.values_mut() {
+            if handler.record_trade_batch(req_id, count) {
+                return;
+            }
+        }
     }
 
     pub fn collect_requests(
@@ -173,7 +228,7 @@ impl FetchCoordinator {
                         self.queue_trade_fetch(ticker_info, range, &mut requests);
                     }
                 }
-                FetchRange::Kline(..) | FetchRange::OpenInterest(..) => {
+                FetchRange::Kline(..) | FetchRange::OpenInterest { .. } => {
                     for ticker_info in tickers {
                         self.queue_kline_fetch(ticker_info, range, basis, &mut requests);
                     }
@@ -211,51 +266,29 @@ impl FetchCoordinator {
 
     fn queue_trade_fetch(
         &mut self,
-        base_ticker: TickerInfo,
+        ticker_info: TickerInfo,
         range: FetchRange,
         out: &mut Vec<FetchSpec>,
     ) {
-        if self.trade_fetch_in_flight {
+        let handler = self.request_handlers.entry(ticker_info).or_default();
+
+        if handler.has_pending_trade_fetch() {
             return;
         }
 
-        let handler = self.request_handlers.entry(base_ticker).or_default();
-
         if let Ok(Some(req_id)) = handler.add_request(range) {
-            self.trade_fetch_in_flight = true;
             out.push(FetchSpec::from((
                 req_id,
                 range,
-                Some(StreamKind::Trades {
-                    ticker_info: base_ticker,
-                }),
+                Some(StreamKind::Trades { ticker_info }),
             )));
         }
     }
 
-    fn clear_trade_fetch_state(&mut self) {
-        self.trade_fetch_handle = None;
-        self.trade_fetch_in_flight = false;
-    }
-
-    fn record_trade_coverage(&mut self, range: Option<FetchRange>) {
-        let Some(FetchRange::Trades(earliest, latest)) = range else {
-            return;
-        };
-
-        self.trade_coverage
-            .push(TradeCoverage::new(earliest, latest));
-        self.trade_coverage.sort_by_key(|range| range.earliest());
-
-        let mut merged: Vec<TradeCoverage> = Vec::with_capacity(self.trade_coverage.len());
-        for range in self.trade_coverage.drain(..) {
-            if let Some(previous) = merged.last_mut()
-                && previous.merge_if_connected(range)
-            {
-                continue;
-            }
-            merged.push(range);
+    fn clear_fetch_state(&mut self) {
+        for handle in self.fetch_handles.values() {
+            handle.abort();
         }
-        self.trade_coverage = merged;
+        self.fetch_handles.clear();
     }
 }

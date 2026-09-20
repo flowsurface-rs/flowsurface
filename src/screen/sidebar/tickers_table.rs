@@ -1212,16 +1212,12 @@ impl TickersTable {
         let (fav_rows, rest_rows) = self.filtered_rows_compact(&injected_q, &selected_set);
 
         let base_ticker_id = base_ticker.map(|bt| bt.ticker);
-        let selected_list: Vec<TickerInfo> = selected_tickers
-            .map(|slice| {
-                slice
-                    .iter()
-                    .copied()
-                    .filter(|ti| Some(ti.ticker) != base_ticker_id)
-                    .collect()
-            })
-            .unwrap_or_default();
-        let selected_count = selected_list.len() + if base_ticker_id.is_some() { 1 } else { 0 };
+        let selected_count = selected_tickers.map_or(0, |slice| {
+            slice
+                .iter()
+                .filter(|ti| Some(ti.ticker) != base_ticker_id)
+                .count()
+        }) + usize::from(base_ticker_id.is_some());
 
         let virtual_list = VirtualListConfig {
             row_height: COMPACT_ROW_HEIGHT,
@@ -1233,8 +1229,12 @@ impl TickersTable {
         let win = virtual_list.window(scroll_offset.y, bounds.height, total_n);
 
         let top_bar = self.compact_top_bar(search_query, search_box_id, on_search);
-        let selected_section =
-            self.compact_selected_section(base_ticker, selected_list, on_select, selection_enabled);
+        let selected_section = self.compact_selected_section(
+            base_ticker,
+            selected_tickers,
+            on_select,
+            selection_enabled,
+        );
 
         let list = self.compact_virtual_list(
             &virtual_list,
@@ -1357,7 +1357,7 @@ impl TickersTable {
     fn compact_selected_section<'a, M, FSelect>(
         &'a self,
         base_ticker: Option<TickerInfo>,
-        selected_list: Vec<TickerInfo>,
+        selected_tickers: Option<&'a [TickerInfo]>,
         on_select: FSelect,
         selection_enabled: bool,
     ) -> Option<Element<'a, M>>
@@ -1365,7 +1365,14 @@ impl TickersTable {
         M: 'a + Clone,
         FSelect: 'static + Copy + Fn(RowSelection) -> M,
     {
-        if base_ticker.is_none() && selected_list.is_empty() {
+        let base_ticker_id = base_ticker.map(|bt| bt.ticker);
+        let selected_count = selected_tickers.map_or(0, |slice| {
+            slice
+                .iter()
+                .filter(|ti| Some(ti.ticker) != base_ticker_id)
+                .count()
+        });
+        if base_ticker.is_none() && selected_count == 0 {
             return None;
         }
 
@@ -1383,26 +1390,32 @@ impl TickersTable {
             ));
         }
 
-        for info in selected_list {
-            let label = self.label_with_suffix(info.ticker);
+        if let Some(selected_tickers) = selected_tickers {
+            for info in selected_tickers
+                .iter()
+                .copied()
+                .filter(|ti| Some(ti.ticker) != base_ticker_id)
+            {
+                let label = self.label_with_suffix(info.ticker);
 
-            let (left_action, right) = if selection_enabled {
-                (
-                    Some(RowSelection::Switch(info)),
-                    Some(("Remove", Some(RowSelection::Remove(info)))),
-                )
-            } else {
-                (Some(RowSelection::Switch(info)), None)
-            };
+                let (left_action, right) = if selection_enabled {
+                    (
+                        Some(RowSelection::Switch(info)),
+                        Some(("Remove", Some(RowSelection::Remove(info)))),
+                    )
+                } else {
+                    (Some(RowSelection::Switch(info)), None)
+                };
 
-            col = col.push(Self::mini_ticker_card(
-                info.ticker.exchange,
-                label,
-                left_action,
-                right,
-                None,
-                on_select,
-            ));
+                col = col.push(Self::mini_ticker_card(
+                    info.ticker.exchange,
+                    label,
+                    left_action,
+                    right,
+                    None,
+                    on_select,
+                ));
+            }
         }
 
         Some(col.into())

@@ -32,6 +32,7 @@ pub struct SavedState {
     pub volume_size_unit: exchange::SizeUnit,
     pub network: data::Network,
     pub cache_market_metadata: bool,
+    pub antialiasing: bool,
 }
 
 impl SavedState {
@@ -62,6 +63,7 @@ impl Default for SavedState {
             volume_size_unit: exchange::SizeUnit::Base,
             network: data::Network::default(),
             cache_market_metadata: false,
+            antialiasing: true,
         }
     }
 }
@@ -189,7 +191,6 @@ pub fn configuration(pane: data::Pane) -> Configuration<pane::State> {
             let content = pane::Content::Kline {
                 chart: None,
                 layout,
-                kline_indicators: Box::default(),
             };
 
             Configuration::Pane(pane::State::from_config(
@@ -249,7 +250,6 @@ pub fn load_saved_state() -> SavedState {
                     configuration(layout.dashboard.pane.clone()),
                     popout_windows,
                     layout.dashboard.chart_settings,
-                    layout_id,
                 );
 
                 de_layouts.push((layout.name.clone(), layout_id, dashboard));
@@ -317,6 +317,7 @@ pub fn load_saved_state() -> SavedState {
                 volume_size_unit: state.size_in_quote_ccy,
                 network,
                 cache_market_metadata: state.cache_market_metadata,
+                antialiasing: state.antialiasing,
             }
         }
         Err(e) => {

@@ -15,6 +15,9 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 
 pub use audio::AudioStream;
+pub use chart::kline::indicators::{
+    IndicatorCatalogPaths, initialize_indicator_catalog, initialize_indicator_catalog_with_paths,
+};
 pub use config::ScaleFactor;
 pub use config::network::{Network, TradeFetchMode};
 pub use config::sidebar::{self, Sidebar};
@@ -22,7 +25,11 @@ pub use config::state::{Layouts, State};
 pub use config::theme::Theme;
 pub use config::timezone::UserTimezone;
 
+#[doc(hidden)]
+pub use ::exchange;
 use ::log::{error, info, warn};
+#[doc(hidden)]
+pub use ::serde;
 pub use layout::{Dashboard, Layout, Pane};
 pub use metadata::{MarketMetadata, MetadataSource};
 
@@ -213,6 +220,12 @@ fn cleanup_directory(data_path: &PathBuf) -> usize {
     }
 
     deleted_files.len()
+}
+
+pub fn load_antialiasing() -> bool {
+    read_from_file(SAVED_STATE_PATH)
+        .map(|state| state.antialiasing)
+        .unwrap_or_else(|_| true)
 }
 
 pub fn cleanup_old_market_data() -> usize {

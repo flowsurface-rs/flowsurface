@@ -133,6 +133,13 @@ cargo run --release
 
 </details>
 
+## Indicator sources
+
+Flowsurface includes an app-managed core indicator collection and supports optional
+filesystem-installed sources. See [`indicators/README.md`](./indicators/README.md)
+for the repository layout and installation directory. Source files use the
+final segment of their DSL ID as the filename, and duplicate names fail startup.
+
 ## Community
 
 Discord: https://discord.gg/RN2XAF7ZuR

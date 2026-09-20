@@ -263,7 +263,7 @@ impl Scene {
         self.sync_cell_world_uniform();
     }
 
-    pub fn price_at_center(&self, base_price: Price, step: PriceStep) -> Price {
+    pub fn price_at_center(&self, base_price: Price, step: PriceStep) -> Option<Price> {
         self.camera
             .price_at_center(self.cell.height_world(), base_price, step)
     }

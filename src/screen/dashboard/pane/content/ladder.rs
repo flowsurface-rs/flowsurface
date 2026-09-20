@@ -785,14 +785,14 @@ impl Ladder {
     fn build_price_grid(&self) -> Option<PriceGrid> {
         let best_bid = match (self.best_price(Side::Bid), self.best_price(Side::Ask)) {
             (Some(bb), _) => bb,
-            (None, Some(ba)) => ba.add_steps(-1, self.step),
+            (None, Some(ba)) => ba.checked_add_steps(-1, self.step)?,
             (None, None) => {
                 let (min_t, max_t) = self.trades.price_range()?;
                 let steps = Price::steps_between_inclusive(min_t, max_t, self.step).unwrap_or(1);
-                max_t.add_steps(-(steps as i64 / 2), self.step)
+                max_t.checked_add_steps(-(steps as i64 / 2), self.step)?
             }
         };
-        let best_ask = best_bid.add_steps(1, self.step);
+        let best_ask = best_bid.checked_add_steps(1, self.step)?;
 
         Some(PriceGrid {
             best_bid,
@@ -925,10 +925,10 @@ impl PriceGrid {
         }
         if idx > 0 {
             let off = (idx - 1) as i64; // 1 => best_bid, 2 => best_bid - 1 tick
-            Some(self.best_bid.add_steps(-off, self.tick))
+            self.best_bid.checked_add_steps(-off, self.tick)
         } else {
             let off = (-1 - idx) as i64; // -1 => best_ask, -2 => best_ask + 1 tick
-            Some(self.best_ask.add_steps(off, self.tick))
+            self.best_ask.checked_add_steps(off, self.tick)
         }
     }
 

@@ -1,20 +1,23 @@
+use super::YUnit;
 use super::chrome::{
-    CornerControlHit, FootprintLegendIconKind, FootprintLegendLayout, IndicatorLegendLayout,
-    PanelControlHit, StudiesLegendIconKind, StudyLegendIconKind, StudyLegendLayout,
-    TickerLegendIconKind, TickerLegendLayout,
+    CornerControlHit, CornerControlKind, FootprintLegendHit, FootprintLegendIconKind,
+    FootprintLegendLayout, IndicatorLegendHit, IndicatorLegendIconKind, IndicatorLegendLayout,
+    PanelControlHit, PanelControlKind, StudiesLegendIconKind, StudyLegendHit, StudyLegendIconKind,
+    StudyLegendLayout, TickerLegendHit, TickerLegendIconKind, TickerLegendLayout,
 };
 use super::composition::{
-    LayerDataKind, MarkKind, PanelPresentation, PanelScaleMode, PanelValueId,
+    MarkKind, PanelPresentation, PanelScaleMode, PanelValueId, PanelValuePrecision,
 };
+use super::drawing::{DrawingHandleKind, DrawingId};
 use super::layout::PanelLayoutTree;
-use super::{BarSpacingPx, YUnit};
-use data::chart::kline::viewport::{ChartCoord, ChartStepMs};
+use data::chart::kline::viewport::{ChartCoord, ChartStepMs, YUnitRange};
 
 use data::chart::kline::WorldAxis;
 use data::chart::ticks::{Y_LABEL_DENSITY, y::YAxisScale, y_labels_that_fit};
-use exchange::{Timeframe, UnixMs};
+use exchange::{TickerInfo, Timeframe, UnixMs, unit::Price};
 
 use iced::Rectangle;
+use std::ops::Range;
 use std::sync::Arc;
 
 pub(super) const Y_UNIT_STEP_FALLBACK: f32 = 1e-4;
@@ -47,26 +50,6 @@ pub(super) enum XAxis {
 }
 
 impl XAxis {
-    pub(super) fn bar_at_unit(
-        self,
-        bars: &[exchange::Kline],
-        target_unit: i64,
-    ) -> Option<&exchange::Kline> {
-        match self {
-            XAxis::Time { .. } => bars
-                .iter()
-                .find(|bar| self.unit_from_time(bar.time) == target_unit),
-            XAxis::Tick { .. } => {
-                let len = bars.len();
-                bars.iter().enumerate().find_map(|(index, bar)| {
-                    let from_latest = len.saturating_sub(1).saturating_sub(index) as u64;
-                    (self.unit_from_tick(TickIndex::from_u64(from_latest)) == target_unit)
-                        .then_some(bar)
-                })
-            }
-        }
-    }
-
     #[inline]
     pub(super) fn unit_from_time(self, value: UnixMs) -> i64 {
         match self {
@@ -153,30 +136,155 @@ pub(super) struct CursorInfo {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(super) struct ValueDomain {
-    pub(super) units: (YUnit, YUnit),
-    pub(super) values: (f32, f32),
+pub(super) struct PanelValueScale {
+    precision: Option<PanelValuePrecision>,
+    base_ticker: Option<TickerInfo>,
 }
 
-impl ValueDomain {
-    pub(super) fn new(units: (YUnit, YUnit), values: (f32, f32)) -> Self {
-        Self { units, values }
+impl PanelValueScale {
+    fn round_to_i64_saturating(value: f32) -> i64 {
+        if value.is_nan() {
+            return 0;
+        }
+        if value.is_infinite() {
+            return if value.is_sign_negative() {
+                i64::MIN
+            } else {
+                i64::MAX
+            };
+        }
+
+        let rounded = value.round();
+        if rounded > i64::MAX as f32 {
+            i64::MAX
+        } else if rounded < i64::MIN as f32 {
+            i64::MIN
+        } else {
+            rounded as i64
+        }
     }
 
-    pub(super) fn min_unit(self) -> YUnit {
-        self.units.0
+    fn fallback_value_to_unit_f32(value: f32) -> YUnit {
+        if !value.is_finite() {
+            return YUnit(0);
+        }
+
+        YUnit(Self::round_to_i64_saturating(value / Y_UNIT_STEP_FALLBACK))
     }
 
-    pub(super) fn max_unit(self) -> YUnit {
-        self.units.1
+    fn fallback_value_to_unit(value: f64) -> YUnit {
+        if !value.is_finite() {
+            return YUnit(0);
+        }
+
+        let rounded = (value / f64::from(Y_UNIT_STEP_FALLBACK)).round();
+        let unit = if rounded > i64::MAX as f64 {
+            i64::MAX
+        } else if rounded < i64::MIN as f64 {
+            i64::MIN
+        } else {
+            rounded as i64
+        };
+        YUnit(unit)
     }
 
-    pub(super) fn min_value(self) -> f32 {
-        self.values.0
+    pub(super) fn new(
+        precision: Option<PanelValuePrecision>,
+        base_ticker: Option<TickerInfo>,
+    ) -> Self {
+        Self {
+            precision,
+            base_ticker,
+        }
     }
 
-    pub(super) fn max_value(self) -> f32 {
-        self.values.1
+    pub(super) fn quantization_step_f32(self) -> Option<f32> {
+        self.precision
+            .and_then(|precision| precision.quantization_step_f32(self.base_ticker))
+    }
+
+    pub(super) fn quantization_step(self) -> Option<f64> {
+        self.precision
+            .and_then(|precision| precision.quantization_step(self.base_ticker))
+    }
+
+    pub(super) fn value_to_unit_f32(self, value: f32) -> YUnit {
+        self.precision
+            .map(|precision| {
+                precision.value_to_unit_f32(value, self.base_ticker, Y_UNIT_STEP_FALLBACK)
+            })
+            .unwrap_or_else(|| Self::fallback_value_to_unit_f32(value))
+    }
+
+    pub(super) fn value_to_unit(self, value: f64) -> YUnit {
+        self.precision
+            .map(|precision| {
+                precision.value_to_unit(value, self.base_ticker, f64::from(Y_UNIT_STEP_FALLBACK))
+            })
+            .unwrap_or_else(|| Self::fallback_value_to_unit(value))
+    }
+
+    pub(super) fn unit_to_value_f32(self, unit: YUnit) -> f32 {
+        self.precision
+            .map(|precision| {
+                precision.unit_to_value_f32(unit, self.base_ticker, Y_UNIT_STEP_FALLBACK)
+            })
+            .unwrap_or_else(|| (unit.0 as f32) * Y_UNIT_STEP_FALLBACK)
+    }
+
+    pub(super) fn unit_to_value(self, unit: YUnit) -> f64 {
+        self.precision
+            .map(|precision| {
+                precision.unit_to_value(unit, self.base_ticker, f64::from(Y_UNIT_STEP_FALLBACK))
+            })
+            .unwrap_or_else(|| (unit.0 as f64) * f64::from(Y_UNIT_STEP_FALLBACK))
+    }
+
+    pub(super) fn price_to_unit(self, value: Price) -> YUnit {
+        self.precision
+            .and_then(|precision| precision.price_to_unit(value, self.base_ticker))
+            .unwrap_or_else(|| self.value_to_unit_f32(value.to_f32_lossy()))
+    }
+
+    pub(super) fn values(self, range: YUnitRange) -> (f64, f64) {
+        (
+            self.unit_to_value(range.min()),
+            self.unit_to_value(range.max()),
+        )
+    }
+
+    pub(super) fn values_f32(self, range: YUnitRange) -> (f32, f32) {
+        (
+            self.unit_to_value_f32(range.min()),
+            self.unit_to_value_f32(range.max()),
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct PanelDomainState {
+    active: YUnitRange,
+    autoscale: YUnitRange,
+}
+
+impl PanelDomainState {
+    pub(super) fn new(autoscale: YUnitRange) -> Self {
+        Self {
+            active: autoscale,
+            autoscale,
+        }
+    }
+
+    pub(super) fn active(self) -> YUnitRange {
+        self.active
+    }
+
+    pub(super) fn autoscale(self) -> YUnitRange {
+        self.autoscale
+    }
+
+    pub(super) fn set_active(&mut self, range: YUnitRange) {
+        self.active = range;
     }
 }
 
@@ -184,8 +292,6 @@ impl ValueDomain {
 pub(super) struct XViewport {
     pub(super) axis: XAxis,
     pub(super) world: WorldAxis,
-    pub(super) bar_spacing_px: BarSpacingPx,
-    pub(super) logical_bar_spacing: f32,
     pub(super) fractional_offset: f32,
     pub(super) min_unit: i64,
     pub(super) max_unit: i64,
@@ -194,9 +300,9 @@ pub(super) struct XViewport {
 #[derive(Debug, Clone)]
 pub(super) struct PrimaryScale {
     pub(super) panel_index: usize,
-    pub(super) domain: ValueDomain,
+    pub(super) domain: PanelDomainState,
     pub(super) display_domain_override: Option<(f32, f32)>,
-    pub(super) unit_step: f32,
+    pub(super) value_scale: PanelValueScale,
     pub(super) mark: MarkKind,
     pub(super) mode: PanelScaleMode,
     pub(super) inverted: bool,
@@ -210,28 +316,19 @@ pub(super) struct PrimaryScale {
 pub(super) struct IndicatorPanelScene {
     pub(super) panel_index: usize,
     pub(super) value_id: Option<PanelValueId>,
-    pub(super) unit_step: f32,
-    pub(super) domain: ValueDomain,
-    pub(super) mark: MarkKind,
-    pub(super) data_kind: LayerDataKind,
+    pub(super) value_scale: PanelValueScale,
+    pub(super) domain: PanelDomainState,
+    pub(super) independent_domain: Option<YUnitRange>,
     pub(super) presentation: PanelPresentation,
 }
 
 impl IndicatorPanelScene {
-    pub(super) fn min_value(self) -> f32 {
-        self.domain.min_value()
+    pub(super) fn min_value(self) -> f64 {
+        self.value_scale.unit_to_value(self.domain.active().min())
     }
 
-    pub(super) fn max_value(self) -> f32 {
-        self.domain.max_value()
-    }
-
-    pub(super) fn min_unit(self) -> YUnit {
-        self.domain.min_unit()
-    }
-
-    pub(super) fn max_unit(self) -> YUnit {
-        self.domain.max_unit()
+    pub(super) fn max_value(self) -> f64 {
+        self.value_scale.unit_to_value(self.domain.active().max())
     }
 }
 
@@ -245,31 +342,261 @@ pub(super) struct ChromeScene {
     pub(super) indicator_legend: Option<IndicatorLegendLayout>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum LegendTarget {
+    Ticker {
+        row: usize,
+        icon: Option<TickerLegendIconKind>,
+    },
+    Footprint {
+        icon: Option<FootprintLegendIconKind>,
+    },
+    StudyCategory {
+        icon: Option<StudiesLegendIconKind>,
+    },
+    Study {
+        row: usize,
+        icon: Option<StudyLegendIconKind>,
+    },
+    Indicator {
+        row: usize,
+        icon: Option<IndicatorLegendIconKind>,
+    },
+}
+
+impl From<TickerLegendHit> for LegendTarget {
+    fn from(hit: TickerLegendHit) -> Self {
+        match hit {
+            TickerLegendHit::Row(row) => Self::Ticker { row, icon: None },
+            TickerLegendHit::Icon(row, icon) => Self::Ticker {
+                row,
+                icon: Some(icon),
+            },
+        }
+    }
+}
+
+impl From<FootprintLegendHit> for LegendTarget {
+    fn from(hit: FootprintLegendHit) -> Self {
+        match hit {
+            FootprintLegendHit::Row => Self::Footprint { icon: None },
+            FootprintLegendHit::Icon(icon) => Self::Footprint { icon: Some(icon) },
+        }
+    }
+}
+
+impl From<StudyLegendHit> for LegendTarget {
+    fn from(hit: StudyLegendHit) -> Self {
+        match hit {
+            StudyLegendHit::CategoryRow => Self::StudyCategory { icon: None },
+            StudyLegendHit::CategoryIcon(icon) => Self::StudyCategory { icon: Some(icon) },
+            StudyLegendHit::StudyRow(row) => Self::Study { row, icon: None },
+            StudyLegendHit::StudyIcon(row, icon) => Self::Study {
+                row,
+                icon: Some(icon),
+            },
+        }
+    }
+}
+
+impl From<IndicatorLegendHit> for LegendTarget {
+    fn from(hit: IndicatorLegendHit) -> Self {
+        match hit {
+            IndicatorLegendHit::Row(row) => Self::Indicator { row, icon: None },
+            IndicatorLegendHit::Icon(row, icon) => Self::Indicator {
+                row,
+                icon: Some(icon),
+            },
+        }
+    }
+}
+
+impl LegendTarget {
+    pub(super) fn has_icon(self) -> bool {
+        matches!(
+            self,
+            Self::Ticker { icon: Some(_), .. }
+                | Self::Footprint { icon: Some(_), .. }
+                | Self::StudyCategory { icon: Some(_), .. }
+                | Self::Study { icon: Some(_), .. }
+                | Self::Indicator { icon: Some(_), .. }
+        )
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CursorTarget {
+    ActiveDrag,
+    ActivePan,
+    #[default]
+    Outside,
+    Plot(usize),
+    Splitter(usize),
+    YAxis(usize),
+    PanelXAxis(usize),
+    BottomXAxis,
+    PanelControl {
+        panel_index: usize,
+        kind: PanelControlKind,
+    },
+    CornerControl(CornerControlKind),
+    Legend(LegendTarget),
+    DrawingHandle {
+        id: DrawingId,
+        kind: DrawingHandleKind,
+    },
+    Drawing(DrawingId),
+}
+
+impl CursorTarget {
+    pub(super) fn readouts_visible(self) -> bool {
+        matches!(self, Self::Plot(_) | Self::ActivePan)
+    }
+
+    pub(super) fn ticker_row_is_hovered(self, index: usize) -> bool {
+        matches!(
+            self,
+            Self::Legend(LegendTarget::Ticker { row, .. }) if row == index
+        )
+    }
+
+    pub(super) fn ticker_icon_is_hovered(self, index: usize, kind: TickerLegendIconKind) -> bool {
+        matches!(
+            self,
+            Self::Legend(LegendTarget::Ticker {
+                row,
+                icon: Some(icon),
+            }) if row == index && icon == kind
+        )
+    }
+
+    pub(super) fn footprint_legend_is_hovered(self) -> bool {
+        matches!(self, Self::Legend(LegendTarget::Footprint { .. }))
+    }
+
+    pub(super) fn footprint_icon_is_hovered(self, kind: FootprintLegendIconKind) -> bool {
+        matches!(
+            self,
+            Self::Legend(LegendTarget::Footprint { icon: Some(icon) }) if icon == kind
+        )
+    }
+
+    pub(super) fn study_category_is_hovered(self) -> bool {
+        matches!(self, Self::Legend(LegendTarget::StudyCategory { .. }))
+    }
+
+    pub(super) fn studies_icon_is_hovered(self, kind: StudiesLegendIconKind) -> bool {
+        matches!(
+            self,
+            Self::Legend(LegendTarget::StudyCategory { icon: Some(icon) }) if icon == kind
+        )
+    }
+
+    pub(super) fn study_row_is_hovered(self, index: usize) -> bool {
+        matches!(
+            self,
+            Self::Legend(LegendTarget::Study { row, .. }) if row == index
+        )
+    }
+
+    pub(super) fn study_icon_is_hovered(self, index: usize, kind: StudyLegendIconKind) -> bool {
+        matches!(
+            self,
+            Self::Legend(LegendTarget::Study {
+                row,
+                icon: Some(icon),
+            }) if row == index && icon == kind
+        )
+    }
+
+    pub(super) fn indicator_row_is_hovered(self, index: usize) -> bool {
+        matches!(
+            self,
+            Self::Legend(LegendTarget::Indicator { row, .. }) if row == index
+        )
+    }
+
+    pub(super) fn indicator_row(self) -> Option<usize> {
+        match self {
+            Self::Legend(LegendTarget::Indicator { row, .. }) => Some(row),
+            _ => None,
+        }
+    }
+
+    pub(super) fn indicator_icon_is_hovered(
+        self,
+        index: usize,
+        kind: IndicatorLegendIconKind,
+    ) -> bool {
+        matches!(
+            self,
+            Self::Legend(LegendTarget::Indicator {
+                row,
+                icon: Some(icon),
+            }) if row == index && icon == kind
+        )
+    }
+
+    pub(super) fn panel_control_is_hovered(
+        self,
+        panel_index: usize,
+        kind: PanelControlKind,
+    ) -> bool {
+        matches!(
+            self,
+            Self::PanelControl {
+                panel_index: hovered_panel,
+                kind: hovered_kind,
+            } if hovered_panel == panel_index && hovered_kind == kind
+        )
+    }
+
+    pub(super) fn corner_control_is_hovered(self, kind: CornerControlKind) -> bool {
+        matches!(self, Self::CornerControl(hovered_kind) if hovered_kind == kind)
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub(super) struct SceneInteraction {
+    pub(super) target: CursorTarget,
     pub(super) controls_visible_for_panel: Option<usize>,
-    pub(super) hovered_control: Option<PanelControlHit>,
-    pub(super) hovered_corner_control: Option<CornerControlHit>,
-    pub(super) hovering_ticker_legend: bool,
-    pub(super) hovered_ticker_row: Option<usize>,
-    pub(super) hovered_ticker_icon: Option<(usize, TickerLegendIconKind)>,
-    pub(super) hovering_footprint_legend: bool,
-    pub(super) hovered_footprint_icon: Option<FootprintLegendIconKind>,
-    pub(super) hovering_study_legend: bool,
-    pub(super) hovered_study_row: Option<usize>,
-    pub(super) hovered_study_icon: Option<(usize, StudyLegendIconKind)>,
-    pub(super) hovered_studies_icon: Option<StudiesLegendIconKind>,
-    pub(super) hovering_indicator_legend: bool,
-    pub(super) hovered_indicator_row: Option<usize>,
-    pub(super) hovered_indicator_icon: Option<(usize, super::chrome::IndicatorLegendIconKind)>,
     pub(super) cursor: Option<CursorInfo>,
+}
+
+impl SceneInteraction {
+    pub(super) fn readouts_visible(&self) -> bool {
+        self.target.readouts_visible()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct BarUnitWindow {
+    pub(super) values: Vec<i64>,
+    pub(super) start_index: usize,
+}
+
+impl BarUnitWindow {
+    pub(super) fn global_index(&self, local_index: usize) -> Option<usize> {
+        self.start_index.checked_add(local_index)
+    }
+
+    pub(super) fn global_range(&self, local_range: Range<usize>) -> Range<usize> {
+        self.start_index.saturating_add(local_range.start)
+            ..self.start_index.saturating_add(local_range.end)
+    }
+
+    pub(super) fn unit_at_global_index(&self, index: usize) -> Option<i64> {
+        index
+            .checked_sub(self.start_index)
+            .and_then(|local_index| self.values.get(local_index).copied())
+    }
 }
 
 #[derive(Debug)]
 pub(super) struct SceneBase {
     pub(super) layout: PanelLayoutTree,
     pub(super) x: XViewport,
-    pub(super) bar_units: Arc<[Vec<i64>]>,
+    pub(super) bar_units: Arc<[BarUnitWindow]>,
     pub(super) primary: PrimaryScale,
     pub(super) indicator_panels: Vec<IndicatorPanelScene>,
     pub(super) panel_controls: Vec<PanelControlHit>,
@@ -280,7 +607,7 @@ pub(super) struct SceneBase {
 pub(super) struct Scene {
     pub(super) layout: PanelLayoutTree,
     pub(super) x: XViewport,
-    pub(super) bar_units: Arc<[Vec<i64>]>,
+    pub(super) bar_units: Arc<[BarUnitWindow]>,
     pub(super) primary: PrimaryScale,
     pub(super) indicator_panels: Vec<IndicatorPanelScene>,
     pub(super) chrome: ChromeScene,
@@ -356,43 +683,12 @@ pub(super) struct PrimaryPercentScaleState {
 }
 
 impl Scene {
-    fn round_to_i64_saturating(value: f32) -> i64 {
-        if !value.is_finite() {
-            return 0;
-        }
-
-        let rounded = value.round();
-        if rounded > i64::MAX as f32 {
-            i64::MAX
-        } else if rounded < i64::MIN as f32 {
-            i64::MIN
-        } else {
-            rounded as i64
-        }
-    }
-
-    pub(super) fn unit_step_or_default(step: Option<f32>) -> f32 {
-        step.unwrap_or(Y_UNIT_STEP_FALLBACK).abs().max(1e-8)
-    }
-
-    pub(super) fn value_to_unit_with_step(value: f32, unit_step: f32) -> YUnit {
-        if !value.is_finite() || !unit_step.is_finite() || unit_step <= 0.0 {
-            return YUnit(0);
-        }
-
-        YUnit(Self::round_to_i64_saturating(value / unit_step))
-    }
-
-    pub(super) fn unit_to_value_with_step(y_unit: YUnit, unit_step: f32) -> f32 {
-        (y_unit.0 as f32) * unit_step
-    }
-
     fn primary_value_to_unit(&self, value: f32) -> YUnit {
-        Self::value_to_unit_with_step(value, self.primary.unit_step)
+        self.primary.value_scale.value_to_unit_f32(value)
     }
 
     pub(super) fn primary_unit_to_value(&self, y_unit: YUnit) -> f32 {
-        Self::unit_to_value_with_step(y_unit, self.primary.unit_step)
+        self.primary.value_scale.unit_to_value_f32(y_unit)
     }
 
     pub(super) fn lerp_unit(min_unit: YUnit, max_unit: YUnit, ratio: f32) -> YUnit {
@@ -439,12 +735,8 @@ impl Scene {
             .map(|rect| rect.y + rect.height)
     }
 
-    pub(super) fn bar_spacing_px(&self) -> BarSpacingPx {
-        self.x.bar_spacing_px
-    }
-
     pub(super) fn logical_bar_spacing(&self) -> f32 {
-        self.x.logical_bar_spacing
+        self.x.world.spacing()
     }
 
     pub(super) fn x_axis_plot_width(&self) -> f32 {
@@ -457,10 +749,6 @@ impl Scene {
         self.x.max_unit as f32 + self.x.fractional_offset
     }
 
-    pub(super) fn plot_right_edge_px(&self) -> f32 {
-        self.x_axis_plot_width().floor().max(1.0)
-    }
-
     pub(super) fn map_x_plot(&self, x_unit: i64) -> f32 {
         self.map_x_plot_f32(x_unit as f32)
     }
@@ -468,7 +756,7 @@ impl Scene {
     pub(super) fn map_x_plot_f32(&self, x_unit: f32) -> f32 {
         self.x
             .world
-            .world_to_screen(x_unit, self.plot_right_edge_px())
+            .world_to_screen(x_unit, self.x_axis_plot_width().max(1.0))
     }
 
     pub(super) fn x_unit_for_time(&self, time: UnixMs) -> Option<i64> {
@@ -483,12 +771,12 @@ impl Scene {
     }
 
     pub(super) fn unit_from_plot_x(&self, x_plot: f32) -> i64 {
-        let right_edge_px = self.plot_right_edge_px();
+        let right_edge_px = self.x_axis_plot_width().max(1.0);
         let unit = self
             .x
             .world
-            .screen_to_world(x_plot.clamp(0.0, right_edge_px), right_edge_px)
-            .round() as i64;
+            .screen_to_logical_index(x_plot.clamp(0.0, right_edge_px), right_edge_px)
+            .ceil() as i64;
 
         unit.clamp(self.x.min_unit, self.x.max_unit)
     }
@@ -498,7 +786,10 @@ impl Scene {
             return (min_display, max_display);
         }
 
-        let (min_primary_value, max_primary_value) = self.primary.domain.values;
+        let (min_primary_value, max_primary_value) = self
+            .primary
+            .value_scale
+            .values_f32(self.primary.domain.active());
         let log_scale_enabled = self.can_use_log_primary_scale();
 
         (
@@ -515,6 +806,26 @@ impl Scene {
         )
     }
 
+    pub(super) fn primary_autoscale_display_values(&self) -> (f32, f32) {
+        if let Some((min_display, max_display)) = self.primary.display_domain_override {
+            return (min_display, max_display);
+        }
+
+        let (min_value, max_value) = self
+            .primary
+            .value_scale
+            .values_f32(self.primary.domain.autoscale());
+        let log_scale_enabled = self.can_use_log_primary_scale();
+        (
+            self.primary
+                .mode
+                .value_to_display(min_value, self.primary.anchor, log_scale_enabled),
+            self.primary
+                .mode
+                .value_to_display(max_value, self.primary.anchor, log_scale_enabled),
+        )
+    }
+
     pub(super) fn primary_display_to_value(&self, display_value: f32) -> f32 {
         self.primary.mode.display_to_value(
             display_value,
@@ -523,16 +834,22 @@ impl Scene {
         )
     }
 
-    pub(super) fn primary_domain_value_range(&self) -> (f32, f32) {
+    pub(super) fn primary_domain_value_range(&self) -> (Price, Price) {
         let (min_display, max_display) = self.primary_domain_display_values();
+        let min_value = self.primary_display_to_value(min_display);
+        let max_value = self.primary_display_to_value(max_display);
         (
-            self.primary_display_to_value(min_display),
-            self.primary_display_to_value(max_display),
+            Price::from_f32(min_value.min(max_value)),
+            Price::from_f32(min_value.max(max_value)),
         )
     }
 
     pub(super) fn can_use_log_primary_scale(&self) -> bool {
-        self.primary.domain.values.0 > f32::EPSILON && self.primary.domain.values.1 > f32::EPSILON
+        let (min, max) = self
+            .primary
+            .value_scale
+            .values_f32(self.primary.domain.autoscale());
+        min > f32::EPSILON && max > f32::EPSILON
     }
 
     fn quantized_primary_value(&self, value: f32) -> f32 {
@@ -657,7 +974,10 @@ impl Scene {
     }
 
     pub(super) fn map_primary_plot_value(&self, value: f32) -> f32 {
-        let (min, max) = self.primary.domain.values;
+        let (min, max) = self
+            .primary
+            .value_scale
+            .values_f32(self.primary.domain.active());
         let ratio = (value - min) / (max - min).abs().max(1e-8);
         self.map_primary_plot_ratio(ratio)
     }
@@ -682,15 +1002,19 @@ impl Scene {
     ) -> Option<f32> {
         let panel = self.indicator_plot(panel_index)?;
         let indicator = self.indicator_panel_config(panel_index)?;
-        let value = Self::unit_to_value_with_step(indicator_unit, indicator.unit_step);
+        let value = indicator.value_scale.unit_to_value(indicator_unit);
         let ratio = (value - indicator.min_value())
             / (indicator.max_value() - indicator.min_value())
                 .abs()
                 .max(1e-8);
-        Some(panel.y + (1.0 - ratio) * panel.height)
+        if !ratio.is_finite() {
+            return None;
+        }
+        let y = f64::from(panel.y) + (1.0 - ratio) * f64::from(panel.height);
+        y.is_finite().then_some(y as f32).filter(|y| y.is_finite())
     }
 
-    pub(super) fn map_primary_plot_with_anchor(&self, value: f32, anchor: Option<f32>) -> f32 {
+    pub(super) fn map_primary_plot_with_anchor_f32(&self, value: f32, anchor: Option<f32>) -> f32 {
         let log_scale_enabled = self.can_use_log_primary_scale();
         let uses_display_transform = self.primary.mode.uses_display_transform(log_scale_enabled);
 
@@ -712,24 +1036,94 @@ impl Scene {
         self.map_primary_plot_ratio(ratio)
     }
 
+    pub(super) fn map_primary_plot_with_anchor(
+        &self,
+        value: f64,
+        anchor: Option<f32>,
+    ) -> Option<f32> {
+        if !value.is_finite() {
+            return None;
+        }
+
+        let log_scale_enabled = self.can_use_log_primary_scale();
+        let uses_display_transform = self.primary.mode.uses_display_transform(log_scale_enabled);
+        let (min, max) = self
+            .primary
+            .value_scale
+            .values_f32(self.primary.domain.active());
+
+        if !uses_display_transform {
+            let ratio =
+                (value - f64::from(min)) / (f64::from(max) - f64::from(min)).abs().max(1e-8);
+            return finite_plot_y(*self.primary_plot(), ratio, self.primary.inverted);
+        }
+
+        let (min_display, max_display) = self.primary_domain_display_values();
+        let range = (f64::from(max_display) - f64::from(min_display))
+            .abs()
+            .max(1e-6);
+        let display_anchor = if self.primary.mode.uses_percent_base() {
+            anchor.map(f64::from)
+        } else {
+            self.primary.anchor.map(f64::from)
+        };
+        let display_value =
+            if log_scale_enabled && matches!(self.primary.mode, PanelScaleMode::Logarithmic) {
+                value.max(f64::MIN_POSITIVE).log10()
+            } else if let Some(base) = display_anchor.filter(|base| base.abs() > f64::EPSILON) {
+                ((value / base) - 1.0) * 100.0
+            } else {
+                value
+            };
+        let ratio = (display_value - f64::from(min_display)) / range;
+        finite_plot_y(*self.primary_plot(), ratio, self.primary.inverted)
+    }
+
     pub(super) fn map_indicator_plot(
         &self,
         panel_index: usize,
-        indicator_value: f32,
+        indicator_value: f64,
+    ) -> Option<f32> {
+        self.map_indicator_plot_scaled(panel_index, indicator_value, false)
+    }
+
+    pub(super) fn map_indicator_plot_scaled(
+        &self,
+        panel_index: usize,
+        indicator_value: f64,
+        independent_scale: bool,
     ) -> Option<f32> {
         let panel = self.indicator_plot(panel_index)?;
         let indicator = self.indicator_panel_config(panel_index)?;
-        let ratio = (indicator_value - indicator.min_value())
-            / (indicator.max_value() - indicator.min_value())
-                .abs()
-                .max(1e-8);
-        Some(panel.y + (1.0 - ratio) * panel.height)
+        let domain = independent_scale
+            .then_some(indicator.independent_domain)
+            .flatten()
+            .unwrap_or(indicator.domain.active());
+        let (min_value, max_value) = indicator.value_scale.values(domain);
+        if !indicator_value.is_finite() || !min_value.is_finite() || !max_value.is_finite() {
+            return None;
+        }
+        let ratio = (indicator_value - min_value) / (max_value - min_value).abs().max(1e-8);
+        if !ratio.is_finite() {
+            return None;
+        }
+        let y = f64::from(panel.y) + (1.0 - ratio) * f64::from(panel.height);
+        y.is_finite().then_some(y as f32).filter(|y| y.is_finite())
     }
 }
 
 fn map_ratio_to_plot_y(plot: Rectangle, ratio: f32, inverted: bool) -> f32 {
     let screen_ratio = if inverted { ratio } else { 1.0 - ratio };
     plot.y + screen_ratio * plot.height
+}
+
+fn finite_plot_y(plot: Rectangle, ratio: f64, inverted: bool) -> Option<f32> {
+    if !ratio.is_finite() {
+        return None;
+    }
+    let screen_ratio = if inverted { ratio } else { 1.0 - ratio };
+    let y = f64::from(plot.y) + screen_ratio * f64::from(plot.height);
+    y.is_finite().then_some(y as f32).filter(|y| y.is_finite())
 }
 
 fn format_value(value: f32, step: f32) -> String {

@@ -1,11 +1,11 @@
 use crate::{
     theme::ThemeAccents,
-    widget::{labeled_slider, theme_color_control},
+    widget::{classic_slider_row, theme_color_control},
 };
 use data::chart::kline::{LineStrokeStyle, MAX_LINE_WIDTH, MIN_LINE_WIDTH, SeriesColor};
 use data::config::theme::{ThemeAccent, ThemeColorShade};
 use exchange::TickerInfo;
-use iced::widget::{column, pick_list, row};
+use iced::widget::{column, pick_list, row, text};
 use iced::{Element, Length};
 
 #[derive(Debug, Clone)]
@@ -121,8 +121,8 @@ impl TickerSeriesEditor {
 
         let color_controls = column![color_choices].width(Length::Fill).spacing(4);
 
-        let line_width_slider = labeled_slider(
-            "Line width",
+        let line_width_slider = classic_slider_row(
+            Some(text("Width")),
             MIN_LINE_WIDTH..=MAX_LINE_WIDTH,
             line_width,
             Message::LineWidthChanged,

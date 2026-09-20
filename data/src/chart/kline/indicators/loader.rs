@@ -1,0 +1,269 @@
+use super::{IndicatorRegistration, language};
+use crate::data_path;
+use log::warn;
+use std::fs;
+use std::path::PathBuf;
+
+/// Filesystem sources used to build the process-wide indicator catalog.
+///
+/// Core sources are managed by the host application, while installed paths
+/// belong to the user or a development workflow.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndicatorCatalogPaths {
+    pub core_directory: PathBuf,
+    pub installed_directory: PathBuf,
+    pub additional_files: Vec<PathBuf>,
+}
+
+impl IndicatorCatalogPaths {
+    pub fn from_data_directory() -> Self {
+        let indicators = data_path(Some("indicators"));
+        Self {
+            core_directory: indicators.join("core"),
+            installed_directory: indicators.join("installed"),
+            additional_files: Vec::new(),
+        }
+    }
+
+    /// Use a repository-style source tree with `core/` and `catalog/sources/` collections.
+    pub fn from_indicator_root(root: impl Into<PathBuf>) -> Self {
+        let indicators = root.into();
+        Self {
+            core_directory: indicators.join("core"),
+            installed_directory: indicators.join("catalog").join("sources"),
+            additional_files: Vec::new(),
+        }
+    }
+}
+
+pub fn initialize_indicator_catalog() -> Result<(), String> {
+    initialize_indicator_catalog_with_paths(&IndicatorCatalogPaths::from_data_directory())
+}
+
+pub fn initialize_indicator_catalog_with_paths(
+    paths: &IndicatorCatalogPaths,
+) -> Result<(), String> {
+    let sources = load_catalog_sources(paths)?;
+    super::install_catalog_with_core_diagnostics(
+        sources.core,
+        sources.installed,
+        sources.diagnostics,
+    )
+    .map(|_| ())
+    .map_err(|error| error.to_string())
+}
+
+#[derive(Debug)]
+struct IndicatorCatalogSources {
+    core: Vec<IndicatorRegistration>,
+    installed: Vec<IndicatorRegistration>,
+    diagnostics: Vec<String>,
+}
+
+fn load_catalog_sources(paths: &IndicatorCatalogPaths) -> Result<IndicatorCatalogSources, String> {
+    let (core_files, mut core_discovery_diagnostics) =
+        language::indicator_files_in_directory(&paths.core_directory)?;
+    let core_report = language::load_from_files_report(&core_files, language::PackageOrigin::Core);
+    core_discovery_diagnostics.extend(core_report.diagnostics);
+    if !core_discovery_diagnostics.is_empty() {
+        return Err(format!(
+            "core indicator source validation failed:\n{}",
+            core_discovery_diagnostics.join("\n")
+        ));
+    }
+    if core_report.registrations.is_empty() {
+        return Err(format!(
+            "core indicator directory {} contains no valid sources",
+            paths.core_directory.display()
+        ));
+    }
+
+    let mut diagnostics = Vec::new();
+    let mut installed_files = if let Err(error) = fs::create_dir_all(&paths.installed_directory) {
+        diagnostics.push(format!(
+            "could not create installed indicator directory {}: {error}",
+            paths.installed_directory.display()
+        ));
+        Vec::new()
+    } else {
+        match language::indicator_files_in_directory(&paths.installed_directory) {
+            Ok((files, discovery_diagnostics)) => {
+                diagnostics.extend(discovery_diagnostics);
+                files
+            }
+            Err(error) => {
+                diagnostics.push(error);
+                Vec::new()
+            }
+        }
+    };
+    installed_files.extend(paths.additional_files.iter().cloned());
+    let installed_report =
+        language::load_from_files_report(&installed_files, language::PackageOrigin::Installed);
+    for diagnostic in &installed_report.diagnostics {
+        warn!("Ignoring invalid installed indicator source: {diagnostic}");
+    }
+    diagnostics.extend(installed_report.diagnostics);
+
+    let mut loaded_sources = core_report.loaded_sources;
+    loaded_sources.extend(installed_report.loaded_sources.iter().cloned());
+    let name_collisions = language::duplicate_short_name_diagnostics(&loaded_sources);
+    if !name_collisions.is_empty() {
+        diagnostics.extend(name_collisions);
+        return Err(format!(
+            "indicator source validation failed:\n{}",
+            diagnostics.join("\n")
+        ));
+    }
+
+    Ok(IndicatorCatalogSources {
+        core: core_report.registrations,
+        installed: installed_report.registrations,
+        diagnostics,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn test_root(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "flowsurface-indicator-catalog-{}-{name}",
+            std::process::id()
+        ))
+    }
+
+    fn repository_core_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../indicators/core")
+    }
+
+    #[test]
+    fn catalog_source_loading_applies_core_and_installed_error_policies() {
+        let root = test_root("malformed-core");
+        let _ = fs::remove_dir_all(&root);
+        let core = root.join("core");
+        fs::create_dir_all(&core).expect("core indicator directory should exist");
+        fs::write(core.join("broken.ind"), "language(1)\nplot(\n")
+            .expect("malformed core source should be written");
+
+        let error = load_catalog_sources(&IndicatorCatalogPaths {
+            core_directory: core,
+            installed_directory: root.join("installed"),
+            additional_files: Vec::new(),
+        })
+        .expect_err("malformed core sources must prevent catalog loading");
+        assert!(error.contains("core indicator source validation failed"));
+        assert!(error.contains("broken"));
+
+        let _ = fs::remove_dir_all(root);
+
+        let root = test_root("malformed-installed");
+        let _ = fs::remove_dir_all(&root);
+        let installed = root.join("installed");
+        fs::create_dir_all(&installed).expect("installed indicator directory should exist");
+        fs::write(installed.join("broken.ind"), "language(1)\nplot(\n")
+            .expect("malformed installed source should be written");
+        fs::write(
+            installed.join("optional.ind"),
+            "language(1)\nindicator(\"Optional\", id = \"community.optional\")\nformat(precision = \"base_ticker_min_tick\")\nplot(chart.close, id = \"value\")\n",
+        )
+        .expect("valid installed source should be written");
+        fs::write(
+            installed.join("reserved.ind"),
+            "language(1)\nindicator(\"Reserved\", id = \"core.reserved\")\nformat(precision = \"base_ticker_min_tick\")\nplot(chart.close, id = \"value\")\n",
+        )
+        .expect("reserved installed source should be written");
+
+        let sources = load_catalog_sources(&IndicatorCatalogPaths {
+            core_directory: repository_core_path(),
+            installed_directory: installed,
+            additional_files: Vec::new(),
+        })
+        .expect("installed diagnostics should not fail source loading");
+        let (core_files, discovery) =
+            language::indicator_files_in_directory(repository_core_path())
+                .expect("repository core indicator directory should be readable");
+        assert!(discovery.is_empty());
+        assert_eq!(sources.core.len(), core_files.len());
+        assert_eq!(sources.installed.len(), 1);
+        assert_eq!(sources.installed[0].id.id(), "community.optional");
+        assert!(
+            sources
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.contains("broken"))
+        );
+        assert!(sources.diagnostics.iter().any(|diagnostic| {
+            diagnostic.contains("core.reserved") && diagnostic.contains("reserved core namespace")
+        }));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn catalog_source_loading_preserves_order_and_rejects_short_name_collisions() {
+        let root = test_root("explicit-precedence");
+        let _ = fs::remove_dir_all(&root);
+        let installed = root.join("installed");
+        let explicit = root.join("other.ind");
+        fs::create_dir_all(&installed).expect("installed indicator directory should exist");
+        fs::write(
+            installed.join("same.ind"),
+            "language(1)\nindicator(\"Installed\", id = \"community.same\")\nformat(precision = \"base_ticker_min_tick\")\nplot(chart.close, id = \"value\")\n",
+        )
+        .expect("installed source should be written");
+        fs::write(
+            &explicit,
+            "language(1)\nindicator(\"Explicit\", id = \"community.other\")\nformat(precision = \"base_ticker_min_tick\")\nplot(chart.close, id = \"value\")\n",
+        )
+        .expect("explicit source should be written");
+
+        let sources = load_catalog_sources(&IndicatorCatalogPaths {
+            core_directory: repository_core_path(),
+            installed_directory: installed,
+            additional_files: vec![explicit],
+        })
+        .expect("valid sources should load");
+        assert_eq!(sources.installed.len(), 2);
+        assert_eq!(sources.installed[0].definition.display_name, "Installed");
+        assert_eq!(sources.installed[1].definition.display_name, "Explicit");
+        assert!(sources.diagnostics.is_empty());
+
+        let _ = fs::remove_dir_all(root);
+
+        let root = test_root("duplicate-short-name");
+        let _ = fs::remove_dir_all(&root);
+        let installed = root.join("installed");
+        let explicit_root = root.join("development");
+        let explicit = explicit_root.join("rsi.ind");
+        fs::create_dir_all(&installed).expect("installed indicator directory should exist");
+        fs::create_dir_all(&explicit_root).expect("development directory should exist");
+        fs::write(
+            installed.join("rsi.ind"),
+            "language(1)\nindicator(\"Installed\", id = \"community.rsi\")\nformat(precision = \"base_ticker_min_tick\")\nplot(chart.close, id = \"value\")\n",
+        )
+        .expect("installed source should be written");
+        fs::write(
+            &explicit,
+            "language(1)\nindicator(\"Explicit\", id = \"other.rsi\")\nformat(precision = \"base_ticker_min_tick\")\nplot(chart.close, id = \"value\")\n",
+        )
+        .expect("explicit source should be written");
+
+        let error = load_catalog_sources(&IndicatorCatalogPaths {
+            core_directory: repository_core_path(),
+            installed_directory: installed,
+            additional_files: vec![explicit],
+        })
+        .expect_err("duplicate short names must fail startup loading");
+        assert!(error.contains("duplicate indicator short name 'rsi'"));
+        assert!(error.contains("core.rsi"));
+        assert!(error.contains("community.rsi"));
+        assert!(error.contains("other.rsi"));
+        assert!(error.contains("installed/rsi.ind"));
+        assert!(error.contains("development/rsi.ind"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+}

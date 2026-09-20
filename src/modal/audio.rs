@@ -1,13 +1,13 @@
 use crate::TooltipPosition;
 use crate::audio::{AudioError, SoundCache, SoundType};
 use crate::style::{self, icon_text};
-use crate::widget::{labeled_slider, tooltip};
+use crate::widget::{classic_slider_row, tooltip};
 use data::audio::StreamCfg;
 use exchange::adapter::{Exchange, StreamKind};
 
 use exchange::Trade;
 use iced::widget::{button, column, container, row, text};
-use iced::widget::{checkbox, slider, space};
+use iced::widget::{checkbox, space};
 use iced::{Element, padding};
 use rustc_hash::FxHashMap;
 use std::collections::HashMap;
@@ -170,8 +170,8 @@ impl AudioStream {
             let volume_slider = {
                 let volume_pct = self.volume.unwrap_or(0.0);
 
-                labeled_slider(
-                    "Volume",
+                classic_slider_row(
+                    Some(text("Volume")),
                     0.0..=100.0,
                     volume_pct,
                     Message::SoundLevelChanged,
@@ -251,23 +251,23 @@ impl AudioStream {
                     {
                         match cfg.threshold {
                             data::audio::Threshold::Count(v) => {
-                                let threshold_slider =
-                                    slider(1.0..=100.0, v as f32, move |value| {
+                                let threshold_slider = classic_slider_row(
+                                    Some(text("Trade count")),
+                                    1.0..=100.0,
+                                    v as f32,
+                                    move |value| {
                                         Message::SetThreshold(
                                             exchange,
                                             ticker,
                                             data::audio::Threshold::Count(value as usize),
                                         )
-                                    });
-
-                                column = column.push(
-                                    column![
-                                        text(format!("Buy/sell trade count in buffer ≥ {}", v)),
-                                        threshold_slider
-                                    ]
-                                    .padding(8)
-                                    .spacing(4),
+                                    },
+                                    |value| format!("≥ {value:.0}"),
+                                    Some(1.0),
                                 );
+
+                                column =
+                                    column.push(column![threshold_slider].padding(8).spacing(4));
                             }
                             data::audio::Threshold::Qty(v) => {
                                 column = column.push(

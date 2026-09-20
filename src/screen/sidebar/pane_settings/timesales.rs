@@ -4,7 +4,6 @@ use crate::{
     widget::{
         classic_slider_row,
         inspector::{InspectorContent, InspectorSection},
-        labeled_slider,
     },
 };
 use data::layout::pane::VisualConfig;
@@ -13,7 +12,7 @@ use data::util::format_with_commas;
 use iced::{
     Alignment, Element, Length,
     widget::{
-        button, checkbox, column, pick_list, radio, row, slider, space, text,
+        button, checkbox, column, pick_list, radio, row, space, text,
         tooltip::Position as TooltipPosition,
     },
 };
@@ -21,8 +20,8 @@ use std::time::Duration;
 
 pub fn timesales_cfg_view<'a>(cfg: timesales::Config) -> InspectorContent<'a, Message> {
     let filter = cfg.trade_size_filter;
-    let trade_size_slider = labeled_slider(
-        "Trade",
+    let trade_size_slider = classic_slider_row(
+        Some(text("Trade")),
         0.0..=50000.0,
         filter,
         move |value| Message::VisualConfigChanged {
@@ -37,8 +36,11 @@ pub fn timesales_cfg_view<'a>(cfg: timesales::Config) -> InspectorContent<'a, Me
     );
 
     let retention_minutes = (cfg.trade_retention.as_secs_f32() / 60.0).max(1.0);
-    let retention_slider = {
-        let slider_ui = slider(1.0..=60.0, retention_minutes, move |new_minutes| {
+    let retention_slider = classic_slider_row(
+        Some(text("Keep trades for")),
+        1.0..=60.0,
+        retention_minutes,
+        move |new_minutes| {
             let mins = new_minutes.round().max(1.0) as u64;
             Message::VisualConfigChanged {
                 config: VisualConfig::TimeAndSales(timesales::Config {
@@ -47,18 +49,10 @@ pub fn timesales_cfg_view<'a>(cfg: timesales::Config) -> InspectorContent<'a, Me
                 }),
                 sync_all: false,
             }
-        })
-        .step(1.0);
-
-        classic_slider_row(
-            text("Keep trades for"),
-            slider_ui.into(),
-            Some(crate::widget::text::emphasis(format!(
-                "≈ {} min",
-                retention_minutes.round() as u64
-            ))),
-        )
-    };
+        },
+        |value| format!("≈ {} min", value.round() as u64),
+        Some(1.0),
+    );
 
     let history_title = row![
         crate::widget::text::section("History"),

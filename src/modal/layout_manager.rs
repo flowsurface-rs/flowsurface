@@ -154,7 +154,7 @@ impl LayoutManager {
             .position(|layout| layout.id.unique == *layout_id)?;
         let dashboard = &mut self.layouts[layout_index].dashboard;
 
-        Some(dashboard.update(message, main_window, layout_id, data_sources))
+        Some(dashboard.update(message, main_window, data_sources))
     }
 
     pub fn park_inactive_layouts(&mut self, active_layout_id: Uuid, main_window: window::Id) {

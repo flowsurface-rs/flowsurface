@@ -4,7 +4,11 @@ use serde::{Deserialize, Serialize};
 pub const DEFAULT_HORIZONTAL_SPACING_PX: f32 = 5.0;
 pub const MIN_HORIZONTAL_SPACING_PX: f32 = 2.0;
 pub const MAX_HORIZONTAL_SPACING_PX: f32 = 360.0;
+pub const MAX_AUTOSCALE_SPAN_FACTOR: f64 = 1_000.0;
 pub const ZOOM_SENSITIVITY: f32 = 30.0;
+
+const BAR_CENTER_OFFSET_UNITS: f32 = 0.5;
+const RIGHT_EDGE_INSET_PX: f32 = 1.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ChartStepMs(i64);
@@ -49,14 +53,41 @@ impl ChartCoord {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct PanelYViewport {
-    pub min_value: f32,
-    pub max_value: f32,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct YUnit(pub i64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct YUnitRange {
+    min: YUnit,
+    max: YUnit,
 }
 
-impl PanelYViewport {
-    pub fn normalized(min_value: f32, max_value: f32) -> Option<Self> {
+impl YUnitRange {
+    pub fn new(min: YUnit, max: YUnit) -> Self {
+        if min <= max {
+            Self { min, max }
+        } else {
+            Self { min: max, max: min }
+        }
+    }
+
+    pub fn min(self) -> YUnit {
+        self.min
+    }
+
+    pub fn max(self) -> YUnit {
+        self.max
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PanelYValueRange {
+    min: f64,
+    max: f64,
+}
+
+impl PanelYValueRange {
+    pub fn normalized(min_value: f64, max_value: f64) -> Option<Self> {
         if !min_value.is_finite() || !max_value.is_finite() {
             return None;
         }
@@ -70,50 +101,97 @@ impl PanelYViewport {
             min_value -= pad;
             max_value += pad;
         }
+        if !min_value.is_finite() || !max_value.is_finite() {
+            return None;
+        }
         Some(Self {
-            min_value,
-            max_value,
+            min: min_value,
+            max: max_value,
         })
     }
 
-    pub fn span(self) -> f32 {
-        (self.max_value - self.min_value).abs()
+    pub fn min_value(self) -> f64 {
+        self.min
+    }
+
+    pub fn max_value(self) -> f64 {
+        self.max
+    }
+
+    pub fn span(self) -> f64 {
+        (self.max - self.min).abs()
     }
 
     pub fn zoom_around_ratio(
         self,
-        anchor_ratio: f32,
-        zoom_scale: f32,
+        anchor_ratio: f64,
+        zoom_scale: f64,
         zoom_in: bool,
-        min_span: f32,
     ) -> Option<Self> {
+        if !zoom_scale.is_finite() {
+            return None;
+        }
         let anchor_ratio = anchor_ratio.clamp(0.0, 1.0);
         let span = self.span().max(1e-8);
         let zoom_scale = zoom_scale.abs().max(1.0);
-        let min_span = min_span.abs().max(1e-8);
         let new_span = if zoom_in {
             span / zoom_scale
-        } else {
+        } else if span <= f64::MAX / zoom_scale {
             span * zoom_scale
+        } else {
+            f64::MAX
+        };
+        if !new_span.is_finite() {
+            return None;
         }
-        .max(min_span);
-        let anchor_value = self.min_value + anchor_ratio * span;
+        let anchor_value = self.min + anchor_ratio * span;
         let new_min = anchor_value - anchor_ratio * new_span;
         Self::normalized(new_min, new_min + new_span)
     }
 
-    pub fn pan_by_ratio(self, delta_ratio: f32) -> Option<Self> {
+    pub fn clamp_span(self, min_span: f64, max_span: f64) -> Option<Self> {
+        if !self.min.is_finite()
+            || !self.max.is_finite()
+            || !min_span.is_finite()
+            || !max_span.is_finite()
+        {
+            return None;
+        }
+
+        let min_span = min_span.abs().max(1e-8);
+        let max_span = max_span.abs().max(min_span);
+        let span = self.span();
+        let target_span = span.clamp(min_span, max_span);
+        let center = self.min * 0.5 + self.max * 0.5;
+        let min_value = center - target_span * 0.5;
+        Self::normalized(min_value, min_value + target_span)
+    }
+
+    pub fn clamp_to_bounds(self, lower: f64, upper: f64) -> Option<Self> {
+        if !lower.is_finite() || !upper.is_finite() || lower >= upper {
+            return None;
+        }
+
+        let span = self.span().min(upper - lower);
+        let mut min_value = self.min.max(lower);
+        let mut max_value = min_value + span;
+        if max_value > upper {
+            max_value = upper;
+            min_value = max_value - span;
+        }
+
+        Self::normalized(min_value, max_value)
+    }
+
+    pub fn pan_by_ratio(self, delta_ratio: f64) -> Option<Self> {
         if !delta_ratio.is_finite() {
             return None;
         }
         let span = self.span().max(1e-8);
         let shift = delta_ratio * span;
-        Self::normalized(self.min_value + shift, self.max_value + shift)
+        Self::normalized(self.min + shift, self.max + shift)
     }
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct YUnit(pub i64);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HorizontalWorld {
@@ -122,31 +200,26 @@ pub struct HorizontalWorld {
 }
 
 impl HorizontalWorld {
-    pub fn new(cell_width: f32, scaling: f32, offset: f32) -> Self {
-        let spacing = cell_width * scaling;
-        let spacing = if spacing.is_finite() {
-            spacing.clamp(MIN_HORIZONTAL_SPACING_PX, MAX_HORIZONTAL_SPACING_PX)
-        } else {
-            DEFAULT_HORIZONTAL_SPACING_PX
-        };
+    pub fn new(spacing: f32, offset: f32) -> Self {
+        let spacing = Self::normalized_spacing(spacing);
 
         Self { spacing, offset }
     }
 
-    pub fn cell_width(self) -> f32 {
-        self.spacing
+    fn normalized_spacing(spacing: f32) -> f32 {
+        if spacing.is_finite() {
+            spacing.clamp(MIN_HORIZONTAL_SPACING_PX, MAX_HORIZONTAL_SPACING_PX)
+        } else {
+            DEFAULT_HORIZONTAL_SPACING_PX
+        }
     }
 
-    pub fn scaling(self) -> f32 {
-        1.0
+    pub fn spacing(self) -> f32 {
+        self.spacing
     }
 
     pub fn offset(self) -> f32 {
         self.offset
-    }
-
-    pub fn effective_spacing(self) -> f32 {
-        self.spacing
     }
 
     pub fn with_offset(self, offset: f32) -> Self {
@@ -154,7 +227,10 @@ impl HorizontalWorld {
     }
 
     pub fn axis_at_right_unit(self, right_unit: f32) -> WorldAxis {
-        WorldAxis::new(self.spacing, -right_unit * self.spacing)
+        WorldAxis::new(
+            self.spacing,
+            -(right_unit + BAR_CENTER_OFFSET_UNITS) * self.spacing - RIGHT_EDGE_INSET_PX,
+        )
     }
 
     pub fn zoom_around_screen(
@@ -165,20 +241,15 @@ impl HorizontalWorld {
         delta: f32,
     ) -> Self {
         let axis = self.axis_at_right_unit(current_right_unit);
-        let next = axis.zoom_around_screen(
-            cursor_screen,
-            origin,
-            delta,
-            MIN_HORIZONTAL_SPACING_PX,
-            MAX_HORIZONTAL_SPACING_PX,
-        );
-        self.updated_from_axis(current_right_unit, next)
-    }
+        let spacing = (self.spacing * (delta / ZOOM_SENSITIVITY).exp())
+            .clamp(MIN_HORIZONTAL_SPACING_PX, MAX_HORIZONTAL_SPACING_PX);
+        let cursor_world = axis.screen_to_world(cursor_screen, origin);
+        let translation = cursor_screen - origin - cursor_world * spacing;
+        let next_right_unit =
+            (-translation - RIGHT_EDGE_INSET_PX) / spacing - BAR_CENTER_OFFSET_UNITS;
 
-    pub fn updated_from_axis(self, current_right_unit: f32, next: WorldAxis) -> Self {
-        let next_right_unit = -next.translation() / next.spacing();
         Self {
-            spacing: next.spacing(),
+            spacing,
             offset: self.offset + next_right_unit - current_right_unit,
         }
     }
@@ -198,12 +269,8 @@ impl WorldAxis {
         }
     }
 
-    fn spacing(self) -> f32 {
+    pub fn spacing(self) -> f32 {
         self.spacing
-    }
-
-    pub fn translation(self) -> f32 {
-        self.translation
     }
 
     pub fn world_to_screen(self, world: f32, origin: f32) -> f32 {
@@ -214,22 +281,7 @@ impl WorldAxis {
         (screen - origin - self.translation) / self.spacing
     }
 
-    pub fn zoom_around_screen(
-        self,
-        cursor_screen: f32,
-        origin: f32,
-        delta: f32,
-        min_spacing: f32,
-        max_spacing: f32,
-    ) -> Self {
-        let new_spacing =
-            (self.spacing * (delta / ZOOM_SENSITIVITY).exp()).clamp(min_spacing, max_spacing);
-        let cursor_world = self.screen_to_world(cursor_screen, origin);
-        let translation = cursor_screen - origin - cursor_world * new_spacing;
-
-        Self {
-            spacing: new_spacing,
-            translation,
-        }
+    pub fn screen_to_logical_index(self, screen: f32, origin: f32) -> f32 {
+        self.screen_to_world(screen, origin) - BAR_CENTER_OFFSET_UNITS
     }
 }

@@ -1,12 +1,12 @@
 use super::composition::PanelScaleMode;
 use super::composition::{MarkKind, PanelId};
+use super::helpers::PixelGeometry;
+use super::layout::contains_inclusive;
 use super::scene::Scene;
-use super::{
-    KlinePanelKind, KlineSeriesLike, KlineWidget, TEXT_SIZE, Y_AXIS_LABEL_LEFT_INSET, YUnit,
-};
+use super::{KlinePanelKind, KlineWidget, TEXT_SIZE, Y_AXIS_LABEL_LEFT_INSET, YUnit};
 use crate::style;
 
-use data::config::theme::{ThemeColor, ThemeColorRole};
+use data::config::theme::{ACCENT_COUNT, ThemeColor, ThemeColorRole};
 use exchange::UnixMs;
 
 use iced::theme::palette::Extended;
@@ -47,7 +47,7 @@ pub use data::chart::kline::drawing::{
 fn iced_color(
     color: DrawingColor,
     palette: &Extended,
-    generated_accents: &[iced::Color; 6],
+    generated_accents: &[iced::Color; ACCENT_COUNT],
 ) -> iced::Color {
     match color {
         DrawingColor::Accent {
@@ -90,17 +90,14 @@ fn nearest_y_unit(target: YUnit, candidates: impl IntoIterator<Item = YUnit>) ->
         .min_by_key(|candidate| candidate.0.abs_diff(target.0))
 }
 
-impl<'a, S> KlineWidget<'a, S>
-where
-    S: KlineSeriesLike,
-{
+impl<'a> KlineWidget<'a> {
     fn x_unit_for_anchor(&self, scene: &Scene, x: DrawingX) -> Option<f64> {
         match (self.basis, x) {
             (data::chart::Basis::Time(_), DrawingX::Time(time)) => {
                 scene.x_unit_for_time(time).map(|unit| unit as f64)
             }
             (data::chart::Basis::Tick(interval), DrawingX::Tick(_)) => {
-                let count = self.series.first()?.bars().len();
+                let count = self.series.first()?.point_count();
                 let super::scene::XAxis::Tick { anchor } = scene.x.axis else {
                     return None;
                 };
@@ -120,7 +117,7 @@ where
         match self.basis {
             data::chart::Basis::Time(_) => scene.time_for_x_unit(x_unit).map(DrawingX::Time),
             data::chart::Basis::Tick(interval) => {
-                let count = self.series.first()?.bars().len();
+                let count = self.series.first()?.point_count();
                 let super::scene::XAxis::Tick { anchor } = scene.x.axis else {
                     return None;
                 };
@@ -140,13 +137,12 @@ where
             (data::chart::Basis::Tick(interval), DrawingX::Tick(_)) => {
                 let index = x.tick_bar_position(interval.0 as u64)?;
                 let series = self.series.first()?;
-                if index < 0.0 || index >= series.bars().len() as f64 {
+                if index < 0.0 || index >= series.point_count() as f64 {
                     return None;
                 }
                 series
-                    .bars()
-                    .get(index.floor() as usize)
-                    .map(|point| point.time)
+                    .point_at(index.floor() as usize)
+                    .map(|point| point.kline.time)
             }
             _ => None,
         }
@@ -181,7 +177,7 @@ where
         let panel_h = panel.plot.height.max(1.0);
         let y_in_panel = cursor_local.y - scene.layout.regions.plot.y - panel.plot.y;
         let ratio = (1.0 - (y_in_panel / panel_h)).clamp(0.0, 1.0);
-        let panel_precision = self.panel_value_precision(panel_index);
+        let value_scale = self.panel_value_scale(panel_index);
 
         let y_unit = match panel.kind {
             KlinePanelKind::PrimaryChart => {
@@ -195,12 +191,14 @@ where
                     let (min_display, max_display) = scene.primary_domain_display_values();
                     let display_value = min_display + (max_display - min_display) * primary_ratio;
                     let value = scene.primary_display_to_value(display_value);
-                    self.panel_value_to_unit(panel_precision, value)
+                    value_scale.value_to_unit_f32(value)
                 } else {
-                    let min_value = scene.primary.domain.values.0;
-                    let max_value = scene.primary.domain.values.1;
+                    let (min_value, max_value) = scene
+                        .primary
+                        .value_scale
+                        .values_f32(scene.primary.domain.active());
                     let value = min_value + (max_value - min_value) * primary_ratio;
-                    self.panel_value_to_unit(panel_precision, value)
+                    value_scale.value_to_unit_f32(value)
                 }
             }
             KlinePanelKind::Indicator => {
@@ -210,8 +208,8 @@ where
                     .find(|indicator| indicator.panel_index == panel_index)?;
                 let min_value = indicator.min_value();
                 let max_value = indicator.max_value();
-                let value = min_value + (max_value - min_value) * ratio;
-                self.panel_value_to_unit(panel_precision, value)
+                let value = min_value + (max_value - min_value) * f64::from(ratio);
+                value_scale.value_to_unit(value)
             }
         };
 
@@ -263,8 +261,11 @@ where
         }
 
         let series = self.series.first()?;
-        let bar = scene.x.axis.bar_at_unit(series.bars(), x_unit)?;
-        let precision = self.panel_value_precision(scene.primary.panel_index);
+        let units = scene.bar_units.first()?;
+        let unit_index = units.values.binary_search(&x_unit).ok()?;
+        let source_index = units.global_index(unit_index)?;
+        let bar = series.point_at(source_index)?.kline;
+        let value_scale = self.panel_value_scale(scene.primary.panel_index);
         let line_values = [bar.close.to_f32_lossy()];
         let ohlc_values = [
             bar.open.to_f32_lossy(),
@@ -282,7 +283,7 @@ where
             anchor.y_unit,
             values
                 .iter()
-                .map(|value| self.panel_value_to_unit(precision, *value)),
+                .map(|value| value_scale.value_to_unit_f32(*value)),
         )?;
         Some(anchor)
     }
@@ -372,11 +373,7 @@ where
 
     fn x_overlay_for_anchor(&self, scene: &Scene, x: DrawingX) -> Option<f32> {
         let x_unit = self.x_unit_for_anchor(scene, x)?;
-        let x_plot = Self::snap_plot_x_to_cell(
-            scene.map_x_plot_f32(x_unit as f32),
-            self.pixel_ratio_value(),
-        );
-        Some(scene.layout.regions.plot.x + x_plot)
+        Some(scene.layout.regions.plot.x + scene.map_x_plot_f32(x_unit as f32))
     }
 
     pub(super) fn y_overlay_for_value(
@@ -387,13 +384,16 @@ where
     ) -> Option<f32> {
         let panel_index = self.panel_index_for_id(panel_id)?;
         let panel = scene.layout.panel(panel_index)?;
-        let panel_precision = self.panel_value_precision(panel_index);
-        let value = self.panel_unit_to_value(panel_precision, y_unit);
+        let value_scale = self.panel_value_scale(panel_index);
         let y_plot = match panel.kind {
             KlinePanelKind::PrimaryChart => {
-                scene.map_primary_plot_with_anchor(value, scene.primary.anchor)
+                let value = value_scale.unit_to_value_f32(y_unit);
+                scene.map_primary_plot_with_anchor_f32(value, scene.primary.anchor)
             }
-            KlinePanelKind::Indicator => scene.map_indicator_plot(panel_index, value)?,
+            KlinePanelKind::Indicator => {
+                let value = value_scale.unit_to_value(y_unit);
+                scene.map_indicator_plot(panel_index, value)?
+            }
         };
 
         Some(scene.layout.regions.plot.y + y_plot)
@@ -479,14 +479,17 @@ where
         let panel_index = self.panel_index_for_id(panel_id)?;
         let panel = scene.layout.panel(panel_index)?;
         let clip_bounds = self.panel_plot_bounds_in_overlay(scene, panel_index)?;
-        let panel_precision = self.panel_value_precision(panel_index);
-        let value = self.panel_unit_to_value(panel_precision, y_unit);
+        let value_scale = self.panel_value_scale(panel_index);
 
         let y_plot = match panel.kind {
             KlinePanelKind::PrimaryChart => {
-                scene.map_primary_plot_with_anchor(value, scene.primary.anchor)
+                let value = value_scale.unit_to_value_f32(y_unit);
+                scene.map_primary_plot_with_anchor_f32(value, scene.primary.anchor)
             }
-            KlinePanelKind::Indicator => scene.map_indicator_plot(panel_index, value)?,
+            KlinePanelKind::Indicator => {
+                let value = value_scale.unit_to_value(y_unit);
+                scene.map_indicator_plot(panel_index, value)?
+            }
         };
 
         let panel_top = panel.plot.y;
@@ -497,11 +500,7 @@ where
 
         let start_x = if ray {
             let x_unit = self.x_unit_for_anchor(scene, x)?;
-            let x = scene.layout.regions.plot.x
-                + Self::snap_plot_x_to_cell(
-                    scene.map_x_plot_f32(x_unit as f32),
-                    self.pixel_ratio_value(),
-                );
+            let x = scene.layout.regions.plot.x + scene.map_x_plot_f32(x_unit as f32);
             x.max(clip_bounds.x)
         } else {
             clip_bounds.x
@@ -517,11 +516,7 @@ where
     ) -> Option<(Rectangle, f32)> {
         let x_unit = self.x_unit_for_anchor(scene, x)?;
         let clip_bounds = self.plot_bounds_in_overlay(scene);
-        let x = scene.layout.regions.plot.x
-            + Self::snap_plot_x_to_cell(
-                scene.map_x_plot_f32(x_unit as f32),
-                self.pixel_ratio_value(),
-            );
+        let x = scene.layout.regions.plot.x + scene.map_x_plot_f32(x_unit as f32);
 
         if x < clip_bounds.x || x > (clip_bounds.x + clip_bounds.width) {
             return None;
@@ -537,18 +532,16 @@ where
         object: &DrawingObject,
         style: DrawingStyle,
         palette: &Extended,
-        generated_accents: &[iced::Color; 6],
+        generated_accents: &[iced::Color; ACCENT_COUNT],
         selected: bool,
-        overlay_origin_in_window: Point,
-        pixel_ratio: f32,
+        pixels: PixelGeometry,
     ) {
         let raw_stroke_width = if selected {
             style.normalized_stroke_width() + 0.6
         } else {
             style.normalized_stroke_width()
         };
-        let (stroke_width, stroke_width_phys) =
-            Self::quantized_stroke_width(raw_stroke_width, pixel_ratio);
+        let (stroke_width, stroke_width_phys) = pixels.quantized_stroke_width(raw_stroke_width);
         let stroke = canvas::Stroke::default()
             .with_color(iced_color(style.stroke_color, palette, generated_accents))
             .with_width(stroke_width);
@@ -560,18 +553,8 @@ where
                 else {
                     return;
                 };
-                let start = Self::snap_point_for_stroke_with_origin(
-                    start,
-                    pixel_ratio,
-                    overlay_origin_in_window,
-                    stroke_width_phys,
-                );
-                let end = Self::snap_point_for_stroke_with_origin(
-                    end,
-                    pixel_ratio,
-                    overlay_origin_in_window,
-                    stroke_width_phys,
-                );
+                let start = pixels.snap_point_for_stroke(start, stroke_width_phys);
+                let end = pixels.snap_point_for_stroke(end, stroke_width_phys);
 
                 frame.with_clip(bounds, |frame| {
                     frame.stroke(&canvas::Path::line(start, end), stroke);
@@ -593,49 +576,18 @@ where
                 let top = origin.y;
                 let bottom = origin.y + size.height;
 
-                let (fill_left, fill_width) = Self::snapped_span_with_origin(
-                    left,
-                    right,
-                    pixel_ratio,
-                    overlay_origin_in_window.x,
-                );
-                let (fill_top, fill_height) = Self::snapped_span_with_origin(
-                    top,
-                    bottom,
-                    pixel_ratio,
-                    overlay_origin_in_window.y,
-                );
-
-                let left_stroke = Self::snap_stroke_center_with_origin(
-                    left,
-                    pixel_ratio,
-                    overlay_origin_in_window.x,
-                    stroke_width_phys,
-                );
-                let right_stroke = Self::snap_stroke_center_with_origin(
-                    right,
-                    pixel_ratio,
-                    overlay_origin_in_window.x,
-                    stroke_width_phys,
-                );
-                let top_stroke = Self::snap_stroke_center_with_origin(
-                    top,
-                    pixel_ratio,
-                    overlay_origin_in_window.y,
-                    stroke_width_phys,
-                );
-                let bottom_stroke = Self::snap_stroke_center_with_origin(
-                    bottom,
-                    pixel_ratio,
-                    overlay_origin_in_window.y,
-                    stroke_width_phys,
-                );
+                let fill_span = pixels.snapped_x_span(left, right);
+                let fill_top = pixels.snapped_y_span(top, bottom);
+                let left_stroke = pixels.snap_stroke_center_x(left, stroke_width_phys);
+                let right_stroke = pixels.snap_stroke_center_x(right, stroke_width_phys);
+                let top_stroke = pixels.snap_stroke_center_y(top, stroke_width_phys);
+                let bottom_stroke = pixels.snap_stroke_center_y(bottom, stroke_width_phys);
 
                 frame.with_clip(bounds, |frame| {
                     if let Some(fill) = style.fill_color {
                         frame.fill_rectangle(
-                            Point::new(fill_left, fill_top),
-                            Size::new(fill_width, fill_height),
+                            Point::new(fill_span.start, fill_top.start),
+                            Size::new(fill_span.size, fill_top.size),
                             iced_color(fill, palette, generated_accents),
                         );
                     }
@@ -682,18 +634,8 @@ where
                     return;
                 };
 
-                let y = Self::snap_stroke_center_with_origin(
-                    y,
-                    pixel_ratio,
-                    overlay_origin_in_window.y,
-                    stroke_width_phys,
-                );
-                let start_x = Self::snap_stroke_center_with_origin(
-                    start_x,
-                    pixel_ratio,
-                    overlay_origin_in_window.x,
-                    stroke_width_phys,
-                );
+                let y = pixels.snap_stroke_center_y(y, stroke_width_phys);
+                let start_x = pixels.snap_stroke_center_x(start_x, stroke_width_phys);
 
                 frame.with_clip(bounds, |frame| {
                     frame.stroke(
@@ -710,12 +652,7 @@ where
                     return;
                 };
 
-                let x = Self::snap_stroke_center_with_origin(
-                    x,
-                    pixel_ratio,
-                    overlay_origin_in_window.x,
-                    stroke_width_phys,
-                );
+                let x = pixels.snap_stroke_center_x(x, stroke_width_phys);
 
                 frame.with_clip(plot, |frame| {
                     frame.stroke(
@@ -841,7 +778,7 @@ where
         frame: &mut canvas::Frame,
         scene: &Scene,
         palette: &Extended,
-        pixel_ratio: f32,
+        pixels: PixelGeometry,
         object: &DrawingObject,
     ) {
         let handles = self.drawing_handle_points(scene, object);
@@ -855,10 +792,11 @@ where
 
         let fill_color = palette.background.strongest.color;
         let stroke_color = palette.primary.base.color.scale_alpha(0.92);
-        let (handle_stroke_width, _) = Self::quantized_stroke_width(1.2, pixel_ratio);
+        let (handle_stroke_width, _) = pixels.quantized_stroke_width(1.2);
 
         frame.with_clip(clip_bounds, |frame| {
             for (_, point) in handles {
+                let point = Point::new(pixels.snap_x_to_cell(point.x), point.y);
                 let circle = canvas::Path::circle(point, DRAWING_HANDLE_RADIUS_PX);
 
                 frame.fill(&circle, fill_color);
@@ -911,9 +849,8 @@ where
         frame: &mut canvas::Frame,
         scene: &Scene,
         palette: &Extended,
-        generated_accents: &[iced::Color; 6],
-        overlay_origin_in_window: Point,
-        pixel_ratio: f32,
+        generated_accents: &[iced::Color; ACCENT_COUNT],
+        pixels: PixelGeometry,
     ) {
         let drawing_state = &self.drawings;
 
@@ -931,8 +868,7 @@ where
                 palette,
                 generated_accents,
                 selected,
-                overlay_origin_in_window,
-                pixel_ratio,
+                pixels,
             );
         }
     }
@@ -942,9 +878,8 @@ where
         frame: &mut canvas::Frame,
         scene: &Scene,
         palette: &Extended,
-        generated_accents: &[iced::Color; 6],
-        overlay_origin_in_window: Point,
-        pixel_ratio: f32,
+        generated_accents: &[iced::Color; ACCENT_COUNT],
+        pixels: PixelGeometry,
     ) {
         let drawing_state = &self.drawings;
 
@@ -953,7 +888,7 @@ where
                 frame,
                 scene,
                 palette,
-                pixel_ratio,
+                pixels,
                 &selected_drawing.object,
             );
         }
@@ -974,21 +909,13 @@ where
                 palette,
                 generated_accents,
                 false,
-                overlay_origin_in_window,
-                pixel_ratio,
+                pixels,
             );
-            self.draw_selected_drawing_handles(frame, scene, palette, pixel_ratio, &preview);
+            self.draw_selected_drawing_handles(frame, scene, palette, pixels, &preview);
         }
 
         if let Some(measure) = drawing_state.measure {
-            self.fill_measure(
-                frame,
-                scene,
-                palette,
-                measure,
-                overlay_origin_in_window,
-                pixel_ratio,
-            );
+            self.fill_measure(frame, scene, palette, measure, pixels);
         }
     }
 
@@ -998,8 +925,7 @@ where
         scene: &Scene,
         palette: &Extended,
         measure: DrawingMeasure,
-        overlay_origin_in_window: Point,
-        pixel_ratio: f32,
+        pixels: PixelGeometry,
     ) {
         let state = measure.state();
         let Some(start_point) = self.anchor_to_overlay_point(scene, state.start) else {
@@ -1015,9 +941,10 @@ where
             return;
         };
         let panel_precision = self.panel_value_precision(panel_index);
+        let value_scale = self.panel_value_scale(panel_index);
 
-        let start_value = self.panel_unit_to_value(panel_precision, state.start.y_unit);
-        let end_value = self.panel_unit_to_value(panel_precision, state.end.y_unit);
+        let start_value = value_scale.unit_to_value(state.start.y_unit);
+        let end_value = value_scale.unit_to_value(state.end.y_unit);
         let delta = end_value - start_value;
         let pct = if start_value.abs() > 1e-12 {
             (delta / start_value.abs()) * 100.0
@@ -1057,19 +984,9 @@ where
             None => format!("{bars}b"),
         };
 
-        let (_, stroke_width_phys) = Self::quantized_stroke_width(1.25, pixel_ratio);
-        let start = Self::snap_point_for_stroke_with_origin(
-            start_point,
-            pixel_ratio,
-            overlay_origin_in_window,
-            stroke_width_phys,
-        );
-        let end = Self::snap_point_for_stroke_with_origin(
-            end_point,
-            pixel_ratio,
-            overlay_origin_in_window,
-            stroke_width_phys,
-        );
+        let (_, stroke_width_phys) = pixels.quantized_stroke_width(1.25);
+        let start = pixels.snap_point_for_stroke(start_point, stroke_width_phys);
+        let end = pixels.snap_point_for_stroke(end_point, stroke_width_phys);
         let stroke = canvas::Stroke::default().with_color(color).with_width(1.25);
 
         frame.with_clip(clip_bounds, |frame| {
@@ -1212,10 +1129,7 @@ where
                 let top = origin.y;
                 let bottom = origin.y + size.height;
 
-                let within_expanded = point.x >= (visible_bounds.x - tolerance)
-                    && point.x <= (visible_bounds.x + visible_bounds.width + tolerance)
-                    && point.y >= (visible_bounds.y - tolerance)
-                    && point.y <= (visible_bounds.y + visible_bounds.height + tolerance);
+                let within_expanded = contains_inclusive(visible_bounds.expand(tolerance), point);
 
                 if !within_expanded {
                     return false;
@@ -1240,11 +1154,8 @@ where
                     Self::point_segment_distance(point, edge_start, edge_end) <= tolerance
                 });
 
-                let inside_visible_fill = style.fill_color.is_some()
-                    && point.x >= visible_bounds.x
-                    && point.x <= (visible_bounds.x + visible_bounds.width)
-                    && point.y >= visible_bounds.y
-                    && point.y <= (visible_bounds.y + visible_bounds.height);
+                let inside_visible_fill =
+                    style.fill_color.is_some() && contains_inclusive(visible_bounds, point);
 
                 near_edge || inside_visible_fill
             }
@@ -1323,12 +1234,7 @@ where
             .filter(|drawing| {
                 self.drawing_selection_corners(scene, &drawing.object)
                     .iter()
-                    .any(|corner| {
-                        corner.x >= rect.x
-                            && corner.x <= rect.x + rect.width
-                            && corner.y >= rect.y
-                            && corner.y <= rect.y + rect.height
-                    })
+                    .any(|corner| contains_inclusive(rect, *corner))
             })
             .map(|drawing| drawing.id)
             .collect()
@@ -1403,13 +1309,18 @@ where
         let panel_index = self.panel_index_for_id(panel_id)?;
         let panel = scene.layout.panel(panel_index)?;
         let panel_precision = self.panel_value_precision(panel_index);
-        let value = self.panel_unit_to_value(panel_precision, y_unit);
+        let value_scale = self.panel_value_scale(panel_index);
 
         match panel.kind {
-            KlinePanelKind::PrimaryChart => Some(scene.format_primary_cursor_label(value)),
-            KlinePanelKind::Indicator => {
-                Some(self.format_panel_axis_value(panel_index, panel_precision, value, 0.01))
+            KlinePanelKind::PrimaryChart => {
+                Some(scene.format_primary_cursor_label(value_scale.unit_to_value_f32(y_unit)))
             }
+            KlinePanelKind::Indicator => Some(self.format_panel_axis_value(
+                panel_index,
+                panel_precision,
+                value_scale.unit_to_value(y_unit),
+                0.01,
+            )),
         }
     }
 
@@ -1608,6 +1519,7 @@ where
         scene: &Scene,
         palette: &Extended,
         filter: &mut AxisBadgeFilter,
+        pixels: PixelGeometry,
     ) {
         let Some(object) = self.drawings.active_axis_labeled_object() else {
             return;
@@ -1628,7 +1540,14 @@ where
                         }
                         _ => self.format_x_label(scene.x.axis, x_unit as i64, 1),
                     };
-                    self.draw_x_axis_badge(frame, scene, palette, screen_x, &x_text, filter);
+                    self.draw_x_axis_badge(
+                        frame,
+                        scene,
+                        palette,
+                        pixels.snap_x_to_cell(screen_x),
+                        &x_text,
+                        filter,
+                    );
                 }
                 AxisLabelAnchor::Y { panel_id, y_unit } => {
                     let Some(y) = self.y_overlay_for_value(scene, panel_id, y_unit) else {

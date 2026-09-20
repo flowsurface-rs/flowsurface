@@ -19,6 +19,7 @@ rustc-hash.workspace = true
 url.workspace = true
 uuid.workspace = true
 exchange.workspace = true
+indicator_engine.workspace = true
 
 dirs-next = "2.0.0"
 open = "5.3.5"
