@@ -1,7 +1,7 @@
 use crate::{
     Event, Kline, OpenInterest, PushFrequency, TickerInfo, Timeframe, UnixMs,
     adapter::limiter::FixedWindowRateLimiterConfig,
-    adapter::{Exchange, MarketKind, StreamTicksize},
+    adapter::{Exchange, KlinePage, MarketKind, StreamTicksize},
     unit::qty::RawQtyUnit,
 };
 
@@ -140,6 +140,24 @@ impl OkexHandle {
             .await
     }
 
+    pub async fn fetch_klines_page(
+        &self,
+        ticker: TickerInfo,
+        timeframe: Timeframe,
+        from: UnixMs,
+        to: UnixMs,
+    ) -> Result<KlinePage, AdapterError> {
+        self.request_port
+            .request(move |reply| OkexCommand::KlinePage {
+                ticker,
+                timeframe,
+                from,
+                to,
+                reply,
+            })
+            .await
+    }
+
     pub async fn fetch_open_interest(
         &self,
         ticker: TickerInfo,
@@ -221,6 +239,18 @@ impl super::FetchCommandHandler<Vec<MarketKind>> for Worker {
         Box::pin(
             async move { fetch::fetch_klines(&mut self.hub, ticker_info, timeframe, range).await },
         )
+    }
+
+    fn fetch_klines_page(
+        &mut self,
+        ticker_info: TickerInfo,
+        timeframe: Timeframe,
+        from: UnixMs,
+        to: UnixMs,
+    ) -> futures::future::BoxFuture<'_, Result<KlinePage, AdapterError>> {
+        Box::pin(async move {
+            fetch::fetch_klines_page(&mut self.hub, ticker_info, timeframe, from, to).await
+        })
     }
 
     fn fetch_open_interest(

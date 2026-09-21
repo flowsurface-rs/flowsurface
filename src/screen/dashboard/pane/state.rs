@@ -27,7 +27,7 @@ use crate::{
     theme::ThemeAccents,
     widget::{
         self, button_with_tooltip, inspector::InspectorContent, link_group_button,
-        press_button_with_tooltip,
+        press_button_with_tooltip, toast::Toast,
     },
     window::{self, PixelRatio, Window},
 };

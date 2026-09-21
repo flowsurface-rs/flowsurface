@@ -1,5 +1,6 @@
 use super::{
-    AdapterError, Event, Exchange, MarketKind, StreamConfig, StreamKind, StreamTicksize, Venue,
+    AdapterError, Event, Exchange, KlinePage, MarketKind, StreamConfig, StreamKind, StreamTicksize,
+    Venue,
     hub::{binance, bybit, hyperliquid, mexc, okex},
 };
 use crate::{
@@ -451,6 +452,59 @@ impl AdapterHandles {
                     return Err(Self::missing_venue_error(venue));
                 };
                 handle.fetch_klines(ticker_info, timeframe, range).await
+            }
+        }
+    }
+
+    pub async fn fetch_klines_page(
+        &self,
+        ticker_info: TickerInfo,
+        timeframe: Timeframe,
+        from: UnixMs,
+        to: UnixMs,
+    ) -> Result<KlinePage, AdapterError> {
+        let venue = ticker_info.ticker.exchange.venue();
+
+        match venue {
+            Venue::Binance => {
+                let Some(handle) = self.binance.as_ref() else {
+                    return Err(Self::missing_venue_error(venue));
+                };
+                handle
+                    .fetch_klines_page(ticker_info, timeframe, from, to)
+                    .await
+            }
+            Venue::Bybit => {
+                let Some(handle) = self.bybit.as_ref() else {
+                    return Err(Self::missing_venue_error(venue));
+                };
+                handle
+                    .fetch_klines_page(ticker_info, timeframe, from, to)
+                    .await
+            }
+            Venue::Hyperliquid => {
+                let Some(handle) = self.hyperliquid.as_ref() else {
+                    return Err(Self::missing_venue_error(venue));
+                };
+                handle
+                    .fetch_klines_page(ticker_info, timeframe, from, to)
+                    .await
+            }
+            Venue::Okex => {
+                let Some(handle) = self.okex.as_ref() else {
+                    return Err(Self::missing_venue_error(venue));
+                };
+                handle
+                    .fetch_klines_page(ticker_info, timeframe, from, to)
+                    .await
+            }
+            Venue::Mexc => {
+                let Some(handle) = self.mexc.as_ref() else {
+                    return Err(Self::missing_venue_error(venue));
+                };
+                handle
+                    .fetch_klines_page(ticker_info, timeframe, from, to)
+                    .await
             }
         }
     }

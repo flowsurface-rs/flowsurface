@@ -1,6 +1,8 @@
 use crate::{
     Event, Kline, PushFrequency, Ticker, TickerInfo, Timeframe, UnixMs,
-    adapter::{Exchange, MarketKind, StreamTicksize, limiter::FixedWindowRateLimiterConfig},
+    adapter::{
+        Exchange, KlinePage, MarketKind, StreamTicksize, limiter::FixedWindowRateLimiterConfig,
+    },
     depth::DepthPayload,
     unit::{ContractSize, qty::RawQtyUnit},
 };
@@ -217,6 +219,24 @@ impl MexcHandle {
             .await
     }
 
+    pub async fn fetch_klines_page(
+        &self,
+        ticker: TickerInfo,
+        timeframe: Timeframe,
+        from: UnixMs,
+        to: UnixMs,
+    ) -> Result<KlinePage, AdapterError> {
+        self.request_port
+            .request(move |reply| MexcCommand::KlinePage {
+                ticker,
+                timeframe,
+                from,
+                to,
+                reply,
+            })
+            .await
+    }
+
     pub async fn fetch_depth_snapshot(&self, ticker: Ticker) -> Result<DepthPayload, AdapterError> {
         self.request_port
             .request(move |reply| MexcCommand::DepthSnapshot { ticker, reply })
@@ -298,6 +318,18 @@ impl super::FetchCommandHandler<MexcMarketScope> for Worker {
         Box::pin(
             async move { fetch::fetch_klines(&mut self.hub, ticker_info, timeframe, range).await },
         )
+    }
+
+    fn fetch_klines_page(
+        &mut self,
+        ticker_info: TickerInfo,
+        timeframe: Timeframe,
+        from: UnixMs,
+        to: UnixMs,
+    ) -> futures::future::BoxFuture<'_, Result<KlinePage, AdapterError>> {
+        Box::pin(async move {
+            fetch::fetch_klines_page(&mut self.hub, ticker_info, timeframe, from, to).await
+        })
     }
 
     fn fetch_depth_snapshot(

@@ -10,9 +10,12 @@ use super::{
     raw_qty_unit_from_market_type,
 };
 use crate::adapter::hub::AdapterError;
+use crate::adapter::{KlinePage, kline_page_end};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashMap;
+
+const MAX_KLINE_BARS: u64 = 1_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -215,7 +218,7 @@ pub(super) async fn fetch_klines(
         let start = start.as_u64();
         let end = end.as_u64();
         let interval_ms = timeframe.to_milliseconds();
-        let num_intervals = ((end - start) / interval_ms).min(1000);
+        let num_intervals = ((end - start) / interval_ms).min(MAX_KLINE_BARS);
 
         url.push_str(&format!("&start={start}&end={end}&limit={num_intervals}"));
     }
@@ -259,6 +262,18 @@ pub(super) async fn fetch_klines(
         .collect();
 
     klines
+}
+
+pub(super) async fn fetch_klines_page(
+    hub: &mut HttpHub<BybitLimiter>,
+    ticker_info: TickerInfo,
+    timeframe: Timeframe,
+    from: UnixMs,
+    to: UnixMs,
+) -> Result<KlinePage, AdapterError> {
+    let page_to = kline_page_end(from, to, timeframe, MAX_KLINE_BARS)?;
+    let data = fetch_klines(hub, ticker_info, timeframe, Some((from, page_to))).await?;
+    Ok(KlinePage::new(data, from, to, page_to))
 }
 
 pub(super) async fn fetch_historical_oi(
