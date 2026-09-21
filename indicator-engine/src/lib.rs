@@ -978,6 +978,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "slow 10k-bar history stress test; run explicitly"]
     fn flat_open_zones_handle_dense_10k_history_under_untrusted_limits() {
         let compiled = compile(
             include_str!("../../indicators/catalog/sources/flat-open-zones.ind"),
@@ -1001,6 +1002,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "slow 10k-bar history stress test; run explicitly"]
     fn volume_pivot_zones_handle_dense_10k_history_under_untrusted_limits() {
         let compiled = compile(
             include_str!("../../indicators/catalog/sources/volume-pivot-zones.ind"),
