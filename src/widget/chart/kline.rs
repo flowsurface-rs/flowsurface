@@ -29,6 +29,7 @@ pub(crate) use presentation::{
     ResolvedIndicatorPresentation, ResolvedIndicatorStyleSlot, resolve_indicator_bar_values,
     resolve_indicator_presentation_status,
 };
+use primary_render::PrimaryPlotLayer;
 use scene::{CursorTarget, LegendTarget, Scene, SceneCache, TickIndex, XAxis};
 
 use data::UserTimezone;
@@ -36,16 +37,14 @@ use data::chart::Basis;
 use data::chart::kline::series::KlineSeries;
 use data::chart::kline::{
     CandlestickColorSlot, CandlestickConfig, DEFAULT_HORIZONTAL_SPACING_PX, FootprintConfig,
-    FootprintPocColorSlot, KlineStudy, KlineStudyId, LegendVisibility, VolumeProfileColorConfig,
-    VolumeProfileColorSlot, VolumeProfileSchedule,
+    FootprintPocColorSlot, KlineStudy, KlineStudyId, LegendVisibility, TpoBoundaryEdits,
+    TpoProfile, VolumeProfileColorConfig, VolumeProfileColorSlot, VolumeProfileSchedule,
 };
 pub(crate) use data::chart::kline::{PanelYValueRange, YUnit, YUnitRange};
 use data::chart::kline_data::NPoc;
 use data::config::theme::ThemeColorRole;
-use exchange::{
-    TickerInfo,
-    unit::{Price, PriceStep},
-};
+use exchange::{Kline, TickerInfo, UnixMs, unit::PriceStep};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct OverlayChannelSpec<'a> {
@@ -143,6 +142,11 @@ const PANEL_SPLITTER_HEIGHT: f32 = 1.0;
 const PIXELS_PER_SCROLL_LINE: f32 = 40.0;
 const HORIZONTAL_DRAG_SCALE_DELTA_PER_PX: f32 = 0.3 / 9.0;
 const DRAG_THRESHOLD_PX: f32 = 5.0;
+const TPO_BOUNDARY_HIT_PX: f32 = 7.0;
+pub(super) const TPO_ACTION_BUTTON_WIDTH_PX: f32 = 62.0;
+pub(super) const TPO_ACTION_BUTTON_HEIGHT_PX: f32 = 20.0;
+pub(super) const TPO_RESET_BUTTON_WIDTH_PX: f32 = 48.0;
+const TPO_ACTION_BUTTON_GAP_PX: f32 = 3.0;
 
 const PANEL_TITLE_TOP_PAD: f32 = 4.0;
 const Y_AXIS_DRAG_SCALE_DELTA_PER_PX: f32 = 0.1;
@@ -186,6 +190,12 @@ impl Regions {
 pub(super) enum DragMode {
     None,
     Split(usize),
+    TpoBoundary {
+        boundary: UnixMs,
+        preview: UnixMs,
+        minimum: Option<UnixMs>,
+        maximum: Option<UnixMs>,
+    },
     YAxisScale {
         panel_index: usize,
         anchor_y: f32,
@@ -207,6 +217,43 @@ pub(super) enum DragMode {
         panel_index: usize,
         start: Point,
         current: Point,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TpoInteraction {
+    MergeLeft { boundary: UnixMs },
+    MoveBoundary { from: UnixMs, to: UnixMs },
+    Reset { start: UnixMs, end: UnixMs },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct TpoProfileGeometry {
+    pub(super) index: usize,
+    pub(super) start: UnixMs,
+    pub(super) end: UnixMs,
+    pub(super) overlay_bounds: Rectangle,
+    pub(super) button_bounds: Option<Rectangle>,
+    pub(super) reset_button_bounds: Option<Rectangle>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum TpoHit {
+    Reset {
+        start: UnixMs,
+        end: UnixMs,
+    },
+    Profile {
+        start: UnixMs,
+    },
+    Boundary {
+        boundary: UnixMs,
+        minimum: Option<UnixMs>,
+        maximum: Option<UnixMs>,
+    },
+    MergeLeft {
+        boundary: UnixMs,
+        left_start: UnixMs,
     },
 }
 
@@ -256,7 +303,9 @@ impl GeometryCacheKey {
 }
 
 struct State {
+    plot_background_cache: canvas::Cache,
     plot_cache: canvas::Cache,
+    tpo_cache: canvas::Cache,
     y_axis_cache: canvas::Cache,
     x_axis_cache: canvas::Cache,
     overlay_cache: canvas::Cache,
@@ -264,6 +313,8 @@ struct State {
     drawing_background_cache: canvas::Cache,
     marquee_cache: canvas::Cache,
     drag_mode: DragMode,
+    selected_tpo_profile: Option<UnixMs>,
+    pending_tpo_hit: Option<TpoHit>,
     drag_start: Option<Point>,
     last_cursor: Option<Point>,
     modifiers: keyboard::Modifiers,
@@ -285,7 +336,9 @@ struct State {
 impl Default for State {
     fn default() -> Self {
         Self {
+            plot_background_cache: canvas::Cache::new(),
             plot_cache: canvas::Cache::new(),
+            tpo_cache: canvas::Cache::new(),
             y_axis_cache: canvas::Cache::new(),
             x_axis_cache: canvas::Cache::new(),
             overlay_cache: canvas::Cache::new(),
@@ -293,6 +346,8 @@ impl Default for State {
             drawing_background_cache: canvas::Cache::new(),
             marquee_cache: canvas::Cache::new(),
             drag_mode: DragMode::None,
+            selected_tpo_profile: None,
+            pending_tpo_hit: None,
             drag_start: None,
             last_cursor: None,
             modifiers: keyboard::Modifiers::empty(),
@@ -315,7 +370,9 @@ impl Default for State {
 
 impl State {
     fn clear_all_caches(&mut self) {
+        self.plot_background_cache.clear();
         self.plot_cache.clear();
+        self.tpo_cache.clear();
         self.y_axis_cache.clear();
         self.x_axis_cache.clear();
         self.drawing_background_cache.clear();
@@ -358,11 +415,13 @@ impl State {
         let plot_origin = Point::new(bounds.x + regions.plot.x, bounds.y + regions.plot.y);
         let x_axis_origin = Point::new(bounds.x + regions.x_axis.x, bounds.y + regions.x_axis.y);
 
-        Self::sync_geometry_cache(
-            &self.plot_cache,
-            &mut self.plot_geometry_key,
-            GeometryCacheKey::new(regions.plot, plot_origin, pixel_ratio),
-        );
+        let plot_geometry_key = GeometryCacheKey::new(regions.plot, plot_origin, pixel_ratio);
+        if self.plot_geometry_key != Some(plot_geometry_key) {
+            self.plot_background_cache.clear();
+            self.plot_cache.clear();
+            self.tpo_cache.clear();
+            self.plot_geometry_key = Some(plot_geometry_key);
+        }
         Self::sync_geometry_cache(
             &self.drawing_background_cache,
             &mut self.drawing_background_geometry_key,
@@ -434,6 +493,7 @@ pub enum KlineWidgetEvent {
     PrimaryAutoscaleToggled,
     PrimaryScaleModeCycleRequested,
     PanelInteraction(PanelInteraction),
+    Tpo(TpoInteraction),
     TickerSettings(TickerInfo),
     FootprintSettings,
     TickerRemove(TickerInfo),
@@ -453,12 +513,37 @@ pub enum KlineWidgetEvent {
     Drawing(KlineWidgetDrawingEvent),
 }
 
+enum ProfileBarSource<'a> {
+    Empty,
+    External(&'a BTreeMap<UnixMs, Kline>),
+    Chart { retained: (UnixMs, UnixMs) },
+}
+
+impl ProfileBarSource<'_> {
+    fn collect(&self, series: &[KlineSeries]) -> Vec<Kline> {
+        match self {
+            Self::Empty => Vec::new(),
+            Self::External(bars) => bars.values().copied().collect(),
+            Self::Chart { retained } => series
+                .first()
+                .into_iter()
+                .flat_map(KlineSeries::points)
+                .filter(|point| point.kline.time >= retained.0 && point.kline.time < retained.1)
+                .map(|point| *point.kline)
+                .collect(),
+        }
+    }
+}
+
 pub struct KlineWidget<'a> {
     series: &'a [KlineSeries],
     indicator_host: &'a IndicatorHost,
     composition: &'a ChartComposition,
     indicator_instances: &'a IndicatorInstanceStore,
     studies: &'a [KlineStudy],
+    profile_bars: ProfileBarSource<'a>,
+    tpo_profiles: &'a [TpoProfile],
+    tpo_edits: &'a TpoBoundaryEdits,
     studies_legend_expanded: bool,
     legend_visibility: LegendVisibility,
     candlestick: CandlestickConfig,
@@ -488,6 +573,7 @@ impl<'a> KlineWidget<'a> {
         composition: &'a ChartComposition,
         indicator_instances: &'a IndicatorInstanceStore,
         theme_accents: ThemeAccents,
+        tpo_edits: &'a TpoBoundaryEdits,
     ) -> Self {
         Self {
             series,
@@ -495,6 +581,9 @@ impl<'a> KlineWidget<'a> {
             composition,
             indicator_instances,
             studies: &[],
+            profile_bars: ProfileBarSource::Empty,
+            tpo_profiles: &[],
+            tpo_edits,
             studies_legend_expanded: true,
             legend_visibility: LegendVisibility::default(),
             candlestick: CandlestickConfig::default(),
@@ -520,6 +609,151 @@ impl<'a> KlineWidget<'a> {
     pub fn with_studies(mut self, studies: &'a [KlineStudy]) -> Self {
         self.studies = studies;
         self
+    }
+
+    pub fn with_tpo_profiles(mut self, profiles: &'a [TpoProfile]) -> Self {
+        self.tpo_profiles = profiles;
+        self
+    }
+
+    pub fn with_external_profile_bars(mut self, bars: Option<&'a BTreeMap<UnixMs, Kline>>) -> Self {
+        self.profile_bars = bars.map_or(ProfileBarSource::Empty, ProfileBarSource::External);
+        self
+    }
+
+    pub fn with_chart_profile_range(mut self, retained: Option<(UnixMs, UnixMs)>) -> Self {
+        self.profile_bars = retained.map_or(ProfileBarSource::Empty, |retained| {
+            ProfileBarSource::Chart { retained }
+        });
+        self
+    }
+
+    fn tpo_hit_test(
+        &self,
+        scene: &Scene,
+        point: Point,
+        selected_profile: Option<UnixMs>,
+    ) -> Option<TpoHit> {
+        let geometries = self.tpo_profile_geometries(scene, selected_profile);
+
+        for geometry in &geometries {
+            if geometry
+                .reset_button_bounds
+                .is_some_and(|bounds| point_in_rectangle(point, bounds))
+            {
+                return Some(TpoHit::Reset {
+                    start: geometry.start,
+                    end: geometry.end,
+                });
+            }
+            if geometry
+                .button_bounds
+                .is_some_and(|bounds| point_in_rectangle(point, bounds))
+            {
+                let left_start = self
+                    .tpo_profiles
+                    .get(geometry.index.saturating_sub(1))?
+                    .start;
+                return Some(TpoHit::MergeLeft {
+                    boundary: geometry.start,
+                    left_start,
+                });
+            }
+        }
+
+        if selected_profile.is_some() {
+            let snap_timeframe = match self.basis {
+                Basis::Time(timeframe) => timeframe,
+                Basis::Tick(_) => return None,
+            };
+            let selected_index = selected_profile.and_then(|start| {
+                self.tpo_profiles
+                    .iter()
+                    .position(|profile| profile.start == start)
+            });
+            let plot = scene.primary_plot();
+            let plot_top = scene.layout.regions.plot.y + plot.y;
+            let plot_bottom = plot_top + plot.height;
+            for (index, profile) in self.tpo_profiles.iter().enumerate().skip(1) {
+                let Some(boundary_unit) = scene.x.axis.unit_from_time_f32(profile.start) else {
+                    continue;
+                };
+                let boundary_x = scene.layout.regions.plot.x + scene.map_x_plot_f32(boundary_unit);
+                if (point.x - boundary_x).abs() <= TPO_BOUNDARY_HIT_PX
+                    && point.y >= plot_top
+                    && point.y <= plot_bottom
+                {
+                    let Some((minimum, maximum)) = selected_index.and_then(|selected_index| {
+                        let selected = self.tpo_profiles.get(selected_index)?;
+                        if index == selected_index {
+                            Some((
+                                None,
+                                Some(selected.end.offset_by_timeframe(snap_timeframe, -1)),
+                            ))
+                        } else if index == selected_index + 1 {
+                            Some((
+                                Some(selected.start.offset_by_timeframe(snap_timeframe, 1)),
+                                None,
+                            ))
+                        } else {
+                            None
+                        }
+                    }) else {
+                        continue;
+                    };
+                    return Some(TpoHit::Boundary {
+                        boundary: profile.start,
+                        minimum,
+                        maximum,
+                    });
+                }
+            }
+        }
+
+        geometries
+            .iter()
+            .rev()
+            .find(|geometry| point_in_rectangle(point, geometry.overlay_bounds))
+            .map(|geometry| TpoHit::Profile {
+                start: geometry.start,
+            })
+    }
+
+    fn tpo_boundary_from_cursor(
+        &self,
+        scene: &Scene,
+        cursor: Point,
+        boundary: UnixMs,
+        minimum: Option<UnixMs>,
+        maximum: Option<UnixMs>,
+    ) -> Option<UnixMs> {
+        let pair_index = self
+            .tpo_profiles
+            .windows(2)
+            .position(|profiles| profiles[1].start == boundary)?;
+        let left_profile = self.tpo_profiles.get(pair_index)?;
+        let snap_timeframe = match self.basis {
+            Basis::Time(timeframe) => timeframe,
+            Basis::Tick(_) => return None,
+        };
+        let period_ms = snap_timeframe.to_milliseconds().max(1);
+        let raw_time = scene.time_from_plot_x_f32(cursor.x - scene.layout.regions.plot.x)?;
+        let (before_anchor, elapsed) = if raw_time >= left_profile.start {
+            (false, raw_time.as_u64() - left_profile.start.as_u64())
+        } else {
+            (true, left_profile.start.as_u64() - raw_time.as_u64())
+        };
+        let whole_periods = elapsed / period_ms;
+        let rounded_periods =
+            whole_periods.saturating_add(u64::from(elapsed % period_ms >= period_ms / 2));
+        let intervals = i64::try_from(rounded_periods).unwrap_or(i64::MAX);
+        let candidate = left_profile.start.offset_by_timeframe(
+            snap_timeframe,
+            if before_anchor { -intervals } else { intervals },
+        );
+        let minimum = minimum.unwrap_or(self.tpo_profiles.first()?.start);
+        let maximum = maximum.unwrap_or(self.tpo_profiles.last()?.end);
+        (minimum <= maximum).then(|| candidate.clamp(minimum, maximum))
     }
 
     pub fn with_studies_legend_expanded(mut self, expanded: bool) -> Self {
@@ -943,6 +1177,21 @@ where
                             KlineWidgetDrawingEvent::DragFinished { id },
                         )));
                     }
+                    if let DragMode::TpoBoundary {
+                        boundary, preview, ..
+                    } = state.drag_mode
+                    {
+                        state.selected_tpo_profile = Some(preview);
+                        if boundary != preview {
+                            shell.publish(M::from(KlineWidgetEvent::Tpo(
+                                TpoInteraction::MoveBoundary {
+                                    from: boundary,
+                                    to: preview,
+                                },
+                            )));
+                        }
+                    }
+                    state.pending_tpo_hit = None;
                     state.drag_mode = DragMode::None;
                     state.drag_start = None;
                     state.last_cursor = None;
@@ -961,6 +1210,7 @@ where
                     DragMode::DrawingMove { .. }
                         | DragMode::YAxisScale { .. }
                         | DragMode::XAxisScale { .. }
+                        | DragMode::TpoBoundary { .. }
                         | DragMode::Marquee { .. }
                 ) {
                     if let Some(global) = cursor.position() {
@@ -1100,6 +1350,7 @@ where
                     }
                     mouse::Event::ButtonPressed(mouse::Button::Left) => {
                         state.drag_start = Some(cursor_pos);
+                        state.pending_tpo_hit = None;
 
                         if let Some(global_pos) = cursor.position() {
                             let new_click = iced_core::mouse::Click::new(
@@ -1239,6 +1490,55 @@ where
                             state.clear_all_caches();
                             shell.capture_event();
                             return;
+                        }
+
+                        let tpo_hit = if self.drawings.allows_panning()
+                            && let LayoutHitZone::PanelPlot(panel_index) = zone
+                            && let Some(scene) = scene.as_ref()
+                            && panel_index == scene.primary.panel_index
+                        {
+                            self.tpo_hit_test(scene, cursor_pos, state.selected_tpo_profile)
+                        } else {
+                            None
+                        };
+
+                        if let Some(hit) = tpo_hit {
+                            match hit {
+                                TpoHit::Reset { .. }
+                                | TpoHit::MergeLeft { .. }
+                                | TpoHit::Profile { .. } => {
+                                    state.pending_tpo_hit = Some(hit);
+                                    state.clear_overlay_caches();
+                                    if let LayoutHitZone::PanelPlot(panel_index) = zone {
+                                        state.drag_mode = DragMode::Pan { panel_index };
+                                        state.last_cursor = Some(cursor_pos);
+                                        shell.capture_event();
+                                        return;
+                                    }
+                                }
+                                TpoHit::Boundary {
+                                    boundary,
+                                    minimum,
+                                    maximum,
+                                } => {
+                                    state.selected_tpo_profile = Some(boundary);
+                                    state.drag_mode = DragMode::TpoBoundary {
+                                        boundary,
+                                        preview: boundary,
+                                        minimum,
+                                        maximum,
+                                    };
+                                    state.last_cursor = Some(cursor_pos);
+                                    state.clear_overlay_caches();
+                                    shell.capture_event();
+                                    return;
+                                }
+                            }
+                        } else if self.drawings.allows_panning()
+                            && matches!(zone, LayoutHitZone::PanelPlot(_))
+                            && state.selected_tpo_profile.take().is_some()
+                        {
+                            state.clear_overlay_caches();
                         }
 
                         if (self.drawings.measure.is_some()
@@ -1477,10 +1777,63 @@ where
                         shell.capture_event();
                     }
                     mouse::Event::ButtonReleased(mouse::Button::Left) => {
+                        if let Some(hit) = state.pending_tpo_hit.take()
+                            && state
+                                .drag_start
+                                .is_some_and(|start| !drag_threshold_reached(start, cursor_pos))
+                        {
+                            match hit {
+                                TpoHit::Reset { start, end } => {
+                                    shell.publish(M::from(KlineWidgetEvent::Tpo(
+                                        TpoInteraction::Reset { start, end },
+                                    )));
+                                    state.clear_all_caches();
+                                    shell.capture_event();
+                                }
+                                TpoHit::MergeLeft {
+                                    boundary,
+                                    left_start,
+                                } => {
+                                    state.selected_tpo_profile = Some(left_start);
+                                    shell.publish(M::from(KlineWidgetEvent::Tpo(
+                                        TpoInteraction::MergeLeft { boundary },
+                                    )));
+                                    state.clear_all_caches();
+                                    shell.capture_event();
+                                }
+                                TpoHit::Profile { start } => {
+                                    state.selected_tpo_profile = (state.selected_tpo_profile
+                                        != Some(start))
+                                    .then_some(start);
+                                    state.clear_overlay_caches();
+                                    shell.capture_event();
+                                }
+                                TpoHit::Boundary { .. } => {}
+                            }
+                        }
+
                         if let DragMode::DrawingMove { id, .. } = state.drag_mode {
                             shell.publish(M::from(KlineWidgetEvent::Drawing(
                                 KlineWidgetDrawingEvent::DragFinished { id },
                             )));
+                            state.clear_overlay_caches();
+                            state.clear_all_caches();
+                            shell.capture_event();
+                        }
+
+                        if let DragMode::TpoBoundary {
+                            boundary, preview, ..
+                        } = state.drag_mode
+                        {
+                            state.selected_tpo_profile = Some(preview);
+                            if boundary != preview {
+                                shell.publish(M::from(KlineWidgetEvent::Tpo(
+                                    TpoInteraction::MoveBoundary {
+                                        from: boundary,
+                                        to: preview,
+                                    },
+                                )));
+                            }
                             state.clear_overlay_caches();
                             state.clear_all_caches();
                             shell.capture_event();
@@ -1521,10 +1874,12 @@ where
 
                         if let Some(start) = state.drag_start
                             && !matches!(state.drag_mode, DragMode::None)
-                            && !drag_threshold_reached(start, cursor_pos)
                         {
-                            shell.capture_event();
-                            return;
+                            if !drag_threshold_reached(start, cursor_pos) {
+                                shell.capture_event();
+                                return;
+                            }
+                            state.pending_tpo_hit = None;
                         }
 
                         if let Some(DrawingMeasure::Pending(measure_state)) = self.drawings.measure
@@ -1540,7 +1895,29 @@ where
                             )));
                         }
 
-                        if let DragMode::XAxisScale {
+                        if let DragMode::TpoBoundary {
+                            boundary,
+                            minimum,
+                            maximum,
+                            ..
+                        } = state.drag_mode
+                        {
+                            if let Some(scene) = self.cached_scene(state, layout, cursor)
+                                && let Some(preview) = self.tpo_boundary_from_cursor(
+                                    &scene, cursor_pos, boundary, minimum, maximum,
+                                )
+                            {
+                                state.drag_mode = DragMode::TpoBoundary {
+                                    boundary,
+                                    preview,
+                                    minimum,
+                                    maximum,
+                                };
+                                state.last_cursor = Some(cursor_pos);
+                                state.clear_overlay_caches();
+                                shell.capture_event();
+                            }
+                        } else if let DragMode::XAxisScale {
                             anchor_x,
                             initial_world,
                             initial_right_unit,
@@ -1821,8 +2198,40 @@ where
                         }
                     });
 
-            let plot_geom = state.plot_cache.draw(r, plot_rect.size(), |frame| {
-                self.fill_main_geometry(frame, &scene, palette, generated_accents, plot_pixels);
+            let plot_background_geom =
+                state
+                    .plot_background_cache
+                    .draw(r, plot_rect.size(), |frame| {
+                        self.fill_main_geometry(
+                            frame,
+                            &scene,
+                            palette,
+                            generated_accents,
+                            plot_pixels,
+                            PrimaryPlotLayer::Background,
+                        );
+                    });
+
+            let tpo_geom = state.tpo_cache.draw(r, plot_rect.size(), |frame| {
+                self.fill_main_geometry(
+                    frame,
+                    &scene,
+                    palette,
+                    generated_accents,
+                    plot_pixels,
+                    PrimaryPlotLayer::Tpo,
+                );
+            });
+
+            let plot_foreground_geom = state.plot_cache.draw(r, plot_rect.size(), |frame| {
+                self.fill_main_geometry(
+                    frame,
+                    &scene,
+                    palette,
+                    generated_accents,
+                    plot_pixels,
+                    PrimaryPlotLayer::Foreground,
+                );
             });
 
             let splitter_color = style::split_ruler(theme).color;
@@ -1890,6 +2299,11 @@ where
                     generated_accents,
                     overlay_pixels,
                     drawing_magnet,
+                    state.selected_tpo_profile,
+                    match state.drag_mode {
+                        DragMode::TpoBoundary { preview, .. } => Some(preview),
+                        _ => None,
+                    },
                 );
             });
 
@@ -1929,8 +2343,22 @@ where
             use iced::advanced::graphics::geometry::Renderer as _;
             r.draw_geometry(drawing_background_geom);
 
-            r.with_translation(Vector::new(plot_rect.x, plot_rect.y), |r| {
-                r.draw_geometry(plot_geom);
+            r.with_layer(plot_rect, |r| {
+                r.with_translation(Vector::new(plot_rect.x, plot_rect.y), |r| {
+                    r.draw_geometry(plot_background_geom);
+                });
+            });
+
+            r.with_layer(plot_rect, |r| {
+                r.with_translation(Vector::new(plot_rect.x, plot_rect.y), |r| {
+                    r.draw_geometry(tpo_geom);
+                });
+            });
+
+            r.with_layer(plot_rect, |r| {
+                r.with_translation(Vector::new(plot_rect.x, plot_rect.y), |r| {
+                    r.draw_geometry(plot_foreground_geom);
+                });
             });
 
             r.with_translation(Vector::new(y_rect.x, y_rect.y), |r| {
@@ -1972,6 +2400,10 @@ where
             return advanced::mouse::Interaction::ResizingVertically;
         }
 
+        if matches!(state.drag_mode, DragMode::TpoBoundary { .. }) {
+            return advanced::mouse::Interaction::ResizingHorizontally;
+        }
+
         if matches!(state.drag_mode, DragMode::XAxisScale { .. }) {
             return advanced::mouse::Interaction::ResizingHorizontally;
         }
@@ -1985,6 +2417,18 @@ where
         }
 
         let scene = self.cached_scene(state, layout, cursor);
+        if self.drawings.allows_panning()
+            && let Some(scene) = scene.as_ref()
+            && let Some(point) = cursor.position_in(layout.bounds())
+            && let Some(hit) = self.tpo_hit_test(scene, point, state.selected_tpo_profile)
+        {
+            return match hit {
+                TpoHit::Boundary { .. } => advanced::mouse::Interaction::ResizingHorizontally,
+                TpoHit::Reset { .. } | TpoHit::MergeLeft { .. } | TpoHit::Profile { .. } => {
+                    advanced::mouse::Interaction::Pointer
+                }
+            };
+        }
         let Some(target) = scene.map(|scene| scene.interaction.target) else {
             return advanced::mouse::Interaction::default();
         };
@@ -2042,6 +2486,13 @@ fn primary_scale_inversion_shortcut(
     modifiers: keyboard::Modifiers,
 ) -> bool {
     modifiers.alt() && physical_key == keyboard::key::Code::KeyI
+}
+
+fn point_in_rectangle(point: Point, bounds: Rectangle) -> bool {
+    point.x >= bounds.x
+        && point.x <= bounds.x + bounds.width
+        && point.y >= bounds.y
+        && point.y <= bounds.y + bounds.height
 }
 
 impl<'a, M> From<KlineWidget<'a>> for Element<'a, M, Theme, Renderer>

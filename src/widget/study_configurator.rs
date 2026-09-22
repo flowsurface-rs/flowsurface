@@ -8,12 +8,13 @@ use crate::{
 };
 use data::chart::heatmap::{CLEANUP_THRESHOLD, HeatmapStudy, ProfileKind};
 use data::chart::kline::{
-    KlineStudy, MAX_VOLUME_PROFILE_OPACITY_PERCENT, MAX_VOLUME_PROFILE_WIDTH_PERCENT,
-    MIN_VOLUME_PROFILE_OPACITY_PERCENT, MIN_VOLUME_PROFILE_WIDTH_PERCENT, VolumeProfileColorConfig,
-    VolumeProfileSchedule,
+    KlineStudy, MAX_TPO_VALUE_AREA_PERCENT, MAX_VOLUME_PROFILE_OPACITY_PERCENT,
+    MAX_VOLUME_PROFILE_WIDTH_PERCENT, MIN_TPO_VALUE_AREA_PERCENT,
+    MIN_VOLUME_PROFILE_OPACITY_PERCENT, MIN_VOLUME_PROFILE_WIDTH_PERCENT, ProfileSource, TpoAnchor,
+    TpoColorConfig, VolumeProfileColorConfig, VolumeProfileSchedule,
 };
-use exchange::TickMultiplier;
 use exchange::unit::{MinTicksize, PriceStep};
+use exchange::{TickMultiplier, Timeframe};
 use iced::{
     Element, Length, padding,
     widget::{button, checkbox, column, container, pick_list, row, rule, space, text},
@@ -125,12 +126,13 @@ fn study_window_duration(datapoint_count: usize, interval_ms: u64) -> String {
 
 fn volume_profile_color_section<'a>(
     colors: VolumeProfileColorConfig,
+    source: ProfileSource,
     schedule: VolumeProfileSchedule,
     theme_accents: ThemeAccents,
     layout: StudyConfigLayout,
     on_change: impl Fn(VolumeProfileColorConfig) -> Message<KlineStudy> + Copy + 'a,
 ) -> Element<'a, Message<KlineStudy>> {
-    let controls = VolumeProfileColorConfig::color_specs_for(schedule)
+    let controls = VolumeProfileColorConfig::color_specs_for_source(source, schedule)
         .iter()
         .map(|spec| {
             let slot = spec.slot;
@@ -485,6 +487,7 @@ fn kline_study_config_view<'a>(
 ) -> Element<'a, Message<KlineStudy>> {
     match study {
         KlineStudy::VolumeProfile {
+            source,
             schedule,
             colors,
             width_percent,
@@ -493,6 +496,7 @@ fn kline_study_config_view<'a>(
             tick_multiplier,
         } => {
             let schedule = *schedule;
+            let source = *source;
             let colors = *colors;
             let width_percent = *width_percent;
             let opacity_percent = *opacity_percent;
@@ -507,11 +511,13 @@ fn kline_study_config_view<'a>(
             };
             let color_section = volume_profile_color_section(
                 colors,
+                source,
                 schedule,
                 theme_accents,
                 layout,
                 move |colors| {
                     on_change(KlineStudy::VolumeProfile {
+                        source,
                         schedule,
                         colors,
                         width_percent,
@@ -528,6 +534,7 @@ fn kline_study_config_view<'a>(
                 layout,
                 move |new_multiplier| {
                     on_change(KlineStudy::VolumeProfile {
+                        source,
                         schedule,
                         colors,
                         width_percent,
@@ -546,6 +553,7 @@ fn kline_study_config_view<'a>(
                         layout,
                         move |width_percent| {
                             on_change(KlineStudy::VolumeProfile {
+                                source,
                                 schedule,
                                 colors,
                                 width_percent,
@@ -560,6 +568,7 @@ fn kline_study_config_view<'a>(
                         layout,
                         move |opacity_percent| {
                             on_change(KlineStudy::VolumeProfile {
+                                source,
                                 schedule,
                                 colors,
                                 width_percent,
@@ -604,6 +613,7 @@ fn kline_study_config_view<'a>(
                         layout,
                         move |width_percent| {
                             on_change(KlineStudy::VolumeProfile {
+                                source,
                                 schedule,
                                 colors,
                                 width_percent,
@@ -618,6 +628,7 @@ fn kline_study_config_view<'a>(
                         layout,
                         move |opacity_percent| {
                             on_change(KlineStudy::VolumeProfile {
+                                source,
                                 schedule,
                                 colors,
                                 width_percent,
@@ -666,6 +677,7 @@ fn kline_study_config_view<'a>(
                     let interval_picker =
                         pick_list(intervals, selected_interval, move |new_interval| {
                             on_change(KlineStudy::VolumeProfile {
+                                source,
                                 schedule: VolumeProfileSchedule::Recurring {
                                     interval: new_interval,
                                 },
@@ -699,7 +711,350 @@ fn kline_study_config_view<'a>(
                 }
             }
         }
+        KlineStudy::TpoProfile {
+            source,
+            anchor,
+            letter_period,
+            tick_multiplier,
+            value_area_percent,
+            colors,
+            visible,
+        } => tpo_study_config_view(
+            *study,
+            *source,
+            *anchor,
+            *letter_period,
+            *tick_multiplier,
+            *value_area_percent,
+            *colors,
+            *visible,
+            basis,
+            footprint_tick_multiplier,
+            min_ticksize,
+            theme_accents,
+            on_change,
+            include_reset,
+            layout,
+        ),
     }
+}
+
+fn tpo_study_config_view<'a>(
+    study: KlineStudy,
+    source: ProfileSource,
+    anchor: TpoAnchor,
+    letter_period: Timeframe,
+    tick_multiplier: Option<TickMultiplier>,
+    value_area_percent: u8,
+    colors: TpoColorConfig,
+    visible: bool,
+    basis: data::chart::Basis,
+    footprint_tick_multiplier: Option<TickMultiplier>,
+    min_ticksize: Option<MinTicksize>,
+    theme_accents: ThemeAccents,
+    on_change: impl Fn(KlineStudy) -> Message<KlineStudy> + Copy + 'a,
+    include_reset: bool,
+    layout: StudyConfigLayout,
+) -> Element<'a, Message<KlineStudy>> {
+    if !basis.is_time() {
+        return iced::widget::center(text("TPO profiles require a time-based chart")).into();
+    }
+
+    let anchor_picker = pick_list(TpoAnchor::ALL, Some(anchor), move |anchor| {
+        on_change(KlineStudy::TpoProfile {
+            source,
+            anchor,
+            letter_period,
+            tick_multiplier,
+            value_area_percent,
+            colors,
+            visible,
+        })
+    })
+    .width(Length::Fill);
+
+    let periods = [
+        Timeframe::M15,
+        Timeframe::M30,
+        Timeframe::H1,
+        Timeframe::H2,
+        Timeframe::H4,
+    ];
+    let period_picker = pick_list(periods, Some(letter_period), move |period| {
+        on_change(KlineStudy::TpoProfile {
+            source,
+            anchor,
+            letter_period: period,
+            tick_multiplier,
+            value_area_percent,
+            colors,
+            visible,
+        })
+    })
+    .width(Length::Fill);
+
+    let ticksize_section = volume_profile_ticksize_section(
+        tick_multiplier,
+        footprint_tick_multiplier,
+        min_ticksize,
+        layout,
+        move |new_multiplier| {
+            on_change(KlineStudy::TpoProfile {
+                source,
+                anchor,
+                letter_period,
+                tick_multiplier: new_multiplier,
+                value_area_percent,
+                colors,
+                visible,
+            })
+        },
+    );
+
+    let value_area = classic_slider_row(
+        Some(text("Value area")),
+        f32::from(MIN_TPO_VALUE_AREA_PERCENT)..=f32::from(MAX_TPO_VALUE_AREA_PERCENT),
+        f32::from(value_area_percent.clamp(MIN_TPO_VALUE_AREA_PERCENT, MAX_TPO_VALUE_AREA_PERCENT)),
+        move |value| {
+            on_change(KlineStudy::TpoProfile {
+                source,
+                anchor,
+                letter_period,
+                tick_multiplier,
+                value_area_percent: (value.round() as u8)
+                    .clamp(MIN_TPO_VALUE_AREA_PERCENT, MAX_TPO_VALUE_AREA_PERCENT),
+                colors,
+                visible,
+            })
+        },
+        |value| format!("{value:.0}%"),
+        Some(5.0),
+    );
+
+    let color_controls = [
+        (TpoColorSlot::Letters, "Letters"),
+        (TpoColorSlot::Poc, "POC"),
+        (TpoColorSlot::ValueArea, "Value area"),
+        (TpoColorSlot::InitialBalance, "Initial balance"),
+        (TpoColorSlot::SinglePrint, "Single print"),
+        (TpoColorSlot::PoorExtremes, "Poor high/low"),
+    ]
+    .into_iter()
+    .map(|(slot, label)| {
+        let enabled = match slot {
+            TpoColorSlot::Letters | TpoColorSlot::ValueArea => true,
+            TpoColorSlot::Poc => colors.show_poc,
+            TpoColorSlot::InitialBalance => colors.show_initial_balance,
+            TpoColorSlot::SinglePrint => colors.show_single_print,
+            TpoColorSlot::PoorExtremes => colors.show_poor_high || colors.show_poor_low,
+        };
+        if !enabled {
+            return element_for_layout(
+                tpo_visibility_toggle(colors, label, slot, study, on_change),
+                layout,
+            );
+        }
+
+        let selected = tpo_color_for(colors, slot);
+        let setting = tpo_color_setting(selected, theme_accents, move |color| {
+            on_change(KlineStudy::TpoProfile {
+                source,
+                anchor,
+                letter_period,
+                tick_multiplier,
+                value_area_percent,
+                colors: tpo_color_with(colors, slot, color),
+                visible,
+            })
+        });
+        let title = match slot {
+            TpoColorSlot::Letters | TpoColorSlot::ValueArea => {
+                crate::widget::text::body(label).into()
+            }
+            TpoColorSlot::Poc
+            | TpoColorSlot::InitialBalance
+            | TpoColorSlot::SinglePrint
+            | TpoColorSlot::PoorExtremes => {
+                tpo_visibility_toggle(colors, label, slot, study, on_change)
+            }
+        };
+        study_setting_with_title(title, setting, layout)
+    })
+    .collect::<Vec<_>>();
+
+    let mut content = column![];
+    if include_reset {
+        content = content.push(row![
+            space::horizontal(),
+            button("Reset defaults").on_press(on_change(study.default_for_type_for_basis(basis)))
+        ]);
+    }
+
+    match layout {
+        StudyConfigLayout::Card => {
+            content = content.push(study_setting("Anchor (UTC)", anchor_picker, layout));
+            content = content.push(
+                row![
+                    study_setting("Letter period", period_picker, layout),
+                    ticksize_section,
+                ]
+                .spacing(12),
+            );
+            content = content.push(value_area);
+            content = content.push(rule::horizontal(1.0).style(style::split_ruler));
+            content = content.push(column(color_controls).spacing(8));
+            content.padding(8).spacing(12).into()
+        }
+        StudyConfigLayout::Inspector(tab) => {
+            match tab {
+                inspector::InspectorTab::Inputs => {
+                    content = content.push(study_setting("Anchor (UTC)", anchor_picker, layout));
+                    content = content.push(study_setting("Letter period", period_picker, layout));
+                    content = content.push(ticksize_section);
+                    content = content.push(study_setting("Value area", value_area, layout));
+                }
+                inspector::InspectorTab::Style => {
+                    content = content.push(column(color_controls).spacing(8));
+                }
+                inspector::InspectorTab::Source => {}
+            }
+            content.spacing(inspector::MODAL_SECTION_SPACING).into()
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum TpoColorSlot {
+    Letters,
+    Poc,
+    ValueArea,
+    InitialBalance,
+    SinglePrint,
+    PoorExtremes,
+}
+
+fn tpo_color_for(colors: TpoColorConfig, slot: TpoColorSlot) -> data::config::theme::ThemeColor {
+    match slot {
+        TpoColorSlot::Letters => colors.letters,
+        TpoColorSlot::Poc => colors.poc,
+        TpoColorSlot::ValueArea => colors.value_area,
+        TpoColorSlot::InitialBalance => colors.initial_balance,
+        TpoColorSlot::SinglePrint => colors.single_print,
+        TpoColorSlot::PoorExtremes => colors.poor_high,
+    }
+}
+
+fn tpo_color_with(
+    colors: TpoColorConfig,
+    slot: TpoColorSlot,
+    color: data::config::theme::ThemeColor,
+) -> TpoColorConfig {
+    match slot {
+        TpoColorSlot::Letters => TpoColorConfig {
+            letters: color,
+            ..colors
+        },
+        TpoColorSlot::Poc => TpoColorConfig {
+            poc: color,
+            ..colors
+        },
+        TpoColorSlot::ValueArea => TpoColorConfig {
+            value_area: color,
+            ..colors
+        },
+        TpoColorSlot::InitialBalance => TpoColorConfig {
+            initial_balance: color,
+            ..colors
+        },
+        TpoColorSlot::SinglePrint => TpoColorConfig {
+            single_print: color,
+            ..colors
+        },
+        TpoColorSlot::PoorExtremes => TpoColorConfig {
+            poor_high: color,
+            poor_low: color,
+            ..colors
+        },
+    }
+}
+
+fn tpo_visibility_toggle<'a>(
+    colors: TpoColorConfig,
+    label: &'static str,
+    slot: TpoColorSlot,
+    study: KlineStudy,
+    on_change: impl Fn(KlineStudy) -> Message<KlineStudy> + Copy + 'a,
+) -> Element<'a, Message<KlineStudy>> {
+    let enabled = match slot {
+        TpoColorSlot::Poc => colors.show_poc,
+        TpoColorSlot::InitialBalance => colors.show_initial_balance,
+        TpoColorSlot::SinglePrint => colors.show_single_print,
+        TpoColorSlot::PoorExtremes => colors.show_poor_high || colors.show_poor_low,
+        TpoColorSlot::Letters | TpoColorSlot::ValueArea => unreachable!(),
+    };
+    checkbox(enabled)
+        .label(label)
+        .spacing(8)
+        .text_size(crate::style::text_size::SECTION)
+        .on_toggle(move |enabled| {
+            let colors = match slot {
+                TpoColorSlot::Poc => colors.with_show_poc(enabled),
+                TpoColorSlot::InitialBalance => colors.with_show_initial_balance(enabled),
+                TpoColorSlot::SinglePrint => colors.with_show_single_print(enabled),
+                TpoColorSlot::PoorExtremes => colors.with_show_poor_extremes(enabled),
+                TpoColorSlot::Letters | TpoColorSlot::ValueArea => unreachable!(),
+            };
+            on_change(match study {
+                KlineStudy::TpoProfile {
+                    source,
+                    anchor,
+                    letter_period,
+                    tick_multiplier,
+                    value_area_percent,
+                    visible,
+                    ..
+                } => KlineStudy::TpoProfile {
+                    source,
+                    anchor,
+                    letter_period,
+                    tick_multiplier,
+                    value_area_percent,
+                    colors,
+                    visible,
+                },
+                KlineStudy::VolumeProfile { .. } => unreachable!(),
+            })
+        })
+        .width(Length::Fill)
+        .into()
+}
+
+fn tpo_color_setting<'a>(
+    color: data::config::theme::ThemeColor,
+    theme_accents: ThemeAccents,
+    on_change: impl Fn(data::config::theme::ThemeColor) -> Message<KlineStudy> + Copy + 'a,
+) -> Element<'a, Message<KlineStudy>> {
+    let selected = color;
+    let accents = crate::widget::theme_color_control(selected, theme_accents, move |accent| {
+        on_change(data::config::theme::ThemeColor::with_accent(
+            selected.role,
+            accent,
+            selected.shade,
+        ))
+    });
+    let shades = pick_list(
+        data::config::theme::ThemeColorShade::ALL,
+        Some(selected.shade),
+        move |shade| {
+            on_change(data::config::theme::ThemeColor::with_accent(
+                selected.role,
+                selected.accent,
+                shade,
+            ))
+        },
+    )
+    .width(Length::Fill);
+    column![accents, shades].spacing(4).into()
 }
 
 impl Study for KlineStudy {

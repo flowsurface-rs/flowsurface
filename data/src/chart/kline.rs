@@ -22,6 +22,7 @@ pub mod feed_capabilities;
 pub mod fetch_plan;
 pub mod indicator_layout;
 pub mod indicators;
+mod poc_lines;
 pub mod series;
 pub mod studies;
 pub mod viewport;
@@ -48,12 +49,24 @@ pub use indicators::{
     indicator_definition, table_columns, unsupported_reason,
 };
 pub use indicators::{IndicatorConfig, IndicatorId};
+pub use studies::tpo::{
+    TPO_TRADE_COVERAGE_TIMEFRAME, TpoAnchor, TpoBoundaryEdits, TpoCalculationError, TpoProfile,
+    TpoProfileSettings, TpoProfileStatus, TpoRow, TradeTpoCache,
+    build_tpo_profile_with_source_timeframe, build_tpo_profiles_with_source_timeframe,
+};
+pub use studies::volume_profile::{
+    AnchoredProfileDistribution, ProfileDistribution, ProfileLevel, kline_volume_profile,
+    recurring_kline_volume_profiles,
+};
 pub use studies::{
     DEFAULT_RECURRING_VOLUME_PROFILE_INTERVAL, DEFAULT_RECURRING_VOLUME_PROFILE_OPACITY_PERCENT,
+    DEFAULT_TPO_LETTER_PERIOD, DEFAULT_TPO_VALUE_AREA_PERCENT,
     DEFAULT_VISIBLE_VOLUME_PROFILE_OPACITY_PERCENT, DEFAULT_VOLUME_PROFILE_WIDTH_PERCENT,
-    KlineStudy, KlineStudyId, MAX_VOLUME_PROFILE_OPACITY_PERCENT, MAX_VOLUME_PROFILE_WIDTH_PERCENT,
-    MIN_VOLUME_PROFILE_OPACITY_PERCENT, MIN_VOLUME_PROFILE_WIDTH_PERCENT, VolumeProfileColorConfig,
-    VolumeProfileColorSlot, VolumeProfileColorSpec, VolumeProfileSchedule,
+    KlineStudy, KlineStudyId, MAX_TPO_VALUE_AREA_PERCENT, MAX_VOLUME_PROFILE_OPACITY_PERCENT,
+    MAX_VOLUME_PROFILE_WIDTH_PERCENT, MIN_TPO_VALUE_AREA_PERCENT,
+    MIN_VOLUME_PROFILE_OPACITY_PERCENT, MIN_VOLUME_PROFILE_WIDTH_PERCENT, ProfileSource,
+    TpoColorConfig, VolumeProfileColorConfig, VolumeProfileColorSlot, VolumeProfileColorSpec,
+    VolumeProfileSchedule, tpo, volume_profile,
 };
 pub use viewport::{
     ChartCoord, ChartStepMs, DEFAULT_HORIZONTAL_SPACING_PX, HorizontalWorld,
@@ -626,8 +639,8 @@ impl IndicatorInstance {
         }
     }
 
-    pub fn normalized_for_basis(mut self, basis: Basis) -> Self {
-        self.config = self.config.clone().normalized_for_basis(&self.kind, basis);
+    pub fn normalized(mut self) -> Self {
+        self.config = self.config.normalized_for(&self.kind);
         self.style_overrides = if self.kind.is_registered() {
             self.style_overrides
                 .normalized_for_slots(&self.kind.definition().style_slots)
@@ -655,13 +668,13 @@ impl PartialEq for IndicatorInstanceStore {
 }
 
 impl IndicatorInstanceStore {
-    pub fn from_instances(instances: Vec<IndicatorInstance>, basis: Basis) -> Self {
+    pub fn from_instances(instances: Vec<IndicatorInstance>) -> Self {
         let mut store = Self::default();
         for instance in instances {
             if !instance.kind.is_registered() {
                 continue;
             }
-            let instance = instance.normalized_for_basis(basis);
+            let instance = instance.normalized();
             if !instance.config.is_valid_for(&instance.kind) {
                 continue;
             }
@@ -919,21 +932,6 @@ impl IndicatorInstanceStore {
             })
             .max()
             .unwrap_or(0)
-    }
-
-    pub fn normalized_for_basis(&self, basis: Basis) -> Self {
-        let mut normalized = Self {
-            instances: self
-                .instances
-                .iter()
-                .cloned()
-                .map(|instance| instance.normalized_for_basis(basis))
-                .collect(),
-            next_id: self.next_id,
-            warmup_bars_by_id: BTreeMap::new(),
-        };
-        normalized.rebuild_warmup_cache();
-        normalized
     }
 
     pub fn restore_snapshot(&mut self, snapshot: Self) {
@@ -1257,6 +1255,8 @@ pub struct Config {
     pub drawing_sidebar_visible: bool,
     pub studies: Vec<KlineStudy>,
     pub study_configs: Vec<KlineStudy>,
+    #[serde(default)]
+    pub tpo_profile_edits: TpoBoundaryEdits,
     pub indicator_instances: Vec<IndicatorInstance>,
     pub series: Vec<SeriesConfig>,
 }
@@ -1277,6 +1277,7 @@ impl Default for Config {
             drawing_sidebar_visible: default_drawing_sidebar_visible(),
             studies: Vec::new(),
             study_configs: Vec::new(),
+            tpo_profile_edits: TpoBoundaryEdits::default(),
             indicator_instances: Vec::new(),
             series: Vec::new(),
         }
@@ -1300,6 +1301,8 @@ pub struct SettingsSnapshot {
     pub splits: Vec<f32>,
     pub studies: Vec<KlineStudy>,
     pub study_configs: Vec<KlineStudy>,
+    #[serde(default)]
+    pub tpo_profile_edits: TpoBoundaryEdits,
     pub indicator_instances: Vec<IndicatorInstance>,
 }
 
@@ -1326,37 +1329,32 @@ impl Config {
             splits: self.splits.clone(),
             studies: self.studies.clone(),
             study_configs: self.study_configs.clone(),
+            tpo_profile_edits: self.tpo_profile_edits.clone(),
             indicator_instances: self.indicator_instances.clone(),
         }
     }
 
-    pub fn indicator_instances_for(&self, basis: Basis) -> IndicatorInstanceStore {
-        indicator_instances_for(&self.indicator_instances, basis)
+    pub fn indicator_instance_store(&self) -> IndicatorInstanceStore {
+        indicator_instance_store(&self.indicator_instances)
     }
 }
 
 impl SettingsSnapshot {
-    pub fn indicator_instances_for(&self, basis: Basis) -> IndicatorInstanceStore {
-        indicator_instances_for(&self.indicator_instances, basis)
+    pub fn indicator_instance_store(&self) -> IndicatorInstanceStore {
+        indicator_instance_store(&self.indicator_instances)
     }
 }
 
-fn indicator_instances_for(
-    instances: &[IndicatorInstance],
-    basis: Basis,
-) -> IndicatorInstanceStore {
+fn indicator_instance_store(instances: &[IndicatorInstance]) -> IndicatorInstanceStore {
     if !instances.is_empty() {
-        return IndicatorInstanceStore::from_instances(instances.to_vec(), basis);
+        return IndicatorInstanceStore::from_instances(instances.to_vec());
     }
 
     let kind = IndicatorId::parse("core.volume").expect("static ID is valid");
-    IndicatorInstanceStore::from_instances(
-        vec![IndicatorInstance::new(
-            IndicatorInstanceId::default_for(&kind),
-            kind,
-        )],
-        basis,
-    )
+    IndicatorInstanceStore::from_instances(vec![IndicatorInstance::new(
+        IndicatorInstanceId::default_for(&kind),
+        kind,
+    )])
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

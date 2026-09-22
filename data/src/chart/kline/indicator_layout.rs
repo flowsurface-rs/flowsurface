@@ -5,7 +5,7 @@ use super::composition::{
 use super::indicators::{
     AvailabilityContext, IndicatorAttachmentMode, IndicatorAvailability, IndicatorInputCoverage,
     IndicatorInputCoverageState, IndicatorInputSource, IndicatorPanelRecipe,
-    IndicatorUnsupportedReason, TableColumnValue, is_supported_for_market,
+    IndicatorUnsupportedReason, TableColumnValue,
 };
 use super::series::KlineSeries;
 use crate::chart::Basis;
@@ -109,8 +109,7 @@ impl IndicatorLayout {
         indicator: IndicatorId,
         market: exchange::adapter::MarketKind,
     ) -> bool {
-        if self.selected_indicators().contains(&id) || !is_supported_for_market(&indicator, market)
-        {
+        if self.selected_indicators().contains(&id) || !indicator.supports_market(market) {
             return false;
         }
         self.enable_indicator(id, indicator)
@@ -124,7 +123,7 @@ impl IndicatorLayout {
         source: &crate::chart::kline::IndicatorOutputRef,
     ) -> bool {
         if self.selected_indicators().contains(&id)
-            || !is_supported_for_market(&indicator, market)
+            || !indicator.supports_market(market)
             || !matches!(indicator.default_view(), IndicatorPanelRecipe::Plot { .. })
             || !indicator.definition().has_numeric_plot_layers()
         {
@@ -267,12 +266,7 @@ impl IndicatorLayout {
                                 )
                         })
                         .map(|requirement| requirement.source)?;
-                let reason = match source {
-                    IndicatorInputSource::DirectionalVolume => {
-                        IndicatorUnsupportedReason::MissingDirectionalVolume
-                    }
-                    source => IndicatorUnsupportedReason::MissingRequiredInput { source },
-                };
+                let reason = IndicatorUnsupportedReason::MissingRequiredInput { source };
                 Some((id, reason))
             })
             .collect()

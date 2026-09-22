@@ -3,6 +3,7 @@ use crate::{
     style::{self, Icon, icon_text},
     widget::tooltip_with_delay,
 };
+use data::chart::kline::series::KlineSeries;
 use data::{
     InternalError, MarketMetadata, MetadataSource,
     layout::pane::ContentKind,
@@ -1189,7 +1190,7 @@ impl TickersTable {
         on_select: FSelect,
         on_search: FSearch,
         on_scroll: FScroll,
-        selected_tickers: Option<&'a [TickerInfo]>,
+        selected_tickers: Option<&'a [KlineSeries]>,
         base_ticker: Option<TickerInfo>,
     ) -> Element<'a, M>
     where
@@ -1203,7 +1204,7 @@ impl TickersTable {
         let selection_enabled = selected_tickers.is_some();
 
         let mut selected_set: FxHashSet<Ticker> = selected_tickers
-            .map(|slice| slice.iter().map(|ti| ti.ticker).collect())
+            .map(|slice| slice.iter().map(|entry| entry.ticker_info.ticker).collect())
             .unwrap_or_default();
         if let Some(bt) = base_ticker {
             selected_set.insert(bt.ticker);
@@ -1215,7 +1216,7 @@ impl TickersTable {
         let selected_count = selected_tickers.map_or(0, |slice| {
             slice
                 .iter()
-                .filter(|ti| Some(ti.ticker) != base_ticker_id)
+                .filter(|entry| Some(entry.ticker_info.ticker) != base_ticker_id)
                 .count()
         }) + usize::from(base_ticker_id.is_some());
 
@@ -1357,7 +1358,7 @@ impl TickersTable {
     fn compact_selected_section<'a, M, FSelect>(
         &'a self,
         base_ticker: Option<TickerInfo>,
-        selected_tickers: Option<&'a [TickerInfo]>,
+        selected_tickers: Option<&'a [KlineSeries]>,
         on_select: FSelect,
         selection_enabled: bool,
     ) -> Option<Element<'a, M>>
@@ -1369,7 +1370,7 @@ impl TickersTable {
         let selected_count = selected_tickers.map_or(0, |slice| {
             slice
                 .iter()
-                .filter(|ti| Some(ti.ticker) != base_ticker_id)
+                .filter(|entry| Some(entry.ticker_info.ticker) != base_ticker_id)
                 .count()
         });
         if base_ticker.is_none() && selected_count == 0 {
@@ -1393,8 +1394,8 @@ impl TickersTable {
         if let Some(selected_tickers) = selected_tickers {
             for info in selected_tickers
                 .iter()
-                .copied()
-                .filter(|ti| Some(ti.ticker) != base_ticker_id)
+                .map(|entry| entry.ticker_info)
+                .filter(|info| Some(info.ticker) != base_ticker_id)
             {
                 let label = self.label_with_suffix(info.ticker);
 

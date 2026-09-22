@@ -18,7 +18,6 @@ use crate::{
         self, ModifierKind,
         pane::{Modal, mini_tickers_list::MiniPanel, stack_modal},
     },
-    notify::Notifications,
     screen::{
         dashboard::pane::Action,
         sidebar::{pane_settings as settings, tickers_table::TickersTable},
@@ -101,7 +100,7 @@ pub struct State {
     pub modal: Option<Modal>,
     pub content: Content,
     pub settings: Settings,
-    pub notifications: Notifications,
+    pub notifications: Vec<Toast>,
     pub streams: ResolvedStream,
     pub link_group: Option<LinkGroup>,
 }
@@ -334,10 +333,27 @@ impl State {
         timeframe: Timeframe,
         ticker_info: TickerInfo,
         klines: &[Kline],
+        is_batches_done: bool,
+        has_data: bool,
     ) {
         match &mut self.content {
             Content::Kline { chart, .. } => {
                 if chart.is_none() && req_id.is_some() {
+                    return;
+                }
+
+                if let Some(chart) = chart.as_mut()
+                    && chart.accepts_profile_kline_source(timeframe, ticker_info)
+                    && req_id.is_some_and(|req_id| chart.is_profile_kline_request(req_id))
+                {
+                    chart.insert_historical_profile_klines(
+                        req_id,
+                        timeframe,
+                        ticker_info,
+                        klines,
+                        is_batches_done,
+                        has_data,
+                    );
                     return;
                 }
 
@@ -378,6 +394,7 @@ impl State {
 
                 chart.apply_data(DataUpdate::HistoricalKlines {
                     req_id,
+                    timeframe,
                     ticker_info,
                     klines,
                 });
@@ -577,7 +594,7 @@ impl State {
                         .align_x(Alignment::Center)
                         .spacing(12),
                     ),
-                    self.notifications.toasts(),
+                    &self.notifications,
                     Alignment::End,
                     move |msg| Message::PaneEvent(id, Event::DeleteNotification(msg)),
                 )
@@ -668,14 +685,13 @@ impl State {
                                 Message::PaneEvent(id, Event::KlineInteraction(message))
                             });
 
-                    let selected_tickers =
-                        chart.basis().is_time().then_some(chart.selected_tickers());
+                    let selected_series = chart.basis().is_time().then_some(chart.series());
 
                     self.compose_stack_view(
                         base,
                         id,
                         compact_controls,
-                        selected_tickers,
+                        selected_series,
                         tickers_table,
                     )
                 } else {
@@ -852,7 +868,9 @@ impl State {
                 }
             }
             Event::DeleteNotification(idx) => {
-                self.notifications.remove(idx);
+                if idx < self.notifications.len() {
+                    self.notifications.remove(idx);
+                }
             }
             Event::StreamModifierChanged(message) => {
                 if let Some(Modal::StreamModifier(mut modifier)) = self.modal.take() {
@@ -1235,16 +1253,14 @@ impl State {
         base: Element<'a, Message>,
         pane: pane_grid::Pane,
         compact_controls: Option<Element<'a, Message>>,
-        selected_tickers: Option<&'a [TickerInfo]>,
+        selected_tickers: Option<&'a [data::chart::kline::series::KlineSeries]>,
         tickers_table: &'a TickersTable,
     ) -> Element<'a, Message> {
-        let base = widget::toast::Manager::new(
-            base,
-            self.notifications.toasts(),
-            Alignment::End,
-            move |msg| Message::PaneEvent(pane, Event::DeleteNotification(msg)),
-        )
-        .into();
+        let base =
+            widget::toast::Manager::new(base, &self.notifications, Alignment::End, move |msg| {
+                Message::PaneEvent(pane, Event::DeleteNotification(msg))
+            })
+            .into();
 
         let on_blur = Message::PaneEvent(pane, Event::HideModal);
 
@@ -1520,7 +1536,7 @@ impl Default for State {
             content: Content::Starter,
             settings: Settings::default(),
             streams: ResolvedStream::waiting(vec![]),
-            notifications: Notifications::new(),
+            notifications: vec![],
             link_group: None,
         }
     }

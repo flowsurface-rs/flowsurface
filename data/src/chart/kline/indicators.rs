@@ -174,8 +174,8 @@ pub(crate) use registry::install_catalog_with_bundled_diagnostics;
 pub use registry::{
     CatalogInstallError, IndicatorCatalog, IndicatorConfig, IndicatorConfigError, IndicatorId,
     IndicatorIdError, IndicatorRegistration, all_indicators, availability, catalog,
-    declared_input_requirements, display_name, indicator_definition, is_supported_for_market,
-    panel_recipe, requires_trade_data, table_columns, unsupported_reason,
+    declared_input_requirements, display_name, indicator_definition, panel_recipe,
+    requires_trade_data, table_columns, unsupported_reason,
 };
 
 /// Shared Open Interest capability used by both indicator availability and
@@ -958,7 +958,6 @@ pub enum IndicatorUnsupportedReason {
     ResolutionNotSupported,
     InsufficientData { available: usize, required: usize },
     MissingRequiredInput { source: IndicatorInputSource },
-    MissingDirectionalVolume,
 }
 
 impl IndicatorUnsupportedReason {
@@ -986,9 +985,6 @@ impl IndicatorUnsupportedReason {
                 IndicatorInputSource::Trades => "Enable trade data to use this indicator",
                 IndicatorInputSource::OpenInterest => "Requires open-interest data",
             },
-            IndicatorUnsupportedReason::MissingDirectionalVolume => {
-                "Requires directional volume from candles or trade data"
-            }
         }
     }
 }

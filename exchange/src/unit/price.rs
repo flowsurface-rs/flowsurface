@@ -202,8 +202,8 @@ impl Price {
         if high.units < low.units || step.units <= 0 {
             return None;
         }
-        let span = high.units.checked_sub(low.units)?;
-        Some((span / step.units) as usize + 1)
+        let span = i128::from(high.units) - i128::from(low.units);
+        usize::try_from(span / i128::from(step.units) + 1).ok()
     }
 }
 
@@ -269,6 +269,56 @@ pub struct PriceStep {
 }
 
 impl PriceStep {
+    /// Return the smallest whole-number multiple of this step that fits the range.
+    pub fn coarsened_to_fit(self, low: Price, high: Price, max_rows: usize) -> Option<Self> {
+        if self.units <= 0 || high < low || max_rows == 0 {
+            return None;
+        }
+
+        let max_factor = i64::MAX / self.units;
+        let max_rows = i128::try_from(max_rows).ok()?;
+        let base = i128::from(self.units);
+        let low_units = i128::from(low.units).div_euclid(base);
+        let high_units = i128::from(high.units).div_euclid(base);
+        let span = high_units - low_units;
+        let max_difference = max_rows - 1;
+        let first_factor = if max_difference == 0 {
+            span.checked_add(1)?
+        } else {
+            span / (max_difference + 1) + 1
+        };
+        let last_factor = if max_difference == 0 {
+            i128::from(max_factor)
+        } else {
+            (span + max_difference - 1) / max_difference
+        }
+        .max(1)
+        .min(i128::from(max_factor));
+        if first_factor > last_factor {
+            return None;
+        }
+
+        let mut factor = first_factor.max(1);
+        while factor <= last_factor {
+            let low_row_index = low_units.div_euclid(factor);
+            let high_row_index = high_units.div_euclid(factor);
+            if high_row_index - low_row_index < max_rows {
+                let units = base * factor;
+                let low_row = low_row_index * units;
+                let high_row = high_row_index * units;
+                if i64::try_from(low_row).is_ok() && i64::try_from(high_row).is_ok() {
+                    return i64::try_from(units).ok().map(|units| Self { units });
+                }
+            }
+
+            let next_low = next_quotient_change(low_units, factor, low_row_index);
+            let next_high = next_quotient_change(high_units, factor, high_row_index);
+            factor = next_low.into_iter().chain(next_high).min()?;
+        }
+
+        None
+    }
+
     /// Decimal places needed to represent this step without trailing zeros.
     pub fn decimal_places(self) -> usize {
         let mut units = self.units.unsigned_abs();
@@ -324,6 +374,17 @@ impl PriceStep {
         let scale = 10f64.powi(Price::ATOMIC_SCALE);
         (self.units as f64) / scale
     }
+}
+
+fn next_quotient_change(value: i128, divisor: i128, quotient: i128) -> Option<i128> {
+    if value >= 0 {
+        (quotient > 0).then(|| value / quotient + 1)
+    } else {
+        let magnitude = -value;
+        let positive_quotient = -quotient;
+        (positive_quotient > 1).then(|| (magnitude - 1) / (positive_quotient - 1) + 1)
+    }
+    .filter(|next| *next > divisor)
 }
 
 impl<const MIN: i8, const MAX: i8> From<Power10<MIN, MAX>> for PriceStep {

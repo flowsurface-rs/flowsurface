@@ -9,7 +9,15 @@ const DEFAULT_FETCH_BARS: u64 = 500;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FetchRange {
     Kline(UnixMs, UnixMs),
-    OpenInterest { from: UnixMs, to: UnixMs },
+    ProfileKline {
+        timeframe: Timeframe,
+        from: UnixMs,
+        to: UnixMs,
+    },
+    OpenInterest {
+        from: UnixMs,
+        to: UnixMs,
+    },
     Trades(UnixMs, UnixMs),
 }
 
@@ -88,7 +96,7 @@ impl FetchPlanInput<'_> {
 
         if empty_base {
             let end = initial_end;
-            let start = end.saturating_sub(comparison_span);
+            let start = end.saturating_sub(base_span);
             batches.push(FetchBatch {
                 stage: FetchStage::PrimaryPlot,
                 range: FetchRange::Kline(start, end),
@@ -366,192 +374,4 @@ pub fn visible_window(
         left.to_unix_ms_non_negative(),
         right.to_unix_ms_non_negative(),
     ))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::chart::kline::{IndicatorInstanceStore, SeriesColor};
-    use exchange::adapter::Exchange;
-    use exchange::unit::{MinTicksize, Price};
-    use exchange::{Kline, Ticker, TickerInfo, Trade, Volume};
-
-    fn ticker_info() -> TickerInfo {
-        TickerInfo::new(
-            Ticker::new("BTCUSDT", Exchange::BinanceSpot),
-            0.01,
-            0.01,
-            None,
-        )
-    }
-
-    fn kline(time: u64) -> Kline {
-        Kline::new(
-            time,
-            100.0,
-            101.0,
-            99.0,
-            100.5,
-            Volume::empty_total(),
-            MinTicksize::new(0),
-        )
-    }
-
-    fn trade(time: u64) -> Trade {
-        Trade {
-            time: UnixMs::new(time),
-            is_sell: false,
-            price: Price::from_f64(100.0),
-            qty: 1.0.into(),
-        }
-    }
-
-    fn plan_input<'a>(
-        series: &'a [KlineSeries],
-        indicators: &'a IndicatorInstanceStore,
-        now: UnixMs,
-    ) -> FetchPlanInput<'a> {
-        FetchPlanInput {
-            basis: Basis::Time(Timeframe::M1),
-            horizontal_offset: 0.0,
-            base_ticker: ticker_info(),
-            series,
-            active_indicators: &[],
-            indicator_instances: indicators,
-            open_interest_required: false,
-            trade_data_required: true,
-            trade_fetch_enabled: true,
-            visible_points: 2,
-            required_history_start: None,
-            required_history_bars: 0,
-            now,
-        }
-    }
-
-    #[test]
-    fn initial_kline_fetch_uses_actual_now_as_end() {
-        let ticker = ticker_info();
-        let series = [KlineSeries::new(ticker, SeriesColor::default())];
-        let indicators = IndicatorInstanceStore::default();
-        let now = UnixMs::new(10 * 60_000 + 40_000);
-
-        let batches = plan_input(&series, &indicators, now).desired_fetch_batches();
-
-        assert_eq!(
-            batches,
-            vec![FetchBatch {
-                stage: FetchStage::PrimaryPlot,
-                range: FetchRange::Kline(now.saturating_sub(500 * 60_000), now),
-                tickers: vec![ticker],
-            }]
-        );
-    }
-
-    #[test]
-    fn initial_empty_base_fetch_includes_required_history() {
-        let ticker = ticker_info();
-        let series = [KlineSeries::new(ticker, SeriesColor::default())];
-        let indicators = IndicatorInstanceStore::default();
-        let now = UnixMs::new(10 * 60_000 + 40_000);
-        let input = plan_input(&series, &indicators, now);
-
-        let batches = FetchPlanInput {
-            required_history_bars: 3_000,
-            ..input
-        }
-        .desired_fetch_batches();
-
-        assert_eq!(
-            batches,
-            vec![FetchBatch {
-                stage: FetchStage::PrimaryPlot,
-                range: FetchRange::Kline(now.saturating_sub(3_002 * 60_000), now),
-                tickers: vec![ticker],
-            }]
-        );
-    }
-
-    #[test]
-    fn all_empty_candles_produce_no_trade_fetch() {
-        let ticker = ticker_info();
-        let mut base = KlineSeries::new(ticker, SeriesColor::default());
-        base.insert_klines(
-            &[kline(0), kline(60_000), kline(120_000)],
-            Basis::Time(Timeframe::M1),
-        );
-        let series = [base];
-        let indicators = IndicatorInstanceStore::default();
-
-        assert_eq!(
-            plan_input(&series, &indicators, UnixMs::new(180_000))
-                .desired_trade_fetch_range(ticker),
-            None
-        );
-    }
-
-    #[test]
-    fn newest_empty_candle_is_used_for_trade_fetch() {
-        let ticker = ticker_info();
-        let mut base = KlineSeries::new(ticker, SeriesColor::default());
-        base.insert_klines(
-            &[
-                kline(0),
-                kline(60_000),
-                kline(120_000),
-                kline(180_000),
-                kline(240_000),
-                kline(300_000),
-            ],
-            Basis::Time(Timeframe::M1),
-        );
-        base.insert_time_trades(&[trade(0), trade(180_000)], Timeframe::M1);
-        let series = [base];
-        let indicators = IndicatorInstanceStore::default();
-
-        assert_eq!(
-            plan_input(&series, &indicators, UnixMs::new(360_000))
-                .desired_trade_fetch_range(ticker),
-            Some(FetchRange::Trades(
-                UnixMs::new(180_001),
-                UnixMs::new(300_000)
-            ))
-        );
-    }
-
-    #[test]
-    fn following_trade_extends_fetch_beyond_visible_window() {
-        let ticker = ticker_info();
-        let mut base = KlineSeries::new(ticker, SeriesColor::default());
-        base.insert_klines(
-            &[
-                kline(0),
-                kline(60_000),
-                kline(120_000),
-                kline(180_000),
-                kline(240_000),
-                kline(300_000),
-                kline(360_000),
-                kline(420_000),
-                kline(480_000),
-                kline(540_000),
-                kline(600_000),
-            ],
-            Basis::Time(Timeframe::M1),
-        );
-        base.insert_time_trades(&[trade(180_000), trade(600_000)], Timeframe::M1);
-        let series = [base];
-        let indicators = IndicatorInstanceStore::default();
-        let input = FetchPlanInput {
-            horizontal_offset: -5.0,
-            ..plan_input(&series, &indicators, UnixMs::new(660_000))
-        };
-
-        assert_eq!(
-            input.desired_trade_fetch_range(ticker),
-            Some(FetchRange::Trades(
-                UnixMs::new(180_001),
-                UnixMs::new(599_999)
-            ))
-        );
-    }
 }

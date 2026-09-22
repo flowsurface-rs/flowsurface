@@ -4,15 +4,16 @@ mod history;
 mod indicator_browser;
 mod layout;
 mod presentation;
+mod profile;
 mod settings;
 mod studies;
 mod toolbar;
+mod tpo;
 mod updates;
 mod viewport;
 
 pub use data::chart::kline::IndicatorId;
 use data::chart::kline::LegendVisibility;
-pub use data::chart::kline::series::KlineSeries;
 pub use fetch::FetchUpdate;
 pub use layout::{IndicatorCommand, IndicatorInputCommand, IndicatorStyleCommand};
 pub use studies::StudyCommand;
@@ -20,11 +21,13 @@ pub use updates::DataUpdate;
 
 use data::chart::kline::KlineData;
 use data::chart::kline::indicators::IndicatorHost;
+use data::chart::kline::series::KlineSeries;
 use drawing::{DrawingEditState, DrawingMessage, DrawingState, DrawingTools, DrawingUpdate};
 use fetch::FetchCoordinator;
 use history::DrawingHistory;
 use layout::{IndicatorChange, IndicatorRebuildReason, IndicatorState};
 use presentation::IndicatorPresentationResolver;
+use profile::{ProfilePlan, ProfileState, ProfileTradeUpdate, profile_source_timeframe};
 use settings::{ChartOptions, InspectorEffect, InspectorState, SettingsContext};
 use studies::StudyState;
 use updates::DataUpdateEffect;
@@ -36,7 +39,7 @@ use crate::style;
 use crate::theme::ThemeAccents;
 use crate::widget::chart::kline::{
     IndicatorPresentationContext, KlineWidget, KlineWidgetEvent, MIN_FULL_CACHE_REFRESH_INTERVAL,
-    PanelInteraction,
+    PanelInteraction, TpoInteraction,
 };
 use crate::widget::inspector::{InspectorBody, InspectorFooter};
 use crate::widget::series_editor::{self, SeriesStyleEntry};
@@ -49,13 +52,15 @@ use data::chart::kline::composition::{
 use data::chart::Basis;
 use data::chart::kline::{
     self as persisted, CandlestickConfig, ChartSettings, DEFAULT_HORIZONTAL_SPACING_PX, FetchBatch,
-    FetchPlanInput, FetchStage, FootprintImbalanceConfig, FootprintPocConfig, HorizontalWorld,
-    IndicatorInputSource, IndicatorInstanceId, IndicatorInstanceStore, IndicatorLayout,
-    IndicatorOutputRef, KlineStudy, LineStrokeStyle, SeriesColor, SettingsSnapshot, visible_window,
+    FetchPlanInput, FetchRange, FetchStage, FootprintImbalanceConfig, FootprintPocConfig,
+    HorizontalWorld, IndicatorInputSource, IndicatorInstanceId, IndicatorInstanceStore,
+    IndicatorLayout, IndicatorOutputRef, KlineStudy, LineStrokeStyle, ProfileSource, SeriesColor,
+    SettingsSnapshot, TPO_TRADE_COVERAGE_TIMEFRAME, TpoProfileStatus, VolumeProfileSchedule,
+    visible_window,
 };
 use data::chart::kline_data::{ClusterKind, ClusterScaling};
 use exchange::adapter::StreamKind;
-use exchange::{TickMultiplier, TickerInfo, UnixMs};
+use exchange::{Kline, TickMultiplier, TickerInfo, Timeframe, UnixMs};
 use indicator_engine::IndicatorFrame;
 
 use std::sync::Arc;
@@ -71,6 +76,26 @@ const FLOATING_TOOLBAR_HANDLE_WIDTH: f32 = 28.0;
 const FLOATING_TOOLBAR_HEIGHT: f32 = 36.0;
 const SIDEBAR_WIDTH: f32 = 228.0;
 const SIDEBAR_RETURN_BUTTON_WIDTH: f32 = 32.0;
+
+fn trade_profile_status(
+    fetch: &FetchCoordinator,
+    ticker_info: TickerInfo,
+    start: UnixMs,
+    end: UnixMs,
+    now: UnixMs,
+) -> TpoProfileStatus {
+    let expected_end = end
+        .min(now.floor_to(TPO_TRADE_COVERAGE_TIMEFRAME))
+        .max(start);
+    let complete = fetch.trade_range_is_covered(ticker_info, start, expected_end);
+    if end > now {
+        TpoProfileStatus::Developing
+    } else if complete {
+        TpoProfileStatus::Complete
+    } else {
+        TpoProfileStatus::Incomplete
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum Sidebar {
@@ -126,6 +151,7 @@ pub struct KlineChart {
     history: DrawingHistory,
     drawings: DrawingState,
     studies: StudyState,
+    profiles: ProfileState,
     inspector: InspectorState,
     indicator_browser: indicator_browser::State,
     sidebar: Sidebar,
@@ -184,6 +210,7 @@ pub enum ChartCommand {
     RemoveIndicator(IndicatorInstanceId),
     Indicator(IndicatorCommand),
     Study(StudyCommand),
+    TpoEdit(TpoEditCommand),
 
     SetSeriesColor {
         ticker_info: TickerInfo,
@@ -206,6 +233,14 @@ pub enum ChartCommand {
     RemoveTicker {
         ticker_info: TickerInfo,
     },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum TpoEditCommand {
+    SplitAt(UnixMs),
+    MergeAt(UnixMs),
+    MoveBoundary { from: UnixMs, to: UnixMs },
+    Reset { start: UnixMs, end: UnixMs },
 }
 
 impl ChartCommand {
@@ -235,7 +270,7 @@ impl KlineChart {
             .copied()
             .expect("Kline chart requires a base ticker");
         let footprint_tick_multiplier = DEFAULT_FOOTPRINT_TICK_MULTIPLIER;
-        let indicators = IndicatorState::new(basis);
+        let indicators = IndicatorState::new();
 
         let mut chart = Self {
             basis,
@@ -247,6 +282,7 @@ impl KlineChart {
             history: DrawingHistory::default(),
             drawings: DrawingState::default(),
             studies: StudyState::default(),
+            profiles: ProfileState::default(),
             inspector: InspectorState::default(),
             indicator_browser: indicator_browser::State::default(),
             sidebar: Sidebar::Drawings,
@@ -267,14 +303,15 @@ impl KlineChart {
             }
         }
 
-        chart.fetch.rebuild_handlers(chart.data.selected_tickers());
+        let selected_tickers = chart.data.selected_tickers();
+        chart.fetch.rebuild_handlers(&selected_tickers);
         chart.data.configure_series_for_basis(chart.basis);
         chart.drawings.tools.set_basis(basis);
         chart.sync_tick_drawing_sequence();
         chart
             .indicators
             .layout_mut()
-            .sync_comparison_sources(chart.data.base_ticker(), chart.data.selected_tickers());
+            .sync_comparison_sources(chart.data.base_ticker(), &selected_tickers);
         chart
     }
 
@@ -361,6 +398,22 @@ impl KlineChart {
                             .tools
                             .handle_widget_drawing_event(event, &chart_settings.drawing);
                         self.apply_drawing_update(update, before);
+                    }
+                    KlineWidgetEvent::Tpo(TpoInteraction::MergeLeft { boundary }) => {
+                        let _ = self.apply_command(ChartCommand::TpoEdit(TpoEditCommand::MergeAt(
+                            boundary,
+                        )));
+                    }
+                    KlineWidgetEvent::Tpo(TpoInteraction::Reset { start, end }) => {
+                        let _ = self.apply_command(ChartCommand::TpoEdit(TpoEditCommand::Reset {
+                            start,
+                            end,
+                        }));
+                    }
+                    KlineWidgetEvent::Tpo(TpoInteraction::MoveBoundary { from, to }) => {
+                        let _ = self.apply_command(ChartCommand::TpoEdit(
+                            TpoEditCommand::MoveBoundary { from, to },
+                        ));
                     }
                     KlineWidgetEvent::PanelInteraction(interaction) => match interaction {
                         PanelInteraction::YViewportChanged { panel_id, range } => {
@@ -599,6 +652,10 @@ impl KlineChart {
         if let Some(ts) = now {
             self.last_tick = ts;
 
+            if self.rebuild_tpo_profiles() {
+                self.bump_rev();
+            }
+
             let action = self
                 .request_fetch_action(true)
                 .map(ChartAction::RequestFetch);
@@ -728,55 +785,70 @@ impl KlineChart {
         pixel_ratio: PixelRatio,
         theme_accents: ThemeAccents,
     ) -> iced::Element<'_, Message> {
-        let chart: iced::Element<'_, Message> =
-            if self.data.series().iter().all(KlineSeries::is_empty) {
-                iced::widget::center(iced::widget::text("Waiting for data...").size(16)).into()
-            } else {
-                let indicator_presentation = self
-                    .indicator_presentation_context()
-                    .with_rebuild_in_flight_ids(
-                        self.indicator_rebuild
-                            .as_ref()
-                            .map_or_else(Vec::new, |pending| pending.replay_ids.clone()),
-                    )
-                    .with_pending_input_ids(
-                        self.indicators.pending_input_ids(&self.data, &self.fetch),
-                    );
-                let chart = KlineWidget::new(
-                    self.data.series(),
-                    self.data.indicator_host(),
-                    self.basis,
-                    self.indicators.composition(),
-                    self.indicators.instances(),
-                    theme_accents,
+        let chart: iced::Element<'_, Message> = if self
+            .data
+            .series()
+            .iter()
+            .all(KlineSeries::is_empty)
+        {
+            iced::widget::center(iced::widget::text("Waiting for data...").size(16)).into()
+        } else {
+            let indicator_presentation = self
+                .indicator_presentation_context()
+                .with_rebuild_in_flight_ids(
+                    self.indicator_rebuild
+                        .as_ref()
+                        .map_or_else(Vec::new, |pending| pending.replay_ids.clone()),
                 )
-                .with_candlestick_config(self.options.candlestick)
-                .with_footprint_config(self.options.footprint)
-                .with_trade_data_enabled(self.trade_data_enabled())
-                .with_legend_visibility(self.legend_visibility());
+                .with_pending_input_ids(self.indicators.pending_input_ids(&self.data, &self.fetch));
+            let plan = self.profile_plan();
+            let chart = KlineWidget::new(
+                self.data.series(),
+                self.data.indicator_host(),
+                self.basis,
+                self.indicators.composition(),
+                self.indicators.instances(),
+                theme_accents,
+                self.profiles.edits(),
+            )
+            .with_candlestick_config(self.options.candlestick)
+            .with_footprint_config(self.options.footprint)
+            .with_trade_data_enabled(self.trade_data_enabled())
+            .with_tpo_profiles(self.profiles.profiles())
+            .with_legend_visibility(self.legend_visibility());
 
-                let chart: iced::Element<_> = chart
-                    .with_studies(self.studies.active())
-                    .with_studies_legend_expanded(self.studies.legend_expanded())
-                    .with_coordinate_state(self.viewport.horizontal_world, pixel_ratio)
-                    .with_primary_viewport(self.viewport.primary)
-                    .with_primary_scale_inverted(self.viewport.primary_scale_inverted)
-                    .with_known_plot_width(self.viewport.plot_width)
-                    .with_autoscale_plot_width_offset(self.autoscale_plot_width_offset())
-                    .with_indicator_ranges(self.viewport.indicator_y_ranges.as_slice())
-                    .with_indicator_presentation(indicator_presentation)
-                    .with_drawings(self.drawings.tools.snapshot())
-                    .with_timezone(timezone)
-                    .with_version(self.cache_rev)
-                    .with_escape_enabled(self.can_handle_escape())
-                    .into();
-
-                iced::widget::container(chart.map(Message::Chart))
-                    .width(iced::Length::Fill)
-                    .height(iced::Length::Fill)
-                    .padding(1)
-                    .into()
+            let chart = match plan.kline_source_timeframe {
+                Some(timeframe) if matches!(self.basis, Basis::Time(chart) if chart == timeframe) => {
+                    chart.with_chart_profile_range(self.profiles.profile_source_range(timeframe))
+                }
+                Some(timeframe) => {
+                    chart.with_external_profile_bars(self.profiles.profile_source_map(timeframe))
+                }
+                None => chart,
             };
+
+            let chart: iced::Element<_> = chart
+                .with_studies(self.studies.active())
+                .with_studies_legend_expanded(self.studies.legend_expanded())
+                .with_coordinate_state(self.viewport.horizontal_world, pixel_ratio)
+                .with_primary_viewport(self.viewport.primary)
+                .with_primary_scale_inverted(self.viewport.primary_scale_inverted)
+                .with_known_plot_width(self.viewport.plot_width)
+                .with_autoscale_plot_width_offset(self.autoscale_plot_width_offset())
+                .with_indicator_ranges(self.viewport.indicator_y_ranges.as_slice())
+                .with_indicator_presentation(indicator_presentation)
+                .with_drawings(self.drawings.tools.snapshot())
+                .with_timezone(timezone)
+                .with_version(self.cache_rev.wrapping_add(self.profiles.source_revision()))
+                .with_escape_enabled(self.can_handle_escape())
+                .into();
+
+            iced::widget::container(chart.map(Message::Chart))
+                .width(iced::Length::Fill)
+                .height(iced::Length::Fill)
+                .padding(1)
+                .into()
+        };
 
         let chart = {
             let chart_stack = iced::widget::Stack::new()
@@ -1150,6 +1222,7 @@ impl KlineChart {
         let visible_points = self.visible_points();
         let active_indicators = self.selected_indicators();
         let data_requirements = self.data_requirements();
+        let profile_plan = self.profile_plan();
 
         let (required_history_start, required_history_bars) =
             self.indicator_history_requirement(&active_indicators, visible_points);
@@ -1181,11 +1254,81 @@ impl KlineChart {
             });
         }
 
-        let requests = self.fetch.collect_requests(
+        let profile_kline_ranges =
+            if let Some(source_timeframe) = profile_plan.kline_source_timeframe {
+                let window = match self.basis {
+                    Basis::Time(timeframe) => visible_window(
+                        self.data.series(),
+                        horizontal_offset,
+                        timeframe,
+                        visible_points,
+                    ),
+                    Basis::Tick(_) => None,
+                };
+                let now = UnixMs::now();
+                let windows = self.profile_kline_fetch_windows(&profile_plan, window, now);
+                let visible_span = window
+                    .map(|(start, end)| end.saturating_diff(start))
+                    .filter(|span| *span > 0)
+                    .unwrap_or(Timeframe::D1.to_milliseconds());
+                let chart_bars = self.chart_source_bars(source_timeframe);
+                let source_changed = self.profiles.configure_source_retention(
+                    &windows,
+                    visible_span,
+                    now,
+                    source_timeframe,
+                    profile_plan
+                        .tpo_study
+                        .is_some_and(|study| study.source() == ProfileSource::Kline),
+                );
+                if source_changed {
+                    self.fetch.clear_pending_profile_requests();
+                }
+                if matches!(self.basis, Basis::Time(timeframe) if timeframe == source_timeframe) {
+                    if let Some((retained_start, retained_end)) =
+                        self.profiles.profile_source_range(source_timeframe)
+                    {
+                        let latest = now.floor_to(source_timeframe);
+                        for (start, end) in windows {
+                            let start = start.max(retained_start).floor_to(source_timeframe);
+                            let end = end
+                                .min(retained_end)
+                                .saturating_add(source_timeframe.to_milliseconds() - 1)
+                                .floor_to(source_timeframe)
+                                .min(latest);
+                            if start < end {
+                                batches.push(FetchBatch {
+                                    stage: FetchStage::PrimaryPlot,
+                                    range: data::chart::kline::FetchRange::Kline(start, end),
+                                    tickers: vec![base_ticker],
+                                });
+                            }
+                        }
+                    }
+                    Vec::new()
+                } else {
+                    self.profiles.profile_fetch_ranges(
+                        &windows,
+                        now,
+                        base_ticker,
+                        source_timeframe,
+                        &chart_bars,
+                    )
+                }
+            } else {
+                Vec::new()
+            };
+
+        let mut requests = self.fetch.collect_requests(
             batches
                 .into_iter()
                 .map(|batch| (batch.range, batch.tickers)),
             self.basis,
+        );
+
+        requests.extend(
+            self.fetch
+                .collect_requests(profile_kline_ranges, self.basis),
         );
 
         if requests.is_empty() {
@@ -1228,15 +1371,52 @@ impl KlineChart {
     }
 
     pub fn apply_data(&mut self, update: DataUpdate<'_>) {
+        let base_ticker = self.data.base_ticker();
+        let profile_trade_update = match &update {
+            DataUpdate::LiveTrades {
+                ticker_info,
+                trades,
+            } if **ticker_info == base_ticker => Some(ProfileTradeUpdate::Live(trades)),
+            DataUpdate::HistoricalTrades {
+                ticker_info,
+                trades,
+                is_batches_done,
+                ..
+            } if *ticker_info == base_ticker => Some(ProfileTradeUpdate::Historical {
+                trades,
+                batches_done: *is_batches_done,
+            }),
+            _ => None,
+        };
+        let chart_historical_bars = match &update {
+            DataUpdate::HistoricalKlines {
+                timeframe,
+                ticker_info,
+                klines,
+                ..
+            } if *ticker_info == base_ticker => Some((*timeframe, *klines)),
+            _ => None,
+        };
+        let chart_live_kline = match &update {
+            DataUpdate::LiveKline { ticker_info, kline } if **ticker_info == base_ticker => {
+                match self.basis {
+                    Basis::Time(timeframe) => Some((timeframe, *kline)),
+                    Basis::Tick(_) => None,
+                }
+            }
+            _ => None,
+        };
         let trade_data_enabled = self.trade_data_enabled();
-        match updates::apply(
+        let effect = updates::apply(
             update,
             self.basis,
             &mut self.data,
             &mut self.fetch,
             &mut self.indicators,
             trade_data_enabled,
-        ) {
+        );
+        let historical_changed = matches!(&effect, DataUpdateEffect::HistoricalChanged);
+        match effect {
             DataUpdateEffect::Unchanged => {}
             DataUpdateEffect::HistoricalChanged => {
                 self.bump_rev();
@@ -1249,6 +1429,80 @@ impl KlineChart {
                 self.redraw_data_if_due(Instant::now());
             }
         }
+        if historical_changed && let Some((timeframe, bars)) = chart_historical_bars {
+            self.profiles.apply_chart_kline_bars(timeframe, bars);
+        }
+        if !matches!(&effect, DataUpdateEffect::Unchanged)
+            && let Some((timeframe, kline)) = chart_live_kline
+        {
+            self.profiles
+                .apply_chart_kline_bars(timeframe, std::slice::from_ref(kline));
+        }
+        if let Some(update) = profile_trade_update
+            && !matches!(&effect, DataUpdateEffect::Unchanged)
+        {
+            self.profiles.apply_trade_update(update);
+        }
+    }
+
+    pub(crate) fn accepts_profile_kline_source(
+        &self,
+        timeframe: Timeframe,
+        ticker_info: TickerInfo,
+    ) -> bool {
+        self.profile_plan().kline_source_timeframe == Some(timeframe)
+            && ticker_info == self.data.base_ticker()
+    }
+
+    pub(crate) fn is_profile_kline_request(&self, req_id: uuid::Uuid) -> bool {
+        self.fetch.is_profile_request(req_id)
+    }
+
+    pub(crate) fn insert_historical_profile_klines(
+        &mut self,
+        req_id: Option<uuid::Uuid>,
+        timeframe: Timeframe,
+        ticker_info: TickerInfo,
+        klines: &[exchange::Kline],
+        is_batches_done: bool,
+        has_data: bool,
+    ) {
+        if !self.accepts_profile_kline_source(timeframe, ticker_info)
+            || req_id.is_some_and(|req_id| !self.fetch.accepts_data(req_id))
+        {
+            return;
+        }
+        self.profiles.insert_profile_kline_bars(timeframe, klines);
+        if is_batches_done
+            && let Some(req_id) = req_id
+            && let Some(FetchRange::ProfileKline {
+                timeframe,
+                from,
+                to,
+            }) = self.fetch.mark_profile_completed(ticker_info, req_id)
+            && !has_data
+        {
+            self.profiles
+                .insert_profile_empty_range(timeframe, from, to);
+        }
+        self.data_redraw_pending = true;
+    }
+
+    pub(crate) fn apply_live_profile_kline(
+        &mut self,
+        timeframe: Timeframe,
+        ticker_info: TickerInfo,
+        kline: &exchange::Kline,
+    ) {
+        let plan = self.profile_plan();
+        if !plan.uses_external_kline_source(self.basis)
+            || !self.accepts_profile_kline_source(timeframe, ticker_info)
+        {
+            return;
+        }
+        self.profiles
+            .insert_profile_kline_bars(timeframe, std::slice::from_ref(kline));
+        self.data_redraw_pending = true;
     }
 
     pub fn apply_fetch_update(&mut self, update: FetchUpdate) -> bool {
@@ -1270,13 +1524,145 @@ impl KlineChart {
     }
 
     fn configure_profile_caches(&mut self) {
+        let plan = self.profile_plan();
+        if plan.kline_source_timeframe.is_none() {
+            self.fetch.clear_pending_profile_requests();
+            self.profiles.clear_kline_source();
+        }
         self.data
-            .configure_profile_caches(self.studies.active(), self.basis);
+            .configure_recurring_profile_intervals(&plan.recurring_trade_profiles);
+        if plan.tpo_study.is_none() {
+            self.profiles.clear_tpo_source();
+        }
+    }
+
+    fn profile_source_timeframe(&self) -> Timeframe {
+        match self.basis {
+            Basis::Time(timeframe) => profile_source_timeframe(timeframe),
+            Basis::Tick(_) => Timeframe::M1,
+        }
+    }
+
+    fn profile_plan(&self) -> ProfilePlan {
+        let visible_studies = self
+            .studies
+            .active()
+            .iter()
+            .copied()
+            .filter(|study| study.visible())
+            .collect::<Vec<_>>();
+        let time_basis = self.basis.is_time();
+        let mut tpo_study = None;
+        let mut kline_volume_profiles = Vec::new();
+        let mut has_kline_source = false;
+        for study in &visible_studies {
+            if time_basis && tpo_study.is_none() && study.is_tpo_profile() {
+                tpo_study = Some(*study);
+            }
+            if time_basis && study.source() == ProfileSource::Kline {
+                has_kline_source = true;
+                if let Some(schedule) = study.volume_profile_schedule() {
+                    kline_volume_profiles.push(schedule);
+                }
+            }
+        }
+        ProfilePlan {
+            kline_source_timeframe: has_kline_source.then(|| self.profile_source_timeframe()),
+            kline_volume_profiles,
+            tpo_study,
+            recurring_trade_profiles: self
+                .data
+                .recurring_profile_cache_requirements(&visible_studies, self.basis),
+        }
+    }
+
+    fn profile_kline_fetch_windows(
+        &self,
+        plan: &ProfilePlan,
+        visible_window: Option<(UnixMs, UnixMs)>,
+        now: UnixMs,
+    ) -> Vec<(UnixMs, UnixMs)> {
+        let anchor = plan
+            .tpo_study
+            .filter(|study| study.source() == ProfileSource::Kline)
+            .and_then(|study| study.tpo_anchor())
+            .unwrap_or_default();
+        let fallback_start = anchor.floor(now);
+        let visible_window =
+            visible_window.unwrap_or_else(|| (fallback_start, anchor.offset(fallback_start, 1)));
+        let tpo_ranges = if plan
+            .tpo_study
+            .is_some_and(|study| study.source() == ProfileSource::Kline)
+        {
+            self.profiles
+                .profile_ranges_overlapping(visible_window.0, visible_window.1, anchor)
+        } else {
+            Vec::new()
+        };
+        merge_profile_kline_windows(&plan.kline_volume_profiles, visible_window, &tpo_ranges)
+    }
+
+    fn rebuild_tpo_profiles(&mut self) -> bool {
+        let plan = self.profile_plan();
+        let Some(study) = plan.tpo_study else {
+            return self.profiles.clear_tpo_source();
+        };
+        let price_step = self.data.effective_study_tick_size(study);
+        match study.source() {
+            ProfileSource::Kline => {
+                let source_timeframe = plan
+                    .kline_source_timeframe
+                    .expect("Kline TPO requires a Kline source timeframe");
+                let chart_source = match self.basis {
+                    Basis::Time(timeframe) if timeframe == source_timeframe => {
+                        self.data.base_series()
+                    }
+                    _ => None,
+                };
+                self.profiles.rebuild_tpo_from_klines(
+                    Some(study),
+                    chart_source,
+                    price_step,
+                    source_timeframe,
+                    UnixMs::now(),
+                )
+            }
+            ProfileSource::Trades => {
+                let trades = self
+                    .data
+                    .base_series()
+                    .map(|series| series.raw_trades())
+                    .unwrap_or_default();
+                let fetch = &self.fetch;
+                let ticker_info = self.data.base_ticker();
+                let now = UnixMs::now();
+                self.profiles.rebuild_tpo_from_trades(
+                    Some(study),
+                    trades,
+                    price_step,
+                    now,
+                    move |start, end| trade_profile_status(fetch, ticker_info, start, end, now),
+                )
+            }
+        }
+    }
+
+    fn chart_source_bars(&self, source_timeframe: Timeframe) -> Vec<Kline> {
+        match self.basis {
+            Basis::Time(chart_timeframe) if chart_timeframe == source_timeframe => self
+                .data
+                .base_series()
+                .map(|series| series.points().map(|point| *point.kline).collect())
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        }
     }
 
     fn set_basis(&mut self, basis: Basis) -> Option<ChartAction> {
         self.finish_pending_drawing_edit();
-        if self.basis != basis {
+        let previous_basis = self.basis;
+        let basis_changed = previous_basis != basis;
+        if basis_changed {
             self.history.clear();
         }
         self.drawings.tools.set_basis(basis);
@@ -1285,8 +1671,7 @@ impl KlineChart {
             let secondary_tickers = self
                 .data
                 .selected_tickers()
-                .iter()
-                .copied()
+                .into_iter()
                 .filter(|ticker| *ticker != base_ticker)
                 .collect::<Vec<_>>();
             for ticker in secondary_tickers {
@@ -1294,31 +1679,35 @@ impl KlineChart {
             }
         }
         let preserve_raw_trades = matches!(
-            (self.basis, basis),
+            (previous_basis, basis),
             (Basis::Time(_), Basis::Time(_)) | (Basis::Tick(_), Basis::Tick(_))
         );
         self.basis = basis;
-        self.indicators.normalize_for_basis(basis);
         self.studies.normalize_for_basis(basis);
 
         self.data.reset_for_basis(self.basis, preserve_raw_trades);
+        self.profiles.invalidate_tpo();
         self.sync_tick_drawing_sequence();
         self.frame_revision = self.frame_revision.wrapping_add(1);
         self.indicators
             .mark_rebuild_pending(IndicatorRebuildReason::BasisChanged);
         self.configure_profile_caches();
 
-        self.fetch.rebuild_handlers(self.data.selected_tickers());
+        if basis_changed {
+            self.fetch.reset_for_basis_change();
+        } else {
+            let selected_tickers = self.data.selected_tickers();
+            self.fetch.rebuild_handlers(&selected_tickers);
+        }
 
-        // The next chart tick builds the plan from the settled basis and
-        // launches all stages together. Old requests have already been
-        // aborted and their request IDs invalidated above.
+        // The next chart tick builds the normal fetch stage from the settled basis.
         None
     }
 
     fn reconcile_indicator_layout(&mut self, rebuild_all: bool) {
+        let selected_tickers = self.data.selected_tickers();
         self.indicators
-            .sync_comparison_sources(self.data.base_ticker(), self.data.selected_tickers());
+            .sync_comparison_sources(self.data.base_ticker(), &selected_tickers);
         let _ = self.indicators.reconcile_attached_indicator_placements();
         let active_indicators = self.indicators.selected_indicators();
         self.configure_indicator_runtimes(&active_indicators, rebuild_all);
@@ -1552,6 +1941,25 @@ impl KlineChart {
             }
             ChartCommand::Indicator(command) => self.apply_indicator_command(command, &mut dirty),
             ChartCommand::Study(command) => self.apply_study_command(command, &mut dirty),
+            ChartCommand::TpoEdit(command) => {
+                let anchor = self
+                    .profile_plan()
+                    .tpo_study
+                    .and_then(|study| study.tpo_anchor())
+                    .unwrap_or_default();
+                match command {
+                    TpoEditCommand::SplitAt(boundary) => self.profiles.edit_split(boundary),
+                    TpoEditCommand::MergeAt(boundary) => self.profiles.edit_merge(boundary),
+                    TpoEditCommand::MoveBoundary { from, to } => {
+                        self.profiles.edit_move_boundary(from, to, anchor)
+                    }
+                    TpoEditCommand::Reset { start, end } => {
+                        self.profiles.reset_edits_in_range(start, end, anchor)
+                    }
+                }
+                dirty = true;
+                CommandResult::Changed(true)
+            }
             ChartCommand::SetSeriesColor { ticker_info, color } => {
                 let changed = self.data.set_series_color(ticker_info, color);
                 if changed {
@@ -1589,10 +1997,9 @@ impl KlineChart {
                     && self.data.add_ticker(ticker_info, self.basis)
                 {
                     self.fetch.add_ticker(ticker_info);
-                    self.indicators.sync_comparison_sources(
-                        self.data.base_ticker(),
-                        self.data.selected_tickers(),
-                    );
+                    let selected_tickers = self.data.selected_tickers();
+                    self.indicators
+                        .sync_comparison_sources(self.data.base_ticker(), &selected_tickers);
                     let active_indicators = self.selected_indicators();
                     self.configure_indicator_runtimes(&active_indicators, false);
                     self.mark_indicators_for_candle_ticker(
@@ -1711,7 +2118,7 @@ impl KlineChart {
         command: IndicatorCommand,
         dirty: &mut bool,
     ) -> CommandResult {
-        let change = self.indicators.apply(command, self.basis, &self.data);
+        let change = self.indicators.apply(command, &self.data);
         self.apply_indicator_change(change, dirty)
     }
 
@@ -1759,9 +2166,13 @@ impl KlineChart {
     }
 
     fn apply_study_command(&mut self, command: StudyCommand, dirty: &mut bool) -> CommandResult {
+        let previous_plan = self.profile_plan();
         let change = self
             .studies
             .apply(command, self.basis, self.trade_data_enabled());
+        if change.changed() && previous_plan != self.profile_plan() {
+            self.configure_profile_caches();
+        }
         self.apply_study_change(change, dirty)
     }
 
@@ -1770,13 +2181,11 @@ impl KlineChart {
         change: studies::StudyChange,
         dirty: &mut bool,
     ) -> CommandResult {
-        if change.profile_data_changed {
-            self.configure_profile_caches();
-        }
-        if change.changed {
+        let changed = change.changed();
+        if changed {
             *dirty = true;
         }
-        CommandResult::Changed(change.changed)
+        CommandResult::Changed(changed)
     }
 
     fn remove_ticker(&mut self, ticker_info: TickerInfo) -> bool {
@@ -1789,8 +2198,9 @@ impl KlineChart {
             self.inspector.series_editor_mut().close();
         }
         self.fetch.remove_ticker(ticker_info);
+        let selected_tickers = self.data.selected_tickers();
         self.indicators
-            .sync_comparison_sources(self.data.base_ticker(), self.data.selected_tickers());
+            .sync_comparison_sources(self.data.base_ticker(), &selected_tickers);
         if was_multi_source
             && !self.indicators.layout().primary_uses_multi_source()
             && self.indicators.restore_primary_scale_after_comparisons()
@@ -1841,7 +2251,7 @@ impl KlineChart {
     fn apply_shared_settings(&mut self, snapshot: &SettingsSnapshot) {
         let previous_requirements = self.data_requirements();
         self.replace_indicator_configuration(
-            snapshot.indicator_instances_for(self.basis),
+            snapshot.indicator_instance_store(),
             &snapshot.panels,
             &snapshot.splits,
         );
@@ -1854,6 +2264,8 @@ impl KlineChart {
             snapshot.studies.clone(),
             snapshot.study_configs.clone(),
         ));
+        self.profiles
+            .restore_edits(snapshot.tpo_profile_edits.clone());
         self.studies.normalize_for_basis(self.basis);
         self.reconcile_indicator_layout(true);
         self.reconcile_data_requirements(previous_requirements);
@@ -1920,7 +2332,8 @@ impl KlineChart {
 
     pub fn apply_settings_snapshot(&mut self, snapshot: &SettingsSnapshot) -> Option<Action> {
         self.apply_shared_settings(snapshot);
-        self.fetch.rebuild_handlers(self.data.selected_tickers());
+        let selected_tickers = self.data.selected_tickers();
+        self.fetch.rebuild_handlers(&selected_tickers);
         self.reconcile_local_sidebar();
         self.bump_rev();
 
@@ -1986,6 +2399,7 @@ impl KlineChart {
                 .studies
                 .active()
                 .iter()
+                .filter(|study| study.visible())
                 .any(|study| study.requires_trade_data())
         {
             requirements.trades = true;
@@ -2001,8 +2415,8 @@ impl KlineChart {
         self.data.base_ticker()
     }
 
-    pub fn selected_tickers(&self) -> &[TickerInfo] {
-        self.data.selected_tickers()
+    pub fn series(&self) -> &[KlineSeries] {
+        self.data.series()
     }
 
     pub fn last_update(&self) -> Instant {
@@ -2028,6 +2442,7 @@ impl KlineChart {
     }
 
     pub(crate) fn desired_streams(&self) -> Vec<StreamKind> {
+        let plan = self.profile_plan();
         match self.basis {
             Basis::Time(timeframe) => {
                 let mut streams = Vec::new();
@@ -2036,16 +2451,21 @@ impl KlineChart {
                         ticker_info: self.data.base_ticker(),
                     });
                 }
-                streams.extend(
-                    self.data
-                        .selected_tickers()
-                        .iter()
-                        .copied()
-                        .map(|ticker_info| StreamKind::Kline {
-                            ticker_info,
-                            timeframe,
-                        }),
-                );
+                streams.extend(self.data.selected_tickers().into_iter().map(|ticker_info| {
+                    StreamKind::Kline {
+                        ticker_info,
+                        timeframe,
+                    }
+                }));
+                if plan.uses_external_kline_source(self.basis) {
+                    let profile_timeframe = plan
+                        .kline_source_timeframe
+                        .expect("external Kline source requires a timeframe");
+                    streams.push(StreamKind::Kline {
+                        ticker_info: self.data.base_ticker(),
+                        timeframe: profile_timeframe,
+                    });
+                }
                 streams
             }
             Basis::Tick(_) => vec![StreamKind::Trades {
@@ -2075,6 +2495,7 @@ impl KlineChart {
             drawing_sidebar_visible: self.drawing_sidebar_visible,
             studies: self.studies.active_snapshot(),
             study_configs: self.studies.configs_snapshot(),
+            tpo_profile_edits: self.profiles.edits().clone(),
             indicator_instances: self.indicators.instances().instances().to_vec(),
             series: self
                 .data
@@ -2106,6 +2527,50 @@ impl KlineChart {
                 .collect(),
         }
     }
+}
+
+fn merge_profile_kline_windows(
+    schedules: &[VolumeProfileSchedule],
+    visible_window: (UnixMs, UnixMs),
+    tpo_ranges: &[(UnixMs, UnixMs)],
+) -> Vec<(UnixMs, UnixMs)> {
+    let mut windows = Vec::new();
+    for schedule in schedules {
+        match schedule {
+            VolumeProfileSchedule::VisibleRange => windows.push(visible_window),
+            VolumeProfileSchedule::Recurring { interval } => {
+                let mut start = visible_window.0.floor_to(*interval);
+                let end = visible_window
+                    .1
+                    .saturating_sub(1)
+                    .floor_to(*interval)
+                    .offset_by_timeframe(*interval, 1);
+                while start < end {
+                    let next = start.offset_by_timeframe(*interval, 1);
+                    if next <= start {
+                        break;
+                    }
+                    windows.push((start, next));
+                    start = next;
+                }
+            }
+        }
+    }
+    windows.extend_from_slice(tpo_ranges);
+    windows.retain(|(start, end)| start < end);
+    windows.sort_unstable();
+
+    let mut merged: Vec<(UnixMs, UnixMs)> = Vec::new();
+    for (start, end) in windows {
+        if let Some((_, previous_end)) = merged.last_mut()
+            && start <= *previous_end
+        {
+            *previous_end = (*previous_end).max(end);
+        } else {
+            merged.push((start, end));
+        }
+    }
+    merged
 }
 
 fn sidebar_header<'a>(title: String) -> iced::Element<'a, Message> {
@@ -2146,4 +2611,38 @@ fn sidebar_panel<'a>(
     .padding([4, 8])
     .style(style::chart_sidebar_container)
     .into()
+}
+
+#[cfg(test)]
+mod profile_fetch_window_tests {
+    use super::*;
+
+    #[test]
+    fn recurring_intervals_are_complete_and_merge_with_tpo_sessions() {
+        let day = Timeframe::D1.to_milliseconds();
+        let visible = (
+            UnixMs::ZERO.offset_by_timeframe(Timeframe::H1, 25),
+            UnixMs::ZERO.offset_by_timeframe(Timeframe::H1, 49),
+        );
+        let windows = merge_profile_kline_windows(
+            &[VolumeProfileSchedule::Recurring {
+                interval: Timeframe::D1,
+            }],
+            visible,
+            &[(
+                UnixMs::ZERO.offset_by_timeframe(Timeframe::H1, 30),
+                UnixMs::ZERO.offset_by_timeframe(Timeframe::H1, 50),
+            )],
+        );
+
+        assert_eq!(
+            windows,
+            vec![(
+                UnixMs::ZERO.offset_by_timeframe(Timeframe::D1, 1),
+                UnixMs::ZERO.offset_by_timeframe(Timeframe::D1, 3)
+            )]
+        );
+        assert_eq!(windows[0].0.as_u64() % day, 0);
+        assert_eq!(windows[0].1.as_u64() % day, 0);
+    }
 }

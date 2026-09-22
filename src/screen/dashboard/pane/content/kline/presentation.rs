@@ -84,7 +84,12 @@ impl<'a> IndicatorPresentationResolver<'a> {
                             selected_mark,
                             required_input,
                             fallback_mark,
-                            |source| missing_presentation_input_message(kind, source),
+                            |source| {
+                                missing_input_message(
+                                    data::chart::kline::indicators::display_name(kind),
+                                    source,
+                                )
+                            },
                         )
                     };
                 let selected_layer_ids = effective_mark
@@ -192,12 +197,7 @@ impl<'a> IndicatorPresentationResolver<'a> {
         if matches!(source, IndicatorInputSource::OpenInterest) {
             return None;
         }
-        Some(match source {
-            IndicatorInputSource::DirectionalVolume => {
-                persisted::IndicatorUnsupportedReason::MissingDirectionalVolume
-            }
-            source => persisted::IndicatorUnsupportedReason::MissingRequiredInput { source },
-        })
+        Some(persisted::IndicatorUnsupportedReason::MissingRequiredInput { source })
     }
 
     fn unavailable_indicator_panels(
@@ -258,9 +258,7 @@ fn unavailable_indicator_message(
             format!("{name} is not available for {basis}.")
         }
         IndicatorUnsupportedReason::IncompleteHistory => {
-            format!(
-                "{name} requires complete history from its anchor; tick charts currently contain live data only."
-            )
+            "Anchored VWAP requires complete history from its anchor; tick charts currently contain live data only.".to_owned()
         }
         IndicatorUnsupportedReason::SourceNotSupported => {
             format!("{name} is not available for {}.", base_ticker.exchange())
@@ -277,16 +275,8 @@ fn unavailable_indicator_message(
         } => {
             format!("{name} needs {required} candles; only {available} available.")
         }
-        IndicatorUnsupportedReason::MissingRequiredInput { source } => match source {
-            IndicatorInputSource::Klines => format!("{name} requires candle data."),
-            IndicatorInputSource::DirectionalVolume => {
-                format!("{name} requires directional volume from candles or enabled trade data.")
-            }
-            IndicatorInputSource::Trades => format!("{name} requires trade data."),
-            IndicatorInputSource::OpenInterest => format!("{name} requires open-interest data."),
-        },
-        IndicatorUnsupportedReason::MissingDirectionalVolume => {
-            format!("{name} requires directional volume from candles or enabled trade data.")
+        IndicatorUnsupportedReason::MissingRequiredInput { source } => {
+            missing_input_message(name, source)
         }
         IndicatorUnsupportedReason::NotInstalled => {
             format!("Indicator unavailable in this build: {}.", indicator.id())
@@ -294,11 +284,7 @@ fn unavailable_indicator_message(
     }
 }
 
-fn missing_presentation_input_message(
-    indicator: &IndicatorId,
-    source: IndicatorInputSource,
-) -> String {
-    let name = data::chart::kline::indicators::display_name(indicator);
+fn missing_input_message(name: &str, source: IndicatorInputSource) -> String {
     match source {
         IndicatorInputSource::Klines => format!("{name} requires candle data."),
         IndicatorInputSource::DirectionalVolume => {

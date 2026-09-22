@@ -3,7 +3,7 @@ use crate::style::{self, Icon, icon_text};
 use crate::widget::inspector::{InspectorContent, InspectorSection};
 use data::chart::kline::IndicatorId;
 use data::chart::kline::{
-    IndicatorUnsupportedReason, KlineStudy,
+    IndicatorUnsupportedReason, KlineStudy, ProfileSource,
     indicators::{IndicatorInputSource, all_indicators, declared_input_requirements},
 };
 use iced::{
@@ -193,7 +193,7 @@ pub fn view<'a>(chart: &'a KlineChart, picker: &'a State) -> Element<'a, KlineMe
 
     let available_studies = KlineStudy::ALL
         .into_iter()
-        .map(|study| study.normalized_for_basis(chart.basis()).unwrap_or(study))
+        .filter_map(|study| study.normalized_for_basis(chart.basis()))
         .map(|study| {
             let available =
                 chart
@@ -246,26 +246,22 @@ fn available_column(
     studies: Vec<AvailableStudy>,
 ) -> Element<'static, KlineMessage> {
     let indicator_groups = indicator_group_views(indicators);
-    let study_rows = studies
-        .into_iter()
-        .map(|available| study_row(available.study, available.available, available.active))
-        .collect::<Vec<_>>();
+    let study_groups = study_group_views(studies);
 
     let mut sections = Vec::with_capacity(2);
     if !indicator_groups.is_empty() {
-        sections.push(InspectorSection::titled(
-            "Indicators",
+        sections.push(InspectorSection::new(
+            crate::widget::text::title("Indicators"),
             iced::widget::Column::with_children(indicator_groups)
                 .spacing(10)
                 .width(Length::Fill),
         ));
     }
-    if !study_rows.is_empty() {
-        sections.push(InspectorSection::titled(
-            "Studies",
-            iced::widget::Column::with_children(study_rows)
-                .spacing(2)
-                .padding([0, 4])
+    if !study_groups.is_empty() {
+        sections.push(InspectorSection::new(
+            crate::widget::text::title("Studies"),
+            iced::widget::Column::with_children(study_groups)
+                .spacing(10)
                 .width(Length::Fill),
         ));
     }
@@ -312,6 +308,55 @@ fn indicator_group_views(
             Some(
                 column![
                     crate::widget::text::emphasis(group.label()),
+                    iced::widget::Column::with_children(rows)
+                        .spacing(2)
+                        .width(Length::Fill),
+                ]
+                .padding([0, 4])
+                .spacing(4)
+                .width(Length::Fill)
+                .into(),
+            )
+        })
+        .collect()
+}
+
+fn study_group_views(studies: Vec<AvailableStudy>) -> Vec<Element<'static, KlineMessage>> {
+    let mut grouped: Vec<(ProfileSource, Vec<AvailableStudy>)> =
+        [ProfileSource::Kline, ProfileSource::Trades]
+            .into_iter()
+            .map(|source| (source, Vec::new()))
+            .collect();
+
+    for available in studies {
+        let source = available.study.source();
+        if let Some((_, entries)) = grouped
+            .iter_mut()
+            .find(|(candidate, _)| *candidate == source)
+        {
+            entries.push(available);
+        }
+    }
+
+    grouped
+        .into_iter()
+        .filter_map(|(source, studies)| {
+            if studies.is_empty() {
+                return None;
+            }
+
+            let rows = studies
+                .into_iter()
+                .map(|available| study_row(available.study, available.available, available.active))
+                .collect::<Vec<_>>();
+            let label = match source {
+                ProfileSource::Kline => "Candles",
+                ProfileSource::Trades => "Trades",
+            };
+
+            Some(
+                column![
+                    crate::widget::text::emphasis(label),
                     iced::widget::Column::with_children(rows)
                         .spacing(2)
                         .width(Length::Fill),

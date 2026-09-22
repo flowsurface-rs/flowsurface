@@ -5,11 +5,12 @@ use data::chart::kline::{
     HistoricalOpenInterestUpdate, IndicatorInputSource, IndicatorUpdateScope, KlineData,
     KlineDataChange, KlineIndexChange, OpenInterestSeries,
 };
-use exchange::{Kline, TickerInfo, Trade};
+use exchange::{Kline, TickerInfo, Timeframe, Trade};
 
 pub enum DataUpdate<'a> {
     HistoricalKlines {
         req_id: Option<uuid::Uuid>,
+        timeframe: Timeframe,
         ticker_info: TickerInfo,
         klines: &'a [Kline],
     },
@@ -214,6 +215,7 @@ fn ingest(
             req_id,
             ticker_info,
             klines,
+            ..
         } => {
             if req_id.is_some_and(|req_id| !fetch.accepts_data(req_id)) {
                 return KlineDataChange::Unchanged;

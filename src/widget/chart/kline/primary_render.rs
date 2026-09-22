@@ -3,23 +3,24 @@ use super::footprint::{
     FootprintColumnLayout, FootprintImbalance, FootprintTextMode, draw_footprint_candle,
     draw_footprint_cluster_row, footprint_text_content_lengths, resolve_footprint_text_mode,
 };
-use super::helpers::PixelGeometry;
+use super::helpers::{PixelGeometry, PixelSpan};
 use super::scene::IndicatorPanelScene;
 use super::scene_builder::{
     IndicatorLinePointStatus, IndicatorLineTraversal, bar_index_range_for_units,
     shifted_output_unit,
 };
 use super::*;
-use data::chart::kline::series::{KlineSeries, PriceLevelTradeDistribution};
+use data::chart::kline::series::KlineSeries;
 use data::chart::kline::{
     IndicatorFillGeometry, IndicatorFillSpec, IndicatorInputSource, IndicatorOutputRef,
-    LineStrokeStyle, OutputValue, TableColumnColor, TableColumnFormat, TableColumnValue,
+    LineStrokeStyle, OutputValue, ProfileDistribution, ProfileSource, TableColumnColor,
+    TableColumnFormat, TableColumnValue, TpoColorConfig, TpoProfile, TpoProfileStatus,
 };
 use data::chart::kline_data::ClusterKind;
 use data::config::theme::ACCENT_COUNT;
 use data::util::abbr_large_numbers;
 use exchange::UnixMs;
-use exchange::unit::Qty;
+use exchange::unit::{Price, Qty};
 use rustc_hash::FxHashSet;
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -148,6 +149,13 @@ fn indicator_line_stroke(
 pub(super) enum PrimaryPlotDetail {
     CandleOnly,
     Footprint,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PrimaryPlotLayer {
+    Background,
+    Tpo,
+    Foreground,
 }
 
 fn footprint_detail_enabled(trade_data_enabled: bool, logical_bar_spacing: f32) -> bool {
@@ -932,9 +940,8 @@ impl<'a> KlineWidget<'a> {
         scene: &Scene,
         palette: &Extended,
         generated_accents: &[iced::Color; ACCENT_COUNT],
-        distribution: &PriceLevelTradeDistribution,
+        distribution: &ProfileDistribution,
         colors: VolumeProfileColorConfig,
-        tick_size: PriceStep,
         profile_edge: f32,
         profile_width: f32,
         bar_alpha: f32,
@@ -944,6 +951,7 @@ impl<'a> KlineWidget<'a> {
         grow_right: bool,
         pixels: PixelGeometry,
     ) {
+        let tick_size = distribution.price_step;
         let max_qty = distribution.max_qty.to_f64();
         if max_qty <= 0.0 {
             return;
@@ -990,8 +998,8 @@ impl<'a> KlineWidget<'a> {
                                 level.price.to_f32_lossy(),
                                 anchor,
                             ),
-                            level.buy_qty,
-                            level.sell_qty,
+                            level.positive_qty,
+                            level.negative_qty,
                         );
                     }
                     rows
@@ -1004,7 +1012,7 @@ impl<'a> KlineWidget<'a> {
                     max_qty
                 }
             });
-            let mut draw_row = |y: f32, row_height: f32, buy: Qty, sell: Qty| {
+            let mut draw_row = |y: f32, row_height: f32, positive: Qty, negative: Qty| {
                 let row_height = row_height.max(min_row_height);
                 let row_top = y - row_height * 0.5;
                 let row_bottom = row_top + row_height;
@@ -1013,7 +1021,7 @@ impl<'a> KlineWidget<'a> {
                 {
                     return;
                 }
-                let total_qty = (buy + sell).to_f64();
+                let total_qty = (positive + negative).to_f64();
                 if total_qty <= 0.0 {
                     return;
                 }
@@ -1034,28 +1042,28 @@ impl<'a> KlineWidget<'a> {
                     profile_edge - total_width
                 };
                 let left_span = pixels.snapped_x_span(left, left + total_width);
-                let sell_width =
-                    left_span.size * (sell.to_f64() / total_qty).clamp(0.0, 1.0) as f32;
-                let buy_width = left_span.size - sell_width;
+                let negative_width =
+                    left_span.size * (negative.to_f64() / total_qty).clamp(0.0, 1.0) as f32;
+                let positive_width = left_span.size - negative_width;
 
-                if sell_width > 0.0 {
+                if negative_width > 0.0 {
                     frame.fill_rectangle(
                         Point::new(left_span.start, row_span.start),
-                        Size::new(sell_width, row_span.size),
+                        Size::new(negative_width, row_span.size),
                         sell_color,
                     );
                 }
-                if buy_width > 0.0 {
+                if positive_width > 0.0 {
                     frame.fill_rectangle(
-                        Point::new(left_span.start + sell_width, row_span.start),
-                        Size::new(buy_width, row_span.size),
+                        Point::new(left_span.start + negative_width, row_span.start),
+                        Size::new(positive_width, row_span.size),
                         buy_color,
                     );
                 }
             };
             if let Some(rows) = rows {
-                for (y, buy, sell) in rows.rows() {
-                    draw_row(y, rows.bucket_height, buy, sell);
+                for (y, positive, negative) in rows.rows() {
+                    draw_row(y, rows.bucket_height, positive, negative);
                 }
             } else {
                 for level in &distribution.levels {
@@ -1064,8 +1072,8 @@ impl<'a> KlineWidget<'a> {
                     draw_row(
                         y,
                         self.footprint_row_height(scene, level.price, tick_size, anchor),
-                        level.buy_qty,
-                        level.sell_qty,
+                        level.positive_qty,
+                        level.negative_qty,
                     );
                 }
             }
@@ -1279,18 +1287,10 @@ impl<'a> KlineWidget<'a> {
         study: KlineStudy,
         footprint_tick_size: PriceStep,
     ) -> PriceStep {
-        let Some(multiplier) = study.volume_profile_tick_multiplier() else {
-            return footprint_tick_size;
-        };
         let Some(base_series) = self.series.first() else {
             return footprint_tick_size;
         };
-        let step = multiplier.multiply_with_min_tick_step(base_series.ticker_info);
-        if step.units < footprint_tick_size.units {
-            footprint_tick_size
-        } else {
-            step
-        }
+        study.effective_profile_tick_size(base_series.ticker_info, footprint_tick_size)
     }
 
     pub(super) fn fill_volume_profile_overlay(
@@ -1312,70 +1312,86 @@ impl<'a> KlineWidget<'a> {
             return;
         };
 
-        let (lowest, highest) = scene.primary_domain_value_range();
         let footprint_tick_size = base_series.footprint_tick_size();
+        let profile_bars = self.profile_bars.collect(self.series);
         let visible_profile = self.studies.iter().find_map(|study| {
-            if !study.visible() || !study.is_volume_profile() {
+            if !study.visible() {
                 return None;
             }
 
-            if !matches!(
-                study.volume_profile_schedule(),
-                VolumeProfileSchedule::VisibleRange
-            ) {
+            if study.volume_profile_schedule()? != VolumeProfileSchedule::VisibleRange {
                 return None;
             }
 
+            let colors = study.volume_profile_colors()?;
+            let width_ratio = study.volume_profile_width_ratio()?;
+            let opacity_ratio = study.volume_profile_opacity_ratio()?;
+            let opacity_scale = study.volume_profile_opacity_scale()?;
             let tick_size = self.effective_study_tick_size(*study, footprint_tick_size);
-            base_series
-                .trade_price_distribution(earliest, latest, lowest, highest, tick_size)
-                .map(|profile| {
-                    (
-                        profile,
-                        study.volume_profile_colors(),
-                        study.volume_profile_width_ratio(),
-                        study.volume_profile_opacity_ratio(),
-                        study.volume_profile_opacity_scale(),
-                        tick_size,
-                    )
-                })
+            let profile = match study.source() {
+                ProfileSource::Kline => data::chart::kline::kline_volume_profile(
+                    &profile_bars,
+                    earliest,
+                    latest,
+                    tick_size,
+                ),
+                ProfileSource::Trades => {
+                    base_series.trade_price_distribution(earliest, latest, tick_size)
+                }
+            };
+            profile.map(|profile| (profile, colors, width_ratio, opacity_ratio, opacity_scale))
         });
         let recurring_intervals = self
             .studies
             .iter()
-            .filter(|study| study.visible() && study.is_volume_profile())
-            .filter_map(|study| match study.volume_profile_schedule() {
-                VolumeProfileSchedule::VisibleRange => None,
-                VolumeProfileSchedule::Recurring { interval }
-                    if study.is_interval_available(self.basis) =>
-                {
-                    Some((
-                        interval,
-                        study.volume_profile_colors(),
-                        study.volume_profile_width_ratio(),
-                        study.volume_profile_opacity_ratio(),
-                        study.volume_profile_opacity_scale(),
-                        self.effective_study_tick_size(*study, footprint_tick_size),
-                    ))
+            .filter(|study| study.visible())
+            .filter_map(|study| {
+                let VolumeProfileSchedule::Recurring { interval } =
+                    study.volume_profile_schedule()?
+                else {
+                    return None;
+                };
+                if !study.is_interval_available(self.basis) {
+                    return None;
                 }
-                VolumeProfileSchedule::Recurring { .. } => None,
+                Some((
+                    study.source(),
+                    interval,
+                    study.volume_profile_colors()?,
+                    study.volume_profile_width_ratio()?,
+                    study.volume_profile_opacity_ratio()?,
+                    study.volume_profile_opacity_scale()?,
+                    self.effective_study_tick_size(*study, footprint_tick_size),
+                ))
             });
         let profiles = recurring_intervals
             .flat_map(
-                |(interval, colors, width_ratio, opacity_ratio, opacity_scale, tick_size)| {
-                    base_series
-                        .recurring_trade_price_distributions(interval, tick_size, earliest, latest)
-                        .into_iter()
-                        .map(move |profile| {
-                            (
-                                profile,
-                                colors,
-                                width_ratio,
-                                opacity_ratio,
-                                opacity_scale,
+                |(
+                    source,
+                    interval,
+                    colors,
+                    width_ratio,
+                    opacity_ratio,
+                    opacity_scale,
+                    tick_size,
+                )| {
+                    let profiles = match source {
+                        ProfileSource::Kline => {
+                            data::chart::kline::recurring_kline_volume_profiles(
+                                &profile_bars,
+                                interval,
+                                earliest,
+                                latest,
                                 tick_size,
                             )
-                        })
+                        }
+                        ProfileSource::Trades => base_series.recurring_trade_price_distributions(
+                            interval, tick_size, earliest, latest,
+                        ),
+                    };
+                    profiles.into_iter().map(move |profile| {
+                        (profile, colors, width_ratio, opacity_ratio, opacity_scale)
+                    })
                 },
             )
             .collect::<Vec<_>>();
@@ -1386,7 +1402,7 @@ impl<'a> KlineWidget<'a> {
         let primary_plot = *scene.primary_plot();
         let min_profile_width = pixels.logical_width_from_physical(1);
         frame.with_clip(primary_plot, |frame| {
-            if let Some((profile, colors, width_ratio, opacity_ratio, opacity_scale, tick_size)) =
+            if let Some((profile, colors, width_ratio, opacity_ratio, opacity_scale)) =
                 visible_profile.as_ref()
             {
                 self.draw_profile_distribution(
@@ -1396,7 +1412,6 @@ impl<'a> KlineWidget<'a> {
                     generated_accents,
                     profile,
                     *colors,
-                    *tick_size,
                     primary_plot.x + primary_plot.width,
                     primary_plot.width * width_ratio,
                     *opacity_ratio,
@@ -1408,9 +1423,7 @@ impl<'a> KlineWidget<'a> {
                 );
             }
 
-            for (anchored_profile, colors, width_ratio, opacity_ratio, opacity_scale, tick_size) in
-                profiles
-            {
+            for (anchored_profile, colors, width_ratio, opacity_ratio, opacity_scale) in profiles {
                 let Some(start_unit) = scene.x.axis.unit_from_time_f32(anchored_profile.start)
                 else {
                     continue;
@@ -1437,7 +1450,6 @@ impl<'a> KlineWidget<'a> {
                     generated_accents,
                     &anchored_profile.distribution,
                     colors,
-                    tick_size,
                     segment_left,
                     profile_width,
                     opacity_ratio,
@@ -1447,6 +1459,382 @@ impl<'a> KlineWidget<'a> {
                     true,
                     pixels,
                 );
+            }
+        });
+    }
+
+    fn tpo_row_height(scene: &Scene, profile: &TpoProfile, anchor: Option<f32>) -> f32 {
+        let row_height = if profile.rows.len() < 2 {
+            12.0
+        } else {
+            profile
+                .rows
+                .windows(2)
+                .filter_map(|rows| {
+                    let y1 = scene
+                        .map_primary_plot_with_anchor_f32(rows[0].price.to_f32_lossy(), anchor);
+                    let y2 = scene
+                        .map_primary_plot_with_anchor_f32(rows[1].price.to_f32_lossy(), anchor);
+                    (y1.is_finite() && y2.is_finite()).then_some((y1 - y2).abs())
+                })
+                .fold(f32::INFINITY, f32::min)
+                .min(24.0)
+        };
+
+        if row_height.is_finite() {
+            row_height
+        } else {
+            0.0
+        }
+    }
+
+    pub(super) fn tpo_profile_geometries(
+        &self,
+        scene: &Scene,
+        selected_profile: Option<UnixMs>,
+    ) -> Vec<TpoProfileGeometry> {
+        if self.tpo_profiles.is_empty() || !self.basis.is_time() {
+            return Vec::new();
+        }
+        if !self
+            .studies
+            .iter()
+            .any(|study| study.visible() && study.is_tpo_profile())
+        {
+            return Vec::new();
+        }
+
+        let plot = *scene.primary_plot();
+        let anchor = scene
+            .primary
+            .series_percent_anchors
+            .first()
+            .copied()
+            .flatten();
+        let plot_right = plot.x + plot.width;
+        let plot_bottom = plot.y + plot.height;
+
+        self.tpo_profiles
+            .iter()
+            .enumerate()
+            .filter_map(|(index, profile)| {
+                let start_unit = scene.x.axis.unit_from_time_f32(profile.start)?;
+                let end_unit = scene.x.axis.unit_from_time_f32(profile.end)?;
+                let left = scene.map_x_plot_f32(start_unit);
+                let right = scene.map_x_plot_f32(end_unit);
+                let (line_start, line_end) = (left.min(right), left.max(right));
+                if line_end < plot.x || line_start > plot_right {
+                    return None;
+                }
+
+                let row_height = Self::tpo_row_height(scene, profile, anchor);
+                if row_height <= 0.0 || profile.rows.is_empty() {
+                    return None;
+                }
+
+                let mut top = f32::INFINITY;
+                let mut bottom = f32::NEG_INFINITY;
+                for row in &profile.rows {
+                    let y =
+                        scene.map_primary_plot_with_anchor_f32(row.price.to_f32_lossy(), anchor);
+                    if y.is_finite() {
+                        top = top.min(y - row_height * 0.5);
+                        bottom = bottom.max(y + row_height * 0.5);
+                    }
+                }
+                if !top.is_finite() || !bottom.is_finite() {
+                    return None;
+                }
+
+                let visible_left = line_start.max(plot.x);
+                let visible_right = line_end.min(plot_right);
+                let visible_top = top.max(plot.y);
+                let visible_bottom = bottom.min(plot_bottom);
+                if visible_right <= visible_left || visible_bottom <= visible_top {
+                    return None;
+                }
+
+                let overlay_bounds = Rectangle {
+                    x: scene.layout.regions.plot.x + visible_left,
+                    y: scene.layout.regions.plot.y + visible_top,
+                    width: visible_right - visible_left,
+                    height: visible_bottom - visible_top,
+                };
+                let button_y = (overlay_bounds.y + TPO_ACTION_BUTTON_GAP_PX)
+                    .min(scene.layout.regions.plot.y + plot_bottom - TPO_ACTION_BUTTON_HEIGHT_PX);
+                let selected = selected_profile == Some(profile.start);
+                let reset_visible = selected
+                    && self
+                        .tpo_edits
+                        .has_boundary_in_range(profile.start, profile.end);
+                let merge_with_reset_width = TPO_RESET_BUTTON_WIDTH_PX
+                    + TPO_ACTION_BUTTON_WIDTH_PX
+                    + TPO_ACTION_BUTTON_GAP_PX * 3.0;
+                let button_bounds = (selected
+                    && index > 0
+                    && overlay_bounds.width
+                        >= if reset_visible {
+                            merge_with_reset_width
+                        } else {
+                            TPO_ACTION_BUTTON_WIDTH_PX + TPO_ACTION_BUTTON_GAP_PX * 2.0
+                        })
+                .then_some(Rectangle {
+                    x: overlay_bounds.x + overlay_bounds.width
+                        - TPO_ACTION_BUTTON_WIDTH_PX
+                        - TPO_ACTION_BUTTON_GAP_PX,
+                    y: button_y,
+                    width: TPO_ACTION_BUTTON_WIDTH_PX,
+                    height: TPO_ACTION_BUTTON_HEIGHT_PX,
+                });
+                let reset_button_bounds = (selected
+                    && reset_visible
+                    && overlay_bounds.width
+                        >= TPO_RESET_BUTTON_WIDTH_PX + TPO_ACTION_BUTTON_GAP_PX * 2.0)
+                    .then(|| {
+                        let x = button_bounds.map_or(
+                            overlay_bounds.x + overlay_bounds.width
+                                - TPO_RESET_BUTTON_WIDTH_PX
+                                - TPO_ACTION_BUTTON_GAP_PX,
+                            |button| {
+                                button.x - TPO_ACTION_BUTTON_GAP_PX - TPO_RESET_BUTTON_WIDTH_PX
+                            },
+                        );
+                        Rectangle {
+                            x,
+                            y: button_y,
+                            width: TPO_RESET_BUTTON_WIDTH_PX,
+                            height: TPO_ACTION_BUTTON_HEIGHT_PX,
+                        }
+                    });
+
+                Some(TpoProfileGeometry {
+                    index,
+                    start: profile.start,
+                    end: profile.end,
+                    overlay_bounds,
+                    button_bounds,
+                    reset_button_bounds,
+                })
+            })
+            .collect()
+    }
+
+    pub(super) fn fill_tpo_profile_overlay(
+        &self,
+        frame: &mut canvas::Frame,
+        scene: &Scene,
+        palette: &Extended,
+        generated_accents: &[iced::Color; ACCENT_COUNT],
+        pixels: PixelGeometry,
+    ) {
+        if self.tpo_profiles.is_empty() || !self.basis.is_time() {
+            return;
+        }
+        let Some(tpo_study) = self
+            .studies
+            .iter()
+            .find(|study| study.visible() && study.is_tpo_profile())
+        else {
+            return;
+        };
+        let plot = *scene.primary_plot();
+        let anchor = scene
+            .primary
+            .series_percent_anchors
+            .first()
+            .copied()
+            .flatten();
+        let line_width = pixels.quantized_stroke_width(1.0).0;
+        let colors = tpo_study
+            .tpo_colors()
+            .unwrap_or_else(TpoColorConfig::defaults);
+
+        frame.with_clip(plot, |frame| {
+            for profile in self.tpo_profiles {
+                let Some(start_unit) = scene.x.axis.unit_from_time_f32(profile.start) else {
+                    continue;
+                };
+                let Some(end_unit) = scene.x.axis.unit_from_time_f32(profile.end) else {
+                    continue;
+                };
+                let left = scene.map_x_plot_f32(start_unit);
+                let right = scene.map_x_plot_f32(end_unit);
+                let (line_start, line_end) = (left.min(right), left.max(right));
+                if line_end < plot.x || line_start > plot.x + plot.width {
+                    continue;
+                }
+                let profile_width = (line_end - line_start).max(0.0);
+                let row_height = Self::tpo_row_height(scene, profile, anchor);
+                let column_width = profile.period_count.max(1) as f32;
+                let column_width = profile_width / column_width;
+                let show_letters = column_width >= 8.0 && row_height >= 8.0;
+                let status_alpha = match profile.status {
+                    TpoProfileStatus::Complete => 0.95,
+                    TpoProfileStatus::Developing => 0.8,
+                    TpoProfileStatus::Incomplete => 0.55,
+                };
+                let color = |configured| {
+                    Self::resolve_theme_color(configured, palette, generated_accents)
+                        .scale_alpha(status_alpha)
+                };
+                let is_single_print = |price: Price| profile.single_prints.contains(&price);
+                let poor_color = |price: Price| {
+                    if colors.show_poor_high && profile.poor_highs.contains(&price) {
+                        Some(colors.poor_high)
+                    } else if colors.show_poor_low && profile.poor_lows.contains(&price) {
+                        Some(colors.poor_low)
+                    } else {
+                        None
+                    }
+                };
+                let row_color = |price: Price| {
+                    if colors.show_poc && profile.poc == Some(price) {
+                        colors.poc
+                    } else if profile.val.is_some_and(|val| price >= val)
+                        && profile.vah.is_some_and(|vah| price <= vah)
+                    {
+                        colors.value_area
+                    } else {
+                        colors.letters
+                    }
+                };
+                let cell_color = |price: Price| {
+                    if !show_letters {
+                        if let Some(configured) = poor_color(price) {
+                            configured
+                        } else if colors.show_single_print && is_single_print(price) {
+                            colors.single_print
+                        } else {
+                            row_color(price)
+                        }
+                    } else {
+                        row_color(price)
+                    }
+                };
+                let text_color = |price: Price| {
+                    poor_color(price).unwrap_or_else(|| {
+                        if colors.show_single_print && is_single_print(price) {
+                            colors.single_print
+                        } else {
+                            row_color(price)
+                        }
+                    })
+                };
+
+                let cell_gap = pixels.logical_width_from_physical(1);
+                let plot_right = plot.x + plot.width;
+                for row in &profile.rows {
+                    let y =
+                        scene.map_primary_plot_with_anchor_f32(row.price.to_f32_lossy(), anchor);
+                    if !y.is_finite() {
+                        continue;
+                    }
+                    let y_span = pixels.snapped_y_span(y - row_height * 0.5, y + row_height * 0.5);
+                    let cell_y = PixelSpan {
+                        start: y_span.start + cell_gap * 0.5,
+                        size: (y_span.size - cell_gap).max(cell_gap),
+                    };
+                    let configured = cell_color(row.price);
+                    let cell_alpha = if !show_letters
+                        && (poor_color(row.price).is_some()
+                            || (colors.show_single_print && is_single_print(row.price)))
+                        || (colors.show_poc && profile.poc == Some(row.price))
+                    {
+                        0.38
+                    } else if profile.val.is_some_and(|val| row.price >= val)
+                        && profile.vah.is_some_and(|vah| row.price <= vah)
+                    {
+                        0.26
+                    } else {
+                        0.18
+                    };
+                    for (column_index, period_index) in row.periods.iter().enumerate() {
+                        if usize::from(*period_index) >= profile.period_count {
+                            continue;
+                        }
+                        let x_start = line_start + column_width * column_index as f32;
+                        let x_end = x_start + column_width;
+                        let Some(x_span) =
+                            pixels.positive_x_span_in_bounds(x_start, x_end, plot.x, plot_right)
+                        else {
+                            continue;
+                        };
+                        let cell_x = PixelSpan {
+                            start: x_span.start + cell_gap * 0.5,
+                            size: (x_span.size - cell_gap).max(cell_gap),
+                        };
+                        frame.fill_rectangle(
+                            Point::new(cell_x.start, cell_y.start),
+                            Size::new(cell_x.size, cell_y.size),
+                            color(configured).scale_alpha(cell_alpha),
+                        );
+                    }
+                }
+                let line = |frame: &mut canvas::Frame,
+                            price: Option<Price>,
+                            configured: data::config::theme::ThemeColor,
+                            width: f32| {
+                    let Some(price) = price else { return };
+                    let y = scene.map_primary_plot_with_anchor_f32(price.to_f32_lossy(), anchor);
+                    if !y.is_finite() {
+                        return;
+                    }
+                    frame.stroke(
+                        &canvas::Path::line(Point::new(line_start, y), Point::new(line_end, y)),
+                        canvas::Stroke::default()
+                            .with_width(width)
+                            .with_color(color(configured)),
+                    );
+                };
+
+                line(frame, profile.vah, colors.value_area, line_width);
+                line(frame, profile.val, colors.value_area, line_width);
+                if colors.show_poc {
+                    line(frame, profile.poc, colors.poc, line_width.max(1.5));
+                }
+                line(frame, profile.session_high, colors.letters, line_width);
+                line(frame, profile.session_low, colors.letters, line_width);
+                if colors.show_initial_balance {
+                    line(
+                        frame,
+                        profile.initial_balance_high,
+                        colors.initial_balance,
+                        line_width,
+                    );
+                    line(
+                        frame,
+                        profile.initial_balance_low,
+                        colors.initial_balance,
+                        line_width,
+                    );
+                }
+
+                if !show_letters {
+                    continue;
+                }
+                for row in &profile.rows {
+                    let y =
+                        scene.map_primary_plot_with_anchor_f32(row.price.to_f32_lossy(), anchor);
+                    if !y.is_finite() {
+                        continue;
+                    }
+                    for (column_index, period_index) in row.periods.iter().enumerate() {
+                        if usize::from(*period_index) >= profile.period_count {
+                            continue;
+                        }
+                        let x = line_start + column_width * (column_index as f32 + 0.5);
+                        frame.fill_text(canvas::Text {
+                            content: TpoProfile::letter_label(usize::from(*period_index)),
+                            position: Point::new(x, y),
+                            color: color(text_color(row.price)),
+                            size: row_height.min(column_width * 0.8).max(8.0).into(),
+                            align_x: iced::Alignment::Center.into(),
+                            align_y: iced::Alignment::Center.into(),
+                            font: style::AZERET_MONO,
+                            ..Default::default()
+                        });
+                    }
+                }
             }
         });
     }
@@ -2512,6 +2900,7 @@ impl<'a> KlineWidget<'a> {
         palette: &Extended,
         generated_accents: &[iced::Color; ACCENT_COUNT],
         pixels: PixelGeometry,
+        layer: PrimaryPlotLayer,
     ) {
         let primary_plot_detail = self.primary_plot_detail(scene);
 
@@ -2524,621 +2913,649 @@ impl<'a> KlineWidget<'a> {
         let in_visible_range =
             |x_unit: i64| x_unit >= scene.x.min_unit && x_unit <= scene.x.max_unit;
 
-        for indicator_panel in &scene.indicator_panels {
-            if matches!(indicator_panel.presentation, PanelPresentation::Table) {
-                self.fill_table_panel(frame, scene, indicator_panel, palette, generated_accents);
-            } else {
-                self.fill_indicator_panel_background(
-                    frame,
-                    scene,
-                    indicator_panel,
-                    palette,
-                    generated_accents,
-                    pixels,
-                );
-            }
-        }
-        self.fill_primary_overlay_backgrounds(frame, scene, palette, generated_accents, pixels);
-
-        for indicator_panel in &scene.indicator_panels {
-            if self
-                .panel_indicator_value_ids(indicator_panel.panel_index)
-                .iter()
-                .all(|value_id| self.indicator_is_unavailable(Some(*value_id)))
-            {
-                continue;
-            }
-
-            let Some(panel_plot) = scene
-                .layout
-                .panel(indicator_panel.panel_index)
-                .map(|panel| panel.plot)
-            else {
-                continue;
-            };
-
-            let structural_layers = self
-                .panel_output_layers(indicator_panel.panel_index)
-                .into_iter()
-                .filter(|layer| layer.visible && layer.purpose.is_plot())
-                .collect::<Vec<_>>();
-            frame.with_clip(panel_plot, |frame| {
-                for layer in &structural_layers {
-                    let output = &layer.presentation_output;
-                    let Some(spec) = self.indicator_output_spec(output) else {
-                        continue;
-                    };
-                    match spec.value_type {
-                        data::chart::kline::OutputValueType::Ohlc => {
-                            self.draw_indicator_ohlc_output(
-                                frame,
-                                scene,
-                                output.instance_id,
-                                output,
-                                layer.required_input,
-                                |value| {
-                                    scene.map_indicator_plot(indicator_panel.panel_index, value)
-                                },
-                                indicator_width_phys,
-                                wick_width_phys,
-                                pixels,
-                                palette,
-                                generated_accents,
-                            );
-                        }
-                        data::chart::kline::OutputValueType::Range => {
-                            self.draw_indicator_range_output(
-                                frame,
-                                scene,
-                                output,
-                                layer.required_input,
-                                |value| {
-                                    scene.map_indicator_plot(indicator_panel.panel_index, value)
-                                },
-                                pixels,
-                                palette,
-                                generated_accents,
-                            );
-                        }
-                        data::chart::kline::OutputValueType::Number
-                        | data::chart::kline::OutputValueType::Boolean => {}
-                    }
-                }
-                for value_id in self.panel_indicator_value_ids(indicator_panel.panel_index) {
-                    self.draw_indicator_markers_and_levels(
+        if layer == PrimaryPlotLayer::Background {
+            for indicator_panel in &scene.indicator_panels {
+                if matches!(indicator_panel.presentation, PanelPresentation::Table) {
+                    self.fill_table_panel(
                         frame,
                         scene,
-                        value_id,
-                        |value| scene.map_indicator_plot(indicator_panel.panel_index, value),
-                        pixels,
+                        indicator_panel,
                         palette,
                         generated_accents,
                     );
+                } else {
+                    self.fill_indicator_panel_background(
+                        frame,
+                        scene,
+                        indicator_panel,
+                        palette,
+                        generated_accents,
+                        pixels,
+                    );
                 }
-            });
-
-            let output_layers = self
-                .panel_output_layers(indicator_panel.panel_index)
-                .into_iter()
-                .filter(|layer| {
-                    layer.visible
-                        && layer.purpose.is_plot()
-                        && matches!(layer.mark, MarkKind::Candle | MarkKind::Bar(_))
-                        && layer.data_kind != LayerDataKind::Ohlc
-                        && self
-                            .indicator_output_spec(&layer.presentation_output)
-                            .is_some_and(|spec| {
-                                spec.value_type == data::chart::kline::OutputValueType::Number
-                            })
-                })
-                .collect::<Vec<_>>();
-            if output_layers.is_empty() {
-                continue;
             }
+            self.fill_primary_overlay_backgrounds(frame, scene, palette, generated_accents, pixels);
 
-            frame.with_clip(panel_plot, |frame| {
-                self.for_each_scene_bar_unit_index(
-                    scene,
-                    |series_index, bar_index, series, x_unit, _bar| {
-                        if series_index != 0 || !in_visible_range(x_unit) {
-                            return;
-                        }
+            for indicator_panel in &scene.indicator_panels {
+                if self
+                    .panel_indicator_value_ids(indicator_panel.panel_index)
+                    .iter()
+                    .all(|value_id| self.indicator_is_unavailable(Some(*value_id)))
+                {
+                    continue;
+                }
 
-                        let x_plot = scene.map_x_plot(x_unit);
-                        let layer_count = output_layers.len();
-                        let layer_width_phys = (indicator_width_phys / layer_count as i32).max(1);
-                        let layer_width = pixels.logical_width_from_physical(layer_width_phys);
-                        for (layer_index, layer) in output_layers.iter().enumerate() {
-                            let Some(values) =
-                                self.indicator_layer_values_at(series, layer, bar_index)
-                            else {
-                                continue;
-                            };
-                            let slot_offset =
-                                (layer_index as f32 + 0.5) - (layer_count as f32 * 0.5);
-                            let layer_center = x_plot + slot_offset * layer_width;
-                            let layer_left = pixels.centered_left(layer_center, layer_width_phys);
-                            let bar_output = &layer.presentation_output;
-                            let Some(y_indicator_baseline) = self
-                                .map_indicator_plot_for_output(
+                let Some(panel_plot) = scene
+                    .layout
+                    .panel(indicator_panel.panel_index)
+                    .map(|panel| panel.plot)
+                else {
+                    continue;
+                };
+
+                let structural_layers = self
+                    .panel_output_layers(indicator_panel.panel_index)
+                    .into_iter()
+                    .filter(|layer| layer.visible && layer.purpose.is_plot())
+                    .collect::<Vec<_>>();
+                frame.with_clip(panel_plot, |frame| {
+                    for layer in &structural_layers {
+                        let output = &layer.presentation_output;
+                        let Some(spec) = self.indicator_output_spec(output) else {
+                            continue;
+                        };
+                        match spec.value_type {
+                            data::chart::kline::OutputValueType::Ohlc => {
+                                self.draw_indicator_ohlc_output(
+                                    frame,
                                     scene,
-                                    indicator_panel.panel_index,
-                                    &layer.base_output,
-                                    0.0,
-                                )
-                                .or_else(|| {
-                                    scene.indicator_panel_bottom(indicator_panel.panel_index)
-                                })
-                            else {
-                                continue;
-                            };
-
-                            match values {
-                                super::IndicatorBarValues::SignedOverlay {
-                                    background_value,
-                                    signed_value,
-                                } => {
-                                    let Some(y_base) = self.map_indicator_plot_for_output(
-                                        scene,
-                                        indicator_panel.panel_index,
-                                        &layer.base_output,
-                                        background_value,
-                                    ) else {
-                                        continue;
-                                    };
-                                    let base = pixels.snapped_y_span(y_base, y_indicator_baseline);
-                                    let base_top = base.start;
-                                    let base_height = base.size;
-                                    let base_size = Size::new(layer_width, base_height);
-                                    let base_origin = Point::new(layer_left, base_top);
-                                    let overlay_output = bar_output;
-                                    let color_slot = self.style_slot_for_output(
-                                        layer.base_output.instance_id,
-                                        overlay_output.channel_id.as_str(),
-                                        Some(signed_value >= 0.0),
-                                        self.indicator_style_slot_for_output(overlay_output),
-                                    );
-                                    let color = self.indicator_color(
-                                        Some(layer.base_output.instance_id),
-                                        color_slot,
-                                        palette,
-                                        generated_accents,
-                                    );
-                                    frame.fill_rectangle(
-                                        base_origin,
-                                        base_size,
-                                        color.scale_alpha(0.3),
-                                    );
-
-                                    if signed_value.abs() > 0.0
-                                        && let Some(y_overlay) = self.map_indicator_plot_for_output(
-                                            scene,
-                                            indicator_panel.panel_index,
-                                            overlay_output,
-                                            signed_value.abs(),
-                                        )
-                                    {
-                                        let overlay =
-                                            pixels.snapped_y_span(y_overlay, y_indicator_baseline);
-                                        frame.fill_rectangle(
-                                            Point::new(layer_left, overlay.start),
-                                            Size::new(layer_width, overlay.size),
-                                            color,
-                                        );
-                                    }
-                                    if let Some((outline_color, outline_width, outline_style)) =
-                                        self.indicator_highlight_style_for_mark_at(
-                                            series,
-                                            bar_index,
-                                            overlay_output,
-                                            layer.mark,
-                                            palette,
-                                            generated_accents,
-                                        )
-                                    {
-                                        draw_indicator_bar_outline(
-                                            frame,
-                                            base_origin,
-                                            base_size,
-                                            outline_color,
-                                            outline_width,
-                                            outline_style,
-                                        );
-                                    }
-                                }
-                                super::IndicatorBarValues::Plain { value } => {
-                                    let Some(y_base) = self.map_indicator_plot_for_output(
-                                        scene,
-                                        indicator_panel.panel_index,
-                                        &layer.base_output,
-                                        value,
-                                    ) else {
-                                        continue;
-                                    };
-                                    let base = pixels.snapped_y_span(y_base, y_indicator_baseline);
-                                    let base_top = base.start;
-                                    let base_height = base.size;
-                                    let base_size = Size::new(layer_width, base_height);
-                                    let base_origin = Point::new(layer_left, base_top);
-                                    let color = self.indicator_color_for_output_at(
-                                        series,
-                                        bar_index,
-                                        &layer.base_output,
-                                        Some(MarkKind::Bar(BarMode::Histogram(
-                                            HistogramMode::Plain,
-                                        ))),
-                                        "bars",
-                                        ThemeColorRole::Neutral,
-                                        palette,
-                                        generated_accents,
-                                    );
-                                    frame.fill_rectangle(
-                                        base_origin,
-                                        base_size,
-                                        color.scale_alpha(0.5),
-                                    );
-                                    if let Some((outline_color, outline_width, outline_style)) =
-                                        self.indicator_highlight_style_for_mark_at(
-                                            series,
-                                            bar_index,
-                                            bar_output,
-                                            layer.mark,
-                                            palette,
-                                            generated_accents,
-                                        )
-                                    {
-                                        draw_indicator_bar_outline(
-                                            frame,
-                                            base_origin,
-                                            base_size,
-                                            outline_color,
-                                            outline_width,
-                                            outline_style,
-                                        );
-                                    }
-                                }
+                                    output.instance_id,
+                                    output,
+                                    layer.required_input,
+                                    |value| {
+                                        scene.map_indicator_plot(indicator_panel.panel_index, value)
+                                    },
+                                    indicator_width_phys,
+                                    wick_width_phys,
+                                    pixels,
+                                    palette,
+                                    generated_accents,
+                                );
                             }
+                            data::chart::kline::OutputValueType::Range => {
+                                self.draw_indicator_range_output(
+                                    frame,
+                                    scene,
+                                    output,
+                                    layer.required_input,
+                                    |value| {
+                                        scene.map_indicator_plot(indicator_panel.panel_index, value)
+                                    },
+                                    pixels,
+                                    palette,
+                                    generated_accents,
+                                );
+                            }
+                            data::chart::kline::OutputValueType::Number
+                            | data::chart::kline::OutputValueType::Boolean => {}
                         }
-                    },
-                );
-            });
-        }
-
-        if let Some(primary_panel_id) = self.composition.primary_panel_id()
-            && let Some(primary_panel) = self.composition.panel(primary_panel_id)
-        {
-            let base_series_anchor = scene
-                .primary
-                .series_percent_anchors
-                .first()
-                .copied()
-                .flatten();
-            let primary_plot = *scene.primary_plot();
-
-            let region_ids = self
-                .primary_overlay_entries()
-                .into_iter()
-                .filter_map(|(value_id, visible)| visible.then_some(value_id))
-                .collect::<Vec<_>>();
-            frame.with_clip(primary_plot, |frame| {
-                for value_id in region_ids {
-                    self.draw_indicator_regions(
-                        frame,
-                        scene,
-                        value_id,
-                        |value| scene.map_primary_plot_with_anchor(value, base_series_anchor),
-                        pixels,
-                        palette,
-                        generated_accents,
-                    );
-                }
-            });
-
-            self.fill_footprint_poc_overlay(frame, scene, palette, generated_accents, pixels);
-            self.fill_volume_profile_overlay(frame, scene, palette, generated_accents, pixels);
-
-            let structural_layers = primary_panel
-                .layers
-                .iter()
-                .filter_map(|layer| {
-                    let output = layer.source.indicator_output()?;
-                    let resolved = self.resolved_indicator_layer_for_composition_layer(layer)?;
-                    (layer.visible
-                        && resolved.purpose.is_plot()
-                        && !self.indicator_is_unavailable(Some(output.instance_id)))
-                    .then_some(resolved)
-                })
-                .collect::<Vec<_>>();
-            frame.with_clip(primary_plot, |frame| {
-                let mut annotation_ids = FxHashSet::default();
-                for layer in &structural_layers {
-                    let output = &layer.presentation_output;
-                    let Some(spec) = self.indicator_output_spec(output) else {
-                        continue;
-                    };
-                    match spec.value_type {
-                        data::chart::kline::OutputValueType::Ohlc => {
-                            self.draw_indicator_ohlc_output(
-                                frame,
-                                scene,
-                                output.instance_id,
-                                output,
-                                layer.required_input,
-                                |value| {
-                                    scene.map_primary_plot_with_anchor(value, base_series_anchor)
-                                },
-                                indicator_width_phys,
-                                wick_width_phys,
-                                pixels,
-                                palette,
-                                generated_accents,
-                            );
-                        }
-                        data::chart::kline::OutputValueType::Range => {
-                            self.draw_indicator_range_output(
-                                frame,
-                                scene,
-                                output,
-                                layer.required_input,
-                                |value| {
-                                    scene.map_primary_plot_with_anchor(value, base_series_anchor)
-                                },
-                                pixels,
-                                palette,
-                                generated_accents,
-                            );
-                        }
-                        data::chart::kline::OutputValueType::Number
-                        | data::chart::kline::OutputValueType::Boolean => {}
                     }
-                    if annotation_ids.insert(output.instance_id) {
+                    for value_id in self.panel_indicator_value_ids(indicator_panel.panel_index) {
                         self.draw_indicator_markers_and_levels(
                             frame,
                             scene,
-                            output.instance_id,
+                            value_id,
+                            |value| scene.map_indicator_plot(indicator_panel.panel_index, value),
+                            pixels,
+                            palette,
+                            generated_accents,
+                        );
+                    }
+                });
+
+                let output_layers = self
+                    .panel_output_layers(indicator_panel.panel_index)
+                    .into_iter()
+                    .filter(|layer| {
+                        layer.visible
+                            && layer.purpose.is_plot()
+                            && matches!(layer.mark, MarkKind::Candle | MarkKind::Bar(_))
+                            && layer.data_kind != LayerDataKind::Ohlc
+                            && self
+                                .indicator_output_spec(&layer.presentation_output)
+                                .is_some_and(|spec| {
+                                    spec.value_type == data::chart::kline::OutputValueType::Number
+                                })
+                    })
+                    .collect::<Vec<_>>();
+                if output_layers.is_empty() {
+                    continue;
+                }
+
+                frame.with_clip(panel_plot, |frame| {
+                    self.for_each_scene_bar_unit_index(
+                        scene,
+                        |series_index, bar_index, series, x_unit, _bar| {
+                            if series_index != 0 || !in_visible_range(x_unit) {
+                                return;
+                            }
+
+                            let x_plot = scene.map_x_plot(x_unit);
+                            let layer_count = output_layers.len();
+                            let layer_width_phys =
+                                (indicator_width_phys / layer_count as i32).max(1);
+                            let layer_width = pixels.logical_width_from_physical(layer_width_phys);
+                            for (layer_index, layer) in output_layers.iter().enumerate() {
+                                let Some(values) =
+                                    self.indicator_layer_values_at(series, layer, bar_index)
+                                else {
+                                    continue;
+                                };
+                                let slot_offset =
+                                    (layer_index as f32 + 0.5) - (layer_count as f32 * 0.5);
+                                let layer_center = x_plot + slot_offset * layer_width;
+                                let layer_left =
+                                    pixels.centered_left(layer_center, layer_width_phys);
+                                let bar_output = &layer.presentation_output;
+                                let Some(y_indicator_baseline) = self
+                                    .map_indicator_plot_for_output(
+                                        scene,
+                                        indicator_panel.panel_index,
+                                        &layer.base_output,
+                                        0.0,
+                                    )
+                                    .or_else(|| {
+                                        scene.indicator_panel_bottom(indicator_panel.panel_index)
+                                    })
+                                else {
+                                    continue;
+                                };
+
+                                match values {
+                                    super::IndicatorBarValues::SignedOverlay {
+                                        background_value,
+                                        signed_value,
+                                    } => {
+                                        let Some(y_base) = self.map_indicator_plot_for_output(
+                                            scene,
+                                            indicator_panel.panel_index,
+                                            &layer.base_output,
+                                            background_value,
+                                        ) else {
+                                            continue;
+                                        };
+                                        let base =
+                                            pixels.snapped_y_span(y_base, y_indicator_baseline);
+                                        let base_top = base.start;
+                                        let base_height = base.size;
+                                        let base_size = Size::new(layer_width, base_height);
+                                        let base_origin = Point::new(layer_left, base_top);
+                                        let overlay_output = bar_output;
+                                        let color_slot = self.style_slot_for_output(
+                                            layer.base_output.instance_id,
+                                            overlay_output.channel_id.as_str(),
+                                            Some(signed_value >= 0.0),
+                                            self.indicator_style_slot_for_output(overlay_output),
+                                        );
+                                        let color = self.indicator_color(
+                                            Some(layer.base_output.instance_id),
+                                            color_slot,
+                                            palette,
+                                            generated_accents,
+                                        );
+                                        frame.fill_rectangle(
+                                            base_origin,
+                                            base_size,
+                                            color.scale_alpha(0.3),
+                                        );
+
+                                        if signed_value.abs() > 0.0
+                                            && let Some(y_overlay) = self
+                                                .map_indicator_plot_for_output(
+                                                    scene,
+                                                    indicator_panel.panel_index,
+                                                    overlay_output,
+                                                    signed_value.abs(),
+                                                )
+                                        {
+                                            let overlay = pixels
+                                                .snapped_y_span(y_overlay, y_indicator_baseline);
+                                            frame.fill_rectangle(
+                                                Point::new(layer_left, overlay.start),
+                                                Size::new(layer_width, overlay.size),
+                                                color,
+                                            );
+                                        }
+                                        if let Some((outline_color, outline_width, outline_style)) =
+                                            self.indicator_highlight_style_for_mark_at(
+                                                series,
+                                                bar_index,
+                                                overlay_output,
+                                                layer.mark,
+                                                palette,
+                                                generated_accents,
+                                            )
+                                        {
+                                            draw_indicator_bar_outline(
+                                                frame,
+                                                base_origin,
+                                                base_size,
+                                                outline_color,
+                                                outline_width,
+                                                outline_style,
+                                            );
+                                        }
+                                    }
+                                    super::IndicatorBarValues::Plain { value } => {
+                                        let Some(y_base) = self.map_indicator_plot_for_output(
+                                            scene,
+                                            indicator_panel.panel_index,
+                                            &layer.base_output,
+                                            value,
+                                        ) else {
+                                            continue;
+                                        };
+                                        let base =
+                                            pixels.snapped_y_span(y_base, y_indicator_baseline);
+                                        let base_top = base.start;
+                                        let base_height = base.size;
+                                        let base_size = Size::new(layer_width, base_height);
+                                        let base_origin = Point::new(layer_left, base_top);
+                                        let color = self.indicator_color_for_output_at(
+                                            series,
+                                            bar_index,
+                                            &layer.base_output,
+                                            Some(MarkKind::Bar(BarMode::Histogram(
+                                                HistogramMode::Plain,
+                                            ))),
+                                            "bars",
+                                            ThemeColorRole::Neutral,
+                                            palette,
+                                            generated_accents,
+                                        );
+                                        frame.fill_rectangle(
+                                            base_origin,
+                                            base_size,
+                                            color.scale_alpha(0.5),
+                                        );
+                                        if let Some((outline_color, outline_width, outline_style)) =
+                                            self.indicator_highlight_style_for_mark_at(
+                                                series,
+                                                bar_index,
+                                                bar_output,
+                                                layer.mark,
+                                                palette,
+                                                generated_accents,
+                                            )
+                                        {
+                                            draw_indicator_bar_outline(
+                                                frame,
+                                                base_origin,
+                                                base_size,
+                                                outline_color,
+                                                outline_width,
+                                                outline_style,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                    );
+                });
+            }
+
+            if let Some(primary_panel_id) = self.composition.primary_panel_id()
+                && let Some(primary_panel) = self.composition.panel(primary_panel_id)
+            {
+                let base_series_anchor = scene
+                    .primary
+                    .series_percent_anchors
+                    .first()
+                    .copied()
+                    .flatten();
+                let primary_plot = *scene.primary_plot();
+
+                let region_ids = self
+                    .primary_overlay_entries()
+                    .into_iter()
+                    .filter_map(|(value_id, visible)| visible.then_some(value_id))
+                    .collect::<Vec<_>>();
+                frame.with_clip(primary_plot, |frame| {
+                    for value_id in region_ids {
+                        self.draw_indicator_regions(
+                            frame,
+                            scene,
+                            value_id,
                             |value| scene.map_primary_plot_with_anchor(value, base_series_anchor),
                             pixels,
                             palette,
                             generated_accents,
                         );
                     }
-                }
-            });
+                });
 
-            frame.with_clip(primary_plot, |frame| {
-                for layer in &primary_panel.layers {
-                    if !layer.visible {
-                        continue;
-                    }
+                self.fill_footprint_poc_overlay(frame, scene, palette, generated_accents, pixels);
+                self.fill_volume_profile_overlay(frame, scene, palette, generated_accents, pixels);
 
-                    let Some(resolved_layer) =
-                        self.resolved_indicator_layer_for_composition_layer(layer)
-                    else {
-                        continue;
-                    };
-                    if !resolved_layer.purpose.is_plot() {
-                        continue;
-                    }
-                    let value_id = resolved_layer.base_output.instance_id;
-                    if self.indicator_is_unavailable(Some(value_id)) {
-                        continue;
-                    }
-
-                    let output = &resolved_layer.presentation_output;
-                    if self.indicator_output_spec(output).is_some_and(|spec| {
-                        spec.value_type != data::chart::kline::OutputValueType::Number
-                    }) {
-                        // Boolean channels are event/table values. They do
-                        // not have a numeric y-coordinate until a compatible
-                        // mark is introduced.
-                        continue;
-                    }
-                    let mark = resolved_layer.mark;
-                    for channel in self.overlay_channels_for_layer(Some(output)).into_iter() {
-                        let (channel_line_width, channel_line_width_phys) = pixels
-                            .quantized_stroke_width(self.indicator_line_width_for_output(
-                                Some(value_id),
-                                Some(output),
-                                &channel,
-                            ));
-                        let bridge_sparse_values = mark == MarkKind::Segment;
-                        if matches!(mark, MarkKind::Point | MarkKind::Cross) {
-                            self.draw_primary_indicator_points(
+                let structural_layers = primary_panel
+                    .layers
+                    .iter()
+                    .filter_map(|layer| {
+                        let output = layer.source.indicator_output()?;
+                        let resolved =
+                            self.resolved_indicator_layer_for_composition_layer(layer)?;
+                        (layer.visible
+                            && resolved.purpose.is_plot()
+                            && !self.indicator_is_unavailable(Some(output.instance_id)))
+                        .then_some(resolved)
+                    })
+                    .collect::<Vec<_>>();
+                frame.with_clip(primary_plot, |frame| {
+                    let mut annotation_ids = FxHashSet::default();
+                    for layer in &structural_layers {
+                        let output = &layer.presentation_output;
+                        let Some(spec) = self.indicator_output_spec(output) else {
+                            continue;
+                        };
+                        match spec.value_type {
+                            data::chart::kline::OutputValueType::Ohlc => {
+                                self.draw_indicator_ohlc_output(
+                                    frame,
+                                    scene,
+                                    output.instance_id,
+                                    output,
+                                    layer.required_input,
+                                    |value| {
+                                        scene
+                                            .map_primary_plot_with_anchor(value, base_series_anchor)
+                                    },
+                                    indicator_width_phys,
+                                    wick_width_phys,
+                                    pixels,
+                                    palette,
+                                    generated_accents,
+                                );
+                            }
+                            data::chart::kline::OutputValueType::Range => {
+                                self.draw_indicator_range_output(
+                                    frame,
+                                    scene,
+                                    output,
+                                    layer.required_input,
+                                    |value| {
+                                        scene
+                                            .map_primary_plot_with_anchor(value, base_series_anchor)
+                                    },
+                                    pixels,
+                                    palette,
+                                    generated_accents,
+                                );
+                            }
+                            data::chart::kline::OutputValueType::Number
+                            | data::chart::kline::OutputValueType::Boolean => {}
+                        }
+                        if annotation_ids.insert(output.instance_id) {
+                            self.draw_indicator_markers_and_levels(
                                 frame,
                                 scene,
-                                value_id,
-                                output,
-                                channel,
-                                mark,
-                                resolved_layer.required_input,
+                                output.instance_id,
+                                |value| {
+                                    scene.map_primary_plot_with_anchor(value, base_series_anchor)
+                                },
+                                pixels,
                                 palette,
                                 generated_accents,
-                                base_series_anchor,
-                                pixels,
                             );
+                        }
+                    }
+                });
+
+                frame.with_clip(primary_plot, |frame| {
+                    for layer in &primary_panel.layers {
+                        if !layer.visible {
                             continue;
                         }
-                        let mut line_runs = Vec::<IndicatorLineRun>::new();
-                        let mut previous_point: Option<Point> = None;
-                        let mut previous_value: Option<f64> = None;
-                        let source_channel = channel.source;
-                        let has_dynamic_style = channel.style_by.is_some()
-                            || self
-                                .indicator_output_spec_for_channel(value_id, source_channel)
-                                .is_some_and(|spec| spec.style_by.is_some());
-                        let static_color = (!has_dynamic_style).then(|| {
-                            self.overlay_channel_color_for_output(
+
+                        let Some(resolved_layer) =
+                            self.resolved_indicator_layer_for_composition_layer(layer)
+                        else {
+                            continue;
+                        };
+                        if !resolved_layer.purpose.is_plot() {
+                            continue;
+                        }
+                        let value_id = resolved_layer.base_output.instance_id;
+                        if self.indicator_is_unavailable(Some(value_id)) {
+                            continue;
+                        }
+
+                        let output = &resolved_layer.presentation_output;
+                        if self.indicator_output_spec(output).is_some_and(|spec| {
+                            spec.value_type != data::chart::kline::OutputValueType::Number
+                        }) {
+                            // Boolean channels are event/table values. They do
+                            // not have a numeric y-coordinate until a compatible
+                            // mark is introduced.
+                            continue;
+                        }
+                        let mark = resolved_layer.mark;
+                        for channel in self.overlay_channels_for_layer(Some(output)).into_iter() {
+                            let (channel_line_width, channel_line_width_phys) = pixels
+                                .quantized_stroke_width(self.indicator_line_width_for_output(
+                                    Some(value_id),
+                                    Some(output),
+                                    &channel,
+                                ));
+                            let bridge_sparse_values = mark == MarkKind::Segment;
+                            if matches!(mark, MarkKind::Point | MarkKind::Cross) {
+                                self.draw_primary_indicator_points(
+                                    frame,
+                                    scene,
+                                    value_id,
+                                    output,
+                                    channel,
+                                    mark,
+                                    resolved_layer.required_input,
+                                    palette,
+                                    generated_accents,
+                                    base_series_anchor,
+                                    pixels,
+                                );
+                                continue;
+                            }
+                            let mut line_runs = Vec::<IndicatorLineRun>::new();
+                            let mut previous_point: Option<Point> = None;
+                            let mut previous_value: Option<f64> = None;
+                            let source_channel = channel.source;
+                            let has_dynamic_style = channel.style_by.is_some()
+                                || self
+                                    .indicator_output_spec_for_channel(value_id, source_channel)
+                                    .is_some_and(|spec| spec.style_by.is_some());
+                            let static_color = (!has_dynamic_style).then(|| {
+                                self.overlay_channel_color_for_output(
+                                    Some(value_id),
+                                    Some(output),
+                                    &channel,
+                                    palette,
+                                    generated_accents,
+                                )
+                            });
+                            let traversal = if bridge_sparse_values {
+                                IndicatorLineTraversal::SegmentWithNeighbors
+                            } else {
+                                IndicatorLineTraversal::VisibleWithNeighbors
+                            };
+                            self.for_each_scene_indicator_line_output_index_for_channel(
+                                scene,
+                                value_id,
+                                source_channel,
+                                traversal,
+                                |series, source_index, x_unit| {
+                                    if !self.indicator_input_available_at(
+                                        series,
+                                        source_index,
+                                        resolved_layer.required_input,
+                                    ) {
+                                        previous_point = None;
+                                        previous_value = None;
+                                        return IndicatorLinePointStatus::Break;
+                                    }
+                                    let Some(value) = self
+                                        .indicator_raw_output_value_for_series_at_channel(
+                                            series,
+                                            value_id,
+                                            source_channel,
+                                            source_index,
+                                        )
+                                        .and_then(OutputValue::as_number)
+                                    else {
+                                        if !bridge_sparse_values {
+                                            previous_point = None;
+                                            previous_value = None;
+                                        }
+                                        return if bridge_sparse_values {
+                                            IndicatorLinePointStatus::Skipped
+                                        } else {
+                                            IndicatorLinePointStatus::Break
+                                        };
+                                    };
+                                    if !value.is_finite() {
+                                        if !bridge_sparse_values {
+                                            previous_point = None;
+                                            previous_value = None;
+                                        }
+                                        return if bridge_sparse_values {
+                                            IndicatorLinePointStatus::Skipped
+                                        } else {
+                                            IndicatorLinePointStatus::Break
+                                        };
+                                    }
+                                    let Some(y) = scene
+                                        .map_primary_plot_with_anchor(value, base_series_anchor)
+                                    else {
+                                        if !bridge_sparse_values {
+                                            previous_point = None;
+                                            previous_value = None;
+                                        }
+                                        return if bridge_sparse_values {
+                                            IndicatorLinePointStatus::Skipped
+                                        } else {
+                                            IndicatorLinePointStatus::Break
+                                        };
+                                    };
+                                    let point = Point::new(scene.map_x_plot(x_unit), y);
+
+                                    let color = if has_dynamic_style {
+                                        self.overlay_channel_color_for_channel_at(
+                                            series,
+                                            source_index,
+                                            value_id,
+                                            value_id,
+                                            source_channel,
+                                            &channel,
+                                            palette,
+                                            generated_accents,
+                                        )
+                                    } else {
+                                        static_color.expect("static overlay color is precomputed")
+                                    };
+                                    let horizontal_level_break = mark == MarkKind::HorizontalLevel
+                                        && previous_point.is_some()
+                                        && (previous_value != Some(value)
+                                            || line_runs
+                                                .last()
+                                                .is_some_and(|run| run.color != color));
+                                    if horizontal_level_break {
+                                        if let Some(previous) = previous_point
+                                            && let Some(run) = line_runs.last_mut()
+                                        {
+                                            run.points.push(Point::new(point.x, previous.y));
+                                        }
+                                        previous_point = None;
+                                    }
+                                    append_indicator_line_point(
+                                        &mut line_runs,
+                                        previous_point,
+                                        point,
+                                        color,
+                                        mark == MarkKind::StepLine,
+                                    );
+                                    previous_point = Some(point);
+                                    previous_value = Some(value);
+                                    IndicatorLinePointStatus::Rendered
+                                },
+                            );
+
+                            if mark == MarkKind::HorizontalLevel
+                                && let Some(run) = line_runs.last_mut()
+                                && let Some(last) = run.points.last().copied()
+                            {
+                                let end = Point::new(scene.map_x_plot(scene.x.max_unit), last.y);
+                                if end.x > last.x {
+                                    run.points.push(end);
+                                }
+                            }
+
+                            let stroke_style = self.indicator_stroke_style_for_output(
                                 Some(value_id),
                                 Some(output),
                                 &channel,
-                                palette,
-                                generated_accents,
-                            )
-                        });
-                        let traversal = if bridge_sparse_values {
-                            IndicatorLineTraversal::SegmentWithNeighbors
-                        } else {
-                            IndicatorLineTraversal::VisibleWithNeighbors
-                        };
-                        self.for_each_scene_indicator_line_output_index_for_channel(
-                            scene,
-                            value_id,
-                            source_channel,
-                            traversal,
-                            |series, source_index, x_unit| {
-                                if !self.indicator_input_available_at(
-                                    series,
-                                    source_index,
-                                    resolved_layer.required_input,
-                                ) {
-                                    previous_point = None;
-                                    previous_value = None;
-                                    return IndicatorLinePointStatus::Break;
+                            );
+                            let line_runs = trim_indicator_line_runs(line_runs, primary_plot);
+                            if mark == MarkKind::Area {
+                                let baseline =
+                                    scene.map_primary_plot_with_anchor_f32(0.0, base_series_anchor);
+                                for run in &line_runs {
+                                    let snapped_points = snap_indicator_line_points(
+                                        &run.points,
+                                        pixels,
+                                        channel_line_width_phys,
+                                    );
+                                    fill_indicator_area(
+                                        frame,
+                                        &run.points,
+                                        &snapped_points,
+                                        baseline,
+                                        run.color,
+                                        pixels,
+                                    );
                                 }
-                                let Some(value) = self
-                                    .indicator_raw_output_value_for_series_at_channel(
-                                        series,
-                                        value_id,
-                                        source_channel,
-                                        source_index,
-                                    )
-                                    .and_then(OutputValue::as_number)
-                                else {
-                                    if !bridge_sparse_values {
-                                        previous_point = None;
-                                        previous_value = None;
-                                    }
-                                    return if bridge_sparse_values {
-                                        IndicatorLinePointStatus::Skipped
-                                    } else {
-                                        IndicatorLinePointStatus::Break
-                                    };
-                                };
-                                if !value.is_finite() {
-                                    if !bridge_sparse_values {
-                                        previous_point = None;
-                                        previous_value = None;
-                                    }
-                                    return if bridge_sparse_values {
-                                        IndicatorLinePointStatus::Skipped
-                                    } else {
-                                        IndicatorLinePointStatus::Break
-                                    };
-                                }
-                                let Some(y) =
-                                    scene.map_primary_plot_with_anchor(value, base_series_anchor)
-                                else {
-                                    if !bridge_sparse_values {
-                                        previous_point = None;
-                                        previous_value = None;
-                                    }
-                                    return if bridge_sparse_values {
-                                        IndicatorLinePointStatus::Skipped
-                                    } else {
-                                        IndicatorLinePointStatus::Break
-                                    };
-                                };
-                                let point = Point::new(scene.map_x_plot(x_unit), y);
-
-                                let color = if has_dynamic_style {
-                                    self.overlay_channel_color_for_channel_at(
-                                        series,
-                                        source_index,
-                                        value_id,
-                                        value_id,
-                                        source_channel,
-                                        &channel,
-                                        palette,
-                                        generated_accents,
-                                    )
-                                } else {
-                                    static_color.expect("static overlay color is precomputed")
-                                };
-                                let horizontal_level_break = mark == MarkKind::HorizontalLevel
-                                    && previous_point.is_some()
-                                    && (previous_value != Some(value)
-                                        || line_runs.last().is_some_and(|run| run.color != color));
-                                if horizontal_level_break {
-                                    if let Some(previous) = previous_point
-                                        && let Some(run) = line_runs.last_mut()
-                                    {
-                                        run.points.push(Point::new(point.x, previous.y));
-                                    }
-                                    previous_point = None;
-                                }
-                                append_indicator_line_point(
-                                    &mut line_runs,
-                                    previous_point,
-                                    point,
-                                    color,
-                                    mark == MarkKind::StepLine,
-                                );
-                                previous_point = Some(point);
-                                previous_value = Some(value);
-                                IndicatorLinePointStatus::Rendered
-                            },
-                        );
-
-                        if mark == MarkKind::HorizontalLevel
-                            && let Some(run) = line_runs.last_mut()
-                            && let Some(last) = run.points.last().copied()
-                        {
-                            let end = Point::new(scene.map_x_plot(scene.x.max_unit), last.y);
-                            if end.x > last.x {
-                                run.points.push(end);
                             }
-                        }
-
-                        let stroke_style = self.indicator_stroke_style_for_output(
-                            Some(value_id),
-                            Some(output),
-                            &channel,
-                        );
-                        let line_runs = trim_indicator_line_runs(line_runs, primary_plot);
-                        if mark == MarkKind::Area {
-                            let baseline =
-                                scene.map_primary_plot_with_anchor_f32(0.0, base_series_anchor);
-                            for run in &line_runs {
+                            for run in line_runs {
                                 let snapped_points = snap_indicator_line_points(
                                     &run.points,
                                     pixels,
                                     channel_line_width_phys,
                                 );
-                                fill_indicator_area(
-                                    frame,
-                                    &run.points,
-                                    &snapped_points,
-                                    baseline,
-                                    run.color,
-                                    pixels,
-                                );
-                            }
-                        }
-                        for run in line_runs {
-                            let snapped_points = snap_indicator_line_points(
-                                &run.points,
-                                pixels,
-                                channel_line_width_phys,
-                            );
-                            if snapped_points.len() >= 2
-                                && snapped_points.windows(2).any(|pair| pair[0] != pair[1])
-                            {
-                                let path = indicator_line_path(&snapped_points);
-                                frame.stroke(
-                                    &path,
-                                    indicator_line_stroke(
-                                        channel_line_width,
-                                        stroke_style,
-                                        run.color,
-                                    ),
-                                );
-                            } else if let Some(point) = snapped_points.first().copied() {
-                                fill_minimum_mark(frame, point, run.color, pixels);
+                                if snapped_points.len() >= 2
+                                    && snapped_points.windows(2).any(|pair| pair[0] != pair[1])
+                                {
+                                    let path = indicator_line_path(&snapped_points);
+                                    frame.stroke(
+                                        &path,
+                                        indicator_line_stroke(
+                                            channel_line_width,
+                                            stroke_style,
+                                            run.color,
+                                        ),
+                                    );
+                                } else if let Some(point) = snapped_points.first().copied() {
+                                    fill_minimum_mark(frame, point, run.color, pixels);
+                                }
                             }
                         }
                     }
-                }
-            });
+                });
+            }
+        }
+
+        if layer == PrimaryPlotLayer::Background {
+            return;
+        }
+        if layer == PrimaryPlotLayer::Tpo {
+            self.fill_tpo_profile_overlay(frame, scene, palette, generated_accents, pixels);
+            return;
         }
 
         if self.candlestick.visible

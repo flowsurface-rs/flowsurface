@@ -1,7 +1,7 @@
 use crate::connector::fetcher::{FetchSpec, RequestHandler};
 use data::chart::Basis;
 use data::chart::kline::FetchRange;
-use exchange::{TickerInfo, adapter::StreamKind};
+use exchange::{TickerInfo, UnixMs, adapter::StreamKind};
 use iced::task::Handle;
 use rustc_hash::FxHashMap;
 
@@ -50,6 +50,12 @@ impl FetchCoordinator {
             .any(|handler| handler.is_pending(req_id))
     }
 
+    pub fn is_profile_request(&self, req_id: uuid::Uuid) -> bool {
+        self.request_handlers
+            .values()
+            .any(|handler| handler.is_profile_request(req_id))
+    }
+
     pub fn set_handle(&mut self, req_id: uuid::Uuid, handle: Handle) -> bool {
         if self.accepts_data(req_id) {
             self.fetch_handles.insert(req_id, handle);
@@ -66,12 +72,16 @@ impl FetchCoordinator {
             return false;
         }
 
+        let is_profile = self.is_profile_request(req_id);
         if self
             .request_handlers
             .values_mut()
             .any(|handler| handler.mark_failed(req_id))
         {
             self.fetch_handles.remove(&req_id);
+            if is_profile {
+                self.clear_pending_profile_requests();
+            }
             return true;
         }
 
@@ -81,9 +91,22 @@ impl FetchCoordinator {
 
     pub fn mark_completed(&mut self, ticker_info: TickerInfo, req_id: uuid::Uuid) {
         self.finish_request(ticker_info, req_id, |handler| {
-            handler.mark_completed(req_id);
-            true
+            handler.mark_completed(req_id)
         });
+    }
+
+    pub fn mark_profile_completed(
+        &mut self,
+        ticker_info: TickerInfo,
+        req_id: uuid::Uuid,
+    ) -> Option<FetchRange> {
+        let handler = self.request_handlers.get_mut(&ticker_info)?;
+        if !handler.is_pending(req_id) {
+            return None;
+        }
+        let fetch = handler.mark_profile_completed(req_id)?;
+        self.fetch_handles.remove(&req_id);
+        Some(fetch)
     }
 
     pub fn mark_failed_for(&mut self, ticker_info: TickerInfo, req_id: uuid::Uuid) {
@@ -91,10 +114,7 @@ impl FetchCoordinator {
     }
 
     pub fn mark_no_data(&mut self, ticker_info: TickerInfo, req_id: uuid::Uuid) -> bool {
-        self.finish_request(ticker_info, req_id, |handler| {
-            handler.mark_no_data(req_id);
-            true
-        })
+        self.finish_request(ticker_info, req_id, |handler| handler.mark_no_data(req_id))
     }
 
     pub fn complete_trade_fetch(
@@ -110,6 +130,36 @@ impl FetchCoordinator {
         if let Some(req_id) = req_id {
             self.mark_completed(ticker_info, req_id);
         }
+    }
+
+    pub fn trade_range_is_covered(
+        &self,
+        ticker_info: TickerInfo,
+        start: UnixMs,
+        end: UnixMs,
+    ) -> bool {
+        if start >= end {
+            return true;
+        }
+        let Some(handler) = self.request_handlers.get(&ticker_info) else {
+            return false;
+        };
+        let mut ranges = handler.completed_trade_ranges().collect::<Vec<_>>();
+        ranges.sort_unstable_by_key(|(from, _)| *from);
+        let mut covered_until = start;
+        for (from, to) in ranges {
+            if to <= covered_until {
+                continue;
+            }
+            if from > covered_until {
+                return false;
+            }
+            covered_until = covered_until.max(to);
+            if covered_until >= end {
+                return true;
+            }
+        }
+        false
     }
 
     fn finish_request(
@@ -148,6 +198,13 @@ impl FetchCoordinator {
         }
     }
 
+    pub fn reset_for_basis_change(&mut self) {
+        self.clear_fetch_state();
+        for handler in self.request_handlers.values_mut() {
+            handler.reset_for_basis_change();
+        }
+    }
+
     /// Open Interest is a disposable input cache. Once its last consumer is
     /// removed, completed request markers must be discarded as well so a
     /// later consumer can reacquire the same viewport range.
@@ -156,6 +213,19 @@ impl FetchCoordinator {
             .request_handlers
             .values_mut()
             .flat_map(RequestHandler::clear_open_interest_requests)
+            .collect::<Vec<_>>();
+        for req_id in request_ids {
+            if let Some(handle) = self.fetch_handles.remove(&req_id) {
+                handle.abort();
+            }
+        }
+    }
+
+    pub fn clear_pending_profile_requests(&mut self) {
+        let request_ids = self
+            .request_handlers
+            .values_mut()
+            .flat_map(RequestHandler::clear_pending_profile_requests)
             .collect::<Vec<_>>();
         for req_id in request_ids {
             if let Some(handle) = self.fetch_handles.remove(&req_id) {
@@ -182,7 +252,7 @@ impl FetchCoordinator {
         for handler in self.request_handlers.values() {
             for range in handler.pending_ranges() {
                 match range {
-                    FetchRange::Kline(..) => has_klines = true,
+                    FetchRange::Kline(..) | FetchRange::ProfileKline { .. } => has_klines = true,
                     FetchRange::Trades(..) => {}
                     FetchRange::OpenInterest { .. } => has_open_interest = true,
                 }
@@ -228,7 +298,9 @@ impl FetchCoordinator {
                         self.queue_trade_fetch(ticker_info, range, &mut requests);
                     }
                 }
-                FetchRange::Kline(..) | FetchRange::OpenInterest { .. } => {
+                FetchRange::Kline(..)
+                | FetchRange::ProfileKline { .. }
+                | FetchRange::OpenInterest { .. } => {
                     for ticker_info in tickers {
                         self.queue_kline_fetch(ticker_info, range, basis, &mut requests);
                     }
@@ -246,11 +318,21 @@ impl FetchCoordinator {
         basis: Basis,
         out: &mut Vec<FetchSpec>,
     ) {
-        let Basis::Time(timeframe) = basis else {
-            return;
+        let timeframe = match range {
+            FetchRange::ProfileKline { timeframe, .. } => timeframe,
+            FetchRange::Kline(..) | FetchRange::OpenInterest { .. } => {
+                let Basis::Time(timeframe) = basis else {
+                    return;
+                };
+                timeframe
+            }
+            FetchRange::Trades(..) => return,
         };
 
         let handler = self.request_handlers.entry(ticker_info).or_default();
+        if matches!(range, FetchRange::ProfileKline { .. }) && handler.has_pending_profile_fetch() {
+            return;
+        }
 
         if let Ok(Some(req_id)) = handler.add_request(range) {
             out.push(FetchSpec::from((

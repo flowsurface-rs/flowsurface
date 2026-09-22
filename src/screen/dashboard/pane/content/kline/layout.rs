@@ -140,13 +140,13 @@ pub enum IndicatorStyleCommand {
 }
 
 impl IndicatorState {
-    pub(super) fn new(basis: Basis) -> Self {
+    pub(super) fn new() -> Self {
         let default_volume_id = IndicatorId::parse("core.volume").expect("static ID is valid");
         let default_volume = IndicatorInstanceId::default_for(&default_volume_id);
-        let instances = IndicatorInstanceStore::from_instances(
-            vec![IndicatorInstance::new(default_volume, default_volume_id)],
-            basis,
-        );
+        let instances = IndicatorInstanceStore::from_instances(vec![IndicatorInstance::new(
+            default_volume,
+            default_volume_id,
+        )]);
 
         Self {
             layout: IndicatorLayout::new(default_volume),
@@ -181,10 +181,6 @@ impl IndicatorState {
 
     pub(super) fn replace_layout(&mut self, layout: IndicatorLayout) {
         self.layout = layout;
-    }
-
-    pub(super) fn normalize_for_basis(&mut self, basis: Basis) {
-        self.instances = self.instances.normalized_for_basis(basis);
     }
 
     pub(super) fn replace_instances(&mut self, instances: IndicatorInstanceStore) {
@@ -404,20 +400,11 @@ impl IndicatorState {
             .map(|requirement| requirement.source)
     }
 
-    pub(super) fn apply(
-        &mut self,
-        command: IndicatorCommand,
-        basis: Basis,
-        data: &KlineData,
-    ) -> IndicatorChange {
+    pub(super) fn apply(&mut self, command: IndicatorCommand, data: &KlineData) -> IndicatorChange {
         match command {
             IndicatorCommand::InputChanged(IndicatorInputCommand::DataConfig { id, config }) => {
                 let requests_history = self.selected_indicators().contains(&id);
-                let normalized = self
-                    .indicator(id)
-                    .map(|instance| config.clone().normalized_for_basis(&instance.kind, basis))
-                    .unwrap_or(config);
-                if !self.instances.update_config(id, normalized) {
+                if !self.instances.update_config(id, config) {
                     return IndicatorChange::Unchanged;
                 }
                 IndicatorChange::Reconfigure {
@@ -1164,6 +1151,7 @@ impl IndicatorState {
         };
         match range {
             data::chart::kline::FetchRange::Kline(..) => ticker == data.base_ticker(),
+            data::chart::kline::FetchRange::ProfileKline { .. } => false,
             data::chart::kline::FetchRange::OpenInterest { .. } => instance
                 .kind
                 .definition()

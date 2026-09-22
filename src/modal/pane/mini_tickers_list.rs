@@ -2,6 +2,7 @@ use exchange::TickerInfo;
 use iced::Element;
 
 use crate::screen::sidebar::tickers_table::TickersTable;
+use data::chart::kline::series::KlineSeries;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RowSelection {
@@ -59,7 +60,7 @@ impl MiniPanel {
     pub fn view<'a>(
         &'a self,
         table: &'a TickersTable,
-        selected_tickers: Option<&'a [TickerInfo]>,
+        selected_tickers: Option<&'a [KlineSeries]>,
         base_ticker: Option<TickerInfo>,
     ) -> Element<'a, Message> {
         iced::widget::responsive(move |bounds| {

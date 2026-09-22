@@ -98,6 +98,21 @@ impl XAxis {
         }
     }
 
+    pub(super) fn time_from_unit_f32(self, unit: f32) -> Option<UnixMs> {
+        if !unit.is_finite() {
+            return None;
+        }
+
+        match self {
+            Self::Time { timeframe, anchor } => {
+                let offset = (f64::from(unit) * timeframe.to_milliseconds() as f64).round();
+                let offset = offset.clamp(i64::MIN as f64, i64::MAX as f64) as i64;
+                Some(anchor.saturating_add_signed(offset))
+            }
+            Self::Tick { .. } => None,
+        }
+    }
+
     #[inline]
     pub(super) fn tick_from_unit(self, unit: i64) -> Option<TickIndex> {
         match self {
@@ -768,6 +783,15 @@ impl Scene {
 
     pub(super) fn time_for_x_unit(&self, x_unit: i64) -> Option<UnixMs> {
         self.x.axis.time_from_unit(x_unit)
+    }
+
+    pub(super) fn time_from_plot_x_f32(&self, x_plot: f32) -> Option<UnixMs> {
+        let x_plot = x_plot.clamp(0.0, self.x_axis_plot_width().max(1.0));
+        let unit = self
+            .x
+            .world
+            .screen_to_logical_index(x_plot, self.x_axis_plot_width().max(1.0));
+        self.x.axis.time_from_unit_f32(unit)
     }
 
     pub(super) fn unit_from_plot_x(&self, x_plot: f32) -> i64 {

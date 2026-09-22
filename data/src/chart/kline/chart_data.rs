@@ -4,7 +4,8 @@ use super::indicators::{
 use super::series::KlineSeries;
 use super::{
     IndicatorInstanceId, IndicatorInstanceStore, IndicatorUpdateScope, KlineIndexChange,
-    KlineStudy, KlineUpdate, LineStrokeStyle, MIN_LINE_WIDTH, SeriesColor, ThemeAccent,
+    KlineStudy, KlineUpdate, LineStrokeStyle, MIN_LINE_WIDTH, ProfileSource, SeriesColor,
+    ThemeAccent,
 };
 use crate::chart::Basis;
 use exchange::{Kline, TickMultiplier, TickerInfo, Timeframe, Trade, unit::PriceStep};
@@ -55,7 +56,6 @@ pub struct KlineData {
     series: Vec<KlineSeries>,
     indicator_host: IndicatorHost,
     base_ticker: TickerInfo,
-    selected_tickers: Vec<TickerInfo>,
     series_index: FxHashMap<TickerInfo, usize>,
     footprint_tick_multiplier: TickMultiplier,
 }
@@ -66,7 +66,6 @@ impl KlineData {
             series: Vec::new(),
             indicator_host: IndicatorHost::default(),
             base_ticker,
-            selected_tickers: Vec::new(),
             series_index: FxHashMap::default(),
             footprint_tick_multiplier,
         }
@@ -76,8 +75,11 @@ impl KlineData {
         self.base_ticker
     }
 
-    pub fn selected_tickers(&self) -> &[TickerInfo] {
-        &self.selected_tickers
+    pub fn selected_tickers(&self) -> Vec<TickerInfo> {
+        self.series
+            .iter()
+            .map(|series| series.ticker_info)
+            .collect()
     }
 
     pub fn series(&self) -> &[KlineSeries] {
@@ -217,7 +219,7 @@ impl KlineData {
     }
 
     pub fn add_ticker(&mut self, ticker_info: TickerInfo, basis: Basis) -> bool {
-        if self.selected_tickers.contains(&ticker_info) {
+        if self.series_index.contains_key(&ticker_info) {
             return false;
         }
 
@@ -234,7 +236,6 @@ impl KlineData {
 
         self.series.push(series);
         self.series_index.insert(ticker_info, idx);
-        self.selected_tickers.push(ticker_info);
         true
     }
 
@@ -259,8 +260,6 @@ impl KlineData {
         };
 
         self.series.remove(idx);
-        self.selected_tickers
-            .retain(|ticker| *ticker != ticker_info);
         self.rebuild_series_index();
         true
     }
@@ -702,22 +701,27 @@ impl KlineData {
         }
     }
 
-    /// Resolves the row tick size a volume profile study aggregates at.
+    /// Resolves the row tick size a profile study aggregates at.
     ///
     /// A study without an explicit tick multiplier inherits the pane's
     /// footprint multiplier. A study can only choose a tick multiplier that is
     /// at least as coarse as the footprint multiplier, so the resolved step is
     /// never finer than the footprint step.
-    fn effective_study_tick_size(&self, study: KlineStudy) -> PriceStep {
-        let footprint = self.footprint_tick_multiplier;
-        let multiplier = study.volume_profile_tick_multiplier().unwrap_or(footprint);
-        let multiplier = TickMultiplier(multiplier.0.max(footprint.0));
-        multiplier.multiply_with_min_tick_step(self.base_ticker)
+    pub fn effective_study_tick_size(&self, study: KlineStudy) -> PriceStep {
+        let footprint = self
+            .footprint_tick_multiplier
+            .multiply_with_min_tick_step(self.base_ticker);
+        study.effective_profile_tick_size(self.base_ticker, footprint)
     }
 
-    pub fn configure_profile_caches(&mut self, studies: &[KlineStudy], basis: Basis) {
-        let recurring_intervals = studies
+    pub fn recurring_profile_cache_requirements(
+        &self,
+        studies: &[KlineStudy],
+        basis: Basis,
+    ) -> Vec<(Timeframe, PriceStep)> {
+        let mut recurring_intervals = studies
             .iter()
+            .filter(|study| study.source() == ProfileSource::Trades)
             .filter_map(|study| {
                 study
                     .recurring_profile_interval()
@@ -725,7 +729,9 @@ impl KlineData {
                     .map(|interval| (interval, self.effective_study_tick_size(*study)))
             })
             .collect::<Vec<_>>();
-        self.configure_recurring_profile_intervals(&recurring_intervals);
+        recurring_intervals.sort_unstable();
+        recurring_intervals.dedup();
+        recurring_intervals
     }
 }
 

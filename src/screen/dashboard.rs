@@ -956,14 +956,26 @@ impl Dashboard {
                     }
                 }
             }
-            FetchedData::Klines { data, req_id } => {
+            FetchedData::Klines {
+                data,
+                req_id,
+                is_batches_done,
+                has_data,
+            } => {
                 if let Some(pane_state) = self.get_mut_pane_state_by_uuid(main_window, pane_id)
                     && let StreamKind::Kline {
                         timeframe,
                         ticker_info,
                     } = stream_type
                 {
-                    pane_state.insert_hist_klines(req_id, timeframe, ticker_info, &data);
+                    pane_state.insert_hist_klines(
+                        req_id,
+                        timeframe,
+                        ticker_info,
+                        &data,
+                        is_batches_done,
+                        has_data,
+                    );
                 }
             }
             FetchedData::OpenInterest { series, req_id } => {
@@ -1032,10 +1044,15 @@ impl Dashboard {
                 if pane_state.matches_stream(stream) {
                     if let pane::Content::Kline { chart: Some(c), .. } = &mut pane_state.content {
                         let ticker_info = stream.ticker_info();
-                        c.apply_data(pane::DataUpdate::LiveKline {
-                            ticker_info: &ticker_info,
-                            kline,
-                        });
+                        if let StreamKind::Kline { timeframe, .. } = stream {
+                            c.apply_live_profile_kline(*timeframe, ticker_info, kline);
+                            if c.basis() == data::chart::Basis::Time(*timeframe) {
+                                c.apply_data(pane::DataUpdate::LiveKline {
+                                    ticker_info: &ticker_info,
+                                    kline,
+                                });
+                            }
+                        }
                     }
                     found_match = true;
                 }

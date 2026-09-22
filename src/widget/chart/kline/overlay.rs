@@ -1,5 +1,6 @@
 use super::helpers::PixelGeometry;
 use super::*;
+use data::chart::kline::TpoProfileStatus;
 use data::config::theme::ACCENT_COUNT;
 
 impl<'a> KlineWidget<'a> {
@@ -11,6 +12,8 @@ impl<'a> KlineWidget<'a> {
         generated_accents: &[iced::Color; ACCENT_COUNT],
         pixels: PixelGeometry,
         drawing_magnet: bool,
+        selected_tpo_profile: Option<UnixMs>,
+        tpo_boundary_preview: Option<UnixMs>,
     ) {
         self.fill_corner_controls(frame, scene, palette);
         self.fill_panel_controls(frame, scene, palette);
@@ -20,6 +23,14 @@ impl<'a> KlineWidget<'a> {
         self.fill_study_legend(frame, scene, palette);
         self.fill_indicator_legend(frame, scene, palette, generated_accents);
         self.fill_unavailable_indicator_messages(frame, scene, palette);
+        self.fill_tpo_profile_controls(
+            frame,
+            scene,
+            palette,
+            pixels,
+            selected_tpo_profile,
+            tpo_boundary_preview,
+        );
 
         let show_primary_panel_values = scene.chrome.ticker_legend.is_none();
         self.fill_panel_header_values(
@@ -95,6 +106,133 @@ impl<'a> KlineWidget<'a> {
                 stroke,
             );
         }
+    }
+
+    pub(super) fn fill_tpo_profile_controls(
+        &self,
+        frame: &mut canvas::Frame,
+        scene: &Scene,
+        palette: &Extended,
+        pixels: PixelGeometry,
+        selected_profile: Option<UnixMs>,
+        boundary_preview: Option<UnixMs>,
+    ) {
+        let geometries = self.tpo_profile_geometries(scene, selected_profile);
+        if geometries.is_empty() {
+            return;
+        }
+
+        let (border_width, _) = pixels.quantized_stroke_width(1.25);
+        let border_color = palette.primary.base.color.scale_alpha(0.95);
+        for geometry in &geometries {
+            let Some(profile) = self.tpo_profiles.get(geometry.index) else {
+                continue;
+            };
+            if profile.status == TpoProfileStatus::Incomplete {
+                self.fill_tpo_incomplete_marker(frame, geometry, palette);
+            }
+        }
+
+        for geometry in geometries
+            .iter()
+            .filter(|geometry| selected_profile == Some(geometry.start))
+        {
+            frame.stroke(
+                &canvas::Path::rectangle(
+                    geometry.overlay_bounds.position(),
+                    geometry.overlay_bounds.size(),
+                ),
+                canvas::Stroke::default()
+                    .with_color(border_color)
+                    .with_width(border_width),
+            );
+
+            for (button, label) in [
+                (geometry.reset_button_bounds, "Reset"),
+                (geometry.button_bounds, "Merge ←"),
+            ] {
+                let Some(button) = button else {
+                    continue;
+                };
+                frame.fill_rectangle(
+                    button.position(),
+                    button.size(),
+                    palette.primary.base.color.scale_alpha(0.92),
+                );
+                frame.stroke(
+                    &canvas::Path::rectangle(button.position(), button.size()),
+                    canvas::Stroke::default()
+                        .with_color(palette.primary.strong.text.scale_alpha(0.85))
+                        .with_width(border_width),
+                );
+                frame.fill_text(canvas::Text {
+                    content: label.to_owned(),
+                    position: Point::new(
+                        button.x + button.width * 0.5,
+                        button.y + button.height * 0.5,
+                    ),
+                    color: palette.primary.base.text,
+                    size: 10.0.into(),
+                    align_x: iced::Alignment::Center.into(),
+                    align_y: iced::Alignment::Center.into(),
+                    font: style::AZERET_MONO,
+                    ..Default::default()
+                });
+            }
+        }
+
+        let Some(boundary_preview) = boundary_preview else {
+            return;
+        };
+        let Some(unit) = scene.x.axis.unit_from_time_f32(boundary_preview) else {
+            return;
+        };
+        let plot = scene.primary_plot();
+        let x = scene.layout.regions.plot.x + scene.map_x_plot_f32(unit);
+        let y = scene.layout.regions.plot.y + plot.y;
+        frame.stroke(
+            &canvas::Path::line(Point::new(x, y), Point::new(x, y + plot.height)),
+            style::dashed_line_from_palette(palette)
+                .with_color(palette.primary.base.color)
+                .with_width(border_width),
+        );
+    }
+
+    fn fill_tpo_incomplete_marker(
+        &self,
+        frame: &mut canvas::Frame,
+        geometry: &TpoProfileGeometry,
+        palette: &Extended,
+    ) {
+        let marker_width = CHAR_W;
+        let marker_height = TEXT_SIZE;
+        if geometry.overlay_bounds.width < marker_width
+            || geometry.overlay_bounds.height < marker_height
+        {
+            return;
+        }
+
+        let marker_right = geometry
+            .reset_button_bounds
+            .or(geometry.button_bounds)
+            .map_or(
+                geometry.overlay_bounds.x + geometry.overlay_bounds.width
+                    - TPO_ACTION_BUTTON_GAP_PX,
+                |button| button.x - TPO_ACTION_BUTTON_GAP_PX,
+            );
+        let marker_x = marker_right - marker_width * 0.5;
+        let marker_y = geometry.overlay_bounds.y + TPO_ACTION_BUTTON_GAP_PX + marker_height * 0.5;
+
+        frame.fill_text(canvas::Text {
+            content: "!".to_owned(),
+            position: Point::new(marker_x, marker_y),
+            color: palette.danger.base.color,
+            size: marker_height.into(),
+            align_x: iced::Alignment::Center.into(),
+            align_y: iced::Alignment::Center.into(),
+            font: style::AZERET_MONO,
+            ..Default::default()
+        });
     }
 
     pub(super) fn fill_overlay_interaction_text(
