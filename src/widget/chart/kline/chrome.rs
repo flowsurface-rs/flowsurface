@@ -9,10 +9,11 @@ use super::{
     TICKER_LEGEND_ROW_H, TOOLTIP_ROW_LEFT_PAD,
 };
 use crate::style;
-use data::chart::kline::KlineStudyId;
 use data::chart::kline::series::KlineSeries;
+use data::chart::kline::{KlineStudy, KlineStudyId};
 use data::chart::kline_data::ClusterKind;
 use data::config::theme::ACCENT_COUNT;
+use data::util::abbr_large_numbers;
 
 use exchange::TickerInfo;
 
@@ -2275,6 +2276,72 @@ impl<'a> KlineWidget<'a> {
         );
     }
 
+    fn study_legend_label(&self, scene: &Scene, study: KlineStudy) -> String {
+        let Some(base_series) = self.series.first() else {
+            return study.to_string();
+        };
+        if study.big_trades().is_none() {
+            return study.to_string();
+        }
+        let Some(target_unit) = scene
+            .interaction
+            .readouts_visible()
+            .then(|| scene.interaction.cursor.map(|cursor| cursor.x_unit))
+            .flatten()
+            .or_else(|| {
+                self.legend_visibility
+                    .legend_values_always_visible()
+                    .then_some(scene.x.max_unit)
+            })
+        else {
+            return study.to_string();
+        };
+        let Some(bar_index) = self.bar_index_at_or_before_unit(scene, 0, target_unit) else {
+            return study.to_string();
+        };
+        let Some(x_unit) = self
+            .bar_unit_at_series_index(scene, 0, bar_index)
+            .filter(|x_unit| *x_unit >= scene.x.min_unit && *x_unit <= scene.x.max_unit)
+        else {
+            return study.to_string();
+        };
+
+        let mut count = 0_u32;
+        let mut notional = 0.0_f64;
+        match self.basis {
+            data::chart::Basis::Time(timeframe) => {
+                let Some(bucket_start) = scene.x.axis.time_from_unit(x_unit) else {
+                    return study.to_string();
+                };
+                let bucket_end = bucket_start.saturating_add(timeframe.to_milliseconds().max(1));
+                for entry in base_series.big_trades_in_time_range(bucket_start, bucket_end) {
+                    if scene.x.axis.unit_from_time(entry.time.floor_to(timeframe)) != x_unit {
+                        continue;
+                    }
+                    count = count.saturating_add(1);
+                    notional += entry.notional;
+                }
+            }
+            data::chart::Basis::Tick(tick_count) => {
+                let tick_count = usize::from(tick_count.0).max(1);
+                let lo = bar_index.saturating_mul(tick_count);
+                let hi = bar_index.saturating_add(1).saturating_mul(tick_count);
+                for entry in base_series.big_trades_in_index_range(lo, hi) {
+                    count = count.saturating_add(1);
+                    notional += entry.notional;
+                }
+            }
+        }
+
+        if count == 0 {
+            return study.to_string();
+        }
+        format!(
+            "{study} ({count} trades, >${})",
+            abbr_large_numbers(notional)
+        )
+    }
+
     pub(super) fn fill_study_legend(
         &self,
         frame: &mut canvas::Frame,
@@ -2407,7 +2474,7 @@ impl<'a> KlineWidget<'a> {
 
             let row_rect = to_root(row.row_rect);
             let hovered_row = scene.interaction.target.study_row_is_hovered(index);
-            let label = study.to_string();
+            let label = self.study_legend_label(scene, *study);
             let label_end_x =
                 row_rect.x + TOOLTIP_ROW_LEFT_PAD + label.chars().count() as f32 * CHAR_W;
             let content_end_x = if hovered_row {

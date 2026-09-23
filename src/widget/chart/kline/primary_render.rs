@@ -13,7 +13,7 @@ use super::*;
 use data::chart::kline::series::KlineSeries;
 use data::chart::kline::{
     IndicatorFillGeometry, IndicatorFillSpec, IndicatorInputSource, IndicatorOutputRef,
-    LineStrokeStyle, OutputValue, ProfileDistribution, ProfileSource, TableColumnColor,
+    LineStrokeStyle, OutputValue, ProfileDistribution, StudyDataSource, TableColumnColor,
     TableColumnFormat, TableColumnValue, TpoColorConfig, TpoProfile, TpoProfileStatus,
 };
 use data::chart::kline_data::ClusterKind;
@@ -34,6 +34,18 @@ const TABLE_CELL_INSET_PX: f32 = 1.0;
 const INDICATOR_MARKER_TEXT_SIZE_PX: f32 = 8.0;
 const DASHED_LINE_SEGMENTS: [f32; 2] = [8.0, 5.0];
 const DOTTED_LINE_SEGMENTS: [f32; 2] = [1.0, 4.0];
+const MAX_BIG_TRADE_BUBBLES: usize = 2_048;
+const BIG_TRADE_MIN_ROW_PX: f32 = 16.0;
+const BIG_TRADE_MIN_COL_PX: f32 = 16.0;
+const BIG_TRADE_MAX_RADIUS_PX: f32 = 24.0;
+const BIG_TRADE_MIN_RADIUS_PX: f32 = 3.0;
+
+#[derive(Default)]
+struct BigTradeCell {
+    notional: f64,
+    count: u32,
+    unit_sum: f64,
+}
 
 struct PixelRows {
     top: f32,
@@ -1282,6 +1294,177 @@ impl<'a> KlineWidget<'a> {
         });
     }
 
+    fn fill_big_trades_overlay(
+        &self,
+        frame: &mut canvas::Frame,
+        scene: &Scene,
+        palette: &Extended,
+        generated_accents: &[iced::Color; ACCENT_COUNT],
+        pixels: PixelGeometry,
+    ) {
+        if !self.trade_data_enabled {
+            return;
+        }
+        let Some(config) = self
+            .studies
+            .iter()
+            .filter(|study| study.visible())
+            .find_map(|study| study.big_trades())
+        else {
+            return;
+        };
+        let Some(series) = self.series.first() else {
+            return;
+        };
+        let anchor = scene
+            .primary
+            .series_percent_anchors
+            .first()
+            .copied()
+            .flatten();
+        let plot = *scene.primary_plot();
+
+        let bar_spacing = scene.logical_bar_spacing();
+        let col_merge = (BIG_TRADE_MIN_COL_PX / bar_spacing).ceil().max(1.0) as i64;
+        let tick_size = series.footprint_tick_size();
+        let (low, high) = scene.primary_domain_value_range();
+        let target_rows = (plot.height / BIG_TRADE_MIN_ROW_PX).floor().max(1.0) as usize;
+        let row_step = tick_size
+            .coarsened_to_fit(low, high, target_rows)
+            .unwrap_or(tick_size);
+        let cell_width_px = bar_spacing * col_merge as f32;
+        let cell_height_px = self.footprint_row_height(scene, low, row_step, anchor);
+        let max_radius = (0.25 * cell_width_px)
+            .min(0.5 * cell_height_px)
+            .clamp(BIG_TRADE_MIN_RADIUS_PX, BIG_TRADE_MAX_RADIUS_PX);
+
+        let mut groups = rustc_hash::FxHashMap::<(i64, i64, bool), BigTradeCell>::default();
+
+        match (self.basis, scene.x.axis) {
+            (data::chart::Basis::Time(timeframe), XAxis::Time { .. }) => {
+                let Some(window_start) = scene.x.axis.time_from_unit(scene.x.min_unit) else {
+                    return;
+                };
+                let Some(window_end) = scene
+                    .x
+                    .axis
+                    .time_from_unit(scene.x.max_unit.saturating_add(1))
+                else {
+                    return;
+                };
+                for entry in series.big_trades_in_time_range(window_start, window_end) {
+                    let x_unit = scene.x.axis.unit_from_time(entry.time.floor_to(timeframe));
+                    if x_unit < scene.x.min_unit || x_unit > scene.x.max_unit {
+                        continue;
+                    }
+                    let y =
+                        scene.map_primary_plot_with_anchor_f32(entry.price.to_f32_lossy(), anchor);
+                    if !y.is_finite() || y < plot.y || y > plot.y + plot.height {
+                        continue;
+                    }
+                    let row = entry.price.round_to_step(row_step);
+                    let cell = groups
+                        .entry((x_unit.div_euclid(col_merge), row.units, entry.is_sell))
+                        .or_default();
+                    cell.notional += entry.notional;
+                    cell.count = cell.count.saturating_add(1);
+                    cell.unit_sum += x_unit as f64;
+                }
+            }
+            (data::chart::Basis::Tick(tick_count), XAxis::Tick { .. }) => {
+                let point_count = series.point_count();
+                let tick_count = usize::from(tick_count.0).max(1);
+                let start_bar = self
+                    .bar_index_at_or_before_unit(scene, 0, scene.x.min_unit)
+                    .unwrap_or_default();
+                let end_bar = self
+                    .bar_index_at_or_before_unit(scene, 0, scene.x.max_unit)
+                    .unwrap_or_else(|| point_count.saturating_sub(1))
+                    .min(point_count.saturating_sub(1));
+                let lo = start_bar.saturating_mul(tick_count);
+                let hi = end_bar.saturating_add(1).saturating_mul(tick_count);
+                for entry in series.big_trades_in_index_range(lo, hi) {
+                    let bar_index = entry.index / tick_count;
+                    let from_latest =
+                        point_count.saturating_sub(1).saturating_sub(bar_index) as u64;
+                    let x_unit = scene
+                        .x
+                        .axis
+                        .unit_from_tick(TickIndex::from_u64(from_latest));
+                    if x_unit < scene.x.min_unit || x_unit > scene.x.max_unit {
+                        continue;
+                    }
+                    let y =
+                        scene.map_primary_plot_with_anchor_f32(entry.price.to_f32_lossy(), anchor);
+                    if !y.is_finite() || y < plot.y || y > plot.y + plot.height {
+                        continue;
+                    }
+                    let row = entry.price.round_to_step(row_step);
+                    let cell_x = (bar_index as i64).div_euclid(col_merge);
+                    let cell = groups
+                        .entry((cell_x, row.units, entry.is_sell))
+                        .or_default();
+                    cell.notional += entry.notional;
+                    cell.count = cell.count.saturating_add(1);
+                    cell.unit_sum += x_unit as f64;
+                }
+            }
+            _ => return,
+        }
+
+        if groups.is_empty() {
+            return;
+        }
+        let max_notional = groups
+            .values()
+            .map(|cell| cell.notional)
+            .fold(0.0_f64, f64::max);
+        if max_notional <= 0.0 {
+            return;
+        }
+        let buy_color = Self::resolve_theme_color(config.buy_color, palette, generated_accents);
+        let sell_color = Self::resolve_theme_color(config.sell_color, palette, generated_accents);
+        let stroke_width = pixels.quantized_stroke_width(1.0).0;
+
+        let mut groups = groups.into_iter().collect::<Vec<_>>();
+        if groups.len() > MAX_BIG_TRADE_BUBBLES {
+            groups.sort_unstable_by(|left, right| right.1.notional.total_cmp(&left.1.notional));
+            groups.truncate(MAX_BIG_TRADE_BUBBLES);
+        }
+
+        frame.with_clip(plot, |frame| {
+            for ((_, row_units, is_sell), cell) in groups {
+                let count = cell.count;
+                let x_unit = (cell.unit_sum / f64::from(count)) as f32;
+                let x = scene.map_x_plot_f32(x_unit);
+                let y = scene.map_primary_plot_with_anchor_f32(
+                    Price { units: row_units }.to_f32_lossy(),
+                    anchor,
+                );
+                if !x.is_finite() || !y.is_finite() {
+                    continue;
+                }
+                let normalized = (cell.notional / max_notional).sqrt().clamp(0.0, 1.0) as f32;
+                let radius = max_radius * (0.4 + 0.6 * normalized);
+                let side_offset = if is_sell { -radius } else { radius };
+                let center = Point::new(x + side_offset, y);
+                let color = if is_sell { sell_color } else { buy_color };
+                frame.fill(
+                    &canvas::Path::circle(center, radius),
+                    color.scale_alpha(0.8),
+                );
+                for ring in 1..count.min(3) {
+                    frame.stroke(
+                        &canvas::Path::circle(center, radius + 2.0 * ring as f32),
+                        canvas::Stroke::default()
+                            .with_color(color)
+                            .with_width(stroke_width),
+                    );
+                }
+            }
+        });
+    }
+
     fn effective_study_tick_size(
         &self,
         study: KlineStudy,
@@ -1329,13 +1512,13 @@ impl<'a> KlineWidget<'a> {
             let opacity_scale = study.volume_profile_opacity_scale()?;
             let tick_size = self.effective_study_tick_size(*study, footprint_tick_size);
             let profile = match study.source() {
-                ProfileSource::Kline => data::chart::kline::kline_volume_profile(
+                StudyDataSource::Kline => data::chart::kline::kline_volume_profile(
                     &profile_bars,
                     earliest,
                     latest,
                     tick_size,
                 ),
-                ProfileSource::Trades => {
+                StudyDataSource::Trades => {
                     base_series.trade_price_distribution(earliest, latest, tick_size)
                 }
             };
@@ -1376,7 +1559,7 @@ impl<'a> KlineWidget<'a> {
                     tick_size,
                 )| {
                     let profiles = match source {
-                        ProfileSource::Kline => {
+                        StudyDataSource::Kline => {
                             data::chart::kline::recurring_kline_volume_profiles(
                                 &profile_bars,
                                 interval,
@@ -1385,7 +1568,7 @@ impl<'a> KlineWidget<'a> {
                                 tick_size,
                             )
                         }
-                        ProfileSource::Trades => base_series.recurring_trade_price_distributions(
+                        StudyDataSource::Trades => base_series.recurring_trade_price_distributions(
                             interval, tick_size, earliest, latest,
                         ),
                     };
@@ -3908,6 +4091,7 @@ impl<'a> KlineWidget<'a> {
             });
         }
 
+        self.fill_big_trades_overlay(frame, scene, palette, generated_accents, pixels);
         self.fill_panel_titles(frame, scene, palette);
         self.fill_last_price_line(frame, scene, palette);
     }

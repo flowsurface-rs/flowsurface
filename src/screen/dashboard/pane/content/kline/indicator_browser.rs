@@ -1,9 +1,10 @@
+use super::studies::StudyAvailability;
 use super::{KlineChart, Message as KlineMessage};
 use crate::style::{self, Icon, icon_text};
 use crate::widget::inspector::{InspectorContent, InspectorSection};
 use data::chart::kline::IndicatorId;
 use data::chart::kline::{
-    IndicatorUnsupportedReason, KlineStudy, ProfileSource,
+    IndicatorUnsupportedReason, KlineStudy, StudyDataSource,
     indicators::{IndicatorInputSource, all_indicators, declared_input_requirements},
 };
 use iced::{
@@ -34,7 +35,7 @@ struct ActiveIndicator {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct AvailableStudy {
     study: KlineStudy,
-    available: bool,
+    availability: StudyAvailability,
     active: bool,
 }
 
@@ -52,10 +53,10 @@ enum IndicatorInputGroup {
     CandlesAndTrades,
     Trades,
     OpenInterest,
-    CandlesAndOpenInterest,
-    CandlesOrTradesAndOpenInterest,
-    TradesAndOpenInterest,
-    CandlesTradesAndOpenInterest,
+    CandlesAndOi,
+    CandlesOrTradesAndOi,
+    TradesAndOi,
+    CandlesTradesAndOi,
     NoExternalData,
 }
 
@@ -66,10 +67,10 @@ impl IndicatorInputGroup {
         Self::CandlesAndTrades,
         Self::Trades,
         Self::OpenInterest,
-        Self::CandlesAndOpenInterest,
-        Self::CandlesOrTradesAndOpenInterest,
-        Self::TradesAndOpenInterest,
-        Self::CandlesTradesAndOpenInterest,
+        Self::CandlesAndOi,
+        Self::CandlesOrTradesAndOi,
+        Self::TradesAndOi,
+        Self::CandlesTradesAndOi,
         Self::NoExternalData,
     ];
 
@@ -84,7 +85,7 @@ impl IndicatorInputGroup {
         let requires_directional_volume = requires(IndicatorInputSource::DirectionalVolume);
         if requires_directional_volume {
             return if requires(IndicatorInputSource::OpenInterest) {
-                Self::CandlesOrTradesAndOpenInterest
+                Self::CandlesOrTradesAndOi
             } else {
                 Self::CandlesOrTrades
             };
@@ -99,9 +100,9 @@ impl IndicatorInputGroup {
             (true, true, false) => Self::CandlesAndTrades,
             (false, true, false) => Self::Trades,
             (false, false, true) => Self::OpenInterest,
-            (true, false, true) => Self::CandlesAndOpenInterest,
-            (false, true, true) => Self::TradesAndOpenInterest,
-            (true, true, true) => Self::CandlesTradesAndOpenInterest,
+            (true, false, true) => Self::CandlesAndOi,
+            (false, true, true) => Self::TradesAndOi,
+            (true, true, true) => Self::CandlesTradesAndOi,
             (false, false, false) => Self::NoExternalData,
         }
     }
@@ -112,11 +113,11 @@ impl IndicatorInputGroup {
             Self::CandlesOrTrades => "Candles or trades",
             Self::CandlesAndTrades => "Candles + trades",
             Self::Trades => "Trades",
-            Self::OpenInterest => "Open interest",
-            Self::CandlesAndOpenInterest => "Candles + open interest",
-            Self::CandlesOrTradesAndOpenInterest => "Candles or trades + open interest",
-            Self::TradesAndOpenInterest => "Trades + open interest",
-            Self::CandlesTradesAndOpenInterest => "Candles + trades + open interest",
+            Self::OpenInterest => "OI",
+            Self::CandlesAndOi => "Candles + OI",
+            Self::CandlesOrTradesAndOi => "Candles or trades + OI",
+            Self::TradesAndOi => "Trades + OI",
+            Self::CandlesTradesAndOi => "Candles + trades + OI",
             Self::NoExternalData => "No external data",
         }
     }
@@ -165,6 +166,7 @@ pub fn view<'a>(chart: &'a KlineChart, picker: &'a State) -> Element<'a, KlineMe
         .into_iter()
         .filter_map(|id| chart.indicator_kind(id))
         .collect::<Vec<_>>();
+
     let active_indicator_counts = group_active_indicators(&active_indicators);
     let available_indicators: Vec<_> = all_indicators()
         .into_iter()
@@ -195,10 +197,10 @@ pub fn view<'a>(chart: &'a KlineChart, picker: &'a State) -> Element<'a, KlineMe
         .into_iter()
         .filter_map(|study| study.normalized_for_basis(chart.basis()))
         .map(|study| {
-            let available =
+            let availability =
                 chart
                     .studies
-                    .is_available(study, chart.basis, chart.trade_data_enabled());
+                    .availability(study, chart.basis, chart.trade_data_enabled());
 
             let active = chart
                 .studies()
@@ -207,7 +209,7 @@ pub fn view<'a>(chart: &'a KlineChart, picker: &'a State) -> Element<'a, KlineMe
 
             AvailableStudy {
                 study,
-                available,
+                availability,
                 active,
             }
         })
@@ -322,8 +324,8 @@ fn indicator_group_views(
 }
 
 fn study_group_views(studies: Vec<AvailableStudy>) -> Vec<Element<'static, KlineMessage>> {
-    let mut grouped: Vec<(ProfileSource, Vec<AvailableStudy>)> =
-        [ProfileSource::Kline, ProfileSource::Trades]
+    let mut grouped: Vec<(StudyDataSource, Vec<AvailableStudy>)> =
+        [StudyDataSource::Kline, StudyDataSource::Trades]
             .into_iter()
             .map(|source| (source, Vec::new()))
             .collect();
@@ -347,12 +349,11 @@ fn study_group_views(studies: Vec<AvailableStudy>) -> Vec<Element<'static, Kline
 
             let rows = studies
                 .into_iter()
-                .map(|available| study_row(available.study, available.available, available.active))
+                .map(|available| {
+                    study_row(available.study, available.availability, available.active)
+                })
                 .collect::<Vec<_>>();
-            let label = match source {
-                ProfileSource::Kline => "Candles",
-                ProfileSource::Trades => "Trades",
-            };
+            let label = source_label(source);
 
             Some(
                 column![
@@ -423,11 +424,15 @@ fn indicator_row(
 
     availability_tooltip(
         row,
-        unavailable_reason.map(|reason| reason.indicator_unavailable_tooltip()),
+        unavailable_reason.map(|reason| reason.indicator_unavailable_tooltip().to_owned()),
     )
 }
 
-fn study_row(study: KlineStudy, available: bool, active: bool) -> Element<'static, KlineMessage> {
+fn study_row(
+    study: KlineStudy,
+    availability: StudyAvailability,
+    active: bool,
+) -> Element<'static, KlineMessage> {
     let mut content = row![
         iced::widget::text(study.to_string()).size(crate::style::text_size::BODY),
         space::horizontal()
@@ -437,11 +442,8 @@ fn study_row(study: KlineStudy, available: bool, active: bool) -> Element<'stati
         content = content.push(icon_text(Icon::Checkmark, 12));
     }
 
-    let message = if active || !available {
-        None
-    } else {
-        Some(KlineMessage::IndicatorBrowser(Message::ToggleStudy(study)))
-    };
+    let message = (availability == StudyAvailability::Available && !active)
+        .then_some(KlineMessage::IndicatorBrowser(Message::ToggleStudy(study)));
 
     let row = picker_button(
         content.align_y(Alignment::Center).width(Length::Fill),
@@ -449,10 +451,25 @@ fn study_row(study: KlineStudy, available: bool, active: bool) -> Element<'stati
         active,
     );
 
-    availability_tooltip(
-        row,
-        (!available).then_some("Enable trade data to use this study"),
-    )
+    let tooltip = match availability {
+        StudyAvailability::Available | StudyAvailability::UnsupportedBasis => None,
+        StudyAvailability::RequiresTradeData => {
+            Some("Enable trade data to use this study".to_owned())
+        }
+        StudyAvailability::SourceConflict(source) => Some(format!(
+            "Source conflict:\n Remove active {} studies before adding this.",
+            source_label(source),
+        )),
+    };
+
+    availability_tooltip(row, tooltip)
+}
+
+fn source_label(source: StudyDataSource) -> &'static str {
+    match source {
+        StudyDataSource::Kline => "Candles",
+        StudyDataSource::Trades => "Trades",
+    }
 }
 
 fn picker_button(
@@ -468,10 +485,17 @@ fn picker_button(
 
 fn availability_tooltip(
     row: button::Button<'static, KlineMessage>,
-    message: Option<&'static str>,
+    message: Option<String>,
 ) -> Element<'static, KlineMessage> {
     match message {
-        Some(message) => crate::tooltip(row, Some(message), Position::Top),
+        Some(message) => iced::widget::tooltip(
+            row,
+            container(iced::widget::text(message))
+                .style(style::tooltip)
+                .padding(8),
+            Position::Left,
+        )
+        .into(),
         None => row.into(),
     }
 }

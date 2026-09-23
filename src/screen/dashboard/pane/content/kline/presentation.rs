@@ -36,6 +36,7 @@ impl<'a> IndicatorPresentationResolver<'a> {
     pub(super) fn context(&self) -> IndicatorPresentationContext {
         let input_coverage = self.indicators.input_coverage().clone();
         let unavailable = self.unavailable_indicator_panels(&input_coverage);
+
         let presentations = self
             .indicators
             .selected_indicators()
@@ -47,6 +48,7 @@ impl<'a> IndicatorPresentationResolver<'a> {
                     .indicators
                     .layout()
                     .indicator_mark(value_id, Some(kind));
+
                 let panel = self.indicators.composition().panels.iter().find(|panel| {
                     panel.layers.iter().any(|layer| {
                         layer
@@ -60,6 +62,7 @@ impl<'a> IndicatorPresentationResolver<'a> {
                         .base_layer
                         .or_else(|| panel.layers.first().map(|layer| layer.id))
                 });
+
                 let required_input = selected_mark
                     .and_then(|mark| kind.mark_spec(mark))
                     .and_then(|spec| spec.required_input);
@@ -74,6 +77,7 @@ impl<'a> IndicatorPresentationResolver<'a> {
                                 .find(|(entry_id, _)| *entry_id == value_id)
                                 .map(|(_, message)| message.as_str())
                         });
+
                 let (effective_mark, status) =
                     if self.indicators.hides_rebuild_output(value_id) && base_message.is_none() {
                         (selected_mark, IndicatorPresentationStatus::Loading)
@@ -92,6 +96,7 @@ impl<'a> IndicatorPresentationResolver<'a> {
                             },
                         )
                     };
+
                 let selected_layer_ids = effective_mark
                     .and_then(|mark| {
                         self.indicators
@@ -215,6 +220,7 @@ impl<'a> IndicatorPresentationResolver<'a> {
                 input_coverage,
                 self.indicators.instances(),
             );
+
         let mut seen = FxHashSet::default();
         self.indicators
             .layout()

@@ -8,30 +8,8 @@ mod profile;
 mod settings;
 mod studies;
 mod toolbar;
-mod tpo;
 mod updates;
 mod viewport;
-
-pub use data::chart::kline::IndicatorId;
-use data::chart::kline::LegendVisibility;
-pub use fetch::FetchUpdate;
-pub use layout::{IndicatorCommand, IndicatorInputCommand, IndicatorStyleCommand};
-pub use studies::StudyCommand;
-pub use updates::DataUpdate;
-
-use data::chart::kline::KlineData;
-use data::chart::kline::indicators::IndicatorHost;
-use data::chart::kline::series::KlineSeries;
-use drawing::{DrawingEditState, DrawingMessage, DrawingState, DrawingTools, DrawingUpdate};
-use fetch::FetchCoordinator;
-use history::DrawingHistory;
-use layout::{IndicatorChange, IndicatorRebuildReason, IndicatorState};
-use presentation::IndicatorPresentationResolver;
-use profile::{ProfilePlan, ProfileState, ProfileTradeUpdate, profile_source_timeframe};
-use settings::{ChartOptions, InspectorEffect, InspectorState, SettingsContext};
-use studies::StudyState;
-use updates::DataUpdateEffect;
-use viewport::ViewportState;
 
 use crate::connector::fetcher::FetchSpec;
 use crate::screen::dashboard::pane::ChartAction;
@@ -43,24 +21,42 @@ use crate::widget::chart::kline::{
 };
 use crate::widget::inspector::{InspectorBody, InspectorFooter};
 use crate::widget::series_editor::{self, SeriesStyleEntry};
-use crate::widget::study_configurator as study;
 use crate::window::PixelRatio;
+use drawing::{DrawingEditState, DrawingMessage, DrawingState, DrawingTools, DrawingUpdate};
+use fetch::FetchCoordinator;
+pub use fetch::FetchUpdate;
+use history::DrawingHistory;
+use layout::{IndicatorChange, IndicatorRebuildReason, IndicatorState};
+pub use layout::{IndicatorCommand, IndicatorInputCommand, IndicatorStyleCommand};
+use presentation::IndicatorPresentationResolver;
+use profile::{ProfilePlan, ProfileState, ProfileTradeUpdate, profile_source_timeframe};
+use settings::{ChartOptions, InspectorEffect, InspectorState, SettingsContext};
+pub use studies::StudyCommand;
+use studies::StudyState;
+pub use updates::DataUpdate;
+use updates::DataUpdateEffect;
+use viewport::ViewportState;
+
+use data::chart::Basis;
+pub use data::chart::kline::IndicatorId;
+use data::chart::kline::KlineData;
+use data::chart::kline::LegendVisibility;
 use data::chart::kline::composition::{
     DEFAULT_MIN_PANEL_RATIO, MarkKind, PanelRole, PanelScaleMode,
 };
-
-use data::chart::Basis;
+use data::chart::kline::indicators::IndicatorHost;
+use data::chart::kline::series::KlineSeries;
 use data::chart::kline::{
     self as persisted, CandlestickConfig, ChartSettings, DEFAULT_HORIZONTAL_SPACING_PX, FetchBatch,
     FetchPlanInput, FetchRange, FetchStage, FootprintImbalanceConfig, FootprintPocConfig,
     HorizontalWorld, IndicatorInputSource, IndicatorInstanceId, IndicatorInstanceStore,
-    IndicatorLayout, IndicatorOutputRef, KlineStudy, LineStrokeStyle, ProfileSource, SeriesColor,
-    SettingsSnapshot, TPO_TRADE_COVERAGE_TIMEFRAME, TpoProfileStatus, VolumeProfileSchedule,
+    IndicatorLayout, IndicatorOutputRef, KlineStudy, LineStrokeStyle, SeriesColor,
+    SettingsSnapshot, StudyDataSource, TPO_TRADE_COVERAGE_TIMEFRAME, TpoProfileStatus,
     visible_window,
 };
 use data::chart::kline_data::{ClusterKind, ClusterScaling};
 use exchange::adapter::StreamKind;
-use exchange::{Kline, TickMultiplier, TickerInfo, Timeframe, UnixMs};
+use exchange::{TickMultiplier, TickerInfo, Timeframe, UnixMs};
 use indicator_engine::IndicatorFrame;
 
 use std::sync::Arc;
@@ -77,31 +73,25 @@ const FLOATING_TOOLBAR_HEIGHT: f32 = 36.0;
 const SIDEBAR_WIDTH: f32 = 228.0;
 const SIDEBAR_RETURN_BUTTON_WIDTH: f32 = 32.0;
 
-fn trade_profile_status(
-    fetch: &FetchCoordinator,
-    ticker_info: TickerInfo,
-    start: UnixMs,
-    end: UnixMs,
-    now: UnixMs,
-) -> TpoProfileStatus {
-    let expected_end = end
-        .min(now.floor_to(TPO_TRADE_COVERAGE_TIMEFRAME))
-        .max(start);
-    let complete = fetch.trade_range_is_covered(ticker_info, start, expected_end);
-    if end > now {
-        TpoProfileStatus::Developing
-    } else if complete {
-        TpoProfileStatus::Complete
-    } else {
-        TpoProfileStatus::Incomplete
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum Sidebar {
     #[default]
     Drawings,
     Settings,
+}
+
+enum IndicatorRebuildFailure {
+    WorkerPanicked(tokio::task::JoinError),
+    WorkerDropped,
+}
+
+impl std::fmt::Display for IndicatorRebuildFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::WorkerPanicked(error) => write!(f, "rebuild worker failed: {error}"),
+            Self::WorkerDropped => f.write_str("rebuild worker dropped without reporting a result"),
+        }
+    }
 }
 
 struct IndicatorRebuildState {
@@ -112,7 +102,7 @@ struct IndicatorRebuildState {
     replay_ids: Vec<IndicatorInstanceId>,
     active_ids: Vec<IndicatorInstanceId>,
     frames: Arc<[IndicatorFrame]>,
-    result: oneshot::Receiver<Result<IndicatorHost, String>>,
+    result: oneshot::Receiver<Result<IndicatorHost, IndicatorRebuildFailure>>,
 }
 
 pub enum Action {
@@ -132,13 +122,13 @@ pub struct KlineDataRequirements {
 #[derive(Debug, Clone)]
 pub enum Message {
     Chart(KlineWidgetEvent),
-    IndicatorRebuildCompleted { job_id: u64 },
     Drawing(drawing::Event),
     ToggleDrawingSidebar,
     ShowDrawingsPage,
-    IndicatorBrowser(indicator_browser::Message),
-    Settings(settings::Message),
     SeriesEditor(series_editor::Message),
+    IndicatorBrowser(indicator_browser::Message),
+    IndicatorRebuildCompleted { job_id: u64 },
+    Settings(settings::Message),
 }
 
 pub struct KlineChart {
@@ -210,7 +200,7 @@ pub enum ChartCommand {
     RemoveIndicator(IndicatorInstanceId),
     Indicator(IndicatorCommand),
     Study(StudyCommand),
-    TpoEdit(TpoEditCommand),
+    TpoEdit(profile::TpoEditCommand),
 
     SetSeriesColor {
         ticker_info: TickerInfo,
@@ -235,14 +225,6 @@ pub enum ChartCommand {
     },
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum TpoEditCommand {
-    SplitAt(UnixMs),
-    MergeAt(UnixMs),
-    MoveBoundary { from: UnixMs, to: UnixMs },
-    Reset { start: UnixMs, end: UnixMs },
-}
-
 impl ChartCommand {
     fn indicator_input(command: IndicatorInputCommand) -> Self {
         Self::Indicator(IndicatorCommand::InputChanged(command))
@@ -255,12 +237,6 @@ impl ChartCommand {
     fn reset_indicator_settings(id: IndicatorInstanceId) -> Self {
         Self::Indicator(IndicatorCommand::ResetSettings(id))
     }
-}
-
-pub enum CommandResult {
-    None,
-    Changed(bool),
-    Action(Option<crate::screen::dashboard::pane::ChartAction>),
 }
 
 impl KlineChart {
@@ -399,21 +375,19 @@ impl KlineChart {
                             .handle_widget_drawing_event(event, &chart_settings.drawing);
                         self.apply_drawing_update(update, before);
                     }
-                    KlineWidgetEvent::Tpo(TpoInteraction::MergeLeft { boundary }) => {
-                        let _ = self.apply_command(ChartCommand::TpoEdit(TpoEditCommand::MergeAt(
-                            boundary,
-                        )));
-                    }
-                    KlineWidgetEvent::Tpo(TpoInteraction::Reset { start, end }) => {
-                        let _ = self.apply_command(ChartCommand::TpoEdit(TpoEditCommand::Reset {
-                            start,
-                            end,
-                        }));
-                    }
-                    KlineWidgetEvent::Tpo(TpoInteraction::MoveBoundary { from, to }) => {
-                        let _ = self.apply_command(ChartCommand::TpoEdit(
-                            TpoEditCommand::MoveBoundary { from, to },
-                        ));
+                    KlineWidgetEvent::Tpo(interaction) => {
+                        let edit = match interaction {
+                            TpoInteraction::MergeLeft { boundary } => {
+                                profile::TpoEditCommand::MergeAt(boundary)
+                            }
+                            TpoInteraction::MoveBoundary { from, to } => {
+                                profile::TpoEditCommand::MoveBoundary { from, to }
+                            }
+                            TpoInteraction::Reset { start, end } => {
+                                profile::TpoEditCommand::Reset { start, end }
+                            }
+                        };
+                        let _ = self.apply_command(ChartCommand::TpoEdit(edit));
                     }
                     KlineWidgetEvent::PanelInteraction(interaction) => match interaction {
                         PanelInteraction::YViewportChanged { panel_id, range } => {
@@ -669,7 +643,7 @@ impl KlineChart {
         None
     }
 
-    pub(crate) fn rebuild_indicators(&mut self) -> Option<iced::Task<Message>> {
+    pub fn rebuild_indicators(&mut self) -> Option<iced::Task<Message>> {
         if let Some(job_id) = self
             .indicator_rebuild
             .as_ref()
@@ -700,7 +674,7 @@ impl KlineChart {
                 host
             })
             .await
-            .map_err(|error| format!("indicator rebuild worker failed: {error}"));
+            .map_err(IndicatorRebuildFailure::WorkerPanicked);
             let _ = result_tx.send(result);
         };
 
@@ -732,9 +706,7 @@ impl KlineChart {
             Ok(result) => result,
             Err(oneshot::error::TryRecvError::Empty) => return,
             Err(oneshot::error::TryRecvError::Closed) => {
-                self.indicator_rebuild = None;
-                log::error!("indicator rebuild result channel closed for job {job_id}");
-                return;
+                Err(IndicatorRebuildFailure::WorkerDropped)
             }
         };
         let pending = self
@@ -744,8 +716,8 @@ impl KlineChart {
 
         let host = match result {
             Ok(host) => host,
-            Err(error) => {
-                log::error!("indicator rebuild job {job_id} failed: {error}");
+            Err(failure) => {
+                log::error!("indicator rebuild job {job_id} failed: {failure}");
                 return;
             }
         };
@@ -779,7 +751,7 @@ impl KlineChart {
         self.data_redraw_pending = false;
     }
 
-    pub(crate) fn view(
+    pub fn view(
         &self,
         timezone: data::UserTimezone,
         pixel_ratio: PixelRatio,
@@ -815,7 +787,7 @@ impl KlineChart {
             .with_footprint_config(self.options.footprint)
             .with_trade_data_enabled(self.trade_data_enabled())
             .with_tpo_profiles(self.profiles.profiles())
-            .with_legend_visibility(self.legend_visibility());
+            .with_legend_visibility(self.options.legend_visibility);
 
             let chart = match plan.kline_source_timeframe {
                 Some(timeframe) if matches!(self.basis, Basis::Time(chart) if chart == timeframe) => {
@@ -939,10 +911,10 @@ impl KlineChart {
         .into()
     }
 
-    pub(crate) fn pane_settings_view(&self) -> iced::Element<'static, Message> {
+    pub fn pane_settings_view(&self) -> iced::Element<'static, Message> {
         settings::data_settings_content(
             self.trade_data_enabled(),
-            self.legend_visibility(),
+            self.options.legend_visibility,
             self.basis(),
             self.trade_data_setting_locked(),
         )
@@ -971,11 +943,11 @@ impl KlineChart {
             .contextual_content(context, theme_accents)
     }
 
-    pub(crate) fn indicator_browser_view(&self) -> iced::Element<'_, Message> {
+    pub fn indicator_browser_view(&self) -> iced::Element<'_, Message> {
         indicator_browser::view(self, &self.indicator_browser)
     }
 
-    pub(crate) fn indicator_browser_focus_id(&self) -> iced::widget::Id {
+    pub fn indicator_browser_focus_id(&self) -> iced::widget::Id {
         self.indicator_browser.search_box_id()
     }
 
@@ -1011,9 +983,7 @@ impl KlineChart {
 
     fn apply_browser_action(&mut self, command: ChartCommand) -> Option<Action> {
         match self.apply_command(command) {
-            CommandResult::Action(Some(ChartAction::RequestFetch(fetch))) => {
-                Some(Action::RequestFetch(fetch))
-            }
+            Some(ChartAction::RequestFetch(fetch)) => Some(Action::RequestFetch(fetch)),
             _ => None,
         }
     }
@@ -1021,14 +991,17 @@ impl KlineChart {
     fn apply_inspector_effect(&mut self, effect: InspectorEffect) -> Option<Action> {
         match effect {
             InspectorEffect::None => None,
-            InspectorEffect::Command(command) => match self.apply_settings_action(command) {
-                CommandResult::Action(Some(ChartAction::RequestFetch(fetch))) => {
-                    Some(Action::RequestFetch(fetch))
-                }
+            InspectorEffect::Command(command) => match self.apply_command_inner(command) {
+                Some(ChartAction::RequestFetch(fetch)) => Some(Action::RequestFetch(fetch)),
                 _ => None,
             },
             InspectorEffect::StudyConfigurator(message) => {
-                self.update_study_configurator(message);
+                let command = self.studies.update_configurator(
+                    message,
+                    self.basis,
+                    self.trade_data_enabled(),
+                )?;
+                let _ = self.apply_command_inner(ChartCommand::Study(command));
                 None
             }
             InspectorEffect::OpenUrl(url) => Some(Action::OpenUrl(url)),
@@ -1095,16 +1068,6 @@ impl KlineChart {
         }
     }
 
-    pub fn update_study_configurator(&mut self, message: study::Message<KlineStudy>) {
-        let Some(command) =
-            self.studies
-                .update_configurator(message, self.basis, self.trade_data_enabled())
-        else {
-            return;
-        };
-        let _ = self.apply_settings_action(ChartCommand::Study(command));
-    }
-
     fn handle_escape(&mut self) -> bool {
         if self.inspector.dismiss_reset_confirmation() {
             return true;
@@ -1125,7 +1088,7 @@ impl KlineChart {
         true
     }
 
-    pub(crate) fn go_back(&mut self) -> bool {
+    pub fn go_back(&mut self) -> bool {
         if self.inspector.dismiss_reset_confirmation() {
             return true;
         }
@@ -1136,15 +1099,6 @@ impl KlineChart {
         }
 
         false
-    }
-
-    fn mark_indicators_with_dependents(
-        &mut self,
-        roots: &[IndicatorInstanceId],
-        reason: IndicatorRebuildReason,
-    ) {
-        self.indicators
-            .mark_with_dependents(&self.data, roots, reason);
     }
 
     fn reconcile_data_requirements(&mut self, previous: KlineDataRequirements) {
@@ -1236,7 +1190,7 @@ impl KlineChart {
             active_indicators: &active_indicators,
             indicator_instances: self.indicators.instances(),
             open_interest_required: data_requirements.open_interest,
-            trade_data_required: self.trade_data_required(),
+            trade_data_required: self.data_requirements().trades,
             trade_fetch_enabled: crate::connector::fetcher::is_trade_fetch_enabled(),
             visible_points,
             required_history_start,
@@ -1271,7 +1225,15 @@ impl KlineChart {
                     .map(|(start, end)| end.saturating_diff(start))
                     .filter(|span| *span > 0)
                     .unwrap_or(Timeframe::D1.to_milliseconds());
-                let chart_bars = self.chart_source_bars(source_timeframe);
+
+                let chart_bars = match self.basis {
+                    Basis::Time(chart_timeframe) if chart_timeframe == source_timeframe => self
+                        .data
+                        .base_series()
+                        .map(|series| series.points().map(|point| *point.kline).collect())
+                        .unwrap_or_default(),
+                    _ => Vec::new(),
+                };
                 let source_changed = self.profiles.configure_source_retention(
                     &windows,
                     visible_span,
@@ -1279,11 +1241,13 @@ impl KlineChart {
                     source_timeframe,
                     profile_plan
                         .tpo_study
-                        .is_some_and(|study| study.source() == ProfileSource::Kline),
+                        .is_some_and(|study| study.source() == StudyDataSource::Kline),
                 );
+
                 if source_changed {
                     self.fetch.clear_pending_profile_requests();
                 }
+
                 if matches!(self.basis, Basis::Time(timeframe) if timeframe == source_timeframe) {
                     if let Some((retained_start, retained_end)) =
                         self.profiles.profile_source_range(source_timeframe)
@@ -1407,8 +1371,7 @@ impl KlineChart {
             _ => None,
         };
         let trade_data_enabled = self.trade_data_enabled();
-        let effect = updates::apply(
-            update,
+        let effect = update.apply(
             self.basis,
             &mut self.data,
             &mut self.fetch,
@@ -1445,7 +1408,7 @@ impl KlineChart {
         }
     }
 
-    pub(crate) fn accepts_profile_kline_source(
+    pub fn accepts_profile_kline_source(
         &self,
         timeframe: Timeframe,
         ticker_info: TickerInfo,
@@ -1454,11 +1417,11 @@ impl KlineChart {
             && ticker_info == self.data.base_ticker()
     }
 
-    pub(crate) fn is_profile_kline_request(&self, req_id: uuid::Uuid) -> bool {
+    pub fn is_profile_kline_request(&self, req_id: uuid::Uuid) -> bool {
         self.fetch.is_profile_request(req_id)
     }
 
-    pub(crate) fn insert_historical_profile_klines(
+    pub fn insert_historical_profile_klines(
         &mut self,
         req_id: Option<uuid::Uuid>,
         timeframe: Timeframe,
@@ -1488,7 +1451,7 @@ impl KlineChart {
         self.data_redraw_pending = true;
     }
 
-    pub(crate) fn apply_live_profile_kline(
+    pub fn apply_live_profile_kline(
         &mut self,
         timeframe: Timeframe,
         ticker_info: TickerInfo,
@@ -1523,6 +1486,15 @@ impl KlineChart {
             .retain(|panel_id| layout.composition().panel(panel_id).is_some());
     }
 
+    fn active_big_trades_threshold(&self) -> Option<u64> {
+        self.studies
+            .active()
+            .iter()
+            .filter(|study| study.visible())
+            .find_map(|study| study.big_trades())
+            .map(|config| config.threshold)
+    }
+
     fn configure_profile_caches(&mut self) {
         let plan = self.profile_plan();
         if plan.kline_source_timeframe.is_none() {
@@ -1531,6 +1503,9 @@ impl KlineChart {
         }
         self.data
             .configure_recurring_profile_intervals(&plan.recurring_trade_profiles);
+        let big_trades_threshold = self.active_big_trades_threshold();
+        self.data
+            .configure_big_trades_threshold(big_trades_threshold);
         if plan.tpo_study.is_none() {
             self.profiles.clear_tpo_source();
         }
@@ -1544,35 +1519,31 @@ impl KlineChart {
     }
 
     fn profile_plan(&self) -> ProfilePlan {
-        let visible_studies = self
-            .studies
-            .active()
-            .iter()
-            .copied()
-            .filter(|study| study.visible())
-            .collect::<Vec<_>>();
+        let active_studies = self.studies.active();
         let time_basis = self.basis.is_time();
+
         let mut tpo_study = None;
         let mut kline_volume_profiles = Vec::new();
         let mut has_kline_source = false;
-        for study in &visible_studies {
+        for study in active_studies {
             if time_basis && tpo_study.is_none() && study.is_tpo_profile() {
                 tpo_study = Some(*study);
             }
-            if time_basis && study.source() == ProfileSource::Kline {
+            if time_basis && study.source() == StudyDataSource::Kline {
                 has_kline_source = true;
                 if let Some(schedule) = study.volume_profile_schedule() {
                     kline_volume_profiles.push(schedule);
                 }
             }
         }
+
         ProfilePlan {
             kline_source_timeframe: has_kline_source.then(|| self.profile_source_timeframe()),
             kline_volume_profiles,
             tpo_study,
             recurring_trade_profiles: self
                 .data
-                .recurring_profile_cache_requirements(&visible_studies, self.basis),
+                .recurring_profile_cache_requirements(active_studies, self.basis),
         }
     }
 
@@ -1584,7 +1555,7 @@ impl KlineChart {
     ) -> Vec<(UnixMs, UnixMs)> {
         let anchor = plan
             .tpo_study
-            .filter(|study| study.source() == ProfileSource::Kline)
+            .filter(|study| study.source() == StudyDataSource::Kline)
             .and_then(|study| study.tpo_anchor())
             .unwrap_or_default();
         let fallback_start = anchor.floor(now);
@@ -1592,14 +1563,14 @@ impl KlineChart {
             visible_window.unwrap_or_else(|| (fallback_start, anchor.offset(fallback_start, 1)));
         let tpo_ranges = if plan
             .tpo_study
-            .is_some_and(|study| study.source() == ProfileSource::Kline)
+            .is_some_and(|study| study.source() == StudyDataSource::Kline)
         {
             self.profiles
                 .profile_ranges_overlapping(visible_window.0, visible_window.1, anchor)
         } else {
             Vec::new()
         };
-        merge_profile_kline_windows(&plan.kline_volume_profiles, visible_window, &tpo_ranges)
+        plan.fetch_windows(visible_window, &tpo_ranges)
     }
 
     fn rebuild_tpo_profiles(&mut self) -> bool {
@@ -1609,7 +1580,7 @@ impl KlineChart {
         };
         let price_step = self.data.effective_study_tick_size(study);
         match study.source() {
-            ProfileSource::Kline => {
+            StudyDataSource::Kline => {
                 let source_timeframe = plan
                     .kline_source_timeframe
                     .expect("Kline TPO requires a Kline source timeframe");
@@ -1627,7 +1598,7 @@ impl KlineChart {
                     UnixMs::now(),
                 )
             }
-            ProfileSource::Trades => {
+            StudyDataSource::Trades => {
                 let trades = self
                     .data
                     .base_series()
@@ -1636,25 +1607,29 @@ impl KlineChart {
                 let fetch = &self.fetch;
                 let ticker_info = self.data.base_ticker();
                 let now = UnixMs::now();
+
+                let profile_status = move |start: UnixMs, end: UnixMs| {
+                    let expected_end = end
+                        .min(now.floor_to(TPO_TRADE_COVERAGE_TIMEFRAME))
+                        .max(start);
+                    let complete = fetch.trade_range_is_covered(ticker_info, start, expected_end);
+                    if end > now {
+                        TpoProfileStatus::Developing
+                    } else if complete {
+                        TpoProfileStatus::Complete
+                    } else {
+                        TpoProfileStatus::Incomplete
+                    }
+                };
+
                 self.profiles.rebuild_tpo_from_trades(
                     Some(study),
                     trades,
                     price_step,
                     now,
-                    move |start, end| trade_profile_status(fetch, ticker_info, start, end, now),
+                    profile_status,
                 )
             }
-        }
-    }
-
-    fn chart_source_bars(&self, source_timeframe: Timeframe) -> Vec<Kline> {
-        match self.basis {
-            Basis::Time(chart_timeframe) if chart_timeframe == source_timeframe => self
-                .data
-                .base_series()
-                .map(|series| series.points().map(|point| *point.kline).collect())
-                .unwrap_or_default(),
-            _ => Vec::new(),
         }
     }
 
@@ -1728,7 +1703,8 @@ impl KlineChart {
                 .mark_rebuild_pending(IndicatorRebuildReason::IndicatorConfigurationChanged);
         }
         if !changed_indicator_ids.is_empty() {
-            self.mark_indicators_with_dependents(
+            self.indicators.mark_with_dependents(
+                &self.data,
                 &changed_indicator_ids,
                 IndicatorRebuildReason::IndicatorConfigurationChanged,
             );
@@ -1788,17 +1764,13 @@ impl KlineChart {
         None
     }
 
-    pub fn apply_command(&mut self, command: ChartCommand) -> CommandResult {
-        let result = self.apply_command_inner(command);
+    pub fn apply_command(&mut self, command: ChartCommand) -> Option<ChartAction> {
+        let action = self.apply_command_inner(command);
         self.reconcile_local_sidebar();
-        result
+        action
     }
 
-    fn apply_settings_action(&mut self, command: ChartCommand) -> CommandResult {
-        self.apply_command_inner(command)
-    }
-
-    fn apply_command_inner(&mut self, command: ChartCommand) -> CommandResult {
+    fn apply_command_inner(&mut self, command: ChartCommand) -> Option<ChartAction> {
         let previous_requirements = self.data_requirements();
         let previous_panels = self
             .indicators
@@ -1812,13 +1784,15 @@ impl KlineChart {
         let result = match command {
             ChartCommand::SetBasis(basis) => {
                 dirty = true;
-                CommandResult::Action(self.set_basis(basis))
+                self.set_basis(basis)
             }
             ChartCommand::SetTradeDataEnabled(enabled) => {
-                self.apply_trade_data_enabled(enabled, &mut dirty)
+                self.apply_trade_data_enabled(enabled, &mut dirty);
+                None
             }
             ChartCommand::SetLegendVisibility(visibility) => {
-                self.apply_legend_visibility(visibility, &mut dirty)
+                self.apply_legend_visibility(visibility, &mut dirty);
+                None
             }
             ChartCommand::SetCandlestickConfig { config } => {
                 let changed = self.options.candlestick != config;
@@ -1826,7 +1800,7 @@ impl KlineChart {
                     self.options.candlestick = config;
                     dirty = true;
                 }
-                CommandResult::Changed(changed)
+                None
             }
             ChartCommand::ResetCandlestickSettings => {
                 let default_style = self.options.candlestick.with_default_style();
@@ -1841,14 +1815,14 @@ impl KlineChart {
                 if config_changed || mark_changed || series_changed {
                     dirty = true;
                 }
-                CommandResult::Changed(config_changed || mark_changed || series_changed)
+                None
             }
             ChartCommand::SetCandlestickMark { mark } => {
                 let changed = self.indicators.layout_mut().set_primary_mark(mark);
                 if changed {
                     dirty = true;
                 }
-                CommandResult::Changed(changed)
+                None
             }
             ChartCommand::SetCandlestickVisible { visible } => {
                 let changed = self.options.candlestick.visible != visible;
@@ -1856,7 +1830,7 @@ impl KlineChart {
                     self.options.candlestick = self.options.candlestick.with_visible(visible);
                     dirty = true;
                 }
-                CommandResult::Changed(changed)
+                None
             }
             ChartCommand::SetFootprintVisible { visible } => {
                 let changed = self.options.footprint.visible != visible;
@@ -1865,7 +1839,7 @@ impl KlineChart {
                     self.configure_profile_caches();
                     dirty = true;
                 }
-                CommandResult::Changed(changed)
+                None
             }
             ChartCommand::SetFootprintClusterKind { kind } => {
                 let changed = self.options.footprint.cluster_kind != kind;
@@ -1873,7 +1847,7 @@ impl KlineChart {
                     self.options.footprint = self.options.footprint.with_cluster_kind(kind);
                     dirty = true;
                 }
-                CommandResult::Changed(changed)
+                None
             }
             ChartCommand::SetFootprintClusterScaling { scaling } => {
                 let changed = self.options.footprint.cluster_scaling != scaling;
@@ -1881,7 +1855,7 @@ impl KlineChart {
                     self.options.footprint = self.options.footprint.with_cluster_scaling(scaling);
                     dirty = true;
                 }
-                CommandResult::Changed(changed)
+                None
             }
             ChartCommand::SetFootprintImbalanceConfig { config } => {
                 let changed = self.options.footprint.imbalance != config;
@@ -1889,7 +1863,7 @@ impl KlineChart {
                     self.options.footprint = self.options.footprint.with_imbalance(config);
                     dirty = true;
                 }
-                CommandResult::Changed(changed)
+                None
             }
             ChartCommand::SetFootprintPocConfig { config } => {
                 let changed = self.options.footprint.poc != config;
@@ -1898,7 +1872,7 @@ impl KlineChart {
                     self.configure_profile_caches();
                     dirty = true;
                 }
-                CommandResult::Changed(changed)
+                None
             }
             ChartCommand::ResetFootprintSettings => {
                 let default_options = self.options.footprint.with_default_options();
@@ -1911,7 +1885,7 @@ impl KlineChart {
                     }
                     dirty = true;
                 }
-                CommandResult::Changed(changed)
+                None
             }
             ChartCommand::SetFootprintTickMultiplier { multiplier } => {
                 if self.data.set_footprint_tick_multiplier(multiplier) {
@@ -1919,7 +1893,7 @@ impl KlineChart {
                     self.configure_profile_caches();
                     dirty = true;
                 }
-                CommandResult::None
+                None
             }
             ChartCommand::AddIndicator(kind) => {
                 let change = self.indicators.add_indicator(kind, self.basis, &self.data);
@@ -1940,39 +1914,34 @@ impl KlineChart {
                 self.apply_indicator_change(change, &mut dirty)
             }
             ChartCommand::Indicator(command) => self.apply_indicator_command(command, &mut dirty),
-            ChartCommand::Study(command) => self.apply_study_command(command, &mut dirty),
+            ChartCommand::Study(command) => {
+                self.apply_study_command(command, &mut dirty);
+                None
+            }
             ChartCommand::TpoEdit(command) => {
                 let anchor = self
                     .profile_plan()
                     .tpo_study
                     .and_then(|study| study.tpo_anchor())
                     .unwrap_or_default();
-                match command {
-                    TpoEditCommand::SplitAt(boundary) => self.profiles.edit_split(boundary),
-                    TpoEditCommand::MergeAt(boundary) => self.profiles.edit_merge(boundary),
-                    TpoEditCommand::MoveBoundary { from, to } => {
-                        self.profiles.edit_move_boundary(from, to, anchor)
-                    }
-                    TpoEditCommand::Reset { start, end } => {
-                        self.profiles.reset_edits_in_range(start, end, anchor)
-                    }
-                }
+                self.profiles.apply_edit(command, anchor);
+
                 dirty = true;
-                CommandResult::Changed(true)
+                None
             }
             ChartCommand::SetSeriesColor { ticker_info, color } => {
                 let changed = self.data.set_series_color(ticker_info, color);
                 if changed {
                     dirty = true;
                 }
-                CommandResult::Changed(changed)
+                None
             }
             ChartCommand::SetSeriesLineWidth { ticker_info, width } => {
                 let changed = self.data.set_series_line_width(ticker_info, width);
                 if changed {
                     dirty = true;
                 }
-                CommandResult::Changed(changed)
+                None
             }
             ChartCommand::SetSeriesStrokeStyle {
                 ticker_info,
@@ -1982,7 +1951,7 @@ impl KlineChart {
                 if changed {
                     dirty = true;
                 }
-                CommandResult::Changed(changed)
+                None
             }
             ChartCommand::ResetSeriesSettings { ticker_info } => {
                 let changed = self.data.reset_series_style(ticker_info);
@@ -1990,7 +1959,7 @@ impl KlineChart {
                 if changed {
                     dirty = true;
                 }
-                CommandResult::Changed(changed)
+                None
             }
             ChartCommand::AddTicker { ticker_info } => {
                 let changed = if ticker_info != self.data.base_ticker()
@@ -2013,14 +1982,14 @@ impl KlineChart {
                 if changed {
                     dirty = true;
                 }
-                CommandResult::Changed(changed)
+                None
             }
             ChartCommand::RemoveTicker { ticker_info } => {
                 let changed = self.remove_ticker(ticker_info);
                 if changed {
                     dirty = true;
                 }
-                CommandResult::Changed(changed)
+                None
             }
         };
 
@@ -2088,36 +2057,30 @@ impl KlineChart {
         true
     }
 
-    fn apply_trade_data_enabled(&mut self, enabled: bool, dirty: &mut bool) -> CommandResult {
+    fn apply_trade_data_enabled(&mut self, enabled: bool, dirty: &mut bool) {
         if !enabled && self.trade_data_setting_locked() {
-            return CommandResult::Changed(false);
+            return;
         }
         if !self.options.set_trade_data_requested(enabled, self.basis) {
-            return CommandResult::Changed(false);
+            return;
         }
         self.configure_profile_caches();
         *dirty = true;
-        CommandResult::Changed(true)
     }
 
-    fn apply_legend_visibility(
-        &mut self,
-        visibility: LegendVisibility,
-        dirty: &mut bool,
-    ) -> CommandResult {
+    fn apply_legend_visibility(&mut self, visibility: LegendVisibility, dirty: &mut bool) {
         if self.options.legend_visibility == visibility {
-            return CommandResult::Changed(false);
+            return;
         }
         self.options.legend_visibility = visibility;
         *dirty = true;
-        CommandResult::Changed(true)
     }
 
     fn apply_indicator_command(
         &mut self,
         command: IndicatorCommand,
         dirty: &mut bool,
-    ) -> CommandResult {
+    ) -> Option<ChartAction> {
         let change = self.indicators.apply(command, &self.data);
         self.apply_indicator_change(change, dirty)
     }
@@ -2126,66 +2089,60 @@ impl KlineChart {
         &mut self,
         change: IndicatorChange,
         dirty: &mut bool,
-    ) -> CommandResult {
+    ) -> Option<ChartAction> {
         match change {
-            IndicatorChange::Unchanged => CommandResult::Changed(false),
+            IndicatorChange::Unchanged => None,
             IndicatorChange::Visual => {
                 *dirty = true;
-                CommandResult::Changed(true)
+                None
             }
             IndicatorChange::Reconfigure { id, request_fetch } => {
                 self.data
                     .reconfigure_indicator(id, self.indicators.instances());
-                self.mark_indicators_with_dependents(
+
+                self.indicators.mark_with_dependents(
+                    &self.data,
                     &[id],
                     IndicatorRebuildReason::IndicatorConfigurationChanged,
                 );
+
                 *dirty = true;
                 if request_fetch {
-                    CommandResult::Action(
-                        self.request_fetch_action(false)
-                            .map(ChartAction::RequestFetch),
-                    )
+                    self.request_fetch_action(false)
+                        .map(ChartAction::RequestFetch)
                 } else {
-                    CommandResult::Changed(true)
+                    None
                 }
             }
             IndicatorChange::Reconcile { request_fetch } => {
                 self.reconcile_indicator_layout(false);
                 *dirty = true;
                 if request_fetch {
-                    CommandResult::Action(
-                        self.request_fetch_action(false)
-                            .map(ChartAction::RequestFetch),
-                    )
+                    self.request_fetch_action(false)
+                        .map(ChartAction::RequestFetch)
                 } else {
-                    CommandResult::Changed(true)
+                    None
                 }
             }
         }
     }
 
-    fn apply_study_command(&mut self, command: StudyCommand, dirty: &mut bool) -> CommandResult {
+    fn apply_study_command(&mut self, command: StudyCommand, dirty: &mut bool) {
         let previous_plan = self.profile_plan();
+        let previous_threshold = self.active_big_trades_threshold();
         let change = self
             .studies
             .apply(command, self.basis, self.trade_data_enabled());
-        if change.changed() && previous_plan != self.profile_plan() {
+        if change.changed()
+            && (previous_plan != self.profile_plan()
+                || previous_threshold != self.active_big_trades_threshold())
+        {
             self.configure_profile_caches();
         }
-        self.apply_study_change(change, dirty)
-    }
 
-    fn apply_study_change(
-        &mut self,
-        change: studies::StudyChange,
-        dirty: &mut bool,
-    ) -> CommandResult {
-        let changed = change.changed();
-        if changed {
+        if change.changed() {
             *dirty = true;
         }
-        CommandResult::Changed(changed)
     }
 
     fn remove_ticker(&mut self, ticker_info: TickerInfo) -> bool {
@@ -2223,6 +2180,7 @@ impl KlineChart {
         splits: &[f32],
     ) {
         self.indicators.replace_instances(instances);
+
         if !panels.is_empty() {
             let panels = panels
                 .iter()
@@ -2255,11 +2213,14 @@ impl KlineChart {
             &snapshot.panels,
             &snapshot.splits,
         );
+
         self.viewport.primary_scale_inverted = snapshot.primary_scale_inverted;
+
         self.options.trade_data_requested = snapshot.trade_data_enabled;
         self.options.legend_visibility = snapshot.legend_visibility;
         self.options.candlestick = snapshot.candlestick;
         self.options.footprint = snapshot.footprint;
+
         self.studies.restore(studies::StudySnapshot::new(
             snapshot.studies.clone(),
             snapshot.study_configs.clone(),
@@ -2275,6 +2236,7 @@ impl KlineChart {
         let snapshot = config.settings_snapshot();
         self.history.clear();
         self.apply_shared_settings(&snapshot);
+
         self.drawing_sidebar_visible = config.drawing_sidebar_visible;
         self.sidebar = Sidebar::Drawings;
         self.drawings.floating_toolbar =
@@ -2313,6 +2275,7 @@ impl KlineChart {
             else {
                 continue;
             };
+
             let _ = self.data.set_series_color(ticker_info, series_color);
             let _ = self
                 .data
@@ -2346,10 +2309,6 @@ impl KlineChart {
 
     pub fn trade_data_enabled(&self) -> bool {
         self.data_requirements().trades
-    }
-
-    fn legend_visibility(&self) -> LegendVisibility {
-        self.options.legend_visibility
     }
 
     fn trade_data_setting_locked(&self) -> bool {
@@ -2399,7 +2358,6 @@ impl KlineChart {
                 .studies
                 .active()
                 .iter()
-                .filter(|study| study.visible())
                 .any(|study| study.requires_trade_data())
         {
             requirements.trades = true;
@@ -2437,16 +2395,13 @@ impl KlineChart {
         .context()
     }
 
-    fn trade_data_required(&self) -> bool {
-        self.data_requirements().trades
-    }
-
-    pub(crate) fn desired_streams(&self) -> Vec<StreamKind> {
+    pub fn desired_streams(&self) -> Vec<StreamKind> {
         let plan = self.profile_plan();
         match self.basis {
             Basis::Time(timeframe) => {
                 let mut streams = Vec::new();
-                if self.trade_data_required() {
+
+                if self.data_requirements().trades {
                     streams.push(StreamKind::Trades {
                         ticker_info: self.data.base_ticker(),
                     });
@@ -2457,6 +2412,7 @@ impl KlineChart {
                         timeframe,
                     }
                 }));
+
                 if plan.uses_external_kline_source(self.basis) {
                     let profile_timeframe = plan
                         .kline_source_timeframe
@@ -2529,50 +2485,6 @@ impl KlineChart {
     }
 }
 
-fn merge_profile_kline_windows(
-    schedules: &[VolumeProfileSchedule],
-    visible_window: (UnixMs, UnixMs),
-    tpo_ranges: &[(UnixMs, UnixMs)],
-) -> Vec<(UnixMs, UnixMs)> {
-    let mut windows = Vec::new();
-    for schedule in schedules {
-        match schedule {
-            VolumeProfileSchedule::VisibleRange => windows.push(visible_window),
-            VolumeProfileSchedule::Recurring { interval } => {
-                let mut start = visible_window.0.floor_to(*interval);
-                let end = visible_window
-                    .1
-                    .saturating_sub(1)
-                    .floor_to(*interval)
-                    .offset_by_timeframe(*interval, 1);
-                while start < end {
-                    let next = start.offset_by_timeframe(*interval, 1);
-                    if next <= start {
-                        break;
-                    }
-                    windows.push((start, next));
-                    start = next;
-                }
-            }
-        }
-    }
-    windows.extend_from_slice(tpo_ranges);
-    windows.retain(|(start, end)| start < end);
-    windows.sort_unstable();
-
-    let mut merged: Vec<(UnixMs, UnixMs)> = Vec::new();
-    for (start, end) in windows {
-        if let Some((_, previous_end)) = merged.last_mut()
-            && start <= *previous_end
-        {
-            *previous_end = (*previous_end).max(end);
-        } else {
-            merged.push((start, end));
-        }
-    }
-    merged
-}
-
 fn sidebar_header<'a>(title: String) -> iced::Element<'a, Message> {
     let title = iced::widget::container(
         crate::widget::text::emphasis(title).wrapping(iced::widget::text::Wrapping::Glyph),
@@ -2611,38 +2523,4 @@ fn sidebar_panel<'a>(
     .padding([4, 8])
     .style(style::chart_sidebar_container)
     .into()
-}
-
-#[cfg(test)]
-mod profile_fetch_window_tests {
-    use super::*;
-
-    #[test]
-    fn recurring_intervals_are_complete_and_merge_with_tpo_sessions() {
-        let day = Timeframe::D1.to_milliseconds();
-        let visible = (
-            UnixMs::ZERO.offset_by_timeframe(Timeframe::H1, 25),
-            UnixMs::ZERO.offset_by_timeframe(Timeframe::H1, 49),
-        );
-        let windows = merge_profile_kline_windows(
-            &[VolumeProfileSchedule::Recurring {
-                interval: Timeframe::D1,
-            }],
-            visible,
-            &[(
-                UnixMs::ZERO.offset_by_timeframe(Timeframe::H1, 30),
-                UnixMs::ZERO.offset_by_timeframe(Timeframe::H1, 50),
-            )],
-        );
-
-        assert_eq!(
-            windows,
-            vec![(
-                UnixMs::ZERO.offset_by_timeframe(Timeframe::D1, 1),
-                UnixMs::ZERO.offset_by_timeframe(Timeframe::D1, 3)
-            )]
-        );
-        assert_eq!(windows[0].0.as_u64() % day, 0);
-        assert_eq!(windows[0].1.as_u64() % day, 0);
-    }
 }

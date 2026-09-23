@@ -1,5 +1,5 @@
 use data::chart::kline::{
-    KlineStudy, ProfileSource, TPO_TRADE_COVERAGE_TIMEFRAME, TpoAnchor, TpoBoundaryEdits,
+    KlineStudy, StudyDataSource, TPO_TRADE_COVERAGE_TIMEFRAME, TpoAnchor, TpoBoundaryEdits,
     TpoCalculationError, TpoProfile, TpoProfileSettings, TpoProfileStatus, TradeTpoCache,
     build_tpo_profile_with_source_timeframe, build_tpo_profiles_with_source_timeframe,
 };
@@ -7,9 +7,11 @@ use exchange::unit::price::PriceStep;
 use exchange::{Kline, Timeframe, Trade, UnixMs};
 use std::collections::BTreeSet;
 
+use super::{ProfileTradeUpdate, TpoEditCommand};
+
 #[derive(Clone, PartialEq, Eq)]
 struct TpoBuildKey {
-    source: ProfileSource,
+    source: StudyDataSource,
     source_timeframe: Timeframe,
     settings: TpoProfileSettings,
     edits: TpoBoundaryEdits,
@@ -60,7 +62,7 @@ impl TpoState {
         now: UnixMs,
     ) -> bool {
         let Some(KlineStudy::TpoProfile {
-            source: ProfileSource::Kline,
+            source: StudyDataSource::Kline,
             anchor,
             letter_period,
             value_area_percent,
@@ -78,7 +80,7 @@ impl TpoState {
             value_area_percent,
         };
         let key = TpoBuildKey {
-            source: ProfileSource::Kline,
+            source: StudyDataSource::Kline,
             source_timeframe,
             settings,
             edits: self.edits.clone(),
@@ -113,7 +115,7 @@ impl TpoState {
         coverage: impl Fn(UnixMs, UnixMs) -> TpoProfileStatus,
     ) -> bool {
         let Some(KlineStudy::TpoProfile {
-            source: ProfileSource::Trades,
+            source: StudyDataSource::Trades,
             anchor,
             letter_period,
             value_area_percent,
@@ -130,7 +132,7 @@ impl TpoState {
             value_area_percent,
         };
         let key = TpoBuildKey {
-            source: ProfileSource::Trades,
+            source: StudyDataSource::Trades,
             source_timeframe: TPO_TRADE_COVERAGE_TIMEFRAME,
             settings,
             edits: self.edits.clone(),
@@ -288,26 +290,36 @@ impl TpoState {
         Some(Ok(profiles))
     }
 
-    fn uses_source(&self, source: ProfileSource, source_timeframe: Timeframe) -> bool {
+    fn uses_source(&self, source: StudyDataSource, source_timeframe: Timeframe) -> bool {
         self.build_key
             .as_ref()
             .is_some_and(|key| key.source == source && key.source_timeframe == source_timeframe)
     }
 
     pub fn mark_kline_bars_dirty(&mut self, timeframe: Timeframe, bars: &[UnixMs]) {
-        if self.uses_source(ProfileSource::Kline, timeframe) {
+        if self.uses_source(StudyDataSource::Kline, timeframe) {
             self.mark_times_dirty(bars.iter().copied());
         }
     }
 
-    pub fn mark_live_trades_dirty(&mut self, trades: &[Trade]) {
-        if self.uses_source(ProfileSource::Trades, TPO_TRADE_COVERAGE_TIMEFRAME) {
+    pub fn apply_trade_update(&mut self, update: ProfileTradeUpdate<'_>) {
+        match update {
+            ProfileTradeUpdate::Live(trades) => self.mark_live_trades_dirty(trades),
+            ProfileTradeUpdate::Historical {
+                trades,
+                batches_done,
+            } => self.mark_historical_trades_dirty(trades, batches_done),
+        }
+    }
+
+    fn mark_live_trades_dirty(&mut self, trades: &[Trade]) {
+        if self.uses_source(StudyDataSource::Trades, TPO_TRADE_COVERAGE_TIMEFRAME) {
             self.mark_times_dirty(trades.iter().map(|trade| trade.time));
         }
     }
 
-    pub fn mark_historical_trades_dirty(&mut self, trades: &[Trade], is_batches_done: bool) {
-        if !self.uses_source(ProfileSource::Trades, TPO_TRADE_COVERAGE_TIMEFRAME) {
+    fn mark_historical_trades_dirty(&mut self, trades: &[Trade], is_batches_done: bool) {
+        if !self.uses_source(StudyDataSource::Trades, TPO_TRADE_COVERAGE_TIMEFRAME) {
             return;
         }
         self.mark_times_dirty(trades.iter().map(|trade| trade.time));
@@ -408,22 +420,16 @@ impl TpoState {
         self.edits = edits;
     }
 
-    pub fn edit_split(&mut self, boundary: UnixMs) {
-        self.edits.split_at(boundary);
-    }
-
-    pub fn edit_merge(&mut self, boundary: UnixMs) {
-        self.edits.merge_at(boundary);
-    }
-
-    pub fn edit_move_boundary(&mut self, from: UnixMs, to: UnixMs, anchor: TpoAnchor) {
-        if from == to {
-            return;
+    pub fn apply_edit(&mut self, edit: TpoEditCommand, anchor: TpoAnchor) {
+        match edit {
+            TpoEditCommand::SplitAt(boundary) => self.edits.split_at(boundary),
+            TpoEditCommand::MergeAt(boundary) => self.edits.merge_at(boundary),
+            TpoEditCommand::MoveBoundary { from, to } => {
+                if from != to {
+                    self.edits.move_boundary(from, to, anchor);
+                }
+            }
+            TpoEditCommand::Reset { start, end } => self.edits.clear_range(start, end, anchor),
         }
-        self.edits.move_boundary(from, to, anchor);
-    }
-
-    pub fn reset_edits_in_range(&mut self, start: UnixMs, end: UnixMs, anchor: TpoAnchor) {
-        self.edits.clear_range(start, end, anchor);
     }
 }

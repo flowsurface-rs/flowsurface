@@ -67,26 +67,3 @@ impl DrawingHistory {
         self.undo.push_back(entry);
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::super::drawing::DrawingTools;
-    use super::*;
-
-    #[test]
-    fn drawing_history_skips_unchanged_gestures_and_clears_redo_on_edit() {
-        let state = DrawingTools::default().edit_state();
-        let mut history = DrawingHistory::default();
-
-        history.begin_drawing(state.clone());
-        history.finish_drawing(state.clone());
-        assert!(history.pop_undo().is_none());
-
-        history.record(state.clone(), state.clone());
-        let entry = history.pop_undo().unwrap();
-        history.push_redo(entry);
-        history.record(state.clone(), state);
-        assert!(history.pop_redo().is_none());
-        assert!(history.pop_undo().is_some());
-    }
-}

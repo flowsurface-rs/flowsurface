@@ -1,9 +1,7 @@
 use super::content::{
     self, Content,
     heatmap::HeatmapShader,
-    kline::{
-        Action as KlineAction, ChartCommand, CommandResult, DataUpdate, FetchUpdate, KlineChart,
-    },
+    kline::{Action as KlineAction, ChartCommand, DataUpdate, FetchUpdate, KlineChart},
     ladder::Ladder,
     timesales::TimeAndSales,
 };
@@ -975,12 +973,8 @@ impl State {
                                         effect = Some(Effect::RefreshStreams);
                                     }
                                     Content::Kline { chart: Some(c), .. } => {
-                                        let action = match c
-                                            .apply_command(ChartCommand::SetBasis(new_basis))
-                                        {
-                                            CommandResult::Action(action) => action,
-                                            _ => None,
-                                        };
+                                        let action =
+                                            c.apply_command(ChartCommand::SetBasis(new_basis));
                                         let stream_plan_changed = self.sync_kline_streams();
 
                                         if let Some(super::ChartAction::RequestFetch(fetch)) =

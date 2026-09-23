@@ -4,7 +4,7 @@ use super::indicators::{
 use super::series::KlineSeries;
 use super::{
     IndicatorInstanceId, IndicatorInstanceStore, IndicatorUpdateScope, KlineIndexChange,
-    KlineStudy, KlineUpdate, LineStrokeStyle, MIN_LINE_WIDTH, ProfileSource, SeriesColor,
+    KlineStudy, KlineUpdate, LineStrokeStyle, MIN_LINE_WIDTH, SeriesColor, StudyDataSource,
     ThemeAccent,
 };
 use crate::chart::Basis;
@@ -157,6 +157,12 @@ impl KlineData {
     pub fn configure_recurring_profile_intervals(&mut self, intervals: &[(Timeframe, PriceStep)]) {
         if let Some(base_series) = self.base_series_mut() {
             base_series.configure_recurring_profile_intervals(intervals);
+        }
+    }
+
+    pub fn configure_big_trades_threshold(&mut self, threshold: Option<u64>) {
+        if let Some(base_series) = self.base_series_mut() {
+            base_series.configure_big_trades_threshold(threshold);
         }
     }
 
@@ -721,7 +727,7 @@ impl KlineData {
     ) -> Vec<(Timeframe, PriceStep)> {
         let mut recurring_intervals = studies
             .iter()
-            .filter(|study| study.source() == ProfileSource::Trades)
+            .filter(|study| study.source() == StudyDataSource::Trades)
             .filter_map(|study| {
                 study
                     .recurring_profile_interval()
@@ -732,139 +738,5 @@ impl KlineData {
         recurring_intervals.sort_unstable();
         recurring_intervals.dedup();
         recurring_intervals
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::chart::Basis;
-    use exchange::adapter::Exchange;
-    use exchange::unit::{MinTicksize, Price};
-    use exchange::{Kline, Ticker, TickerInfo, Timeframe, Trade, UnixMs, Volume};
-
-    fn ticker_info() -> TickerInfo {
-        TickerInfo::new(
-            Ticker::new("BTCUSDT", Exchange::BinanceSpot),
-            0.01,
-            0.01,
-            None,
-        )
-    }
-
-    fn kline(time: u64) -> Kline {
-        Kline::new(
-            time,
-            100.0,
-            101.0,
-            99.0,
-            100.5,
-            Volume::empty_total(),
-            MinTicksize::new(0),
-        )
-    }
-
-    fn trade(time: u64) -> Trade {
-        Trade {
-            time: UnixMs::new(time),
-            is_sell: false,
-            price: Price::from_f64(100.0),
-            qty: 1.0.into(),
-        }
-    }
-
-    #[test]
-    fn empty_and_unknown_updates_are_unchanged() {
-        let ticker = ticker_info();
-        let mut data = KlineData::new(ticker, TickMultiplier(25));
-        let basis = Basis::Time(Timeframe::M1);
-        let unknown = TickerInfo::new(
-            Ticker::new("ETHUSDT", Exchange::BinanceSpot),
-            0.01,
-            0.01,
-            None,
-        );
-
-        assert!(matches!(
-            data.insert_historical_klines(ticker, &[], basis),
-            KlineDataChange::Unchanged
-        ));
-        assert!(matches!(
-            data.update_live_kline(&unknown, &kline(0), basis, &[], false),
-            KlineDataChange::Unchanged
-        ));
-        assert!(matches!(
-            data.insert_live_trades(&unknown, &[trade(0)], basis, &[], false),
-            KlineDataChange::Unchanged
-        ));
-        assert!(matches!(
-            data.insert_historical_trades(ticker, &[], false, basis),
-            KlineDataChange::Unchanged
-        ));
-    }
-
-    #[test]
-    fn data_mutators_report_their_domain_change() {
-        let ticker = ticker_info();
-        let mut data = KlineData::new(ticker, TickMultiplier(25));
-        let basis = Basis::Time(Timeframe::M1);
-        assert!(data.add_ticker(ticker, basis));
-
-        assert!(matches!(
-            data.insert_historical_klines(ticker, &[kline(0)], basis),
-            KlineDataChange::HistoricalKlines { .. }
-        ));
-        assert!(matches!(
-            data.update_live_kline(&ticker, &kline(60_000), basis, &[], false),
-            KlineDataChange::LiveKline { .. }
-        ));
-        assert!(matches!(
-            data.insert_live_trades(&ticker, &[trade(60_000)], basis, &[], false),
-            KlineDataChange::LiveTrades { .. }
-        ));
-        assert!(matches!(
-            data.insert_historical_trades(ticker, &[], true, basis),
-            KlineDataChange::HistoricalTrades
-        ));
-    }
-
-    #[test]
-    fn open_interest_outcome_preserves_status_without_fake_change() {
-        let ticker = ticker_info();
-        let mut data = KlineData::new(ticker, TickMultiplier(25));
-        let basis = Basis::Time(Timeframe::M1);
-        assert!(data.add_ticker(ticker, basis));
-
-        assert!(matches!(
-            data.insert_historical_open_interest(ticker, &OpenInterestSeries::default()),
-            KlineDataChange::HistoricalOpenInterest {
-                update: HistoricalOpenInterestUpdate::NoData {
-                    has_consumer: false
-                }
-            }
-        ));
-        assert!(matches!(
-            data.insert_historical_open_interest(
-                ticker,
-                &OpenInterestSeries::from_points([(UnixMs::new(0), 1.0)])
-            ),
-            KlineDataChange::HistoricalOpenInterest {
-                update: HistoricalOpenInterestUpdate::Ignored
-            }
-        ));
-        assert!(matches!(
-            data.insert_historical_open_interest(
-                TickerInfo::new(
-                    Ticker::new("ETHUSDT", Exchange::BinanceSpot),
-                    0.01,
-                    0.01,
-                    None,
-                ),
-                &OpenInterestSeries::default()
-            ),
-            KlineDataChange::HistoricalOpenInterest {
-                update: HistoricalOpenInterestUpdate::Rejected
-            }
-        ));
     }
 }

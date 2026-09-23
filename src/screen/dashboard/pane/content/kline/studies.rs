@@ -1,6 +1,6 @@
 use crate::widget::study_configurator as study;
 use data::chart::Basis;
-use data::chart::kline::{KlineStudy, KlineStudyId};
+use data::chart::kline::{KlineStudy, KlineStudyId, SourceConstraint, StudyDataSource};
 
 pub enum StudyCommand {
     Set(Vec<KlineStudy>),
@@ -28,6 +28,14 @@ impl StudyChange {
 pub(super) struct StudySnapshot {
     active: Vec<KlineStudy>,
     configs: Vec<KlineStudy>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum StudyAvailability {
+    Available,
+    UnsupportedBasis,
+    RequiresTradeData,
+    SourceConflict(StudyDataSource),
 }
 
 impl StudySnapshot {
@@ -75,14 +83,33 @@ impl StudyState {
         self.active.iter().copied().find(|study| study.id() == id)
     }
 
-    pub(super) fn is_available(
+    pub(super) fn availability(
         &self,
         study: KlineStudy,
         basis: Basis,
         trade_data_enabled: bool,
-    ) -> bool {
-        study.normalized_for_basis(basis).is_some()
-            && (trade_data_enabled || !study.requires_trade_data())
+    ) -> StudyAvailability {
+        if study.normalized_for_basis(basis).is_none() {
+            return StudyAvailability::UnsupportedBasis;
+        }
+
+        if let SourceConstraint::Exclusive(source) = study.source_constraint()
+            && let Some(conflicting) =
+                self.active
+                    .iter()
+                    .find_map(|active| match active.source_constraint() {
+                        SourceConstraint::Exclusive(other) if other != source => Some(other),
+                        SourceConstraint::Exclusive(_) | SourceConstraint::Independent => None,
+                    })
+        {
+            return StudyAvailability::SourceConflict(conflicting);
+        }
+
+        if !trade_data_enabled && study.requires_trade_data() {
+            return StudyAvailability::RequiresTradeData;
+        }
+
+        StudyAvailability::Available
     }
 
     pub(super) fn restore(&mut self, snapshot: StudySnapshot) {
@@ -91,10 +118,7 @@ impl StudyState {
     }
 
     pub(super) fn normalize_for_basis(&mut self, basis: Basis) {
-        self.active = Self::active_for_families(Self::normalized_for_basis(
-            self.active.iter().copied(),
-            basis,
-        ));
+        self.active = Self::normalized_active(self.active.iter().copied(), basis);
         self.configs = Self::normalized_for_basis(self.configs.iter().copied(), basis);
         self.remember_configs(&self.active.clone());
     }
@@ -192,7 +216,7 @@ impl StudyState {
     }
 
     fn apply_set(&mut self, studies: Vec<KlineStudy>, basis: Basis) -> StudyChange {
-        let normalized = Self::active_for_families(Self::normalized_for_basis(studies, basis));
+        let normalized = Self::normalized_active(studies, basis);
         self.remember_configs(&normalized);
         let changed = self.active != normalized;
         if changed {
@@ -212,7 +236,9 @@ impl StudyState {
         basis: Basis,
         trade_data_enabled: bool,
     ) -> Option<Vec<KlineStudy>> {
-        if is_active && !self.is_available(study, basis, trade_data_enabled) {
+        if is_active
+            && self.availability(study, basis, trade_data_enabled) != StudyAvailability::Available
+        {
             return None;
         }
 
@@ -252,6 +278,28 @@ impl StudyState {
                 self.configs.push(*study);
             }
         }
+    }
+
+    fn normalized_active(
+        studies: impl IntoIterator<Item = KlineStudy>,
+        basis: Basis,
+    ) -> Vec<KlineStudy> {
+        let studies = studies.into_iter().collect::<Vec<_>>();
+        let source = studies
+            .iter()
+            .rev()
+            .find_map(|study| match study.source_constraint() {
+                SourceConstraint::Exclusive(source) => Some(source),
+                SourceConstraint::Independent => None,
+            });
+        let studies = studies
+            .into_iter()
+            .filter(|study| match study.source_constraint() {
+                SourceConstraint::Exclusive(study_source) => Some(study_source) == source,
+                SourceConstraint::Independent => true,
+            });
+
+        Self::active_for_families(Self::normalized_for_basis(studies, basis))
     }
 
     fn normalized_for_basis(

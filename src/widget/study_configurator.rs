@@ -10,9 +10,12 @@ use data::chart::heatmap::{CLEANUP_THRESHOLD, HeatmapStudy, ProfileKind};
 use data::chart::kline::{
     KlineStudy, MAX_TPO_VALUE_AREA_PERCENT, MAX_VOLUME_PROFILE_OPACITY_PERCENT,
     MAX_VOLUME_PROFILE_WIDTH_PERCENT, MIN_TPO_VALUE_AREA_PERCENT,
-    MIN_VOLUME_PROFILE_OPACITY_PERCENT, MIN_VOLUME_PROFILE_WIDTH_PERCENT, ProfileSource, TpoAnchor,
-    TpoColorConfig, VolumeProfileColorConfig, VolumeProfileSchedule,
+    MIN_VOLUME_PROFILE_OPACITY_PERCENT, MIN_VOLUME_PROFILE_WIDTH_PERCENT, StudyDataSource,
+    TpoAnchor, TpoColorConfig, VolumeProfileColorConfig, VolumeProfileSchedule,
+    big_trades_step_count, big_trades_step_for_threshold, big_trades_threshold_at_step,
+    big_trades_threshold_label,
 };
+use data::config::theme::ThemeColor;
 use exchange::unit::{MinTicksize, PriceStep};
 use exchange::{TickMultiplier, Timeframe};
 use iced::{
@@ -126,7 +129,7 @@ fn study_window_duration(datapoint_count: usize, interval_ms: u64) -> String {
 
 fn volume_profile_color_section<'a>(
     colors: VolumeProfileColorConfig,
-    source: ProfileSource,
+    source: StudyDataSource,
     schedule: VolumeProfileSchedule,
     theme_accents: ThemeAccents,
     layout: StudyConfigLayout,
@@ -475,6 +478,89 @@ impl Study for HeatmapStudy {
     }
 }
 
+fn big_trades_color_settings<'a>(
+    buy_color: ThemeColor,
+    sell_color: ThemeColor,
+    theme_accents: ThemeAccents,
+    on_change: impl Fn(ThemeColor, ThemeColor) -> Message<KlineStudy> + Copy + 'a,
+) -> Element<'a, Message<KlineStudy>> {
+    let buy_accent_control =
+        crate::widget::theme_color_control(buy_color, theme_accents, move |accent| {
+            on_change(
+                ThemeColor::with_accent(buy_color.role, accent, buy_color.shade),
+                sell_color,
+            )
+        });
+    let buy_shade_control = pick_list(
+        data::config::theme::ThemeColorShade::ALL,
+        Some(buy_color.shade),
+        move |shade| {
+            on_change(
+                ThemeColor::with_accent(buy_color.role, buy_color.accent, shade),
+                sell_color,
+            )
+        },
+    )
+    .width(Length::Fill);
+    let sell_accent_control =
+        crate::widget::theme_color_control(sell_color, theme_accents, move |accent| {
+            on_change(
+                buy_color,
+                ThemeColor::with_accent(sell_color.role, accent, sell_color.shade),
+            )
+        });
+    let sell_shade_control = pick_list(
+        data::config::theme::ThemeColorShade::ALL,
+        Some(sell_color.shade),
+        move |shade| {
+            on_change(
+                buy_color,
+                ThemeColor::with_accent(sell_color.role, sell_color.accent, shade),
+            )
+        },
+    )
+    .width(Length::Fill);
+
+    column![
+        study_setting(
+            "Buy bubbles",
+            column![buy_accent_control, buy_shade_control].spacing(4),
+            StudyConfigLayout::Inspector(inspector::InspectorTab::Style),
+        ),
+        study_setting(
+            "Sell bubbles",
+            column![sell_accent_control, sell_shade_control].spacing(4),
+            StudyConfigLayout::Inspector(inspector::InspectorTab::Style),
+        ),
+    ]
+    .spacing(inspector::MODAL_SECTION_SPACING)
+    .into()
+}
+
+fn big_trades_threshold_slider<'a>(
+    threshold: u64,
+    buy_color: ThemeColor,
+    sell_color: ThemeColor,
+    visible: bool,
+    on_change: impl Fn(KlineStudy) -> Message<KlineStudy> + Copy + 'a,
+) -> Element<'a, Message<KlineStudy>> {
+    classic_slider_row(
+        Some(text("Minimum quote notional per trade")),
+        0..=big_trades_step_count().saturating_sub(1) as u32,
+        big_trades_step_for_threshold(threshold) as u32,
+        move |step| {
+            on_change(KlineStudy::BigTrades {
+                threshold: big_trades_threshold_at_step(step as usize),
+                buy_color,
+                sell_color,
+                visible,
+            })
+        },
+        |step| big_trades_threshold_label(big_trades_threshold_at_step(*step as usize)),
+        Some(1),
+    )
+}
+
 fn kline_study_config_view<'a>(
     study: &KlineStudy,
     basis: data::chart::Basis,
@@ -711,6 +797,49 @@ fn kline_study_config_view<'a>(
                 }
             }
         }
+        KlineStudy::BigTrades {
+            threshold,
+            buy_color,
+            sell_color,
+            visible,
+        } => {
+            let threshold = *threshold;
+            let buy_color = *buy_color;
+            let sell_color = *sell_color;
+            let visible = *visible;
+            let slider =
+                big_trades_threshold_slider(threshold, buy_color, sell_color, visible, on_change);
+            match layout {
+                StudyConfigLayout::Card => {
+                    let mut content = column![];
+                    if include_reset {
+                        content = content.push(row![
+                            space::horizontal(),
+                            button("Reset defaults")
+                                .on_press(on_change((*study).default_for_type_for_basis(basis))),
+                        ]);
+                    }
+                    content.push(slider).padding(8).spacing(4).into()
+                }
+                StudyConfigLayout::Inspector(tab) => match tab {
+                    inspector::InspectorTab::Inputs => column![slider].spacing(4).into(),
+                    inspector::InspectorTab::Style => big_trades_color_settings(
+                        buy_color,
+                        sell_color,
+                        theme_accents,
+                        move |buy_color, sell_color| {
+                            on_change(KlineStudy::BigTrades {
+                                threshold,
+                                buy_color,
+                                sell_color,
+                                visible,
+                            })
+                        },
+                    ),
+                    inspector::InspectorTab::Source => column![].into(),
+                },
+            }
+        }
         KlineStudy::TpoProfile {
             source,
             anchor,
@@ -741,7 +870,7 @@ fn kline_study_config_view<'a>(
 
 fn tpo_study_config_view<'a>(
     study: KlineStudy,
-    source: ProfileSource,
+    source: StudyDataSource,
     anchor: TpoAnchor,
     letter_period: Timeframe,
     tick_multiplier: Option<TickMultiplier>,
@@ -1022,7 +1151,7 @@ fn tpo_visibility_toggle<'a>(
                     colors,
                     visible,
                 },
-                KlineStudy::VolumeProfile { .. } => unreachable!(),
+                KlineStudy::VolumeProfile { .. } | KlineStudy::BigTrades { .. } => unreachable!(),
             })
         })
         .width(Length::Fill)
