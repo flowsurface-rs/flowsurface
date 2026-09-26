@@ -2,8 +2,8 @@ use super::fetch::FetchCoordinator;
 use super::layout::{IndicatorRebuildReason, IndicatorState};
 use data::chart::Basis;
 use data::chart::kline::{
-    HistoricalOpenInterestUpdate, IndicatorInputSource, IndicatorUpdateScope, KlineData,
-    KlineDataChange, KlineIndexChange, OpenInterestSeries,
+    HistoricalInputUpdate, IndicatorUpdateScope, KlineData, KlineDataChange, KlineIndexChange,
+    OpenInterestSeries,
 };
 use exchange::{Kline, TickerInfo, Timeframe, Trade};
 
@@ -65,7 +65,7 @@ impl DataUpdate<'_> {
         if matches!(&change, KlineDataChange::Unchanged)
             || matches!(
                 &change,
-                KlineDataChange::HistoricalOpenInterest { update } if !update.changed()
+                KlineDataChange::HistoricalInput { update, .. } if !update.needs_rebuild()
             )
         {
             return DataUpdateEffect::Unchanged;
@@ -156,16 +156,9 @@ impl DataUpdate<'_> {
                 );
                 DataUpdateEffect::HistoricalChanged
             }
-            (
-                DataUpdate::HistoricalOpenInterest { .. },
-                KlineDataChange::HistoricalOpenInterest { update },
-            ) => {
-                debug_assert!(update.changed());
-                indicators.mark_for_inputs(
-                    data,
-                    &[IndicatorInputSource::OpenInterest],
-                    IndicatorRebuildReason::InputFetch,
-                );
+            (_, KlineDataChange::HistoricalInput { source, update }) => {
+                debug_assert!(update.needs_rebuild());
+                indicators.mark_for_inputs(data, &[source], IndicatorRebuildReason::InputFetch);
                 DataUpdateEffect::HistoricalChanged
             }
             _ => unreachable!("data update outcome does not match its input"),
@@ -257,18 +250,17 @@ impl DataUpdate<'_> {
 
                 let change = data.insert_historical_open_interest(*ticker_info, series);
                 if let Some(req_id) = req_id {
-                    let KlineDataChange::HistoricalOpenInterest { update } = &change else {
+                    let KlineDataChange::HistoricalInput { update, .. } = &change else {
                         unreachable!("open-interest update returned another outcome")
                     };
                     match update {
-                        HistoricalOpenInterestUpdate::Rejected => {
+                        HistoricalInputUpdate::Rejected => {
                             fetch.mark_failed_for(*ticker_info, *req_id)
                         }
-                        HistoricalOpenInterestUpdate::NoData { .. } => {
+                        HistoricalInputUpdate::NoData { .. } => {
                             fetch.mark_no_data(*ticker_info, *req_id);
                         }
-                        HistoricalOpenInterestUpdate::Ignored
-                        | HistoricalOpenInterestUpdate::Applied => {
+                        HistoricalInputUpdate::Ignored | HistoricalInputUpdate::Applied => {
                             fetch.mark_completed(*ticker_info, *req_id)
                         }
                     }

@@ -32,7 +32,7 @@ use presentation::IndicatorPresentationResolver;
 use profile::{ProfilePlan, ProfileState, ProfileTradeUpdate, profile_source_timeframe};
 use settings::{ChartOptions, InspectorEffect, InspectorState, SettingsContext};
 pub use studies::StudyCommand;
-use studies::StudyState;
+use studies::{StudyChange, StudyState};
 pub use updates::DataUpdate;
 use updates::DataUpdateEffect;
 use viewport::ViewportState;
@@ -44,6 +44,7 @@ use data::chart::kline::LegendVisibility;
 use data::chart::kline::composition::{
     DEFAULT_MIN_PANEL_RATIO, MarkKind, PanelRole, PanelScaleMode,
 };
+use data::chart::kline::footprint::{ClusterKind, ClusterScaling};
 use data::chart::kline::indicators::IndicatorHost;
 use data::chart::kline::series::KlineSeries;
 use data::chart::kline::{
@@ -54,7 +55,6 @@ use data::chart::kline::{
     SettingsSnapshot, StudyDataSource, TPO_TRADE_COVERAGE_TIMEFRAME, TpoProfileStatus,
     visible_window,
 };
-use data::chart::kline_data::{ClusterKind, ClusterScaling};
 use exchange::adapter::StreamKind;
 use exchange::{TickMultiplier, TickerInfo, Timeframe, UnixMs};
 use indicator_engine::IndicatorFrame;
@@ -65,7 +65,7 @@ use tokio::sync::oneshot;
 
 const DEFAULT_HORIZONTAL_OFFSET_UNITS: f32 = 8.0;
 
-const DEFAULT_FOOTPRINT_TICK_MULTIPLIER: TickMultiplier = TickMultiplier(25);
+const DEFAULT_TICK_MULTIPLIER: TickMultiplier = TickMultiplier(25);
 
 const FLOATING_TOOLBAR_MARGIN: f32 = 8.0;
 const FLOATING_TOOLBAR_HANDLE_WIDTH: f32 = 28.0;
@@ -150,9 +150,17 @@ pub struct KlineChart {
     cache_rev: u64,
     last_revision_at: Instant,
     data_redraw_pending: bool,
+    settings_reconfigure_pending: bool,
     frame_revision: u64,
     next_indicator_rebuild_job: u64,
     indicator_rebuild: Option<IndicatorRebuildState>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UpdatePolicy {
+    Redraw,
+    DeferredReconfigure,
+    ImmediateReconfigure,
 }
 
 pub enum ChartCommand {
@@ -187,7 +195,7 @@ pub enum ChartCommand {
         config: FootprintPocConfig,
     },
     ResetFootprintSettings,
-    SetFootprintTickMultiplier {
+    SetTickMultiplier {
         multiplier: TickMultiplier,
     },
 
@@ -226,6 +234,41 @@ pub enum ChartCommand {
 }
 
 impl ChartCommand {
+    fn update_policy(&self) -> UpdatePolicy {
+        match self {
+            Self::SetLegendVisibility(_)
+            | Self::SetCandlestickConfig { .. }
+            | Self::ResetCandlestickSettings
+            | Self::SetCandlestickMark { .. }
+            | Self::SetCandlestickVisible { .. }
+            | Self::SetFootprintClusterKind { .. }
+            | Self::SetFootprintClusterScaling { .. }
+            | Self::SetFootprintImbalanceConfig { .. }
+            | Self::SetFootprintPocConfig { .. }
+            | Self::ResetFootprintSettings
+            | Self::SetSeriesColor { .. }
+            | Self::SetSeriesLineWidth { .. }
+            | Self::SetSeriesStrokeStyle { .. }
+            | Self::ResetSeriesSettings { .. }
+            | Self::TpoEdit(_) => UpdatePolicy::Redraw,
+            Self::SetBasis(_)
+            | Self::SetTradeDataEnabled(_)
+            | Self::SetTickMultiplier { .. }
+            | Self::AddIndicator(_)
+            | Self::AddIndicatorOnSource { .. }
+            | Self::RemoveIndicator(_)
+            | Self::AddTicker { .. }
+            | Self::RemoveTicker { .. }
+            | Self::Indicator(IndicatorCommand::InputChanged(
+                IndicatorInputCommand::SourceBinding { .. }
+                | IndicatorInputCommand::BaseSource { .. },
+            )) => UpdatePolicy::ImmediateReconfigure,
+            Self::SetFootprintVisible { .. } | Self::Indicator(_) | Self::Study(_) => {
+                UpdatePolicy::DeferredReconfigure
+            }
+        }
+    }
+
     fn indicator_input(command: IndicatorInputCommand) -> Self {
         Self::Indicator(IndicatorCommand::InputChanged(command))
     }
@@ -245,14 +288,14 @@ impl KlineChart {
             .first()
             .copied()
             .expect("Kline chart requires a base ticker");
-        let footprint_tick_multiplier = DEFAULT_FOOTPRINT_TICK_MULTIPLIER;
+        let tick_multiplier = DEFAULT_TICK_MULTIPLIER;
         let indicators = IndicatorState::new();
 
         let mut chart = Self {
             basis,
             viewport: ViewportState::default(),
             options: ChartOptions::default(),
-            data: KlineData::new(base_ticker, footprint_tick_multiplier),
+            data: KlineData::new(base_ticker, tick_multiplier),
             indicators,
             fetch: FetchCoordinator::new(&[]),
             history: DrawingHistory::default(),
@@ -267,6 +310,7 @@ impl KlineChart {
             cache_rev: 0,
             last_revision_at: Instant::now(),
             data_redraw_pending: false,
+            settings_reconfigure_pending: false,
             frame_revision: 0,
             next_indicator_rebuild_job: 0,
             indicator_rebuild: None,
@@ -626,6 +670,10 @@ impl KlineChart {
         if let Some(ts) = now {
             self.last_tick = ts;
 
+            if self.flush_settings_update() {
+                self.bump_rev();
+            }
+
             if self.rebuild_tpo_profiles() {
                 self.bump_rev();
             }
@@ -651,7 +699,7 @@ impl KlineChart {
         {
             self.complete_indicator_rebuild(job_id);
         }
-        if self.indicator_rebuild.is_some() {
+        if self.indicator_rebuild.is_some() || self.settings_reconfigure_pending {
             return None;
         }
 
@@ -744,11 +792,33 @@ impl KlineChart {
     }
 
     fn bump_rev(&mut self) {
-        self.sync_tick_drawing_sequence();
-        self.prune_stale_indicator_y_ranges();
         self.cache_rev = self.cache_rev.wrapping_add(1);
         self.last_revision_at = Instant::now();
         self.data_redraw_pending = false;
+    }
+
+    fn request_settings_update(&mut self, policy: UpdatePolicy) {
+        match policy {
+            UpdatePolicy::Redraw => self.bump_rev(),
+            UpdatePolicy::DeferredReconfigure => self.settings_reconfigure_pending = true,
+            UpdatePolicy::ImmediateReconfigure => {
+                self.settings_reconfigure_pending = true;
+                self.flush_settings_update();
+                self.bump_rev();
+            }
+        }
+    }
+
+    fn flush_settings_update(&mut self) -> bool {
+        if !std::mem::take(&mut self.settings_reconfigure_pending) {
+            return false;
+        }
+
+        self.data.configure_series_for_basis(self.basis);
+        self.reconcile_indicator_layout(false);
+        self.sync_tick_drawing_sequence();
+        self.prune_stale_indicator_y_ranges();
+        true
     }
 
     pub fn view(
@@ -962,11 +1032,12 @@ impl KlineChart {
     }
 
     fn show_sidebar(&mut self, page: Sidebar) {
-        if self.sidebar == page {
+        if self.sidebar == page && !self.settings_reconfigure_pending {
             return;
         }
 
         self.sidebar = page;
+        self.flush_settings_update();
         self.bump_rev();
     }
 
@@ -1110,7 +1181,7 @@ impl KlineChart {
                     IndicatorInputSource::Trades,
                     IndicatorInputSource::DirectionalVolume,
                 ],
-                IndicatorRebuildReason::InputConfigurationChanged,
+                IndicatorRebuildReason::TradeDataModeChanged,
             );
         }
         if !current.open_interest {
@@ -1378,6 +1449,7 @@ impl KlineChart {
             &mut self.indicators,
             trade_data_enabled,
         );
+        self.sync_tick_drawing_sequence();
         let historical_changed = matches!(&effect, DataUpdateEffect::HistoricalChanged);
         match effect {
             DataUpdateEffect::Unchanged => {}
@@ -1578,7 +1650,7 @@ impl KlineChart {
         let Some(study) = plan.tpo_study else {
             return self.profiles.clear_tpo_source();
         };
-        let price_step = self.data.effective_study_tick_size(study);
+        let price_step = self.data.tick_size();
         match study.source() {
             StudyDataSource::Kline => {
                 let source_timeframe = plan
@@ -1599,11 +1671,9 @@ impl KlineChart {
                 )
             }
             StudyDataSource::Trades => {
-                let trades = self
-                    .data
-                    .base_series()
-                    .map(|series| series.raw_trades())
-                    .unwrap_or_default();
+                let series = self.data.base_series();
+                let trades = series.map(|series| series.raw_trades()).unwrap_or_default();
+                let trade_sequence_id = series.map(|series| series.trade_sequence_id());
                 let fetch = &self.fetch;
                 let ticker_info = self.data.base_ticker();
                 let now = UnixMs::now();
@@ -1625,6 +1695,7 @@ impl KlineChart {
                 self.profiles.rebuild_tpo_from_trades(
                     Some(study),
                     trades,
+                    trade_sequence_id,
                     price_step,
                     now,
                     profile_status,
@@ -1666,8 +1737,6 @@ impl KlineChart {
         self.frame_revision = self.frame_revision.wrapping_add(1);
         self.indicators
             .mark_rebuild_pending(IndicatorRebuildReason::BasisChanged);
-        self.configure_profile_caches();
-
         if basis_changed {
             self.fetch.reset_for_basis_change();
         } else {
@@ -1700,14 +1769,15 @@ impl KlineChart {
         self.indicators.retain_dirty_for(active_indicators);
         if rebuild_all {
             self.indicators
-                .mark_rebuild_pending(IndicatorRebuildReason::IndicatorConfigurationChanged);
+                .mark_rebuild_pending(IndicatorRebuildReason::IndicatorStructureChanged);
         }
-        if !changed_indicator_ids.is_empty() {
-            self.indicators.mark_with_dependents(
-                &self.data,
-                &changed_indicator_ids,
-                IndicatorRebuildReason::IndicatorConfigurationChanged,
-            );
+        for id in changed_indicator_ids {
+            let reason = self
+                .indicators
+                .rebuild_reason(id)
+                .unwrap_or(IndicatorRebuildReason::IndicatorStructureChanged);
+            self.indicators
+                .mark_with_dependents(&self.data, &[id], reason);
         }
     }
 
@@ -1771,6 +1841,8 @@ impl KlineChart {
     }
 
     fn apply_command_inner(&mut self, command: ChartCommand) -> Option<ChartAction> {
+        let mut policy = command.update_policy();
+        let mut request_fetch = false;
         let previous_requirements = self.data_requirements();
         let previous_panels = self
             .indicators
@@ -1836,7 +1908,6 @@ impl KlineChart {
                 let changed = self.options.footprint.visible != visible;
                 if changed {
                     self.options.footprint = self.options.footprint.with_visible(visible);
-                    self.configure_profile_caches();
                     dirty = true;
                 }
                 None
@@ -1869,35 +1940,29 @@ impl KlineChart {
                 let changed = self.options.footprint.poc != config;
                 if changed {
                     self.options.footprint = self.options.footprint.with_poc(config);
-                    self.configure_profile_caches();
                     dirty = true;
                 }
                 None
             }
             ChartCommand::ResetFootprintSettings => {
                 let default_options = self.options.footprint.with_default_options();
-                let poc_changed = self.options.footprint.poc != default_options.poc;
                 let changed = self.options.footprint != default_options;
                 if changed {
                     self.options.footprint = default_options;
-                    if poc_changed {
-                        self.configure_profile_caches();
-                    }
                     dirty = true;
                 }
                 None
             }
-            ChartCommand::SetFootprintTickMultiplier { multiplier } => {
-                if self.data.set_footprint_tick_multiplier(multiplier) {
-                    self.data.configure_series_for_basis(self.basis);
-                    self.configure_profile_caches();
+            ChartCommand::SetTickMultiplier { multiplier } => {
+                if self.data.set_tick_multiplier(multiplier) {
                     dirty = true;
                 }
                 None
             }
             ChartCommand::AddIndicator(kind) => {
                 let change = self.indicators.add_indicator(kind, self.basis, &self.data);
-                self.apply_indicator_change(change, &mut dirty)
+                request_fetch = self.apply_indicator_change(change, &mut dirty, &mut policy);
+                None
             }
             ChartCommand::AddIndicatorOnSource {
                 kind,
@@ -1907,15 +1972,21 @@ impl KlineChart {
                 let change = self
                     .indicators
                     .add_indicator_on_source(kind, input_id, source, self.basis, &self.data);
-                self.apply_indicator_change(change, &mut dirty)
+                request_fetch = self.apply_indicator_change(change, &mut dirty, &mut policy);
+                None
             }
             ChartCommand::RemoveIndicator(id) => {
                 let change = self.indicators.remove_indicator(id);
-                self.apply_indicator_change(change, &mut dirty)
+                request_fetch = self.apply_indicator_change(change, &mut dirty, &mut policy);
+                None
             }
-            ChartCommand::Indicator(command) => self.apply_indicator_command(command, &mut dirty),
+            ChartCommand::Indicator(command) => {
+                let change = self.indicators.apply(command, &self.data);
+                request_fetch = self.apply_indicator_change(change, &mut dirty, &mut policy);
+                None
+            }
             ChartCommand::Study(command) => {
-                self.apply_study_command(command, &mut dirty);
+                self.apply_study_command(command, &mut dirty, &mut policy);
                 None
             }
             ChartCommand::TpoEdit(command) => {
@@ -1969,11 +2040,9 @@ impl KlineChart {
                     let selected_tickers = self.data.selected_tickers();
                     self.indicators
                         .sync_comparison_sources(self.data.base_ticker(), &selected_tickers);
-                    let active_indicators = self.selected_indicators();
-                    self.configure_indicator_runtimes(&active_indicators, false);
                     self.mark_indicators_for_candle_ticker(
                         ticker_info,
-                        IndicatorRebuildReason::IndicatorConfigurationChanged,
+                        IndicatorRebuildReason::IndicatorStructureChanged,
                     );
                     true
                 } else {
@@ -2002,7 +2071,12 @@ impl KlineChart {
         }
 
         if dirty {
-            self.bump_rev();
+            self.request_settings_update(policy);
+        }
+        if request_fetch && policy == UpdatePolicy::ImmediateReconfigure {
+            return self
+                .request_fetch_action(false)
+                .map(ChartAction::RequestFetch);
         }
         result
     }
@@ -2047,13 +2121,10 @@ impl KlineChart {
             return false;
         }
 
-        if indicator_removed {
-            self.reconcile_indicator_layout(false);
-        }
         self.reconcile_data_requirements(previous_requirements);
         let _ = self.viewport.indicator_y_ranges.reset(panel_id);
         self.history.clear();
-        self.bump_rev();
+        self.request_settings_update(UpdatePolicy::ImmediateReconfigure);
         true
     }
 
@@ -2064,7 +2135,6 @@ impl KlineChart {
         if !self.options.set_trade_data_requested(enabled, self.basis) {
             return;
         }
-        self.configure_profile_caches();
         *dirty = true;
     }
 
@@ -2076,72 +2146,66 @@ impl KlineChart {
         *dirty = true;
     }
 
-    fn apply_indicator_command(
-        &mut self,
-        command: IndicatorCommand,
-        dirty: &mut bool,
-    ) -> Option<ChartAction> {
-        let change = self.indicators.apply(command, &self.data);
-        self.apply_indicator_change(change, dirty)
-    }
-
     fn apply_indicator_change(
         &mut self,
         change: IndicatorChange,
         dirty: &mut bool,
-    ) -> Option<ChartAction> {
+        policy: &mut UpdatePolicy,
+    ) -> bool {
         match change {
-            IndicatorChange::Unchanged => None,
+            IndicatorChange::Unchanged => false,
             IndicatorChange::Visual => {
+                *policy = UpdatePolicy::Redraw;
                 *dirty = true;
-                None
+                false
             }
             IndicatorChange::Reconfigure { id, request_fetch } => {
-                self.data
-                    .reconfigure_indicator(id, self.indicators.instances());
-
+                if *policy != UpdatePolicy::ImmediateReconfigure {
+                    *policy = UpdatePolicy::DeferredReconfigure;
+                }
                 self.indicators.mark_with_dependents(
                     &self.data,
                     &[id],
-                    IndicatorRebuildReason::IndicatorConfigurationChanged,
+                    IndicatorRebuildReason::IndicatorSettingsChanged,
                 );
 
                 *dirty = true;
-                if request_fetch {
-                    self.request_fetch_action(false)
-                        .map(ChartAction::RequestFetch)
-                } else {
-                    None
-                }
+                request_fetch
             }
             IndicatorChange::Reconcile { request_fetch } => {
-                self.reconcile_indicator_layout(false);
+                *policy = UpdatePolicy::ImmediateReconfigure;
                 *dirty = true;
-                if request_fetch {
-                    self.request_fetch_action(false)
-                        .map(ChartAction::RequestFetch)
-                } else {
-                    None
-                }
+                request_fetch
             }
         }
     }
 
-    fn apply_study_command(&mut self, command: StudyCommand, dirty: &mut bool) {
-        let previous_plan = self.profile_plan();
-        let previous_threshold = self.active_big_trades_threshold();
+    fn apply_study_command(
+        &mut self,
+        command: StudyCommand,
+        dirty: &mut bool,
+        policy: &mut UpdatePolicy,
+    ) {
+        let previous_ids = self
+            .studies
+            .active()
+            .iter()
+            .map(|study| study.id())
+            .collect::<Vec<_>>();
         let change = self
             .studies
             .apply(command, self.basis, self.trade_data_enabled());
-        if change.changed()
-            && (previous_plan != self.profile_plan()
-                || previous_threshold != self.active_big_trades_threshold())
+        *policy = match change {
+            StudyChange::Unchanged => return,
+            StudyChange::Visual => UpdatePolicy::Redraw,
+            StudyChange::Reconfigure => UpdatePolicy::DeferredReconfigure,
+        };
+        *dirty = true;
+        if !previous_ids
+            .into_iter()
+            .eq(self.studies.active().iter().map(|study| study.id()))
         {
-            self.configure_profile_caches();
-        }
-
-        if change.changed() {
-            *dirty = true;
+            *policy = UpdatePolicy::ImmediateReconfigure;
         }
     }
 
@@ -2164,11 +2228,9 @@ impl KlineChart {
         {
             self.viewport.primary.reset();
         }
-        let active_indicators = self.selected_indicators();
-        self.configure_indicator_runtimes(&active_indicators, false);
         self.mark_indicators_for_candle_ticker(
             ticker_info,
-            IndicatorRebuildReason::IndicatorConfigurationChanged,
+            IndicatorRebuildReason::IndicatorStructureChanged,
         );
         true
     }
@@ -2207,6 +2269,7 @@ impl KlineChart {
     }
 
     fn apply_shared_settings(&mut self, snapshot: &SettingsSnapshot) {
+        self.settings_reconfigure_pending = false;
         let previous_requirements = self.data_requirements();
         self.replace_indicator_configuration(
             snapshot.indicator_instance_store(),
@@ -2229,6 +2292,8 @@ impl KlineChart {
             .restore_edits(snapshot.tpo_profile_edits.clone());
         self.studies.normalize_for_basis(self.basis);
         self.reconcile_indicator_layout(true);
+        self.sync_tick_drawing_sequence();
+        self.prune_stale_indicator_y_ranges();
         self.reconcile_data_requirements(previous_requirements);
     }
 
@@ -2381,8 +2446,8 @@ impl KlineChart {
         self.last_tick
     }
 
-    pub fn footprint_tick_multiplier(&self) -> TickMultiplier {
-        self.data.footprint_tick_multiplier()
+    pub fn tick_multiplier(&self) -> TickMultiplier {
+        self.data.tick_multiplier()
     }
 
     fn indicator_presentation_context(&self) -> IndicatorPresentationContext {

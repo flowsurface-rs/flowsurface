@@ -94,14 +94,6 @@ pub mod text {
             .style(crate::style::text_color::body)
     }
 
-    pub fn small<'a>(
-        content: impl iced::widget::text::IntoFragment<'a>,
-    ) -> iced::widget::Text<'a, Theme, Renderer> {
-        iced::widget::text(content)
-            .size(crate::style::text_size::SMALL)
-            .style(crate::style::text_color::body)
-    }
-
     pub fn muted<'a>(
         content: impl iced::widget::text::IntoFragment<'a>,
     ) -> iced::widget::Text<'a, Theme, Renderer> {

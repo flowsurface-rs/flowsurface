@@ -75,7 +75,7 @@ pub fn ladder_cfg_view<'a>(cfg: ladder::Config) -> InspectorContent<'a, Message>
     );
 
     let mut content = InspectorContent::new(vec![
-        InspectorSection::titled("Display Options", display_options),
+        InspectorSection::titled("Display Options", display_options).with_modal_container(),
         InspectorSection::titled("History", retention_slider),
     ]);
     content.set_footer(row![

@@ -214,6 +214,10 @@ impl IndicatorLayout {
             .collect()
     }
 
+    pub fn close_panel(&mut self, panel_id: PanelId) -> bool {
+        self.composition.remove_panel(panel_id)
+    }
+
     /// Indicators that are active (have a panel) and require trade data, but
     /// trade data is disabled. Returned as unsupported so the chart hides them.
     pub fn trade_data_unavailable_indicators(
@@ -583,13 +587,15 @@ impl IndicatorLayout {
                     }
                     PaneTarget::Indicator => {
                         let layers = self.new_indicator_layers(id, declared_layers);
-                        let panel_id = self.composition.add_aux_panel(
+                        let Some(panel_id) = self.composition.add_aux_panel(
                             panel_title,
                             layers,
                             Some(value_precision),
                             value_label_policy,
                             PanelPresentation::Plot,
-                        );
+                        ) else {
+                            return false;
+                        };
                         let _ = self
                             .composition
                             .set_panel_preferred_scale(panel_id, preferred_scale);
@@ -605,20 +611,23 @@ impl IndicatorLayout {
                                     && panel.named_pane == Some(named_pane)
                             })
                             .map(|panel| panel.id);
-                        let panel_id = panel_id.unwrap_or_else(|| {
+                        let panel_id = panel_id.or_else(|| {
                             let panel_id = self.composition.add_aux_panel(
                                 panel_title.clone(),
                                 Vec::new(),
                                 Some(value_precision),
                                 value_label_policy,
                                 PanelPresentation::Plot,
-                            );
+                            )?;
                             if let Some(panel) = self.composition.panel_mut(panel_id) {
                                 panel.named_pane = Some(named_pane);
                                 panel.preferred_scale = preferred_scale;
                             }
-                            panel_id
+                            Some(panel_id)
                         });
+                        let Some(panel_id) = panel_id else {
+                            return false;
+                        };
                         if !self.add_indicator_layers_to_panel(id, declared_layers, panel_id) {
                             return false;
                         }
@@ -634,9 +643,12 @@ impl IndicatorLayout {
                 }) else {
                     return false;
                 };
-                let panel_id = self
+                let Some(panel_id) = self
                     .composition
-                    .add_table_panel(panel_title, DataSourceId::Primary);
+                    .add_table_panel(panel_title, DataSourceId::Primary)
+                else {
+                    return false;
+                };
                 if let Some(panel) = self.composition.panel_mut(panel_id)
                     && let Some(layer) = panel.layers.first_mut()
                 {
@@ -860,7 +872,7 @@ impl IndicatorLayout {
                         Some(value_precision),
                         value_label_policy,
                         PanelPresentation::Plot,
-                    );
+                    )?;
                     if let Some(panel) = self.composition.panel_mut(panel_id) {
                         panel.named_pane = Some(named_pane);
                         panel.preferred_scale = preferred_scale;
@@ -903,7 +915,7 @@ impl IndicatorLayout {
                             Some(value_precision),
                             value_label_policy,
                             PanelPresentation::Plot,
-                        );
+                        )?;
                         let _ = self
                             .composition
                             .set_panel_preferred_scale(panel_id, preferred_scale);
@@ -1146,11 +1158,5 @@ impl IndicatorLayout {
             .base_layer
             .or_else(|| panel.layers.first().map(|layer| layer.id))?;
         Some((panel.id, layer_id))
-    }
-}
-
-impl IndicatorLayout {
-    pub fn close_panel(&mut self, panel_id: PanelId) -> bool {
-        self.composition.remove_panel(panel_id)
     }
 }

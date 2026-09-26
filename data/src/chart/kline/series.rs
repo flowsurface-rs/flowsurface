@@ -1,24 +1,23 @@
 use crate::aggr::{
-    TickCount,
     ticks::{TickAccumulation, TickAggr},
     time::TimeSeries,
 };
 use crate::chart::kline::IndicatorUpdateScope;
+use crate::chart::kline::bar::KlineDataPoint;
+use crate::chart::kline::footprint::{ClusterKind, KlineTrades};
 use crate::chart::kline::indicators::OpenInterestSeries;
-use crate::chart::kline::poc_lines::PocLineTracker;
+use crate::chart::kline::poc::{NPoc, PocLineTracker, PointOfControl};
+pub use crate::chart::kline::studies::big_trades::BigTradeEntry;
+use crate::chart::kline::studies::big_trades::BigTradesCache;
 use crate::chart::kline::studies::volume_profile::{
     AnchoredProfileDistribution, ProfileAccumulator, ProfileDistribution,
 };
 use crate::chart::kline::{LineStrokeStyle, MAX_LINE_WIDTH, MIN_LINE_WIDTH};
-use crate::chart::kline_data::{ClusterKind, KlineDataPoint, KlineTrades, NPoc, PointOfControl};
 use crate::chart::{Basis, PlotData};
 use crate::config::theme::{ThemeAccent, ThemeColor, ThemeColorRole, ThemeColorShade};
 use exchange::{
-    Kline, SizeUnit, TickerInfo, Timeframe, Trade, UnixMs,
-    unit::{
-        Price, PriceStep,
-        qty::{Qty, volume_size_unit},
-    },
+    Kline, TickerInfo, Timeframe, Trade, UnixMs,
+    unit::{Price, PriceStep, qty::Qty},
 };
 use indicator_engine::{ChartFrame, IndicatorFrame, InstrumentContext, TimeOrTick, TradeAggregate};
 use serde::{Deserialize, Serialize};
@@ -92,21 +91,6 @@ impl Default for SeriesColor {
 pub struct FootprintPocLine {
     pub start: UnixMs,
     pub poc: PointOfControl,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct BigTradeEntry {
-    pub index: usize,
-    pub time: UnixMs,
-    pub price: Price,
-    pub notional: f64,
-    pub is_sell: bool,
-}
-
-struct BigTradesCache {
-    threshold: u64,
-    entries: Vec<BigTradeEntry>,
-    consumed: usize,
 }
 
 struct RecurringProfileCache {
@@ -293,7 +277,7 @@ impl KlineSeries {
     ) -> Self {
         Self {
             ticker_info,
-            data: empty_plot_data(basis, tick_size),
+            data: empty_plot_data_with_trades(basis, tick_size, &[]),
             time_index: Vec::new(),
             color,
             line_width: MIN_LINE_WIDTH,
@@ -316,7 +300,7 @@ impl KlineSeries {
         self.data.basis()
     }
 
-    pub fn footprint_tick_size(&self) -> PriceStep {
+    pub fn tick_size(&self) -> PriceStep {
         self.data.tick_size()
     }
 
@@ -504,7 +488,7 @@ impl KlineSeries {
         } else {
             Vec::new()
         };
-        self.data = empty_plot_data_with_trades(basis, self.footprint_tick_size(), &raw_trades);
+        self.data = empty_plot_data_with_trades(basis, self.tick_size(), &raw_trades);
         if !preserve_raw_trades {
             self.raw_trades.clear();
             self.trade_sequence_id = uuid::Uuid::new_v4();
@@ -842,20 +826,6 @@ impl KlineSeries {
         (visual_index < self.point_count()).then_some(visual_index)
     }
 
-    pub fn enable_tick_aggregation(&mut self, interval: TickCount, footprint_tick_size: PriceStep) {
-        self.set_aggregation_basis(Basis::Tick(interval), true);
-        if let PlotData::TickBased(series) = &mut self.data {
-            series.change_tick_size(footprint_tick_size, &self.raw_trades);
-        }
-    }
-
-    pub fn disable_tick_aggregation(&mut self) {
-        if self.basis().is_time() {
-            return;
-        }
-        self.set_aggregation_basis(Basis::Time(Timeframe::M1), false);
-    }
-
     pub fn reset_for_basis(&mut self, preserve_raw_trades: bool) {
         let basis = self.basis();
         self.set_aggregation_basis(basis, preserve_raw_trades);
@@ -869,7 +839,8 @@ impl KlineSeries {
             return IndicatorUpdateScope::From(self.point_count());
         }
         merge_trade_time_range(&mut self.trade_time_range, trades);
-        self.sync_big_trades_cache(trades);
+        self.raw_trades.extend_from_slice(trades);
+        self.fold_big_trades_cache();
         self.recurring_profile_caches.clear();
         let PlotData::TickBased(tick_aggr) = &mut self.data else {
             unreachable!("tick basis checked above");
@@ -892,7 +863,9 @@ impl KlineSeries {
             return IndicatorUpdateScope::From(self.point_count());
         }
         merge_trade_time_range(&mut self.trade_time_range, trades);
-        self.sync_big_trades_cache(trades);
+        if self.sync_big_trades_cache(trades) {
+            self.trade_sequence_id = uuid::Uuid::new_v4();
+        }
         if self
             .time_trade_timeframe
             .is_some_and(|current| current != timeframe)
@@ -917,8 +890,8 @@ impl KlineSeries {
         )
     }
 
-    pub fn set_footprint_tick_size(&mut self, tick_size: PriceStep) {
-        if self.footprint_tick_size() == tick_size {
+    pub fn set_tick_size(&mut self, tick_size: PriceStep) {
+        if self.tick_size() == tick_size {
             return;
         }
         let raw_trades = self.raw_trades.clone();
@@ -927,22 +900,6 @@ impl KlineSeries {
             PlotData::TickBased(series) => series.change_tick_size(tick_size, &raw_trades),
         }
         self.clear_profile_caches();
-    }
-
-    pub fn rebuild_time_footprints(&mut self, timeframe: Timeframe) {
-        let raw_trades = self.raw_trades.clone();
-        if !matches!(self.data, PlotData::TimeBased(_)) {
-            return;
-        }
-        self.clear_profile_caches();
-        let PlotData::TimeBased(series) = &mut self.data else {
-            unreachable!("time basis checked above");
-        };
-        series.clear_trades();
-        series.insert_trades_existing_buckets(&raw_trades);
-        series.update_poc_status();
-        self.time_trade_timeframe = Some(timeframe);
-        self.trade_time_range = calculate_trade_time_range(&raw_trades);
     }
 
     pub fn configure_recurring_profile_intervals(&mut self, intervals: &[(Timeframe, PriceStep)]) {
@@ -1056,30 +1013,60 @@ impl KlineSeries {
         self.trade_time_range
     }
 
-    /// Appends `trades`, restoring time order when a gap-driven backfill delivers an older
-    /// range after newer trades are already loaded. Returns whether the order was restored,
-    /// since that also invalidates every cached trade index.
+    /// Keeps raw trades time-ordered and reports whether existing indices moved.
     fn append_raw_trades(&mut self, trades: &[Trade]) -> bool {
         if trades.is_empty() {
             return false;
         }
-        let out_of_order = self
+
+        let sorted_trades = if trades.windows(2).any(|pair| pair[0].time > pair[1].time) {
+            let mut sorted = trades.to_vec();
+            sorted.sort_unstable_by_key(|trade| trade.time);
+            Some(sorted)
+        } else {
+            None
+        };
+        let trades = sorted_trades.as_deref().unwrap_or(trades);
+        let previous_len = self.raw_trades.len();
+        let insert_at = self
             .raw_trades
-            .last()
-            .is_some_and(|last| trades[0].time < last.time);
-        self.raw_trades.extend_from_slice(trades);
-        if out_of_order {
-            self.raw_trades.sort_unstable_by_key(|trade| trade.time);
+            .partition_point(|trade| trade.time <= trades[0].time);
+
+        if self
+            .raw_trades
+            .get(insert_at)
+            .is_none_or(|next| next.time >= trades[trades.len() - 1].time)
+        {
+            self.raw_trades.extend_from_slice(trades);
+            self.raw_trades[insert_at..].rotate_right(trades.len());
+        } else {
+            let existing = std::mem::take(&mut self.raw_trades);
+            let mut merged = Vec::with_capacity(existing.len() + trades.len());
+            let (mut old, mut new) = (0, 0);
+            while old < existing.len() && new < trades.len() {
+                if existing[old].time <= trades[new].time {
+                    merged.push(existing[old]);
+                    old += 1;
+                } else {
+                    merged.push(trades[new]);
+                    new += 1;
+                }
+            }
+            merged.extend_from_slice(&existing[old..]);
+            merged.extend_from_slice(&trades[new..]);
+            self.raw_trades = merged;
         }
-        out_of_order
+        insert_at < previous_len
     }
 
-    fn sync_big_trades_cache(&mut self, trades: &[Trade]) {
-        if self.append_raw_trades(trades) {
+    fn sync_big_trades_cache(&mut self, trades: &[Trade]) -> bool {
+        let reordered = self.append_raw_trades(trades);
+        if reordered {
             self.rebuild_big_trades_cache();
         } else {
             self.fold_big_trades_cache();
         }
+        reordered
     }
 
     /// Rebuilds the big-trade cache for `threshold`, or drops it when no study needs it.
@@ -1092,70 +1079,34 @@ impl KlineSeries {
         if self
             .big_trades_cache
             .as_ref()
-            .is_some_and(|cache| cache.threshold == threshold)
+            .is_some_and(|cache| cache.threshold() == threshold)
         {
             return;
         }
-        let cache = self.build_big_trades_cache(threshold);
-        self.big_trades_cache = Some(cache);
+        self.big_trades_cache = Some(BigTradesCache::new(
+            threshold,
+            &self.raw_trades,
+            &self.ticker_info,
+        ));
     }
 
+    /// Requires a time-based series; tick-series entries follow trade arrival order.
     pub fn big_trades_in_time_range(&self, start: UnixMs, end: UnixMs) -> &[BigTradeEntry] {
         if start > end {
             return &[];
         }
-        let Some(cache) = self.big_trades_cache.as_ref() else {
-            return &[];
-        };
-        let lo = cache.entries.partition_point(|entry| entry.time < start);
-        let hi = cache.entries.partition_point(|entry| entry.time <= end);
-        &cache.entries[lo..hi]
+        self.big_trades_cache
+            .as_ref()
+            .map_or(&[], |cache| cache.in_time_range(start, end))
     }
 
     pub fn big_trades_in_index_range(&self, lo: usize, hi: usize) -> &[BigTradeEntry] {
         if lo >= hi {
             return &[];
         }
-        let Some(cache) = self.big_trades_cache.as_ref() else {
-            return &[];
-        };
-        let start = cache.entries.partition_point(|entry| entry.index < lo);
-        let end = cache.entries.partition_point(|entry| entry.index < hi);
-        &cache.entries[start..end]
-    }
-
-    fn build_big_trades_cache(&self, threshold: u64) -> BigTradesCache {
-        let mut entries = Vec::new();
-        self.extend_big_trade_entries(&mut entries, threshold, 0);
-        BigTradesCache {
-            threshold,
-            entries,
-            consumed: self.raw_trades.len(),
-        }
-    }
-
-    fn extend_big_trade_entries(
-        &self,
-        entries: &mut Vec<BigTradeEntry>,
-        threshold: u64,
-        from_index: usize,
-    ) {
-        let Some(trades) = self.raw_trades.get(from_index..) else {
-            return;
-        };
-        let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
-        let market_type = self.ticker_info.market_type();
-        entries.extend(trades.iter().enumerate().filter_map(|(offset, trade)| {
-            let notional =
-                market_type.qty_in_quote_value(trade.qty, trade.price, size_in_quote_ccy);
-            (notional >= threshold as f64).then_some(BigTradeEntry {
-                index: from_index + offset,
-                time: trade.time,
-                price: trade.price,
-                notional,
-                is_sell: trade.is_sell,
-            })
-        }));
+        self.big_trades_cache
+            .as_ref()
+            .map_or(&[], |cache| cache.in_index_range(lo, hi))
     }
 
     fn fold_big_trades_cache(&mut self) {
@@ -1165,49 +1116,29 @@ impl KlineSeries {
             big_trades_cache,
             ..
         } = self;
-        let Some(cache) = big_trades_cache.as_mut() else {
-            return;
-        };
-        let threshold = cache.threshold;
-        let start = cache.consumed.min(raw_trades.len());
-        let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
-        let market_type = ticker_info.market_type();
-        cache
-            .entries
-            .extend(
-                raw_trades[start..]
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(offset, trade)| {
-                        let notional = market_type.qty_in_quote_value(
-                            trade.qty,
-                            trade.price,
-                            size_in_quote_ccy,
-                        );
-                        (notional >= threshold as f64).then_some(BigTradeEntry {
-                            index: start + offset,
-                            time: trade.time,
-                            price: trade.price,
-                            notional,
-                            is_sell: trade.is_sell,
-                        })
-                    }),
-            );
-        cache.consumed = raw_trades.len();
+        if let Some(cache) = big_trades_cache {
+            cache.fold(raw_trades, ticker_info);
+        }
     }
 
     fn rebuild_big_trades_cache(&mut self) {
-        let Some(threshold) = self.big_trades_cache.as_ref().map(|cache| cache.threshold) else {
+        let Some(threshold) = self
+            .big_trades_cache
+            .as_ref()
+            .map(BigTradesCache::threshold)
+        else {
             return;
         };
-        let cache = self.build_big_trades_cache(threshold);
-        self.big_trades_cache = Some(cache);
+        self.big_trades_cache = Some(BigTradesCache::new(
+            threshold,
+            &self.raw_trades,
+            &self.ticker_info,
+        ));
     }
 
     fn reset_big_trades_cache(&mut self) {
         if let Some(cache) = self.big_trades_cache.as_mut() {
-            cache.entries.clear();
-            cache.consumed = 0;
+            cache.clear();
         }
     }
 
@@ -1285,10 +1216,6 @@ impl KlineSeries {
         self.open_interest.as_ref()
     }
 
-    pub fn clear_open_interest(&mut self) -> bool {
-        self.open_interest.take().is_some()
-    }
-
     fn first_bar_at_or_after(&self, time: UnixMs) -> usize {
         self.points()
             .find(|point| point.kline.time >= time)
@@ -1336,10 +1263,6 @@ fn merge_sorted_time_index(existing: &[UnixMs], timestamps: &[UnixMs]) -> Vec<Un
     }
 
     merged
-}
-
-fn empty_plot_data(basis: Basis, tick_size: PriceStep) -> PlotData<KlineDataPoint> {
-    empty_plot_data_with_trades(basis, tick_size, &[])
 }
 
 fn empty_plot_data_with_trades(

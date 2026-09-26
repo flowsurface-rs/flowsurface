@@ -19,9 +19,10 @@ use rustc_hash::FxHashMap;
 pub(super) enum IndicatorRebuildReason {
     InputFetch,
     HistoricalDataChanged(IndicatorUpdateScope),
+    IndicatorSettingsChanged,
     BasisChanged,
-    IndicatorConfigurationChanged,
-    InputConfigurationChanged,
+    IndicatorStructureChanged,
+    TradeDataModeChanged,
 }
 
 pub(super) enum IndicatorChange {
@@ -52,7 +53,10 @@ pub(super) struct IndicatorRebuildPlan {
 
 impl IndicatorRebuildReason {
     pub(super) fn allows_partial_recalculation(self) -> bool {
-        matches!(self, Self::InputFetch | Self::HistoricalDataChanged(_))
+        matches!(
+            self,
+            Self::InputFetch | Self::HistoricalDataChanged(_) | Self::IndicatorSettingsChanged
+        )
     }
 
     fn hides_output(self) -> bool {
@@ -60,7 +64,7 @@ impl IndicatorRebuildReason {
     }
 
     fn invalidates_input_coverage(self) -> bool {
-        matches!(self, Self::BasisChanged | Self::InputConfigurationChanged)
+        matches!(self, Self::BasisChanged | Self::TradeDataModeChanged)
     }
 
     fn merge(self, next: Self) -> Self {
@@ -69,6 +73,9 @@ impl IndicatorRebuildReason {
         }
 
         match (self, next) {
+            (Self::IndicatorSettingsChanged, Self::InputFetch | Self::HistoricalDataChanged(_)) => {
+                Self::IndicatorSettingsChanged
+            }
             (Self::InputFetch, Self::HistoricalDataChanged(_))
             | (Self::HistoricalDataChanged(_), Self::InputFetch) => Self::InputFetch,
             (Self::HistoricalDataChanged(first), Self::HistoricalDataChanged(second)) => {

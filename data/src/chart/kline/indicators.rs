@@ -12,13 +12,28 @@ use super::composition::{
 use crate::chart::Basis;
 use crate::config::theme::{ThemeColor, ThemeColorRole, ThemeColorShade};
 use exchange::adapter::MarketKind;
-use exchange::{TickerInfo, Timeframe, UnixMs};
+use exchange::{TickerInfo, UnixMs};
 use indicator_engine::IndicatorFrame;
 use indicator_engine::PaneTarget;
 pub use indicator_engine::{BaseSeriesSource, IndicatorAuthor};
 use std::fmt::{Display, Formatter};
 use std::ops::Range;
 use std::sync::Arc;
+
+pub use core::input::{IndicatorInputRequirement, IndicatorInputSource, OpenInterestSeries};
+pub use core::output::{IndicatorOutputRef, OutputChannelSpec, OutputValue, OutputValueType};
+pub use core::runtime::IndicatorHost;
+
+pub use loader::{
+    IndicatorCatalogPaths, initialize_indicator_catalog, initialize_indicator_catalog_with_paths,
+};
+pub(crate) use registry::install_catalog_with_bundled_diagnostics;
+pub use registry::{
+    CatalogInstallError, IndicatorCatalog, IndicatorConfig, IndicatorConfigError, IndicatorId,
+    IndicatorIdError, IndicatorRegistration, all_indicators, availability, catalog,
+    declared_input_requirements, display_name, indicator_definition, panel_recipe,
+    requires_trade_data, table_columns, unsupported_reason,
+};
 
 pub(crate) fn region_intersects_source_range(
     region: &indicator_engine::RegionOutput,
@@ -30,14 +45,11 @@ pub(crate) fn region_intersects_source_range(
     if region.extend_right {
         return region.left_index < source_range.end;
     }
+
     let left = region.left_index.min(region.right_index);
     let right = region.left_index.max(region.right_index);
     left < source_range.end && right >= source_range.start
 }
-
-pub use core::input::{IndicatorInputRequirement, IndicatorInputSource, OpenInterestSeries};
-pub use core::output::{IndicatorOutputRef, OutputChannelSpec, OutputValue, OutputValueType};
-pub use core::runtime::IndicatorHost;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct IndicatorInputAvailability {
@@ -166,22 +178,6 @@ impl IndicatorInputCoverage {
         self.at_index(runtime_index)
             .is_some_and(|availability| availability.contains(source))
     }
-}
-pub use loader::{
-    IndicatorCatalogPaths, initialize_indicator_catalog, initialize_indicator_catalog_with_paths,
-};
-pub(crate) use registry::install_catalog_with_bundled_diagnostics;
-pub use registry::{
-    CatalogInstallError, IndicatorCatalog, IndicatorConfig, IndicatorConfigError, IndicatorId,
-    IndicatorIdError, IndicatorRegistration, all_indicators, availability, catalog,
-    declared_input_requirements, display_name, indicator_definition, panel_recipe,
-    requires_trade_data, table_columns, unsupported_reason,
-};
-
-/// Shared Open Interest capability used by both indicator availability and
-/// the connector fetch planner.
-pub fn supports_open_interest(ticker_info: TickerInfo, timeframe: Timeframe) -> bool {
-    super::feed_capabilities::supports_open_interest(ticker_info, timeframe)
 }
 
 /// Declarative metadata shared by startup-loaded indicator sources.

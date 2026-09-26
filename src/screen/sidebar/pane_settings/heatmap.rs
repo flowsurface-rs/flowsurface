@@ -92,12 +92,12 @@ pub fn heatmap_shader_cfg_view<'a>(
     };
 
     let study_cfg = study_config
-        .view(studies, basis, None, None, theme_accents)
+        .view(studies, basis, theme_accents)
         .map(move |msg| Message::Study(study::StudyMessage::Heatmap(msg)));
 
     let mut content = InspectorContent::new(vec![
-        InspectorSection::titled("Size filter", size_filters),
-        InspectorSection::titled("Trade visualization", trade_viz_column),
+        InspectorSection::titled("Size filter", size_filters).with_modal_container(),
+        InspectorSection::titled("Trade visualization", trade_viz_column).with_modal_container(),
         InspectorSection::titled("Studies", study_cfg),
     ]);
     content.set_footer(row![

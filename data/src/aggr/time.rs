@@ -4,7 +4,9 @@ use rustc_hash::FxHashSet;
 
 use crate::chart::Basis;
 use crate::chart::heatmap::HeatmapDataPoint;
-use crate::chart::kline_data::{ClusterKind, KlineDataPoint, KlineTrades, NPoc};
+use crate::chart::kline::bar::KlineDataPoint;
+use crate::chart::kline::footprint::{ClusterKind, KlineTrades};
+use crate::chart::kline::poc::NPoc;
 
 use exchange::unit::{Price, PriceStep, Qty};
 use exchange::{Kline, Timeframe, Trade, UnixMs};

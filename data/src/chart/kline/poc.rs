@@ -1,7 +1,44 @@
-use crate::chart::kline_data::{NPoc, PointOfControl};
 use exchange::unit::price::Price;
+use exchange::unit::qty::Qty;
 use exchange::{Timeframe, UnixMs};
 use std::collections::{BTreeMap, BTreeSet};
+
+#[derive(Debug, Clone, Copy)]
+pub struct PointOfControl {
+    pub price: Price,
+    pub volume: Qty,
+    pub status: NPoc,
+}
+
+impl Default for PointOfControl {
+    fn default() -> Self {
+        Self {
+            price: Price::from_f32(0.0),
+            volume: Qty::ZERO,
+            status: NPoc::default(),
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum NPoc {
+    #[default]
+    None,
+    Naked,
+    Filled {
+        at: u64,
+    },
+}
+
+impl NPoc {
+    pub fn filled(&mut self, at: u64) {
+        *self = NPoc::Filled { at };
+    }
+
+    pub fn unfilled(&mut self) {
+        *self = NPoc::Naked;
+    }
+}
 
 const NAKED_POC_LINE_END: UnixMs = UnixMs::new(u64::MAX);
 

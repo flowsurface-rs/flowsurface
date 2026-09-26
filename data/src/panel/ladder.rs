@@ -1,4 +1,4 @@
-use crate::chart::kline_data::KlineTrades;
+use crate::chart::kline::footprint::KlineTrades;
 use crate::util::ok_or_default;
 use exchange::{
     Trade, UnixMs,

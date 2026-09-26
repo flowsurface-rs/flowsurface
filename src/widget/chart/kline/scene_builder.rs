@@ -739,7 +739,7 @@ impl<'a> KlineWidget<'a> {
         let footprint_half_tick = self
             .series
             .first()
-            .map(|series| series.footprint_tick_size().to_f32_lossy() * 0.5)
+            .map(|series| series.tick_size().to_f32_lossy() * 0.5)
             .unwrap_or(0.0);
         self.for_each_bar_unit_index_with_units(
             x_axis,
@@ -1524,7 +1524,7 @@ impl<'a> KlineWidget<'a> {
             let tick_value = self
                 .series
                 .first()
-                .map(|series| Price::from_units(series.footprint_tick_size().units))
+                .map(|series| Price::from_units(series.tick_size().units))
                 .unwrap_or_else(|| Price::from_units(0));
             let tick_unit = value_scale.price_to_unit(tick_value);
             i64::try_from(tick_unit.0.abs_diff(zero_unit.0))

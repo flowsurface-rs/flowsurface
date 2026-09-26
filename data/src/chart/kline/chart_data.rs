@@ -23,31 +23,33 @@ pub struct LiveIndicatorUpdate {
 
 pub enum KlineDataChange {
     Unchanged,
-    HistoricalKlines {
-        update: KlineUpdate,
-    },
+
     LiveKline {
         update: LiveIndicatorUpdate,
     },
     LiveTrades {
         update: LiveIndicatorUpdate,
     },
+    HistoricalKlines {
+        update: KlineUpdate,
+    },
     HistoricalTrades,
-    HistoricalOpenInterest {
-        update: HistoricalOpenInterestUpdate,
+    HistoricalInput {
+        source: IndicatorInputSource,
+        update: HistoricalInputUpdate,
     },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HistoricalOpenInterestUpdate {
+pub enum HistoricalInputUpdate {
     Rejected,
     NoData { has_consumer: bool },
     Ignored,
     Applied,
 }
 
-impl HistoricalOpenInterestUpdate {
-    pub fn changed(self) -> bool {
+impl HistoricalInputUpdate {
+    pub fn needs_rebuild(self) -> bool {
         matches!(self, Self::NoData { has_consumer: true } | Self::Applied)
     }
 }
@@ -57,17 +59,17 @@ pub struct KlineData {
     indicator_host: IndicatorHost,
     base_ticker: TickerInfo,
     series_index: FxHashMap<TickerInfo, usize>,
-    footprint_tick_multiplier: TickMultiplier,
+    tick_multiplier: TickMultiplier,
 }
 
 impl KlineData {
-    pub fn new(base_ticker: TickerInfo, footprint_tick_multiplier: TickMultiplier) -> Self {
+    pub fn new(base_ticker: TickerInfo, tick_multiplier: TickMultiplier) -> Self {
         Self {
             series: Vec::new(),
             indicator_host: IndicatorHost::default(),
             base_ticker,
             series_index: FxHashMap::default(),
-            footprint_tick_multiplier,
+            tick_multiplier,
         }
     }
 
@@ -140,8 +142,8 @@ impl KlineData {
             .validate_source_binding(active_indicators, indicators, id, input_id)
     }
 
-    pub fn footprint_tick_multiplier(&self) -> TickMultiplier {
-        self.footprint_tick_multiplier
+    pub fn tick_multiplier(&self) -> TickMultiplier {
+        self.tick_multiplier
     }
 
     pub fn base_series(&self) -> Option<&KlineSeries> {
@@ -166,12 +168,17 @@ impl KlineData {
         }
     }
 
-    pub fn set_footprint_tick_multiplier(&mut self, multiplier: TickMultiplier) -> bool {
-        if self.footprint_tick_multiplier == multiplier {
+    pub fn set_tick_multiplier(&mut self, multiplier: TickMultiplier) -> bool {
+        if self.tick_multiplier == multiplier {
             return false;
         }
-        self.footprint_tick_multiplier = multiplier;
+        self.tick_multiplier = multiplier;
         true
+    }
+
+    pub fn tick_size(&self) -> PriceStep {
+        self.tick_multiplier
+            .multiply_with_min_tick_step(self.base_ticker)
     }
 
     pub fn set_series_color(&mut self, ticker_info: TickerInfo, color: SeriesColor) -> bool {
@@ -231,7 +238,7 @@ impl KlineData {
 
         let idx = self.series.len();
         let tick_size = self
-            .footprint_tick_multiplier
+            .tick_multiplier
             .multiply_with_min_tick_step(ticker_info);
         let color = if ticker_info == self.base_ticker {
             SeriesColor::default()
@@ -286,12 +293,12 @@ impl KlineData {
     pub fn configure_series_for_basis(&mut self, basis: Basis) {
         for series in &mut self.series {
             let tick_size = self
-                .footprint_tick_multiplier
+                .tick_multiplier
                 .multiply_with_min_tick_step(series.ticker_info);
             if series.basis() != basis {
                 series.set_aggregation_basis(basis, true);
             }
-            series.set_footprint_tick_size(tick_size);
+            series.set_tick_size(tick_size);
         }
     }
 
@@ -504,17 +511,6 @@ impl KlineData {
             .unwrap_or_default()
     }
 
-    pub fn reconfigure_indicator(
-        &mut self,
-        id: IndicatorInstanceId,
-        indicators: &IndicatorInstanceStore,
-    ) {
-        let Some(instance) = indicators.get(id) else {
-            return;
-        };
-        self.indicator_host.reconfigure(instance, indicators);
-    }
-
     pub fn insert_historical_klines(
         &mut self,
         ticker_info: TickerInfo,
@@ -676,13 +672,15 @@ impl KlineData {
         series: &OpenInterestSeries,
     ) -> KlineDataChange {
         if ticker_info != self.base_ticker {
-            return KlineDataChange::HistoricalOpenInterest {
-                update: HistoricalOpenInterestUpdate::Rejected,
+            return KlineDataChange::HistoricalInput {
+                source: IndicatorInputSource::OpenInterest,
+                update: HistoricalInputUpdate::Rejected,
             };
         }
         let Some(idx) = self.series_index.get(&ticker_info).copied() else {
-            return KlineDataChange::HistoricalOpenInterest {
-                update: HistoricalOpenInterestUpdate::Rejected,
+            return KlineDataChange::HistoricalInput {
+                source: IndicatorInputSource::OpenInterest,
+                update: HistoricalInputUpdate::Rejected,
             };
         };
 
@@ -690,34 +688,24 @@ impl KlineData {
             .indicator_host
             .has_input_consumer(IndicatorInputSource::OpenInterest);
         if series.is_empty() {
-            return KlineDataChange::HistoricalOpenInterest {
-                update: HistoricalOpenInterestUpdate::NoData {
+            return KlineDataChange::HistoricalInput {
+                source: IndicatorInputSource::OpenInterest,
+                update: HistoricalInputUpdate::NoData {
                     has_consumer: has_open_interest_consumer,
                 },
             };
         }
         if !has_open_interest_consumer {
-            return KlineDataChange::HistoricalOpenInterest {
-                update: HistoricalOpenInterestUpdate::Ignored,
+            return KlineDataChange::HistoricalInput {
+                source: IndicatorInputSource::OpenInterest,
+                update: HistoricalInputUpdate::Ignored,
             };
         }
         self.series[idx].insert_open_interest(series);
-        KlineDataChange::HistoricalOpenInterest {
-            update: HistoricalOpenInterestUpdate::Applied,
+        KlineDataChange::HistoricalInput {
+            source: IndicatorInputSource::OpenInterest,
+            update: HistoricalInputUpdate::Applied,
         }
-    }
-
-    /// Resolves the row tick size a profile study aggregates at.
-    ///
-    /// A study without an explicit tick multiplier inherits the pane's
-    /// footprint multiplier. A study can only choose a tick multiplier that is
-    /// at least as coarse as the footprint multiplier, so the resolved step is
-    /// never finer than the footprint step.
-    pub fn effective_study_tick_size(&self, study: KlineStudy) -> PriceStep {
-        let footprint = self
-            .footprint_tick_multiplier
-            .multiply_with_min_tick_step(self.base_ticker);
-        study.effective_profile_tick_size(self.base_ticker, footprint)
     }
 
     pub fn recurring_profile_cache_requirements(
@@ -725,6 +713,7 @@ impl KlineData {
         studies: &[KlineStudy],
         basis: Basis,
     ) -> Vec<(Timeframe, PriceStep)> {
+        let tick_size = self.tick_size();
         let mut recurring_intervals = studies
             .iter()
             .filter(|study| study.source() == StudyDataSource::Trades)
@@ -732,7 +721,7 @@ impl KlineData {
                 study
                     .recurring_profile_interval()
                     .filter(|_| study.is_interval_available(basis))
-                    .map(|interval| (interval, self.effective_study_tick_size(*study)))
+                    .map(|interval| (interval, tick_size))
             })
             .collect::<Vec<_>>();
         recurring_intervals.sort_unstable();

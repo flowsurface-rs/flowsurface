@@ -34,6 +34,7 @@ pub(super) struct TpoState {
     rebuild_state: TpoRebuildState,
     last_rebuild_source: Option<UnixMs>,
     trade_cache: Option<TradeTpoCache>,
+    trade_cache_sequence_id: Option<uuid::Uuid>,
 }
 
 impl TpoState {
@@ -50,6 +51,7 @@ impl TpoState {
         self.rebuild_state = TpoRebuildState::Clean;
         self.last_rebuild_source = None;
         self.trade_cache = None;
+        self.trade_cache_sequence_id = None;
         changed
     }
 
@@ -73,6 +75,7 @@ impl TpoState {
         };
 
         self.trade_cache = None;
+        self.trade_cache_sequence_id = None;
         let settings = TpoProfileSettings {
             anchor,
             letter_period,
@@ -110,6 +113,7 @@ impl TpoState {
         &mut self,
         study: Option<KlineStudy>,
         trades: &[Trade],
+        trade_sequence_id: Option<uuid::Uuid>,
         price_step: PriceStep,
         now: UnixMs,
         coverage: impl Fn(UnixMs, UnixMs) -> TpoProfileStatus,
@@ -137,9 +141,10 @@ impl TpoState {
             settings,
             edits: self.edits.clone(),
         };
-        if self.prepare_rebuild(&key, now) {
+        if self.prepare_rebuild(&key, now) || self.trade_cache_sequence_id != trade_sequence_id {
             self.trade_cache = None;
         }
+        self.trade_cache_sequence_id = trade_sequence_id;
         let cache_synced = self
             .trade_cache
             .as_mut()

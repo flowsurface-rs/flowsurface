@@ -1,132 +1,44 @@
+pub mod big_trades;
 pub mod tpo;
 pub mod volume_profile;
 
-use self::tpo::TpoAnchor;
+pub use big_trades::{
+    BigTradesConfig, DEFAULT_BIG_TRADES_THRESHOLD, MAX_BIG_TRADES_THRESHOLD,
+    MIN_BIG_TRADES_THRESHOLD, big_trades_step_count, big_trades_step_for_threshold,
+    big_trades_threshold_at_step, big_trades_threshold_label,
+};
+pub use tpo::{
+    DEFAULT_TPO_LETTER_PERIOD, DEFAULT_TPO_VALUE_AREA_PERCENT, MAX_TPO_VALUE_AREA_PERCENT,
+    MIN_TPO_VALUE_AREA_PERCENT, TpoColorConfig,
+};
+pub use volume_profile::{
+    DEFAULT_RECURRING_VOLUME_PROFILE_INTERVAL, DEFAULT_RECURRING_VOLUME_PROFILE_OPACITY_PERCENT,
+    DEFAULT_VISIBLE_VOLUME_PROFILE_OPACITY_PERCENT, DEFAULT_VOLUME_PROFILE_WIDTH_PERCENT,
+    MAX_VOLUME_PROFILE_OPACITY_PERCENT, MAX_VOLUME_PROFILE_WIDTH_PERCENT,
+    MIN_RECURRING_VOLUME_PROFILE_BASIS_MULTIPLIER, MIN_VOLUME_PROFILE_OPACITY_PERCENT,
+    MIN_VOLUME_PROFILE_WIDTH_PERCENT, VolumeProfileColorConfig, VolumeProfileColorSlot,
+    VolumeProfileColorSpec, VolumeProfileSchedule,
+};
+
+use self::big_trades::{
+    default_big_trades_buy_color, default_big_trades_sell_color, default_big_trades_threshold,
+};
+use self::tpo::{
+    TpoAnchor, default_tpo_anchor, default_tpo_letter_period, default_tpo_value_area_percent,
+    default_tpo_visible,
+};
+use self::volume_profile::default_volume_profile_width_percent;
 
 use crate::chart::Basis;
-use crate::config::theme::{ThemeAccent, ThemeColor, ThemeColorRole, ThemeColorShade};
-use exchange::unit::price::PriceStep;
-use exchange::{TickMultiplier, TickerInfo, Timeframe};
-
+use crate::config::theme::ThemeColor;
+use exchange::Timeframe;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 
-pub const DEFAULT_RECURRING_VOLUME_PROFILE_INTERVAL: Timeframe = Timeframe::M15;
-pub const MIN_RECURRING_VOLUME_PROFILE_BASIS_MULTIPLIER: u64 = 4;
-pub const DEFAULT_VOLUME_PROFILE_WIDTH_PERCENT: u8 = 20;
-pub const DEFAULT_VISIBLE_VOLUME_PROFILE_OPACITY_PERCENT: u8 = 20;
-pub const DEFAULT_RECURRING_VOLUME_PROFILE_OPACITY_PERCENT: u8 = 55;
-pub const MIN_VOLUME_PROFILE_OPACITY_PERCENT: u8 = 5;
-pub const MAX_VOLUME_PROFILE_OPACITY_PERCENT: u8 = 100;
-pub const MIN_VOLUME_PROFILE_WIDTH_PERCENT: u8 = 5;
-pub const MAX_VOLUME_PROFILE_WIDTH_PERCENT: u8 = 100;
-pub const DEFAULT_TPO_LETTER_PERIOD: Timeframe = Timeframe::M30;
-pub const DEFAULT_TPO_VALUE_AREA_PERCENT: u8 = 70;
-pub const MIN_TPO_VALUE_AREA_PERCENT: u8 = 5;
-pub const MAX_TPO_VALUE_AREA_PERCENT: u8 = 100;
-pub const DEFAULT_BIG_TRADES_THRESHOLD: u64 = 100_000;
-pub const MIN_BIG_TRADES_THRESHOLD: u64 = 10_000;
-pub const MAX_BIG_TRADES_THRESHOLD: u64 = 25_000_000;
-// Round thresholds are generated from these per-decade mantissas (x10^k), giving nine
-// steps per decade: 10k, 15k, 20k, ... 75k, then 100k, 150k, ... 750k, and so on.
-const BIG_TRADES_MANTISSAS: [u64; 9] = [10, 15, 20, 25, 30, 40, 50, 60, 75];
-
-const fn big_trades_nice_threshold(step: usize) -> u64 {
-    let mut scale = MIN_BIG_TRADES_THRESHOLD / BIG_TRADES_MANTISSAS[0];
-    let mut decade = step / BIG_TRADES_MANTISSAS.len();
-    while decade > 0 {
-        scale *= 10;
-        decade -= 1;
-    }
-    BIG_TRADES_MANTISSAS[step % BIG_TRADES_MANTISSAS.len()] * scale
-}
-
-pub const fn big_trades_step_count() -> usize {
-    let mut count = 0;
-    while big_trades_nice_threshold(count) <= MAX_BIG_TRADES_THRESHOLD {
-        count += 1;
-    }
-    count
-}
-
-const BIG_TRADES_THRESHOLDS: [u64; big_trades_step_count()] = {
-    let mut thresholds = [0_u64; big_trades_step_count()];
-    let mut step = 0;
-    while step < thresholds.len() {
-        thresholds[step] = big_trades_nice_threshold(step);
-        step += 1;
-    }
-    thresholds
-};
-pub(crate) const MAX_PROFILE_PRICE_ROWS: usize = 4_096;
-
-fn default_volume_profile_width_percent() -> u8 {
-    DEFAULT_VOLUME_PROFILE_WIDTH_PERCENT
-}
+const MAX_PROFILE_PRICE_ROWS: usize = 4_096;
 
 const fn default_study_visible() -> bool {
     true
-}
-
-const fn default_show_volume_profile_poc() -> bool {
-    false
-}
-
-const fn default_show_volume_profile_npoc() -> bool {
-    true
-}
-
-const fn default_tpo_letter_period() -> Timeframe {
-    DEFAULT_TPO_LETTER_PERIOD
-}
-
-const fn default_tpo_anchor() -> TpoAnchor {
-    TpoAnchor::Daily
-}
-
-const fn default_tpo_value_area_percent() -> u8 {
-    DEFAULT_TPO_VALUE_AREA_PERCENT
-}
-
-const fn default_tpo_visible() -> bool {
-    true
-}
-
-fn default_big_trades_threshold() -> u64 {
-    DEFAULT_BIG_TRADES_THRESHOLD
-}
-
-const fn default_big_trades_buy_color() -> ThemeColor {
-    ThemeColor::new(ThemeColorRole::Success, ThemeColorShade::Soft)
-}
-
-const fn default_big_trades_sell_color() -> ThemeColor {
-    ThemeColor::new(ThemeColorRole::Danger, ThemeColorShade::Soft)
-}
-
-pub fn big_trades_threshold_at_step(step: usize) -> u64 {
-    BIG_TRADES_THRESHOLDS[step.min(BIG_TRADES_THRESHOLDS.len() - 1)]
-}
-
-pub fn big_trades_step_for_threshold(threshold: u64) -> usize {
-    let threshold = threshold.clamp(MIN_BIG_TRADES_THRESHOLD, MAX_BIG_TRADES_THRESHOLD);
-    let target = (threshold as f64).ln();
-    BIG_TRADES_THRESHOLDS
-        .iter()
-        .enumerate()
-        .min_by(|(_, left), (_, right)| {
-            distance_in_log_space(**left, target).total_cmp(&distance_in_log_space(**right, target))
-        })
-        .map(|(index, _)| index)
-        .unwrap_or_default()
-}
-
-fn distance_in_log_space(candidate: u64, target: f64) -> f64 {
-    ((candidate as f64).ln() - target).abs()
-}
-
-pub fn big_trades_threshold_label(threshold: u64) -> String {
-    format!(">${}", crate::util::abbr_large_numbers(threshold as f64))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -169,8 +81,6 @@ enum PersistedKlineStudy {
         opacity_percent: Option<u8>,
         #[serde(default = "default_study_visible")]
         visible: bool,
-        #[serde(default)]
-        tick_multiplier: Option<TickMultiplier>,
     },
     TpoProfile {
         #[serde(default)]
@@ -179,8 +89,6 @@ enum PersistedKlineStudy {
         anchor: TpoAnchor,
         #[serde(default = "default_tpo_letter_period")]
         letter_period: Timeframe,
-        #[serde(default, alias = "price_increment_ticks")]
-        tick_multiplier: Option<TickMultiplier>,
         #[serde(default = "default_tpo_value_area_percent")]
         value_area_percent: u8,
         #[serde(default)]
@@ -200,295 +108,6 @@ enum PersistedKlineStudy {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VolumeProfileColorSlot {
-    Buy,
-    Sell,
-    NakedPoc,
-    FilledPoc,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct VolumeProfileColorSpec {
-    pub label: &'static str,
-    pub slot: VolumeProfileColorSlot,
-}
-
-const VOLUME_PROFILE_COLOR_SPECS: [VolumeProfileColorSpec; 4] = [
-    VolumeProfileColorSpec {
-        label: "Buy volume",
-        slot: VolumeProfileColorSlot::Buy,
-    },
-    VolumeProfileColorSpec {
-        label: "Sell volume",
-        slot: VolumeProfileColorSlot::Sell,
-    },
-    VolumeProfileColorSpec {
-        label: "NPOC",
-        slot: VolumeProfileColorSlot::NakedPoc,
-    },
-    VolumeProfileColorSpec {
-        label: "POC",
-        slot: VolumeProfileColorSlot::FilledPoc,
-    },
-];
-
-const KLINE_VOLUME_PROFILE_COLOR_SPECS: [VolumeProfileColorSpec; 4] = [
-    VolumeProfileColorSpec {
-        label: "Up volume",
-        slot: VolumeProfileColorSlot::Buy,
-    },
-    VolumeProfileColorSpec {
-        label: "Down volume",
-        slot: VolumeProfileColorSlot::Sell,
-    },
-    VolumeProfileColorSpec {
-        label: "NPOC",
-        slot: VolumeProfileColorSlot::NakedPoc,
-    },
-    VolumeProfileColorSpec {
-        label: "POC",
-        slot: VolumeProfileColorSlot::FilledPoc,
-    },
-];
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct VolumeProfileColorConfig {
-    pub buy: ThemeColor,
-    pub sell: ThemeColor,
-    pub naked_poc: ThemeColor,
-    pub filled_poc: ThemeColor,
-    #[serde(default = "default_show_volume_profile_poc")]
-    pub show_poc: bool,
-    #[serde(default = "default_show_volume_profile_npoc")]
-    pub show_npoc: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TpoColorConfig {
-    pub letters: ThemeColor,
-    pub poc: ThemeColor,
-    pub value_area: ThemeColor,
-    pub initial_balance: ThemeColor,
-    pub single_print: ThemeColor,
-    pub poor_high: ThemeColor,
-    pub poor_low: ThemeColor,
-    #[serde(default)]
-    pub show_poc: bool,
-    #[serde(default)]
-    pub show_initial_balance: bool,
-    #[serde(default)]
-    pub show_single_print: bool,
-    #[serde(default)]
-    pub show_poor_high: bool,
-    #[serde(default)]
-    pub show_poor_low: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BigTradesConfig {
-    pub threshold: u64,
-    pub buy_color: ThemeColor,
-    pub sell_color: ThemeColor,
-}
-
-impl Default for TpoColorConfig {
-    fn default() -> Self {
-        Self::defaults()
-    }
-}
-
-impl TpoColorConfig {
-    pub const fn defaults() -> Self {
-        Self {
-            letters: ThemeColor::new(ThemeColorRole::Neutral, ThemeColorShade::Soft),
-            poc: ThemeColor::new(ThemeColorRole::Warning, ThemeColorShade::Strong),
-            value_area: ThemeColor::new(ThemeColorRole::Secondary, ThemeColorShade::Strong),
-            initial_balance: ThemeColor::new(ThemeColorRole::Primary, ThemeColorShade::Base),
-            single_print: ThemeColor::with_accent(
-                ThemeColorRole::Neutral,
-                Some(ThemeAccent::Three),
-                ThemeColorShade::Base,
-            ),
-            poor_high: ThemeColor::with_accent(
-                ThemeColorRole::Primary,
-                Some(ThemeAccent::Seven),
-                ThemeColorShade::Base,
-            ),
-            poor_low: ThemeColor::with_accent(
-                ThemeColorRole::Primary,
-                Some(ThemeAccent::Seven),
-                ThemeColorShade::Base,
-            ),
-            show_poc: false,
-            show_initial_balance: false,
-            show_single_print: false,
-            show_poor_high: false,
-            show_poor_low: false,
-        }
-    }
-
-    pub const fn with_show_poc(self, show_poc: bool) -> Self {
-        Self { show_poc, ..self }
-    }
-
-    pub const fn with_show_initial_balance(self, show_initial_balance: bool) -> Self {
-        Self {
-            show_initial_balance,
-            ..self
-        }
-    }
-
-    pub const fn with_show_single_print(self, show_single_print: bool) -> Self {
-        Self {
-            show_single_print,
-            ..self
-        }
-    }
-
-    pub const fn with_show_poor_extremes(self, show: bool) -> Self {
-        Self {
-            show_poor_high: show,
-            show_poor_low: show,
-            ..self
-        }
-    }
-}
-
-impl Default for VolumeProfileColorConfig {
-    fn default() -> Self {
-        Self::defaults()
-    }
-}
-
-impl VolumeProfileColorConfig {
-    pub const fn defaults() -> Self {
-        Self {
-            buy: ThemeColor::new(ThemeColorRole::Secondary, ThemeColorShade::Strong),
-            sell: ThemeColor::new(ThemeColorRole::Secondary, ThemeColorShade::Soft),
-            naked_poc: ThemeColor::new(ThemeColorRole::Warning, ThemeColorShade::Strong),
-            filled_poc: ThemeColor::new(ThemeColorRole::Neutral, ThemeColorShade::Strong),
-            show_poc: false,
-            show_npoc: true,
-        }
-    }
-
-    pub const fn color_specs() -> &'static [VolumeProfileColorSpec] {
-        &VOLUME_PROFILE_COLOR_SPECS
-    }
-
-    pub fn color_specs_for(schedule: VolumeProfileSchedule) -> &'static [VolumeProfileColorSpec] {
-        Self::color_specs_for_source(StudyDataSource::Trades, schedule)
-    }
-
-    pub fn color_specs_for_source(
-        source: StudyDataSource,
-        schedule: VolumeProfileSchedule,
-    ) -> &'static [VolumeProfileColorSpec] {
-        let specs = match source {
-            StudyDataSource::Kline => &KLINE_VOLUME_PROFILE_COLOR_SPECS,
-            StudyDataSource::Trades => &VOLUME_PROFILE_COLOR_SPECS,
-        };
-        match schedule {
-            VolumeProfileSchedule::VisibleRange => &specs[..2],
-            VolumeProfileSchedule::Recurring { .. } => specs,
-        }
-    }
-
-    pub const fn color_for(self, slot: VolumeProfileColorSlot) -> ThemeColor {
-        match slot {
-            VolumeProfileColorSlot::Buy => self.buy,
-            VolumeProfileColorSlot::Sell => self.sell,
-            VolumeProfileColorSlot::NakedPoc => self.naked_poc,
-            VolumeProfileColorSlot::FilledPoc => self.filled_poc,
-        }
-    }
-
-    pub const fn with_color(self, slot: VolumeProfileColorSlot, color: ThemeColor) -> Self {
-        match slot {
-            VolumeProfileColorSlot::Buy => Self { buy: color, ..self },
-            VolumeProfileColorSlot::Sell => Self {
-                sell: color,
-                ..self
-            },
-            VolumeProfileColorSlot::NakedPoc => Self {
-                naked_poc: color,
-                ..self
-            },
-            VolumeProfileColorSlot::FilledPoc => Self {
-                filled_poc: color,
-                ..self
-            },
-        }
-    }
-
-    pub const fn with_show_poc(self, show_poc: bool) -> Self {
-        Self { show_poc, ..self }
-    }
-
-    pub const fn with_show_npoc(self, show_npoc: bool) -> Self {
-        Self { show_npoc, ..self }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum VolumeProfileSchedule {
-    VisibleRange,
-    Recurring { interval: Timeframe },
-}
-
-impl VolumeProfileSchedule {
-    pub fn recurring_intervals_for(basis: Basis) -> Vec<Timeframe> {
-        let Some(minimum_interval) = Self::minimum_recurring_interval(basis) else {
-            return Vec::new();
-        };
-
-        Timeframe::KLINE
-            .iter()
-            .copied()
-            .filter(|interval| interval.to_milliseconds() >= minimum_interval.to_milliseconds())
-            .collect()
-    }
-
-    pub fn minimum_recurring_interval(basis: Basis) -> Option<Timeframe> {
-        let Basis::Time(basis_interval) = basis else {
-            return None;
-        };
-
-        let minimum_interval_ms = basis_interval
-            .to_milliseconds()
-            .saturating_mul(MIN_RECURRING_VOLUME_PROFILE_BASIS_MULTIPLIER);
-
-        Timeframe::KLINE
-            .iter()
-            .copied()
-            .find(|interval| interval.to_milliseconds() >= minimum_interval_ms)
-    }
-
-    pub fn is_available(self, basis: Basis) -> bool {
-        match (self, basis) {
-            (Self::VisibleRange, Basis::Time(_)) => true,
-            (Self::VisibleRange, Basis::Tick(_)) => false,
-            (Self::Recurring { .. }, Basis::Time(_)) => {
-                Self::minimum_recurring_interval(basis).is_some()
-            }
-            (Self::Recurring { .. }, Basis::Tick(_)) => false,
-        }
-    }
-
-    pub fn is_interval_available(self, basis: Basis) -> bool {
-        match (self, basis) {
-            (Self::VisibleRange, _) => self.is_available(basis),
-            (Self::Recurring { interval }, Basis::Time(_)) => {
-                Self::minimum_recurring_interval(basis).is_some_and(|minimum_interval| {
-                    interval.to_milliseconds() >= minimum_interval.to_milliseconds()
-                })
-            }
-            (Self::Recurring { .. }, Basis::Tick(_)) => false,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum KlineStudy {
     VolumeProfile {
@@ -501,8 +120,6 @@ pub enum KlineStudy {
         opacity_percent: u8,
         #[serde(default = "default_study_visible")]
         visible: bool,
-        #[serde(default)]
-        tick_multiplier: Option<TickMultiplier>,
     },
     TpoProfile {
         source: StudyDataSource,
@@ -510,8 +127,6 @@ pub enum KlineStudy {
         anchor: TpoAnchor,
         #[serde(default = "default_tpo_letter_period")]
         letter_period: Timeframe,
-        #[serde(default)]
-        tick_multiplier: Option<TickMultiplier>,
         #[serde(default = "default_tpo_value_area_percent")]
         value_area_percent: u8,
         #[serde(default)]
@@ -544,22 +159,19 @@ impl<'de> Deserialize<'de> for KlineStudy {
                 width_percent,
                 opacity_percent,
                 visible,
-                tick_multiplier,
             } => Ok(Self::VolumeProfile {
                 source: source.unwrap_or(StudyDataSource::Trades),
                 schedule,
                 colors,
                 width_percent,
                 opacity_percent: opacity_percent
-                    .unwrap_or_else(|| Self::default_opacity_percent_for(schedule)),
+                    .unwrap_or_else(|| schedule.default_opacity_percent()),
                 visible,
-                tick_multiplier,
             }),
             PersistedKlineStudy::TpoProfile {
                 source,
                 anchor,
                 letter_period,
-                tick_multiplier,
                 value_area_percent,
                 colors,
                 visible,
@@ -567,7 +179,6 @@ impl<'de> Deserialize<'de> for KlineStudy {
                 source: source.unwrap_or(StudyDataSource::Kline),
                 anchor,
                 letter_period,
-                tick_multiplier,
                 value_area_percent: value_area_percent
                     .clamp(MIN_TPO_VALUE_AREA_PERCENT, MAX_TPO_VALUE_AREA_PERCENT),
                 colors,
@@ -605,13 +216,11 @@ impl KlineStudy {
             width_percent: DEFAULT_VOLUME_PROFILE_WIDTH_PERCENT,
             opacity_percent: DEFAULT_VISIBLE_VOLUME_PROFILE_OPACITY_PERCENT,
             visible: true,
-            tick_multiplier: None,
         },
         Self::TpoProfile {
             source: StudyDataSource::Kline,
             anchor: TpoAnchor::Daily,
             letter_period: DEFAULT_TPO_LETTER_PERIOD,
-            tick_multiplier: None,
             value_area_percent: DEFAULT_TPO_VALUE_AREA_PERCENT,
             colors: TpoColorConfig::defaults(),
             visible: true,
@@ -625,7 +234,6 @@ impl KlineStudy {
             width_percent: DEFAULT_VOLUME_PROFILE_WIDTH_PERCENT,
             opacity_percent: DEFAULT_RECURRING_VOLUME_PROFILE_OPACITY_PERCENT,
             visible: true,
-            tick_multiplier: None,
         },
         Self::VolumeProfile {
             source: StudyDataSource::Trades,
@@ -634,13 +242,11 @@ impl KlineStudy {
             width_percent: DEFAULT_VOLUME_PROFILE_WIDTH_PERCENT,
             opacity_percent: DEFAULT_VISIBLE_VOLUME_PROFILE_OPACITY_PERCENT,
             visible: true,
-            tick_multiplier: None,
         },
         Self::TpoProfile {
             source: StudyDataSource::Trades,
             anchor: TpoAnchor::Daily,
             letter_period: DEFAULT_TPO_LETTER_PERIOD,
-            tick_multiplier: None,
             value_area_percent: DEFAULT_TPO_VALUE_AREA_PERCENT,
             colors: TpoColorConfig::defaults(),
             visible: true,
@@ -654,7 +260,6 @@ impl KlineStudy {
             width_percent: DEFAULT_VOLUME_PROFILE_WIDTH_PERCENT,
             opacity_percent: DEFAULT_RECURRING_VOLUME_PROFILE_OPACITY_PERCENT,
             visible: true,
-            tick_multiplier: None,
         },
         Self::BigTrades {
             threshold: DEFAULT_BIG_TRADES_THRESHOLD,
@@ -698,7 +303,6 @@ impl KlineStudy {
                 colors,
                 width_percent,
                 opacity_percent,
-                tick_multiplier,
                 ..
             } => Self::VolumeProfile {
                 source,
@@ -707,7 +311,6 @@ impl KlineStudy {
                 width_percent,
                 opacity_percent,
                 visible,
-                tick_multiplier,
             },
             Self::TpoProfile {
                 source,
@@ -715,13 +318,11 @@ impl KlineStudy {
                 letter_period,
                 value_area_percent,
                 colors,
-                tick_multiplier,
                 ..
             } => Self::TpoProfile {
                 source,
                 anchor,
                 letter_period,
-                tick_multiplier,
                 value_area_percent,
                 colors,
                 visible,
@@ -737,15 +338,6 @@ impl KlineStudy {
                 sell_color,
                 visible,
             },
-        }
-    }
-
-    const fn default_opacity_percent_for(schedule: VolumeProfileSchedule) -> u8 {
-        match schedule {
-            VolumeProfileSchedule::VisibleRange => DEFAULT_VISIBLE_VOLUME_PROFILE_OPACITY_PERCENT,
-            VolumeProfileSchedule::Recurring { .. } => {
-                DEFAULT_RECURRING_VOLUME_PROFILE_OPACITY_PERCENT
-            }
         }
     }
 
@@ -768,6 +360,70 @@ impl KlineStudy {
 
     pub fn is_same_type(self, other: Self) -> bool {
         self.id() == other.id()
+    }
+
+    pub fn requires_reconfiguration(self, previous: Self) -> bool {
+        match (self, previous) {
+            (
+                Self::VolumeProfile {
+                    source,
+                    schedule,
+                    colors: _,
+                    width_percent: _,
+                    opacity_percent: _,
+                    visible: _,
+                },
+                Self::VolumeProfile {
+                    source: previous_source,
+                    schedule: previous_schedule,
+                    colors: _,
+                    width_percent: _,
+                    opacity_percent: _,
+                    visible: _,
+                },
+            ) => (source, schedule) != (previous_source, previous_schedule),
+            (
+                Self::TpoProfile {
+                    source,
+                    anchor,
+                    letter_period,
+                    value_area_percent,
+                    colors: _,
+                    visible: _,
+                },
+                Self::TpoProfile {
+                    source: previous_source,
+                    anchor: previous_anchor,
+                    letter_period: previous_letter_period,
+                    value_area_percent: previous_value_area_percent,
+                    colors: _,
+                    visible: _,
+                },
+            ) => {
+                (source, anchor, letter_period, value_area_percent)
+                    != (
+                        previous_source,
+                        previous_anchor,
+                        previous_letter_period,
+                        previous_value_area_percent,
+                    )
+            }
+            (
+                Self::BigTrades {
+                    threshold,
+                    buy_color: _,
+                    sell_color: _,
+                    visible,
+                },
+                Self::BigTrades {
+                    threshold: previous_threshold,
+                    buy_color: _,
+                    sell_color: _,
+                    visible: previous_visible,
+                },
+            ) => (threshold, visible) != (previous_threshold, previous_visible),
+            _ => true,
+        }
     }
 
     pub fn is_available(self, basis: Basis) -> bool {
@@ -845,7 +501,6 @@ impl KlineStudy {
                 width_percent,
                 opacity_percent,
                 visible,
-                tick_multiplier,
             } => VolumeProfileSchedule::minimum_recurring_interval(basis).map(|interval| {
                 Self::VolumeProfile {
                     source,
@@ -854,7 +509,6 @@ impl KlineStudy {
                     width_percent,
                     opacity_percent,
                     visible,
-                    tick_multiplier,
                 }
             }),
             Self::VolumeProfile { .. } => None,
@@ -868,60 +522,6 @@ impl KlineStudy {
         match self {
             Self::VolumeProfile { schedule, .. } => Some(schedule),
             Self::TpoProfile { .. } | Self::BigTrades { .. } => None,
-        }
-    }
-
-    pub const fn profile_tick_multiplier(self) -> Option<TickMultiplier> {
-        match self {
-            Self::VolumeProfile {
-                tick_multiplier, ..
-            } => tick_multiplier,
-            Self::TpoProfile {
-                tick_multiplier, ..
-            } => tick_multiplier,
-            Self::BigTrades { .. } => None,
-        }
-    }
-
-    pub fn effective_profile_tick_size(
-        self,
-        ticker_info: TickerInfo,
-        footprint_tick_size: PriceStep,
-    ) -> PriceStep {
-        let Some(multiplier) = self.profile_tick_multiplier() else {
-            return footprint_tick_size;
-        };
-        let step = multiplier.multiply_with_min_tick_step(ticker_info);
-        if step.units < footprint_tick_size.units {
-            footprint_tick_size
-        } else {
-            step
-        }
-    }
-
-    pub const fn with_volume_profile_tick_multiplier(
-        self,
-        tick_multiplier: Option<TickMultiplier>,
-    ) -> Self {
-        match self {
-            Self::VolumeProfile {
-                source,
-                schedule,
-                colors,
-                width_percent,
-                opacity_percent,
-                visible,
-                ..
-            } => Self::VolumeProfile {
-                source,
-                schedule,
-                colors,
-                width_percent,
-                opacity_percent,
-                visible,
-                tick_multiplier,
-            },
-            Self::TpoProfile { .. } | Self::BigTrades { .. } => self,
         }
     }
 
@@ -962,12 +562,7 @@ impl KlineStudy {
             MIN_VOLUME_PROFILE_OPACITY_PERCENT,
             MAX_VOLUME_PROFILE_OPACITY_PERCENT,
         ));
-        Some(
-            opacity
-                / f32::from(Self::default_opacity_percent_for(
-                    self.volume_profile_schedule()?,
-                )),
-        )
+        Some(opacity / f32::from(self.volume_profile_schedule()?.default_opacity_percent()))
     }
 
     pub fn volume_profile_width_ratio(self) -> Option<f32> {
@@ -977,10 +572,6 @@ impl KlineStudy {
                 MAX_VOLUME_PROFILE_WIDTH_PERCENT,
             )) / f32::from(MAX_VOLUME_PROFILE_WIDTH_PERCENT),
         )
-    }
-
-    pub const fn is_volume_profile(self) -> bool {
-        matches!(self, Self::VolumeProfile { .. })
     }
 
     pub const fn is_tpo_profile(self) -> bool {
@@ -1058,15 +649,6 @@ impl Display for KlineStudy {
                     big_trades_threshold_label(*threshold)
                 )
             }
-        }
-    }
-}
-
-impl Display for VolumeProfileSchedule {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::VisibleRange => formatter.write_str("Visible Range"),
-            Self::Recurring { interval } => write!(formatter, "Recurring {interval}"),
         }
     }
 }

@@ -16,6 +16,7 @@ use crate::{
     },
 };
 use data::chart::kline::KlineData;
+use data::chart::kline::footprint::{ClusterKind, ClusterScaling};
 use data::chart::kline::{
     BaseSeriesSource, CandlestickColorSlot, CandlestickConfig, FootprintConfig,
     FootprintImbalanceConfig, FootprintPocColorConfig, FootprintPocColorSlot, FootprintPocConfig,
@@ -25,10 +26,8 @@ use data::chart::kline::{
     MAX_CANDLESTICK_OPACITY_PERCENT, MAX_LINE_WIDTH, MIN_CANDLESTICK_OPACITY_PERCENT,
     MIN_LINE_WIDTH, MarkKind, ThemeAccent,
 };
-use data::chart::kline_data::{ClusterKind, ClusterScaling};
 use data::config::theme::{ThemeColor, ThemeColorShade};
-use exchange::unit::MinTicksize;
-use exchange::{TickMultiplier, TickerInfo};
+use exchange::TickerInfo;
 use iced::{
     Alignment, Element, Length,
     widget::{
@@ -1589,16 +1588,12 @@ fn study_cfg_view(
     modal: StudySettingsState,
     study: KlineStudy,
     basis: data::chart::Basis,
-    footprint_tick_multiplier: TickMultiplier,
-    min_ticksize: MinTicksize,
     theme_accents: ThemeAccents,
 ) -> Element<'static, Message> {
     let tabs = inspector::tabs(modal.tab(), Message::StudyTabSelected, false);
     let settings = study
         .view_config_without_reset(
             basis,
-            Some(footprint_tick_multiplier),
-            Some(min_ticksize),
             theme_accents,
             modal.tab(),
             study::Message::StudyValueChanged,
@@ -1913,16 +1908,7 @@ impl State {
             SettingsTarget::Study(modal) => context
                 .studies
                 .study(modal.study_id())
-                .map(|study| {
-                    study_cfg_view(
-                        *modal,
-                        study,
-                        context.basis,
-                        context.data.footprint_tick_multiplier(),
-                        context.data.base_ticker().min_ticksize,
-                        theme_accents,
-                    )
-                })
+                .map(|study| study_cfg_view(*modal, study, context.basis, theme_accents))
                 .unwrap_or_else(|| {
                     footprint_cfg_view(
                         context.options.footprint,

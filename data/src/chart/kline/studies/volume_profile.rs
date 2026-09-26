@@ -1,15 +1,247 @@
-use std::collections::BTreeMap;
-
-use super::super::poc_lines::{PocLineTracker, PocProfile};
-use super::MAX_PROFILE_PRICE_ROWS;
-
-use crate::chart::kline_data::{NPoc, PointOfControl};
+use super::{MAX_PROFILE_PRICE_ROWS, StudyDataSource};
+use crate::chart::Basis;
+use crate::chart::kline::poc::{NPoc, PocLineTracker, PocProfile, PointOfControl};
+use crate::config::theme::{ThemeColor, ThemeColorRole, ThemeColorShade};
 use exchange::{
     Kline, Timeframe, UnixMs,
     unit::price::{Price, PriceStep},
     unit::qty::Qty,
 };
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::fmt::{Display, Formatter};
 
+pub const DEFAULT_RECURRING_VOLUME_PROFILE_INTERVAL: Timeframe = Timeframe::M15;
+pub const MIN_RECURRING_VOLUME_PROFILE_BASIS_MULTIPLIER: u64 = 4;
+pub const DEFAULT_VOLUME_PROFILE_WIDTH_PERCENT: u8 = 20;
+pub const DEFAULT_VISIBLE_VOLUME_PROFILE_OPACITY_PERCENT: u8 = 20;
+pub const DEFAULT_RECURRING_VOLUME_PROFILE_OPACITY_PERCENT: u8 = 55;
+pub const MIN_VOLUME_PROFILE_OPACITY_PERCENT: u8 = 5;
+pub const MAX_VOLUME_PROFILE_OPACITY_PERCENT: u8 = 100;
+pub const MIN_VOLUME_PROFILE_WIDTH_PERCENT: u8 = 5;
+pub const MAX_VOLUME_PROFILE_WIDTH_PERCENT: u8 = 100;
+
+pub(super) fn default_volume_profile_width_percent() -> u8 {
+    DEFAULT_VOLUME_PROFILE_WIDTH_PERCENT
+}
+
+const fn default_show_volume_profile_poc() -> bool {
+    false
+}
+
+const fn default_show_volume_profile_npoc() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VolumeProfileColorSlot {
+    Buy,
+    Sell,
+    NakedPoc,
+    FilledPoc,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VolumeProfileColorSpec {
+    pub label: &'static str,
+    pub slot: VolumeProfileColorSlot,
+}
+
+const VOLUME_PROFILE_COLOR_SPECS: [VolumeProfileColorSpec; 4] = [
+    VolumeProfileColorSpec {
+        label: "Buy volume",
+        slot: VolumeProfileColorSlot::Buy,
+    },
+    VolumeProfileColorSpec {
+        label: "Sell volume",
+        slot: VolumeProfileColorSlot::Sell,
+    },
+    VolumeProfileColorSpec {
+        label: "NPOC",
+        slot: VolumeProfileColorSlot::NakedPoc,
+    },
+    VolumeProfileColorSpec {
+        label: "POC",
+        slot: VolumeProfileColorSlot::FilledPoc,
+    },
+];
+
+const KLINE_VOLUME_PROFILE_COLOR_SPECS: [VolumeProfileColorSpec; 4] = [
+    VolumeProfileColorSpec {
+        label: "Up volume",
+        slot: VolumeProfileColorSlot::Buy,
+    },
+    VolumeProfileColorSpec {
+        label: "Down volume",
+        slot: VolumeProfileColorSlot::Sell,
+    },
+    VolumeProfileColorSpec {
+        label: "NPOC",
+        slot: VolumeProfileColorSlot::NakedPoc,
+    },
+    VolumeProfileColorSpec {
+        label: "POC",
+        slot: VolumeProfileColorSlot::FilledPoc,
+    },
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VolumeProfileColorConfig {
+    pub buy: ThemeColor,
+    pub sell: ThemeColor,
+    pub naked_poc: ThemeColor,
+    pub filled_poc: ThemeColor,
+    #[serde(default = "default_show_volume_profile_poc")]
+    pub show_poc: bool,
+    #[serde(default = "default_show_volume_profile_npoc")]
+    pub show_npoc: bool,
+}
+
+impl Default for VolumeProfileColorConfig {
+    fn default() -> Self {
+        Self::defaults()
+    }
+}
+
+impl VolumeProfileColorConfig {
+    pub const fn defaults() -> Self {
+        Self {
+            buy: ThemeColor::new(ThemeColorRole::Secondary, ThemeColorShade::Strong),
+            sell: ThemeColor::new(ThemeColorRole::Secondary, ThemeColorShade::Soft),
+            naked_poc: ThemeColor::new(ThemeColorRole::Warning, ThemeColorShade::Strong),
+            filled_poc: ThemeColor::new(ThemeColorRole::Neutral, ThemeColorShade::Strong),
+            show_poc: false,
+            show_npoc: true,
+        }
+    }
+
+    pub const fn color_specs() -> &'static [VolumeProfileColorSpec] {
+        &VOLUME_PROFILE_COLOR_SPECS
+    }
+
+    pub fn color_specs_for_source(
+        source: StudyDataSource,
+        schedule: VolumeProfileSchedule,
+    ) -> &'static [VolumeProfileColorSpec] {
+        let specs = match source {
+            StudyDataSource::Kline => &KLINE_VOLUME_PROFILE_COLOR_SPECS,
+            StudyDataSource::Trades => &VOLUME_PROFILE_COLOR_SPECS,
+        };
+        match schedule {
+            VolumeProfileSchedule::VisibleRange => &specs[..2],
+            VolumeProfileSchedule::Recurring { .. } => specs,
+        }
+    }
+
+    pub const fn color_for(self, slot: VolumeProfileColorSlot) -> ThemeColor {
+        match slot {
+            VolumeProfileColorSlot::Buy => self.buy,
+            VolumeProfileColorSlot::Sell => self.sell,
+            VolumeProfileColorSlot::NakedPoc => self.naked_poc,
+            VolumeProfileColorSlot::FilledPoc => self.filled_poc,
+        }
+    }
+
+    pub const fn with_color(self, slot: VolumeProfileColorSlot, color: ThemeColor) -> Self {
+        match slot {
+            VolumeProfileColorSlot::Buy => Self { buy: color, ..self },
+            VolumeProfileColorSlot::Sell => Self {
+                sell: color,
+                ..self
+            },
+            VolumeProfileColorSlot::NakedPoc => Self {
+                naked_poc: color,
+                ..self
+            },
+            VolumeProfileColorSlot::FilledPoc => Self {
+                filled_poc: color,
+                ..self
+            },
+        }
+    }
+
+    pub const fn with_show_poc(self, show_poc: bool) -> Self {
+        Self { show_poc, ..self }
+    }
+
+    pub const fn with_show_npoc(self, show_npoc: bool) -> Self {
+        Self { show_npoc, ..self }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VolumeProfileSchedule {
+    VisibleRange,
+    Recurring { interval: Timeframe },
+}
+
+impl VolumeProfileSchedule {
+    pub(super) const fn default_opacity_percent(self) -> u8 {
+        match self {
+            Self::VisibleRange => DEFAULT_VISIBLE_VOLUME_PROFILE_OPACITY_PERCENT,
+            Self::Recurring { .. } => DEFAULT_RECURRING_VOLUME_PROFILE_OPACITY_PERCENT,
+        }
+    }
+
+    pub fn recurring_intervals_for(basis: Basis) -> Vec<Timeframe> {
+        let Some(minimum_interval) = Self::minimum_recurring_interval(basis) else {
+            return Vec::new();
+        };
+
+        Timeframe::KLINE
+            .iter()
+            .copied()
+            .filter(|interval| interval.to_milliseconds() >= minimum_interval.to_milliseconds())
+            .collect()
+    }
+
+    pub fn minimum_recurring_interval(basis: Basis) -> Option<Timeframe> {
+        let Basis::Time(basis_interval) = basis else {
+            return None;
+        };
+
+        let minimum_interval_ms = basis_interval
+            .to_milliseconds()
+            .saturating_mul(MIN_RECURRING_VOLUME_PROFILE_BASIS_MULTIPLIER);
+
+        Timeframe::KLINE
+            .iter()
+            .copied()
+            .find(|interval| interval.to_milliseconds() >= minimum_interval_ms)
+    }
+
+    pub fn is_available(self, basis: Basis) -> bool {
+        match (self, basis) {
+            (Self::VisibleRange, Basis::Time(_)) => true,
+            (Self::VisibleRange, Basis::Tick(_)) => false,
+            (Self::Recurring { .. }, Basis::Time(_)) => {
+                Self::minimum_recurring_interval(basis).is_some()
+            }
+            (Self::Recurring { .. }, Basis::Tick(_)) => false,
+        }
+    }
+
+    pub fn is_interval_available(self, basis: Basis) -> bool {
+        match (self, basis) {
+            (Self::VisibleRange, _) => self.is_available(basis),
+            (Self::Recurring { interval }, Basis::Time(_)) => {
+                Self::minimum_recurring_interval(basis).is_some_and(|minimum_interval| {
+                    interval.to_milliseconds() >= minimum_interval.to_milliseconds()
+                })
+            }
+            (Self::Recurring { .. }, Basis::Tick(_)) => false,
+        }
+    }
+}
+
+impl Display for VolumeProfileSchedule {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::VisibleRange => formatter.write_str("Visible Range"),
+            Self::Recurring { interval } => write!(formatter, "Recurring {interval}"),
+        }
+    }
+}
 #[derive(Debug, Clone, Copy)]
 pub struct ProfileLevel {
     pub price: Price,

@@ -16,11 +16,30 @@ use composition::{
     ChartComposition, DEFAULT_MIN_PANEL_RATIO, LayerDataKind, MarkKind, PanelId, PanelRole,
     PanelScaleMode, PanelValueId,
 };
+use data::UserTimezone;
+use data::chart::Basis;
+use data::chart::kline::poc::NPoc;
+use data::chart::kline::series::KlineSeries;
+use data::chart::kline::{
+    CandlestickColorSlot, CandlestickConfig, DEFAULT_HORIZONTAL_SPACING_PX, FootprintConfig,
+    FootprintPocColorSlot, KlineStudy, KlineStudyId, LegendVisibility, TpoBoundaryEdits,
+    TpoProfile, VolumeProfileColorConfig, VolumeProfileColorSlot, VolumeProfileSchedule,
+};
 use data::chart::kline::{HorizontalWorld, IndicatorHost, IndicatorInstanceStore};
+pub(crate) use data::chart::kline::{PanelYValueRange, YUnit, YUnitRange};
+use data::chart::ticks::{
+    Y_LABEL_DENSITY,
+    x::{TimeTickLabel, TimeTickTier},
+    x_labels_that_fit,
+    y::{TickValue, YAxisScale},
+    y_labels_that_fit,
+};
+use data::config::theme::ThemeColorRole;
 use drawing::{
     AxisBadgeFilter, DrawingDragOperation, DrawingDragTarget, DrawingId, DrawingMeasure,
     DrawingSnapshot, DrawingTool, KlineWidgetDrawingEvent,
 };
+use exchange::{Kline, TickerInfo, UnixMs, unit::PriceStep};
 use helpers::PixelGeometry;
 use layout::{KlinePanelKind, LayoutHitZone, PanelLayoutNode, PanelLayoutTree};
 pub(crate) use presentation::IndicatorPresentationStatus;
@@ -32,19 +51,79 @@ pub(crate) use presentation::{
 use primary_render::PrimaryPlotLayer;
 use scene::{CursorTarget, LegendTarget, Scene, SceneCache, TickIndex, XAxis};
 
-use data::UserTimezone;
-use data::chart::Basis;
-use data::chart::kline::series::KlineSeries;
-use data::chart::kline::{
-    CandlestickColorSlot, CandlestickConfig, DEFAULT_HORIZONTAL_SPACING_PX, FootprintConfig,
-    FootprintPocColorSlot, KlineStudy, KlineStudyId, LegendVisibility, TpoBoundaryEdits,
-    TpoProfile, VolumeProfileColorConfig, VolumeProfileColorSlot, VolumeProfileSchedule,
+use iced::advanced::widget::tree::{self, Tree};
+use iced::advanced::{self, Clipboard, Layout, Shell, Widget, layout as iced_layout, renderer};
+use iced::theme::palette::Extended;
+use iced::widget::canvas;
+use iced::{
+    Element, Event, Length, Point, Rectangle, Renderer, Size, Theme, Vector, keyboard, mouse,
+    window,
 };
-pub(crate) use data::chart::kline::{PanelYValueRange, YUnit, YUnitRange};
-use data::chart::kline_data::NPoc;
-use data::config::theme::ThemeColorRole;
-use exchange::{Kline, TickerInfo, UnixMs, unit::PriceStep};
+use iced_core::renderer::Quad;
 use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
+
+const Y_AXIS_GUTTER: f32 = 66.0;
+const X_AXIS_HEIGHT: f32 = 24.0;
+pub(crate) const MIN_FULL_CACHE_REFRESH_INTERVAL: Duration = Duration::from_micros(33_333);
+
+const TEXT_SIZE: f32 = 12.0;
+const CHAR_W: f32 = TEXT_SIZE * 0.64;
+const Y_AXIS_LABEL_LEFT_INSET: f32 = 4.0;
+const PANEL_SPLITTER_HEIGHT: f32 = 1.0;
+const PIXELS_PER_SCROLL_LINE: f32 = 40.0;
+const HORIZONTAL_DRAG_SCALE_DELTA_PER_PX: f32 = 0.3 / 9.0;
+const DRAG_THRESHOLD_PX: f32 = 5.0;
+const TPO_BOUNDARY_HIT_PX: f32 = 7.0;
+pub(super) const TPO_ACTION_BUTTON_WIDTH_PX: f32 = 62.0;
+pub(super) const TPO_ACTION_BUTTON_HEIGHT_PX: f32 = 20.0;
+pub(super) const TPO_RESET_BUTTON_WIDTH_PX: f32 = 48.0;
+const TPO_ACTION_BUTTON_GAP_PX: f32 = 3.0;
+
+const PANEL_TITLE_TOP_PAD: f32 = 4.0;
+const Y_AXIS_DRAG_SCALE_DELTA_PER_PX: f32 = 0.1;
+
+const TICKER_LEGEND_PADDING: f32 = 4.0;
+const TOOLTIP_ROW_LEFT_PAD: f32 = TICKER_LEGEND_PADDING * 2.0;
+const TICKER_LEGEND_ROW_H: f32 = TEXT_SIZE + 6.0;
+
+// Keep plot and widget passes separate: iced_wgpu renders meshes before text
+// within each renderer layer.
+const PAINT_ORDER: [PaintStep; 11] = [
+    PaintStep::Root(RootPaintStep::Separators),
+    PaintStep::Plot(PrimaryPlotLayer::Background),
+    PaintStep::Plot(PrimaryPlotLayer::Tpo),
+    PaintStep::Plot(PrimaryPlotLayer::Foreground),
+    PaintStep::Root(RootPaintStep::Drawings),
+    PaintStep::Plot(PrimaryPlotLayer::PriceBars),
+    PaintStep::Root(RootPaintStep::YAxis),
+    PaintStep::Root(RootPaintStep::XAxis),
+    PaintStep::Widget(WidgetPaintStep::Overlay),
+    PaintStep::Widget(WidgetPaintStep::InteractionText),
+    PaintStep::Widget(WidgetPaintStep::Marquee),
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PaintStep {
+    Root(RootPaintStep),
+    Plot(PrimaryPlotLayer),
+    Widget(WidgetPaintStep),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RootPaintStep {
+    Separators,
+    Drawings,
+    YAxis,
+    XAxis,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WidgetPaintStep {
+    Overlay,
+    InteractionText,
+    Marquee,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct OverlayChannelSpec<'a> {
@@ -111,49 +190,6 @@ impl PrimaryViewportState {
         true
     }
 }
-
-use data::chart::ticks::{
-    Y_LABEL_DENSITY,
-    x::{TimeTickLabel, TimeTickTier},
-    x_labels_that_fit,
-    y::{TickValue, YAxisScale},
-    y_labels_that_fit,
-};
-
-use iced::advanced::widget::tree::{self, Tree};
-use iced::advanced::{self, Clipboard, Layout, Shell, Widget, layout as iced_layout, renderer};
-use iced::theme::palette::Extended;
-use iced::widget::canvas;
-use iced::{
-    Element, Event, Length, Point, Rectangle, Renderer, Size, Theme, Vector, keyboard, mouse,
-    window,
-};
-use iced_core::renderer::Quad;
-use std::time::{Duration, Instant};
-
-const Y_AXIS_GUTTER: f32 = 66.0;
-const X_AXIS_HEIGHT: f32 = 24.0;
-pub(crate) const MIN_FULL_CACHE_REFRESH_INTERVAL: Duration = Duration::from_micros(33_333);
-
-const TEXT_SIZE: f32 = 12.0;
-const CHAR_W: f32 = TEXT_SIZE * 0.64;
-const Y_AXIS_LABEL_LEFT_INSET: f32 = 4.0;
-const PANEL_SPLITTER_HEIGHT: f32 = 1.0;
-const PIXELS_PER_SCROLL_LINE: f32 = 40.0;
-const HORIZONTAL_DRAG_SCALE_DELTA_PER_PX: f32 = 0.3 / 9.0;
-const DRAG_THRESHOLD_PX: f32 = 5.0;
-const TPO_BOUNDARY_HIT_PX: f32 = 7.0;
-pub(super) const TPO_ACTION_BUTTON_WIDTH_PX: f32 = 62.0;
-pub(super) const TPO_ACTION_BUTTON_HEIGHT_PX: f32 = 20.0;
-pub(super) const TPO_RESET_BUTTON_WIDTH_PX: f32 = 48.0;
-const TPO_ACTION_BUTTON_GAP_PX: f32 = 3.0;
-
-const PANEL_TITLE_TOP_PAD: f32 = 4.0;
-const Y_AXIS_DRAG_SCALE_DELTA_PER_PX: f32 = 0.1;
-
-const TICKER_LEGEND_PADDING: f32 = 4.0;
-const TOOLTIP_ROW_LEFT_PAD: f32 = TICKER_LEGEND_PADDING * 2.0;
-const TICKER_LEGEND_ROW_H: f32 = TEXT_SIZE + 6.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Regions {
@@ -257,10 +293,6 @@ enum TpoHit {
     },
 }
 
-fn drag_threshold_reached(start: Point, current: Point) -> bool {
-    (start.x - current.x).abs() + (start.y - current.y).abs() >= DRAG_THRESHOLD_PX
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum HorizontalWheelZoomMode {
     LiveEdge,
@@ -306,11 +338,12 @@ struct State {
     plot_background_cache: canvas::Cache,
     plot_cache: canvas::Cache,
     tpo_cache: canvas::Cache,
+    price_bars_cache: canvas::Cache,
     y_axis_cache: canvas::Cache,
     x_axis_cache: canvas::Cache,
     overlay_cache: canvas::Cache,
     interaction_text_cache: canvas::Cache,
-    drawing_background_cache: canvas::Cache,
+    drawing_cache: canvas::Cache,
     marquee_cache: canvas::Cache,
     drag_mode: DragMode,
     selected_tpo_profile: Option<UnixMs>,
@@ -321,7 +354,7 @@ struct State {
     y_axis_gutter_width: f32,
     gutter_cache_key: Option<GutterCacheKey>,
     plot_geometry_key: Option<GeometryCacheKey>,
-    drawing_background_geometry_key: Option<GeometryCacheKey>,
+    drawing_geometry_key: Option<GeometryCacheKey>,
     overlay_geometry_key: Option<GeometryCacheKey>,
     interaction_text_geometry_key: Option<GeometryCacheKey>,
     x_axis_geometry_key: Option<GeometryCacheKey>,
@@ -339,11 +372,12 @@ impl Default for State {
             plot_background_cache: canvas::Cache::new(),
             plot_cache: canvas::Cache::new(),
             tpo_cache: canvas::Cache::new(),
+            price_bars_cache: canvas::Cache::new(),
             y_axis_cache: canvas::Cache::new(),
             x_axis_cache: canvas::Cache::new(),
             overlay_cache: canvas::Cache::new(),
             interaction_text_cache: canvas::Cache::new(),
-            drawing_background_cache: canvas::Cache::new(),
+            drawing_cache: canvas::Cache::new(),
             marquee_cache: canvas::Cache::new(),
             drag_mode: DragMode::None,
             selected_tpo_profile: None,
@@ -354,7 +388,7 @@ impl Default for State {
             y_axis_gutter_width: Y_AXIS_GUTTER,
             gutter_cache_key: None,
             plot_geometry_key: None,
-            drawing_background_geometry_key: None,
+            drawing_geometry_key: None,
             overlay_geometry_key: None,
             interaction_text_geometry_key: None,
             x_axis_geometry_key: None,
@@ -373,18 +407,24 @@ impl State {
         self.plot_background_cache.clear();
         self.plot_cache.clear();
         self.tpo_cache.clear();
+        self.price_bars_cache.clear();
         self.y_axis_cache.clear();
         self.x_axis_cache.clear();
-        self.drawing_background_cache.clear();
+        self.drawing_cache.clear();
         self.clear_overlay_caches();
         self.marquee_cache.clear();
     }
 
-    fn cache_refresh_is_due(&self, version: u64, now: Instant, minimum_interval: Duration) -> bool {
-        self.last_cache_rev != version
-            && self.last_cache_clear_at.is_none_or(|last_clear| {
-                now.saturating_duration_since(last_clear) >= minimum_interval
-            })
+    fn cache_refresh_at(
+        &self,
+        version: u64,
+        now: Instant,
+        minimum_interval: Duration,
+    ) -> Option<Instant> {
+        (self.last_cache_rev != version).then(|| {
+            self.last_cache_clear_at
+                .map_or(now, |last_clear| last_clear + minimum_interval)
+        })
     }
 
     fn mark_cache_refreshed(&mut self, version: u64, now: Instant) {
@@ -420,11 +460,12 @@ impl State {
             self.plot_background_cache.clear();
             self.plot_cache.clear();
             self.tpo_cache.clear();
+            self.price_bars_cache.clear();
             self.plot_geometry_key = Some(plot_geometry_key);
         }
         Self::sync_geometry_cache(
-            &self.drawing_background_cache,
-            &mut self.drawing_background_geometry_key,
+            &self.drawing_cache,
+            &mut self.drawing_geometry_key,
             GeometryCacheKey::new(bounds, root_origin, pixel_ratio),
         );
         Self::sync_geometry_cache(
@@ -453,6 +494,19 @@ impl State {
             cache.clear();
             *previous = Some(next);
         }
+    }
+
+    fn rounded_drag_delta(&self, cursor: Point) -> Vector {
+        let Some(previous) = self.last_cursor else {
+            return Vector::new(0.0, 0.0);
+        };
+        let start = self.drag_start.unwrap_or(previous);
+
+        // Round cumulative movement so sub-pixel events accumulate instead of disappearing.
+        Vector::new(
+            (cursor.x - start.x).round() - (previous.x - start.x).round(),
+            (cursor.y - start.y).round() - (previous.y - start.y).round(),
+        )
     }
 }
 
@@ -887,6 +941,57 @@ impl<'a> KlineWidget<'a> {
         self.drawings.active_tool.supports_magnet()
             && (self.drawings.magnet_enabled || Self::is_command_modifier(modifiers))
     }
+
+    fn paint_separators(renderer: &mut Renderer, scene: &Scene, theme: &Theme) {
+        use advanced::Renderer as _;
+
+        let plot_rect = scene.plot_rect();
+        let splitter_color = style::split_ruler(theme).color;
+
+        for splitter in &scene.layout.splitters {
+            renderer.fill_quad(
+                Quad {
+                    bounds: Rectangle {
+                        x: plot_rect.x + splitter.x,
+                        y: plot_rect.y + splitter.y,
+                        width: splitter.width + scene.layout.regions.y_axis.width,
+                        height: splitter.height,
+                    },
+                    snap: true,
+                    ..Default::default()
+                },
+                splitter_color,
+            );
+        }
+
+        renderer.fill_quad(
+            Quad {
+                bounds: Rectangle {
+                    x: plot_rect.x,
+                    y: plot_rect.y + plot_rect.height,
+                    width: plot_rect.width + scene.layout.regions.y_axis.width,
+                    height: 1.0,
+                },
+                snap: true,
+                ..Default::default()
+            },
+            splitter_color,
+        );
+
+        renderer.fill_quad(
+            Quad {
+                bounds: Rectangle {
+                    x: plot_rect.x + plot_rect.width,
+                    y: plot_rect.y,
+                    width: 1.0,
+                    height: plot_rect.height,
+                },
+                snap: true,
+                ..Default::default()
+            },
+            splitter_color,
+        );
+    }
 }
 
 impl<'a, M> Widget<M, Theme, Renderer> for KlineWidget<'a>
@@ -1281,8 +1386,14 @@ where
                                     return;
                                 }
 
-                                let horizontal_zoom_mode =
-                                    HorizontalWheelZoomMode::from_modifiers(state.modifiers);
+                                let horizontal_zoom_mode = if matches!(
+                                    zone,
+                                    LayoutHitZone::PanelXAxis(_) | LayoutHitZone::BottomXAxis
+                                ) {
+                                    HorizontalWheelZoomMode::Cursor
+                                } else {
+                                    HorizontalWheelZoomMode::from_modifiers(state.modifiers)
+                                };
                                 let horizontal_zoom_delta = scroll_y / 2.0;
 
                                 if horizontal_zoom_delta.abs() <= f32::EPSILON {
@@ -1497,7 +1608,16 @@ where
                             && let Some(scene) = scene.as_ref()
                             && panel_index == scene.primary.panel_index
                         {
-                            self.tpo_hit_test(scene, cursor_pos, state.selected_tpo_profile)
+                            prioritized_tpo_hit(
+                                self.tpo_hit_test(scene, cursor_pos, state.selected_tpo_profile),
+                                matches!(
+                                    cursor_target,
+                                    Some(
+                                        CursorTarget::Drawing(_)
+                                            | CursorTarget::DrawingHandle { .. }
+                                    )
+                                ),
+                            )
                         } else {
                             None
                         };
@@ -1510,7 +1630,17 @@ where
                                     state.pending_tpo_hit = Some(hit);
                                     state.clear_overlay_caches();
                                     if let LayoutHitZone::PanelPlot(panel_index) = zone {
-                                        state.drag_mode = DragMode::Pan { panel_index };
+                                        state.drag_mode = if matches!(hit, TpoHit::Profile { .. })
+                                            && Self::is_command_modifier(state.modifiers)
+                                        {
+                                            DragMode::Marquee {
+                                                panel_index,
+                                                start: cursor_pos,
+                                                current: cursor_pos,
+                                            }
+                                        } else {
+                                            DragMode::Pan { panel_index }
+                                        };
                                         state.last_cursor = Some(cursor_pos);
                                         shell.capture_event();
                                         return;
@@ -1805,6 +1935,7 @@ where
                                     state.selected_tpo_profile = (state.selected_tpo_profile
                                         != Some(start))
                                     .then_some(start);
+                                    state.drag_mode = DragMode::None;
                                     state.clear_overlay_caches();
                                     shell.capture_event();
                                 }
@@ -1923,9 +2054,11 @@ where
                             initial_right_unit,
                         } = state.drag_mode
                         {
-                            let total_delta =
-                                (anchor_x - cursor_pos.x) * HORIZONTAL_DRAG_SCALE_DELTA_PER_PX;
-                            if let Some(scene) = self.cached_scene(state, layout, cursor) {
+                            let total_delta = (anchor_x - cursor_pos.x).round()
+                                * HORIZONTAL_DRAG_SCALE_DELTA_PER_PX;
+                            if total_delta.abs() > f32::EPSILON
+                                && let Some(scene) = self.cached_scene(state, layout, cursor)
+                            {
                                 let right_edge = scene.x_axis_plot_width().max(1.0);
                                 let anchor_x =
                                     (anchor_x - scene.layout.regions.plot.x).clamp(0.0, right_edge);
@@ -1967,8 +2100,7 @@ where
                             anchor_y,
                         } = state.drag_mode
                         {
-                            let prev = state.last_cursor.unwrap_or(cursor_pos);
-                            let dy_px = cursor_pos.y - prev.y;
+                            let dy_px = state.rounded_drag_delta(cursor_pos).y;
                             let scale_delta = (-dy_px) * Y_AXIS_DRAG_SCALE_DELTA_PER_PX;
 
                             if scale_delta.abs() > f32::EPSILON
@@ -2057,10 +2189,9 @@ where
                                 return;
                             }
 
-                            let prev_x = state.last_cursor.map_or(cursor_pos.x, |prev| prev.x);
-                            let prev_y = state.last_cursor.map_or(cursor_pos.y, |prev| prev.y);
-                            let dx_px = cursor_pos.x - prev_x;
-                            let dy_px = cursor_pos.y - prev_y;
+                            let drag_delta = state.rounded_drag_delta(cursor_pos);
+                            let dx_px = drag_delta.x;
+                            let dy_px = drag_delta.y;
                             let spacing = self.horizontal_world.spacing();
                             let offset = self.horizontal_world.offset() - dx_px / spacing;
 
@@ -2113,9 +2244,15 @@ where
                     state.last_theme_generation = Some(self.theme_accents.generation());
                 }
 
-                if state.cache_refresh_is_due(self.version, *now, MIN_FULL_CACHE_REFRESH_INTERVAL) {
-                    state.clear_all_caches();
-                    state.mark_cache_refreshed(self.version, *now);
+                if let Some(refresh_at) =
+                    state.cache_refresh_at(self.version, *now, MIN_FULL_CACHE_REFRESH_INTERVAL)
+                {
+                    if *now >= refresh_at {
+                        state.clear_all_caches();
+                        state.mark_cache_refreshed(self.version, *now);
+                    } else {
+                        shell.request_redraw_at(refresh_at);
+                    }
                 }
 
                 if let Some(scene) = self.cached_scene(state, layout, cursor) {
@@ -2156,230 +2293,159 @@ where
         cursor: mouse::Cursor,
         _viewport: &Rectangle,
     ) {
-        use advanced::Renderer as _;
-
         let state = tree.state.downcast_ref::<State>();
         let Some(scene) = self.cached_scene(state, layout, cursor) else {
             return;
         };
-
         let bounds = layout.bounds();
-        let palette = theme.extended_palette();
-        let generated_accents = self.theme_accents.as_array();
 
-        renderer.with_translation(Vector::new(bounds.x, bounds.y), |r| {
+        use advanced::Renderer as _;
+        use iced::advanced::graphics::geometry::Renderer as _;
+        renderer.with_translation(Vector::new(bounds.x, bounds.y), |renderer| {
             let plot_rect = scene.plot_rect();
-            let plot_pixels = PixelGeometry::new(
-                self.pixel_ratio,
-                Point::new(bounds.x + plot_rect.x, bounds.y + plot_rect.y),
-            );
-            let overlay_pixels =
-                PixelGeometry::new(self.pixel_ratio, Point::new(bounds.x, bounds.y));
-            let x_axis_pixels = PixelGeometry::new(
-                self.pixel_ratio,
-                Point::new(
-                    bounds.x + scene.layout.regions.x_axis.x,
-                    bounds.y + scene.layout.regions.x_axis.y,
-                ),
-            );
+            let palette = theme.extended_palette();
+            let generated_accents = self.theme_accents.as_array();
 
-            let drawing_background_geom =
-                state
-                    .drawing_background_cache
-                    .draw(r, bounds.size(), |frame| {
-                        if self.drawings.has_state() {
-                            self.fill_drawing_objects(
+            for step in PAINT_ORDER {
+                match step {
+                    PaintStep::Root(pass) => match pass {
+                        RootPaintStep::Separators => {
+                            Self::paint_separators(renderer, &scene, theme);
+                        }
+                        RootPaintStep::Drawings => {
+                            let overlay_pixels = PixelGeometry::new(
+                                self.pixel_ratio,
+                                Point::new(bounds.x, bounds.y),
+                            );
+                            let geometry =
+                                state.drawing_cache.draw(renderer, bounds.size(), |frame| {
+                                    if self.drawings.has_state() {
+                                        self.fill_drawing_objects(
+                                            frame,
+                                            &scene,
+                                            palette,
+                                            generated_accents,
+                                            overlay_pixels,
+                                        );
+                                    }
+                                });
+                            renderer.draw_geometry(geometry);
+                        }
+                        RootPaintStep::YAxis => {
+                            let rect = scene.layout.regions.y_axis;
+                            let geometry =
+                                state.y_axis_cache.draw(renderer, rect.size(), |frame| {
+                                    self.fill_y_axis_labels(frame, &scene, palette)
+                                });
+                            renderer.with_translation(Vector::new(rect.x, rect.y), |renderer| {
+                                renderer.draw_geometry(geometry);
+                            });
+                        }
+                        RootPaintStep::XAxis => {
+                            let rect = scene.layout.regions.x_axis;
+                            let x_axis_pixels = PixelGeometry::new(
+                                self.pixel_ratio,
+                                Point::new(bounds.x + rect.x, bounds.y + rect.y),
+                            );
+                            let geometry =
+                                state.x_axis_cache.draw(renderer, rect.size(), |frame| {
+                                    self.fill_x_axis_labels(frame, &scene, palette, x_axis_pixels)
+                                });
+                            renderer.with_translation(Vector::new(rect.x, rect.y), |renderer| {
+                                renderer.draw_geometry(geometry);
+                            });
+                        }
+                    },
+                    PaintStep::Plot(layer) => {
+                        let cache = match layer {
+                            PrimaryPlotLayer::Background => &state.plot_background_cache,
+                            PrimaryPlotLayer::Tpo => &state.tpo_cache,
+                            PrimaryPlotLayer::Foreground => &state.plot_cache,
+                            PrimaryPlotLayer::PriceBars => &state.price_bars_cache,
+                        };
+                        let plot_pixels = PixelGeometry::new(
+                            self.pixel_ratio,
+                            Point::new(bounds.x + plot_rect.x, bounds.y + plot_rect.y),
+                        );
+                        let geometry = cache.draw(renderer, plot_rect.size(), |frame| {
+                            self.fill_main_geometry(
                                 frame,
                                 &scene,
                                 palette,
                                 generated_accents,
-                                overlay_pixels,
+                                plot_pixels,
+                                layer,
                             );
-                        }
-                    });
-
-            let plot_background_geom =
-                state
-                    .plot_background_cache
-                    .draw(r, plot_rect.size(), |frame| {
-                        self.fill_main_geometry(
-                            frame,
-                            &scene,
-                            palette,
-                            generated_accents,
-                            plot_pixels,
-                            PrimaryPlotLayer::Background,
-                        );
-                    });
-
-            let tpo_geom = state.tpo_cache.draw(r, plot_rect.size(), |frame| {
-                self.fill_main_geometry(
-                    frame,
-                    &scene,
-                    palette,
-                    generated_accents,
-                    plot_pixels,
-                    PrimaryPlotLayer::Tpo,
-                );
-            });
-
-            let plot_foreground_geom = state.plot_cache.draw(r, plot_rect.size(), |frame| {
-                self.fill_main_geometry(
-                    frame,
-                    &scene,
-                    palette,
-                    generated_accents,
-                    plot_pixels,
-                    PrimaryPlotLayer::Foreground,
-                );
-            });
-
-            let splitter_color = style::split_ruler(theme).color;
-
-            for splitter in &scene.layout.splitters {
-                r.fill_quad(
-                    Quad {
-                        bounds: Rectangle {
-                            x: plot_rect.x + splitter.x,
-                            y: plot_rect.y + splitter.y,
-                            width: splitter.width + scene.layout.regions.y_axis.width,
-                            height: splitter.height,
-                        },
-                        snap: true,
-                        ..Default::default()
-                    },
-                    splitter_color,
-                );
-            }
-
-            r.fill_quad(
-                Quad {
-                    bounds: Rectangle {
-                        x: plot_rect.x,
-                        y: plot_rect.y + plot_rect.height,
-                        width: plot_rect.width + scene.layout.regions.y_axis.width,
-                        height: 1.0,
-                    },
-                    snap: true,
-                    ..Default::default()
-                },
-                splitter_color,
-            );
-
-            r.fill_quad(
-                Quad {
-                    bounds: Rectangle {
-                        x: plot_rect.x + plot_rect.width,
-                        y: plot_rect.y,
-                        width: 1.0,
-                        height: plot_rect.height,
-                    },
-                    snap: true,
-                    ..Default::default()
-                },
-                splitter_color,
-            );
-
-            let y_rect = scene.layout.regions.y_axis;
-            let y_geom = state.y_axis_cache.draw(r, y_rect.size(), |frame| {
-                self.fill_y_axis_labels(frame, &scene, palette);
-            });
-
-            let x_rect = scene.layout.regions.x_axis;
-            let x_geom = state.x_axis_cache.draw(r, x_rect.size(), |frame| {
-                self.fill_x_axis_labels(frame, &scene, palette, x_axis_pixels);
-            });
-
-            let drawing_magnet = self.drawing_magnet_enabled(state.modifiers);
-            let overlay_geom = state.overlay_cache.draw(r, bounds.size(), |frame| {
-                self.fill_overlay(
-                    frame,
-                    &scene,
-                    palette,
-                    generated_accents,
-                    overlay_pixels,
-                    drawing_magnet,
-                    state.selected_tpo_profile,
-                    match state.drag_mode {
-                        DragMode::TpoBoundary { preview, .. } => Some(preview),
-                        _ => None,
-                    },
-                );
-            });
-
-            let interaction_text_geom =
-                state
-                    .interaction_text_cache
-                    .draw(r, bounds.size(), |frame| {
-                        self.fill_overlay_interaction_text(
-                            frame,
-                            &scene,
-                            palette,
-                            drawing_magnet,
-                            overlay_pixels,
-                        );
-                    });
-
-            let marquee_geom = state.marquee_cache.draw(r, bounds.size(), |frame| {
-                if let DragMode::Marquee {
-                    panel_index,
-                    start,
-                    current,
-                } = &state.drag_mode
-                    && let Some(rect) =
-                        self.clipped_marquee_rect(&scene, *panel_index, *start, *current)
-                {
-                    self.fill_marquee_rectangle(frame, rect, palette);
+                        });
+                        renderer.with_layer(plot_rect, |renderer| {
+                            renderer.with_translation(
+                                Vector::new(plot_rect.x, plot_rect.y),
+                                |renderer| {
+                                    renderer.draw_geometry(geometry);
+                                },
+                            );
+                        });
+                    }
+                    PaintStep::Widget(layer) => {
+                        let overlay_pixels =
+                            PixelGeometry::new(self.pixel_ratio, Point::new(bounds.x, bounds.y));
+                        let drawing_magnet = self.drawing_magnet_enabled(state.modifiers);
+                        let geometry = match layer {
+                            WidgetPaintStep::Overlay => {
+                                state.overlay_cache.draw(renderer, bounds.size(), |frame| {
+                                    self.fill_overlay(
+                                        frame,
+                                        &scene,
+                                        palette,
+                                        generated_accents,
+                                        overlay_pixels,
+                                        drawing_magnet,
+                                        state.selected_tpo_profile,
+                                        match state.drag_mode {
+                                            DragMode::TpoBoundary { preview, .. } => Some(preview),
+                                            _ => None,
+                                        },
+                                    );
+                                })
+                            }
+                            WidgetPaintStep::InteractionText => state.interaction_text_cache.draw(
+                                renderer,
+                                bounds.size(),
+                                |frame| {
+                                    self.fill_overlay_interaction_text(
+                                        frame,
+                                        &scene,
+                                        palette,
+                                        drawing_magnet,
+                                        overlay_pixels,
+                                    );
+                                },
+                            ),
+                            WidgetPaintStep::Marquee => {
+                                state.marquee_cache.draw(renderer, bounds.size(), |frame| {
+                                    if let DragMode::Marquee {
+                                        panel_index,
+                                        start,
+                                        current,
+                                    } = &state.drag_mode
+                                        && let Some(rect) = self.clipped_marquee_rect(
+                                            &scene,
+                                            *panel_index,
+                                            *start,
+                                            *current,
+                                        )
+                                    {
+                                        self.fill_marquee_rectangle(frame, rect, palette);
+                                    }
+                                })
+                            }
+                        };
+                        renderer.with_layer(Rectangle::with_size(bounds.size()), |renderer| {
+                            renderer.draw_geometry(geometry);
+                        });
+                    }
                 }
-            });
-
-            let layer_bounds = Rectangle {
-                x: 0.0,
-                y: 0.0,
-                width: bounds.width,
-                height: bounds.height,
-            };
-
-            use iced::advanced::graphics::geometry::Renderer as _;
-            r.draw_geometry(drawing_background_geom);
-
-            r.with_layer(plot_rect, |r| {
-                r.with_translation(Vector::new(plot_rect.x, plot_rect.y), |r| {
-                    r.draw_geometry(plot_background_geom);
-                });
-            });
-
-            r.with_layer(plot_rect, |r| {
-                r.with_translation(Vector::new(plot_rect.x, plot_rect.y), |r| {
-                    r.draw_geometry(tpo_geom);
-                });
-            });
-
-            r.with_layer(plot_rect, |r| {
-                r.with_translation(Vector::new(plot_rect.x, plot_rect.y), |r| {
-                    r.draw_geometry(plot_foreground_geom);
-                });
-            });
-
-            r.with_translation(Vector::new(y_rect.x, y_rect.y), |r| {
-                r.draw_geometry(y_geom);
-            });
-
-            r.with_translation(Vector::new(x_rect.x, x_rect.y), |r| {
-                r.draw_geometry(x_geom);
-            });
-
-            r.with_layer(layer_bounds, |r| {
-                r.draw_geometry(overlay_geom);
-            });
-
-            r.with_layer(layer_bounds, |r| {
-                r.draw_geometry(interaction_text_geom);
-            });
-
-            r.with_layer(layer_bounds, |r| {
-                r.draw_geometry(marquee_geom);
-            });
+            }
         });
     }
 
@@ -2420,7 +2486,13 @@ where
         if self.drawings.allows_panning()
             && let Some(scene) = scene.as_ref()
             && let Some(point) = cursor.position_in(layout.bounds())
-            && let Some(hit) = self.tpo_hit_test(scene, point, state.selected_tpo_profile)
+            && let Some(hit) = prioritized_tpo_hit(
+                self.tpo_hit_test(scene, point, state.selected_tpo_profile),
+                matches!(
+                    scene.interaction.target,
+                    CursorTarget::Drawing(_) | CursorTarget::DrawingHandle { .. }
+                ),
+            )
         {
             return match hit {
                 TpoHit::Boundary { .. } => advanced::mouse::Interaction::ResizingHorizontally,
@@ -2479,6 +2551,14 @@ fn history_shortcut(
     } else {
         KlineWidgetEvent::UndoRequested
     })
+}
+
+fn prioritized_tpo_hit(hit: Option<TpoHit>, drawing_target: bool) -> Option<TpoHit> {
+    hit.filter(|hit| !drawing_target || !matches!(hit, TpoHit::Profile { .. }))
+}
+
+fn drag_threshold_reached(start: Point, current: Point) -> bool {
+    (start.x - current.x).abs() + (start.y - current.y).abs() >= DRAG_THRESHOLD_PX
 }
 
 fn primary_scale_inversion_shortcut(

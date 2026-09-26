@@ -325,7 +325,9 @@ impl<'a> KlineWidget<'a> {
         let mut previous = 0.0;
 
         for split in splits {
-            let boundary = split.clamp(0.0, 1.0) * usable;
+            let boundary = (split.clamp(0.0, 1.0) * usable)
+                .round()
+                .clamp(previous, usable);
             heights.push((boundary - previous).max(0.0));
             previous = boundary;
         }
@@ -353,7 +355,7 @@ impl<'a> KlineWidget<'a> {
 
         let fixed_before =
             (split_index as f32 * PANEL_SPLITTER_HEIGHT) + (PANEL_SPLITTER_HEIGHT * 0.5);
-        let boundary = (local_y - fixed_before).clamp(0.0, usable);
+        let boundary = (local_y - fixed_before).round().clamp(0.0, usable);
 
         Some((boundary / usable).clamp(0.0, 1.0))
     }

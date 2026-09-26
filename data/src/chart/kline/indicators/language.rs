@@ -34,19 +34,6 @@ pub fn indicator_files_in_directory(
     indicator_engine::source_files_in_directory(path)
 }
 
-/// Load explicit source files and retain per-file diagnostics.
-pub fn load_from_files(
-    paths: &[PathBuf],
-    origin: PackageOrigin,
-) -> Result<Vec<IndicatorRegistration>, Vec<String>> {
-    let report = load_from_files_report(paths, origin);
-    if report.diagnostics.is_empty() {
-        Ok(report.registrations)
-    } else {
-        Err(report.diagnostics)
-    }
-}
-
 /// Load valid source files and retain diagnostics for files that could not
 /// be activated. The application uses this form so one broken file does not
 /// disable unrelated indicators.

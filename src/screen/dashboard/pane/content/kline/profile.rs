@@ -225,12 +225,13 @@ impl ProfileState {
         &mut self,
         study: Option<KlineStudy>,
         trades: &[Trade],
+        trade_sequence_id: Option<uuid::Uuid>,
         price_step: PriceStep,
         now: UnixMs,
         coverage: impl Fn(UnixMs, UnixMs) -> TpoProfileStatus,
     ) -> bool {
         self.tpo
-            .rebuild_trades(study, trades, price_step, now, coverage)
+            .rebuild_trades(study, trades, trade_sequence_id, price_step, now, coverage)
     }
 
     pub(super) fn clear_tpo_source(&mut self) -> bool {

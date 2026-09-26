@@ -9,9 +9,9 @@ use super::{
     TICKER_LEGEND_ROW_H, TOOLTIP_ROW_LEFT_PAD,
 };
 use crate::style;
+use data::chart::kline::footprint::ClusterKind;
 use data::chart::kline::series::KlineSeries;
 use data::chart::kline::{KlineStudy, KlineStudyId};
-use data::chart::kline_data::ClusterKind;
 use data::config::theme::ACCENT_COUNT;
 use data::util::abbr_large_numbers;
 

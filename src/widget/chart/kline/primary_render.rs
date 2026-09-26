@@ -10,13 +10,13 @@ use super::scene_builder::{
     shifted_output_unit,
 };
 use super::*;
-use data::chart::kline::series::KlineSeries;
+use data::chart::kline::footprint::ClusterKind;
+use data::chart::kline::series::{BigTradeEntry, KlineSeries};
 use data::chart::kline::{
     IndicatorFillGeometry, IndicatorFillSpec, IndicatorInputSource, IndicatorOutputRef,
     LineStrokeStyle, OutputValue, ProfileDistribution, StudyDataSource, TableColumnColor,
     TableColumnFormat, TableColumnValue, TpoColorConfig, TpoProfile, TpoProfileStatus,
 };
-use data::chart::kline_data::ClusterKind;
 use data::config::theme::ACCENT_COUNT;
 use data::util::abbr_large_numbers;
 use exchange::UnixMs;
@@ -44,7 +44,20 @@ const BIG_TRADE_MIN_RADIUS_PX: f32 = 3.0;
 struct BigTradeCell {
     notional: f64,
     count: u32,
-    unit_sum: f64,
+    anchor: Option<(BigTradeEntry, i64)>,
+}
+
+impl BigTradeCell {
+    fn add(&mut self, entry: BigTradeEntry, x_unit: i64) {
+        self.notional += entry.notional;
+        self.count = self.count.saturating_add(1);
+        if self
+            .anchor
+            .is_none_or(|(anchor, _)| entry.notional > anchor.notional)
+        {
+            self.anchor = Some((entry, x_unit));
+        }
+    }
 }
 
 struct PixelRows {
@@ -168,6 +181,7 @@ pub(super) enum PrimaryPlotLayer {
     Background,
     Tpo,
     Foreground,
+    PriceBars,
 }
 
 fn footprint_detail_enabled(trade_data_enabled: bool, logical_bar_spacing: f32) -> bool {
@@ -697,7 +711,7 @@ impl<'a> KlineWidget<'a> {
         let Some(base_series) = self.series.first() else {
             return;
         };
-        let tick_size = base_series.footprint_tick_size();
+        let tick_size = base_series.tick_size();
         let anchor = scene
             .primary
             .series_percent_anchors
@@ -1201,7 +1215,7 @@ impl<'a> KlineWidget<'a> {
         }
 
         let primary_plot = *scene.primary_plot();
-        let tick_size = base_series.footprint_tick_size();
+        let tick_size = base_series.tick_size();
         let min_row_height = pixels.logical_width_from_physical(1);
         let naked_line_end = primary_plot.x + primary_plot.width;
         let npoc_color = Self::resolve_theme_color(
@@ -1326,11 +1340,11 @@ impl<'a> KlineWidget<'a> {
 
         let bar_spacing = scene.logical_bar_spacing();
         let col_merge = (BIG_TRADE_MIN_COL_PX / bar_spacing).ceil().max(1.0) as i64;
-        let tick_size = series.footprint_tick_size();
+        let tick_size = series.tick_size();
         let (low, high) = scene.primary_domain_value_range();
         let target_rows = (plot.height / BIG_TRADE_MIN_ROW_PX).floor().max(1.0) as usize;
         let row_step = tick_size
-            .coarsened_to_fit(low, high, target_rows)
+            .nested_coarsened_to_fit(low, high, target_rows)
             .unwrap_or(tick_size);
         let cell_width_px = bar_spacing * col_merge as f32;
         let cell_height_px = self.footprint_row_height(scene, low, row_step, anchor);
@@ -1357,18 +1371,16 @@ impl<'a> KlineWidget<'a> {
                     if x_unit < scene.x.min_unit || x_unit > scene.x.max_unit {
                         continue;
                     }
-                    let y =
-                        scene.map_primary_plot_with_anchor_f32(entry.price.to_f32_lossy(), anchor);
+                    let price = entry.price.round_to_step(tick_size);
+                    let y = scene.map_primary_plot_with_anchor_f32(price.to_f32_lossy(), anchor);
                     if !y.is_finite() || y < plot.y || y > plot.y + plot.height {
                         continue;
                     }
-                    let row = entry.price.round_to_step(row_step);
+                    let row = price.round_to_step(row_step);
                     let cell = groups
                         .entry((x_unit.div_euclid(col_merge), row.units, entry.is_sell))
                         .or_default();
-                    cell.notional += entry.notional;
-                    cell.count = cell.count.saturating_add(1);
-                    cell.unit_sum += x_unit as f64;
+                    cell.add(*entry, x_unit);
                 }
             }
             (data::chart::Basis::Tick(tick_count), XAxis::Tick { .. }) => {
@@ -1394,19 +1406,17 @@ impl<'a> KlineWidget<'a> {
                     if x_unit < scene.x.min_unit || x_unit > scene.x.max_unit {
                         continue;
                     }
-                    let y =
-                        scene.map_primary_plot_with_anchor_f32(entry.price.to_f32_lossy(), anchor);
+                    let price = entry.price.round_to_step(tick_size);
+                    let y = scene.map_primary_plot_with_anchor_f32(price.to_f32_lossy(), anchor);
                     if !y.is_finite() || y < plot.y || y > plot.y + plot.height {
                         continue;
                     }
-                    let row = entry.price.round_to_step(row_step);
+                    let row = price.round_to_step(row_step);
                     let cell_x = (bar_index as i64).div_euclid(col_merge);
                     let cell = groups
                         .entry((cell_x, row.units, entry.is_sell))
                         .or_default();
-                    cell.notional += entry.notional;
-                    cell.count = cell.count.saturating_add(1);
-                    cell.unit_sum += x_unit as f64;
+                    cell.add(*entry, x_unit);
                 }
             }
             _ => return,
@@ -1433,17 +1443,18 @@ impl<'a> KlineWidget<'a> {
         }
 
         frame.with_clip(plot, |frame| {
-            for ((_, row_units, is_sell), cell) in groups {
+            for ((_, _, is_sell), cell) in groups {
                 let count = cell.count;
-                let x_unit = (cell.unit_sum / f64::from(count)) as f32;
-                let x = scene.map_x_plot_f32(x_unit);
-                let y = scene.map_primary_plot_with_anchor_f32(
-                    Price { units: row_units }.to_f32_lossy(),
-                    anchor,
-                );
+                let Some((entry, x_unit)) = cell.anchor else {
+                    continue;
+                };
+                let x = scene.map_x_plot_f32(x_unit as f32);
+                let price = entry.price.round_to_step(tick_size);
+                let y = scene.map_primary_plot_with_anchor_f32(price.to_f32_lossy(), anchor);
                 if !x.is_finite() || !y.is_finite() {
                     continue;
                 }
+                let y = y.clamp(plot.y, plot.y + plot.height);
                 let normalized = (cell.notional / max_notional).sqrt().clamp(0.0, 1.0) as f32;
                 let radius = max_radius * (0.4 + 0.6 * normalized);
                 let side_offset = if is_sell { -radius } else { radius };
@@ -1465,17 +1476,6 @@ impl<'a> KlineWidget<'a> {
         });
     }
 
-    fn effective_study_tick_size(
-        &self,
-        study: KlineStudy,
-        footprint_tick_size: PriceStep,
-    ) -> PriceStep {
-        let Some(base_series) = self.series.first() else {
-            return footprint_tick_size;
-        };
-        study.effective_profile_tick_size(base_series.ticker_info, footprint_tick_size)
-    }
-
     pub(super) fn fill_volume_profile_overlay(
         &self,
         frame: &mut canvas::Frame,
@@ -1495,7 +1495,7 @@ impl<'a> KlineWidget<'a> {
             return;
         };
 
-        let footprint_tick_size = base_series.footprint_tick_size();
+        let tick_size = base_series.tick_size();
         let profile_bars = self.profile_bars.collect(self.series);
         let visible_profile = self.studies.iter().find_map(|study| {
             if !study.visible() {
@@ -1510,7 +1510,6 @@ impl<'a> KlineWidget<'a> {
             let width_ratio = study.volume_profile_width_ratio()?;
             let opacity_ratio = study.volume_profile_opacity_ratio()?;
             let opacity_scale = study.volume_profile_opacity_scale()?;
-            let tick_size = self.effective_study_tick_size(*study, footprint_tick_size);
             let profile = match study.source() {
                 StudyDataSource::Kline => data::chart::kline::kline_volume_profile(
                     &profile_bars,
@@ -1544,7 +1543,7 @@ impl<'a> KlineWidget<'a> {
                     study.volume_profile_width_ratio()?,
                     study.volume_profile_opacity_ratio()?,
                     study.volume_profile_opacity_scale()?,
-                    self.effective_study_tick_size(*study, footprint_tick_size),
+                    tick_size,
                 ))
             });
         let profiles = recurring_intervals
@@ -3741,7 +3740,8 @@ impl<'a> KlineWidget<'a> {
             return;
         }
 
-        if self.candlestick.visible
+        if layer == PrimaryPlotLayer::PriceBars
+            && self.candlestick.visible
             && matches!(primary_plot_detail, PrimaryPlotDetail::CandleOnly)
             && matches!(scene.primary.mark, MarkKind::Candle | MarkKind::Bar(_))
         {
@@ -3805,7 +3805,9 @@ impl<'a> KlineWidget<'a> {
             });
         }
 
-        if matches!(primary_plot_detail, PrimaryPlotDetail::Footprint) {
+        if layer == PrimaryPlotLayer::PriceBars
+            && matches!(primary_plot_detail, PrimaryPlotDetail::Footprint)
+        {
             self.fill_footprint_overlay(
                 frame,
                 scene,
@@ -3814,6 +3816,10 @@ impl<'a> KlineWidget<'a> {
                 self.footprint.visible,
                 pixels,
             );
+        }
+
+        if layer == PrimaryPlotLayer::PriceBars {
+            return;
         }
 
         let primary_plot = *scene.primary_plot();

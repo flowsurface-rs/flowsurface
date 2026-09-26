@@ -147,7 +147,7 @@ pub fn timesales_cfg_view<'a>(cfg: timesales::Config) -> InspectorContent<'a, Me
     let mut content = InspectorContent::new(vec![
         InspectorSection::titled("Size filter", trade_size_slider),
         InspectorSection::new(history_title, retention_slider),
-        InspectorSection::titled("Stacked bar", stacked_bar),
+        InspectorSection::titled("Stacked bar", stacked_bar).with_modal_container(),
     ]);
     content.set_footer(row![
         space::horizontal(),

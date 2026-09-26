@@ -2,6 +2,7 @@ use super::indicators::{AvailabilityContext, IndicatorAvailability, availability
 use super::series::KlineSeries;
 use super::{IndicatorInstanceId, IndicatorInstanceStore};
 use crate::chart::Basis;
+use exchange::adapter::Exchange;
 use exchange::{TickerInfo, Timeframe, UnixMs};
 
 const DEFAULT_FETCH_BARS: u64 = 500;
@@ -310,8 +311,9 @@ impl FetchPlanInput<'_> {
         )
         .map(|(earliest, latest)| {
             let half_interval = dt / 2;
+            let half_visible_span = latest.saturating_diff(earliest) / 2;
             (
-                earliest.saturating_sub(half_interval),
+                earliest.saturating_sub(half_visible_span.saturating_add(half_interval)),
                 latest.saturating_add(half_interval),
             )
         })?;
@@ -374,4 +376,26 @@ pub fn visible_window(
         left.to_unix_ms_non_negative(),
         right.to_unix_ms_non_negative(),
     ))
+}
+
+/// Provider capability predicates shared by fetch planning and indicators.
+pub fn supports_open_interest(ticker_info: TickerInfo, timeframe: Timeframe) -> bool {
+    supports_open_interest_exchange(ticker_info.exchange())
+        && supports_open_interest_timeframe(timeframe)
+}
+
+pub fn supports_open_interest_exchange(exchange: Exchange) -> bool {
+    matches!(
+        exchange,
+        Exchange::BinanceLinear
+            | Exchange::BinanceInverse
+            | Exchange::BybitLinear
+            | Exchange::BybitInverse
+            | Exchange::OkexLinear
+            | Exchange::OkexInverse
+    )
+}
+
+pub fn supports_open_interest_timeframe(timeframe: Timeframe) -> bool {
+    timeframe >= Timeframe::M5 && timeframe <= Timeframe::H4 && timeframe != Timeframe::H2
 }

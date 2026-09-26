@@ -44,10 +44,7 @@ where
     Message: Clone + 'a + 'static,
     SelectColor: Fn(ThemeAccent) -> DrawingMessage + Copy + 'a,
 {
-    let selected_accent = selected
-        .uniform()
-        .flatten()
-        .and_then(|color| color.accent_value());
+    let selected_accent = selected.uniform().flatten().map(|color| color.accent);
     let shade = shade.representative().unwrap_or_default();
     let colors = ThemeAccent::ALL.into_iter().map(|accent| {
         color_swatch_button(
@@ -512,18 +509,18 @@ impl DrawingStyleChange {
                 style.stroke_color = style.stroke_color.with_accent(color, 1.0);
             }
             Self::StrokeShade(shade) => {
-                style.stroke_color.set_shade(shade);
+                style.stroke_color.shade = shade;
             }
             Self::FillColor(color) => {
                 let shade = style
                     .fill_color
-                    .map(DrawingColor::shade_value)
+                    .map(|color| color.shade)
                     .unwrap_or_default();
                 style.fill_color = Some(DrawingColor::themed(color, shade, DRAWING_FILL_ALPHA));
             }
             Self::FillShade(shade) => {
                 if let Some(color) = &mut style.fill_color {
-                    color.set_shade(shade);
+                    color.shade = shade;
                 }
             }
             Self::StrokeWidth(width) => {
@@ -821,7 +818,7 @@ impl DrawingTools {
         let stroke_shade = shared_value(
             editable
                 .iter()
-                .map(|drawing| drawing.style.stroke_color.shade_value()),
+                .map(|drawing| drawing.style.stroke_color.shade),
         );
         let stroke_width = shared_value(
             editable
@@ -833,7 +830,7 @@ impl DrawingTools {
             drawing
                 .style
                 .fill_color
-                .map(DrawingColor::shade_value)
+                .map(|color| color.shade)
                 .unwrap_or_default()
         }));
         let box_extend_right =

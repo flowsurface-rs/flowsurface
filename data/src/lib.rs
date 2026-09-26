@@ -33,7 +33,34 @@ pub use ::serde;
 pub use layout::{Dashboard, Layout, Pane};
 pub use metadata::{MarketMetadata, MetadataSource};
 
+use crate::layout::pane::VisualConfig;
+
 pub const SAVED_STATE_PATH: &str = "saved-state.json";
+
+#[derive(Debug, Clone)]
+pub enum PaneSettingsSnapshot {
+    Heatmap(chart::heatmap::SettingsSnapshot),
+    Kline(chart::kline::SettingsSnapshot),
+    TimeAndSales(Option<panel::timesales::Config>),
+    Ladder(Option<panel::ladder::Config>),
+}
+
+impl PaneSettingsSnapshot {
+    pub fn visual_config(&self) -> Option<VisualConfig> {
+        match self {
+            Self::Heatmap(snapshot) => snapshot.config.map(VisualConfig::Heatmap),
+            Self::TimeAndSales(config) => config.map(VisualConfig::TimeAndSales),
+            Self::Ladder(config) => config.map(VisualConfig::Ladder),
+            Self::Kline(_) => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum PaneSettingsTransfer {
+    Visual(Option<VisualConfig>),
+    Kline,
+}
 
 #[derive(thiserror::Error, Debug, Clone)]
 pub enum InternalError {

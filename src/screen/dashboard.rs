@@ -16,7 +16,7 @@ use crate::{
 use data::{
     UserTimezone,
     chart::kline::ChartSettings,
-    layout::{WindowSpec, pane::ContentKind, pane::VisualConfig},
+    layout::{WindowSpec, pane::ContentKind},
     stream::PersistStreamKind,
 };
 use exchange::{
@@ -236,34 +236,17 @@ impl Dashboard {
                 }
                 pane::Message::VisualConfigChanged(pane, cfg, to_sync) => {
                     if to_sync {
-                        if let Some(state) = self.get_pane(main_window.id, window, pane) {
-                            let studies_cfg = state.content.studies();
-
+                        let snapshot =
+                            self.get_pane(main_window.id, window, pane)
+                                .and_then(|state| {
+                                    state.settings_snapshot(data::PaneSettingsTransfer::Visual(
+                                        Some(cfg.clone()),
+                                    ))
+                                });
+                        if let Some(snapshot) = snapshot {
                             self.iter_all_panes_mut(main_window.id)
                                 .for_each(|(_, _, state)| {
-                                    let should_apply = match state.settings.visual_config {
-                                        Some(ref current_cfg) => {
-                                            std::mem::discriminant(current_cfg)
-                                                == std::mem::discriminant(&cfg)
-                                        }
-                                        None => matches!(
-                                            (&cfg, &state.content),
-                                            (
-                                                data::layout::pane::VisualConfig::Heatmap(_),
-                                                pane::Content::ShaderHeatmap { .. }
-                                            ) | (
-                                                data::layout::pane::VisualConfig::TimeAndSales(_),
-                                                pane::Content::TimeAndSales(_)
-                                            )
-                                        ),
-                                    };
-
-                                    if should_apply {
-                                        state.settings.visual_config = Some(cfg.clone());
-                                        state.content.change_visual_config(cfg.clone());
-
-                                        state.apply_synced_settings(&studies_cfg);
-                                    }
+                                    let _ = state.apply_settings_snapshot(&snapshot);
                                 });
                         }
                     } else if let Some(state) = self.get_mut_pane(main_window.id, window, pane) {
@@ -725,9 +708,7 @@ impl Dashboard {
         }
     }
 
-    /// Borrow visual config and studies from an existing pane of the same
-    /// content kind, so newly created panes inherit the full set of settings
-    /// that the manual "Sync all" button would apply.
+    /// Borrow visual settings from an existing pane of the same content kind.
     ///
     /// `exclude` is the pane that is being initialized, it is skipped so that
     /// a freshly-set placeholder (from `ContentSelected`) doesn't shadow an
@@ -737,13 +718,13 @@ impl Dashboard {
         main_window: window::Id,
         content_kind: ContentKind,
         exclude: Option<(window::Id, pane_grid::Pane)>,
-    ) -> Option<(Option<VisualConfig>, Option<data::chart::Study>)> {
+    ) -> Option<data::PaneSettingsSnapshot> {
         self.iter_all_panes(main_window)
             .find_map(|(win, pane, state)| {
                 if state.content.kind() == content_kind && (exclude != Some((win, pane))) {
-                    let visual_config = state.settings.visual_config.clone();
-                    let studies = state.content.studies();
-                    Some((visual_config, studies))
+                    state.settings_snapshot(data::PaneSettingsTransfer::Visual(
+                        state.settings.visual_config.clone(),
+                    ))
                 } else {
                     None
                 }
@@ -767,18 +748,20 @@ impl Dashboard {
                 return Task::none();
             };
 
-            if let Some((Some(cfg), _)) = &synced
+            if let Some(cfg) = synced
+                .as_ref()
+                .and_then(data::PaneSettingsSnapshot::visual_config)
                 && (state.settings.visual_config.is_none() || state.content.kind() != content_kind)
             {
-                state.settings.visual_config = Some(cfg.clone());
+                state.settings.visual_config = Some(cfg);
             } else if state.content.kind() != content_kind {
                 state.settings.visual_config = None;
             }
 
             let streams = state.set_content_and_streams(vec![ticker_info], content_kind);
 
-            if let Some((_, studies)) = &synced {
-                state.apply_synced_settings(studies);
+            if let Some(snapshot) = &synced {
+                let _ = state.content.apply_settings_snapshot(snapshot);
             }
 
             let task = match state.invalidate(Instant::now()) {
@@ -1358,7 +1341,7 @@ impl Dashboard {
         main_window: window::Id,
         window: window::Id,
         pane: pane_grid::Pane,
-        snapshot: &data::chart::kline::SettingsSnapshot,
+        snapshot: &data::PaneSettingsSnapshot,
         data_sources: &DataSources,
     ) -> Task<Message> {
         let Some(state) = self.get_mut_pane(main_window, window, pane) else {
@@ -1390,7 +1373,7 @@ impl Dashboard {
         let Some(source) = self.get_pane(main_window, source_window, source_pane) else {
             return Task::none();
         };
-        let Some(snapshot) = source.content.settings_snapshot() else {
+        let Some(snapshot) = source.settings_snapshot(data::PaneSettingsTransfer::Kline) else {
             return Task::none();
         };
 

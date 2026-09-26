@@ -1,5 +1,5 @@
 use data::chart::kline::OpenInterestSeries;
-use data::chart::kline::feed_capabilities::supports_open_interest;
+use data::chart::kline::fetch_plan::supports_open_interest;
 use exchange::adapter::{AdapterError, AdapterHandles, Exchange, KlinePage, StreamKind};
 use exchange::{Kline, TickerInfo, Timeframe, Trade, UnixMs};
 use iced::{

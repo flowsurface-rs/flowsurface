@@ -49,21 +49,12 @@ fn iced_color(
     palette: &Extended,
     generated_accents: &[iced::Color; ACCENT_COUNT],
 ) -> iced::Color {
-    match color {
-        DrawingColor::Accent {
-            accent,
-            shade,
-            alpha,
-        } => crate::widget::resolve_theme_color(
-            ThemeColor::with_accent(ThemeColorRole::Primary, Some(accent), shade),
-            palette,
-            generated_accents,
-        )
-        .scale_alpha(alpha),
-        DrawingColor::Custom(color) => {
-            iced::Color::from_rgba(color.red, color.green, color.blue, color.alpha)
-        }
-    }
+    crate::widget::resolve_theme_color(
+        ThemeColor::with_accent(ThemeColorRole::Primary, Some(color.accent), color.shade),
+        palette,
+        generated_accents,
+    )
+    .scale_alpha(color.alpha)
 }
 
 fn intersect_bounds(a: Rectangle, b: Rectangle) -> Option<Rectangle> {

@@ -1109,13 +1109,12 @@ impl IndicatorRegistration {
             let Basis::Time(timeframe) = context.basis else {
                 return Some(IndicatorUnsupportedReason::BasisNotSupported);
             };
-            if !crate::chart::kline::feed_capabilities::supports_open_interest_exchange(
+            if !crate::chart::kline::fetch_plan::supports_open_interest_exchange(
                 context.base_ticker.exchange(),
             ) {
                 return Some(IndicatorUnsupportedReason::SourceNotSupported);
             }
-            if !crate::chart::kline::feed_capabilities::supports_open_interest_timeframe(timeframe)
-            {
+            if !crate::chart::kline::fetch_plan::supports_open_interest_timeframe(timeframe) {
                 return Some(IndicatorUnsupportedReason::ResolutionNotSupported);
             }
         }

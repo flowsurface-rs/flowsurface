@@ -15,13 +15,8 @@ pub enum StudyCommand {
 #[derive(Clone, Copy)]
 pub(super) enum StudyChange {
     Unchanged,
-    Changed,
-}
-
-impl StudyChange {
-    pub(super) const fn changed(self) -> bool {
-        matches!(self, Self::Changed)
-    }
+    Visual,
+    Reconfigure,
 }
 
 #[derive(Clone)]
@@ -144,39 +139,31 @@ impl StudyState {
                 let Some(index) = self.active.iter().position(|study| study.id() == id) else {
                     return StudyChange::Unchanged;
                 };
-                let study = self.active[index];
-                self.active[index] = study.with_visibility(!study.visible());
-                self.remember_configs(&self.active.clone());
-                StudyChange::Changed
+                let mut studies = self.active.clone();
+                let study = studies[index];
+                studies[index] = study.with_visibility(!study.visible());
+                self.apply_set(studies, basis)
             }
             StudyCommand::ToggleAllVisibility => {
                 let should_show = !self.active.iter().all(|study| study.visible());
-                let mut changed = false;
-                for study in &mut self.active {
+                let mut studies = self.active.clone();
+                for study in &mut studies {
                     if study.visible() != should_show {
                         *study = study.with_visibility(should_show);
-                        changed = true;
                     }
                 }
-                if changed {
-                    self.remember_configs(&self.active.clone());
-                }
-                if changed {
-                    StudyChange::Changed
-                } else {
-                    StudyChange::Unchanged
-                }
+                self.apply_set(studies, basis)
             }
             StudyCommand::ToggleExpansion => {
                 self.legend_expanded = !self.legend_expanded;
-                StudyChange::Changed
+                StudyChange::Visual
             }
             StudyCommand::Remove(id) => {
                 let original_len = self.active.len();
                 self.active.retain(|study| study.id() != id);
                 let changed = self.active.len() != original_len;
                 if changed {
-                    StudyChange::Changed
+                    StudyChange::Reconfigure
                 } else {
                     StudyChange::Unchanged
                 }
@@ -185,7 +172,7 @@ impl StudyState {
                 let changed = !self.active.is_empty();
                 self.active.clear();
                 if changed {
-                    StudyChange::Changed
+                    StudyChange::Reconfigure
                 } else {
                     StudyChange::Unchanged
                 }
@@ -218,15 +205,21 @@ impl StudyState {
     fn apply_set(&mut self, studies: Vec<KlineStudy>, basis: Basis) -> StudyChange {
         let normalized = Self::normalized_active(studies, basis);
         self.remember_configs(&normalized);
-        let changed = self.active != normalized;
-        if changed {
-            self.active = normalized;
+        if self.active == normalized {
+            return StudyChange::Unchanged;
         }
-        if changed {
-            StudyChange::Changed
+        let change = if self.active.len() != normalized.len()
+            || normalized
+                .iter()
+                .zip(&self.active)
+                .any(|(study, previous)| study.requires_reconfiguration(*previous))
+        {
+            StudyChange::Reconfigure
         } else {
-            StudyChange::Unchanged
-        }
+            StudyChange::Visual
+        };
+        self.active = normalized;
+        change
     }
 
     fn studies_with_active(

@@ -1,4 +1,5 @@
-use super::{MAX_PROFILE_PRICE_ROWS, MAX_TPO_VALUE_AREA_PERCENT, MIN_TPO_VALUE_AREA_PERCENT};
+use super::MAX_PROFILE_PRICE_ROWS;
+use crate::config::theme::{ThemeAccent, ThemeColor, ThemeColorRole, ThemeColorShade};
 use chrono::{Datelike, Months, NaiveDate};
 use exchange::unit::price::{Price, PriceStep};
 use exchange::{Kline, Timeframe, Trade, UnixMs};
@@ -82,6 +83,111 @@ impl std::fmt::Display for TpoAnchor {
             Self::Weekly => "Weekly",
             Self::Monthly => "Monthly",
         })
+    }
+}
+
+pub const DEFAULT_TPO_LETTER_PERIOD: Timeframe = Timeframe::M30;
+pub const DEFAULT_TPO_VALUE_AREA_PERCENT: u8 = 70;
+pub const MIN_TPO_VALUE_AREA_PERCENT: u8 = 5;
+pub const MAX_TPO_VALUE_AREA_PERCENT: u8 = 100;
+
+pub(super) const fn default_tpo_letter_period() -> Timeframe {
+    DEFAULT_TPO_LETTER_PERIOD
+}
+
+pub(super) const fn default_tpo_anchor() -> TpoAnchor {
+    TpoAnchor::Daily
+}
+
+pub(super) const fn default_tpo_value_area_percent() -> u8 {
+    DEFAULT_TPO_VALUE_AREA_PERCENT
+}
+
+pub(super) const fn default_tpo_visible() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TpoColorConfig {
+    pub letters: ThemeColor,
+    pub poc: ThemeColor,
+    pub value_area: ThemeColor,
+    pub initial_balance: ThemeColor,
+    pub single_print: ThemeColor,
+    pub poor_high: ThemeColor,
+    pub poor_low: ThemeColor,
+    #[serde(default)]
+    pub show_poc: bool,
+    #[serde(default)]
+    pub show_initial_balance: bool,
+    #[serde(default)]
+    pub show_single_print: bool,
+    #[serde(default)]
+    pub show_poor_high: bool,
+    #[serde(default)]
+    pub show_poor_low: bool,
+}
+
+impl Default for TpoColorConfig {
+    fn default() -> Self {
+        Self::defaults()
+    }
+}
+
+impl TpoColorConfig {
+    pub const fn defaults() -> Self {
+        Self {
+            letters: ThemeColor::new(ThemeColorRole::Neutral, ThemeColorShade::Soft),
+            poc: ThemeColor::new(ThemeColorRole::Warning, ThemeColorShade::Strong),
+            value_area: ThemeColor::new(ThemeColorRole::Secondary, ThemeColorShade::Strong),
+            initial_balance: ThemeColor::new(ThemeColorRole::Primary, ThemeColorShade::Base),
+            single_print: ThemeColor::with_accent(
+                ThemeColorRole::Neutral,
+                Some(ThemeAccent::Three),
+                ThemeColorShade::Base,
+            ),
+            poor_high: ThemeColor::with_accent(
+                ThemeColorRole::Primary,
+                Some(ThemeAccent::Seven),
+                ThemeColorShade::Base,
+            ),
+            poor_low: ThemeColor::with_accent(
+                ThemeColorRole::Primary,
+                Some(ThemeAccent::Seven),
+                ThemeColorShade::Base,
+            ),
+            show_poc: false,
+            show_initial_balance: false,
+            show_single_print: false,
+            show_poor_high: false,
+            show_poor_low: false,
+        }
+    }
+
+    pub const fn with_show_poc(self, show_poc: bool) -> Self {
+        Self { show_poc, ..self }
+    }
+
+    pub const fn with_show_initial_balance(self, show_initial_balance: bool) -> Self {
+        Self {
+            show_initial_balance,
+            ..self
+        }
+    }
+
+    pub const fn with_show_single_print(self, show_single_print: bool) -> Self {
+        Self {
+            show_single_print,
+            ..self
+        }
+    }
+
+    pub const fn with_show_poor_extremes(self, show: bool) -> Self {
+        Self {
+            show_poor_high: show,
+            show_poor_low: show,
+            ..self
+        }
     }
 }
 

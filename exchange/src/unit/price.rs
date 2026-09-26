@@ -319,6 +319,28 @@ impl PriceStep {
         None
     }
 
+    /// Returns a power-of-two multiple of this step that fits the range.
+    pub fn nested_coarsened_to_fit(self, low: Price, high: Price, max_rows: usize) -> Option<Self> {
+        let minimum_step = self.coarsened_to_fit(low, high, max_rows)?;
+        let factor = u64::try_from(minimum_step.units / self.units)
+            .ok()?
+            .checked_next_power_of_two()?;
+        let mut units = self.units.checked_mul(i64::try_from(factor).ok()?)?;
+        let max_rows = i128::try_from(max_rows).ok()?;
+
+        loop {
+            let base = i128::from(units);
+            let low_row = i128::from(low.units).div_euclid(base);
+            let high_row = i128::from(high.units).div_euclid(base);
+            if high_row - low_row < max_rows {
+                i64::try_from(low_row * base).ok()?;
+                i64::try_from(high_row * base).ok()?;
+                return Some(Self { units });
+            }
+            units = units.checked_mul(2)?;
+        }
+    }
+
     /// Decimal places needed to represent this step without trailing zeros.
     pub fn decimal_places(self) -> usize {
         let mut units = self.units.unsigned_abs();

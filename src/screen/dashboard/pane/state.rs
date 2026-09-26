@@ -29,11 +29,11 @@ use crate::{
     window::{self, PixelRatio, Window},
 };
 use data::{
-    UserTimezone,
+    PaneSettingsSnapshot, PaneSettingsTransfer, UserTimezone,
     chart::{
         Basis,
         heatmap::HeatmapStudy,
-        kline::{ChartSettings, INDICATOR_REFRESH_MS, OpenInterestSeries},
+        kline::{ChartSettings, OpenInterestSeries},
     },
     layout::pane::{ContentKind, LinkGroup, PaneSetup, Settings, VisualConfig},
     stream::PersistStreamKind,
@@ -656,14 +656,13 @@ impl State {
             Content::Kline { chart, .. } => {
                 if let Some(chart) = chart {
                     let selected_basis = chart.basis();
-                    let tick_multiplier = chart.footprint_tick_multiplier();
+                    let tick_multiplier = chart.tick_multiplier();
                     let kind = ModifierKind::Candlestick(selected_basis, tick_multiplier);
                     let ticker_info = chart.ticker_info();
 
-                    let mut modifiers =
-                        row![basis_modifier(id, selected_basis, modifier, kind)].spacing(4);
-                    if chart.trade_data_enabled() {
-                        modifiers = modifiers.push(ticksize_modifier(
+                    let modifiers = row![
+                        basis_modifier(id, selected_basis, modifier, kind),
+                        ticksize_modifier(
                             id,
                             tick_multiplier.multiply_with_min_tick_step(ticker_info),
                             Some(ticker_info.min_ticksize),
@@ -671,8 +670,9 @@ impl State {
                             modifier,
                             kind,
                             Some(ticker_info.exchange()),
-                        ));
-                    }
+                        ),
+                    ]
+                    .spacing(4);
 
                     top_left_buttons = top_left_buttons.push(modifiers);
 
@@ -902,11 +902,10 @@ impl State {
                                             );
                                         }
                                         Content::Kline { chart: Some(c), .. } => {
-                                            let _ = c.apply_command(
-                                                ChartCommand::SetFootprintTickMultiplier {
+                                            let _ =
+                                                c.apply_command(ChartCommand::SetTickMultiplier {
                                                     multiplier: tm,
-                                                },
-                                            );
+                                                });
                                         }
                                         _ => {}
                                     }
@@ -1367,46 +1366,11 @@ impl State {
     }
 
     pub fn invalidate(&mut self, now: Instant) -> Option<Action> {
-        match &mut self.content {
-            Content::Starter => None,
-            Content::Kline { chart, .. } => chart
-                .as_mut()
-                .and_then(|c| c.invalidate(Some(now)).map(Action::Chart)),
-            Content::TimeAndSales(panel) => {
-                if let Some(panel) = panel {
-                    panel.invalidate(Some(now));
-                }
-                None
-            }
-            Content::Ladder(panel) => {
-                if let Some(panel) = panel {
-                    panel.invalidate(Some(now));
-                }
-                None
-            }
-            Content::ShaderHeatmap { chart, .. } => chart
-                .as_mut()
-                .and_then(|c| c.invalidate(Some(now)).map(Action::Chart)),
-        }
+        self.content.invalidate(now).map(Action::Chart)
     }
 
     pub fn park_for_inactive_layout(&mut self) {
-        if let Content::ShaderHeatmap { chart, .. } = &mut self.content {
-            *chart = None;
-        }
-    }
-
-    pub fn update_interval(&self) -> Option<u64> {
-        match &self.content {
-            Content::Kline { .. } => Some(INDICATOR_REFRESH_MS),
-            Content::Ladder(_) | Content::TimeAndSales(_) => Some(100),
-            Content::ShaderHeatmap { .. } => None,
-            Content::Starter => None,
-        }
-    }
-
-    pub fn last_tick(&self) -> Option<Instant> {
-        self.content.last_tick()
+        self.content.park();
     }
 
     pub fn tick(
@@ -1416,15 +1380,14 @@ impl State {
     ) -> (Option<Action>, iced::Task<Message>) {
         let action = self.tick_action(now);
         let task = self
-            .start_indicator_rebuild(pane)
+            .content
+            .background_task()
+            .map(|task| task.map(move |event| Message::PaneEvent(pane, event)))
             .unwrap_or_else(iced::Task::none);
         (action, task)
     }
 
     fn tick_action(&mut self, now: Instant) -> Option<Action> {
-        let invalidate_interval: Option<u64> = self.update_interval();
-        let last_tick: Option<Instant> = self.last_tick();
-
         if let Some(streams) = self.streams.due_streams_to_resolve(now) {
             return Some(Action::ResolveStreams(streams));
         }
@@ -1433,43 +1396,11 @@ impl State {
             return Some(Action::ResolveContent);
         }
 
-        self.content.redraw_data_if_due(now);
-
-        match (invalidate_interval, last_tick) {
-            (Some(interval_ms), Some(previous_tick_time)) => {
-                if interval_ms > 0 {
-                    let interval_duration = std::time::Duration::from_millis(interval_ms);
-                    if now.duration_since(previous_tick_time) >= interval_duration {
-                        return self.invalidate(now);
-                    }
-                }
-            }
-            (Some(interval_ms), None) => {
-                if interval_ms > 0 {
-                    return self.invalidate(now);
-                }
-            }
-            (None, _) => {
-                return self.invalidate(now);
-            }
-        }
-
-        None
+        self.content.tick(now).map(Action::Chart)
     }
 
     pub fn unique_id(&self) -> uuid::Uuid {
         self.id
-    }
-
-    fn start_indicator_rebuild(&mut self, pane: pane_grid::Pane) -> Option<iced::Task<Message>> {
-        match &mut self.content {
-            Content::Kline {
-                chart: Some(chart), ..
-            } => chart.rebuild_indicators().map(|task| {
-                task.map(move |message| Message::PaneEvent(pane, Event::KlineInteraction(message)))
-            }),
-            _ => None,
-        }
     }
 
     pub fn request_fetch(
@@ -1502,23 +1433,34 @@ impl State {
         )
     }
 
-    pub fn apply_settings_snapshot(
-        &mut self,
-        snapshot: &data::chart::kline::SettingsSnapshot,
-    ) -> Option<Effect> {
+    pub fn settings_snapshot(
+        &self,
+        transfer: PaneSettingsTransfer,
+    ) -> Option<PaneSettingsSnapshot> {
+        self.content.settings_snapshot(transfer)
+    }
+
+    pub fn apply_settings_snapshot(&mut self, snapshot: &PaneSettingsSnapshot) -> Option<Effect> {
+        if !self.content.can_apply_settings_snapshot(snapshot) {
+            return None;
+        }
+
+        if !matches!(snapshot, PaneSettingsSnapshot::Kline(_)) {
+            let visual_config = snapshot.visual_config();
+            self.settings.visual_config = visual_config.clone();
+            if let Some(config) = visual_config {
+                self.content.change_visual_config(config);
+            }
+        }
+
         let action = self.content.apply_settings_snapshot(snapshot);
-        let stream_plan_changed = self.sync_kline_streams();
+        let stream_plan_changed =
+            matches!(snapshot, PaneSettingsSnapshot::Kline(_)) && self.sync_kline_streams();
 
         if let Some(KlineAction::RequestFetch(fetch)) = action {
             return Some(Effect::RequestFetch(fetch));
         }
         stream_plan_changed.then_some(Effect::RefreshStreams)
-    }
-
-    pub fn apply_synced_settings(&mut self, studies: &Option<data::chart::Study>) {
-        if let Some(studies) = studies {
-            self.content.update_studies(studies.clone());
-        }
     }
 }
 

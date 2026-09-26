@@ -1,5 +1,6 @@
 use crate::aggr;
-use crate::chart::kline_data::{ClusterKind, KlineTrades, NPoc};
+use crate::chart::kline::footprint::{ClusterKind, KlineTrades};
+use crate::chart::kline::poc::NPoc;
 use exchange::unit::Qty;
 use exchange::unit::price::{Price, PriceStep};
 use exchange::{Kline, Trade, Volume};

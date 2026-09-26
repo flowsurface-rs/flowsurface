@@ -1,36 +1,27 @@
-use exchange::Ticker;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::collections::{BTreeMap, BTreeSet};
-
-use crate::chart::Basis;
-use crate::chart::kline_data::{ClusterKind, ClusterScaling};
-use crate::config::theme::ThemeColor;
-use crate::config::theme::ThemeColorRole;
-use crate::config::theme::ThemeColorShade;
-
-use composition::{
-    LayerSource as DomainLayerSource, LayerSpec, PanelSpec,
-    PanelValuePrecision as DomainPanelValuePrecision,
-};
-
-pub use crate::config::theme::ThemeAccent;
-
+pub mod bar;
 pub mod chart_data;
 pub mod composition;
 pub mod drawing;
-pub mod feed_capabilities;
 pub mod fetch_plan;
+pub mod footprint;
 pub mod indicator_layout;
 pub mod indicators;
-mod poc_lines;
+pub mod poc;
 pub mod series;
 pub mod studies;
 pub mod viewport;
 
-pub use series::{KlineIndexChange, KlineSeriesPoint, KlineSeriesPoints, KlineUpdate, SeriesColor};
+use self::footprint::{ClusterKind, ClusterScaling};
+use crate::chart::Basis;
+pub use crate::config::theme::ThemeAccent;
+use crate::config::theme::ThemeColor;
+use crate::config::theme::ThemeColorRole;
+use crate::config::theme::ThemeColorShade;
 
-pub use chart_data::{
-    HistoricalOpenInterestUpdate, KlineData, KlineDataChange, LiveIndicatorUpdate,
+pub use chart_data::{HistoricalInputUpdate, KlineData, KlineDataChange, LiveIndicatorUpdate};
+use composition::{
+    LayerSource as DomainLayerSource, LayerSpec, PanelSpec,
+    PanelValuePrecision as DomainPanelValuePrecision,
 };
 pub use fetch_plan::{FetchBatch, FetchPlanInput, FetchRange, FetchStage, visible_window};
 pub use indicator_layout::IndicatorLayout;
@@ -49,6 +40,7 @@ pub use indicators::{
     indicator_definition, table_columns, unsupported_reason,
 };
 pub use indicators::{IndicatorConfig, IndicatorId};
+pub use series::{KlineIndexChange, KlineSeriesPoint, KlineSeriesPoints, KlineUpdate, SeriesColor};
 pub use studies::tpo::{
     TPO_TRADE_COVERAGE_TIMEFRAME, TpoAnchor, TpoBoundaryEdits, TpoCalculationError, TpoProfile,
     TpoProfileSettings, TpoProfileStatus, TpoRow, TradeTpoCache,
@@ -77,6 +69,22 @@ pub use viewport::{
     YUnitRange, ZOOM_SENSITIVITY,
 };
 
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::collections::{BTreeMap, BTreeSet};
+
+pub const MIN_CANDLESTICK_OPACITY_PERCENT: u8 = 5;
+pub const MAX_CANDLESTICK_OPACITY_PERCENT: u8 = 100;
+pub const MIN_LINE_WIDTH: u8 = 1;
+pub const MAX_LINE_WIDTH: u8 = 4;
+
+pub const DEFAULT_FOOTPRINT_IMBALANCE_THRESHOLD_PERCENT: usize = 200;
+pub const DEFAULT_FOOTPRINT_IMBALANCE_IGNORE_ZEROS: bool = true;
+pub const DEFAULT_FOOTPRINT_IMBALANCE_COLOR: ThemeColor =
+    ThemeColor::new(ThemeColorRole::Warning, ThemeColorShade::Strong);
+pub const DEFAULT_CANDLESTICK_OPACITY_PERCENT: u8 = 100;
+
+const DEFAULT_INDICATOR_INSTANCE_ID_BASE: u64 = 1 << 63;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FootprintPocColorSlot {
     Poc,
@@ -99,27 +107,6 @@ const FOOTPRINT_POC_COLOR_SPECS: [FootprintPocColorSpec; 2] = [
         slot: FootprintPocColorSlot::Npoc,
     },
 ];
-
-const fn default_show_footprint_imbalance() -> bool {
-    false
-}
-
-pub const DEFAULT_FOOTPRINT_IMBALANCE_THRESHOLD_PERCENT: usize = 200;
-pub const DEFAULT_FOOTPRINT_IMBALANCE_IGNORE_ZEROS: bool = true;
-pub const DEFAULT_FOOTPRINT_IMBALANCE_COLOR: ThemeColor =
-    ThemeColor::new(ThemeColorRole::Warning, ThemeColorShade::Strong);
-
-const fn default_footprint_imbalance_threshold_percent() -> usize {
-    DEFAULT_FOOTPRINT_IMBALANCE_THRESHOLD_PERCENT
-}
-
-const fn default_footprint_imbalance_ignore_zeros() -> bool {
-    DEFAULT_FOOTPRINT_IMBALANCE_IGNORE_ZEROS
-}
-
-const fn default_footprint_imbalance_color() -> ThemeColor {
-    DEFAULT_FOOTPRINT_IMBALANCE_COLOR
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FootprintPocColorConfig {
@@ -186,24 +173,21 @@ impl FootprintPocConfig {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct FootprintImbalanceConfig {
-    #[serde(default = "default_show_footprint_imbalance")]
     pub show: bool,
-    #[serde(default = "default_footprint_imbalance_threshold_percent")]
     pub threshold_percent: usize,
-    #[serde(default = "default_footprint_imbalance_ignore_zeros")]
     pub ignore_zeros: bool,
-    #[serde(default = "default_footprint_imbalance_color")]
     pub color: ThemeColor,
 }
 
 impl Default for FootprintImbalanceConfig {
     fn default() -> Self {
         Self {
-            show: default_show_footprint_imbalance(),
-            threshold_percent: default_footprint_imbalance_threshold_percent(),
-            ignore_zeros: default_footprint_imbalance_ignore_zeros(),
-            color: default_footprint_imbalance_color(),
+            show: false,
+            threshold_percent: DEFAULT_FOOTPRINT_IMBALANCE_THRESHOLD_PERCENT,
+            ignore_zeros: DEFAULT_FOOTPRINT_IMBALANCE_IGNORE_ZEROS,
+            color: DEFAULT_FOOTPRINT_IMBALANCE_COLOR,
         }
     }
 }
@@ -232,30 +216,14 @@ impl FootprintImbalanceConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct FootprintConfig {
-    #[serde(default = "default_footprints_visible")]
     pub visible: bool,
-    #[serde(default)]
     pub cluster_kind: ClusterKind,
-    #[serde(default)]
     pub cluster_scaling: ClusterScaling,
-    #[serde(default)]
     pub imbalance: FootprintImbalanceConfig,
-    #[serde(default)]
     pub poc: FootprintPocConfig,
-}
-
-impl Default for FootprintConfig {
-    fn default() -> Self {
-        Self {
-            visible: default_footprints_visible(),
-            cluster_kind: ClusterKind::default(),
-            cluster_scaling: ClusterScaling::default(),
-            imbalance: FootprintImbalanceConfig::default(),
-            poc: FootprintPocConfig::default(),
-        }
-    }
 }
 
 impl FootprintConfig {
@@ -291,21 +259,7 @@ impl FootprintConfig {
             ..Self::default()
         }
     }
-
-    pub const fn poc_enabled(self) -> bool {
-        self.visible && (self.poc.show_poc || self.poc.show_npoc)
-    }
 }
-
-pub const DEFAULT_CANDLESTICK_OPACITY_PERCENT: u8 = 100;
-pub const MIN_CANDLESTICK_OPACITY_PERCENT: u8 = 5;
-pub const MAX_CANDLESTICK_OPACITY_PERCENT: u8 = 100;
-pub const MIN_LINE_WIDTH: u8 = 1;
-pub const MAX_LINE_WIDTH: u8 = 4;
-
-const DEFAULT_INDICATOR_INSTANCE_ID_BASE: u64 = 1 << 63;
-
-pub const INDICATOR_REFRESH_MS: u64 = 250;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct IndicatorInstanceId(u64);
@@ -347,13 +301,6 @@ pub enum IndicatorUpdateScope {
 impl IndicatorUpdateScope {
     pub fn is_full(self) -> bool {
         matches!(self, Self::Full)
-    }
-
-    pub fn first_index(self) -> usize {
-        match self {
-            Self::Full => 0,
-            Self::From(index) => index,
-        }
     }
 
     pub fn merge(self, other: Self) -> Self {
@@ -412,31 +359,17 @@ impl CandlestickColorConfig {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct CandlestickConfig {
-    #[serde(default = "default_candlesticks_visible")]
     pub visible: bool,
-    #[serde(default)]
     pub colors: CandlestickColorConfig,
-    #[serde(default = "default_candlestick_opacity_percent")]
     pub opacity_percent: u8,
-}
-
-fn default_candlestick_opacity_percent() -> u8 {
-    DEFAULT_CANDLESTICK_OPACITY_PERCENT
-}
-
-fn default_footprints_visible() -> bool {
-    false
-}
-
-fn default_candlesticks_visible() -> bool {
-    true
 }
 
 impl Default for CandlestickConfig {
     fn default() -> Self {
         Self {
-            visible: default_candlesticks_visible(),
+            visible: true,
             colors: CandlestickColorConfig::defaults(),
             opacity_percent: DEFAULT_CANDLESTICK_OPACITY_PERCENT,
         }
@@ -503,7 +436,6 @@ impl std::fmt::Display for LineStrokeStyle {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct IndicatorStyleOverrides {
-    #[serde(default = "default_fill_visible")]
     pub fill_visible: bool,
     #[serde(default)]
     colors: BTreeMap<String, ThemeColor>,
@@ -511,10 +443,6 @@ pub struct IndicatorStyleOverrides {
     line_widths: BTreeMap<String, u8>,
     #[serde(default)]
     stroke_styles: BTreeMap<String, LineStrokeStyle>,
-}
-
-fn default_fill_visible() -> bool {
-    true
 }
 
 impl Default for IndicatorStyleOverrides {
@@ -937,12 +865,6 @@ impl IndicatorInstanceStore {
             .unwrap_or(0)
     }
 
-    pub fn restore_snapshot(&mut self, snapshot: Self) {
-        self.instances = snapshot.instances;
-        self.next_id = self.next_id.max(snapshot.next_id);
-        self.rebuild_warmup_cache();
-    }
-
     fn rebuild_warmup_cache(&mut self) {
         self.warmup_bars_by_id = self
             .instances
@@ -1192,18 +1114,18 @@ impl Default for FloatingToolbarPosition {
 
 impl FloatingToolbarPosition {
     pub fn clamped(self) -> Self {
+        let clamp_ratio = |ratio: f32| {
+            if ratio.is_finite() {
+                ratio.clamp(0.0, 1.0)
+            } else {
+                0.0
+            }
+        };
+
         Self {
             x_ratio: clamp_ratio(self.x_ratio),
             y_ratio: clamp_ratio(self.y_ratio),
         }
-    }
-}
-
-fn clamp_ratio(ratio: f32) -> f32 {
-    if ratio.is_finite() {
-        ratio.clamp(0.0, 1.0)
-    } else {
-        0.0
     }
 }
 
@@ -1277,7 +1199,7 @@ impl Default for Config {
             drawings: Vec::new(),
             active_drawing_tool: DrawingTool::Cursor,
             floating_toolbar_position: FloatingToolbarPosition::default(),
-            drawing_sidebar_visible: default_drawing_sidebar_visible(),
+            drawing_sidebar_visible: true,
             studies: Vec::new(),
             study_configs: Vec::new(),
             tpo_profile_edits: TpoBoundaryEdits::default(),
@@ -1285,10 +1207,6 @@ impl Default for Config {
             series: Vec::new(),
         }
     }
-}
-
-fn default_drawing_sidebar_visible() -> bool {
-    true
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1435,7 +1353,6 @@ pub use composition::{
 };
 pub type ComparisonPolicy = composition::PanelComparisonPolicy;
 pub type ValueLabelPolicy = composition::PanelValueLabelPolicy;
-pub type ValueLabelMode = composition::PanelValueLabelMode;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum LayerSource {
@@ -1455,12 +1372,12 @@ pub enum ValuePrecision {
 
 pub use drawing::{
     DrawingAnchor, DrawingColor, DrawingEntity, DrawingObject, DrawingSettings, DrawingStyle,
-    DrawingStyleDefaults, DrawingTool, Rgba,
+    DrawingStyleDefaults, DrawingTool,
 };
 pub type DrawingConfig = DrawingEntity;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SeriesConfig {
-    pub ticker: Ticker,
+    pub ticker: exchange::Ticker,
     #[serde(default)]
     pub color: Option<iced_core::Color>,
     #[serde(default)]

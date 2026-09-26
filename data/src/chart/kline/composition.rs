@@ -6,26 +6,6 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 
-fn format_pct(value: f32, step: f32, show_decimals: bool) -> String {
-    let precision = if show_decimals || step.fract() != 0.0 {
-        if step >= 1.0 {
-            1
-        } else if step >= 0.1 {
-            2
-        } else {
-            3
-        }
-    } else if step >= 1.0 {
-        0
-    } else if step >= 0.1 {
-        1
-    } else {
-        2
-    };
-
-    format!("{value:+.*}%", precision)
-}
-
 pub const DEFAULT_MIN_PANEL_RATIO: f32 = 0.08;
 pub const DEFAULT_AUXILIARY_PANEL_RATIO: f32 = 0.15;
 
@@ -254,6 +234,26 @@ impl PanelScaleMode {
         if !self.uses_percent_base() {
             return None;
         }
+
+        let format_pct = |value: f32, step: f32, show_decimals: bool| {
+            let precision = if show_decimals || step.fract() != 0.0 {
+                if step >= 1.0 {
+                    1
+                } else if step >= 0.1 {
+                    2
+                } else {
+                    3
+                }
+            } else if step >= 1.0 {
+                0
+            } else if step >= 0.1 {
+                1
+            } else {
+                2
+            };
+
+            format!("{value:+.*}%", precision)
+        };
 
         Some(format_pct(display_value, display_step, show_decimals))
     }
@@ -774,12 +774,6 @@ impl LayerSource {
             _ => None,
         }
     }
-
-    pub fn is_indicator_output(&self, instance_id: PanelValueId, channel_id: &str) -> bool {
-        self.indicator_output().is_some_and(|output| {
-            output.instance_id == instance_id && output.channel_id == channel_id
-        })
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -867,6 +861,15 @@ impl PanelSpec {
     }
 }
 
+/// Chart panels and their cumulative height ratios.
+///
+/// Adding an auxiliary panel takes height from the primary; removing one
+/// returns its height to the primary. Surviving auxiliary panels retain
+/// their ratios, subject to minimum-height normalization. Reordering
+/// carries each panel's ratio with it. Heights are proportional, not pixels.
+///
+/// New auxiliary panels receive up to 15%, reduced to an 8% minimum when
+/// space is limited. The primary must retain at least 8%.
 #[derive(Debug, Clone)]
 pub struct ChartComposition {
     pub panels: Vec<PanelSpec>,
@@ -877,13 +880,6 @@ pub struct ChartComposition {
 }
 
 impl ChartComposition {
-    pub fn indicator_outputs(&self) -> impl Iterator<Item = &IndicatorOutputRef> {
-        self.panels
-            .iter()
-            .flat_map(|panel| panel.layers.iter())
-            .filter_map(|layer| layer.source.indicator_output())
-    }
-
     pub fn prototype_kline() -> Self {
         let mut composition = Self {
             panels: Vec::new(),
@@ -1108,6 +1104,8 @@ impl ChartComposition {
         true
     }
 
+    /// Returns `None` if no primary panel exists or it cannot supply the
+    /// minimum auxiliary height while retaining its own minimum height.
     pub fn add_aux_panel(
         &mut self,
         title: impl Into<String>,
@@ -1115,8 +1113,18 @@ impl ChartComposition {
         value_precision: Option<PanelValuePrecision>,
         value_label_policy: PanelValueLabelPolicy,
         presentation: PanelPresentation,
-    ) -> PanelId {
-        let use_default_auxiliary_ratio = self.panels.len() == 1 && self.splits.is_empty();
+    ) -> Option<PanelId> {
+        let mut heights = self.normalized_panel_heights(DEFAULT_MIN_PANEL_RATIO);
+        let primary_index = self
+            .panels
+            .iter()
+            .position(|panel| panel.role == PanelRole::Primary)?;
+        let available_height = heights[primary_index] - DEFAULT_MIN_PANEL_RATIO;
+        if available_height + f32::EPSILON < DEFAULT_MIN_PANEL_RATIO {
+            return None;
+        }
+        let auxiliary_height =
+            DEFAULT_AUXILIARY_PANEL_RATIO.min(available_height.max(DEFAULT_MIN_PANEL_RATIO));
         let panel_id = self.new_panel_id();
         let base_layer = layers.first().map(|layer| layer.id);
         self.panels.push(PanelSpec {
@@ -1133,18 +1141,28 @@ impl ChartComposition {
             layers,
         });
 
-        self.ensure_split_count();
-        if use_default_auxiliary_ratio {
-            self.splits[0] = 1.0 - DEFAULT_AUXILIARY_PANEL_RATIO;
-        }
+        heights[primary_index] -= auxiliary_height;
+        heights.push(auxiliary_height);
+        self.splits = Self::splits_from_heights(&heights);
         self.splits = self.normalized_splits(DEFAULT_MIN_PANEL_RATIO);
-        panel_id
+        Some(panel_id)
     }
 
-    pub fn add_table_panel(&mut self, title: impl Into<String>, source: DataSourceId) -> PanelId {
+    pub fn add_table_panel(
+        &mut self,
+        title: impl Into<String>,
+        source: DataSourceId,
+    ) -> Option<PanelId> {
         let title = title.into();
-        let mut layer = self.new_layer(
+        let panel_id = self.add_aux_panel(
             title.clone(),
+            Vec::new(),
+            None,
+            PanelValueLabelPolicy::default(),
+            PanelPresentation::Table,
+        )?;
+        let mut layer = self.new_layer(
+            title,
             LayerSource::RawKline { source },
             LayerDataKind::Scalar,
             MarkKind::Line,
@@ -1152,13 +1170,8 @@ impl ChartComposition {
         );
         layer.purpose = LayerPurpose::TableBinding;
 
-        self.add_aux_panel(
-            title,
-            vec![layer],
-            None,
-            PanelValueLabelPolicy::default(),
-            PanelPresentation::Table,
-        )
+        self.add_layer_to_panel(panel_id, layer);
+        Some(panel_id)
     }
 
     pub fn add_layer_to_panel(&mut self, panel_id: PanelId, layer: LayerSpec) -> bool {
@@ -1360,8 +1373,19 @@ impl ChartComposition {
             return false;
         }
 
+        let mut heights = self.normalized_panel_heights(DEFAULT_MIN_PANEL_RATIO);
+        let removed_height = heights.remove(index);
         self.panels.remove(index);
-        self.ensure_split_count();
+        if let Some(primary_index) = self
+            .panels
+            .iter()
+            .position(|panel| panel.role == PanelRole::Primary)
+        {
+            heights[primary_index] += removed_height;
+            self.splits = Self::splits_from_heights(&heights);
+        } else {
+            self.ensure_split_count();
+        }
         self.splits = self.normalized_splits(DEFAULT_MIN_PANEL_RATIO);
         true
     }

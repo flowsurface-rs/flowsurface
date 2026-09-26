@@ -1,7 +1,6 @@
 use super::helpers::PixelGeometry;
 use super::*;
-use data::chart::kline_data::ClusterKind;
-use data::chart::kline_data::KlineTrades;
+use data::chart::kline::footprint::{ClusterKind, KlineTrades};
 use data::config::theme::{composite_color, contrast_ratio};
 use data::util::abbr_large_numbers;
 use exchange::unit::{Price, PriceStep};
