@@ -21,7 +21,8 @@ pub use volume_profile::{
 };
 
 use self::big_trades::{
-    default_big_trades_buy_color, default_big_trades_sell_color, default_big_trades_threshold,
+    default_big_trades_buy_color, default_big_trades_radius_scale, default_big_trades_sell_color,
+    default_big_trades_threshold,
 };
 use self::tpo::{
     TpoAnchor, default_tpo_anchor, default_tpo_letter_period, default_tpo_value_area_percent,
@@ -41,7 +42,7 @@ const fn default_study_visible() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum StudyDataSource {
     Kline,
     Trades,
@@ -99,6 +100,8 @@ enum PersistedKlineStudy {
     BigTrades {
         #[serde(default = "default_big_trades_threshold")]
         threshold: u64,
+        #[serde(default = "default_big_trades_radius_scale")]
+        radius_scale: Option<i32>,
         #[serde(default = "default_big_trades_buy_color")]
         buy_color: ThemeColor,
         #[serde(default = "default_big_trades_sell_color")]
@@ -137,6 +140,8 @@ pub enum KlineStudy {
     BigTrades {
         #[serde(default = "default_big_trades_threshold")]
         threshold: u64,
+        #[serde(default = "default_big_trades_radius_scale")]
+        radius_scale: Option<i32>,
         #[serde(default = "default_big_trades_buy_color")]
         buy_color: ThemeColor,
         #[serde(default = "default_big_trades_sell_color")]
@@ -186,11 +191,13 @@ impl<'de> Deserialize<'de> for KlineStudy {
             }),
             PersistedKlineStudy::BigTrades {
                 threshold,
+                radius_scale,
                 buy_color,
                 sell_color,
                 visible,
             } => Ok(Self::BigTrades {
                 threshold: threshold.clamp(MIN_BIG_TRADES_THRESHOLD, MAX_BIG_TRADES_THRESHOLD),
+                radius_scale: radius_scale.map(|scale| scale.clamp(10, 200)),
                 buy_color,
                 sell_color,
                 visible,
@@ -199,7 +206,7 @@ impl<'de> Deserialize<'de> for KlineStudy {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum KlineStudyId {
     VolumeProfileVisibleRange(StudyDataSource),
     VolumeProfileRecurring(StudyDataSource),
@@ -263,6 +270,7 @@ impl KlineStudy {
         },
         Self::BigTrades {
             threshold: DEFAULT_BIG_TRADES_THRESHOLD,
+            radius_scale: default_big_trades_radius_scale(),
             buy_color: default_big_trades_buy_color(),
             sell_color: default_big_trades_sell_color(),
             visible: true,
@@ -329,11 +337,13 @@ impl KlineStudy {
             },
             Self::BigTrades {
                 threshold,
+                radius_scale,
                 buy_color,
                 sell_color,
                 ..
             } => Self::BigTrades {
                 threshold,
+                radius_scale,
                 buy_color,
                 sell_color,
                 visible,
@@ -411,12 +421,14 @@ impl KlineStudy {
             (
                 Self::BigTrades {
                     threshold,
+                    radius_scale: _,
                     buy_color: _,
                     sell_color: _,
                     visible,
                 },
                 Self::BigTrades {
                     threshold: previous_threshold,
+                    radius_scale: _,
                     buy_color: _,
                     sell_color: _,
                     visible: previous_visible,
@@ -582,11 +594,13 @@ impl KlineStudy {
         match self {
             Self::BigTrades {
                 threshold,
+                radius_scale,
                 buy_color,
                 sell_color,
                 ..
             } => Some(BigTradesConfig {
                 threshold,
+                radius_scale,
                 buy_color,
                 sell_color,
             }),

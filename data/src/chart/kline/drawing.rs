@@ -15,9 +15,9 @@ pub enum DrawingTool {
     #[default]
     Cursor,
     Trendline,
-    Box,
     HorizontalLine,
     VerticalLine,
+    Box,
     Measure,
 }
 
@@ -37,22 +37,11 @@ impl DrawingTool {
         &[
             Self::Cursor,
             Self::Trendline,
-            Self::Box,
             Self::HorizontalLine,
             Self::VerticalLine,
+            Self::Box,
             Self::Measure,
         ]
-    }
-
-    pub const fn short_label(self) -> &'static str {
-        match self {
-            Self::Cursor => "C",
-            Self::HorizontalLine => "H",
-            Self::VerticalLine => "V",
-            Self::Trendline => "TL",
-            Self::Box => "B",
-            Self::Measure => "M",
-        }
     }
 
     pub const fn label(self) -> &'static str {

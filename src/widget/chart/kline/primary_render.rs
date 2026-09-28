@@ -1,26 +1,24 @@
 use super::composition::{BarMode, HistogramMode, PanelPresentation};
 use super::footprint::{
-    FootprintColumnLayout, FootprintImbalance, FootprintTextMode, draw_footprint_candle,
+    FootprintColumnLayout, FootprintImbalance, FootprintTextMode, PixelRows, draw_footprint_candle,
     draw_footprint_cluster_row, footprint_text_content_lengths, resolve_footprint_text_mode,
 };
-use super::helpers::{PixelGeometry, PixelSpan};
+use super::helpers::PixelGeometry;
 use super::scene::IndicatorPanelScene;
 use super::scene_builder::{
     IndicatorLinePointStatus, IndicatorLineTraversal, bar_index_range_for_units,
     shifted_output_unit,
 };
+use super::studies::{LayerPaintPhase, StudyStates};
 use super::*;
-use data::chart::kline::footprint::ClusterKind;
-use data::chart::kline::series::{BigTradeEntry, KlineSeries};
+use data::chart::kline::series::KlineSeries;
 use data::chart::kline::{
     IndicatorFillGeometry, IndicatorFillSpec, IndicatorInputSource, IndicatorOutputRef,
-    LineStrokeStyle, OutputValue, ProfileDistribution, StudyDataSource, TableColumnColor,
-    TableColumnFormat, TableColumnValue, TpoColorConfig, TpoProfile, TpoProfileStatus,
+    LineStrokeStyle, OutputValue, TableColumnColor, TableColumnFormat, TableColumnValue,
 };
 use data::config::theme::ACCENT_COUNT;
 use data::util::abbr_large_numbers;
 use exchange::UnixMs;
-use exchange::unit::{Price, Qty};
 use rustc_hash::FxHashSet;
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -34,116 +32,6 @@ const TABLE_CELL_INSET_PX: f32 = 1.0;
 const INDICATOR_MARKER_TEXT_SIZE_PX: f32 = 8.0;
 const DASHED_LINE_SEGMENTS: [f32; 2] = [8.0, 5.0];
 const DOTTED_LINE_SEGMENTS: [f32; 2] = [1.0, 4.0];
-const MAX_BIG_TRADE_BUBBLES: usize = 2_048;
-const BIG_TRADE_MIN_ROW_PX: f32 = 16.0;
-const BIG_TRADE_MIN_COL_PX: f32 = 16.0;
-const BIG_TRADE_MAX_RADIUS_PX: f32 = 24.0;
-const BIG_TRADE_MIN_RADIUS_PX: f32 = 3.0;
-
-#[derive(Default)]
-struct BigTradeCell {
-    notional: f64,
-    count: u32,
-    anchor: Option<(BigTradeEntry, i64)>,
-}
-
-impl BigTradeCell {
-    fn add(&mut self, entry: BigTradeEntry, x_unit: i64) {
-        self.notional += entry.notional;
-        self.count = self.count.saturating_add(1);
-        if self
-            .anchor
-            .is_none_or(|(anchor, _)| entry.notional > anchor.notional)
-        {
-            self.anchor = Some((entry, x_unit));
-        }
-    }
-}
-
-struct PixelRows {
-    top: f32,
-    height: f32,
-    bucket_height: f32,
-    quantities: Vec<(Qty, Qty)>,
-    touched: Vec<usize>,
-}
-
-impl PixelRows {
-    fn new(plot: Rectangle, pixels: PixelGeometry) -> Self {
-        let pixel_ratio = pixels.ratio();
-        let origin_y = pixels.origin().y;
-        let top_physical = ((plot.y + origin_y) * pixel_ratio).floor() as i32;
-        let bottom_physical = ((plot.y + plot.height + origin_y) * pixel_ratio).ceil() as i32;
-        let bucket_count = bottom_physical.saturating_sub(top_physical) as usize;
-        let bucket_height = 1.0 / pixel_ratio;
-        Self {
-            top: top_physical as f32 / pixel_ratio - origin_y,
-            height: bucket_count as f32 / pixel_ratio,
-            bucket_height,
-            quantities: vec![(Qty::ZERO, Qty::ZERO); bucket_count],
-            touched: Vec::new(),
-        }
-    }
-
-    fn add(&mut self, y: f32, buy: Qty, sell: Qty) {
-        let offset = y - self.top;
-        let half_bucket = self.bucket_height * 0.5;
-        if !offset.is_finite()
-            || offset < -half_bucket
-            || offset > self.height + half_bucket
-            || self.quantities.is_empty()
-        {
-            return;
-        }
-        let index = (offset / self.bucket_height)
-            .floor()
-            .clamp(0.0, self.quantities.len().saturating_sub(1) as f32)
-            as usize;
-        if let Some(row) = self.quantities.get_mut(index) {
-            let was_empty = row.0.is_zero() && row.1.is_zero();
-            row.0 += buy;
-            row.1 += sell;
-            if was_empty && (!row.0.is_zero() || !row.1.is_zero()) {
-                self.touched.push(index);
-            }
-        }
-    }
-
-    fn is_empty(&self) -> bool {
-        self.touched.iter().all(|&index| {
-            let (buy, sell) = self.quantities[index];
-            buy.is_zero() && sell.is_zero()
-        })
-    }
-
-    fn max_qty(&self, kind: ClusterKind) -> Qty {
-        self.touched
-            .iter()
-            .map(|&index| {
-                let (buy, sell) = self.quantities[index];
-                match kind {
-                    ClusterKind::BidAsk | ClusterKind::Table => buy.max(sell),
-                    ClusterKind::VolumeProfile => buy + sell,
-                    ClusterKind::DeltaProfile => buy.abs_diff(sell),
-                }
-            })
-            .max()
-            .unwrap_or_default()
-    }
-
-    fn rows(&self) -> impl Iterator<Item = (f32, Qty, Qty)> + '_ {
-        let mut touched = self.touched.clone();
-        touched.sort_unstable();
-        touched.into_iter().filter_map(|index| {
-            let (buy, sell) = self.quantities[index];
-            (!buy.is_zero() || !sell.is_zero()).then_some((
-                self.top + (index as f32 + 0.5) * self.bucket_height,
-                buy,
-                sell,
-            ))
-        })
-    }
-}
 
 fn indicator_line_stroke(
     width: f32,
@@ -179,7 +67,7 @@ pub(super) enum PrimaryPlotDetail {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PrimaryPlotLayer {
     Background,
-    Tpo,
+    Objects,
     Foreground,
     PriceBars,
 }
@@ -650,36 +538,6 @@ impl<'a> KlineWidget<'a> {
         }
     }
 
-    pub(super) fn footprint_row_height(
-        &self,
-        scene: &Scene,
-        price: Price,
-        tick_size: PriceStep,
-        anchor: Option<f32>,
-    ) -> f32 {
-        let current_y = scene.map_primary_plot_with_anchor_f32(price.to_f32_lossy(), anchor);
-        let Some(next_price) = price.checked_add_steps(1, tick_size) else {
-            return 0.0;
-        };
-        let next_y = scene.map_primary_plot_with_anchor_f32(next_price.to_f32_lossy(), anchor);
-        (current_y - next_y).abs()
-    }
-
-    fn coalesce_price_rows(
-        &self,
-        scene: &Scene,
-        tick_size: PriceStep,
-        anchor: Option<f32>,
-        pixels: PixelGeometry,
-    ) -> bool {
-        let pixel_ratio = pixels.ratio();
-        let (low, high) = scene.primary_domain_value_range();
-        [low, high].into_iter().all(|price| {
-            let row_height = self.footprint_row_height(scene, price, tick_size, anchor);
-            row_height.is_finite() && row_height * pixel_ratio < 1.0
-        })
-    }
-
     pub(super) fn candlestick_color(
         &self,
         bullish: bool,
@@ -721,7 +579,8 @@ impl<'a> KlineWidget<'a> {
         let min_row_height = pixels.logical_width_from_physical(1);
         let in_visible_range =
             |x_unit: i64| x_unit >= scene.x.min_unit && x_unit <= scene.x.max_unit;
-        let coalesce = draw_clusters && self.coalesce_price_rows(scene, tick_size, anchor, pixels);
+        let coalesce = draw_clusters
+            && super::footprint::coalesce_price_rows(scene, tick_size, anchor, pixels);
 
         let mut pixel_rows = BTreeMap::new();
         if coalesce {
@@ -797,8 +656,7 @@ impl<'a> KlineWidget<'a> {
 
                 let footprint = point.footprint;
                 for (price, group) in &footprint.trades {
-                    let row_height = self
-                        .footprint_row_height(scene, *price, tick_size, anchor)
+                    let row_height = super::footprint::row_height(scene, *price, tick_size, anchor)
                         .max(min_row_height);
                     let y = scene.map_primary_plot_with_anchor_f32(price.to_f32_lossy(), anchor);
                     let cell_height = (row_height - min_row_height).max(min_row_height);
@@ -900,9 +758,9 @@ impl<'a> KlineWidget<'a> {
                             footprint.max_cluster_qty_all(self.footprint.cluster_kind),
                         );
                         for (price, group) in &footprint.trades {
-                            let row_height = self
-                                .footprint_row_height(scene, *price, tick_size, anchor)
-                                .max(min_row_height);
+                            let row_height =
+                                super::footprint::row_height(scene, *price, tick_size, anchor)
+                                    .max(min_row_height);
                             let y = scene
                                 .map_primary_plot_with_anchor_f32(price.to_f32_lossy(), anchor);
                             if !text_mode.row_intersects_plot(
@@ -958,206 +816,6 @@ impl<'a> KlineWidget<'a> {
                 },
             );
         });
-    }
-
-    pub(super) fn draw_profile_distribution(
-        &self,
-        frame: &mut canvas::Frame,
-        scene: &Scene,
-        palette: &Extended,
-        generated_accents: &[iced::Color; ACCENT_COUNT],
-        distribution: &ProfileDistribution,
-        colors: VolumeProfileColorConfig,
-        profile_edge: f32,
-        profile_width: f32,
-        bar_alpha: f32,
-        opacity_scale: f32,
-        line_start: f32,
-        naked_line_end: f32,
-        grow_right: bool,
-        pixels: PixelGeometry,
-    ) {
-        let tick_size = distribution.price_step;
-        let max_qty = distribution.max_qty.to_f64();
-        if max_qty <= 0.0 {
-            return;
-        }
-
-        let anchor = scene
-            .primary
-            .series_percent_anchors
-            .first()
-            .copied()
-            .flatten();
-        let min_row_height = pixels.logical_width_from_physical(1);
-        let sell_color = Self::resolve_theme_color(
-            colors.color_for(VolumeProfileColorSlot::Sell),
-            palette,
-            generated_accents,
-        )
-        .scale_alpha(bar_alpha);
-        let buy_color = Self::resolve_theme_color(
-            colors.color_for(VolumeProfileColorSlot::Buy),
-            palette,
-            generated_accents,
-        )
-        .scale_alpha(bar_alpha);
-
-        let plot = *scene.primary_plot();
-        let body_left = if grow_right {
-            profile_edge
-        } else {
-            profile_edge - profile_width
-        };
-        if profile_width > 0.0
-            && body_left < plot.x + plot.width
-            && body_left + profile_width > plot.x
-        {
-            let profile_width = profile_width.max(min_row_height);
-            let rows = self
-                .coalesce_price_rows(scene, tick_size, anchor, pixels)
-                .then(|| {
-                    let mut rows = PixelRows::new(*scene.primary_plot(), pixels);
-                    for level in &distribution.levels {
-                        rows.add(
-                            scene.map_primary_plot_with_anchor_f32(
-                                level.price.to_f32_lossy(),
-                                anchor,
-                            ),
-                            level.positive_qty,
-                            level.negative_qty,
-                        );
-                    }
-                    rows
-                });
-            let max_qty = rows.as_ref().map_or(max_qty, |rows| {
-                let coalesced_max = rows.max_qty(ClusterKind::VolumeProfile).to_f64();
-                if coalesced_max > 0.0 {
-                    coalesced_max
-                } else {
-                    max_qty
-                }
-            });
-            let mut draw_row = |y: f32, row_height: f32, positive: Qty, negative: Qty| {
-                let row_height = row_height.max(min_row_height);
-                let row_top = y - row_height * 0.5;
-                let row_bottom = row_top + row_height;
-                if row_bottom < scene.primary_plot().y
-                    || row_top > scene.primary_plot().y + scene.primary_plot().height
-                {
-                    return;
-                }
-                let total_qty = (positive + negative).to_f64();
-                if total_qty <= 0.0 {
-                    return;
-                }
-
-                let total_width = profile_width * (total_qty / max_qty).clamp(0.0, 1.0) as f32;
-                if total_width <= 0.0 {
-                    return;
-                }
-
-                let row_span = pixels.snapped_y_span(
-                    row_top,
-                    row_top + (row_height - min_row_height).max(min_row_height),
-                );
-
-                let left = if grow_right {
-                    profile_edge
-                } else {
-                    profile_edge - total_width
-                };
-                let left_span = pixels.snapped_x_span(left, left + total_width);
-                let negative_width =
-                    left_span.size * (negative.to_f64() / total_qty).clamp(0.0, 1.0) as f32;
-                let positive_width = left_span.size - negative_width;
-
-                if negative_width > 0.0 {
-                    frame.fill_rectangle(
-                        Point::new(left_span.start, row_span.start),
-                        Size::new(negative_width, row_span.size),
-                        sell_color,
-                    );
-                }
-                if positive_width > 0.0 {
-                    frame.fill_rectangle(
-                        Point::new(left_span.start + negative_width, row_span.start),
-                        Size::new(positive_width, row_span.size),
-                        buy_color,
-                    );
-                }
-            };
-            if let Some(rows) = rows {
-                for (y, positive, negative) in rows.rows() {
-                    draw_row(y, rows.bucket_height, positive, negative);
-                }
-            } else {
-                for level in &distribution.levels {
-                    let y =
-                        scene.map_primary_plot_with_anchor_f32(level.price.to_f32_lossy(), anchor);
-                    draw_row(
-                        y,
-                        self.footprint_row_height(scene, level.price, tick_size, anchor),
-                        level.positive_qty,
-                        level.negative_qty,
-                    );
-                }
-            }
-        }
-
-        let Some(poc) = distribution.poc else {
-            return;
-        };
-        let (line_end, line_color) = match poc.status {
-            NPoc::Naked if colors.show_npoc => (
-                naked_line_end,
-                Self::resolve_theme_color(
-                    colors.color_for(VolumeProfileColorSlot::NakedPoc),
-                    palette,
-                    generated_accents,
-                )
-                .scale_alpha((0.7 * opacity_scale).min(1.0)),
-            ),
-            NPoc::Filled { at } if colors.show_poc => (
-                scene
-                    .x
-                    .axis
-                    .unit_from_time_f32(UnixMs::new(at))
-                    .map(|unit| scene.map_x_plot_f32(unit))
-                    .unwrap_or(naked_line_end),
-                Self::resolve_theme_color(
-                    colors.color_for(VolumeProfileColorSlot::FilledPoc),
-                    palette,
-                    generated_accents,
-                )
-                .scale_alpha((0.85 * opacity_scale).min(1.0)),
-            ),
-            _ => return,
-        };
-        if !line_start.is_finite() || !line_end.is_finite() {
-            return;
-        }
-
-        let poc_y = scene.map_primary_plot_with_anchor_f32(poc.price.to_f32_lossy(), anchor);
-        if !poc_y.is_finite() {
-            return;
-        }
-        let Some(line) = pixels.positive_x_span(line_start, line_end) else {
-            return;
-        };
-        let raw_line_height = self
-            .footprint_row_height(scene, poc.price, tick_size, anchor)
-            .abs()
-            .max(min_row_height)
-            .min(1.0_f32.max(min_row_height));
-        let line_span =
-            pixels.snapped_y_span(poc_y - raw_line_height * 0.5, poc_y + raw_line_height * 0.5);
-
-        frame.fill_rectangle(
-            Point::new(line.start, line_span.start),
-            Size::new(line.size, line_span.size),
-            line_color,
-        );
     }
 
     pub(super) fn fill_footprint_poc_overlay(
@@ -1292,11 +950,11 @@ impl<'a> KlineWidget<'a> {
                 let Some(line) = pixels.positive_x_span(start_x, end_x) else {
                     continue;
                 };
-                let raw_line_height = self
-                    .footprint_row_height(scene, poc_price, tick_size, anchor)
-                    .abs()
-                    .max(min_row_height)
-                    .min(1.0_f32.max(min_row_height));
+                let raw_line_height =
+                    super::footprint::row_height(scene, poc_price, tick_size, anchor)
+                        .abs()
+                        .max(min_row_height)
+                        .min(1.0_f32.max(min_row_height));
                 let line_span = pixels
                     .snapped_y_span(poc_y - raw_line_height * 0.5, poc_y + raw_line_height * 0.5);
                 frame.fill_rectangle(
@@ -1304,719 +962,6 @@ impl<'a> KlineWidget<'a> {
                     Size::new(line.size, line_span.size),
                     color,
                 );
-            }
-        });
-    }
-
-    fn fill_big_trades_overlay(
-        &self,
-        frame: &mut canvas::Frame,
-        scene: &Scene,
-        palette: &Extended,
-        generated_accents: &[iced::Color; ACCENT_COUNT],
-        pixels: PixelGeometry,
-    ) {
-        if !self.trade_data_enabled {
-            return;
-        }
-        let Some(config) = self
-            .studies
-            .iter()
-            .filter(|study| study.visible())
-            .find_map(|study| study.big_trades())
-        else {
-            return;
-        };
-        let Some(series) = self.series.first() else {
-            return;
-        };
-        let anchor = scene
-            .primary
-            .series_percent_anchors
-            .first()
-            .copied()
-            .flatten();
-        let plot = *scene.primary_plot();
-
-        let bar_spacing = scene.logical_bar_spacing();
-        let col_merge = (BIG_TRADE_MIN_COL_PX / bar_spacing).ceil().max(1.0) as i64;
-        let tick_size = series.tick_size();
-        let (low, high) = scene.primary_domain_value_range();
-        let target_rows = (plot.height / BIG_TRADE_MIN_ROW_PX).floor().max(1.0) as usize;
-        let row_step = tick_size
-            .nested_coarsened_to_fit(low, high, target_rows)
-            .unwrap_or(tick_size);
-        let cell_width_px = bar_spacing * col_merge as f32;
-        let cell_height_px = self.footprint_row_height(scene, low, row_step, anchor);
-        let max_radius = (0.25 * cell_width_px)
-            .min(0.5 * cell_height_px)
-            .clamp(BIG_TRADE_MIN_RADIUS_PX, BIG_TRADE_MAX_RADIUS_PX);
-
-        let mut groups = rustc_hash::FxHashMap::<(i64, i64, bool), BigTradeCell>::default();
-
-        match (self.basis, scene.x.axis) {
-            (data::chart::Basis::Time(timeframe), XAxis::Time { .. }) => {
-                let Some(window_start) = scene.x.axis.time_from_unit(scene.x.min_unit) else {
-                    return;
-                };
-                let Some(window_end) = scene
-                    .x
-                    .axis
-                    .time_from_unit(scene.x.max_unit.saturating_add(1))
-                else {
-                    return;
-                };
-                for entry in series.big_trades_in_time_range(window_start, window_end) {
-                    let x_unit = scene.x.axis.unit_from_time(entry.time.floor_to(timeframe));
-                    if x_unit < scene.x.min_unit || x_unit > scene.x.max_unit {
-                        continue;
-                    }
-                    let price = entry.price.round_to_step(tick_size);
-                    let y = scene.map_primary_plot_with_anchor_f32(price.to_f32_lossy(), anchor);
-                    if !y.is_finite() || y < plot.y || y > plot.y + plot.height {
-                        continue;
-                    }
-                    let row = price.round_to_step(row_step);
-                    let cell = groups
-                        .entry((x_unit.div_euclid(col_merge), row.units, entry.is_sell))
-                        .or_default();
-                    cell.add(*entry, x_unit);
-                }
-            }
-            (data::chart::Basis::Tick(tick_count), XAxis::Tick { .. }) => {
-                let point_count = series.point_count();
-                let tick_count = usize::from(tick_count.0).max(1);
-                let start_bar = self
-                    .bar_index_at_or_before_unit(scene, 0, scene.x.min_unit)
-                    .unwrap_or_default();
-                let end_bar = self
-                    .bar_index_at_or_before_unit(scene, 0, scene.x.max_unit)
-                    .unwrap_or_else(|| point_count.saturating_sub(1))
-                    .min(point_count.saturating_sub(1));
-                let lo = start_bar.saturating_mul(tick_count);
-                let hi = end_bar.saturating_add(1).saturating_mul(tick_count);
-                for entry in series.big_trades_in_index_range(lo, hi) {
-                    let bar_index = entry.index / tick_count;
-                    let from_latest =
-                        point_count.saturating_sub(1).saturating_sub(bar_index) as u64;
-                    let x_unit = scene
-                        .x
-                        .axis
-                        .unit_from_tick(TickIndex::from_u64(from_latest));
-                    if x_unit < scene.x.min_unit || x_unit > scene.x.max_unit {
-                        continue;
-                    }
-                    let price = entry.price.round_to_step(tick_size);
-                    let y = scene.map_primary_plot_with_anchor_f32(price.to_f32_lossy(), anchor);
-                    if !y.is_finite() || y < plot.y || y > plot.y + plot.height {
-                        continue;
-                    }
-                    let row = price.round_to_step(row_step);
-                    let cell_x = (bar_index as i64).div_euclid(col_merge);
-                    let cell = groups
-                        .entry((cell_x, row.units, entry.is_sell))
-                        .or_default();
-                    cell.add(*entry, x_unit);
-                }
-            }
-            _ => return,
-        }
-
-        if groups.is_empty() {
-            return;
-        }
-        let max_notional = groups
-            .values()
-            .map(|cell| cell.notional)
-            .fold(0.0_f64, f64::max);
-        if max_notional <= 0.0 {
-            return;
-        }
-        let buy_color = Self::resolve_theme_color(config.buy_color, palette, generated_accents);
-        let sell_color = Self::resolve_theme_color(config.sell_color, palette, generated_accents);
-        let stroke_width = pixels.quantized_stroke_width(1.0).0;
-
-        let mut groups = groups.into_iter().collect::<Vec<_>>();
-        if groups.len() > MAX_BIG_TRADE_BUBBLES {
-            groups.sort_unstable_by(|left, right| right.1.notional.total_cmp(&left.1.notional));
-            groups.truncate(MAX_BIG_TRADE_BUBBLES);
-        }
-
-        frame.with_clip(plot, |frame| {
-            for ((_, _, is_sell), cell) in groups {
-                let count = cell.count;
-                let Some((entry, x_unit)) = cell.anchor else {
-                    continue;
-                };
-                let x = scene.map_x_plot_f32(x_unit as f32);
-                let price = entry.price.round_to_step(tick_size);
-                let y = scene.map_primary_plot_with_anchor_f32(price.to_f32_lossy(), anchor);
-                if !x.is_finite() || !y.is_finite() {
-                    continue;
-                }
-                let y = y.clamp(plot.y, plot.y + plot.height);
-                let normalized = (cell.notional / max_notional).sqrt().clamp(0.0, 1.0) as f32;
-                let radius = max_radius * (0.4 + 0.6 * normalized);
-                let side_offset = if is_sell { -radius } else { radius };
-                let center = Point::new(x + side_offset, y);
-                let color = if is_sell { sell_color } else { buy_color };
-                frame.fill(
-                    &canvas::Path::circle(center, radius),
-                    color.scale_alpha(0.8),
-                );
-                for ring in 1..count.min(3) {
-                    frame.stroke(
-                        &canvas::Path::circle(center, radius + 2.0 * ring as f32),
-                        canvas::Stroke::default()
-                            .with_color(color)
-                            .with_width(stroke_width),
-                    );
-                }
-            }
-        });
-    }
-
-    pub(super) fn fill_volume_profile_overlay(
-        &self,
-        frame: &mut canvas::Frame,
-        scene: &Scene,
-        palette: &Extended,
-        generated_accents: &[iced::Color; ACCENT_COUNT],
-        pixels: PixelGeometry,
-    ) {
-        let Some(base_series) = self.series.first() else {
-            return;
-        };
-
-        let Some(earliest) = scene.x.axis.time_from_unit(scene.x.min_unit) else {
-            return;
-        };
-        let Some(latest) = scene.x.axis.time_from_unit(scene.x.max_unit) else {
-            return;
-        };
-
-        let tick_size = base_series.tick_size();
-        let profile_bars = self.profile_bars.collect(self.series);
-        let visible_profile = self.studies.iter().find_map(|study| {
-            if !study.visible() {
-                return None;
-            }
-
-            if study.volume_profile_schedule()? != VolumeProfileSchedule::VisibleRange {
-                return None;
-            }
-
-            let colors = study.volume_profile_colors()?;
-            let width_ratio = study.volume_profile_width_ratio()?;
-            let opacity_ratio = study.volume_profile_opacity_ratio()?;
-            let opacity_scale = study.volume_profile_opacity_scale()?;
-            let profile = match study.source() {
-                StudyDataSource::Kline => data::chart::kline::kline_volume_profile(
-                    &profile_bars,
-                    earliest,
-                    latest,
-                    tick_size,
-                ),
-                StudyDataSource::Trades => {
-                    base_series.trade_price_distribution(earliest, latest, tick_size)
-                }
-            };
-            profile.map(|profile| (profile, colors, width_ratio, opacity_ratio, opacity_scale))
-        });
-        let recurring_intervals = self
-            .studies
-            .iter()
-            .filter(|study| study.visible())
-            .filter_map(|study| {
-                let VolumeProfileSchedule::Recurring { interval } =
-                    study.volume_profile_schedule()?
-                else {
-                    return None;
-                };
-                if !study.is_interval_available(self.basis) {
-                    return None;
-                }
-                Some((
-                    study.source(),
-                    interval,
-                    study.volume_profile_colors()?,
-                    study.volume_profile_width_ratio()?,
-                    study.volume_profile_opacity_ratio()?,
-                    study.volume_profile_opacity_scale()?,
-                    tick_size,
-                ))
-            });
-        let profiles = recurring_intervals
-            .flat_map(
-                |(
-                    source,
-                    interval,
-                    colors,
-                    width_ratio,
-                    opacity_ratio,
-                    opacity_scale,
-                    tick_size,
-                )| {
-                    let profiles = match source {
-                        StudyDataSource::Kline => {
-                            data::chart::kline::recurring_kline_volume_profiles(
-                                &profile_bars,
-                                interval,
-                                earliest,
-                                latest,
-                                tick_size,
-                            )
-                        }
-                        StudyDataSource::Trades => base_series.recurring_trade_price_distributions(
-                            interval, tick_size, earliest, latest,
-                        ),
-                    };
-                    profiles.into_iter().map(move |profile| {
-                        (profile, colors, width_ratio, opacity_ratio, opacity_scale)
-                    })
-                },
-            )
-            .collect::<Vec<_>>();
-        if visible_profile.is_none() && profiles.is_empty() {
-            return;
-        }
-
-        let primary_plot = *scene.primary_plot();
-        let min_profile_width = pixels.logical_width_from_physical(1);
-        frame.with_clip(primary_plot, |frame| {
-            if let Some((profile, colors, width_ratio, opacity_ratio, opacity_scale)) =
-                visible_profile.as_ref()
-            {
-                self.draw_profile_distribution(
-                    frame,
-                    scene,
-                    palette,
-                    generated_accents,
-                    profile,
-                    *colors,
-                    primary_plot.x + primary_plot.width,
-                    primary_plot.width * width_ratio,
-                    *opacity_ratio,
-                    *opacity_scale,
-                    primary_plot.x,
-                    primary_plot.x + primary_plot.width,
-                    false,
-                    pixels,
-                );
-            }
-
-            for (anchored_profile, colors, width_ratio, opacity_ratio, opacity_scale) in profiles {
-                let Some(start_unit) = scene.x.axis.unit_from_time_f32(anchored_profile.start)
-                else {
-                    continue;
-                };
-                let Some(end_unit) = scene.x.axis.unit_from_time_f32(anchored_profile.end) else {
-                    continue;
-                };
-
-                let segment_left = scene.map_x_plot_f32(start_unit);
-                let segment_right = scene.map_x_plot_f32(end_unit);
-                if !width_ratio.is_finite() || width_ratio <= 0.0 {
-                    continue;
-                }
-                let segment_width = (segment_right - segment_left).abs();
-                if !segment_width.is_finite() || segment_width <= 0.0 {
-                    continue;
-                }
-                let profile_width = (segment_width * width_ratio).max(min_profile_width);
-
-                self.draw_profile_distribution(
-                    frame,
-                    scene,
-                    palette,
-                    generated_accents,
-                    &anchored_profile.distribution,
-                    colors,
-                    segment_left,
-                    profile_width,
-                    opacity_ratio,
-                    opacity_scale,
-                    segment_left,
-                    primary_plot.x + primary_plot.width,
-                    true,
-                    pixels,
-                );
-            }
-        });
-    }
-
-    fn tpo_row_height(scene: &Scene, profile: &TpoProfile, anchor: Option<f32>) -> f32 {
-        let row_height = if profile.rows.len() < 2 {
-            12.0
-        } else {
-            profile
-                .rows
-                .windows(2)
-                .filter_map(|rows| {
-                    let y1 = scene
-                        .map_primary_plot_with_anchor_f32(rows[0].price.to_f32_lossy(), anchor);
-                    let y2 = scene
-                        .map_primary_plot_with_anchor_f32(rows[1].price.to_f32_lossy(), anchor);
-                    (y1.is_finite() && y2.is_finite()).then_some((y1 - y2).abs())
-                })
-                .fold(f32::INFINITY, f32::min)
-                .min(24.0)
-        };
-
-        if row_height.is_finite() {
-            row_height
-        } else {
-            0.0
-        }
-    }
-
-    pub(super) fn tpo_profile_geometries(
-        &self,
-        scene: &Scene,
-        selected_profile: Option<UnixMs>,
-    ) -> Vec<TpoProfileGeometry> {
-        if self.tpo_profiles.is_empty() || !self.basis.is_time() {
-            return Vec::new();
-        }
-        if !self
-            .studies
-            .iter()
-            .any(|study| study.visible() && study.is_tpo_profile())
-        {
-            return Vec::new();
-        }
-
-        let plot = *scene.primary_plot();
-        let anchor = scene
-            .primary
-            .series_percent_anchors
-            .first()
-            .copied()
-            .flatten();
-        let plot_right = plot.x + plot.width;
-        let plot_bottom = plot.y + plot.height;
-
-        self.tpo_profiles
-            .iter()
-            .enumerate()
-            .filter_map(|(index, profile)| {
-                let start_unit = scene.x.axis.unit_from_time_f32(profile.start)?;
-                let end_unit = scene.x.axis.unit_from_time_f32(profile.end)?;
-                let left = scene.map_x_plot_f32(start_unit);
-                let right = scene.map_x_plot_f32(end_unit);
-                let (line_start, line_end) = (left.min(right), left.max(right));
-                if line_end < plot.x || line_start > plot_right {
-                    return None;
-                }
-
-                let row_height = Self::tpo_row_height(scene, profile, anchor);
-                if row_height <= 0.0 || profile.rows.is_empty() {
-                    return None;
-                }
-
-                let mut top = f32::INFINITY;
-                let mut bottom = f32::NEG_INFINITY;
-                for row in &profile.rows {
-                    let y =
-                        scene.map_primary_plot_with_anchor_f32(row.price.to_f32_lossy(), anchor);
-                    if y.is_finite() {
-                        top = top.min(y - row_height * 0.5);
-                        bottom = bottom.max(y + row_height * 0.5);
-                    }
-                }
-                if !top.is_finite() || !bottom.is_finite() {
-                    return None;
-                }
-
-                let visible_left = line_start.max(plot.x);
-                let visible_right = line_end.min(plot_right);
-                let visible_top = top.max(plot.y);
-                let visible_bottom = bottom.min(plot_bottom);
-                if visible_right <= visible_left || visible_bottom <= visible_top {
-                    return None;
-                }
-
-                let overlay_bounds = Rectangle {
-                    x: scene.layout.regions.plot.x + visible_left,
-                    y: scene.layout.regions.plot.y + visible_top,
-                    width: visible_right - visible_left,
-                    height: visible_bottom - visible_top,
-                };
-                let button_y = (overlay_bounds.y + TPO_ACTION_BUTTON_GAP_PX)
-                    .min(scene.layout.regions.plot.y + plot_bottom - TPO_ACTION_BUTTON_HEIGHT_PX);
-                let selected = selected_profile == Some(profile.start);
-                let reset_visible = selected
-                    && self
-                        .tpo_edits
-                        .has_boundary_in_range(profile.start, profile.end);
-                let merge_with_reset_width = TPO_RESET_BUTTON_WIDTH_PX
-                    + TPO_ACTION_BUTTON_WIDTH_PX
-                    + TPO_ACTION_BUTTON_GAP_PX * 3.0;
-                let button_bounds = (selected
-                    && index > 0
-                    && overlay_bounds.width
-                        >= if reset_visible {
-                            merge_with_reset_width
-                        } else {
-                            TPO_ACTION_BUTTON_WIDTH_PX + TPO_ACTION_BUTTON_GAP_PX * 2.0
-                        })
-                .then_some(Rectangle {
-                    x: overlay_bounds.x + overlay_bounds.width
-                        - TPO_ACTION_BUTTON_WIDTH_PX
-                        - TPO_ACTION_BUTTON_GAP_PX,
-                    y: button_y,
-                    width: TPO_ACTION_BUTTON_WIDTH_PX,
-                    height: TPO_ACTION_BUTTON_HEIGHT_PX,
-                });
-                let reset_button_bounds = (selected
-                    && reset_visible
-                    && overlay_bounds.width
-                        >= TPO_RESET_BUTTON_WIDTH_PX + TPO_ACTION_BUTTON_GAP_PX * 2.0)
-                    .then(|| {
-                        let x = button_bounds.map_or(
-                            overlay_bounds.x + overlay_bounds.width
-                                - TPO_RESET_BUTTON_WIDTH_PX
-                                - TPO_ACTION_BUTTON_GAP_PX,
-                            |button| {
-                                button.x - TPO_ACTION_BUTTON_GAP_PX - TPO_RESET_BUTTON_WIDTH_PX
-                            },
-                        );
-                        Rectangle {
-                            x,
-                            y: button_y,
-                            width: TPO_RESET_BUTTON_WIDTH_PX,
-                            height: TPO_ACTION_BUTTON_HEIGHT_PX,
-                        }
-                    });
-
-                Some(TpoProfileGeometry {
-                    index,
-                    start: profile.start,
-                    end: profile.end,
-                    overlay_bounds,
-                    button_bounds,
-                    reset_button_bounds,
-                })
-            })
-            .collect()
-    }
-
-    pub(super) fn fill_tpo_profile_overlay(
-        &self,
-        frame: &mut canvas::Frame,
-        scene: &Scene,
-        palette: &Extended,
-        generated_accents: &[iced::Color; ACCENT_COUNT],
-        pixels: PixelGeometry,
-    ) {
-        if self.tpo_profiles.is_empty() || !self.basis.is_time() {
-            return;
-        }
-        let Some(tpo_study) = self
-            .studies
-            .iter()
-            .find(|study| study.visible() && study.is_tpo_profile())
-        else {
-            return;
-        };
-        let plot = *scene.primary_plot();
-        let anchor = scene
-            .primary
-            .series_percent_anchors
-            .first()
-            .copied()
-            .flatten();
-        let line_width = pixels.quantized_stroke_width(1.0).0;
-        let colors = tpo_study
-            .tpo_colors()
-            .unwrap_or_else(TpoColorConfig::defaults);
-
-        frame.with_clip(plot, |frame| {
-            for profile in self.tpo_profiles {
-                let Some(start_unit) = scene.x.axis.unit_from_time_f32(profile.start) else {
-                    continue;
-                };
-                let Some(end_unit) = scene.x.axis.unit_from_time_f32(profile.end) else {
-                    continue;
-                };
-                let left = scene.map_x_plot_f32(start_unit);
-                let right = scene.map_x_plot_f32(end_unit);
-                let (line_start, line_end) = (left.min(right), left.max(right));
-                if line_end < plot.x || line_start > plot.x + plot.width {
-                    continue;
-                }
-                let profile_width = (line_end - line_start).max(0.0);
-                let row_height = Self::tpo_row_height(scene, profile, anchor);
-                let column_width = profile.period_count.max(1) as f32;
-                let column_width = profile_width / column_width;
-                let show_letters = column_width >= 8.0 && row_height >= 8.0;
-                let status_alpha = match profile.status {
-                    TpoProfileStatus::Complete => 0.95,
-                    TpoProfileStatus::Developing => 0.8,
-                    TpoProfileStatus::Incomplete => 0.55,
-                };
-                let color = |configured| {
-                    Self::resolve_theme_color(configured, palette, generated_accents)
-                        .scale_alpha(status_alpha)
-                };
-                let is_single_print = |price: Price| profile.single_prints.contains(&price);
-                let poor_color = |price: Price| {
-                    if colors.show_poor_high && profile.poor_highs.contains(&price) {
-                        Some(colors.poor_high)
-                    } else if colors.show_poor_low && profile.poor_lows.contains(&price) {
-                        Some(colors.poor_low)
-                    } else {
-                        None
-                    }
-                };
-                let row_color = |price: Price| {
-                    if colors.show_poc && profile.poc == Some(price) {
-                        colors.poc
-                    } else if profile.val.is_some_and(|val| price >= val)
-                        && profile.vah.is_some_and(|vah| price <= vah)
-                    {
-                        colors.value_area
-                    } else {
-                        colors.letters
-                    }
-                };
-                let cell_color = |price: Price| {
-                    if !show_letters {
-                        if let Some(configured) = poor_color(price) {
-                            configured
-                        } else if colors.show_single_print && is_single_print(price) {
-                            colors.single_print
-                        } else {
-                            row_color(price)
-                        }
-                    } else {
-                        row_color(price)
-                    }
-                };
-                let text_color = |price: Price| {
-                    poor_color(price).unwrap_or_else(|| {
-                        if colors.show_single_print && is_single_print(price) {
-                            colors.single_print
-                        } else {
-                            row_color(price)
-                        }
-                    })
-                };
-
-                let cell_gap = pixels.logical_width_from_physical(1);
-                let plot_right = plot.x + plot.width;
-                for row in &profile.rows {
-                    let y =
-                        scene.map_primary_plot_with_anchor_f32(row.price.to_f32_lossy(), anchor);
-                    if !y.is_finite() {
-                        continue;
-                    }
-                    let y_span = pixels.snapped_y_span(y - row_height * 0.5, y + row_height * 0.5);
-                    let cell_y = PixelSpan {
-                        start: y_span.start + cell_gap * 0.5,
-                        size: (y_span.size - cell_gap).max(cell_gap),
-                    };
-                    let configured = cell_color(row.price);
-                    let cell_alpha = if !show_letters
-                        && (poor_color(row.price).is_some()
-                            || (colors.show_single_print && is_single_print(row.price)))
-                        || (colors.show_poc && profile.poc == Some(row.price))
-                    {
-                        0.38
-                    } else if profile.val.is_some_and(|val| row.price >= val)
-                        && profile.vah.is_some_and(|vah| row.price <= vah)
-                    {
-                        0.26
-                    } else {
-                        0.18
-                    };
-                    for (column_index, period_index) in row.periods.iter().enumerate() {
-                        if usize::from(*period_index) >= profile.period_count {
-                            continue;
-                        }
-                        let x_start = line_start + column_width * column_index as f32;
-                        let x_end = x_start + column_width;
-                        let Some(x_span) =
-                            pixels.positive_x_span_in_bounds(x_start, x_end, plot.x, plot_right)
-                        else {
-                            continue;
-                        };
-                        let cell_x = PixelSpan {
-                            start: x_span.start + cell_gap * 0.5,
-                            size: (x_span.size - cell_gap).max(cell_gap),
-                        };
-                        frame.fill_rectangle(
-                            Point::new(cell_x.start, cell_y.start),
-                            Size::new(cell_x.size, cell_y.size),
-                            color(configured).scale_alpha(cell_alpha),
-                        );
-                    }
-                }
-                let line = |frame: &mut canvas::Frame,
-                            price: Option<Price>,
-                            configured: data::config::theme::ThemeColor,
-                            width: f32| {
-                    let Some(price) = price else { return };
-                    let y = scene.map_primary_plot_with_anchor_f32(price.to_f32_lossy(), anchor);
-                    if !y.is_finite() {
-                        return;
-                    }
-                    frame.stroke(
-                        &canvas::Path::line(Point::new(line_start, y), Point::new(line_end, y)),
-                        canvas::Stroke::default()
-                            .with_width(width)
-                            .with_color(color(configured)),
-                    );
-                };
-
-                line(frame, profile.vah, colors.value_area, line_width);
-                line(frame, profile.val, colors.value_area, line_width);
-                if colors.show_poc {
-                    line(frame, profile.poc, colors.poc, line_width.max(1.5));
-                }
-                line(frame, profile.session_high, colors.letters, line_width);
-                line(frame, profile.session_low, colors.letters, line_width);
-                if colors.show_initial_balance {
-                    line(
-                        frame,
-                        profile.initial_balance_high,
-                        colors.initial_balance,
-                        line_width,
-                    );
-                    line(
-                        frame,
-                        profile.initial_balance_low,
-                        colors.initial_balance,
-                        line_width,
-                    );
-                }
-
-                if !show_letters {
-                    continue;
-                }
-                for row in &profile.rows {
-                    let y =
-                        scene.map_primary_plot_with_anchor_f32(row.price.to_f32_lossy(), anchor);
-                    if !y.is_finite() {
-                        continue;
-                    }
-                    for (column_index, period_index) in row.periods.iter().enumerate() {
-                        if usize::from(*period_index) >= profile.period_count {
-                            continue;
-                        }
-                        let x = line_start + column_width * (column_index as f32 + 0.5);
-                        frame.fill_text(canvas::Text {
-                            content: TpoProfile::letter_label(usize::from(*period_index)),
-                            position: Point::new(x, y),
-                            color: color(text_color(row.price)),
-                            size: row_height.min(column_width * 0.8).max(8.0).into(),
-                            align_x: iced::Alignment::Center.into(),
-                            align_y: iced::Alignment::Center.into(),
-                            font: style::AZERET_MONO,
-                            ..Default::default()
-                        });
-                    }
-                }
             }
         });
     }
@@ -3079,6 +2024,7 @@ impl<'a> KlineWidget<'a> {
         &self,
         frame: &mut canvas::Frame,
         scene: &Scene,
+        layers: &StudyStates,
         palette: &Extended,
         generated_accents: &[iced::Color; ACCENT_COUNT],
         pixels: PixelGeometry,
@@ -3418,7 +2364,15 @@ impl<'a> KlineWidget<'a> {
                 });
 
                 self.fill_footprint_poc_overlay(frame, scene, palette, generated_accents, pixels);
-                self.fill_volume_profile_overlay(frame, scene, palette, generated_accents, pixels);
+                self.paint_study_objects(
+                    LayerPaintPhase::BeforeIndicators,
+                    self.layer_context(scene, None, keyboard::Modifiers::empty()),
+                    layers,
+                    frame,
+                    palette,
+                    generated_accents,
+                    pixels,
+                );
 
                 let structural_layers = primary_panel
                     .layers
@@ -3735,8 +2689,16 @@ impl<'a> KlineWidget<'a> {
         if layer == PrimaryPlotLayer::Background {
             return;
         }
-        if layer == PrimaryPlotLayer::Tpo {
-            self.fill_tpo_profile_overlay(frame, scene, palette, generated_accents, pixels);
+        if layer == PrimaryPlotLayer::Objects {
+            self.paint_study_objects(
+                LayerPaintPhase::Underlay,
+                self.layer_context(scene, None, keyboard::Modifiers::empty()),
+                layers,
+                frame,
+                palette,
+                generated_accents,
+                pixels,
+            );
             return;
         }
 
@@ -4097,7 +3059,15 @@ impl<'a> KlineWidget<'a> {
             });
         }
 
-        self.fill_big_trades_overlay(frame, scene, palette, generated_accents, pixels);
+        self.paint_study_objects(
+            LayerPaintPhase::AfterIndicators,
+            self.layer_context(scene, None, keyboard::Modifiers::empty()),
+            layers,
+            frame,
+            palette,
+            generated_accents,
+            pixels,
+        );
         self.fill_panel_titles(frame, scene, palette);
         self.fill_last_price_line(frame, scene, palette);
     }

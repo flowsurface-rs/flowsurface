@@ -8,8 +8,9 @@ use super::chrome::{
 use super::composition::{
     MarkKind, PanelPresentation, PanelScaleMode, PanelValueId, PanelValuePrecision,
 };
-use super::drawing::{DrawingHandleKind, DrawingId};
+use super::drawing::DrawingHit;
 use super::layout::PanelLayoutTree;
+use super::studies::LayerHit;
 use data::chart::kline::viewport::{ChartCoord, ChartStepMs, YUnitRange};
 
 use data::chart::kline::WorldAxis;
@@ -456,16 +457,16 @@ pub(super) enum CursorTarget {
     },
     CornerControl(CornerControlKind),
     Legend(LegendTarget),
-    DrawingHandle {
-        id: DrawingId,
-        kind: DrawingHandleKind,
-    },
-    Drawing(DrawingId),
+    Drawing(DrawingHit),
+    StudyObject(LayerHit),
 }
 
 impl CursorTarget {
     pub(super) fn readouts_visible(self) -> bool {
-        matches!(self, Self::Plot(_) | Self::ActivePan)
+        match self {
+            Self::StudyObject(hit) => hit.readouts_visible,
+            _ => matches!(self, Self::Plot(_) | Self::ActivePan),
+        }
     }
 
     pub(super) fn ticker_row_is_hovered(self, index: usize) -> bool {

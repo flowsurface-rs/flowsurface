@@ -1,18 +1,23 @@
+use super::composition::ChartComposition;
 use super::composition::{
     self, BarMode, HistogramMode, MarkKind, PanelId, PanelPresentation, PanelScaleMode,
     PanelValueId, PanelValueLabelPolicy, PanelValuePrecision, resolve_mark_for_data_kind,
 };
 use super::scene::Scene;
+use super::scene::{PanelValueScale, XAxis};
 use super::{
     DEFAULT_MIN_PANEL_RATIO, IndicatorBarValues, KlinePanelKind, KlineSeries, KlineWidget,
     OverlayChannelSpec, ResolvedIndicatorLayer, YUnitRange, resolve_indicator_bar_values,
 };
+use data::UserTimezone;
+use data::chart::Basis;
 use data::chart::kline::{
     IndicatorId, IndicatorInputCoverageState, IndicatorInputSource, IndicatorInstance,
     IndicatorOutputRef, LayerPurpose, LineStrokeStyle, OutputChannelSpec, OutputValue,
     OutputValueType, SeriesColor,
 };
 use data::config::theme::{ACCENT_COUNT, ThemeColor, ThemeColorRole, ThemeColorShade};
+use exchange::{Timeframe, UnixMs};
 
 use crate::window::PixelRatio;
 use iced::Point;
@@ -37,7 +42,7 @@ pub(super) struct PixelSpan {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) struct PixelGeometry {
+pub(crate) struct PixelGeometry {
     ratio: f32,
     origin: Point,
 }
@@ -804,32 +809,19 @@ impl<'a> KlineWidget<'a> {
     }
 
     pub(super) fn panel_index_for_id(&self, panel_id: PanelId) -> Option<usize> {
-        self.composition
-            .panels
-            .iter()
-            .position(|panel| panel.id == panel_id)
+        self.coordinates().panel_index_for_id(panel_id)
     }
 
     pub(super) fn panel_id(&self, panel_index: usize) -> Option<composition::PanelId> {
-        self.composition
-            .panels
-            .get(panel_index)
-            .map(|panel| panel.id)
+        self.coordinates().panel_id(panel_index)
     }
 
     pub(super) fn panel_value_precision(&self, panel_index: usize) -> Option<PanelValuePrecision> {
-        self.composition
-            .panels
-            .get(panel_index)
-            .and_then(|panel| panel.value_precision)
+        self.coordinates().panel_value_precision(panel_index)
     }
 
     pub(super) fn panel_value_label_policy(&self, panel_index: usize) -> PanelValueLabelPolicy {
-        self.composition
-            .panels
-            .get(panel_index)
-            .map(|panel| panel.value_label_policy)
-            .unwrap_or_default()
+        self.coordinates().panel_value_label_policy(panel_index)
     }
 
     pub(super) fn panel_y_range(&self, panel_id: PanelId) -> Option<YUnitRange> {
@@ -1692,5 +1684,173 @@ fn offset_source_index(index: usize, offset_bars: i32) -> Option<usize> {
         index.checked_sub(offset_bars as usize)
     } else {
         index.checked_add(offset_bars.unsigned_abs() as usize)
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ChartCoordinates<'a> {
+    pub(super) series: &'a [KlineSeries],
+    pub(super) composition: &'a ChartComposition,
+    pub(super) basis: Basis,
+    pub(super) timezone: UserTimezone,
+}
+
+impl ChartCoordinates<'_> {
+    pub(super) fn bar_index_at_or_before_unit(
+        &self,
+        scene: &Scene,
+        series_index: usize,
+        target_unit: i64,
+    ) -> Option<usize> {
+        let series = self.series.get(series_index)?;
+        match scene.x.axis {
+            XAxis::Time { .. } => {
+                let bucket_end =
+                    super::scene_builder::time_bucket_end_for_unit(scene.x.axis, target_unit)?;
+                series.bar_index_at_or_before_time(bucket_end)
+            }
+            XAxis::Tick { .. } => {
+                let from_latest = scene
+                    .x
+                    .axis
+                    .tick_from_unit(target_unit)
+                    .and_then(|index| usize::try_from(index.as_u64()).ok())
+                    .unwrap_or_default();
+                series
+                    .point_count()
+                    .checked_sub(from_latest.checked_add(1)?)
+            }
+        }
+    }
+
+    pub(super) fn panel_index_for_id(&self, panel_id: PanelId) -> Option<usize> {
+        self.composition
+            .panels
+            .iter()
+            .position(|panel| panel.id == panel_id)
+    }
+
+    pub(super) fn panel_id(&self, panel_index: usize) -> Option<PanelId> {
+        self.composition
+            .panels
+            .get(panel_index)
+            .map(|panel| panel.id)
+    }
+
+    pub(super) fn panel_value_precision(&self, panel_index: usize) -> Option<PanelValuePrecision> {
+        self.composition
+            .panels
+            .get(panel_index)
+            .and_then(|panel| panel.value_precision)
+    }
+
+    pub(super) fn panel_value_label_policy(&self, panel_index: usize) -> PanelValueLabelPolicy {
+        self.composition
+            .panels
+            .get(panel_index)
+            .map(|panel| panel.value_label_policy)
+            .unwrap_or_default()
+    }
+
+    pub(super) fn base_ticker_info(&self) -> Option<exchange::TickerInfo> {
+        self.series.first().map(|series| series.ticker_info)
+    }
+
+    pub(super) fn panel_value_scale(&self, panel_index: usize) -> PanelValueScale {
+        PanelValueScale::new(
+            self.panel_value_precision(panel_index),
+            self.base_ticker_info(),
+        )
+    }
+
+    pub(super) fn format_panel_value_compact(
+        &self,
+        panel_index: usize,
+        value_precision: Option<PanelValuePrecision>,
+        value: f64,
+        fallback_step: f64,
+    ) -> String {
+        let max_decimals = self.panel_value_label_policy(panel_index).max_decimals;
+
+        if let Some(precision) = value_precision {
+            return precision.format_compact(
+                value,
+                fallback_step,
+                max_decimals,
+                self.base_ticker_info(),
+            );
+        }
+
+        let scale = self.panel_value_scale(panel_index);
+        let quantized = scale.unit_to_value(scale.value_to_unit(value));
+        let fallback = fallback_step.abs().max(1e-6);
+        let decimals = PanelValuePrecision::decimals_for_step(fallback);
+        let decimals = max_decimals
+            .map(|max| decimals.min(max as usize))
+            .unwrap_or(decimals);
+        format!("{quantized:.decimals$}")
+    }
+
+    pub(super) fn format_panel_axis_value(
+        &self,
+        panel_index: usize,
+        value_precision: Option<PanelValuePrecision>,
+        value: f64,
+        fallback_step: f64,
+    ) -> String {
+        let scale = self.panel_value_scale(panel_index);
+        self.panel_value_label_policy(panel_index)
+            .format_axis_value(
+                || scale.unit_to_value(scale.value_to_unit(value)),
+                || {
+                    self.format_panel_value_compact(
+                        panel_index,
+                        value_precision,
+                        value,
+                        fallback_step,
+                    )
+                },
+            )
+    }
+
+    pub(super) fn tick_time_for_unit(&self, x_axis: XAxis, unit: i64) -> Option<UnixMs> {
+        let from_latest = usize::try_from(x_axis.tick_from_unit(unit)?.as_u64()).ok()?;
+        let series = self.series.first()?;
+        let index = series
+            .point_count()
+            .checked_sub(from_latest.checked_add(1)?)?;
+        series.time_at_index(index)
+    }
+
+    pub(super) fn format_x_label(&self, x_axis: XAxis, unit: i64, step_units: i64) -> String {
+        match x_axis {
+            XAxis::Time { .. } => x_axis.time_from_unit(unit).map_or_else(
+                || unit.to_string(),
+                |ts| {
+                    let ts_ms = ts.as_u64();
+                    let step_ms = x_axis.step_ms(step_units);
+
+                    self.timezone
+                        .format_with_kind(
+                            ts_ms as i64,
+                            data::config::timezone::TimeLabelKind::AxisStepMs { step_ms },
+                        )
+                        .unwrap_or_else(|| ts_ms.to_string())
+                },
+            ),
+            XAxis::Tick { .. } => self.tick_time_for_unit(x_axis, unit).map_or_else(
+                || unit.to_string(),
+                |time| {
+                    self.timezone
+                        .format_with_kind(
+                            time.as_u64() as i64,
+                            data::config::timezone::TimeLabelKind::Axis {
+                                timeframe: Timeframe::MS100,
+                            },
+                        )
+                        .unwrap_or_else(|| time.as_u64().to_string())
+                },
+            ),
+        }
     }
 }

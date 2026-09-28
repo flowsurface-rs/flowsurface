@@ -26,6 +26,6 @@ pub fn sync_all_button<'a>(config: VisualConfig) -> Element<'a, Message> {
             sync_all: true,
         }),
         Some("Apply configuration to similar panes"),
-        iced::widget::tooltip::Position::Top,
+        iced::widget::tooltip::Position::Left,
     )
 }

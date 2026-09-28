@@ -9,11 +9,10 @@ use super::{
     TICKER_LEGEND_ROW_H, TOOLTIP_ROW_LEFT_PAD,
 };
 use crate::style;
+use data::chart::kline::KlineStudyId;
 use data::chart::kline::footprint::ClusterKind;
 use data::chart::kline::series::KlineSeries;
-use data::chart::kline::{KlineStudy, KlineStudyId};
 use data::config::theme::ACCENT_COUNT;
-use data::util::abbr_large_numbers;
 
 use exchange::TickerInfo;
 
@@ -37,11 +36,6 @@ const STUDY_LEGEND_INDENT: f32 = 8.0;
 const STUDY_COUNT_BADGE_GAP: f32 = 4.0;
 const STUDY_COUNT_BADGE_HORIZONTAL_PAD: f32 = 4.0;
 const STUDY_COUNT_BADGE_HEIGHT: f32 = TEXT_SIZE + 2.0;
-
-enum LegendButtonContent {
-    Icon(style::Icon),
-    Text(&'static str),
-}
 
 fn series_display_name(series: &KlineSeries) -> String {
     series.ticker_info.ticker.symbol_and_exchange_string()
@@ -94,11 +88,11 @@ pub(super) enum PanelControlKind {
 }
 
 impl PanelControlKind {
-    fn icon(self) -> &'static str {
+    fn icon(self) -> style::Icon {
         match self {
-            Self::MoveUp => "^",
-            Self::MoveDown => "v",
-            Self::Close => "X",
+            Self::MoveUp => style::Icon::ChevronUp,
+            Self::MoveDown => style::Icon::ChevronDown,
+            Self::Close => style::Icon::Close,
         }
     }
 
@@ -169,11 +163,11 @@ pub(super) enum TickerLegendIconKind {
 }
 
 impl TickerLegendIconKind {
-    fn icon(self, _visible: bool) -> LegendButtonContent {
+    fn icon(self, visible: bool) -> style::Icon {
         match self {
-            Self::Settings => LegendButtonContent::Icon(style::Icon::Cog),
-            Self::Hide => LegendButtonContent::Text("○"),
-            Self::Close => LegendButtonContent::Icon(style::Icon::Close),
+            Self::Settings => style::Icon::Cog,
+            Self::Hide => style::Icon::visibility(visible),
+            Self::Close => style::Icon::Close,
         }
     }
 
@@ -215,10 +209,10 @@ pub(super) enum FootprintLegendIconKind {
 }
 
 impl FootprintLegendIconKind {
-    fn icon(self, _visible: bool) -> LegendButtonContent {
+    fn icon(self, visible: bool) -> style::Icon {
         match self {
-            Self::Settings => LegendButtonContent::Icon(style::Icon::Cog),
-            Self::Hide => LegendButtonContent::Text("○"),
+            Self::Settings => style::Icon::Cog,
+            Self::Hide => style::Icon::visibility(visible),
         }
     }
 
@@ -257,19 +251,17 @@ pub(super) enum StudiesLegendIconKind {
 }
 
 impl StudiesLegendIconKind {
-    fn icon(self, expanded: bool) -> LegendButtonContent {
+    fn icon(self, row: &StudiesLegendRowHit) -> style::Icon {
         match self {
-            Self::ExpandCollapse => LegendButtonContent::Text(if expanded { "v" } else { ">" }),
-            Self::Visibility => LegendButtonContent::Text("○"),
-            Self::Close => LegendButtonContent::Icon(style::Icon::Close),
-        }
-    }
-
-    pub(super) fn into_event(self) -> KlineWidgetEvent {
-        match self {
-            Self::ExpandCollapse => KlineWidgetEvent::StudiesExpansionToggled,
-            Self::Visibility => KlineWidgetEvent::StudiesVisibilityToggled,
-            Self::Close => KlineWidgetEvent::StudiesRemove,
+            Self::ExpandCollapse => {
+                if row.expanded {
+                    style::Icon::ChevronDown
+                } else {
+                    style::Icon::ChevronRight
+                }
+            }
+            Self::Visibility => style::Icon::visibility(row.visible),
+            Self::Close => style::Icon::Close,
         }
     }
 }
@@ -293,26 +285,34 @@ pub(super) enum StudyLegendIconKind {
 }
 
 impl StudyLegendIconKind {
-    fn icon(self, _visible: bool) -> LegendButtonContent {
+    fn icon(self, visible: bool) -> style::Icon {
         match self {
-            Self::Visibility => LegendButtonContent::Text("○"),
-            Self::Settings => LegendButtonContent::Icon(style::Icon::Cog),
-            Self::Close => LegendButtonContent::Icon(style::Icon::Close),
+            Self::Visibility => style::Icon::visibility(visible),
+            Self::Settings => style::Icon::Cog,
+            Self::Close => style::Icon::Close,
         }
     }
+}
 
-    pub(super) fn into_event(self, study_id: KlineStudyId) -> KlineWidgetEvent {
-        match self {
-            Self::Visibility => KlineWidgetEvent::StudyVisibilityToggled(study_id),
-            Self::Settings => KlineWidgetEvent::StudySettings(study_id),
-            Self::Close => KlineWidgetEvent::StudyRemove(study_id),
-        }
+pub(crate) struct StudyLegendRow {
+    pub(crate) id: KlineStudyId,
+    pub(crate) label: String,
+    pub(crate) visible: bool,
+}
+
+pub(crate) struct StudiesLegend {
+    pub(crate) expanded: bool,
+    pub(crate) rows: Vec<StudyLegendRow>,
+}
+
+impl StudiesLegend {
+    fn visible(&self) -> bool {
+        self.rows.iter().all(|row| row.visible)
     }
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct StudyLegendRowHit {
-    pub(super) study_id: KlineStudyId,
     pub(super) row_rect: Rectangle,
     pub(super) visibility: Rectangle,
     pub(super) settings: Rectangle,
@@ -343,11 +343,11 @@ pub(super) enum IndicatorLegendIconKind {
 }
 
 impl IndicatorLegendIconKind {
-    fn icon(self, _visible: bool) -> LegendButtonContent {
+    fn icon(self, visible: bool) -> style::Icon {
         match self {
-            Self::Visibility => LegendButtonContent::Text("○"),
-            Self::Settings => LegendButtonContent::Icon(style::Icon::Cog),
-            Self::Close => LegendButtonContent::Icon(style::Icon::Close),
+            Self::Visibility => style::Icon::visibility(visible),
+            Self::Settings => style::Icon::Cog,
+            Self::Close => style::Icon::Close,
         }
     }
 
@@ -964,9 +964,9 @@ impl<'a> KlineWidget<'a> {
         layout: &PanelLayoutTree,
         primary_panel: usize,
         preceding_rows: usize,
-        expanded: bool,
     ) -> Option<StudyLegendLayout> {
-        let study_count = self.studies.len();
+        let legend = self.study_legend.as_ref()?;
+        let study_count = legend.rows.len();
         if study_count == 0 {
             return None;
         }
@@ -1010,14 +1010,14 @@ impl<'a> KlineWidget<'a> {
             visibility: category_visibility,
             close: category_close,
             count_badge,
-            expanded,
-            visible: self.studies.iter().all(|study| study.visible()),
+            expanded: legend.expanded,
+            visible: legend.visible(),
         };
         let mut rows = Vec::new();
 
-        if expanded {
-            for (index, study) in self.studies.iter().enumerate() {
-                let label = study.to_string();
+        if legend.expanded {
+            for (index, study) in legend.rows.iter().enumerate() {
+                let label = &study.label;
                 let row_top = panel.plot.y
                     + PANEL_TITLE_TOP_PAD
                     + TICKER_LEGEND_PADDING
@@ -1031,7 +1031,6 @@ impl<'a> KlineWidget<'a> {
                 );
 
                 rows.push(StudyLegendRowHit {
-                    study_id: study.id(),
                     row_rect: Rectangle {
                         x: row_x,
                         y: row_top,
@@ -1041,7 +1040,7 @@ impl<'a> KlineWidget<'a> {
                     visibility,
                     settings,
                     close,
-                    visible: study.visible(),
+                    visible: study.visible,
                 });
             }
         }
@@ -1945,7 +1944,7 @@ impl<'a> KlineWidget<'a> {
     fn draw_legend_icon_button(
         frame: &mut canvas::Frame,
         rect: Rectangle,
-        content: LegendButtonContent,
+        icon: style::Icon,
         hovered: bool,
         palette: &Extended,
     ) {
@@ -1954,19 +1953,14 @@ impl<'a> KlineWidget<'a> {
         } else {
             palette.background.base.text
         };
-        let (content, font) = match content {
-            LegendButtonContent::Icon(icon) => (char::from(icon).to_string(), style::ICONS_FONT),
-            LegendButtonContent::Text(content) => (content.to_string(), iced::Font::DEFAULT),
-        };
-
         frame.fill_text(canvas::Text {
-            content,
+            content: char::from(icon).to_string(),
             position: Point::new(rect.x + rect.width * 0.5, rect.y + rect.height * 0.5),
             color: text,
             size: TEXT_SIZE.into(),
             align_x: iced::Alignment::Center.into(),
             align_y: iced::Alignment::Center.into(),
-            font,
+            font: style::ICONS_FONT,
             ..Default::default()
         });
     }
@@ -2276,72 +2270,6 @@ impl<'a> KlineWidget<'a> {
         );
     }
 
-    fn study_legend_label(&self, scene: &Scene, study: KlineStudy) -> String {
-        let Some(base_series) = self.series.first() else {
-            return study.to_string();
-        };
-        if study.big_trades().is_none() {
-            return study.to_string();
-        }
-        let Some(target_unit) = scene
-            .interaction
-            .readouts_visible()
-            .then(|| scene.interaction.cursor.map(|cursor| cursor.x_unit))
-            .flatten()
-            .or_else(|| {
-                self.legend_visibility
-                    .legend_values_always_visible()
-                    .then_some(scene.x.max_unit)
-            })
-        else {
-            return study.to_string();
-        };
-        let Some(bar_index) = self.bar_index_at_or_before_unit(scene, 0, target_unit) else {
-            return study.to_string();
-        };
-        let Some(x_unit) = self
-            .bar_unit_at_series_index(scene, 0, bar_index)
-            .filter(|x_unit| *x_unit >= scene.x.min_unit && *x_unit <= scene.x.max_unit)
-        else {
-            return study.to_string();
-        };
-
-        let mut count = 0_u32;
-        let mut notional = 0.0_f64;
-        match self.basis {
-            data::chart::Basis::Time(timeframe) => {
-                let Some(bucket_start) = scene.x.axis.time_from_unit(x_unit) else {
-                    return study.to_string();
-                };
-                let bucket_end = bucket_start.saturating_add(timeframe.to_milliseconds().max(1));
-                for entry in base_series.big_trades_in_time_range(bucket_start, bucket_end) {
-                    if scene.x.axis.unit_from_time(entry.time.floor_to(timeframe)) != x_unit {
-                        continue;
-                    }
-                    count = count.saturating_add(1);
-                    notional += entry.notional;
-                }
-            }
-            data::chart::Basis::Tick(tick_count) => {
-                let tick_count = usize::from(tick_count.0).max(1);
-                let lo = bar_index.saturating_mul(tick_count);
-                let hi = bar_index.saturating_add(1).saturating_mul(tick_count);
-                for entry in base_series.big_trades_in_index_range(lo, hi) {
-                    count = count.saturating_add(1);
-                    notional += entry.notional;
-                }
-            }
-        }
-
-        if count == 0 {
-            return study.to_string();
-        }
-        format!(
-            "{study} ({count} trades, >${})",
-            abbr_large_numbers(notional)
-        )
-    }
-
     pub(super) fn fill_study_legend(
         &self,
         frame: &mut canvas::Frame,
@@ -2438,7 +2366,7 @@ impl<'a> KlineWidget<'a> {
             Self::draw_legend_icon_button(
                 frame,
                 expand,
-                StudiesLegendIconKind::ExpandCollapse.icon(legend.category.expanded),
+                StudiesLegendIconKind::ExpandCollapse.icon(&legend.category),
                 scene
                     .interaction
                     .target
@@ -2448,7 +2376,7 @@ impl<'a> KlineWidget<'a> {
             Self::draw_legend_icon_button(
                 frame,
                 visibility,
-                StudiesLegendIconKind::Visibility.icon(legend.category.visible),
+                StudiesLegendIconKind::Visibility.icon(&legend.category),
                 scene
                     .interaction
                     .target
@@ -2458,7 +2386,7 @@ impl<'a> KlineWidget<'a> {
             Self::draw_legend_icon_button(
                 frame,
                 close,
-                StudiesLegendIconKind::Close.icon(legend.category.visible),
+                StudiesLegendIconKind::Close.icon(&legend.category),
                 scene
                     .interaction
                     .target
@@ -2468,13 +2396,17 @@ impl<'a> KlineWidget<'a> {
         }
 
         for (index, row) in legend.rows.iter().enumerate() {
-            let Some(study) = self.studies.iter().find(|study| study.id() == row.study_id) else {
+            let Some(study) = self
+                .study_legend
+                .as_ref()
+                .and_then(|legend| legend.rows.get(index))
+            else {
                 continue;
             };
 
             let row_rect = to_root(row.row_rect);
             let hovered_row = scene.interaction.target.study_row_is_hovered(index);
-            let label = self.study_legend_label(scene, *study);
+            let label = &study.label;
             let label_end_x =
                 row_rect.x + TOOLTIP_ROW_LEFT_PAD + label.chars().count() as f32 * CHAR_W;
             let content_end_x = if hovered_row {
@@ -2508,7 +2440,7 @@ impl<'a> KlineWidget<'a> {
             }
 
             frame.fill_text(canvas::Text {
-                content: label,
+                content: label.clone(),
                 position: Point::new(
                     row_rect.x + TOOLTIP_ROW_LEFT_PAD,
                     row_rect.y + row_rect.height * 0.5,
@@ -2821,13 +2753,13 @@ impl<'a> KlineWidget<'a> {
             );
 
             frame.fill_text(canvas::Text {
-                content: control.kind.icon().to_string(),
+                content: char::from(control.kind.icon()).to_string(),
                 position: Point::new(x + control.rect.width / 2.0, y + control.rect.height / 2.0),
                 color: text_color,
                 size: PANEL_CONTROL_ICON_SIZE.into(),
                 align_x: iced::Alignment::Center.into(),
                 align_y: iced::Alignment::Center.into(),
-                font: style::AZERET_MONO,
+                font: style::ICONS_FONT,
                 ..Default::default()
             });
         }

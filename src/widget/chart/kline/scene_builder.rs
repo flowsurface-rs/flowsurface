@@ -6,15 +6,17 @@ use super::scene::{
     PanelValueScale, PrimaryPercentScaleState, PrimaryScale, Scene, SceneBase, TickIndex, XAxis,
     XViewport, Y_UNIT_STEP_FALLBACK,
 };
+use super::studies::StudyStates;
 use super::{
-    DragMode, KlinePanelKind, KlineSeries, KlineWidget, PanelId, PanelYValueRange, State, YUnit,
+    KlinePanelKind, KlineSeries, KlineWidget, PanelId, PanelYValueRange, SceneActivity, State,
+    YUnit,
 };
 
 use data::chart::kline::series::KlineSeriesPoint;
 use data::chart::kline::viewport::MAX_AUTOSCALE_SPAN_FACTOR;
 use data::chart::kline::viewport::YUnitRange;
 use data::chart::kline::{HorizontalWorld, IndicatorOutputRef, ZOOM_SENSITIVITY};
-use exchange::{Kline, Timeframe, UnixMs, unit::Price};
+use exchange::{Kline, UnixMs, unit::Price};
 
 use iced::advanced::Layout;
 use iced::{Point, Rectangle, mouse};
@@ -167,14 +169,11 @@ fn indicator_line_source_range(
 
 impl<'a> KlineWidget<'a> {
     pub(super) fn base_ticker_info(&self) -> Option<exchange::TickerInfo> {
-        self.series.first().map(|series| series.ticker_info)
+        self.coordinates().base_ticker_info()
     }
 
     pub(super) fn panel_value_scale(&self, panel_index: usize) -> PanelValueScale {
-        PanelValueScale::new(
-            self.panel_value_precision(panel_index),
-            self.base_ticker_info(),
-        )
+        self.coordinates().panel_value_scale(panel_index)
     }
 
     fn panel_viewport_limits(
@@ -501,25 +500,12 @@ impl<'a> KlineWidget<'a> {
         value: f64,
         fallback_step: f64,
     ) -> String {
-        let max_decimals = self.panel_value_label_policy(panel_index).max_decimals;
-
-        if let Some(precision) = value_precision {
-            return precision.format_compact(
-                value,
-                fallback_step,
-                max_decimals,
-                self.base_ticker_info(),
-            );
-        }
-
-        let scale = self.panel_value_scale(panel_index);
-        let quantized = scale.unit_to_value(scale.value_to_unit(value));
-        let fallback = fallback_step.abs().max(1e-6);
-        let decimals = PanelValuePrecision::decimals_for_step(fallback);
-        let decimals = max_decimals
-            .map(|max| decimals.min(max as usize))
-            .unwrap_or(decimals);
-        format!("{quantized:.decimals$}")
+        self.coordinates().format_panel_value_compact(
+            panel_index,
+            value_precision,
+            value,
+            fallback_step,
+        )
     }
 
     pub(super) fn format_panel_axis_value(
@@ -529,19 +515,12 @@ impl<'a> KlineWidget<'a> {
         value: f64,
         fallback_step: f64,
     ) -> String {
-        let scale = self.panel_value_scale(panel_index);
-        self.panel_value_label_policy(panel_index)
-            .format_axis_value(
-                || scale.unit_to_value(scale.value_to_unit(value)),
-                || {
-                    self.format_panel_value_compact(
-                        panel_index,
-                        value_precision,
-                        value,
-                        fallback_step,
-                    )
-                },
-            )
+        self.coordinates().format_panel_axis_value(
+            panel_index,
+            value_precision,
+            value,
+            fallback_step,
+        )
     }
 
     pub(super) fn format_panel_header_value(
@@ -588,23 +567,8 @@ impl<'a> KlineWidget<'a> {
         series_index: usize,
         target_unit: i64,
     ) -> Option<usize> {
-        let series = self.series.get(series_index)?;
-        match scene.x.axis {
-            XAxis::Time { .. } => {
-                let bucket_end = time_bucket_end_for_unit(scene.x.axis, target_unit)?;
-                series.bar_index_at_or_before_time(bucket_end)
-            }
-            XAxis::Tick { .. } => {
-                let point_count = series.point_count();
-                let from_latest = scene
-                    .x
-                    .axis
-                    .tick_from_unit(target_unit)
-                    .and_then(|index| usize::try_from(index.as_u64()).ok())
-                    .unwrap_or_default();
-                point_count.checked_sub(from_latest.checked_add(1)?)
-            }
-        }
+        self.coordinates()
+            .bar_index_at_or_before_unit(scene, series_index, target_unit)
     }
 
     pub(super) fn bar_unit_at_series_index(
@@ -1667,8 +1631,8 @@ impl<'a> KlineWidget<'a> {
         primary_panel: usize,
         primary_plot: Rectangle,
         show_legend_values: bool,
-        drag_active: bool,
-        pan_active: bool,
+        activity: SceneActivity,
+        layers: &StudyStates,
     ) {
         let Some(local) = cursor_root_local else {
             return;
@@ -1740,49 +1704,55 @@ impl<'a> KlineWidget<'a> {
 
         let zone = scene.layout.hit_test(local);
 
-        let drawing_target =
-            if self.drawings.allows_panning() && matches!(zone, LayoutHitZone::PanelPlot(_)) {
-                self.hit_test_selected_drawing_handle(scene, local)
-                    .map(|(id, kind)| CursorTarget::DrawingHandle { id, kind })
-                    .or_else(|| {
-                        self.hit_test_drawings(scene, local)
-                            .map(CursorTarget::Drawing)
-                    })
-            } else {
-                None
-            };
-
-        let target = if drag_active {
-            if pan_active {
-                CursorTarget::ActivePan
-            } else {
-                CursorTarget::ActiveDrag
+        let layer_target = if self.drawing_snapshot.allows_panning() {
+            let drawing_hit = self.drawing_view(scene).hit(local);
+            let study_hit = self.hit_test_study_objects(
+                self.layer_context(scene, Some(local), iced::keyboard::Modifiers::empty()),
+                layers,
+            );
+            match (drawing_hit, study_hit) {
+                (Some(drawing), Some(study)) if drawing.priority() >= study.priority => {
+                    Some(CursorTarget::Drawing(drawing))
+                }
+                (_, Some(study)) => Some(CursorTarget::StudyObject(study)),
+                (Some(drawing), None) => Some(CursorTarget::Drawing(drawing)),
+                (None, None) => None,
             }
-        } else if let Some(hit) = ticker_hit {
-            CursorTarget::Legend(LegendTarget::from(hit))
-        } else if let Some(hit) = footprint_hit {
-            CursorTarget::Legend(LegendTarget::from(hit))
-        } else if let Some(hit) = study_hit {
-            CursorTarget::Legend(LegendTarget::from(hit))
-        } else if let Some(hit) = indicator_hit {
-            CursorTarget::Legend(LegendTarget::from(hit))
-        } else if let Some(control) = hovered_corner_control {
-            CursorTarget::CornerControl(control.kind)
-        } else if let Some(control) = hovered_control {
-            CursorTarget::PanelControl {
-                panel_index: control.panel_index,
-                kind: control.kind,
-            }
-        } else if let Some(target) = drawing_target {
-            target
         } else {
-            match zone {
-                LayoutHitZone::PanelPlot(panel_index) => CursorTarget::Plot(panel_index),
-                LayoutHitZone::Splitter(index) => CursorTarget::Splitter(index),
-                LayoutHitZone::YAxis(index) => CursorTarget::YAxis(index),
-                LayoutHitZone::PanelXAxis(index) => CursorTarget::PanelXAxis(index),
-                LayoutHitZone::BottomXAxis => CursorTarget::BottomXAxis,
-                LayoutHitZone::Outside => CursorTarget::Outside,
+            None
+        };
+
+        let target = match activity {
+            SceneActivity::Pan => CursorTarget::ActivePan,
+            SceneActivity::Drag => CursorTarget::ActiveDrag,
+            SceneActivity::Idle => {
+                if let Some(hit) = ticker_hit {
+                    CursorTarget::Legend(LegendTarget::from(hit))
+                } else if let Some(hit) = footprint_hit {
+                    CursorTarget::Legend(LegendTarget::from(hit))
+                } else if let Some(hit) = study_hit {
+                    CursorTarget::Legend(LegendTarget::from(hit))
+                } else if let Some(hit) = indicator_hit {
+                    CursorTarget::Legend(LegendTarget::from(hit))
+                } else if let Some(control) = hovered_corner_control {
+                    CursorTarget::CornerControl(control.kind)
+                } else if let Some(control) = hovered_control {
+                    CursorTarget::PanelControl {
+                        panel_index: control.panel_index,
+                        kind: control.kind,
+                    }
+                } else if let Some(target) = layer_target {
+                    target
+                } else {
+                    match zone {
+                        LayoutHitZone::PanelPlot(panel_index) => CursorTarget::Plot(panel_index),
+                        LayoutHitZone::Splitter(index) => CursorTarget::Splitter(index),
+                        LayoutHitZone::YAxis(index) => CursorTarget::YAxis(index),
+                        LayoutHitZone::PanelXAxis(index) => CursorTarget::PanelXAxis(index),
+                        LayoutHitZone::BottomXAxis => CursorTarget::BottomXAxis,
+                        LayoutHitZone::Outside => CursorTarget::Outside,
+                    }
+                }
             }
         };
         scene.interaction.target = target;
@@ -1884,12 +1854,12 @@ impl<'a> KlineWidget<'a> {
         &self,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
-        drag_active: bool,
-        pan_active: bool,
+        activity: SceneActivity,
+        layers: &StudyStates,
     ) -> Option<Scene> {
         let panel_layout = PanelLayoutTree::from_layout(layout, &self.composition.panels)?;
         let base = self.compute_scene_base(panel_layout)?;
-        self.build_scene_from_base(&base, layout.bounds(), cursor, drag_active, pan_active)
+        self.build_scene_from_base(&base, layout.bounds(), cursor, activity, layers)
     }
 
     pub(super) fn ensure_scene_base(&self, state: &mut State, layout: Layout<'_>) {
@@ -1913,13 +1883,12 @@ impl<'a> KlineWidget<'a> {
     ) -> Option<Scene> {
         let root_bounds = layout.bounds();
         let panel_layout = PanelLayoutTree::from_layout(layout, &self.composition.panels)?;
-        let drag_active = !matches!(state.drag_mode, DragMode::None);
-        let pan_active = matches!(state.drag_mode, DragMode::Pan { .. });
+        let activity = state.scene_activity();
         let Some(base) = state.scene_cache.get(self.version, &panel_layout) else {
-            return self.compute_scene_uncached(layout, cursor, drag_active, pan_active);
+            return self.compute_scene_uncached(layout, cursor, activity, &state.study_objects);
         };
 
-        self.build_scene_from_base(base, root_bounds, cursor, drag_active, pan_active)
+        self.build_scene_from_base(base, root_bounds, cursor, activity, &state.study_objects)
     }
 
     fn compute_scene_base(&self, panel_layout: PanelLayoutTree) -> Option<SceneBase> {
@@ -2109,8 +2078,8 @@ impl<'a> KlineWidget<'a> {
         base: &SceneBase,
         root_bounds: Rectangle,
         cursor: mouse::Cursor,
-        drag_active: bool,
-        pan_active: bool,
+        activity: SceneActivity,
+        layers: &StudyStates,
     ) -> Option<Scene> {
         let primary_panel = base.primary.panel_index;
         let primary_plot = base.layout.panel(primary_panel)?.plot;
@@ -2119,7 +2088,7 @@ impl<'a> KlineWidget<'a> {
             .map(|local| matches!(base.layout.hit_test(local), LayoutHitZone::PanelPlot(_)))
             .unwrap_or(false);
         let show_legend_values = self.legend_visibility.legend_values_always_visible()
-            || (!drag_active && hovering_plot);
+            || (activity == SceneActivity::Idle && hovering_plot);
         let show_legends = self.legend_visibility.legend_always_visible() || hovering_plot;
         let keep_ticker_names = self.series.len() > 1;
 
@@ -2152,7 +2121,6 @@ impl<'a> KlineWidget<'a> {
                     scene.chrome.footprint_legend.as_ref(),
                     show_legend_values,
                 ),
-                self.studies_legend_expanded,
             );
             scene.chrome.indicator_legend = self.build_indicator_legend_layout(
                 &base.layout,
@@ -2172,51 +2140,18 @@ impl<'a> KlineWidget<'a> {
             primary_panel,
             primary_plot,
             show_legend_values,
-            drag_active,
-            pan_active,
+            activity,
+            layers,
         );
         Some(scene)
     }
 
     pub(super) fn tick_time_for_unit(&self, x_axis: XAxis, unit: i64) -> Option<UnixMs> {
-        let from_latest = usize::try_from(x_axis.tick_from_unit(unit)?.as_u64()).ok()?;
-        let series = self.series.first()?;
-        let index = series
-            .point_count()
-            .checked_sub(from_latest.checked_add(1)?)?;
-        series.time_at_index(index)
+        self.coordinates().tick_time_for_unit(x_axis, unit)
     }
 
     pub(super) fn format_x_label(&self, x_axis: XAxis, unit: i64, step_units: i64) -> String {
-        match x_axis {
-            XAxis::Time { .. } => x_axis.time_from_unit(unit).map_or_else(
-                || unit.to_string(),
-                |ts| {
-                    let ts_ms = ts.as_u64();
-                    let step_ms = x_axis.step_ms(step_units);
-
-                    self.timezone
-                        .format_with_kind(
-                            ts_ms as i64,
-                            data::config::timezone::TimeLabelKind::AxisStepMs { step_ms },
-                        )
-                        .unwrap_or_else(|| ts_ms.to_string())
-                },
-            ),
-            XAxis::Tick { .. } => self.tick_time_for_unit(x_axis, unit).map_or_else(
-                || unit.to_string(),
-                |time| {
-                    self.timezone
-                        .format_with_kind(
-                            time.as_u64() as i64,
-                            data::config::timezone::TimeLabelKind::Axis {
-                                timeframe: Timeframe::MS100,
-                            },
-                        )
-                        .unwrap_or_else(|| time.as_u64().to_string())
-                },
-            ),
-        }
+        self.coordinates().format_x_label(x_axis, unit, step_units)
     }
 
     pub(super) fn format_x_crosshair_label(&self, x_axis: XAxis, unit: i64) -> String {
@@ -2340,7 +2275,7 @@ pub(super) fn bar_index_range_for_units(
     )
 }
 
-fn time_bucket_end_for_unit(axis: XAxis, target_unit: i64) -> Option<UnixMs> {
+pub(super) fn time_bucket_end_for_unit(axis: XAxis, target_unit: i64) -> Option<UnixMs> {
     let XAxis::Time { timeframe, .. } = axis else {
         return None;
     };

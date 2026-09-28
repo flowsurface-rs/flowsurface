@@ -1,5 +1,5 @@
 use crate::{
-    style::{self, Icon, icon_text},
+    style,
     theme::ThemeAccents,
     widget::{
         classic_slider_row,
@@ -18,8 +18,8 @@ use data::chart::kline::{
 use data::config::theme::ThemeColor;
 use exchange::Timeframe;
 use iced::{
-    Element, Length, padding,
-    widget::{button, checkbox, column, container, pick_list, row, rule, space, text},
+    Element, Length,
+    widget::{button, checkbox, column, container, pick_list, radio, row, rule, space, text},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -366,8 +366,32 @@ impl Study for HeatmapStudy {
         };
 
         match self {
-            HeatmapStudy::VolumeProfile(kind) => match kind {
-                ProfileKind::FixedWindow(datapoint_count) => {
+            HeatmapStudy::VolumeProfile(kind) => {
+                let fixed_window = match kind {
+                    ProfileKind::FixedWindow(_) => *kind,
+                    ProfileKind::VisibleRange => ProfileKind::FixedWindow(CLEANUP_THRESHOLD / 5),
+                };
+                let fixed_window_label = match kind {
+                    ProfileKind::FixedWindow(datapoint_count) => format!(
+                        "Fixed window ({})",
+                        study_window_duration(*datapoint_count, interval_ms)
+                    ),
+                    ProfileKind::VisibleRange => "Fixed window".to_owned(),
+                };
+                let mut controls = column![
+                    radio(
+                        "Visible range",
+                        ProfileKind::VisibleRange,
+                        Some(*kind),
+                        move |kind| { on_change(HeatmapStudy::VolumeProfile(kind)) }
+                    ),
+                    radio(fixed_window_label, fixed_window, Some(*kind), move |kind| {
+                        on_change(HeatmapStudy::VolumeProfile(kind))
+                    }),
+                ]
+                .spacing(4);
+
+                if let ProfileKind::FixedWindow(datapoint_count) = kind {
                     let min_range = CLEANUP_THRESHOLD / 20;
                     let slider = classic_slider_row(
                         Some(text("Window")),
@@ -378,39 +402,15 @@ impl Study for HeatmapStudy {
                                 new_datapoint_count as usize,
                             )))
                         },
-                        move |value| {
-                            let datapoint_count = *value as usize;
-                            format!(
-                                "{} datapoints ({})",
-                                datapoint_count,
-                                study_window_duration(datapoint_count, interval_ms)
-                            )
-                        },
+                        |value| format!("{} datapoints", *value as usize),
                         Some(40.0),
                     );
 
-                    let switch_kind = button(text("Switch to visible range")).on_press(on_change(
-                        HeatmapStudy::VolumeProfile(ProfileKind::VisibleRange),
-                    ));
-
-                    column![row![space::horizontal(), switch_kind,], slider,]
-                        .padding(8)
-                        .spacing(4)
-                        .into()
+                    controls = controls.push(slider);
                 }
-                ProfileKind::VisibleRange => {
-                    let switch_kind = button(text("Switch to fixed window")).on_press(on_change(
-                        HeatmapStudy::VolumeProfile(ProfileKind::FixedWindow(
-                            CLEANUP_THRESHOLD / 5_usize,
-                        )),
-                    ));
 
-                    column![row![space::horizontal(), switch_kind,],]
-                        .padding(8)
-                        .spacing(4)
-                        .into()
-                }
-            },
+                controls.padding(8).into()
+            }
         }
     }
 }
@@ -476,18 +476,20 @@ fn big_trades_color_settings<'a>(
 
 fn big_trades_threshold_slider<'a>(
     threshold: u64,
+    radius_scale: Option<i32>,
     buy_color: ThemeColor,
     sell_color: ThemeColor,
     visible: bool,
     on_change: impl Fn(KlineStudy) -> Message<KlineStudy> + Copy + 'a,
 ) -> Element<'a, Message<KlineStudy>> {
     classic_slider_row(
-        Some(text("Minimum trade size")),
+        Some(text("Size filter")),
         0..=big_trades_step_count().saturating_sub(1) as u32,
         big_trades_step_for_threshold(threshold) as u32,
         move |step| {
             on_change(KlineStudy::BigTrades {
                 threshold: big_trades_threshold_at_step(step as usize),
+                radius_scale,
                 buy_color,
                 sell_color,
                 visible,
@@ -706,16 +708,50 @@ fn kline_study_config_view<'a>(
         }
         KlineStudy::BigTrades {
             threshold,
+            radius_scale,
             buy_color,
             sell_color,
             visible,
         } => {
             let threshold = *threshold;
+            let radius_scale = *radius_scale;
             let buy_color = *buy_color;
             let sell_color = *sell_color;
             let visible = *visible;
-            let slider =
-                big_trades_threshold_slider(threshold, buy_color, sell_color, visible, on_change);
+            let slider = big_trades_threshold_slider(
+                threshold,
+                radius_scale,
+                buy_color,
+                sell_color,
+                visible,
+                on_change,
+            );
+            let on_radius_change = move |radius_scale| {
+                on_change(KlineStudy::BigTrades {
+                    threshold,
+                    radius_scale,
+                    buy_color,
+                    sell_color,
+                    visible,
+                })
+            };
+            let mut radius_controls = column![
+                checkbox(radius_scale.is_some())
+                    .label("Dynamic circle radius")
+                    .on_toggle(move |dynamic| on_radius_change(dynamic.then_some(100))),
+            ]
+            .spacing(8);
+            if let Some(scale) = radius_scale {
+                radius_controls = radius_controls.push(classic_slider_row(
+                    Some(crate::widget::text::body("Circle radius scaling")),
+                    10..=200,
+                    scale,
+                    move |value| on_radius_change(Some(value)),
+                    |value| format!("{}%", value),
+                    Some(10),
+                ));
+            }
+            let radius_section = study_setting("Visualization", radius_controls, layout);
             match layout {
                 StudyConfigLayout::Card => {
                     let mut content = column![];
@@ -726,10 +762,17 @@ fn kline_study_config_view<'a>(
                                 .on_press(on_change((*study).default_for_type_for_basis(basis))),
                         ]);
                     }
-                    content.push(slider).padding(8).spacing(4).into()
+                    content
+                        .push(slider)
+                        .push(radius_section)
+                        .padding(8)
+                        .spacing(4)
+                        .into()
                 }
                 StudyConfigLayout::Inspector(tab) => match tab {
-                    inspector::InspectorTab::Inputs => column![slider].spacing(4).into(),
+                    inspector::InspectorTab::Inputs => column![slider, radius_section]
+                        .spacing(inspector::MODAL_SECTION_SPACING)
+                        .into(),
                     inspector::InspectorTab::Style => big_trades_color_settings(
                         buy_color,
                         sell_color,
@@ -737,6 +780,7 @@ fn kline_study_config_view<'a>(
                         move |buy_color, sell_color| {
                             on_change(KlineStudy::BigTrades {
                                 threshold,
+                                radius_scale,
                                 buy_color,
                                 sell_color,
                                 visible,
@@ -1100,152 +1144,38 @@ impl Study for KlineStudy {
 
 #[derive(Debug, Clone, Copy)]
 pub enum Message<S: Study> {
-    CardToggled(S),
     StudyToggled(S, bool),
     StudyValueChanged(S),
 }
 
-pub enum Action<S: Study> {
-    ToggleStudy(S, bool),
-    ConfigureStudy(S),
-}
-
-pub struct Configurator<S: Study> {
-    expanded_card: Option<S>,
-}
-
-impl<S: Study> Default for Configurator<S> {
-    fn default() -> Self {
-        Self {
-            expanded_card: None,
-        }
-    }
-}
-
-impl<S: Study + ToString> Configurator<S> {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn update(&mut self, message: Message<S>) -> Option<Action<S>> {
-        match message {
-            Message::CardToggled(study) => {
-                let should_collapse = self
-                    .expanded_card
-                    .as_ref()
-                    .is_some_and(|expanded| expanded.is_same_type(&study));
-
-                if should_collapse {
-                    self.expanded_card = None;
-                } else {
-                    self.expanded_card = Some(study);
-                }
-            }
-            Message::StudyToggled(study, is_checked) => {
-                return Some(Action::ToggleStudy(study, is_checked));
-            }
-            Message::StudyValueChanged(study) => {
-                return Some(Action::ConfigureStudy(study));
-            }
-        }
-
-        None
-    }
-
-    pub fn view<'a>(
-        &self,
-        active_studies: &[S],
-        basis: data::chart::Basis,
-        theme_accents: ThemeAccents,
-    ) -> Element<'a, Message<S>> {
-        self.view_available(active_studies, basis, theme_accents, S::all(), &[])
-    }
-
-    pub fn view_available<'a>(
-        &self,
-        active_studies: &[S],
-        basis: data::chart::Basis,
-        theme_accents: ThemeAccents,
-        available_studies: Vec<S>,
-        disabled: &[S],
-    ) -> Element<'a, Message<S>> {
-        let mut content = column![].spacing(4);
-
-        for available_study in available_studies {
-            content = content.push(self.create_study_row(
-                available_study,
-                active_studies,
-                basis,
-                theme_accents,
-                disabled,
-            ));
-        }
-
-        content.into()
-    }
-
-    fn create_study_row<'a>(
-        &self,
-        study: S,
-        active_studies: &[S],
-        basis: data::chart::Basis,
-        theme_accents: ThemeAccents,
-        disabled: &[S],
-    ) -> Element<'a, Message<S>> {
-        let (is_selected, study_config) = {
-            let mut is_selected = false;
-            let mut study_config = None;
-
-            for s in active_studies {
-                if s.is_same_type(&study) {
-                    is_selected = true;
-                    study_config = Some(*s);
-                    break;
-                }
-            }
-            (is_selected, study_config)
-        };
-
-        let is_disabled = disabled.iter().any(|d| d.is_same_type(&study));
-
-        let checkbox = crate::tooltip(
-            checkbox(is_selected)
-                .label(study_config.map_or(study.to_string(), |s| s.to_string()))
-                .on_toggle_maybe(
-                    (!is_disabled).then_some(move |checked| Message::StudyToggled(study, checked)),
-                ),
-            is_disabled.then_some("Requires trade data to be enabled"),
-            iced::widget::tooltip::Position::Top,
-        );
-
-        let mut checkbox_row = row![checkbox, space::horizontal()]
+pub fn view<'a, S: Study + ToString>(
+    active_studies: &[S],
+    basis: data::chart::Basis,
+    theme_accents: ThemeAccents,
+) -> Element<'a, Message<S>> {
+    let mut content = column![].spacing(4);
+    for study in S::all() {
+        let study_config = active_studies
+            .iter()
+            .find(|active| active.is_same_type(&study))
+            .copied();
+        let checkbox = checkbox(study_config.is_some())
+            .label(study_config.unwrap_or(study).to_string())
+            .on_toggle(move |checked| Message::StudyToggled(study, checked));
+        let checkbox_row = row![checkbox]
             .height(36)
             .align_y(iced::Alignment::Center)
-            .padding(padding::left(8).right(4))
-            .spacing(4);
-
-        let is_expanded = self
-            .expanded_card
-            .as_ref()
-            .is_some_and(|expanded| expanded.is_same_type(&study));
-
-        if is_selected {
-            checkbox_row = checkbox_row.push(
-                button(icon_text(Icon::Cog, 12))
-                    .on_press(Message::CardToggled(study))
-                    .style(move |theme, status| {
-                        style::button::transparent(theme, status, is_expanded)
-                    }),
-            );
+            .padding([0, 8]);
+        let mut controls = column![checkbox_row];
+        if let Some(config) = study_config {
+            controls =
+                controls.push(config.view_config(basis, theme_accents, Message::StudyValueChanged));
         }
-
-        let mut column = column![checkbox_row];
-
-        if is_expanded && let Some(config) = study_config {
-            column =
-                column.push(config.view_config(basis, theme_accents, Message::StudyValueChanged));
-        }
-
-        container(column).style(style::modal_container).into()
+        content = content.push(
+            container(controls)
+                .width(Length::Fill)
+                .style(style::inspector_control),
+        );
     }
+    content.into()
 }

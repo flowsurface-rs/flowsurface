@@ -15,11 +15,16 @@ use crate::connector::fetcher::FetchSpec;
 use crate::screen::dashboard::pane::ChartAction;
 use crate::style;
 use crate::theme::ThemeAccents;
+use crate::widget::chart::kline::drawing::KlineWidgetDrawingEvent;
+use crate::widget::chart::kline::studies::{
+    BigTradesObject, ProfileBarSource, StudyObject, StudyObjectEvent, TpoInteraction, TpoObject,
+    VolumeProfileObject,
+};
 use crate::widget::chart::kline::{
     IndicatorPresentationContext, KlineWidget, KlineWidgetEvent, MIN_FULL_CACHE_REFRESH_INTERVAL,
-    PanelInteraction, TpoInteraction,
+    PanelInteraction, StudiesLegend, StudyLegendRow,
 };
-use crate::widget::inspector::{InspectorBody, InspectorFooter};
+use crate::widget::inspector::{InspectorBody, InspectorContent, InspectorFooter};
 use crate::widget::series_editor::{self, SeriesStyleEntry};
 use crate::window::PixelRatio;
 use drawing::{DrawingEditState, DrawingMessage, DrawingState, DrawingTools, DrawingUpdate};
@@ -129,6 +134,12 @@ pub enum Message {
     IndicatorBrowser(indicator_browser::Message),
     IndicatorRebuildCompleted { job_id: u64 },
     Settings(settings::Message),
+}
+
+impl From<KlineWidgetEvent> for Message {
+    fn from(event: KlineWidgetEvent) -> Self {
+        Self::Chart(event)
+    }
 }
 
 pub struct KlineChart {
@@ -400,6 +411,49 @@ impl KlineChart {
             }
             Message::Chart(event) => {
                 match event {
+                    KlineWidgetEvent::Drawing(event) => {
+                        self.handle_widget_drawing_event(event, chart_settings);
+                    }
+                    KlineWidgetEvent::Study(event) => match event {
+                        StudyObjectEvent::Tpo(interaction) => {
+                            let edit = match interaction {
+                                TpoInteraction::MergeLeft { boundary } => {
+                                    profile::TpoEditCommand::MergeAt(boundary)
+                                }
+                                TpoInteraction::MoveBoundary { from, to } => {
+                                    profile::TpoEditCommand::MoveBoundary { from, to }
+                                }
+                                TpoInteraction::Reset { start, end } => {
+                                    profile::TpoEditCommand::Reset { start, end }
+                                }
+                            };
+                            let _ = self.apply_command(ChartCommand::TpoEdit(edit));
+                        }
+                    },
+                    KlineWidgetEvent::StudySettings(id) => {
+                        if self.studies.study(id).is_some() {
+                            self.inspector.open_study(id);
+                            self.show_sidebar(Sidebar::Settings);
+                        }
+                    }
+                    KlineWidgetEvent::StudyVisibilityToggled(id) => {
+                        let _ = self
+                            .apply_command(ChartCommand::Study(StudyCommand::ToggleVisibility(id)));
+                    }
+                    KlineWidgetEvent::StudyRemove(id) => {
+                        let _ = self.apply_command(ChartCommand::Study(StudyCommand::Remove(id)));
+                    }
+                    KlineWidgetEvent::StudiesVisibilityToggled => {
+                        let _ = self
+                            .apply_command(ChartCommand::Study(StudyCommand::ToggleAllVisibility));
+                    }
+                    KlineWidgetEvent::StudiesExpansionToggled => {
+                        let _ =
+                            self.apply_command(ChartCommand::Study(StudyCommand::ToggleExpansion));
+                    }
+                    KlineWidgetEvent::StudiesRemove => {
+                        let _ = self.apply_command(ChartCommand::Study(StudyCommand::RemoveAll));
+                    }
                     KlineWidgetEvent::UndoRequested => return self.undo_edit(),
                     KlineWidgetEvent::RedoRequested => return self.redo_edit(),
                     KlineWidgetEvent::EscapePressed => {
@@ -410,28 +464,6 @@ impl KlineChart {
                         self.viewport.primary_scale_inverted =
                             !self.viewport.primary_scale_inverted;
                         self.bump_rev();
-                    }
-                    KlineWidgetEvent::Drawing(event) => {
-                        let before = self.drawings.tools.edit_state();
-                        let update = self
-                            .drawings
-                            .tools
-                            .handle_widget_drawing_event(event, &chart_settings.drawing);
-                        self.apply_drawing_update(update, before);
-                    }
-                    KlineWidgetEvent::Tpo(interaction) => {
-                        let edit = match interaction {
-                            TpoInteraction::MergeLeft { boundary } => {
-                                profile::TpoEditCommand::MergeAt(boundary)
-                            }
-                            TpoInteraction::MoveBoundary { from, to } => {
-                                profile::TpoEditCommand::MoveBoundary { from, to }
-                            }
-                            TpoInteraction::Reset { start, end } => {
-                                profile::TpoEditCommand::Reset { start, end }
-                            }
-                        };
-                        let _ = self.apply_command(ChartCommand::TpoEdit(edit));
                     }
                     KlineWidgetEvent::PanelInteraction(interaction) => match interaction {
                         PanelInteraction::YViewportChanged { panel_id, range } => {
@@ -612,30 +644,6 @@ impl KlineChart {
                             IndicatorStyleCommand::ToggleVisibility(id),
                         ));
                     }
-                    KlineWidgetEvent::StudySettings(id) => {
-                        if self.studies.study(id).is_some() {
-                            self.inspector.open_study(id);
-                            self.show_sidebar(Sidebar::Settings);
-                        }
-                    }
-                    KlineWidgetEvent::StudyVisibilityToggled(id) => {
-                        let _ = self
-                            .apply_command(ChartCommand::Study(StudyCommand::ToggleVisibility(id)));
-                    }
-                    KlineWidgetEvent::StudyRemove(id) => {
-                        let _ = self.apply_command(ChartCommand::Study(StudyCommand::Remove(id)));
-                    }
-                    KlineWidgetEvent::StudiesVisibilityToggled => {
-                        let _ = self
-                            .apply_command(ChartCommand::Study(StudyCommand::ToggleAllVisibility));
-                    }
-                    KlineWidgetEvent::StudiesExpansionToggled => {
-                        let _ =
-                            self.apply_command(ChartCommand::Study(StudyCommand::ToggleExpansion));
-                    }
-                    KlineWidgetEvent::StudiesRemove => {
-                        let _ = self.apply_command(ChartCommand::Study(StudyCommand::RemoveAll));
-                    }
                     KlineWidgetEvent::IndicatorRemove(id) => {
                         let _ = self.apply_command(ChartCommand::RemoveIndicator(id));
                     }
@@ -664,6 +672,19 @@ impl KlineChart {
             }
         }
         None
+    }
+
+    fn handle_widget_drawing_event(
+        &mut self,
+        event: KlineWidgetDrawingEvent,
+        chart_settings: &ChartSettings,
+    ) {
+        let before = self.drawings.tools.edit_state();
+        let update = self
+            .drawings
+            .tools
+            .handle_widget_drawing_event(event, &chart_settings.drawing);
+        self.apply_drawing_update(update, before);
     }
 
     pub fn invalidate(&mut self, now: Option<Instant>) -> Option<ChartAction> {
@@ -844,6 +865,27 @@ impl KlineChart {
                 )
                 .with_pending_input_ids(self.indicators.pending_input_ids(&self.data, &self.fetch));
             let plan = self.profile_plan();
+            let active_studies = self.studies.active();
+            let tpo_study = active_studies.iter().find(|study| study.is_tpo_profile());
+            let tpo_colors = tpo_study
+                .filter(|study| study.visible())
+                .and_then(|study| study.tpo_colors());
+            let profile_bars = match plan.kline_source_timeframe {
+                Some(timeframe) if matches!(self.basis, Basis::Time(chart) if chart == timeframe) => {
+                    self.profiles
+                        .profile_source_range(timeframe)
+                        .map_or(ProfileBarSource::Empty, |retained| {
+                            ProfileBarSource::Chart { retained }
+                        })
+                }
+                Some(timeframe) => self
+                    .profiles
+                    .profile_source_map(timeframe)
+                    .map_or(ProfileBarSource::Empty, ProfileBarSource::External),
+                None => ProfileBarSource::Empty,
+            };
+            let trade_data_enabled = self.trade_data_enabled();
+            let drawing_snapshot = self.drawings.tools.snapshot();
             let chart = KlineWidget::new(
                 self.data.series(),
                 self.data.indicator_host(),
@@ -851,27 +893,60 @@ impl KlineChart {
                 self.indicators.composition(),
                 self.indicators.instances(),
                 theme_accents,
-                self.profiles.edits(),
             )
+            .with_drawing_snapshot(drawing_snapshot)
             .with_candlestick_config(self.options.candlestick)
             .with_footprint_config(self.options.footprint)
-            .with_trade_data_enabled(self.trade_data_enabled())
-            .with_tpo_profiles(self.profiles.profiles())
-            .with_legend_visibility(self.options.legend_visibility);
+            .with_trade_data_enabled(trade_data_enabled);
+            let chart = if let Some(study) = tpo_study {
+                chart.with_study_object(StudyObject::Tpo(TpoObject::new(
+                    study.id(),
+                    self.profiles.profiles(),
+                    self.profiles.edits(),
+                    tpo_colors,
+                )))
+            } else {
+                chart
+            };
+            let chart = if active_studies
+                .iter()
+                .any(|study| study.volume_profile_schedule().is_some())
+            {
+                chart.with_study_object(StudyObject::VolumeProfiles(VolumeProfileObject::new(
+                    active_studies,
+                    profile_bars,
+                )))
+            } else {
+                chart
+            };
+            let chart = if let Some(config) = active_studies
+                .iter()
+                .filter(|study| study.visible())
+                .find_map(|study| study.big_trades())
+            {
+                chart.with_study_object(StudyObject::BigTrades(BigTradesObject::new(
+                    config,
+                    trade_data_enabled,
+                )))
+            } else {
+                chart
+            };
+            let chart = chart.with_legend_visibility(self.options.legend_visibility);
 
-            let chart = match plan.kline_source_timeframe {
-                Some(timeframe) if matches!(self.basis, Basis::Time(chart) if chart == timeframe) => {
-                    chart.with_chart_profile_range(self.profiles.profile_source_range(timeframe))
-                }
-                Some(timeframe) => {
-                    chart.with_external_profile_bars(self.profiles.profile_source_map(timeframe))
-                }
-                None => chart,
+            let study_legend = StudiesLegend {
+                expanded: self.studies.legend_expanded(),
+                rows: active_studies
+                    .iter()
+                    .map(|study| StudyLegendRow {
+                        id: study.id(),
+                        label: study.to_string(),
+                        visible: study.visible(),
+                    })
+                    .collect(),
             };
 
-            let chart: iced::Element<_> = chart
-                .with_studies(self.studies.active())
-                .with_studies_legend_expanded(self.studies.legend_expanded())
+            let chart: iced::Element<'_, Message> = chart
+                .with_study_legend(study_legend)
                 .with_coordinate_state(self.viewport.horizontal_world, pixel_ratio)
                 .with_primary_viewport(self.viewport.primary)
                 .with_primary_scale_inverted(self.viewport.primary_scale_inverted)
@@ -879,13 +954,12 @@ impl KlineChart {
                 .with_autoscale_plot_width_offset(self.autoscale_plot_width_offset())
                 .with_indicator_ranges(self.viewport.indicator_y_ranges.as_slice())
                 .with_indicator_presentation(indicator_presentation)
-                .with_drawings(self.drawings.tools.snapshot())
                 .with_timezone(timezone)
                 .with_version(self.cache_rev.wrapping_add(self.profiles.source_revision()))
                 .with_escape_enabled(self.can_handle_escape())
                 .into();
 
-            iced::widget::container(chart.map(Message::Chart))
+            iced::widget::container(chart)
                 .width(iced::Length::Fill)
                 .height(iced::Length::Fill)
                 .padding(1)
@@ -981,12 +1055,11 @@ impl KlineChart {
         .into()
     }
 
-    pub fn pane_settings_view(&self) -> iced::Element<'static, Message> {
+    pub fn pane_settings_view(&self) -> InspectorContent<'static, Message> {
         settings::data_settings_content(
             self.trade_data_enabled(),
             self.options.legend_visibility,
-            self.basis(),
-            self.trade_data_setting_locked(),
+            self.trade_data_setting_lock_reason(),
         )
         .map(Message::Settings)
     }
@@ -2129,7 +2202,7 @@ impl KlineChart {
     }
 
     fn apply_trade_data_enabled(&mut self, enabled: bool, dirty: &mut bool) {
-        if !enabled && self.trade_data_setting_locked() {
+        if !enabled && self.trade_data_setting_lock_reason().is_some() {
             return;
         }
         if !self.options.set_trade_data_requested(enabled, self.basis) {
@@ -2376,14 +2449,26 @@ impl KlineChart {
         self.data_requirements().trades
     }
 
-    fn trade_data_setting_locked(&self) -> bool {
-        matches!(self.basis, Basis::Tick(_))
-            || self.indicators.selected_indicators().iter().any(|id| {
+    fn trade_data_setting_lock_reason(&self) -> Option<&'static str> {
+        if matches!(self.basis, Basis::Tick(_)) {
+            return Some("Trade data is required for tick-based charts");
+        }
+
+        let indicator_requires_trade_data =
+            self.indicators.selected_indicators().iter().any(|id| {
                 self.indicators.indicator(*id).is_some_and(|instance| {
                     instance.kind.is_registered()
                         && self.indicator_requires_trade_data(&instance.kind)
                 })
-            })
+            });
+        let study_requires_trade_data = self
+            .studies
+            .active()
+            .iter()
+            .any(|study| study.requires_trade_data());
+
+        (indicator_requires_trade_data || study_requires_trade_data)
+            .then_some("Trade data is required by an active indicator or study")
     }
 
     pub fn drawing_sidebar_visible(&self) -> bool {

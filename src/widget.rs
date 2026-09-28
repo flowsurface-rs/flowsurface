@@ -125,21 +125,30 @@ where
     T: 'static + Copy + PartialOrd + Into<f64> + From<u8> + num_traits::FromPrimitive,
     Message: Clone + 'a,
 {
-    let mut slider = iced::widget::slider(range, current, on_change).width(Fill);
+    let mut slider = iced::widget::slider(range, current, on_change)
+        .width(Fill)
+        .style(style::inspector_slider);
 
     if let Some(step) = step {
         slider = slider.step(step);
     }
 
-    let slider = column![slider, text::emphasis(format_value(&current))]
-        .width(Length::Fill)
-        .spacing(2)
-        .align_x(Alignment::Center);
+    let slider = column![
+        slider,
+        iced_text(format_value(&current)).size(style::text_size::EMPHASIS),
+    ]
+    .width(Length::Fill)
+    .spacing(2)
+    .align_x(Alignment::Center);
     let content = match label {
         Some(label) => row![
-            container(label.wrapping(iced::widget::text::Wrapping::Word),)
-                .width(Length::Shrink)
-                .max_width(80.0),
+            container(
+                label
+                    .style(iced::widget::text::default)
+                    .wrapping(iced::widget::text::Wrapping::Word),
+            )
+            .width(Length::Shrink)
+            .max_width(80.0),
             slider,
         ]
         .spacing(8),
@@ -147,7 +156,7 @@ where
     };
 
     container(content.align_y(Alignment::Center).padding(8))
-        .style(style::modal_container)
+        .style(style::inspector_slider_container)
         .into()
 }
 

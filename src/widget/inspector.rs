@@ -23,7 +23,7 @@ pub(crate) fn modal_container<'a, Message: 'a>(
     container(content)
         .width(Length::Fill)
         .padding(SECTION_PADDING)
-        .style(crate::style::modal_container)
+        .style(crate::style::inspector_section)
         .into()
 }
 

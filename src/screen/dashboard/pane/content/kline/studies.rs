@@ -42,7 +42,6 @@ impl StudySnapshot {
 pub(super) struct StudyState {
     active: Vec<KlineStudy>,
     configs: Vec<KlineStudy>,
-    configurator: study::Configurator<KlineStudy>,
     legend_expanded: bool,
 }
 
@@ -51,7 +50,6 @@ impl Default for StudyState {
         Self {
             active: Vec::new(),
             configs: Vec::new(),
-            configurator: study::Configurator::new(),
             legend_expanded: true,
         }
     }
@@ -186,12 +184,11 @@ impl StudyState {
         basis: Basis,
         trade_data_enabled: bool,
     ) -> Option<StudyCommand> {
-        let action = self.configurator.update(message)?;
-        match action {
-            study::Action::ToggleStudy(study, is_active) => self
+        match message {
+            study::Message::StudyToggled(study, is_active) => self
                 .studies_with_active(study, is_active, basis, trade_data_enabled)
                 .map(StudyCommand::Set),
-            study::Action::ConfigureStudy(study) => {
+            study::Message::StudyValueChanged(study) => {
                 let mut studies = self.active.clone();
                 let active = studies
                     .iter_mut()

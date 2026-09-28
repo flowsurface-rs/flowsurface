@@ -3,7 +3,120 @@ use super::*;
 use data::chart::kline::footprint::{ClusterKind, KlineTrades};
 use data::config::theme::{composite_color, contrast_ratio};
 use data::util::abbr_large_numbers;
-use exchange::unit::{Price, PriceStep};
+use exchange::unit::{Price, PriceStep, Qty};
+
+pub(super) struct PixelRows {
+    top: f32,
+    height: f32,
+    pub(super) bucket_height: f32,
+    quantities: Vec<(Qty, Qty)>,
+    touched: Vec<usize>,
+}
+
+impl PixelRows {
+    pub(super) fn new(plot: Rectangle, pixels: PixelGeometry) -> Self {
+        let pixel_ratio = pixels.ratio();
+        let origin_y = pixels.origin().y;
+        let top_physical = ((plot.y + origin_y) * pixel_ratio).floor() as i32;
+        let bottom_physical = ((plot.y + plot.height + origin_y) * pixel_ratio).ceil() as i32;
+        let bucket_count = bottom_physical.saturating_sub(top_physical) as usize;
+        let bucket_height = 1.0 / pixel_ratio;
+        Self {
+            top: top_physical as f32 / pixel_ratio - origin_y,
+            height: bucket_count as f32 / pixel_ratio,
+            bucket_height,
+            quantities: vec![(Qty::ZERO, Qty::ZERO); bucket_count],
+            touched: Vec::new(),
+        }
+    }
+
+    pub(super) fn add(&mut self, y: f32, buy: Qty, sell: Qty) {
+        let offset = y - self.top;
+        let half_bucket = self.bucket_height * 0.5;
+        if !offset.is_finite()
+            || offset < -half_bucket
+            || offset > self.height + half_bucket
+            || self.quantities.is_empty()
+        {
+            return;
+        }
+        let index = (offset / self.bucket_height)
+            .floor()
+            .clamp(0.0, self.quantities.len().saturating_sub(1) as f32)
+            as usize;
+        if let Some(row) = self.quantities.get_mut(index) {
+            let was_empty = row.0.is_zero() && row.1.is_zero();
+            row.0 += buy;
+            row.1 += sell;
+            if was_empty && (!row.0.is_zero() || !row.1.is_zero()) {
+                self.touched.push(index);
+            }
+        }
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.touched.iter().all(|&index| {
+            let (buy, sell) = self.quantities[index];
+            buy.is_zero() && sell.is_zero()
+        })
+    }
+
+    pub(super) fn max_qty(&self, kind: ClusterKind) -> Qty {
+        self.touched
+            .iter()
+            .map(|&index| {
+                let (buy, sell) = self.quantities[index];
+                match kind {
+                    ClusterKind::BidAsk | ClusterKind::Table => buy.max(sell),
+                    ClusterKind::VolumeProfile => buy + sell,
+                    ClusterKind::DeltaProfile => buy.abs_diff(sell),
+                }
+            })
+            .max()
+            .unwrap_or_default()
+    }
+
+    pub(super) fn rows(&self) -> impl Iterator<Item = (f32, Qty, Qty)> + '_ {
+        let mut touched = self.touched.clone();
+        touched.sort_unstable();
+        touched.into_iter().filter_map(|index| {
+            let (buy, sell) = self.quantities[index];
+            (!buy.is_zero() || !sell.is_zero()).then_some((
+                self.top + (index as f32 + 0.5) * self.bucket_height,
+                buy,
+                sell,
+            ))
+        })
+    }
+}
+
+pub(super) fn row_height(
+    scene: &Scene,
+    price: Price,
+    tick_size: PriceStep,
+    anchor: Option<f32>,
+) -> f32 {
+    let current_y = scene.map_primary_plot_with_anchor_f32(price.to_f32_lossy(), anchor);
+    let Some(next_price) = price.checked_add_steps(1, tick_size) else {
+        return 0.0;
+    };
+    let next_y = scene.map_primary_plot_with_anchor_f32(next_price.to_f32_lossy(), anchor);
+    (current_y - next_y).abs()
+}
+
+pub(super) fn coalesce_price_rows(
+    scene: &Scene,
+    tick_size: PriceStep,
+    anchor: Option<f32>,
+    pixels: PixelGeometry,
+) -> bool {
+    let pixel_ratio = pixels.ratio();
+    let (low, high) = scene.primary_domain_value_range();
+    [low, high].into_iter().all(|price| {
+        let row_height = row_height(scene, price, tick_size, anchor);
+        row_height.is_finite() && row_height * pixel_ratio < 1.0
+    })
+}
 
 const FOOTPRINT_TEXT_HORIZONTAL_INSET_PX: f32 = 2.0;
 const FOOTPRINT_TEXT_VERTICAL_INSET_PX: f32 = 1.0;

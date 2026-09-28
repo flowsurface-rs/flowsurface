@@ -1,9 +1,28 @@
 use super::helpers::PixelGeometry;
 use super::*;
-use data::chart::kline::TpoProfileStatus;
 use data::config::theme::ACCENT_COUNT;
 
 impl<'a> KlineWidget<'a> {
+    pub(super) fn fill_legends(
+        &self,
+        frame: &mut canvas::Frame,
+        scene: &Scene,
+        palette: &Extended,
+        generated_accents: &[iced::Color; ACCENT_COUNT],
+    ) {
+        self.fill_primary_ticker_legend(frame, scene, palette, generated_accents);
+        self.fill_footprint_legend(frame, scene, palette);
+        self.fill_study_legend(frame, scene, palette);
+        self.fill_indicator_legend(frame, scene, palette, generated_accents);
+        self.fill_panel_header_values(
+            frame,
+            scene,
+            palette,
+            generated_accents,
+            scene.chrome.ticker_legend.is_none(),
+        );
+    }
+
     pub(super) fn fill_overlay(
         &self,
         frame: &mut canvas::Frame,
@@ -12,227 +31,76 @@ impl<'a> KlineWidget<'a> {
         generated_accents: &[iced::Color; ACCENT_COUNT],
         pixels: PixelGeometry,
         drawing_magnet: bool,
-        selected_tpo_profile: Option<UnixMs>,
-        tpo_boundary_preview: Option<UnixMs>,
     ) {
-        self.fill_corner_controls(frame, scene, palette);
-        self.fill_panel_controls(frame, scene, palette);
-        self.fill_primary_ticker_legend(frame, scene, palette, generated_accents);
-        self.fill_primary_series_end_labels(frame, scene, palette, generated_accents);
-        self.fill_footprint_legend(frame, scene, palette);
-        self.fill_study_legend(frame, scene, palette);
-        self.fill_indicator_legend(frame, scene, palette, generated_accents);
-        self.fill_unavailable_indicator_messages(frame, scene, palette);
-        self.fill_tpo_profile_controls(
-            frame,
-            scene,
-            palette,
-            pixels,
-            selected_tpo_profile,
-            tpo_boundary_preview,
-        );
+        if scene.interaction.readouts_visible()
+            && let Some(cursor) = scene.interaction.cursor
+        {
+            let magnetic_anchor = drawing_magnet
+                .then(|| {
+                    self.drawing_view(scene)
+                        .primary_magnetic_drawing_anchor_at_cursor()
+                })
+                .flatten();
 
-        let show_primary_panel_values = scene.chrome.ticker_legend.is_none();
-        self.fill_panel_header_values(
-            frame,
-            scene,
-            palette,
-            generated_accents,
-            show_primary_panel_values,
-        );
+            let line_color = palette.background.base.text.scale_alpha(0.35);
+            let (crosshair_width, crosshair_width_phys) = pixels.quantized_stroke_width(1.0);
 
-        if self.drawings.has_state() {
-            self.fill_drawing_interaction(frame, scene, palette, generated_accents, pixels);
-        }
+            let gx = pixels.snap_x_for_stroke(
+                scene.layout.regions.plot.x + cursor.x_plot,
+                crosshair_width_phys,
+            );
+            let panel_plot = scene
+                .layout
+                .panel(cursor.panel_index)
+                .map(|panel| panel.plot)
+                .unwrap_or(*scene.primary_plot());
+            let panel_bounds = (
+                scene.layout.regions.plot.y + panel_plot.y,
+                scene.layout.regions.plot.y + panel_plot.y + panel_plot.height,
+            );
+            let crosshair_y = magnetic_anchor
+                .and_then(|anchor| {
+                    self.drawing_view(scene)
+                        .y_overlay_for_value(anchor.panel_id, anchor.y_unit)
+                })
+                .unwrap_or(scene.layout.regions.plot.y + cursor.y_plot);
+            let gy = pixels
+                .snap_y_for_stroke(crosshair_y, crosshair_width_phys)
+                .clamp(panel_bounds.0, panel_bounds.1);
 
-        if !scene.interaction.readouts_visible() {
-            return;
-        }
+            let stroke = style::dashed_line_from_palette(palette)
+                .with_color(line_color)
+                .with_width(crosshair_width);
 
-        let Some(cursor) = scene.interaction.cursor else {
-            return;
-        };
-        let magnetic_anchor = drawing_magnet
-            .then(|| self.primary_magnetic_drawing_anchor_at_cursor(scene))
-            .flatten();
-
-        let line_color = palette.background.base.text.scale_alpha(0.35);
-        let (crosshair_width, crosshair_width_phys) = pixels.quantized_stroke_width(1.0);
-
-        let gx = pixels.snap_x_for_stroke(
-            scene.layout.regions.plot.x + cursor.x_plot,
-            crosshair_width_phys,
-        );
-        let panel_plot = scene
-            .layout
-            .panel(cursor.panel_index)
-            .map(|panel| panel.plot)
-            .unwrap_or(*scene.primary_plot());
-        let panel_bounds = (
-            scene.layout.regions.plot.y + panel_plot.y,
-            scene.layout.regions.plot.y + panel_plot.y + panel_plot.height,
-        );
-        let crosshair_y = magnetic_anchor
-            .and_then(|anchor| self.y_overlay_for_value(scene, anchor.panel_id, anchor.y_unit))
-            .unwrap_or(scene.layout.regions.plot.y + cursor.y_plot);
-        let gy = pixels
-            .snap_y_for_stroke(crosshair_y, crosshair_width_phys)
-            .clamp(panel_bounds.0, panel_bounds.1);
-
-        let stroke = style::dashed_line_from_palette(palette)
-            .with_color(line_color)
-            .with_width(crosshair_width);
-
-        frame.stroke(
-            &canvas::Path::line(
-                Point::new(gx, scene.layout.regions.plot.y),
-                Point::new(
-                    gx,
-                    scene.layout.regions.plot.y + scene.layout.regions.plot.height,
-                ),
-            ),
-            stroke,
-        );
-
-        if cursor.y_primary_unit.is_some() || cursor.y_indicator_unit.is_some() {
             frame.stroke(
                 &canvas::Path::line(
-                    Point::new(scene.layout.regions.plot.x, gy),
+                    Point::new(gx, scene.layout.regions.plot.y),
                     Point::new(
-                        scene.layout.regions.plot.x + scene.layout.regions.plot.width,
-                        gy,
+                        gx,
+                        scene.layout.regions.plot.y + scene.layout.regions.plot.height,
                     ),
                 ),
                 stroke,
             );
-        }
-    }
 
-    pub(super) fn fill_tpo_profile_controls(
-        &self,
-        frame: &mut canvas::Frame,
-        scene: &Scene,
-        palette: &Extended,
-        pixels: PixelGeometry,
-        selected_profile: Option<UnixMs>,
-        boundary_preview: Option<UnixMs>,
-    ) {
-        let geometries = self.tpo_profile_geometries(scene, selected_profile);
-        if geometries.is_empty() {
-            return;
-        }
-
-        let (border_width, _) = pixels.quantized_stroke_width(1.25);
-        let border_color = palette.primary.base.color.scale_alpha(0.95);
-        for geometry in &geometries {
-            let Some(profile) = self.tpo_profiles.get(geometry.index) else {
-                continue;
-            };
-            if profile.status == TpoProfileStatus::Incomplete {
-                self.fill_tpo_incomplete_marker(frame, geometry, palette);
-            }
-        }
-
-        for geometry in geometries
-            .iter()
-            .filter(|geometry| selected_profile == Some(geometry.start))
-        {
-            frame.stroke(
-                &canvas::Path::rectangle(
-                    geometry.overlay_bounds.position(),
-                    geometry.overlay_bounds.size(),
-                ),
-                canvas::Stroke::default()
-                    .with_color(border_color)
-                    .with_width(border_width),
-            );
-
-            for (button, label) in [
-                (geometry.reset_button_bounds, "Reset"),
-                (geometry.button_bounds, "Merge ←"),
-            ] {
-                let Some(button) = button else {
-                    continue;
-                };
-                frame.fill_rectangle(
-                    button.position(),
-                    button.size(),
-                    palette.primary.base.color.scale_alpha(0.92),
-                );
+            if cursor.y_primary_unit.is_some() || cursor.y_indicator_unit.is_some() {
                 frame.stroke(
-                    &canvas::Path::rectangle(button.position(), button.size()),
-                    canvas::Stroke::default()
-                        .with_color(palette.primary.strong.text.scale_alpha(0.85))
-                        .with_width(border_width),
-                );
-                frame.fill_text(canvas::Text {
-                    content: label.to_owned(),
-                    position: Point::new(
-                        button.x + button.width * 0.5,
-                        button.y + button.height * 0.5,
+                    &canvas::Path::line(
+                        Point::new(scene.layout.regions.plot.x, gy),
+                        Point::new(
+                            scene.layout.regions.plot.x + scene.layout.regions.plot.width,
+                            gy,
+                        ),
                     ),
-                    color: palette.primary.base.text,
-                    size: 10.0.into(),
-                    align_x: iced::Alignment::Center.into(),
-                    align_y: iced::Alignment::Center.into(),
-                    font: style::AZERET_MONO,
-                    ..Default::default()
-                });
+                    stroke,
+                );
             }
         }
 
-        let Some(boundary_preview) = boundary_preview else {
-            return;
-        };
-        let Some(unit) = scene.x.axis.unit_from_time_f32(boundary_preview) else {
-            return;
-        };
-        let plot = scene.primary_plot();
-        let x = scene.layout.regions.plot.x + scene.map_x_plot_f32(unit);
-        let y = scene.layout.regions.plot.y + plot.y;
-        frame.stroke(
-            &canvas::Path::line(Point::new(x, y), Point::new(x, y + plot.height)),
-            style::dashed_line_from_palette(palette)
-                .with_color(palette.primary.base.color)
-                .with_width(border_width),
-        );
-    }
-
-    fn fill_tpo_incomplete_marker(
-        &self,
-        frame: &mut canvas::Frame,
-        geometry: &TpoProfileGeometry,
-        palette: &Extended,
-    ) {
-        let marker_width = CHAR_W;
-        let marker_height = TEXT_SIZE;
-        if geometry.overlay_bounds.width < marker_width
-            || geometry.overlay_bounds.height < marker_height
-        {
-            return;
-        }
-
-        let marker_right = geometry
-            .reset_button_bounds
-            .or(geometry.button_bounds)
-            .map_or(
-                geometry.overlay_bounds.x + geometry.overlay_bounds.width
-                    - TPO_ACTION_BUTTON_GAP_PX,
-                |button| button.x - TPO_ACTION_BUTTON_GAP_PX,
-            );
-        let marker_x = marker_right - marker_width * 0.5;
-        let marker_y = geometry.overlay_bounds.y + TPO_ACTION_BUTTON_GAP_PX + marker_height * 0.5;
-
-        frame.fill_text(canvas::Text {
-            content: "!".to_owned(),
-            position: Point::new(marker_x, marker_y),
-            color: palette.danger.base.color,
-            size: marker_height.into(),
-            align_x: iced::Alignment::Center.into(),
-            align_y: iced::Alignment::Center.into(),
-            font: style::AZERET_MONO,
-            ..Default::default()
-        });
+        self.fill_corner_controls(frame, scene, palette);
+        self.fill_panel_controls(frame, scene, palette);
+        self.fill_primary_series_end_labels(frame, scene, palette, generated_accents);
+        self.fill_unavailable_indicator_messages(frame, scene, palette);
     }
 
     pub(super) fn fill_overlay_interaction_text(
@@ -249,10 +117,16 @@ impl<'a> KlineWidget<'a> {
             && let Some(cursor) = scene.interaction.cursor
         {
             let magnetic_anchor = drawing_magnet
-                .then(|| self.primary_magnetic_drawing_anchor_at_cursor(scene))
+                .then(|| {
+                    self.drawing_view(scene)
+                        .primary_magnetic_drawing_anchor_at_cursor()
+                })
                 .flatten();
             let gy = magnetic_anchor
-                .and_then(|anchor| self.y_overlay_for_value(scene, anchor.panel_id, anchor.y_unit))
+                .and_then(|anchor| {
+                    self.drawing_view(scene)
+                        .y_overlay_for_value(anchor.panel_id, anchor.y_unit)
+                })
                 .unwrap_or(scene.layout.regions.plot.y + cursor.y_plot);
 
             if let Some(y_text) = magnetic_anchor
@@ -278,11 +152,11 @@ impl<'a> KlineWidget<'a> {
                 })
             {
                 let y_badge_bounds = self
-                    .panel_plot_bounds_in_overlay(scene, cursor.panel_index)
-                    .unwrap_or_else(|| self.plot_bounds_in_overlay(scene));
-                self.draw_y_axis_badge(
+                    .drawing_view(scene)
+                    .panel_plot_bounds_in_overlay(cursor.panel_index)
+                    .unwrap_or_else(|| self.drawing_view(scene).plot_bounds_in_overlay());
+                self.drawing_view(scene).draw_y_axis_badge(
                     frame,
-                    scene,
                     palette,
                     gy,
                     &y_text,
@@ -292,9 +166,8 @@ impl<'a> KlineWidget<'a> {
             }
 
             let x_text = self.format_x_crosshair_label(scene.x.axis, cursor.x_unit);
-            self.draw_x_axis_badge(
+            self.drawing_view(scene).draw_x_axis_badge(
                 frame,
-                scene,
                 palette,
                 pixels.snap_x_to_cell(scene.layout.regions.plot.x + cursor.x_plot),
                 &x_text,
@@ -303,7 +176,12 @@ impl<'a> KlineWidget<'a> {
         }
 
         self.fill_last_price_axis_badge(frame, scene, palette, &mut badge_filter);
-        self.fill_active_drawing_axis_labels(frame, scene, palette, &mut badge_filter, pixels);
+        self.drawing_view(scene).fill_active_drawing_axis_labels(
+            frame,
+            palette,
+            &mut badge_filter,
+            pixels,
+        );
     }
 
     pub(super) fn fill_last_price_axis_badge(
@@ -320,8 +198,9 @@ impl<'a> KlineWidget<'a> {
             return;
         };
         let last_bar = last_point.kline;
-        let Some(panel_bounds) =
-            self.panel_plot_bounds_in_overlay(scene, scene.primary.panel_index)
+        let Some(panel_bounds) = self
+            .drawing_view(scene)
+            .panel_plot_bounds_in_overlay(scene.primary.panel_index)
         else {
             return;
         };
@@ -359,9 +238,8 @@ impl<'a> KlineWidget<'a> {
             iced::Color::WHITE.scale_alpha(0.8)
         };
 
-        self.draw_y_axis_badge_with_timer(
+        self.drawing_view(scene).draw_y_axis_badge_with_timer(
             frame,
-            scene,
             y,
             &text,
             timer_text.as_deref(),

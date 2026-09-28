@@ -41,6 +41,10 @@ pub(super) fn default_big_trades_threshold() -> u64 {
     DEFAULT_BIG_TRADES_THRESHOLD
 }
 
+pub(super) const fn default_big_trades_radius_scale() -> Option<i32> {
+    Some(100)
+}
+
 pub(super) const fn default_big_trades_buy_color() -> ThemeColor {
     ThemeColor::new(ThemeColorRole::Success, ThemeColorShade::Soft)
 }
@@ -77,6 +81,7 @@ pub fn big_trades_threshold_label(threshold: u64) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BigTradesConfig {
     pub threshold: u64,
+    pub radius_scale: Option<i32>,
     pub buy_color: ThemeColor,
     pub sell_color: ThemeColor,
 }

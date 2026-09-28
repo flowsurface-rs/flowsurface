@@ -4,12 +4,16 @@ pub(crate) mod composition;
 pub(crate) mod drawing;
 mod footprint;
 mod helpers;
+mod interaction;
 mod layout;
 mod overlay;
 mod presentation;
 mod primary_render;
 mod scene;
 mod scene_builder;
+pub(crate) mod studies;
+
+pub(crate) use chrome::{StudiesLegend, StudyLegendRow};
 
 use crate::{style, theme::ThemeAccents, window::PixelRatio};
 use composition::{
@@ -22,8 +26,7 @@ use data::chart::kline::poc::NPoc;
 use data::chart::kline::series::KlineSeries;
 use data::chart::kline::{
     CandlestickColorSlot, CandlestickConfig, DEFAULT_HORIZONTAL_SPACING_PX, FootprintConfig,
-    FootprintPocColorSlot, KlineStudy, KlineStudyId, LegendVisibility, TpoBoundaryEdits,
-    TpoProfile, VolumeProfileColorConfig, VolumeProfileColorSlot, VolumeProfileSchedule,
+    FootprintPocColorSlot, KlineStudyId, LegendVisibility,
 };
 use data::chart::kline::{HorizontalWorld, IndicatorHost, IndicatorInstanceStore};
 pub(crate) use data::chart::kline::{PanelYValueRange, YUnit, YUnitRange};
@@ -36,11 +39,15 @@ use data::chart::ticks::{
 };
 use data::config::theme::ThemeColorRole;
 use drawing::{
-    AxisBadgeFilter, DrawingDragOperation, DrawingDragTarget, DrawingId, DrawingMeasure,
-    DrawingSnapshot, DrawingTool, KlineWidgetDrawingEvent,
+    AxisBadgeFilter, DrawingDrag, DrawingMeasure, DrawingSnapshot, DrawingTool, DrawingView,
+    KlineWidgetDrawingEvent, WidgetDrawingState,
 };
-use exchange::{Kline, TickerInfo, UnixMs, unit::PriceStep};
-use helpers::PixelGeometry;
+use exchange::TickerInfo;
+use helpers::{ChartCoordinates, PixelGeometry};
+use interaction::{
+    CacheInvalidation, LayerContext, LayerEffects, LayerGesture, NavigationFallback, PointerMove,
+    ReleasedGesture, UserInteraction,
+};
 use layout::{KlinePanelKind, LayoutHitZone, PanelLayoutNode, PanelLayoutTree};
 pub(crate) use presentation::IndicatorPresentationStatus;
 pub(crate) use presentation::{
@@ -50,6 +57,9 @@ pub(crate) use presentation::{
 };
 use primary_render::PrimaryPlotLayer;
 use scene::{CursorTarget, LegendTarget, Scene, SceneCache, TickIndex, XAxis};
+use studies::{
+    LayerPaintPhase, LayerPointerInput, StudyObject, StudyObjectEvent, StudyObjectKey, StudyStates,
+};
 
 use iced::advanced::widget::tree::{self, Tree};
 use iced::advanced::{self, Clipboard, Layout, Shell, Widget, layout as iced_layout, renderer};
@@ -60,7 +70,6 @@ use iced::{
     window,
 };
 use iced_core::renderer::Quad;
-use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 const Y_AXIS_GUTTER: f32 = 66.0;
@@ -73,13 +82,6 @@ const Y_AXIS_LABEL_LEFT_INSET: f32 = 4.0;
 const PANEL_SPLITTER_HEIGHT: f32 = 1.0;
 const PIXELS_PER_SCROLL_LINE: f32 = 40.0;
 const HORIZONTAL_DRAG_SCALE_DELTA_PER_PX: f32 = 0.3 / 9.0;
-const DRAG_THRESHOLD_PX: f32 = 5.0;
-const TPO_BOUNDARY_HIT_PX: f32 = 7.0;
-pub(super) const TPO_ACTION_BUTTON_WIDTH_PX: f32 = 62.0;
-pub(super) const TPO_ACTION_BUTTON_HEIGHT_PX: f32 = 20.0;
-pub(super) const TPO_RESET_BUTTON_WIDTH_PX: f32 = 48.0;
-const TPO_ACTION_BUTTON_GAP_PX: f32 = 3.0;
-
 const PANEL_TITLE_TOP_PAD: f32 = 4.0;
 const Y_AXIS_DRAG_SCALE_DELTA_PER_PX: f32 = 0.1;
 
@@ -87,20 +89,25 @@ const TICKER_LEGEND_PADDING: f32 = 4.0;
 const TOOLTIP_ROW_LEFT_PAD: f32 = TICKER_LEGEND_PADDING * 2.0;
 const TICKER_LEGEND_ROW_H: f32 = TEXT_SIZE + 6.0;
 
-// Keep plot and widget passes separate: iced_wgpu renders meshes before text
-// within each renderer layer.
-const PAINT_ORDER: [PaintStep; 11] = [
+/// The order used by [`KlineWidget::draw`] to compose chart render passes.
+///
+/// # Note
+///
+/// Keep plot, widget, and legend passes separate because `iced_wgpu` renders
+/// meshes before text within each renderer layer.
+const PAINT_ORDER: [PaintStep; 12] = [
     PaintStep::Root(RootPaintStep::Separators),
     PaintStep::Plot(PrimaryPlotLayer::Background),
-    PaintStep::Plot(PrimaryPlotLayer::Tpo),
+    PaintStep::Plot(PrimaryPlotLayer::Objects),
     PaintStep::Plot(PrimaryPlotLayer::Foreground),
-    PaintStep::Root(RootPaintStep::Drawings),
+    PaintStep::Root(RootPaintStep::Objects),
     PaintStep::Plot(PrimaryPlotLayer::PriceBars),
     PaintStep::Root(RootPaintStep::YAxis),
     PaintStep::Root(RootPaintStep::XAxis),
     PaintStep::Widget(WidgetPaintStep::Overlay),
     PaintStep::Widget(WidgetPaintStep::InteractionText),
     PaintStep::Widget(WidgetPaintStep::Marquee),
+    PaintStep::Widget(WidgetPaintStep::Legends),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,7 +120,7 @@ enum PaintStep {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RootPaintStep {
     Separators,
-    Drawings,
+    Objects,
     YAxis,
     XAxis,
 }
@@ -123,6 +130,7 @@ enum WidgetPaintStep {
     Overlay,
     InteractionText,
     Marquee,
+    Legends,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -223,74 +231,173 @@ impl Regions {
     }
 }
 
-pub(super) enum DragMode {
-    None,
+#[derive(Debug, Clone, Copy)]
+enum PressAction {
+    Ordinary,
+    DrawingPlacement,
+    Drawing {
+        selection: SelectionDisposition,
+        captures_outside_release: bool,
+    },
+    Layer {
+        key: StudyObjectKey,
+        selection: SelectionDisposition,
+        captures_outside_release: bool,
+    },
+}
+
+impl PressAction {
+    fn selection_disposition(self) -> SelectionDisposition {
+        match self {
+            Self::DrawingPlacement => SelectionDisposition::Preserve,
+            Self::Drawing { selection, .. } => selection,
+            Self::Ordinary => SelectionDisposition::Clear,
+            Self::Layer { selection, .. } => selection,
+        }
+    }
+
+    fn captures_outside_release(self) -> bool {
+        match self {
+            Self::DrawingPlacement => true,
+            Self::Drawing {
+                captures_outside_release,
+                ..
+            } => captures_outside_release,
+            Self::Layer {
+                captures_outside_release,
+                ..
+            } => captures_outside_release,
+            Self::Ordinary => false,
+        }
+    }
+
+    fn layer_key(self) -> Option<StudyObjectKey> {
+        match self {
+            Self::Layer { key, .. } => Some(key),
+            Self::Ordinary | Self::DrawingPlacement | Self::Drawing { .. } => None,
+        }
+    }
+
+    fn is_drawing(self) -> bool {
+        matches!(self, Self::Drawing { .. })
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum DragAction {
     Split(usize),
-    TpoBoundary {
-        boundary: UnixMs,
-        preview: UnixMs,
-        minimum: Option<UnixMs>,
-        maximum: Option<UnixMs>,
+    Layer {
+        key: StudyObjectKey,
+        selection: SelectionDisposition,
+        active_outside_bounds: bool,
+        cursor: advanced::mouse::Interaction,
+    },
+    Drawing {
+        selection: SelectionDisposition,
+        active_outside_bounds: bool,
+        cursor: advanced::mouse::Interaction,
     },
     YAxisScale {
         panel_index: usize,
         anchor_y: f32,
     },
     XAxisScale {
-        anchor_x: f32,
         initial_world: HorizontalWorld,
         initial_right_unit: f32,
     },
     Pan {
         panel_index: usize,
-    },
-    DrawingMove {
-        id: DrawingId,
-        target: DrawingDragTarget,
-        panel_id: PanelId,
+        source_layer: Option<StudyObjectKey>,
     },
     Marquee {
         panel_index: usize,
-        start: Point,
-        current: Point,
+        source_layer: Option<StudyObjectKey>,
     },
+}
+
+#[derive(Debug, Clone, Copy)]
+enum DrawingPointerInput {
+    Moved,
+    DragReleased,
+    Cancelled,
+    SelectionCleared,
+}
+
+impl DragAction {
+    fn scene_activity(self) -> SceneActivity {
+        match self {
+            Self::Pan { .. } => SceneActivity::Pan,
+            _ => SceneActivity::Drag,
+        }
+    }
+
+    fn active_outside_bounds(self) -> bool {
+        match self {
+            Self::Layer {
+                active_outside_bounds,
+                ..
+            }
+            | Self::Drawing {
+                active_outside_bounds,
+                ..
+            } => active_outside_bounds,
+            _ => matches!(
+                self,
+                Self::YAxisScale { .. } | Self::XAxisScale { .. } | Self::Marquee { .. }
+            ),
+        }
+    }
+
+    fn selection_disposition(self) -> SelectionDisposition {
+        match self {
+            Self::Layer { selection, .. } | Self::Drawing { selection, .. } => selection,
+            Self::Marquee { .. } => SelectionDisposition::Preserve,
+            _ => SelectionDisposition::Clear,
+        }
+    }
+
+    fn cursor_appearance(self) -> Option<advanced::mouse::Interaction> {
+        match self {
+            Self::Split(_) | Self::YAxisScale { .. } => {
+                Some(advanced::mouse::Interaction::ResizingVertically)
+            }
+            Self::Layer { cursor, .. } | Self::Drawing { cursor, .. } => Some(cursor),
+            Self::XAxisScale { .. } => Some(advanced::mouse::Interaction::ResizingHorizontally),
+            Self::Pan { .. } => Some(advanced::mouse::Interaction::Grabbing),
+            Self::Marquee { .. } => None,
+        }
+    }
+
+    fn layer_key(self) -> Option<StudyObjectKey> {
+        match self {
+            Self::Layer { key, .. } => Some(key),
+            Self::Pan { source_layer, .. } | Self::Marquee { source_layer, .. } => source_layer,
+            _ => None,
+        }
+    }
+
+    fn is_drawing(self) -> bool {
+        matches!(self, Self::Drawing { .. })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TpoInteraction {
-    MergeLeft { boundary: UnixMs },
-    MoveBoundary { from: UnixMs, to: UnixMs },
-    Reset { start: UnixMs, end: UnixMs },
+pub(super) enum SceneActivity {
+    Idle,
+    Pan,
+    Drag,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(super) struct TpoProfileGeometry {
-    pub(super) index: usize,
-    pub(super) start: UnixMs,
-    pub(super) end: UnixMs,
-    pub(super) overlay_bounds: Rectangle,
-    pub(super) button_bounds: Option<Rectangle>,
-    pub(super) reset_button_bounds: Option<Rectangle>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SelectionDisposition {
+    Preserve,
+    Clear,
 }
 
-#[derive(Debug, Clone, Copy)]
-enum TpoHit {
-    Reset {
-        start: UnixMs,
-        end: UnixMs,
-    },
-    Profile {
-        start: UnixMs,
-    },
-    Boundary {
-        boundary: UnixMs,
-        minimum: Option<UnixMs>,
-        maximum: Option<UnixMs>,
-    },
-    MergeLeft {
-        boundary: UnixMs,
-        left_start: UnixMs,
-    },
+struct MarqueeGesture {
+    panel_index: usize,
+    start: Point,
+    current: Point,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -337,20 +444,18 @@ impl GeometryCacheKey {
 struct State {
     plot_background_cache: canvas::Cache,
     plot_cache: canvas::Cache,
-    tpo_cache: canvas::Cache,
     price_bars_cache: canvas::Cache,
     y_axis_cache: canvas::Cache,
     x_axis_cache: canvas::Cache,
     overlay_cache: canvas::Cache,
+    legend_cache: canvas::Cache,
     interaction_text_cache: canvas::Cache,
-    drawing_cache: canvas::Cache,
     marquee_cache: canvas::Cache,
-    drag_mode: DragMode,
-    selected_tpo_profile: Option<UnixMs>,
-    pending_tpo_hit: Option<TpoHit>,
-    drag_start: Option<Point>,
-    last_cursor: Option<Point>,
-    modifiers: keyboard::Modifiers,
+    study_underlay_cache: canvas::Cache,
+    drawing_cache: canvas::Cache,
+    interaction: UserInteraction<PressAction, DragAction>,
+    study_objects: StudyStates,
+    drawing: WidgetDrawingState,
     y_axis_gutter_width: f32,
     gutter_cache_key: Option<GutterCacheKey>,
     plot_geometry_key: Option<GeometryCacheKey>,
@@ -362,7 +467,6 @@ struct State {
     last_cache_clear_at: Option<Instant>,
     last_theme_generation: Option<u64>,
     last_countdown_second: Option<i64>,
-    previous_click: Option<iced_core::mouse::Click>,
     scene_cache: SceneCache,
 }
 
@@ -371,20 +475,18 @@ impl Default for State {
         Self {
             plot_background_cache: canvas::Cache::new(),
             plot_cache: canvas::Cache::new(),
-            tpo_cache: canvas::Cache::new(),
             price_bars_cache: canvas::Cache::new(),
             y_axis_cache: canvas::Cache::new(),
             x_axis_cache: canvas::Cache::new(),
             overlay_cache: canvas::Cache::new(),
+            legend_cache: canvas::Cache::new(),
             interaction_text_cache: canvas::Cache::new(),
-            drawing_cache: canvas::Cache::new(),
             marquee_cache: canvas::Cache::new(),
-            drag_mode: DragMode::None,
-            selected_tpo_profile: None,
-            pending_tpo_hit: None,
-            drag_start: None,
-            last_cursor: None,
-            modifiers: keyboard::Modifiers::empty(),
+            study_underlay_cache: canvas::Cache::new(),
+            drawing_cache: canvas::Cache::new(),
+            interaction: UserInteraction::default(),
+            study_objects: StudyStates::default(),
+            drawing: WidgetDrawingState::default(),
             y_axis_gutter_width: Y_AXIS_GUTTER,
             gutter_cache_key: None,
             plot_geometry_key: None,
@@ -396,21 +498,62 @@ impl Default for State {
             last_cache_clear_at: None,
             last_theme_generation: None,
             last_countdown_second: None,
-            previous_click: None,
             scene_cache: SceneCache::default(),
         }
     }
 }
 
 impl State {
+    fn apply_interaction_effects<M, E>(
+        &mut self,
+        effects: LayerEffects<E>,
+        shell: &mut Shell<'_, M>,
+        map_event: impl Fn(E) -> KlineWidgetEvent,
+    ) -> (bool, Option<LayerGesture>)
+    where
+        M: Clone + From<KlineWidgetEvent>,
+    {
+        for event in effects.events {
+            shell.publish(M::from(map_event(event)));
+        }
+        match effects.invalidation {
+            CacheInvalidation::None => {}
+            CacheInvalidation::Overlay => self.clear_overlay_caches(),
+            CacheInvalidation::All => self.clear_all_caches(),
+        }
+        let captured = effects.status == iced::event::Status::Captured;
+        if captured {
+            shell.capture_event();
+        }
+        (captured, effects.gesture)
+    }
+
+    fn scene_activity(&self) -> SceneActivity {
+        self.interaction
+            .drag_action()
+            .map_or(SceneActivity::Idle, DragAction::scene_activity)
+    }
+
+    fn marquee(&self) -> Option<MarqueeGesture> {
+        let DragAction::Marquee { panel_index, .. } = self.interaction.drag_action()? else {
+            return None;
+        };
+        let motion = self.interaction.motion()?;
+        Some(MarqueeGesture {
+            panel_index,
+            start: motion.origin,
+            current: motion.current,
+        })
+    }
+
     fn clear_all_caches(&mut self) {
         self.plot_background_cache.clear();
         self.plot_cache.clear();
-        self.tpo_cache.clear();
+        self.study_underlay_cache.clear();
+        self.drawing_cache.clear();
         self.price_bars_cache.clear();
         self.y_axis_cache.clear();
         self.x_axis_cache.clear();
-        self.drawing_cache.clear();
         self.clear_overlay_caches();
         self.marquee_cache.clear();
     }
@@ -434,13 +577,14 @@ impl State {
 
     fn clear_overlay_caches(&mut self) {
         self.overlay_cache.clear();
+        self.legend_cache.clear();
         self.interaction_text_cache.clear();
     }
 
     fn clear_cursor_caches(&mut self) {
         self.clear_overlay_caches();
 
-        if matches!(self.drag_mode, DragMode::Marquee { .. }) {
+        if self.marquee().is_some() {
             self.marquee_cache.clear();
         }
     }
@@ -459,20 +603,22 @@ impl State {
         if self.plot_geometry_key != Some(plot_geometry_key) {
             self.plot_background_cache.clear();
             self.plot_cache.clear();
-            self.tpo_cache.clear();
+            self.study_underlay_cache.clear();
             self.price_bars_cache.clear();
             self.plot_geometry_key = Some(plot_geometry_key);
         }
-        Self::sync_geometry_cache(
-            &self.drawing_cache,
-            &mut self.drawing_geometry_key,
-            GeometryCacheKey::new(bounds, root_origin, pixel_ratio),
-        );
-        Self::sync_geometry_cache(
-            &self.overlay_cache,
-            &mut self.overlay_geometry_key,
-            GeometryCacheKey::new(bounds, root_origin, pixel_ratio),
-        );
+        if self.drawing_geometry_key
+            != Some(GeometryCacheKey::new(bounds, root_origin, pixel_ratio))
+        {
+            self.drawing_cache.clear();
+            self.drawing_geometry_key =
+                Some(GeometryCacheKey::new(bounds, root_origin, pixel_ratio));
+        }
+        let overlay_geometry_key = GeometryCacheKey::new(bounds, root_origin, pixel_ratio);
+        if self.overlay_geometry_key != Some(overlay_geometry_key) {
+            self.clear_overlay_caches();
+            self.overlay_geometry_key = Some(overlay_geometry_key);
+        }
         Self::sync_geometry_cache(
             &self.interaction_text_cache,
             &mut self.interaction_text_geometry_key,
@@ -494,19 +640,6 @@ impl State {
             cache.clear();
             *previous = Some(next);
         }
-    }
-
-    fn rounded_drag_delta(&self, cursor: Point) -> Vector {
-        let Some(previous) = self.last_cursor else {
-            return Vector::new(0.0, 0.0);
-        };
-        let start = self.drag_start.unwrap_or(previous);
-
-        // Round cumulative movement so sub-pixel events accumulate instead of disappearing.
-        Vector::new(
-            (cursor.x - start.x).round() - (previous.x - start.x).round(),
-            (cursor.y - start.y).round() - (previous.y - start.y).round(),
-        )
     }
 }
 
@@ -547,7 +680,14 @@ pub enum KlineWidgetEvent {
     PrimaryAutoscaleToggled,
     PrimaryScaleModeCycleRequested,
     PanelInteraction(PanelInteraction),
-    Tpo(TpoInteraction),
+    Drawing(KlineWidgetDrawingEvent),
+    Study(StudyObjectEvent),
+    StudySettings(KlineStudyId),
+    StudyVisibilityToggled(KlineStudyId),
+    StudyRemove(KlineStudyId),
+    StudiesVisibilityToggled,
+    StudiesExpansionToggled,
+    StudiesRemove,
     TickerSettings(TickerInfo),
     FootprintSettings,
     TickerRemove(TickerInfo),
@@ -556,36 +696,13 @@ pub enum KlineWidgetEvent {
     IndicatorSettings(PanelValueId),
     IndicatorVisibilityToggled(PanelValueId),
     IndicatorRemove(PanelValueId),
-    StudySettings(KlineStudyId),
-    StudyVisibilityToggled(KlineStudyId),
-    StudyRemove(KlineStudyId),
-    StudiesVisibilityToggled,
-    StudiesExpansionToggled,
-    StudiesRemove,
     XAxisDoubleClick,
     DeletePressed,
-    Drawing(KlineWidgetDrawingEvent),
 }
 
-enum ProfileBarSource<'a> {
-    Empty,
-    External(&'a BTreeMap<UnixMs, Kline>),
-    Chart { retained: (UnixMs, UnixMs) },
-}
-
-impl ProfileBarSource<'_> {
-    fn collect(&self, series: &[KlineSeries]) -> Vec<Kline> {
-        match self {
-            Self::Empty => Vec::new(),
-            Self::External(bars) => bars.values().copied().collect(),
-            Self::Chart { retained } => series
-                .first()
-                .into_iter()
-                .flat_map(KlineSeries::points)
-                .filter(|point| point.kline.time >= retained.0 && point.kline.time < retained.1)
-                .map(|point| *point.kline)
-                .collect(),
-        }
+impl From<KlineWidgetDrawingEvent> for KlineWidgetEvent {
+    fn from(event: KlineWidgetDrawingEvent) -> Self {
+        Self::Drawing(event)
     }
 }
 
@@ -594,16 +711,13 @@ pub struct KlineWidget<'a> {
     indicator_host: &'a IndicatorHost,
     composition: &'a ChartComposition,
     indicator_instances: &'a IndicatorInstanceStore,
-    studies: &'a [KlineStudy],
-    profile_bars: ProfileBarSource<'a>,
-    tpo_profiles: &'a [TpoProfile],
-    tpo_edits: &'a TpoBoundaryEdits,
-    studies_legend_expanded: bool,
+    drawing_snapshot: DrawingSnapshot<'a>,
+    study_objects: Vec<StudyObject<'a>>,
+    study_legend: Option<chrome::StudiesLegend>,
     legend_visibility: LegendVisibility,
     candlestick: CandlestickConfig,
     footprint: FootprintConfig,
     trade_data_enabled: bool,
-    drawings: DrawingSnapshot<'a>,
     basis: Basis,
     horizontal_world: HorizontalWorld,
     known_plot_width: Option<f32>,
@@ -627,23 +741,26 @@ impl<'a> KlineWidget<'a> {
         composition: &'a ChartComposition,
         indicator_instances: &'a IndicatorInstanceStore,
         theme_accents: ThemeAccents,
-        tpo_edits: &'a TpoBoundaryEdits,
     ) -> Self {
         Self {
             series,
             indicator_host,
             composition,
             indicator_instances,
-            studies: &[],
-            profile_bars: ProfileBarSource::Empty,
-            tpo_profiles: &[],
-            tpo_edits,
-            studies_legend_expanded: true,
+            drawing_snapshot: DrawingSnapshot::new(
+                DrawingTool::Cursor,
+                false,
+                &[],
+                &[],
+                None,
+                None,
+            ),
+            study_objects: Vec::new(),
+            study_legend: None,
             legend_visibility: LegendVisibility::default(),
             candlestick: CandlestickConfig::default(),
             footprint: FootprintConfig::default(),
             trade_data_enabled: false,
-            drawings: DrawingSnapshot::new(DrawingTool::Cursor, false, &[], &[], None, None),
             basis,
             horizontal_world: HorizontalWorld::new(DEFAULT_HORIZONTAL_SPACING_PX, 0.0),
             known_plot_width: None,
@@ -660,158 +777,13 @@ impl<'a> KlineWidget<'a> {
         }
     }
 
-    pub fn with_studies(mut self, studies: &'a [KlineStudy]) -> Self {
-        self.studies = studies;
+    pub(crate) fn with_study_legend(mut self, legend: chrome::StudiesLegend) -> Self {
+        self.study_legend = Some(legend);
         self
     }
 
-    pub fn with_tpo_profiles(mut self, profiles: &'a [TpoProfile]) -> Self {
-        self.tpo_profiles = profiles;
-        self
-    }
-
-    pub fn with_external_profile_bars(mut self, bars: Option<&'a BTreeMap<UnixMs, Kline>>) -> Self {
-        self.profile_bars = bars.map_or(ProfileBarSource::Empty, ProfileBarSource::External);
-        self
-    }
-
-    pub fn with_chart_profile_range(mut self, retained: Option<(UnixMs, UnixMs)>) -> Self {
-        self.profile_bars = retained.map_or(ProfileBarSource::Empty, |retained| {
-            ProfileBarSource::Chart { retained }
-        });
-        self
-    }
-
-    fn tpo_hit_test(
-        &self,
-        scene: &Scene,
-        point: Point,
-        selected_profile: Option<UnixMs>,
-    ) -> Option<TpoHit> {
-        let geometries = self.tpo_profile_geometries(scene, selected_profile);
-
-        for geometry in &geometries {
-            if geometry
-                .reset_button_bounds
-                .is_some_and(|bounds| point_in_rectangle(point, bounds))
-            {
-                return Some(TpoHit::Reset {
-                    start: geometry.start,
-                    end: geometry.end,
-                });
-            }
-            if geometry
-                .button_bounds
-                .is_some_and(|bounds| point_in_rectangle(point, bounds))
-            {
-                let left_start = self
-                    .tpo_profiles
-                    .get(geometry.index.saturating_sub(1))?
-                    .start;
-                return Some(TpoHit::MergeLeft {
-                    boundary: geometry.start,
-                    left_start,
-                });
-            }
-        }
-
-        if selected_profile.is_some() {
-            let snap_timeframe = match self.basis {
-                Basis::Time(timeframe) => timeframe,
-                Basis::Tick(_) => return None,
-            };
-            let selected_index = selected_profile.and_then(|start| {
-                self.tpo_profiles
-                    .iter()
-                    .position(|profile| profile.start == start)
-            });
-            let plot = scene.primary_plot();
-            let plot_top = scene.layout.regions.plot.y + plot.y;
-            let plot_bottom = plot_top + plot.height;
-            for (index, profile) in self.tpo_profiles.iter().enumerate().skip(1) {
-                let Some(boundary_unit) = scene.x.axis.unit_from_time_f32(profile.start) else {
-                    continue;
-                };
-                let boundary_x = scene.layout.regions.plot.x + scene.map_x_plot_f32(boundary_unit);
-                if (point.x - boundary_x).abs() <= TPO_BOUNDARY_HIT_PX
-                    && point.y >= plot_top
-                    && point.y <= plot_bottom
-                {
-                    let Some((minimum, maximum)) = selected_index.and_then(|selected_index| {
-                        let selected = self.tpo_profiles.get(selected_index)?;
-                        if index == selected_index {
-                            Some((
-                                None,
-                                Some(selected.end.offset_by_timeframe(snap_timeframe, -1)),
-                            ))
-                        } else if index == selected_index + 1 {
-                            Some((
-                                Some(selected.start.offset_by_timeframe(snap_timeframe, 1)),
-                                None,
-                            ))
-                        } else {
-                            None
-                        }
-                    }) else {
-                        continue;
-                    };
-                    return Some(TpoHit::Boundary {
-                        boundary: profile.start,
-                        minimum,
-                        maximum,
-                    });
-                }
-            }
-        }
-
-        geometries
-            .iter()
-            .rev()
-            .find(|geometry| point_in_rectangle(point, geometry.overlay_bounds))
-            .map(|geometry| TpoHit::Profile {
-                start: geometry.start,
-            })
-    }
-
-    fn tpo_boundary_from_cursor(
-        &self,
-        scene: &Scene,
-        cursor: Point,
-        boundary: UnixMs,
-        minimum: Option<UnixMs>,
-        maximum: Option<UnixMs>,
-    ) -> Option<UnixMs> {
-        let pair_index = self
-            .tpo_profiles
-            .windows(2)
-            .position(|profiles| profiles[1].start == boundary)?;
-        let left_profile = self.tpo_profiles.get(pair_index)?;
-        let snap_timeframe = match self.basis {
-            Basis::Time(timeframe) => timeframe,
-            Basis::Tick(_) => return None,
-        };
-        let period_ms = snap_timeframe.to_milliseconds().max(1);
-        let raw_time = scene.time_from_plot_x_f32(cursor.x - scene.layout.regions.plot.x)?;
-        let (before_anchor, elapsed) = if raw_time >= left_profile.start {
-            (false, raw_time.as_u64() - left_profile.start.as_u64())
-        } else {
-            (true, left_profile.start.as_u64() - raw_time.as_u64())
-        };
-        let whole_periods = elapsed / period_ms;
-        let rounded_periods =
-            whole_periods.saturating_add(u64::from(elapsed % period_ms >= period_ms / 2));
-        let intervals = i64::try_from(rounded_periods).unwrap_or(i64::MAX);
-        let candidate = left_profile.start.offset_by_timeframe(
-            snap_timeframe,
-            if before_anchor { -intervals } else { intervals },
-        );
-        let minimum = minimum.unwrap_or(self.tpo_profiles.first()?.start);
-        let maximum = maximum.unwrap_or(self.tpo_profiles.last()?.end);
-        (minimum <= maximum).then(|| candidate.clamp(minimum, maximum))
-    }
-
-    pub fn with_studies_legend_expanded(mut self, expanded: bool) -> Self {
-        self.studies_legend_expanded = expanded;
+    pub fn with_drawing_snapshot(mut self, drawing_snapshot: DrawingSnapshot<'a>) -> Self {
+        self.drawing_snapshot = drawing_snapshot;
         self
     }
 
@@ -866,11 +838,6 @@ impl<'a> KlineWidget<'a> {
         } else {
             0.0
         };
-        self
-    }
-
-    pub fn with_drawings(mut self, snapshot: DrawingSnapshot<'a>) -> Self {
-        self.drawings = snapshot;
         self
     }
 
@@ -933,13 +900,474 @@ impl<'a> KlineWidget<'a> {
         self
     }
 
+    fn coordinates(&self) -> ChartCoordinates<'_> {
+        ChartCoordinates {
+            series: self.series,
+            composition: self.composition,
+            basis: self.basis,
+            timezone: self.timezone,
+        }
+    }
+
+    fn layer_context<'b>(
+        &'b self,
+        scene: &'b Scene,
+        position: Option<Point>,
+        modifiers: keyboard::Modifiers,
+    ) -> LayerContext<'b> {
+        LayerContext {
+            scene,
+            coordinates: self.coordinates(),
+            position,
+            modifiers,
+        }
+    }
+
+    fn drawing_view<'b>(&'b self, scene: &'b Scene) -> DrawingView<'b> {
+        self.drawing_view_at(scene, None, keyboard::Modifiers::empty())
+    }
+
+    fn drawing_view_at<'b>(
+        &'b self,
+        scene: &'b Scene,
+        position: Option<Point>,
+        modifiers: keyboard::Modifiers,
+    ) -> DrawingView<'b> {
+        DrawingView::new(
+            self.drawing_snapshot,
+            self.layer_context(scene, position, modifiers),
+        )
+    }
+
+    fn begin_study_object_interaction<M>(
+        &self,
+        key: StudyObjectKey,
+        scene: &Scene,
+        position: Point,
+        state: &mut State,
+        shell: &mut Shell<'_, M>,
+    ) -> bool
+    where
+        M: Clone + From<KlineWidgetEvent>,
+    {
+        let Some(effects) = self.study_object_pointer(
+            key,
+            LayerPointerInput::Pressed,
+            self.layer_context(scene, Some(position), state.interaction.modifiers()),
+            &mut state.study_objects,
+        ) else {
+            return false;
+        };
+        let (_, gesture) = state.apply_interaction_effects(effects, shell, KlineWidgetEvent::Study);
+        let Some(gesture) = gesture else { return false };
+        match gesture {
+            LayerGesture::Click {
+                selection,
+                captures_outside_release,
+            } => state.interaction.begin_click(
+                position,
+                PressAction::Layer {
+                    key,
+                    selection,
+                    captures_outside_release,
+                },
+            ),
+            LayerGesture::Drag {
+                selection,
+                active_outside_bounds,
+                cursor,
+            } => state.interaction.begin_drag_candidate(
+                position,
+                DragAction::Layer {
+                    key,
+                    selection,
+                    active_outside_bounds,
+                    cursor,
+                },
+            ),
+            LayerGesture::ClickOrNavigate {
+                selection,
+                captures_outside_release,
+                fallback,
+            } => {
+                let LayoutHitZone::PanelPlot(panel_index) = scene.layout.hit_test(position) else {
+                    return false;
+                };
+                let fallback = match fallback {
+                    NavigationFallback::PanOrMarquee
+                        if Self::is_command_modifier(state.interaction.modifiers()) =>
+                    {
+                        DragAction::Marquee {
+                            panel_index,
+                            source_layer: Some(key),
+                        }
+                    }
+                    _ => DragAction::Pan {
+                        panel_index,
+                        source_layer: Some(key),
+                    },
+                };
+                state.interaction.begin_click_or_drag(
+                    position,
+                    PressAction::Layer {
+                        key,
+                        selection,
+                        captures_outside_release,
+                    },
+                    fallback,
+                );
+            }
+        }
+        true
+    }
+
+    fn begin_drawing_interaction<M>(
+        &self,
+        scene: &Scene,
+        position: Point,
+        state: &mut State,
+        shell: &mut Shell<'_, M>,
+    ) -> bool
+    where
+        M: Clone + From<KlineWidgetEvent>,
+    {
+        let view = self.drawing_view_at(scene, Some(position), state.interaction.modifiers());
+        let Some(hit) = view.hit(position) else {
+            return false;
+        };
+        let effects = view.begin(hit, &mut state.drawing);
+        let (_, gesture) =
+            state.apply_interaction_effects(effects, shell, KlineWidgetEvent::Drawing);
+        let Some(gesture) = gesture else { return false };
+        match gesture {
+            LayerGesture::Click {
+                selection,
+                captures_outside_release,
+            } => state.interaction.begin_click(
+                position,
+                PressAction::Drawing {
+                    selection,
+                    captures_outside_release,
+                },
+            ),
+            LayerGesture::Drag {
+                selection,
+                active_outside_bounds,
+                cursor,
+            } => state.interaction.begin_drag_candidate(
+                position,
+                DragAction::Drawing {
+                    selection,
+                    active_outside_bounds,
+                    cursor,
+                },
+            ),
+            LayerGesture::ClickOrNavigate {
+                selection,
+                captures_outside_release,
+                fallback,
+            } => {
+                let LayoutHitZone::PanelPlot(panel_index) = scene.layout.hit_test(position) else {
+                    return false;
+                };
+                let fallback = match fallback {
+                    NavigationFallback::PanOrMarquee
+                        if Self::is_command_modifier(state.interaction.modifiers()) =>
+                    {
+                        DragAction::Marquee {
+                            panel_index,
+                            source_layer: None,
+                        }
+                    }
+                    _ => DragAction::Pan {
+                        panel_index,
+                        source_layer: None,
+                    },
+                };
+                state.interaction.begin_click_or_drag(
+                    position,
+                    PressAction::Drawing {
+                        selection,
+                        captures_outside_release,
+                    },
+                    fallback,
+                );
+            }
+        }
+        true
+    }
+
     fn is_command_modifier(modifiers: keyboard::Modifiers) -> bool {
         modifiers.intersects(keyboard::Modifiers::COMMAND)
     }
 
     fn drawing_magnet_enabled(&self, modifiers: keyboard::Modifiers) -> bool {
-        self.drawings.active_tool.supports_magnet()
-            && (self.drawings.magnet_enabled || Self::is_command_modifier(modifiers))
+        self.drawing_snapshot.active_tool.supports_magnet()
+            && (self.drawing_snapshot.magnet_enabled || Self::is_command_modifier(modifiers))
+    }
+
+    fn apply_study_object_pointer<M>(
+        &self,
+        key: StudyObjectKey,
+        input: LayerPointerInput,
+        context: LayerContext<'_>,
+        state: &mut State,
+        shell: &mut Shell<'_, M>,
+    ) -> bool
+    where
+        M: Clone + From<KlineWidgetEvent>,
+    {
+        self.study_object_pointer(key, input, context, &mut state.study_objects)
+            .is_some_and(|effects| {
+                state
+                    .apply_interaction_effects(effects, shell, KlineWidgetEvent::Study)
+                    .0
+            })
+    }
+
+    fn broadcast_study_object_pointer<M>(
+        &self,
+        input: LayerPointerInput,
+        context: LayerContext<'_>,
+        state: &mut State,
+        shell: &mut Shell<'_, M>,
+    ) -> bool
+    where
+        M: Clone + From<KlineWidgetEvent>,
+    {
+        let effects = self.study_objects_pointer_all(input, context, &mut state.study_objects);
+        let mut captured = false;
+        for effects in effects {
+            captured |= state
+                .apply_interaction_effects(effects, shell, KlineWidgetEvent::Study)
+                .0;
+        }
+        captured
+    }
+
+    fn apply_drawing_pointer<M>(
+        &self,
+        input: DrawingPointerInput,
+        context: LayerContext<'_>,
+        state: &mut State,
+        shell: &mut Shell<'_, M>,
+    ) -> bool
+    where
+        M: Clone + From<KlineWidgetEvent>,
+    {
+        let view = self.drawing_view_at(context.scene, context.position, context.modifiers);
+        let effects = match input {
+            DrawingPointerInput::Moved => state
+                .drawing
+                .drag
+                .map_or_else(LayerEffects::default, |drag| view.update_drag(drag)),
+            DrawingPointerInput::DragReleased => state
+                .drawing
+                .drag
+                .take()
+                .map_or_else(LayerEffects::default, DrawingDrag::release),
+            DrawingPointerInput::Cancelled => {
+                state.drawing.drag = None;
+                LayerEffects::default()
+            }
+            DrawingPointerInput::SelectionCleared => view.deselect(),
+        };
+        state
+            .apply_interaction_effects(effects, shell, KlineWidgetEvent::Drawing)
+            .0
+    }
+
+    fn cancel_pointer<M>(
+        &self,
+        state: &mut State,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        shell: &mut Shell<'_, M>,
+    ) where
+        M: Clone + From<KlineWidgetEvent>,
+    {
+        let drag = state.interaction.drag_action();
+        let press = state.interaction.cancel_pointer();
+        let drawing_active =
+            press.is_some_and(PressAction::is_drawing) || drag.is_some_and(DragAction::is_drawing);
+        let key = press
+            .and_then(PressAction::layer_key)
+            .or_else(|| drag.and_then(DragAction::layer_key));
+        if let (Some(key), Some(scene)) = (key, self.cached_scene(state, layout, cursor)) {
+            self.apply_study_object_pointer(
+                key,
+                LayerPointerInput::Cancelled,
+                self.layer_context(
+                    &scene,
+                    cursor.position_in(layout.bounds()),
+                    state.interaction.modifiers(),
+                ),
+                state,
+                shell,
+            );
+        }
+        if drawing_active && let Some(scene) = self.cached_scene(state, layout, cursor) {
+            self.apply_drawing_pointer(
+                DrawingPointerInput::Cancelled,
+                self.layer_context(
+                    &scene,
+                    cursor.position_in(layout.bounds()),
+                    state.interaction.modifiers(),
+                ),
+                state,
+                shell,
+            );
+        }
+    }
+
+    fn finish_interaction_release<M>(
+        &self,
+        state: &mut State,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        outside_bounds: bool,
+        shell: &mut Shell<'_, M>,
+    ) where
+        M: Clone + 'static + From<KlineWidgetEvent>,
+    {
+        let position = (!outside_bounds)
+            .then(|| cursor.position_in(layout.bounds()))
+            .flatten();
+        let outcome = state.interaction.release(position);
+        let (selection, had_gesture) = match outcome {
+            ReleasedGesture::Idle => (SelectionDisposition::Clear, false),
+            ReleasedGesture::Pressed { action, .. } => (
+                action.selection_disposition(),
+                action.captures_outside_release(),
+            ),
+            ReleasedGesture::Drag { action, .. } => (action.selection_disposition(), true),
+        };
+        let mut capture = outside_bounds && had_gesture;
+
+        let scene = self.cached_scene(state, layout, cursor);
+        let layer_context = scene
+            .as_ref()
+            .map(|scene| self.layer_context(scene, position, state.interaction.modifiers()));
+
+        if selection == SelectionDisposition::Clear
+            && let Some(context) = layer_context
+        {
+            capture |= self.apply_drawing_pointer(
+                DrawingPointerInput::SelectionCleared,
+                context,
+                state,
+                shell,
+            );
+        }
+
+        match outcome {
+            ReleasedGesture::Pressed {
+                action: PressAction::Layer { key, .. },
+                click,
+            } => {
+                if let Some(context) = layer_context {
+                    capture |= self.apply_study_object_pointer(
+                        key,
+                        LayerPointerInput::Clicked {
+                            confirmed: click == interaction::ClickOutcome::Confirmed,
+                        },
+                        context,
+                        state,
+                        shell,
+                    );
+                }
+            }
+            ReleasedGesture::Drag {
+                action: DragAction::Layer { key, .. },
+                ..
+            } => {
+                if let Some(context) = layer_context {
+                    capture |= self.apply_study_object_pointer(
+                        key,
+                        LayerPointerInput::DragReleased,
+                        context,
+                        state,
+                        shell,
+                    );
+                }
+            }
+            ReleasedGesture::Drag {
+                action: DragAction::Drawing { .. },
+                ..
+            } => {
+                if let Some(context) = layer_context {
+                    capture |= self.apply_drawing_pointer(
+                        DrawingPointerInput::DragReleased,
+                        context,
+                        state,
+                        shell,
+                    );
+                }
+            }
+            ReleasedGesture::Drag {
+                action: DragAction::Marquee { panel_index, .. },
+                origin,
+                position: Some(current),
+                press_action,
+            } => {
+                if let Some(scene) = scene.as_ref()
+                    && self
+                        .drawing_view(scene)
+                        .clipped_marquee_rect(panel_index, origin, current)
+                        .is_some()
+                {
+                    let selected = self.drawing_view(scene).marquee_selected_drawings(
+                        panel_index,
+                        origin,
+                        current,
+                    );
+                    shell.publish(M::from(KlineWidgetEvent::from(
+                        KlineWidgetDrawingEvent::MarqueeSelected(selected),
+                    )));
+                }
+                state.clear_overlay_caches();
+                state.clear_all_caches();
+                capture = true;
+                if let (Some(context), Some(key)) =
+                    (layer_context, press_action.and_then(PressAction::layer_key))
+                {
+                    capture |= self.apply_study_object_pointer(
+                        key,
+                        LayerPointerInput::Cancelled,
+                        context,
+                        state,
+                        shell,
+                    );
+                }
+            }
+            ReleasedGesture::Drag {
+                action,
+                press_action,
+                ..
+            } => {
+                if let (Some(context), Some(key)) =
+                    (layer_context, press_action.and_then(PressAction::layer_key))
+                    && action.layer_key() != Some(key)
+                {
+                    capture |= self.apply_study_object_pointer(
+                        key,
+                        LayerPointerInput::Cancelled,
+                        context,
+                        state,
+                        shell,
+                    );
+                }
+            }
+            _ => {}
+        }
+
+        if outside_bounds {
+            state.clear_overlay_caches();
+            state.clear_all_caches();
+        }
+        if capture {
+            shell.capture_event();
+        }
     }
 
     fn paint_separators(renderer: &mut Renderer, scene: &Scene, theme: &Theme) {
@@ -1003,7 +1431,37 @@ where
     }
 
     fn state(&self) -> tree::State {
-        tree::State::new(State::default())
+        let mut state = State::default();
+        self.reconcile_study_states(&mut state.study_objects);
+        tree::State::new(state)
+    }
+
+    fn diff(&self, tree: &mut Tree) {
+        let state = tree.state.downcast_mut::<State>();
+        let active_key = state
+            .interaction
+            .press_action()
+            .and_then(PressAction::layer_key)
+            .or_else(|| {
+                state
+                    .interaction
+                    .drag_action()
+                    .and_then(DragAction::layer_key)
+            });
+        if let Some(key) = active_key {
+            let current_object = self.study_objects.iter().find(|object| object.key() == key);
+            let previous_state = state.study_objects.get(&key);
+            let state_matches = match (current_object, previous_state) {
+                (Some(object), Some(previous_state)) => object.matches_state(previous_state),
+                (None, None) => true,
+                _ => false,
+            };
+            if !state_matches {
+                let _ = state.interaction.cancel_pointer();
+                state.clear_all_caches();
+            }
+        }
+        self.reconcile_study_states(&mut state.study_objects);
     }
 
     fn size(&self) -> Size<Length> {
@@ -1143,8 +1601,8 @@ where
                     self.compute_scene_uncached(
                         provisional_layout,
                         mouse::Cursor::Unavailable,
-                        false,
-                        false,
+                        SceneActivity::Idle,
+                        &state.study_objects,
                     )
                     .map(|scene| self.required_y_axis_gutter(&scene))
                 };
@@ -1197,7 +1655,7 @@ where
                 ..
             }) => {
                 let state = tree.state.downcast_mut::<State>();
-                state.modifiers = *modifiers;
+                state.interaction.set_modifiers(*modifiers);
                 state.clear_overlay_caches();
 
                 if self.escape_enabled
@@ -1225,7 +1683,7 @@ where
                     return;
                 }
 
-                shell.publish(M::from(KlineWidgetEvent::Drawing(
+                shell.publish(M::from(KlineWidgetEvent::from(
                     KlineWidgetDrawingEvent::MagnetModifierChanged(Self::is_command_modifier(
                         *modifiers,
                     )),
@@ -1244,9 +1702,9 @@ where
             }
             Event::Keyboard(keyboard::Event::KeyReleased { modifiers, .. }) => {
                 let state = tree.state.downcast_mut::<State>();
-                state.modifiers = *modifiers;
+                state.interaction.set_modifiers(*modifiers);
                 state.clear_overlay_caches();
-                shell.publish(M::from(KlineWidgetEvent::Drawing(
+                shell.publish(M::from(KlineWidgetEvent::from(
                     KlineWidgetDrawingEvent::MagnetModifierChanged(Self::is_command_modifier(
                         *modifiers,
                     )),
@@ -1254,9 +1712,9 @@ where
             }
             Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
                 let state = tree.state.downcast_mut::<State>();
-                state.modifiers = *modifiers;
+                state.interaction.set_modifiers(*modifiers);
                 state.clear_overlay_caches();
-                shell.publish(M::from(KlineWidgetEvent::Drawing(
+                shell.publish(M::from(KlineWidgetEvent::from(
                     KlineWidgetDrawingEvent::MagnetModifierChanged(Self::is_command_modifier(
                         *modifiers,
                     )),
@@ -1265,59 +1723,28 @@ where
             Event::Mouse(mouse_event) => {
                 let state = tree.state.downcast_mut::<State>();
                 let bounds = layout.bounds();
+                let left_release = matches!(
+                    mouse_event,
+                    mouse::Event::ButtonReleased(mouse::Button::Left)
+                );
                 let Some(layout_tree) =
                     PanelLayoutTree::from_layout(layout, &self.composition.panels)
                 else {
                     return;
                 };
 
-                if matches!(
-                    mouse_event,
-                    mouse::Event::ButtonReleased(mouse::Button::Left)
-                ) && cursor.position_in(bounds).is_none()
-                {
-                    let was_dragging = !matches!(state.drag_mode, DragMode::None);
-                    if let DragMode::DrawingMove { id, .. } = state.drag_mode {
-                        shell.publish(M::from(KlineWidgetEvent::Drawing(
-                            KlineWidgetDrawingEvent::DragFinished { id },
-                        )));
-                    }
-                    if let DragMode::TpoBoundary {
-                        boundary, preview, ..
-                    } = state.drag_mode
-                    {
-                        state.selected_tpo_profile = Some(preview);
-                        if boundary != preview {
-                            shell.publish(M::from(KlineWidgetEvent::Tpo(
-                                TpoInteraction::MoveBoundary {
-                                    from: boundary,
-                                    to: preview,
-                                },
-                            )));
-                        }
-                    }
-                    state.pending_tpo_hit = None;
-                    state.drag_mode = DragMode::None;
-                    state.drag_start = None;
-                    state.last_cursor = None;
-                    state.clear_overlay_caches();
-                    state.clear_all_caches();
-                    if was_dragging {
-                        shell.capture_event();
-                    }
+                if left_release && cursor.position_in(bounds).is_none() {
+                    self.finish_interaction_release(state, layout, cursor, true, shell);
                     return;
                 }
 
                 let cursor_pos = if let Some(local) = cursor.position_in(bounds) {
                     local
-                } else if matches!(
-                    state.drag_mode,
-                    DragMode::DrawingMove { .. }
-                        | DragMode::YAxisScale { .. }
-                        | DragMode::XAxisScale { .. }
-                        | DragMode::TpoBoundary { .. }
-                        | DragMode::Marquee { .. }
-                ) {
+                } else if state
+                    .interaction
+                    .drag_action()
+                    .is_some_and(DragAction::active_outside_bounds)
+                {
                     if let Some(global) = cursor.position() {
                         Point::new(global.x - bounds.x, global.y - bounds.y)
                     } else {
@@ -1339,9 +1766,6 @@ where
                 let ticker_legend = scene
                     .as_ref()
                     .and_then(|scene| scene.chrome.ticker_legend.as_ref());
-                let study_legend = scene
-                    .as_ref()
-                    .and_then(|scene| scene.chrome.study_legend.as_ref());
                 let indicator_legend = scene
                     .as_ref()
                     .and_then(|scene| scene.chrome.indicator_legend.as_ref());
@@ -1392,7 +1816,9 @@ where
                                 ) {
                                     HorizontalWheelZoomMode::Cursor
                                 } else {
-                                    HorizontalWheelZoomMode::from_modifiers(state.modifiers)
+                                    HorizontalWheelZoomMode::from_modifiers(
+                                        state.interaction.modifiers(),
+                                    )
                                 };
                                 let horizontal_zoom_delta = scroll_y / 2.0;
 
@@ -1460,44 +1886,31 @@ where
                         }
                     }
                     mouse::Event::ButtonPressed(mouse::Button::Left) => {
-                        state.drag_start = Some(cursor_pos);
-                        state.pending_tpo_hit = None;
+                        let click_kind = state.interaction.begin_press(
+                            cursor_pos,
+                            cursor.position(),
+                            PressAction::Ordinary,
+                        );
 
-                        if let Some(global_pos) = cursor.position() {
-                            let new_click = iced_core::mouse::Click::new(
-                                global_pos,
-                                mouse::Button::Left,
-                                state.previous_click,
-                            );
+                        if let LayoutHitZone::YAxis(panel_index) = zone
+                            && click_kind == Some(iced_core::mouse::click::Kind::Double)
+                            && let Some(panel_id) = self.panel_id(panel_index)
+                        {
+                            let interaction = PanelInteraction::YViewportReset { panel_id };
 
-                            if let LayoutHitZone::YAxis(panel_index) = zone
-                                && new_click.kind() == iced_core::mouse::click::Kind::Double
-                                && let Some(panel_id) = self.panel_id(panel_index)
-                            {
-                                let interaction = PanelInteraction::YViewportReset { panel_id };
+                            shell.publish(M::from(KlineWidgetEvent::PanelInteraction(interaction)));
+                            state.clear_all_caches();
+                            return;
+                        }
 
-                                shell.publish(M::from(KlineWidgetEvent::PanelInteraction(
-                                    interaction,
-                                )));
-                                state.clear_all_caches();
-                                state.previous_click = Some(new_click);
-                                return;
-                            }
-
-                            if matches!(
-                                zone,
-                                LayoutHitZone::BottomXAxis | LayoutHitZone::PanelXAxis(_)
-                            ) && new_click.kind() == iced_core::mouse::click::Kind::Double
-                            {
-                                shell.publish(M::from(KlineWidgetEvent::XAxisDoubleClick));
-                                state.clear_all_caches();
-                                state.previous_click = Some(new_click);
-                                return;
-                            }
-
-                            state.previous_click = Some(new_click);
-                        } else {
-                            state.previous_click = None;
+                        if matches!(
+                            zone,
+                            LayoutHitZone::BottomXAxis | LayoutHitZone::PanelXAxis(_)
+                        ) && click_kind == Some(iced_core::mouse::click::Kind::Double)
+                        {
+                            shell.publish(M::from(KlineWidgetEvent::XAxisDoubleClick));
+                            state.clear_all_caches();
+                            return;
                         }
 
                         if let (
@@ -1510,8 +1923,6 @@ where
                             && let Some(row) = legend.rows.get(row_index)
                         {
                             shell.publish(M::from(icon_kind.into_event(row.ticker)));
-                            state.drag_mode = DragMode::None;
-                            state.last_cursor = None;
                             state.clear_all_caches();
                             shell.capture_event();
                             return;
@@ -1522,8 +1933,6 @@ where
                         })) = cursor_target
                         {
                             shell.publish(M::from(icon_kind.into_event()));
-                            state.drag_mode = DragMode::None;
-                            state.last_cursor = None;
                             state.clear_all_caches();
                             shell.capture_event();
                             return;
@@ -1532,27 +1941,46 @@ where
                         if let Some(CursorTarget::Legend(LegendTarget::StudyCategory {
                             icon: Some(icon_kind),
                         })) = cursor_target
+                            && self.study_legend.is_some()
                         {
-                            shell.publish(M::from(icon_kind.into_event()));
-                            state.drag_mode = DragMode::None;
-                            state.last_cursor = None;
+                            let event = match icon_kind {
+                                chrome::StudiesLegendIconKind::ExpandCollapse => {
+                                    KlineWidgetEvent::StudiesExpansionToggled
+                                }
+                                chrome::StudiesLegendIconKind::Visibility => {
+                                    KlineWidgetEvent::StudiesVisibilityToggled
+                                }
+                                chrome::StudiesLegendIconKind::Close => {
+                                    KlineWidgetEvent::StudiesRemove
+                                }
+                            };
+                            shell.publish(M::from(event));
                             state.clear_all_caches();
                             shell.capture_event();
                             return;
                         }
 
-                        if let (
-                            Some(legend),
-                            Some(CursorTarget::Legend(LegendTarget::Study {
-                                row: row_index,
-                                icon: Some(icon_kind),
-                            })),
-                        ) = (study_legend, cursor_target)
-                            && let Some(row) = legend.rows.get(row_index)
+                        if let Some(CursorTarget::Legend(LegendTarget::Study {
+                            row: row_index,
+                            icon: Some(icon_kind),
+                        })) = cursor_target
+                            && let Some(row) = self
+                                .study_legend
+                                .as_ref()
+                                .and_then(|legend| legend.rows.get(row_index))
                         {
-                            shell.publish(M::from(icon_kind.into_event(row.study_id)));
-                            state.drag_mode = DragMode::None;
-                            state.last_cursor = None;
+                            let event = match icon_kind {
+                                chrome::StudyLegendIconKind::Visibility => {
+                                    KlineWidgetEvent::StudyVisibilityToggled(row.id)
+                                }
+                                chrome::StudyLegendIconKind::Settings => {
+                                    KlineWidgetEvent::StudySettings(row.id)
+                                }
+                                chrome::StudyLegendIconKind::Close => {
+                                    KlineWidgetEvent::StudyRemove(row.id)
+                                }
+                            };
+                            shell.publish(M::from(event));
                             state.clear_all_caches();
                             shell.capture_event();
                             return;
@@ -1568,8 +1996,6 @@ where
                             && let Some(row) = legend.rows.get(row_index)
                         {
                             shell.publish(M::from(icon_kind.into_event(row.value_id)));
-                            state.drag_mode = DragMode::None;
-                            state.last_cursor = None;
                             state.clear_all_caches();
                             shell.capture_event();
                             return;
@@ -1577,16 +2003,12 @@ where
 
                         if let Some(CursorTarget::CornerControl(kind)) = cursor_target {
                             shell.publish(M::from(kind.into_event()));
-                            state.drag_mode = DragMode::None;
-                            state.last_cursor = None;
                             state.clear_all_caches();
                             shell.capture_event();
                             return;
                         }
 
                         if matches!(cursor_target, Some(CursorTarget::Legend(_))) {
-                            state.drag_mode = DragMode::None;
-                            state.last_cursor = None;
                             return;
                         }
 
@@ -1596,218 +2018,108 @@ where
                             let interaction = kind.into_interaction_kind(panel_index);
 
                             shell.publish(M::from(KlineWidgetEvent::PanelInteraction(interaction)));
-                            state.drag_mode = DragMode::None;
-                            state.last_cursor = None;
                             state.clear_all_caches();
                             shell.capture_event();
                             return;
                         }
 
-                        let tpo_hit = if self.drawings.allows_panning()
-                            && let LayoutHitZone::PanelPlot(panel_index) = zone
-                            && let Some(scene) = scene.as_ref()
-                            && panel_index == scene.primary.panel_index
-                        {
-                            prioritized_tpo_hit(
-                                self.tpo_hit_test(scene, cursor_pos, state.selected_tpo_profile),
-                                matches!(
-                                    cursor_target,
-                                    Some(
-                                        CursorTarget::Drawing(_)
-                                            | CursorTarget::DrawingHandle { .. }
-                                    )
-                                ),
-                            )
-                        } else {
-                            None
+                        let layer_hit = match cursor_target {
+                            Some(CursorTarget::StudyObject(hit)) => Some(hit),
+                            _ => None,
                         };
-
-                        if let Some(hit) = tpo_hit {
-                            match hit {
-                                TpoHit::Reset { .. }
-                                | TpoHit::MergeLeft { .. }
-                                | TpoHit::Profile { .. } => {
-                                    state.pending_tpo_hit = Some(hit);
-                                    state.clear_overlay_caches();
-                                    if let LayoutHitZone::PanelPlot(panel_index) = zone {
-                                        state.drag_mode = if matches!(hit, TpoHit::Profile { .. })
-                                            && Self::is_command_modifier(state.modifiers)
-                                        {
-                                            DragMode::Marquee {
-                                                panel_index,
-                                                start: cursor_pos,
-                                                current: cursor_pos,
-                                            }
-                                        } else {
-                                            DragMode::Pan { panel_index }
-                                        };
-                                        state.last_cursor = Some(cursor_pos);
-                                        shell.capture_event();
-                                        return;
-                                    }
-                                }
-                                TpoHit::Boundary {
-                                    boundary,
-                                    minimum,
-                                    maximum,
-                                } => {
-                                    state.selected_tpo_profile = Some(boundary);
-                                    state.drag_mode = DragMode::TpoBoundary {
-                                        boundary,
-                                        preview: boundary,
-                                        minimum,
-                                        maximum,
-                                    };
-                                    state.last_cursor = Some(cursor_pos);
-                                    state.clear_overlay_caches();
-                                    shell.capture_event();
-                                    return;
-                                }
-                            }
-                        } else if self.drawings.allows_panning()
+                        let drawing_hit = match cursor_target {
+                            Some(CursorTarget::Drawing(hit)) => Some(hit),
+                            _ => None,
+                        };
+                        if self.drawing_snapshot.allows_panning()
                             && matches!(zone, LayoutHitZone::PanelPlot(_))
-                            && state.selected_tpo_profile.take().is_some()
+                            && let Some(scene) = scene.as_ref()
                         {
-                            state.clear_overlay_caches();
+                            self.broadcast_study_object_pointer(
+                                LayerPointerInput::PlotPressed {
+                                    target: layer_hit.map(|hit| hit.key),
+                                },
+                                self.layer_context(
+                                    scene,
+                                    Some(cursor_pos),
+                                    state.interaction.modifiers(),
+                                ),
+                                state,
+                                shell,
+                            );
+                        }
+                        if let Some(hit) = layer_hit.filter(|hit| hit.precedes_tools)
+                            && let Some(scene) = scene.as_ref()
+                            && self.begin_study_object_interaction(
+                                hit.key, scene, cursor_pos, state, shell,
+                            )
+                        {
+                            return;
                         }
 
-                        if (self.drawings.measure.is_some()
-                            || state.modifiers.intersects(keyboard::Modifiers::SHIFT)
-                            || self.drawings.active_tool == DrawingTool::Measure)
+                        if (self.drawing_snapshot.measure.is_some()
+                            || state
+                                .interaction
+                                .modifiers()
+                                .intersects(keyboard::Modifiers::SHIFT)
+                            || self.drawing_snapshot.active_tool == DrawingTool::Measure)
                             && let LayoutHitZone::PanelPlot(panel_index) = zone
                         {
-                            let measure_panel = self.drawings.measure.map(|m| m.state().panel_id);
+                            let measure_panel =
+                                self.drawing_snapshot.measure.map(|m| m.state().panel_id);
                             let panel_id = measure_panel.or_else(|| self.panel_id(panel_index));
 
                             if let Some(panel_id) = panel_id
                                 && let Some(scene) = self.cached_scene(state, layout, cursor)
                                 && let Some(anchor) = self
-                                    .drawing_anchor_from_scene_point(&scene, panel_id, cursor_pos)
+                                    .drawing_view(&scene)
+                                    .drawing_anchor_from_scene_point(panel_id, cursor_pos)
                             {
-                                shell.publish(M::from(KlineWidgetEvent::Drawing(
+                                shell.publish(M::from(KlineWidgetEvent::from(
                                     KlineWidgetDrawingEvent::MeasureClick(anchor),
                                 )));
-                                state.drag_mode = DragMode::None;
-                                state.last_cursor = None;
                                 state.clear_all_caches();
                                 shell.capture_event();
                                 return;
                             }
                         }
 
-                        if self.drawings.allows_panning()
-                            && matches!(zone, LayoutHitZone::PanelPlot(_))
-                            && let Some(scene) = self.cached_scene(state, layout, cursor)
+                        if let Some(hit) = layer_hit.filter(|hit| !hit.precedes_tools)
+                            && let Some(scene) = scene.as_ref()
+                            && self.begin_study_object_interaction(
+                                hit.key, scene, cursor_pos, state, shell,
+                            )
                         {
-                            if matches!(cursor_target, Some(CursorTarget::CornerControl(_))) {
-                                state.drag_mode = DragMode::None;
-                                state.last_cursor = None;
-                                return;
-                            }
-
-                            if !Self::is_command_modifier(state.modifiers)
-                                && let Some((id, handle_kind)) =
-                                    self.hit_test_selected_drawing_handle(&scene, cursor_pos)
-                                && let Some(anchor) = self.drawing_anchor_from_scene_cursor(&scene)
-                            {
-                                let target = DrawingDragTarget::Handle(handle_kind);
-
-                                shell.publish(M::from(KlineWidgetEvent::Drawing(
-                                    KlineWidgetDrawingEvent::DragStarted {
-                                        id,
-                                        target,
-                                        operation: DrawingDragOperation::Move,
-                                        anchor,
-                                    },
-                                )));
-                                state.drag_mode = DragMode::DrawingMove {
-                                    id,
-                                    target,
-                                    panel_id: anchor.panel_id,
-                                };
-                                state.last_cursor = Some(cursor_pos);
-                                state.clear_overlay_caches();
-                                state.clear_all_caches();
-                                shell.capture_event();
-                                return;
-                            }
-
-                            let hit_drawing = self.hit_test_drawings(&scene, cursor_pos);
-
-                            if let Some(id) = hit_drawing {
-                                let was_selected = self.drawings.selected_drawings.contains(&id);
-
-                                if !was_selected {
-                                    shell.publish(M::from(KlineWidgetEvent::Drawing(
-                                        KlineWidgetDrawingEvent::Selected(Some(id)),
-                                    )));
-                                }
-
-                                if let Some(anchor) = self.drawing_anchor_from_scene_cursor(&scene)
-                                {
-                                    let target = DrawingDragTarget::Translate;
-                                    let operation = if Self::is_command_modifier(state.modifiers) {
-                                        DrawingDragOperation::Copy
-                                    } else {
-                                        DrawingDragOperation::Move
-                                    };
-
-                                    shell.publish(M::from(KlineWidgetEvent::Drawing(
-                                        KlineWidgetDrawingEvent::DragStarted {
-                                            id,
-                                            target,
-                                            operation,
-                                            anchor,
-                                        },
-                                    )));
-                                    state.drag_mode = DragMode::DrawingMove {
-                                        id,
-                                        target,
-                                        panel_id: anchor.panel_id,
-                                    };
-                                    state.last_cursor = Some(cursor_pos);
-                                    state.clear_overlay_caches();
-                                    state.clear_all_caches();
-                                    shell.capture_event();
-                                    return;
-                                }
-
-                                state.drag_mode = DragMode::None;
-                                state.last_cursor = Some(cursor_pos);
-                                state.clear_overlay_caches();
-                                state.clear_all_caches();
-                                shell.capture_event();
-                                return;
-                            }
-
-                            if !Self::is_command_modifier(state.modifiers)
-                                && !self.drawings.selected_drawings.is_empty()
-                            {
-                                shell.publish(M::from(KlineWidgetEvent::Drawing(
-                                    KlineWidgetDrawingEvent::Selected(None),
-                                )));
-                                state.clear_all_caches();
-                            }
+                            return;
                         }
 
-                        if self.drawings.allows_panning()
-                            && Self::is_command_modifier(state.modifiers)
+                        if drawing_hit.is_some()
+                            && let Some(scene) = scene.as_ref()
+                            && self.begin_drawing_interaction(scene, cursor_pos, state, shell)
+                        {
+                            return;
+                        }
+
+                        if self.drawing_snapshot.allows_panning()
+                            && Self::is_command_modifier(state.interaction.modifiers())
                             && let LayoutHitZone::PanelPlot(panel_index) = zone
                         {
-                            state.drag_mode = DragMode::Marquee {
-                                panel_index,
-                                start: cursor_pos,
-                                current: cursor_pos,
-                            };
-                            state.last_cursor = Some(cursor_pos);
+                            state.interaction.begin_drag_candidate(
+                                cursor_pos,
+                                DragAction::Marquee {
+                                    panel_index,
+                                    source_layer: None,
+                                },
+                            );
                             state.clear_cursor_caches();
                             shell.capture_event();
                             return;
                         }
 
                         if let LayoutHitZone::Splitter(split_index) = zone {
-                            state.drag_mode = DragMode::Split(split_index);
-                            state.last_cursor = Some(cursor_pos);
+                            state
+                                .interaction
+                                .begin_drag_candidate(cursor_pos, DragAction::Split(split_index));
                             shell.capture_event();
                         } else if let LayoutHitZone::YAxis(panel_index) = zone {
                             let primary_panel_id = self.composition.primary_panel_id();
@@ -1826,234 +2138,162 @@ where
                                 .map_or(cursor_pos.y, |panel| {
                                     layout_tree.regions.plot.y + panel.plot.center().y
                                 });
-                            state.drag_mode = DragMode::YAxisScale {
-                                panel_index,
-                                anchor_y,
-                            };
-                            state.last_cursor = Some(cursor_pos);
+                            state.interaction.begin_drag_candidate(
+                                cursor_pos,
+                                DragAction::YAxisScale {
+                                    panel_index,
+                                    anchor_y,
+                                },
+                            );
                             shell.capture_event();
                         } else if matches!(
                             zone,
                             LayoutHitZone::PanelXAxis(_) | LayoutHitZone::BottomXAxis
                         ) {
                             if let Some(scene) = self.cached_scene(state, layout, cursor) {
-                                state.drag_mode = DragMode::XAxisScale {
-                                    anchor_x: cursor_pos.x,
-                                    initial_world: self.horizontal_world,
-                                    initial_right_unit: scene.effective_right_x_unit(),
-                                };
-                                state.last_cursor = None;
+                                state.interaction.begin_drag_candidate(
+                                    cursor_pos,
+                                    DragAction::XAxisScale {
+                                        initial_world: self.horizontal_world,
+                                        initial_right_unit: scene.effective_right_x_unit(),
+                                    },
+                                );
                                 shell.capture_event();
                             } else {
-                                state.drag_mode = DragMode::None;
-                                state.last_cursor = None;
+                                self.cancel_pointer(state, layout, cursor, shell);
                             }
-                        } else if !self.drawings.allows_panning() {
-                            let magnetic = self.drawing_magnet_enabled(state.modifiers);
-                            let anchor = if let Some(panel_id) = self.drawings.draft_panel_id() {
-                                self.cached_scene(state, layout, cursor).and_then(|scene| {
-                                    self.drawing_draft_anchor_from_scene_point(
-                                        &scene, panel_id, cursor_pos, magnetic,
-                                    )
-                                })
-                            } else if let LayoutHitZone::PanelPlot(panel_index) = zone {
-                                let panel_id = self.panel_id(panel_index);
-
-                                panel_id.and_then(|panel_id| {
+                        } else if !self.drawing_snapshot.allows_panning() {
+                            let magnetic =
+                                self.drawing_magnet_enabled(state.interaction.modifiers());
+                            let anchor =
+                                if let Some(panel_id) = self.drawing_snapshot.draft_panel_id() {
                                     self.cached_scene(state, layout, cursor).and_then(|scene| {
-                                        self.drawing_draft_anchor_from_scene_point(
-                                            &scene, panel_id, cursor_pos, magnetic,
-                                        )
+                                        self.drawing_view(&scene)
+                                            .drawing_draft_anchor_from_scene_point(
+                                                panel_id, cursor_pos, magnetic,
+                                            )
                                     })
-                                })
-                            } else {
-                                None
-                            };
+                                } else if let LayoutHitZone::PanelPlot(panel_index) = zone {
+                                    let panel_id = self.panel_id(panel_index);
+
+                                    panel_id.and_then(|panel_id| {
+                                        self.cached_scene(state, layout, cursor).and_then(|scene| {
+                                            self.drawing_view(&scene)
+                                                .drawing_draft_anchor_from_scene_point(
+                                                    panel_id, cursor_pos, magnetic,
+                                                )
+                                        })
+                                    })
+                                } else {
+                                    None
+                                };
 
                             if let Some(anchor) = anchor {
-                                shell.publish(M::from(KlineWidgetEvent::Drawing(
+                                state
+                                    .interaction
+                                    .begin_click(cursor_pos, PressAction::DrawingPlacement);
+                                shell.publish(M::from(KlineWidgetEvent::from(
                                     KlineWidgetDrawingEvent::AnchorPressed(anchor),
                                 )));
-                                state.drag_mode = DragMode::None;
-                                state.last_cursor = Some(cursor_pos);
                                 state.clear_overlay_caches();
                                 state.clear_all_caches();
                                 shell.capture_event();
                             } else {
-                                state.drag_mode = DragMode::None;
-                                state.last_cursor = None;
+                                self.cancel_pointer(state, layout, cursor, shell);
                             }
-                        } else if self.drawings.allows_panning()
+                        } else if self.drawing_snapshot.allows_panning()
                             && let LayoutHitZone::PanelPlot(panel_index) = zone
                         {
-                            state.drag_mode = DragMode::Pan { panel_index };
-                            state.last_cursor = Some(cursor_pos);
-                        } else {
-                            state.drag_mode = DragMode::None;
-                            state.last_cursor = None;
+                            state.interaction.begin_drag_candidate(
+                                cursor_pos,
+                                DragAction::Pan {
+                                    panel_index,
+                                    source_layer: None,
+                                },
+                            );
                         }
                     }
                     mouse::Event::ButtonPressed(mouse::Button::Right)
-                        if self.drawings.drawing_draft.is_some() =>
+                        if self.drawing_snapshot.drawing_draft.is_some() =>
                     {
-                        shell.publish(M::from(KlineWidgetEvent::Drawing(
+                        shell.publish(M::from(KlineWidgetEvent::from(
                             KlineWidgetDrawingEvent::DraftCanceled,
                         )));
-                        state.drag_mode = DragMode::None;
-                        state.drag_start = None;
-                        state.last_cursor = None;
+                        self.cancel_pointer(state, layout, cursor, shell);
                         state.clear_overlay_caches();
                         state.clear_all_caches();
                         shell.capture_event();
                     }
                     mouse::Event::ButtonReleased(mouse::Button::Left) => {
-                        if let Some(hit) = state.pending_tpo_hit.take()
-                            && state
-                                .drag_start
-                                .is_some_and(|start| !drag_threshold_reached(start, cursor_pos))
-                        {
-                            match hit {
-                                TpoHit::Reset { start, end } => {
-                                    shell.publish(M::from(KlineWidgetEvent::Tpo(
-                                        TpoInteraction::Reset { start, end },
-                                    )));
-                                    state.clear_all_caches();
-                                    shell.capture_event();
-                                }
-                                TpoHit::MergeLeft {
-                                    boundary,
-                                    left_start,
-                                } => {
-                                    state.selected_tpo_profile = Some(left_start);
-                                    shell.publish(M::from(KlineWidgetEvent::Tpo(
-                                        TpoInteraction::MergeLeft { boundary },
-                                    )));
-                                    state.clear_all_caches();
-                                    shell.capture_event();
-                                }
-                                TpoHit::Profile { start } => {
-                                    state.selected_tpo_profile = (state.selected_tpo_profile
-                                        != Some(start))
-                                    .then_some(start);
-                                    state.drag_mode = DragMode::None;
-                                    state.clear_overlay_caches();
-                                    shell.capture_event();
-                                }
-                                TpoHit::Boundary { .. } => {}
-                            }
-                        }
-
-                        if let DragMode::DrawingMove { id, .. } = state.drag_mode {
-                            shell.publish(M::from(KlineWidgetEvent::Drawing(
-                                KlineWidgetDrawingEvent::DragFinished { id },
-                            )));
-                            state.clear_overlay_caches();
-                            state.clear_all_caches();
-                            shell.capture_event();
-                        }
-
-                        if let DragMode::TpoBoundary {
-                            boundary, preview, ..
-                        } = state.drag_mode
-                        {
-                            state.selected_tpo_profile = Some(preview);
-                            if boundary != preview {
-                                shell.publish(M::from(KlineWidgetEvent::Tpo(
-                                    TpoInteraction::MoveBoundary {
-                                        from: boundary,
-                                        to: preview,
-                                    },
-                                )));
-                            }
-                            state.clear_overlay_caches();
-                            state.clear_all_caches();
-                            shell.capture_event();
-                        }
-
-                        if let DragMode::Marquee {
-                            panel_index,
-                            start,
-                            current,
-                        } = state.drag_mode
-                        {
-                            if let Some(scene) = self.cached_scene(state, layout, cursor)
-                                && self
-                                    .clipped_marquee_rect(&scene, panel_index, start, current)
-                                    .is_some()
-                            {
-                                let selected = self.marquee_selected_drawings(
-                                    &scene,
-                                    panel_index,
-                                    start,
-                                    current,
-                                );
-                                shell.publish(M::from(KlineWidgetEvent::Drawing(
-                                    KlineWidgetDrawingEvent::MarqueeSelected(selected),
-                                )));
-                            }
-                            state.clear_overlay_caches();
-                            state.clear_all_caches();
-                            shell.capture_event();
-                        }
-
-                        state.drag_mode = DragMode::None;
-                        state.drag_start = None;
-                        state.last_cursor = None;
+                        self.finish_interaction_release(state, layout, cursor, false, shell);
                     }
                     mouse::Event::CursorMoved { .. } => {
                         state.clear_cursor_caches();
-
-                        if let Some(start) = state.drag_start
-                            && !matches!(state.drag_mode, DragMode::None)
-                        {
-                            if !drag_threshold_reached(start, cursor_pos) {
-                                shell.capture_event();
-                                return;
-                            }
-                            state.pending_tpo_hit = None;
+                        let pointer_move = state.interaction.pointer_moved(cursor_pos);
+                        if matches!(pointer_move, PointerMove::Pending) {
+                            shell.capture_event();
+                            return;
                         }
+                        let pointer_delta = match pointer_move {
+                            PointerMove::Moving { delta } => delta,
+                            PointerMove::Idle | PointerMove::Pending => Vector::new(0.0, 0.0),
+                        };
 
-                        if let Some(DrawingMeasure::Pending(measure_state)) = self.drawings.measure
+                        if let Some(DrawingMeasure::Pending(measure_state)) =
+                            self.drawing_snapshot.measure
                             && let Some(scene) = self.cached_scene(state, layout, cursor)
-                            && let Some(anchor) = self.drawing_anchor_from_scene_point(
-                                &scene,
-                                measure_state.panel_id,
-                                cursor_pos,
-                            )
+                            && let Some(anchor) = self
+                                .drawing_view(&scene)
+                                .drawing_anchor_from_scene_point(measure_state.panel_id, cursor_pos)
                         {
-                            shell.publish(M::from(KlineWidgetEvent::Drawing(
+                            shell.publish(M::from(KlineWidgetEvent::from(
                                 KlineWidgetDrawingEvent::MeasureMove(anchor),
                             )));
                         }
 
-                        if let DragMode::TpoBoundary {
-                            boundary,
-                            minimum,
-                            maximum,
-                            ..
-                        } = state.drag_mode
-                        {
+                        let drag_action = state.interaction.drag_action();
+                        if let Some(DragAction::Layer { key, .. }) = drag_action {
                             if let Some(scene) = self.cached_scene(state, layout, cursor)
-                                && let Some(preview) = self.tpo_boundary_from_cursor(
-                                    &scene, cursor_pos, boundary, minimum, maximum,
+                                && let Some(effects) = self.study_object_pointer(
+                                    key,
+                                    LayerPointerInput::Moved,
+                                    self.layer_context(
+                                        &scene,
+                                        Some(cursor_pos),
+                                        state.interaction.modifiers(),
+                                    ),
+                                    &mut state.study_objects,
                                 )
                             {
-                                state.drag_mode = DragMode::TpoBoundary {
-                                    boundary,
-                                    preview,
-                                    minimum,
-                                    maximum,
-                                };
-                                state.last_cursor = Some(cursor_pos);
-                                state.clear_overlay_caches();
-                                shell.capture_event();
+                                state.apply_interaction_effects(
+                                    effects,
+                                    shell,
+                                    KlineWidgetEvent::Study,
+                                );
                             }
-                        } else if let DragMode::XAxisScale {
-                            anchor_x,
+                        } else if let Some(DragAction::Drawing { .. }) = drag_action {
+                            if let Some(scene) = self.cached_scene(state, layout, cursor) {
+                                self.apply_drawing_pointer(
+                                    DrawingPointerInput::Moved,
+                                    self.layer_context(
+                                        &scene,
+                                        Some(cursor_pos),
+                                        state.interaction.modifiers(),
+                                    ),
+                                    state,
+                                    shell,
+                                );
+                            }
+                        } else if let Some(DragAction::XAxisScale {
                             initial_world,
                             initial_right_unit,
-                        } = state.drag_mode
+                        }) = drag_action
                         {
+                            let Some(anchor_x) =
+                                state.interaction.motion().map(|motion| motion.origin.x)
+                            else {
+                                return;
+                            };
                             let total_delta = (anchor_x - cursor_pos.x).round()
                                 * HORIZONTAL_DRAG_SCALE_DELTA_PER_PX;
                             if total_delta.abs() > f32::EPSILON
@@ -2077,7 +2317,7 @@ where
                                     shell.capture_event();
                                 }
                             }
-                        } else if let DragMode::Split(split_index) = state.drag_mode {
+                        } else if let Some(DragAction::Split(split_index)) = drag_action {
                             if let Some(split) = self.split_ratio_from_cursor(
                                 cursor_pos.y,
                                 &layout_tree,
@@ -2091,16 +2331,15 @@ where
                                 shell.publish(M::from(KlineWidgetEvent::PanelInteraction(
                                     interaction,
                                 )));
-                                state.last_cursor = Some(cursor_pos);
                                 state.clear_all_caches();
                                 shell.capture_event();
                             }
-                        } else if let DragMode::YAxisScale {
+                        } else if let Some(DragAction::YAxisScale {
                             panel_index,
                             anchor_y,
-                        } = state.drag_mode
+                        }) = drag_action
                         {
-                            let dy_px = state.rounded_drag_delta(cursor_pos).y;
+                            let dy_px = pointer_delta.y;
                             let scale_delta = (-dy_px) * Y_AXIS_DRAG_SCALE_DELTA_PER_PX;
 
                             if scale_delta.abs() > f32::EPSILON
@@ -2124,43 +2363,10 @@ where
                                 state.clear_all_caches();
                                 shell.capture_event();
                             }
-
-                            state.last_cursor = Some(cursor_pos);
-                        } else if let DragMode::DrawingMove {
-                            id,
-                            target,
-                            panel_id,
-                        } = state.drag_mode
-                        {
-                            if let Some(scene) = self.cached_scene(state, layout, cursor)
-                                && let Some(new_anchor) = self
-                                    .drawing_anchor_from_scene_point(&scene, panel_id, cursor_pos)
-                            {
-                                shell.publish(M::from(KlineWidgetEvent::Drawing(
-                                    KlineWidgetDrawingEvent::DragMoved {
-                                        id,
-                                        target,
-                                        anchor: new_anchor,
-                                    },
-                                )));
-                                state.last_cursor = Some(cursor_pos);
-                                state.clear_overlay_caches();
-                                state.clear_all_caches();
-                                shell.capture_event();
-                            }
-                        } else if let DragMode::Marquee {
-                            panel_index, start, ..
-                        } = state.drag_mode
-                        {
-                            state.drag_mode = DragMode::Marquee {
-                                panel_index,
-                                start,
-                                current: cursor_pos,
-                            };
-                            state.last_cursor = Some(cursor_pos);
+                        } else if state.marquee().is_some() {
                             state.clear_cursor_caches();
                             shell.capture_event();
-                        } else if let Some(draft_panel_id) = self.drawings.draft_panel_id()
+                        } else if let Some(draft_panel_id) = self.drawing_snapshot.draft_panel_id()
                             && !matches!(
                                 cursor_target,
                                 Some(
@@ -2170,28 +2376,26 @@ where
                                 )
                             )
                             && let Some(scene) = self.cached_scene(state, layout, cursor)
-                            && let Some(anchor) = self.drawing_draft_anchor_from_scene_point(
-                                &scene,
-                                draft_panel_id,
-                                cursor_pos,
-                                self.drawing_magnet_enabled(state.modifiers),
-                            )
+                            && let Some(anchor) = self
+                                .drawing_view(&scene)
+                                .drawing_draft_anchor_from_scene_point(
+                                    draft_panel_id,
+                                    cursor_pos,
+                                    self.drawing_magnet_enabled(state.interaction.modifiers()),
+                                )
                         {
-                            shell.publish(M::from(KlineWidgetEvent::Drawing(
+                            shell.publish(M::from(KlineWidgetEvent::from(
                                 KlineWidgetDrawingEvent::AnchorMoved(anchor),
                             )));
-                            state.last_cursor = Some(cursor_pos);
                             state.clear_cursor_caches();
                             shell.capture_event();
-                        } else if let DragMode::Pan { panel_index } = state.drag_mode {
+                        } else if let Some(DragAction::Pan { panel_index, .. }) = drag_action {
                             if Self::hit_corner_control(corner_controls, cursor_pos).is_some() {
-                                state.last_cursor = Some(cursor_pos);
                                 return;
                             }
 
-                            let drag_delta = state.rounded_drag_delta(cursor_pos);
-                            let dx_px = drag_delta.x;
-                            let dy_px = drag_delta.y;
+                            let dx_px = pointer_delta.x;
+                            let dy_px = pointer_delta.y;
                             let spacing = self.horizontal_world.spacing();
                             let offset = self.horizontal_world.offset() - dx_px / spacing;
 
@@ -2221,8 +2425,6 @@ where
                                 )));
                                 state.clear_all_caches();
                             }
-
-                            state.last_cursor = Some(cursor_pos);
                         }
                     }
                     _ => {}
@@ -2312,22 +2514,24 @@ where
                         RootPaintStep::Separators => {
                             Self::paint_separators(renderer, &scene, theme);
                         }
-                        RootPaintStep::Drawings => {
+                        RootPaintStep::Objects => {
                             let overlay_pixels = PixelGeometry::new(
                                 self.pixel_ratio,
                                 Point::new(bounds.x, bounds.y),
                             );
                             let geometry =
                                 state.drawing_cache.draw(renderer, bounds.size(), |frame| {
-                                    if self.drawings.has_state() {
-                                        self.fill_drawing_objects(
-                                            frame,
-                                            &scene,
-                                            palette,
-                                            generated_accents,
-                                            overlay_pixels,
-                                        );
-                                    }
+                                    self.drawing_view_at(
+                                        &scene,
+                                        None,
+                                        state.interaction.modifiers(),
+                                    )
+                                    .fill_drawing_objects(
+                                        frame,
+                                        palette,
+                                        generated_accents,
+                                        overlay_pixels,
+                                    );
                                 });
                             renderer.draw_geometry(geometry);
                         }
@@ -2359,7 +2563,7 @@ where
                     PaintStep::Plot(layer) => {
                         let cache = match layer {
                             PrimaryPlotLayer::Background => &state.plot_background_cache,
-                            PrimaryPlotLayer::Tpo => &state.tpo_cache,
+                            PrimaryPlotLayer::Objects => &state.study_underlay_cache,
                             PrimaryPlotLayer::Foreground => &state.plot_cache,
                             PrimaryPlotLayer::PriceBars => &state.price_bars_cache,
                         };
@@ -2371,6 +2575,7 @@ where
                             self.fill_main_geometry(
                                 frame,
                                 &scene,
+                                &state.study_objects,
                                 palette,
                                 generated_accents,
                                 plot_pixels,
@@ -2389,8 +2594,14 @@ where
                     PaintStep::Widget(layer) => {
                         let overlay_pixels =
                             PixelGeometry::new(self.pixel_ratio, Point::new(bounds.x, bounds.y));
-                        let drawing_magnet = self.drawing_magnet_enabled(state.modifiers);
+                        let drawing_magnet =
+                            self.drawing_magnet_enabled(state.interaction.modifiers());
                         let geometry = match layer {
+                            WidgetPaintStep::Legends => {
+                                state.legend_cache.draw(renderer, bounds.size(), |frame| {
+                                    self.fill_legends(frame, &scene, palette, generated_accents);
+                                })
+                            }
                             WidgetPaintStep::Overlay => {
                                 state.overlay_cache.draw(renderer, bounds.size(), |frame| {
                                     self.fill_overlay(
@@ -2400,12 +2611,33 @@ where
                                         generated_accents,
                                         overlay_pixels,
                                         drawing_magnet,
-                                        state.selected_tpo_profile,
-                                        match state.drag_mode {
-                                            DragMode::TpoBoundary { preview, .. } => Some(preview),
-                                            _ => None,
-                                        },
                                     );
+                                    self.paint_study_objects(
+                                        LayerPaintPhase::Overlay,
+                                        self.layer_context(
+                                            &scene,
+                                            None,
+                                            state.interaction.modifiers(),
+                                        ),
+                                        &state.study_objects,
+                                        frame,
+                                        palette,
+                                        generated_accents,
+                                        overlay_pixels,
+                                    );
+                                    if self.drawing_snapshot.has_state() {
+                                        self.drawing_view_at(
+                                            &scene,
+                                            None,
+                                            state.interaction.modifiers(),
+                                        )
+                                        .fill_drawing_interaction(
+                                            frame,
+                                            palette,
+                                            generated_accents,
+                                            overlay_pixels,
+                                        );
+                                    }
                                 })
                             }
                             WidgetPaintStep::InteractionText => state.interaction_text_cache.draw(
@@ -2423,19 +2655,15 @@ where
                             ),
                             WidgetPaintStep::Marquee => {
                                 state.marquee_cache.draw(renderer, bounds.size(), |frame| {
-                                    if let DragMode::Marquee {
-                                        panel_index,
-                                        start,
-                                        current,
-                                    } = &state.drag_mode
-                                        && let Some(rect) = self.clipped_marquee_rect(
-                                            &scene,
-                                            *panel_index,
-                                            *start,
-                                            *current,
-                                        )
+                                    if let Some(marquee) = state.marquee()
+                                        && let Some(rect) =
+                                            self.drawing_view(&scene).clipped_marquee_rect(
+                                                marquee.panel_index,
+                                                marquee.start,
+                                                marquee.current,
+                                            )
                                     {
-                                        self.fill_marquee_rectangle(frame, rect, palette);
+                                        drawing::fill_marquee_rectangle(frame, rect, palette);
                                     }
                                 })
                             }
@@ -2459,48 +2687,15 @@ where
     ) -> advanced::mouse::Interaction {
         let state = tree.state.downcast_ref::<State>();
 
-        if matches!(
-            state.drag_mode,
-            DragMode::Split(_) | DragMode::YAxisScale { .. }
-        ) {
-            return advanced::mouse::Interaction::ResizingVertically;
-        }
-
-        if matches!(state.drag_mode, DragMode::TpoBoundary { .. }) {
-            return advanced::mouse::Interaction::ResizingHorizontally;
-        }
-
-        if matches!(state.drag_mode, DragMode::XAxisScale { .. }) {
-            return advanced::mouse::Interaction::ResizingHorizontally;
-        }
-
-        if matches!(state.drag_mode, DragMode::Pan { .. }) {
-            return advanced::mouse::Interaction::Grabbing;
-        }
-
-        if matches!(state.drag_mode, DragMode::DrawingMove { .. }) {
-            return advanced::mouse::Interaction::Grabbing;
+        if let Some(appearance) = state
+            .interaction
+            .drag_action()
+            .and_then(DragAction::cursor_appearance)
+        {
+            return appearance;
         }
 
         let scene = self.cached_scene(state, layout, cursor);
-        if self.drawings.allows_panning()
-            && let Some(scene) = scene.as_ref()
-            && let Some(point) = cursor.position_in(layout.bounds())
-            && let Some(hit) = prioritized_tpo_hit(
-                self.tpo_hit_test(scene, point, state.selected_tpo_profile),
-                matches!(
-                    scene.interaction.target,
-                    CursorTarget::Drawing(_) | CursorTarget::DrawingHandle { .. }
-                ),
-            )
-        {
-            return match hit {
-                TpoHit::Boundary { .. } => advanced::mouse::Interaction::ResizingHorizontally,
-                TpoHit::Reset { .. } | TpoHit::MergeLeft { .. } | TpoHit::Profile { .. } => {
-                    advanced::mouse::Interaction::Pointer
-                }
-            };
-        }
         let Some(target) = scene.map(|scene| scene.interaction.target) else {
             return advanced::mouse::Interaction::default();
         };
@@ -2516,14 +2711,8 @@ where
             CursorTarget::PanelControl { .. } | CursorTarget::CornerControl(_) => {
                 advanced::mouse::Interaction::Pointer
             }
-            CursorTarget::DrawingHandle { .. } => advanced::mouse::Interaction::Grab,
-            CursorTarget::Drawing(id) => {
-                if self.drawings.selected_drawings.contains(&id) {
-                    advanced::mouse::Interaction::Grab
-                } else {
-                    advanced::mouse::Interaction::Pointer
-                }
-            }
+            CursorTarget::Drawing(hit) => hit.cursor_appearance(),
+            CursorTarget::StudyObject(hit) => hit.cursor,
             CursorTarget::Splitter(_) | CursorTarget::YAxis(_) => {
                 advanced::mouse::Interaction::ResizingVertically
             }
@@ -2553,26 +2742,11 @@ fn history_shortcut(
     })
 }
 
-fn prioritized_tpo_hit(hit: Option<TpoHit>, drawing_target: bool) -> Option<TpoHit> {
-    hit.filter(|hit| !drawing_target || !matches!(hit, TpoHit::Profile { .. }))
-}
-
-fn drag_threshold_reached(start: Point, current: Point) -> bool {
-    (start.x - current.x).abs() + (start.y - current.y).abs() >= DRAG_THRESHOLD_PX
-}
-
 fn primary_scale_inversion_shortcut(
     physical_key: keyboard::key::Physical,
     modifiers: keyboard::Modifiers,
 ) -> bool {
     modifiers.alt() && physical_key == keyboard::key::Code::KeyI
-}
-
-fn point_in_rectangle(point: Point, bounds: Rectangle) -> bool {
-    point.x >= bounds.x
-        && point.x <= bounds.x + bounds.width
-        && point.y >= bounds.y
-        && point.y <= bounds.y + bounds.height
 }
 
 impl<'a, M> From<KlineWidget<'a>> for Element<'a, M, Theme, Renderer>

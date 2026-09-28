@@ -1282,10 +1282,17 @@ impl DrawingTools {
 
         for tool in DrawingTool::all().iter().copied() {
             let selected = self.active_tool == tool;
-            let label = tool.short_label().to_string();
+            let icon = match tool {
+                DrawingTool::Cursor => style::Icon::Crosshair,
+                DrawingTool::Trendline => style::Icon::Trendline,
+                DrawingTool::Box => style::Icon::DrawingBox,
+                DrawingTool::HorizontalLine => style::Icon::HorizontalLine,
+                DrawingTool::VerticalLine => style::Icon::VerticalLine,
+                DrawingTool::Measure => style::Icon::Ruler,
+            };
 
             let btn =
-                iced::widget::button(iced::widget::text(label).align_x(iced::Alignment::Center))
+                iced::widget::button(style::icon_text(icon, 16).align_x(iced::Alignment::Center))
                     .style(move |theme, status| style::button::transparent(theme, status, selected))
                     .width(iced::Length::Fill);
 
@@ -1301,24 +1308,26 @@ impl DrawingTools {
 
         let magnet_enabled = self.magnet_enabled;
         let magnet_active = self.magnet_active();
-        let magnet_button =
-            iced::widget::button(iced::widget::text("M").align_x(iced::Alignment::Center))
-                .style(move |theme, status| {
-                    style::button::magnet(theme, status, magnet_enabled, magnet_active)
-                })
-                .width(iced::Length::Fill)
-                .on_press(on_sidebar_message(DrawingMessage::ToggleMagnet));
+        let magnet_button = iced::widget::button(
+            style::icon_text(style::Icon::Magnet, 16).align_x(iced::Alignment::Center),
+        )
+        .style(move |theme, status| {
+            style::button::magnet(theme, status, magnet_enabled, magnet_active)
+        })
+        .width(iced::Length::Fill)
+        .on_press(on_sidebar_message(DrawingMessage::ToggleMagnet));
         tools = tools.push(tooltip(
             magnet_button,
             Some("Magnet"),
             TooltipPosition::Right,
         ));
 
-        let objects_button =
-            iced::widget::button(iced::widget::text("O").align_x(iced::Alignment::Center))
-                .style(|theme, status| style::button::transparent(theme, status, false))
-                .width(iced::Length::Fill)
-                .on_press(on_sidebar_message(DrawingMessage::ShowObjectListPage));
+        let objects_button = iced::widget::button(
+            style::icon_text(style::Icon::Layers, 16).align_x(iced::Alignment::Center),
+        )
+        .style(|theme, status| style::button::transparent(theme, status, false))
+        .width(iced::Length::Fill)
+        .on_press(on_sidebar_message(DrawingMessage::ShowObjectListPage));
         tools = tools.push(tooltip(
             objects_button,
             Some("Drawings"),

@@ -13,7 +13,6 @@ use iced::widget::{checkbox, column, row, space, text};
 
 pub fn heatmap_shader_cfg_view<'a>(
     cfg: heatmap::Config,
-    study_config: &'a study::Configurator<HeatmapStudy>,
     studies: &'a [HeatmapStudy],
     basis: data::chart::Basis,
     theme_accents: ThemeAccents,
@@ -91,14 +90,13 @@ pub fn heatmap_shader_cfg_view<'a>(
         col
     };
 
-    let study_cfg = study_config
-        .view(studies, basis, theme_accents)
+    let study_cfg = study::view(studies, basis, theme_accents)
         .map(move |msg| Message::Study(study::StudyMessage::Heatmap(msg)));
 
     let mut content = InspectorContent::new(vec![
         InspectorSection::titled("Size filter", size_filters).with_modal_container(),
         InspectorSection::titled("Trade visualization", trade_viz_column).with_modal_container(),
-        InspectorSection::titled("Studies", study_cfg),
+        InspectorSection::titled("Studies", study_cfg).with_modal_container(),
     ]);
     content.set_footer(row![
         space::horizontal(),

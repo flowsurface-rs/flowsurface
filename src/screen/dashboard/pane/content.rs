@@ -12,7 +12,7 @@ use crate::{
         self, heatmap_shader_cfg_view, ladder_cfg_view, timesales_cfg_view,
     },
     theme::ThemeAccents,
-    widget::inspector::{InspectorContent, InspectorSection},
+    widget::inspector::InspectorContent,
 };
 use data::{
     PaneSettingsSnapshot, PaneSettingsTransfer,
@@ -326,12 +326,9 @@ impl Content {
             Self::Kline {
                 chart: Some(chart), ..
             } => {
-                let mut content = InspectorContent::new(vec![InspectorSection::titled(
-                    "Data",
-                    chart.pane_settings_view().map(move |message| {
-                        Message::PaneEvent(pane, Event::KlineInteraction(message))
-                    }),
-                )]);
+                let mut content = chart
+                    .pane_settings_view()
+                    .map(move |message| Message::PaneEvent(pane, Event::KlineInteraction(message)));
                 content.set_footer(
                     row![
                         space::horizontal(),
@@ -349,14 +346,8 @@ impl Content {
                 let basis = selected_basis.unwrap_or(Basis::default_heatmap_time(ticker_info));
 
                 Some(
-                    heatmap_shader_cfg_view(
-                        chart.visual_config(),
-                        chart.study_configurator(),
-                        studies,
-                        basis,
-                        theme_accents,
-                    )
-                    .map(move |message| settings_message(pane, message)),
+                    heatmap_shader_cfg_view(chart.visual_config(), studies, basis, theme_accents)
+                        .map(move |message| settings_message(pane, message)),
                 )
             }
             Self::TimeAndSales(Some(panel)) => Some(

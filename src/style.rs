@@ -97,6 +97,25 @@ pub enum Icon {
     Folder = 61716,
     ExternalLink = 61772,
     Refresh = 59416,
+    Crosshair = 59426,
+    Trendline = 59427,
+    DrawingBox = 59428,
+    HorizontalLine = 59429,
+    VerticalLine = 59430,
+    Ruler = 59431,
+    Magnet = 59432,
+    Layers = 59433,
+    ChevronUp = 59434,
+    ChevronDown = 59435,
+    ChevronRight = 59436,
+    Eye = 59437,
+    EyeOff = 59438,
+}
+
+impl Icon {
+    pub fn visibility(visible: bool) -> Self {
+        if visible { Self::Eye } else { Self::EyeOff }
+    }
 }
 
 impl From<Icon> for char {
@@ -142,11 +161,17 @@ pub fn tooltip(theme: &Theme) -> Style {
     let palette = theme.extended_palette();
 
     Style {
-        background: Some(palette.background.weakest.color.into()),
+        text_color: Some(palette.background.base.text),
+        background: Some(palette.background.base.color.into()),
         border: Border {
             width: 1.0,
-            color: palette.background.weak.color,
+            color: palette.background.strong.color,
             radius: 4.0.into(),
+        },
+        shadow: Shadow {
+            offset: iced::Vector { x: 0.0, y: 0.0 },
+            blur_radius: 8.0,
+            color: Color::BLACK.scale_alpha(if palette.is_dark { 0.8 } else { 0.2 }),
         },
         ..Default::default()
     }
@@ -695,6 +720,39 @@ pub fn modal_container(theme: &Theme) -> Style {
         },
         snap: true,
     }
+}
+
+pub fn inspector_section(theme: &Theme) -> Style {
+    let palette = theme.extended_palette();
+    let mut style = modal_container(theme);
+    style.background = Some(palette.background.weaker.color.into());
+    style.text_color = Some(palette.background.weaker.text);
+    style
+}
+
+pub fn inspector_control(theme: &Theme) -> Style {
+    let palette = theme.extended_palette();
+    let mut style = modal_container(theme);
+    style.background = Some(palette.background.strong.color.into());
+    style.text_color = Some(palette.background.strong.text);
+    style.border.color = palette.background.stronger.color;
+    style
+}
+
+pub fn inspector_slider_container(theme: &Theme) -> Style {
+    let surface = theme.extended_palette().background.strongest;
+    let mut style = inspector_control(theme);
+    style.background = Some(surface.color.into());
+    style.text_color = Some(surface.text);
+    style
+}
+
+pub fn inspector_slider(theme: &Theme, status: widget::slider::Status) -> widget::slider::Style {
+    let palette = theme.extended_palette();
+
+    let mut style = widget::slider::default(theme, status);
+    style.rail.backgrounds.1 = palette.background.base.color.into();
+    style
 }
 
 pub fn chart_sidebar_container(theme: &Theme) -> Style {

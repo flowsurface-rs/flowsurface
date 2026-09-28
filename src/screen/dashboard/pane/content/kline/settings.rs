@@ -10,7 +10,7 @@ use crate::{
     tooltip,
     widget::{
         classic_slider_row,
-        inspector::{self, InspectorSection},
+        inspector::{self, InspectorContent, InspectorSection},
         series_editor::{self, SeriesStyleEntry, TickerSeriesEditor},
         study_configurator as study, theme_color_control,
     },
@@ -1336,6 +1336,7 @@ fn indicator_mark_section<'a>(
             .with_modal_container(),
     )
 }
+
 #[derive(Debug, Clone, Copy)]
 pub enum CandlestickSettingsMessage {
     Config(CandlestickConfig),
@@ -1346,26 +1347,25 @@ pub enum CandlestickSettingsMessage {
 pub(super) fn data_settings_content(
     trade_data_enabled: bool,
     legend_visibility: LegendVisibility,
-    basis: data::chart::Basis,
-    trade_data_locked: bool,
-) -> Element<'static, Message> {
-    let trade_data_required_for_basis = matches!(basis, data::chart::Basis::Tick(_));
+    trade_data_lock_reason: Option<&'static str>,
+) -> InspectorContent<'static, Message> {
+    let trade_data_enabled_checkbox = checkbox(trade_data_enabled)
+        .label("Trade data")
+        .on_toggle_maybe(
+            trade_data_lock_reason
+                .is_none()
+                .then_some(Message::TradeDataEnabledChanged),
+        );
+    let trade_data_setting = column![trade_data_enabled_checkbox].spacing(4);
     let trade_data_enabled_checkbox = tooltip(
-        checkbox(trade_data_enabled)
-            .label("Trade data")
-            .on_toggle_maybe(
-                (!trade_data_required_for_basis && !trade_data_locked)
-                    .then_some(Message::TradeDataEnabledChanged),
-            ),
-        Some(if trade_data_required_for_basis {
-            "Trade data is required for tick-based charts"
-        } else if trade_data_locked {
-            "Trade data is required by an active indicator"
-        } else {
-            "Allow Footprint and indicators that need trade data to subscribe and fetch it"
-        }),
-        TooltipPosition::Top,
+        trade_data_setting,
+        Some(
+            trade_data_lock_reason
+                .unwrap_or("Allow plots that need trade data to subscribe and fetch it"),
+        ),
+        TooltipPosition::Left,
     );
+
     let legend_picklist = tooltip(
         pick_list(
             LegendVisibility::ALL,
@@ -1374,15 +1374,13 @@ pub(super) fn data_settings_content(
         )
         .width(Length::Fill),
         None,
-        TooltipPosition::Top,
+        TooltipPosition::Left,
     );
 
-    column![
-        trade_data_enabled_checkbox,
-        inspector::setting_section("Legend visibility", legend_picklist).into_element()
-    ]
-    .spacing(8)
-    .into()
+    InspectorContent::new(vec![
+        InspectorSection::titled("Data", trade_data_enabled_checkbox).with_modal_container(),
+        InspectorSection::titled("Legend visibility", legend_picklist).with_modal_container(),
+    ])
 }
 
 fn footprint_section(config: FootprintConfig) -> Element<'static, Message> {
@@ -1456,7 +1454,7 @@ fn footprint_poc_section(
         let toggle = tooltip(
             toggle,
             (!trade_data_enabled).then_some("Enable trade data in pane settings to use."),
-            TooltipPosition::Top,
+            TooltipPosition::Right,
         );
 
         if !checked {
@@ -1508,7 +1506,7 @@ fn footprint_imbalance_section(
     let toggle = tooltip(
         toggle,
         (!trade_data_enabled).then_some("Enable trade data in pane settings to use."),
-        TooltipPosition::Top,
+        TooltipPosition::Right,
     );
 
     if !config.show {
