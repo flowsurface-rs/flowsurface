@@ -295,6 +295,57 @@ impl KlineStudy {
             .with_visibility(self.visible())
     }
 
+    pub fn with_default_inputs(self, basis: Basis) -> Self {
+        self.default_for_type_for_basis(basis).with_style_from(self)
+    }
+
+    pub fn with_default_style(self) -> Self {
+        self.with_style_from(self.default_for_type())
+    }
+
+    fn with_style_from(mut self, other: Self) -> Self {
+        match (&mut self, other) {
+            (
+                Self::VolumeProfile {
+                    colors,
+                    width_percent,
+                    opacity_percent,
+                    ..
+                },
+                Self::VolumeProfile {
+                    colors: other_colors,
+                    width_percent: other_width,
+                    opacity_percent: other_opacity,
+                    ..
+                },
+            ) => {
+                *colors = other_colors;
+                *width_percent = other_width;
+                *opacity_percent = other_opacity;
+            }
+            (Self::TpoProfile { colors, .. }, Self::TpoProfile { colors: other, .. }) => {
+                *colors = other;
+            }
+            (
+                Self::BigTrades {
+                    buy_color,
+                    sell_color,
+                    ..
+                },
+                Self::BigTrades {
+                    buy_color: other_buy,
+                    sell_color: other_sell,
+                    ..
+                },
+            ) => {
+                *buy_color = other_buy;
+                *sell_color = other_sell;
+            }
+            _ => unreachable!("study defaults retain the study type"),
+        }
+        self
+    }
+
     pub const fn visible(self) -> bool {
         match self {
             Self::VolumeProfile { visible, .. }

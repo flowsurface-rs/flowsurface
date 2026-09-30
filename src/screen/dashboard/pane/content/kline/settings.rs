@@ -1,5 +1,5 @@
 use super::layout::IndicatorState;
-use super::presentation::IndicatorPresentationResolver;
+use super::presentation::IndicatorPresentationCache;
 use super::studies::StudyState;
 use super::{ChartCommand, IndicatorInputCommand, IndicatorStyleCommand, Message as ChartMessage};
 use crate::widget::chart::kline::{IndicatorPresentationContext, ResolvedIndicatorStyleSlot};
@@ -43,6 +43,7 @@ pub(super) struct SettingsContext<'a> {
     pub(super) data: &'a KlineData,
     pub(super) indicators: &'a IndicatorState,
     pub(super) studies: &'a StudyState,
+    pub(super) presentation: &'a IndicatorPresentationCache,
     pub(super) series_editor: Option<&'a TickerSeriesEditor>,
     pub(super) trade_data_enabled: bool,
 }
@@ -54,6 +55,7 @@ impl<'a> SettingsContext<'a> {
         data: &'a KlineData,
         indicators: &'a IndicatorState,
         studies: &'a StudyState,
+        presentation: &'a IndicatorPresentationCache,
         trade_data_enabled: bool,
     ) -> Self {
         Self {
@@ -62,6 +64,7 @@ impl<'a> SettingsContext<'a> {
             data,
             indicators,
             studies,
+            presentation,
             series_editor: None,
             trade_data_enabled,
         }
@@ -73,13 +76,7 @@ impl<'a> SettingsContext<'a> {
     }
 
     fn presentation(&self) -> IndicatorPresentationContext {
-        IndicatorPresentationResolver::new(
-            self.indicators,
-            self.data,
-            self.basis,
-            self.trade_data_enabled,
-        )
-        .context()
+        self.presentation.context(self.indicators)
     }
 
     fn series_style_entry(&self, ticker: TickerInfo) -> Option<SeriesStyleEntry> {
@@ -340,11 +337,11 @@ impl InspectorState {
     }
 
     pub(super) fn is_confirming_reset(&self) -> bool {
-        self.settings.reset_confirmation
+        self.settings.reset_confirmation.is_some()
     }
 
     pub(super) fn dismiss_reset_confirmation(&mut self) -> bool {
-        if !self.settings.reset_confirmation {
+        if self.settings.reset_confirmation.is_none() {
             return false;
         }
 
@@ -423,7 +420,7 @@ impl InspectorState {
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    ResetRequested,
+    ResetRequested(ResetScope),
     ResetConfirmed,
     ResetCancelled,
     ClusterKindSelected(ClusterKind),
@@ -483,7 +480,8 @@ pub enum IndicatorIdSettingsMessage {
         slot: String,
         stroke_style: LineStrokeStyle,
     },
-    Reset,
+    ResetInputs,
+    ResetStyle,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -631,7 +629,7 @@ pub fn kline_indicator_cfg_view<'a>(
     active_style_slots: Vec<ResolvedIndicatorStyleSlot>,
     unavailable_marks: Vec<MarkKind>,
     theme_accents: ThemeAccents,
-) -> Element<'a, Message> {
+) -> (inspector::InspectorTab, Element<'a, Message>) {
     let indicator = modal.indicator();
     let instance_id = modal.instance_id();
     let definition = indicator.definition();
@@ -1595,7 +1593,7 @@ fn study_cfg_view(
     study: KlineStudy,
     basis: data::chart::Basis,
     theme_accents: ThemeAccents,
-) -> Element<'static, Message> {
+) -> (inspector::InspectorTab, Element<'static, Message>) {
     let content_for_tab = |tab| {
         study
             .view_config_without_reset(basis, theme_accents, tab, study::Message::StudyValueChanged)
@@ -1769,54 +1767,75 @@ enum SettingsTarget {
     Study(StudySettingsState),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResetScope {
+    Inputs,
+    Style,
+    All,
+}
+
+impl ResetScope {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Inputs => "Reset inputs",
+            Self::Style => "Reset style",
+            Self::All => "Reset settings",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct State {
     target: SettingsTarget,
-    reset_confirmation: bool,
+    reset_confirmation: Option<ResetScope>,
 }
 
 impl Default for State {
     fn default() -> Self {
         Self {
             target: SettingsTarget::Main,
-            reset_confirmation: false,
+            reset_confirmation: None,
         }
     }
 }
 
 impl State {
-    fn reset_message(&self, context: &SettingsContext<'_>) -> Option<Message> {
+    fn reset_message(&self, context: &SettingsContext<'_>, scope: ResetScope) -> Option<Message> {
         match &self.target {
             SettingsTarget::Main | SettingsTarget::Footprint => {
                 Some(Message::ResetFootprintSettings)
             }
             SettingsTarget::Indicator(modal) => Some(Message::Indicator {
                 instance_id: modal.instance_id(),
-                message: IndicatorIdSettingsMessage::Reset,
+                message: match scope {
+                    ResetScope::Inputs => IndicatorIdSettingsMessage::ResetInputs,
+                    ResetScope::Style => IndicatorIdSettingsMessage::ResetStyle,
+                    ResetScope::All => return None,
+                },
             }),
             SettingsTarget::Candlestick => Some(Message::CandlestickSettings(
                 CandlestickSettingsMessage::Reset,
             )),
             SettingsTarget::Series(ticker) => Some(Message::ResetSeriesSettings(*ticker)),
-            SettingsTarget::Study(modal) => context.studies.study(modal.study_id()).map(|study| {
-                Message::Study(study::Message::StudyValueChanged(
-                    study.default_for_type_for_basis(context.basis),
-                ))
-            }),
+            SettingsTarget::Study(modal) => {
+                let study = context.studies.study(modal.study_id())?;
+                let defaults = match scope {
+                    ResetScope::Inputs => study.with_default_inputs(context.basis),
+                    ResetScope::Style => study.with_default_style(),
+                    ResetScope::All => return None,
+                };
+                Some(Message::Study(study::Message::StudyValueChanged(defaults)))
+            }
         }
     }
 
     fn cancel_reset_confirmation(&mut self) {
-        self.reset_confirmation = false;
+        self.reset_confirmation = None;
     }
 
     fn confirmed_reset_message(&mut self, context: &SettingsContext<'_>) -> Option<Message> {
-        if !self.reset_confirmation {
-            return None;
-        }
-
-        self.reset_confirmation = false;
-        self.reset_message(context)
+        let scope = self.reset_confirmation.take()?;
+        self.reset_message(context, scope)
     }
 
     fn set_target(&mut self, target: SettingsTarget) {
@@ -1851,44 +1870,61 @@ impl State {
         }
     }
 
+    pub(super) fn contextual_title(&self, context: SettingsContext<'_>) -> Option<String> {
+        Some(match &self.target {
+            SettingsTarget::Main => return None,
+            SettingsTarget::Indicator(modal) => modal.indicator().to_string(),
+            SettingsTarget::Candlestick => "Base ticker".to_owned(),
+            SettingsTarget::Series(_) => "Comparison ticker".to_owned(),
+            SettingsTarget::Footprint => "Footprint".to_owned(),
+            SettingsTarget::Study(modal) => context
+                .studies
+                .study(modal.study_id())
+                .map_or_else(|| "Study".to_owned(), |study| study.to_string()),
+        })
+    }
+
     pub(super) fn contextual_content<'a>(
         &'a self,
         context: SettingsContext<'a>,
         theme_accents: ThemeAccents,
-    ) -> Option<Element<'a, ChartMessage>> {
+    ) -> Option<(Option<inspector::InspectorTab>, Element<'a, ChartMessage>)> {
         let presentation = context.presentation();
 
         let content = match &self.target {
             SettingsTarget::Main => return None,
-            SettingsTarget::Indicator(modal) => kline_indicator_cfg_view(
-                modal,
-                context
-                    .indicators
-                    .indicator_data_config(modal.instance_id()),
-                context.indicator_composition_settings(modal.instance_id()),
-                context.basis,
-                presentation.input_coverage.clone(),
-                context
-                    .indicators
-                    .indicator_style_config(modal.instance_id())
-                    .unwrap_or_default(),
-                presentation
-                    .presentation(modal.instance_id())
-                    .and_then(|presentation| presentation.effective_mark),
-                presentation.style_slots_for(modal.instance_id(), &modal.indicator()),
-                modal
-                    .indicator()
-                    .mark_specs()
-                    .iter()
-                    .filter(|spec| {
-                        !context
-                            .indicators
-                            .indicator_mark_selectable(modal.instance_id(), spec.mark)
-                    })
-                    .map(|spec| spec.mark)
-                    .collect(),
-                theme_accents,
-            ),
+            SettingsTarget::Indicator(modal) => {
+                let (tab, content) = kline_indicator_cfg_view(
+                    modal,
+                    context
+                        .indicators
+                        .indicator_data_config(modal.instance_id()),
+                    context.indicator_composition_settings(modal.instance_id()),
+                    context.basis,
+                    presentation.input_coverage.clone(),
+                    context
+                        .indicators
+                        .indicator_style_config(modal.instance_id())
+                        .unwrap_or_default(),
+                    presentation
+                        .presentation(modal.instance_id())
+                        .and_then(|presentation| presentation.effective_mark),
+                    presentation.style_slots_for(modal.instance_id(), &modal.indicator()),
+                    modal
+                        .indicator()
+                        .mark_specs()
+                        .iter()
+                        .filter(|spec| {
+                            !context
+                                .indicators
+                                .indicator_mark_selectable(modal.instance_id(), spec.mark)
+                        })
+                        .map(|spec| spec.mark)
+                        .collect(),
+                    theme_accents,
+                );
+                return Some((Some(tab), content.map(ChartMessage::Settings)));
+            }
             SettingsTarget::Candlestick => candlestick_cfg_view(
                 context.data.base_ticker(),
                 context.options.candlestick,
@@ -1911,100 +1947,113 @@ impl State {
                 context.trade_data_enabled,
                 theme_accents,
             ),
-            SettingsTarget::Study(modal) => context
-                .studies
-                .study(modal.study_id())
-                .map(|study| study_cfg_view(*modal, study, context.basis, theme_accents))
-                .unwrap_or_else(|| {
-                    footprint_cfg_view(
-                        context.options.footprint,
-                        context.trade_data_enabled,
-                        theme_accents,
-                    )
-                }),
+            SettingsTarget::Study(modal) => {
+                let study = context.studies.study(modal.study_id())?;
+                let (tab, content) = study_cfg_view(*modal, study, context.basis, theme_accents);
+                return Some((Some(tab), content.map(ChartMessage::Settings)));
+            }
         };
 
-        Some(content.map(ChartMessage::Settings))
+        Some((None, content.map(ChartMessage::Settings)))
     }
 
     pub(super) fn footer_view<'a>(
         &'a self,
         context: SettingsContext<'a>,
-    ) -> Option<Element<'a, ChartMessage>> {
+        tab: Option<inspector::InspectorTab>,
+    ) -> Option<(f32, Element<'a, ChartMessage>)> {
         if matches!(self.target, SettingsTarget::Main) {
             return None;
         }
 
-        self.reset_message(&context)?;
-        let confirming_reset = self.reset_confirmation;
+        let scope = match tab {
+            Some(inspector::InspectorTab::Inputs) => ResetScope::Inputs,
+            Some(inspector::InspectorTab::Style) => ResetScope::Style,
+            Some(inspector::InspectorTab::Source) => return None,
+            None => ResetScope::All,
+        };
+        self.reset_message(&context, scope)?;
+        let confirming_reset = self.reset_confirmation == Some(scope);
 
         let reset: Element<'_, ChartMessage> = if confirming_reset {
             row![
-                text("Reset settings?"),
-                button(style::icon_text(style::Icon::Checkmark, 12))
-                    .style(|theme, status| style::button::confirm(theme, status, true))
-                    .on_press(ChartMessage::Settings(Message::ResetConfirmed)),
-                button(style::icon_text(style::Icon::Close, 12))
-                    .style(|theme, status| style::button::cancel(theme, status, true))
-                    .on_press(ChartMessage::Settings(Message::ResetCancelled)),
+                text(format!("{}?", scope.label()))
+                    .size(style::text_size::EMPHASIS)
+                    .align_y(Alignment::Center),
+                row![
+                    button(style::icon_text(style::Icon::Checkmark, 12))
+                        .style(|theme, status| style::button::confirm(theme, status, true))
+                        .on_press(ChartMessage::Settings(Message::ResetConfirmed)),
+                    button(style::icon_text(style::Icon::Close, 12))
+                        .style(|theme, status| style::button::cancel(theme, status, true))
+                        .on_press(ChartMessage::Settings(Message::ResetCancelled)),
+                ]
+                .spacing(8)
             ]
             .align_y(Alignment::Center)
-            .spacing(4)
+            .spacing(24)
+            .padding([0, 12])
             .into()
         } else {
             button(text("Reset"))
-                .on_press(ChartMessage::Settings(Message::ResetRequested))
+                .on_press(ChartMessage::Settings(Message::ResetRequested(scope)))
                 .into()
         };
 
         if confirming_reset {
-            return Some(
-                row![space::horizontal(), reset]
-                    .align_y(Alignment::Center)
+            return Some((
+                inspector::InspectorFooter::HEIGHT,
+                iced::widget::container(reset)
+                    .align_x(Alignment::End)
+                    .width(Length::Fill)
+                    .padding(0)
+                    .style(crate::style::inspector_section)
                     .into(),
-            );
+            ));
+        }
+        if tab == Some(inspector::InspectorTab::Inputs)
+            && let SettingsTarget::Indicator(modal) = &self.target
+        {
+            let choices = context.indicator_attachment_choices(modal.instance_id());
+            if !choices.is_empty() {
+                let instance_id = modal.instance_id();
+                let attach = pick_list(choices, None::<IndicatorAttachmentChoice>, move |choice| {
+                    ChartMessage::Settings(Message::Indicator {
+                        instance_id,
+                        message: IndicatorIdSettingsMessage::AddOnSource(choice),
+                    })
+                })
+                .placeholder("Attach an indicator")
+                .width(Length::Fill);
+                return Some((
+                    inspector::InspectorFooter::HEIGHT,
+                    row![attach, reset]
+                        .align_y(Alignment::Center)
+                        .spacing(8)
+                        .into(),
+                ));
+            }
         }
 
-        Some(
-            match &self.target {
-                SettingsTarget::Indicator(modal) => {
-                    let choices = context.indicator_attachment_choices(modal.instance_id());
-                    if choices.is_empty() {
-                        row![space::horizontal(), reset]
-                    } else {
-                        let instance_id = modal.instance_id();
-                        let attach =
-                            pick_list(choices, None::<IndicatorAttachmentChoice>, move |choice| {
-                                ChartMessage::Settings(Message::Indicator {
-                                    instance_id,
-                                    message: IndicatorIdSettingsMessage::AddOnSource(choice),
-                                })
-                            })
-                            .placeholder("Attach an indicator")
-                            .width(Length::Fill);
-
-                        row![attach, reset].spacing(8)
-                    }
-                }
-                _ => row![space::horizontal(), reset],
-            }
-            .align_y(Alignment::Center)
-            .into(),
-        )
+        Some((
+            inspector::InspectorFooter::HEIGHT,
+            row![space::horizontal(), reset]
+                .align_y(Alignment::Center)
+                .into(),
+        ))
     }
 
     fn update(&mut self, context: &SettingsContext<'_>, message: Message) -> InspectorEffect {
         if !matches!(
             &message,
-            Message::ResetRequested | Message::ResetConfirmed | Message::ResetCancelled
+            Message::ResetRequested(_) | Message::ResetConfirmed | Message::ResetCancelled
         ) {
             self.cancel_reset_confirmation();
         }
 
         match message {
-            Message::ResetRequested => {
-                let can_reset = self.reset_message(context).is_some();
-                self.reset_confirmation = can_reset;
+            Message::ResetRequested(scope) => {
+                self.reset_confirmation = self.reset_message(context, scope).map(|_| scope);
             }
             Message::ResetConfirmed => {
                 let Some(message) = self.confirmed_reset_message(context) else {
@@ -2120,14 +2169,19 @@ impl State {
                             stroke_style,
                         }),
                     ),
-                    IndicatorIdSettingsMessage::Reset => {
+                    IndicatorIdSettingsMessage::ResetInputs => {
                         if let SettingsTarget::Indicator(modal) = &mut self.target
                             && modal.instance_id() == instance_id
                         {
                             modal.clear_input_drafts();
                         }
-                        Some(ChartCommand::reset_indicator_settings(instance_id))
+                        Some(ChartCommand::indicator_input(IndicatorInputCommand::Reset(
+                            instance_id,
+                        )))
                     }
+                    IndicatorIdSettingsMessage::ResetStyle => Some(ChartCommand::indicator_style(
+                        IndicatorStyleCommand::Reset(instance_id),
+                    )),
                 };
 
                 if let Some(command) = command {

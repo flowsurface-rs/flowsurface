@@ -670,6 +670,7 @@ impl KlineData {
         &mut self,
         ticker_info: TickerInfo,
         series: &OpenInterestSeries,
+        indicators: &IndicatorInstanceStore,
     ) -> KlineDataChange {
         if ticker_info != self.base_ticker {
             return KlineDataChange::HistoricalInput {
@@ -686,7 +687,7 @@ impl KlineData {
 
         let has_open_interest_consumer = self
             .indicator_host
-            .has_input_consumer(IndicatorInputSource::OpenInterest);
+            .has_input_consumer(IndicatorInputSource::OpenInterest, indicators);
         if series.is_empty() {
             return KlineDataChange::HistoricalInput {
                 source: IndicatorInputSource::OpenInterest,

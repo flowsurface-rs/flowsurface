@@ -1459,10 +1459,9 @@ impl<'a> KlineWidget<'a> {
             frame.fill(&canvas::Path::circle(start, 3.0), color);
             frame.fill(&canvas::Path::circle(end, 3.0), color);
             if let Some(text) = segment.text {
-                let text_offset = if text.contains("Bull") { -8.0 } else { 8.0 };
                 frame.fill_text(canvas::Text {
                     content: text,
-                    position: Point::new(end.x, end.y + text_offset),
+                    position: Point::new(end.x, end.y - 8.0),
                     color,
                     size: INDICATOR_MARKER_TEXT_SIZE_PX.into(),
                     align_x: iced::Alignment::Center.into(),
@@ -1663,7 +1662,8 @@ impl<'a> KlineWidget<'a> {
             return;
         };
         for value_id in self.panel_indicator_value_ids(indicator_panel.panel_index) {
-            if self.indicator_is_unavailable(Some(value_id))
+            if !self.panel_indicator_visible(indicator_panel.panel_index, value_id)
+                || self.indicator_is_unavailable(Some(value_id))
                 || !self.indicator_fill_visible(value_id)
             {
                 continue;
@@ -1895,6 +1895,9 @@ impl<'a> KlineWidget<'a> {
         let Some(value_id) = indicator_panel.value_id else {
             return;
         };
+        if !self.panel_indicator_visible(indicator_panel.panel_index, value_id) {
+            return;
+        }
         let Some(indicator) = self.indicator_kind(value_id) else {
             return;
         };
@@ -2129,6 +2132,9 @@ impl<'a> KlineWidget<'a> {
                         }
                     }
                     for value_id in self.panel_indicator_value_ids(indicator_panel.panel_index) {
+                        if !self.panel_indicator_visible(indicator_panel.panel_index, value_id) {
+                            continue;
+                        }
                         self.draw_indicator_markers_and_levels(
                             frame,
                             scene,
@@ -2787,6 +2793,10 @@ impl<'a> KlineWidget<'a> {
         let primary_plot = *scene.primary_plot();
         frame.with_clip(primary_plot, |frame| {
             for series_index in 0..self.series.len() {
+                if !self.series_participates_in_primary_plot(self.series[series_index].ticker_info)
+                {
+                    continue;
+                }
                 let is_base_series = series_index == 0;
                 let (line_width, line_width_phys) = pixels
                     .quantized_stroke_width(f32::from(self.series[series_index].line_width()));

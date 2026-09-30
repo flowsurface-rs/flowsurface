@@ -1,4 +1,5 @@
 use super::{Message, sync_all_button};
+use crate::style;
 use crate::theme::ThemeAccents;
 use crate::widget::study_configurator as study;
 use crate::widget::{
@@ -9,7 +10,10 @@ use data::chart::heatmap;
 use data::chart::heatmap::HeatmapStudy;
 use data::layout::pane::VisualConfig;
 use data::util::format_with_commas;
-use iced::widget::{checkbox, column, row, space, text};
+use iced::{
+    Length,
+    widget::{checkbox, column, container, row, space, text},
+};
 
 pub fn heatmap_shader_cfg_view<'a>(
     cfg: heatmap::Config,
@@ -83,11 +87,17 @@ pub fn heatmap_shader_cfg_view<'a>(
                 sync_all: false,
             });
 
-        let mut col = column![dyn_checkbox].spacing(8);
+        let checkbox_row = row![dyn_checkbox]
+            .height(36)
+            .align_y(iced::Alignment::Center)
+            .padding([0, 8]);
+        let mut col = column![checkbox_row];
         if let Some(slider) = circle_scaling_slider {
-            col = col.push(slider);
+            col = col.push(container(slider).padding(8));
         }
-        col
+        container(col)
+            .width(Length::Fill)
+            .style(style::inspector_control)
     };
 
     let study_cfg = study::view(studies, basis, theme_accents)

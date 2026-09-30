@@ -100,10 +100,10 @@ pub(super) struct IndicatorState {
 pub enum IndicatorCommand {
     InputChanged(IndicatorInputCommand),
     StyleChanged(IndicatorStyleCommand),
-    ResetSettings(IndicatorInstanceId),
 }
 
 pub enum IndicatorInputCommand {
+    Reset(IndicatorInstanceId),
     DataConfig {
         id: IndicatorInstanceId,
         config: IndicatorConfig,
@@ -121,6 +121,7 @@ pub enum IndicatorInputCommand {
 }
 
 pub enum IndicatorStyleCommand {
+    Reset(IndicatorInstanceId),
     ToggleVisibility(IndicatorInstanceId),
     Color {
         id: IndicatorInstanceId,
@@ -567,16 +568,21 @@ impl IndicatorState {
             IndicatorCommand::StyleChanged(IndicatorStyleCommand::ToggleVisibility(id)) => {
                 self.toggle_indicator_visibility(id)
             }
-            IndicatorCommand::ResetSettings(id) => {
+            IndicatorCommand::InputChanged(IndicatorInputCommand::Reset(id)) => {
                 let data_changed = self.instances.reset_config(id);
-                let style_changed = self.instances.reset_style(id);
-                let mark_changed = self.layout.reset_indicator_mark(id);
                 if data_changed {
                     IndicatorChange::Reconfigure {
                         id,
                         request_fetch: false,
                     }
-                } else if style_changed || mark_changed {
+                } else {
+                    IndicatorChange::Unchanged
+                }
+            }
+            IndicatorCommand::StyleChanged(IndicatorStyleCommand::Reset(id)) => {
+                let style_changed = self.instances.reset_style(id);
+                let mark_changed = self.layout.reset_indicator_mark(id);
+                if style_changed || mark_changed {
                     IndicatorChange::Visual
                 } else {
                     IndicatorChange::Unchanged

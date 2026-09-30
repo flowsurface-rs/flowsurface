@@ -16,8 +16,8 @@ const BUCKET_EPS: f64 = 1e-9;
 const APPROX_CHAR_WIDTH_RATIO: f32 = 0.62;
 const DRAW_MARGIN_EXTRA_PX: f32 = 6.0;
 const TARGET_LABEL_SPACING_PX: f32 = 110.0;
-const CURSOR_LABEL_PADDING_X: f32 = 10.0;
-const CURSOR_LABEL_PADDING_Y: f32 = 6.0;
+const CURSOR_LABEL_PADDING_X: f32 = 6.0;
+const CURSOR_LABEL_PADDING_Y: f32 = 3.0;
 const TICK_CURSOR_GAP_PX: f32 = 2.0;
 
 pub struct AxisXLabelCanvas<'a> {
@@ -243,8 +243,9 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
                             .format_with_kind(t_ms, TimeLabelKind::Crosshair { show_millis: true })
                         {
                             let (width, height) = {
-                                let text_w = approx_text_width_px(label.chars().count());
-                                let label_w = text_w + 2.0 * CURSOR_LABEL_PADDING_X;
+                                let text_w = label.chars().count() as f32 * AXIS_TEXT_SIZE * 0.67;
+                                let label_w =
+                                    (text_w + 2.0 * CURSOR_LABEL_PADDING_X).clamp(100.0, 240.0);
                                 let label_h = AXIS_TEXT_SIZE + 2.0 * CURSOR_LABEL_PADDING_Y;
 
                                 (label_w, label_h)
@@ -330,23 +331,24 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
                 && cursor_label.x_px <= (vw + draw_margin_px)
                 && !cursor_label.text.is_empty()
             {
-                let mut bg = palette.secondary.base.color;
-                bg = iced::Color { a: 1.0, ..bg };
+                let label_x = (cursor_label.x_px - 0.5 * cursor_label.width)
+                    .clamp(0.0, (vw - cursor_label.width).max(0.0));
+                let label_y = 2.0;
                 frame.fill_rectangle(
-                    iced::Point::new(
-                        cursor_label.x_px - 0.5 * cursor_label.width,
-                        y - 0.5 * cursor_label.height,
-                    ),
+                    iced::Point::new(label_x, label_y),
                     iced::Size {
                         width: cursor_label.width,
                         height: cursor_label.height,
                     },
-                    bg,
+                    palette.background.strong.color,
                 );
                 frame.fill_text(canvas::Text {
                     content: cursor_label.text,
-                    position: iced::Point::new(cursor_label.x_px, y),
-                    color: palette.secondary.base.text,
+                    position: iced::Point::new(
+                        label_x + 0.5 * cursor_label.width,
+                        label_y + 0.5 * cursor_label.height,
+                    ),
+                    color: palette.background.strong.text,
                     size: AXIS_TEXT_SIZE.into(),
                     font: crate::style::AZERET_MONO,
                     align_x: iced::Alignment::Center.into(),

@@ -205,7 +205,7 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
             }
 
             let x = bounds.width / 2.0;
-            let cursor_label_padding = 6.0f32;
+            let cursor_label_padding = 3.0f32;
             let cursor_label_height = AXIS_TEXT_SIZE + 2.0 * cursor_label_padding;
             let size_cursor_label = iced::Size {
                 width: bounds.width,
@@ -340,22 +340,22 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
 
             // Draw cursor label (highest priority)
             if let Some(LabelKind::Cursor { y_px, label }) = cursor_label_snapped {
-                let mut bg = palette.secondary.base.color;
-                bg = iced::Color { a: 1.0, ..bg };
+                let label_y = (y_px - 0.5 * size_cursor_label.height)
+                    .clamp(0.0, (bounds.height - size_cursor_label.height).max(0.0));
 
                 frame.fill_rectangle(
-                    iced::Point::new(0.0, y_px - 0.5 * size_cursor_label.height),
+                    iced::Point::new(0.0, label_y),
                     size_cursor_label,
-                    bg,
+                    palette.background.strong.color,
                 );
 
                 frame.fill_text(canvas::Text {
                     content: label,
-                    position: iced::Point::new(x, y_px),
-                    color: palette.secondary.base.text,
+                    position: iced::Point::new(4.0, label_y + 0.5 * size_cursor_label.height),
+                    color: palette.background.strong.text,
                     size: AXIS_TEXT_SIZE.into(),
                     font: crate::style::AZERET_MONO,
-                    align_x: iced::Alignment::Center.into(),
+                    align_x: iced::Alignment::Start.into(),
                     align_y: iced::Alignment::Center.into(),
                     ..Default::default()
                 });

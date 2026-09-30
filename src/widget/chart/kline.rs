@@ -508,7 +508,7 @@ pub enum KlineWidgetEvent {
     TickerSettings(TickerInfo),
     FootprintSettings,
     TickerRemove(TickerInfo),
-    CandlesticksVisibilityToggled,
+    TickerVisibilityToggled(TickerInfo),
     FootprintsVisibilityToggled,
     IndicatorSettings(PanelValueId),
     IndicatorVisibilityToggled(PanelValueId),
@@ -715,6 +715,16 @@ impl<'a> KlineWidget<'a> {
     pub fn with_should_capture_escape(mut self, should_capture_escape: bool) -> Self {
         self.should_capture_escape = should_capture_escape;
         self
+    }
+
+    fn series_participates_in_primary_plot(&self, ticker: TickerInfo) -> bool {
+        self.series
+            .first()
+            .is_some_and(|series| series.ticker_info == ticker)
+            || self
+                .composition
+                .comparison_layer(ticker)
+                .is_some_and(|layer| layer.visible)
     }
 
     fn coordinates(&self) -> ChartCoordinates<'_> {
@@ -950,7 +960,7 @@ impl<'a> KlineWidget<'a> {
             .flatten();
         let outcome = state.interaction.release(position);
         let (selection, had_gesture) = match outcome {
-            ReleasedGesture::Idle => (SelectionDisposition::Clear, false),
+            ReleasedGesture::Idle => return,
             ReleasedGesture::Pressed { action, .. } => (
                 action.selection_disposition(),
                 action.captures_outside_release(),
@@ -1581,6 +1591,25 @@ where
                         }
                     }
                     mouse::Event::ButtonPressed(mouse::Button::Left) => {
+                        let chrome_click =
+                            scene
+                                .as_ref()
+                                .map_or(chrome::ChromeClick::Outside, |scene| {
+                                    scene
+                                        .chrome
+                                        .resolve_click(cursor_target, self.study_legend.as_ref())
+                                });
+                        match chrome_click {
+                            chrome::ChromeClick::Event(event) => {
+                                shell.publish(M::from(event));
+                                state.clear_all_caches();
+                                shell.capture_event();
+                                return;
+                            }
+                            chrome::ChromeClick::Blocked => return,
+                            chrome::ChromeClick::Outside => {}
+                        }
+
                         let click_kind = state.interaction.begin_press(
                             cursor_pos,
                             cursor.position(),
@@ -1606,25 +1635,6 @@ where
                             shell.publish(M::from(KlineWidgetEvent::XAxisDoubleClick));
                             state.clear_all_caches();
                             return;
-                        }
-
-                        let chrome_click =
-                            scene
-                                .as_ref()
-                                .map_or(chrome::ChromeClick::Outside, |scene| {
-                                    scene
-                                        .chrome
-                                        .resolve_click(cursor_target, self.study_legend.as_ref())
-                                });
-                        match chrome_click {
-                            chrome::ChromeClick::Event(event) => {
-                                shell.publish(M::from(event));
-                                state.clear_all_caches();
-                                shell.capture_event();
-                                return;
-                            }
-                            chrome::ChromeClick::Blocked => return,
-                            chrome::ChromeClick::Outside => {}
                         }
 
                         let layer_hit = match cursor_target {

@@ -53,7 +53,7 @@ impl IndicatorLayout {
         splits: Vec<f32>,
     ) {
         self.composition = ChartComposition::from_parts(panels, splits);
-        self.rebuild_comparison_bindings(&[], None);
+        self.comparison_layers.clear();
     }
 
     pub fn sync_comparison_sources(
@@ -483,39 +483,22 @@ impl IndicatorLayout {
     }
 
     pub fn toggle_indicator_visibility(&mut self, id: IndicatorInstanceId) -> bool {
-        let Some((panel_id, layer_id)) = self.indicator_layer_binding(id) else {
+        let Some((panel_id, _)) = self.indicator_layer_binding(id) else {
             return false;
         };
-
         let Some(panel) = self.composition.panel_mut(panel_id) else {
             return false;
         };
-        let Some(visible) = panel
-            .layers
-            .iter()
-            .find(|layer| layer.id == layer_id)
-            .map(|layer| layer.visible)
-        else {
-            return false;
-        };
-        let has_output_layers = panel.layers.iter().any(|layer| {
-            layer
+        let visible = !panel.indicator_visible(id);
+        let mut changed = false;
+        for layer in &mut panel.layers {
+            if layer
                 .source
                 .indicator_output()
                 .is_some_and(|output| output.instance_id == id)
-        });
-        let mut changed = false;
-        for layer in &mut panel.layers {
-            if has_output_layers
-                && layer
-                    .source
-                    .indicator_output()
-                    .is_none_or(|output| output.instance_id != id)
+                && layer.visible != visible
             {
-                continue;
-            }
-            if layer.visible == visible {
-                layer.visible = !visible;
+                layer.visible = visible;
                 changed = true;
             }
         }

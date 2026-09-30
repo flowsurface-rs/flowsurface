@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::composition::{BarMode, HistogramMode, LayerDataKind, MarkKind, PanelValueId};
 use data::chart::kline::{
     IndicatorId, IndicatorInputCoverage, IndicatorInputCoverageState, IndicatorInputSource,
@@ -155,7 +157,7 @@ pub(crate) struct ResolvedIndicatorPresentation {
 #[derive(Debug, Clone, Default)]
 pub struct IndicatorPresentationContext {
     pub(crate) input_coverage: IndicatorInputCoverage,
-    presentations: Vec<ResolvedIndicatorPresentation>,
+    presentations: Arc<[ResolvedIndicatorPresentation]>,
     rebuild_in_flight_ids: Vec<PanelValueId>,
     pending_input_ids: Vec<PanelValueId>,
 }
@@ -163,7 +165,7 @@ pub struct IndicatorPresentationContext {
 impl IndicatorPresentationContext {
     pub(crate) fn new(
         input_coverage: IndicatorInputCoverage,
-        presentations: Vec<ResolvedIndicatorPresentation>,
+        presentations: Arc<[ResolvedIndicatorPresentation]>,
     ) -> Self {
         Self {
             input_coverage,

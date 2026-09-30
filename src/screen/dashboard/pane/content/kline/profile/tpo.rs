@@ -25,6 +25,16 @@ enum TpoRebuildState {
     Profiles(BTreeSet<UnixMs>),
 }
 
+pub(super) enum TpoBarScope {
+    Retained,
+    Session { start: UnixMs, end: UnixMs },
+}
+
+enum TpoBuildResult {
+    All(Vec<TpoProfile>),
+    Dirty(Vec<(usize, TpoProfile)>),
+}
+
 #[derive(Default)]
 pub(super) struct TpoState {
     profiles: Vec<TpoProfile>,
@@ -58,7 +68,7 @@ impl TpoState {
     pub fn rebuild(
         &mut self,
         study: Option<KlineStudy>,
-        load_bars: impl FnOnce() -> Vec<Kline>,
+        load_bars: impl Fn(TpoBarScope) -> Vec<Kline>,
         price_step: PriceStep,
         source_timeframe: Timeframe,
         now: UnixMs,
@@ -92,15 +102,32 @@ impl TpoState {
         let Some(rebuild_state) = self.take_rebuild_state() else {
             return false;
         };
-        let bars = load_bars();
         let result = match rebuild_state {
-            TpoRebuildState::Full => {
-                self.rebuild_all_profiles(&bars, settings, source_timeframe, now)
-            }
+            TpoRebuildState::Full => self
+                .rebuild_all_profiles(
+                    &load_bars(TpoBarScope::Retained),
+                    settings,
+                    source_timeframe,
+                    now,
+                )
+                .map(TpoBuildResult::All),
             TpoRebuildState::Profiles(dirty) => {
-                match self.rebuild_dirty_profiles(&bars, &dirty, settings, source_timeframe, now) {
+                match self.rebuild_dirty_profiles(
+                    &load_bars,
+                    &dirty,
+                    settings,
+                    source_timeframe,
+                    now,
+                ) {
                     Some(result) => result,
-                    None => self.rebuild_all_profiles(&bars, settings, source_timeframe, now),
+                    None => self
+                        .rebuild_all_profiles(
+                            &load_bars(TpoBarScope::Retained),
+                            settings,
+                            source_timeframe,
+                            now,
+                        )
+                        .map(TpoBuildResult::All),
                 }
             }
             TpoRebuildState::Clean => unreachable!(),
@@ -167,11 +194,15 @@ impl TpoState {
             .expect("trade TPO cache initialized before rebuilding");
         let result = match rebuild_state {
             TpoRebuildState::Clean => unreachable!(),
-            TpoRebuildState::Full => cache.build_profiles(now, &coverage),
+            TpoRebuildState::Full => cache
+                .build_profiles(now, &coverage)
+                .map(TpoBuildResult::All),
             TpoRebuildState::Profiles(dirty) => {
                 match self.rebuild_dirty_trade_profiles(cache, &dirty, now, &coverage) {
                     Some(result) => result,
-                    None => cache.build_profiles(now, &coverage),
+                    None => cache
+                        .build_profiles(now, &coverage)
+                        .map(TpoBuildResult::All),
                 }
             }
         };
@@ -197,17 +228,28 @@ impl TpoState {
     fn apply_result(
         &mut self,
         key: TpoBuildKey,
-        result: Result<Vec<TpoProfile>, TpoCalculationError>,
+        result: Result<TpoBuildResult, TpoCalculationError>,
         now: UnixMs,
     ) -> bool {
         let source_timeframe = key.source_timeframe;
         self.build_key = Some(key);
         self.last_rebuild_source = Some(now.floor_to(source_timeframe));
         let changed = match result {
-            Ok(profiles) => {
+            Ok(TpoBuildResult::All(profiles)) => {
                 let changed = self.profiles != profiles || self.error.is_some();
                 if changed {
                     self.profiles = profiles;
+                }
+                self.error = None;
+                changed
+            }
+            Ok(TpoBuildResult::Dirty(replacements)) => {
+                let mut changed = self.error.is_some();
+                for (index, profile) in replacements {
+                    if self.profiles[index] != profile {
+                        self.profiles[index] = profile;
+                        changed = true;
+                    }
                 }
                 self.error = None;
                 changed
@@ -241,24 +283,21 @@ impl TpoState {
 
     fn rebuild_dirty_profiles(
         &self,
-        bars: &[Kline],
+        load_bars: &impl Fn(TpoBarScope) -> Vec<Kline>,
         dirty: &BTreeSet<UnixMs>,
         settings: TpoProfileSettings,
         source_timeframe: Timeframe,
         now: UnixMs,
-    ) -> Option<Result<Vec<TpoProfile>, TpoCalculationError>> {
-        let mut profiles = self.profiles.clone();
+    ) -> Option<Result<TpoBuildResult, TpoCalculationError>> {
+        let mut replacements = Vec::with_capacity(dirty.len());
         for start in dirty {
-            let index = profiles
+            let index = self
+                .profiles
                 .binary_search_by_key(start, |profile| profile.start)
                 .ok()?;
-            let end = profiles[index].end;
-            let bars = bars
-                .iter()
-                .copied()
-                .filter(|bar| bar.time >= *start && bar.time < end)
-                .collect::<Vec<_>>();
-            profiles[index] = match build_tpo_profile_with_source_timeframe(
+            let end = self.profiles[index].end;
+            let bars = load_bars(TpoBarScope::Session { start: *start, end });
+            let profile = match build_tpo_profile_with_source_timeframe(
                 &bars,
                 *start,
                 end,
@@ -269,8 +308,9 @@ impl TpoState {
                 Ok(profile) => profile,
                 Err(error) => return Some(Err(error)),
             };
+            replacements.push((index, profile));
         }
-        Some(Ok(profiles))
+        Some(Ok(TpoBuildResult::Dirty(replacements)))
     }
 
     fn rebuild_dirty_trade_profiles(
@@ -279,20 +319,21 @@ impl TpoState {
         dirty: &BTreeSet<UnixMs>,
         now: UnixMs,
         coverage: &impl Fn(UnixMs, UnixMs) -> TpoProfileStatus,
-    ) -> Option<Result<Vec<TpoProfile>, TpoCalculationError>> {
-        let mut profiles = self.profiles.clone();
+    ) -> Option<Result<TpoBuildResult, TpoCalculationError>> {
+        let mut replacements = Vec::with_capacity(dirty.len());
         for start in dirty {
-            let index = profiles
+            let index = self
+                .profiles
                 .binary_search_by_key(start, |profile| profile.start)
                 .ok()?;
-            let end = profiles[index].end;
+            let end = self.profiles[index].end;
             let profile = match cache.build_profile(*start, now, coverage(*start, end))? {
                 Ok(profile) => profile,
                 Err(error) => return Some(Err(error)),
             };
-            profiles[index] = profile;
+            replacements.push((index, profile));
         }
-        Some(Ok(profiles))
+        Some(Ok(TpoBuildResult::Dirty(replacements)))
     }
 
     fn uses_source(&self, source: StudyDataSource, source_timeframe: Timeframe) -> bool {

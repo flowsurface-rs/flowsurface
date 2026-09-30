@@ -3,12 +3,13 @@ use iced::{
     widget::{button, column, container, row, rule},
 };
 
-const BODY_VERTICAL_PADDING: f32 = 4.0;
+const BODY_VERTICAL_PADDING: f32 = 8.0;
 const SECTION_TITLE_SPACING: f32 = 8.0;
 pub(crate) const SECTION_SPACING: f32 = 16.0;
 pub(crate) const MODAL_SECTION_SPACING: f32 = 8.0;
 const SECTION_PADDING: f32 = 8.0;
 const FOOTER_SPACING: f32 = 4.0;
+const FOOTER_VERTICAL_PADDING: f32 = 4.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InspectorTab {
@@ -107,7 +108,7 @@ pub(crate) fn tabbed_content<'a, Message>(
     selected_tab: InspectorTab,
     on_select: impl Fn(InspectorTab) -> Message + Copy + 'a,
     contents: impl IntoIterator<Item = (InspectorTab, Option<Element<'a, Message>>)>,
-) -> Element<'a, Message>
+) -> (InspectorTab, Element<'a, Message>)
 where
     Message: Clone + 'a,
 {
@@ -121,7 +122,7 @@ where
         InspectorTab::Style => 2,
     });
     let Some((first_tab, _)) = contents.first() else {
-        return column![].into();
+        return (selected_tab, column![].into());
     };
     let selected_tab = if contents.iter().any(|(tab, _)| *tab == selected_tab) {
         selected_tab
@@ -131,10 +132,13 @@ where
     let available_tabs = contents.iter().map(|(tab, _)| *tab).collect::<Vec<_>>();
     let tabs = tabs(selected_tab, &available_tabs, on_select);
     let Some((_, content)) = contents.into_iter().find(|(tab, _)| *tab == selected_tab) else {
-        return column![].into();
+        return (selected_tab, column![].into());
     };
 
-    column![tabs, content].spacing(MODAL_SECTION_SPACING).into()
+    (
+        selected_tab,
+        column![tabs, content].spacing(MODAL_SECTION_SPACING).into(),
+    )
 }
 
 pub struct InspectorSection<'a, Message> {
@@ -248,8 +252,16 @@ impl<'a, Message: 'a> InspectorContent<'a, Message> {
 pub struct InspectorBody;
 
 impl InspectorBody {
-    pub fn view<'a, Message: 'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
-        Self::container(crate::widget::scrollable_content(content))
+    pub fn view<'a, Message: 'a>(
+        content: impl Into<Element<'a, Message>>,
+        max_height: f32,
+    ) -> Element<'a, Message> {
+        container(crate::widget::scrollable_content(content))
+            .width(Length::Fill)
+            .height(Length::Shrink)
+            .max_height(max_height)
+            .padding([BODY_VERTICAL_PADDING, 0.0])
+            .into()
     }
 
     pub fn view_without_scroll<'a, Message: 'a>(
@@ -272,14 +284,20 @@ impl InspectorBody {
 pub struct InspectorFooter;
 
 impl InspectorFooter {
-    pub fn view<'a, Message: 'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    pub(crate) const HEIGHT: f32 = 40.0;
+
+    pub fn view<'a, Message: 'a>(
+        content: impl Into<Element<'a, Message>>,
+        height: f32,
+    ) -> Element<'a, Message> {
         column![
             rule::horizontal(1.0).style(crate::style::split_ruler),
             container(content)
                 .width(Length::Fill)
-                .padding([BODY_VERTICAL_PADDING, 0.0]),
+                .padding([FOOTER_VERTICAL_PADDING, 0.0]),
         ]
         .spacing(FOOTER_SPACING)
+        .height(height)
         .into()
     }
 }

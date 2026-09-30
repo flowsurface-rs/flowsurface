@@ -11,7 +11,7 @@ use exchange::{Kline, TickerInfo, Timeframe, Trade, UnixMs};
 use std::collections::BTreeMap;
 
 use self::source::ProfileKlineSource;
-use self::tpo::TpoState;
+use self::tpo::{TpoBarScope, TpoState};
 
 pub(super) fn profile_source_timeframe(chart_timeframe: Timeframe) -> Timeframe {
     if chart_timeframe <= Timeframe::H2 {
@@ -233,15 +233,14 @@ impl ProfileState {
     }
 
     pub(super) fn profile_fetch_ranges(
-        &self,
+        &mut self,
         windows: &[(UnixMs, UnixMs)],
         now: UnixMs,
         ticker_info: TickerInfo,
         timeframe: Timeframe,
-        covered_bars: &[Kline],
     ) -> Vec<(FetchRange, Vec<TickerInfo>)> {
         self.source
-            .fetch_ranges(windows, now, ticker_info, timeframe, covered_bars)
+            .fetch_ranges(windows, now, ticker_info, timeframe)
     }
 
     pub(super) fn clear_kline_source(&mut self) {
@@ -259,17 +258,33 @@ impl ProfileState {
         let source = &self.source;
         self.tpo.rebuild(
             study,
-            || {
-                chart_source.map_or_else(
-                    || source.bars(source_timeframe),
-                    |series| {
-                        series
-                            .points()
-                            .filter(|point| source.is_active(source_timeframe, point.kline.time))
-                            .map(|point| *point.kline)
-                            .collect()
-                    },
-                )
+            |scope| {
+                let Some((retained_start, retained_end)) = source.retained(source_timeframe) else {
+                    return Vec::new();
+                };
+                let (start, end) = match scope {
+                    TpoBarScope::Retained => (retained_start, retained_end),
+                    TpoBarScope::Session { start, end } => {
+                        (start.max(retained_start), end.min(retained_end))
+                    }
+                };
+                if start >= end {
+                    return Vec::new();
+                }
+                if let Some(series) = chart_source {
+                    let latest = end.saturating_sub(1);
+                    let indices = series.time_index_range(start, latest);
+                    let mut bars = Vec::with_capacity(indices.len());
+                    series.for_each_point_in_range(indices, Some((start, latest)), |point| {
+                        bars.push(*point.kline);
+                    });
+                    bars
+                } else {
+                    source
+                        .bars_ref(source_timeframe)
+                        .map(|bars| bars.range(start..end).map(|(_, bar)| *bar).collect())
+                        .unwrap_or_default()
+                }
             },
             price_step,
             source_timeframe,

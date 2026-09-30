@@ -1,8 +1,9 @@
 use super::helpers::ChartCoordinates;
 use super::layout::LayoutHitZone;
-use super::scene::Scene;
+use super::scene::{CursorTarget, Scene};
 use super::studies::StudyObjectKey;
 use data::chart::kline::HorizontalWorld;
+use data::chart::kline::drawing::{DrawingMeasure, DrawingSnapshot};
 use iced::advanced::mouse::Interaction;
 use iced::event::Status;
 use iced::{Point, Vector, keyboard};
@@ -527,6 +528,32 @@ pub(super) enum GestureSource {
 }
 
 impl UserInteraction<PressAction, DragAction> {
+    pub(super) fn resolve_cursor_target(
+        &self,
+        target: CursorTarget,
+        zone: LayoutHitZone,
+        drawings: &DrawingSnapshot<'_>,
+    ) -> CursorTarget {
+        if (self.motion().is_some()
+            || !drawings.allows_panning()
+            || matches!(drawings.measure, Some(DrawingMeasure::Pending(_)))
+            || self
+                .modifiers
+                .intersects(keyboard::Modifiers::SHIFT | keyboard::Modifiers::COMMAND))
+            && matches!(
+                target,
+                CursorTarget::Legend(_)
+                    | CursorTarget::CornerControl(_)
+                    | CursorTarget::PanelControl { .. }
+            )
+            && let LayoutHitZone::PanelPlot(panel_index) = zone
+        {
+            CursorTarget::Plot(panel_index)
+        } else {
+            target
+        }
+    }
+
     pub(super) fn begin_layer_gesture(
         &mut self,
         gesture: LayerGesture,

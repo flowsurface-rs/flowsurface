@@ -158,7 +158,7 @@ pub(super) struct CornerControlHit {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TickerLegendIconKind {
     Settings,
-    Hide,
+    Visibility,
     Close,
 }
 
@@ -166,7 +166,7 @@ impl TickerLegendIconKind {
     fn icon(self, visible: bool) -> style::Icon {
         match self {
             Self::Settings => style::Icon::Cog,
-            Self::Hide => style::Icon::visibility(visible),
+            Self::Visibility => style::Icon::visibility(visible),
             Self::Close => style::Icon::Close,
         }
     }
@@ -174,7 +174,7 @@ impl TickerLegendIconKind {
     pub(super) fn into_event(self, ticker: TickerInfo) -> KlineWidgetEvent {
         match self {
             Self::Settings => KlineWidgetEvent::TickerSettings(ticker),
-            Self::Hide => KlineWidgetEvent::CandlesticksVisibilityToggled,
+            Self::Visibility => KlineWidgetEvent::TickerVisibilityToggled(ticker),
             Self::Close => KlineWidgetEvent::TickerRemove(ticker),
         }
     }
@@ -186,6 +186,7 @@ pub(super) struct TickerLegendRowHit {
     pub(super) y_center: f32,
     pub(super) row_rect: Rectangle,
     pub(super) settings: Rectangle,
+    pub(super) visibility: Rectangle,
     pub(super) close: Rectangle,
     pub(super) has_close: bool,
 }
@@ -485,6 +486,9 @@ impl<'a> KlineWidget<'a> {
             .enumerate()
             .skip(1)
             .filter_map(|(index, series)| {
+                if !self.series_participates_in_primary_plot(series.ticker_info) {
+                    return None;
+                }
                 let bar = self.bar_at_or_before_unit(series, scene.x.axis, scene.x.max_unit)?;
                 let anchor = scene
                     .primary
@@ -731,7 +735,9 @@ impl<'a> KlineWidget<'a> {
         }
 
         let text_w = max_chars as f32 * CHAR_W;
-        let icons_pack_w = 2.0 * TICKER_LEGEND_ICON_BOX + TICKER_LEGEND_ICON_GAP;
+        let icon_count = if self.series.len() > 1 { 3.0 } else { 2.0 };
+        let icons_pack_w =
+            icon_count * TICKER_LEGEND_ICON_BOX + (icon_count - 1.0) * TICKER_LEGEND_ICON_GAP;
         let min_for_icons = if show_icons {
             max_name_chars as f32 * CHAR_W + 8.0 + icons_pack_w
         } else {
@@ -757,89 +763,24 @@ impl<'a> KlineWidget<'a> {
         };
 
         let x_left = bg.x + TICKER_LEGEND_PADDING;
-        let x_right = bg.x + bg.width - TICKER_LEGEND_PADDING;
 
         let mut rows = Vec::with_capacity(visible_rows);
         let mut row_top = bg.y + TICKER_LEGEND_PADDING;
 
-        for series in self.series.iter().take(visible_rows) {
-            let has_close = true;
+        for (index, series) in self.series.iter().take(visible_rows).enumerate() {
+            let has_close = index != 0;
             let label_chars = series_display_name(series).chars().count() as f32;
 
             let y_center = row_top + TICKER_LEGEND_ROW_H * 0.5;
             let text_end_x = x_left + label_chars * CHAR_W;
 
-            let (settings, close, row_w) = {
-                let icon_pack_w = if has_close {
-                    2.0 * TICKER_LEGEND_ICON_BOX + TICKER_LEGEND_ICON_GAP
-                } else {
-                    TICKER_LEGEND_ICON_BOX
-                };
-
-                let free_left = text_end_x + 8.0;
-                let free_right = x_right;
-
-                let (settings_x, close_x_opt) = if free_right - free_left >= icon_pack_w {
-                    let settings_x = free_left;
-                    let close_x_opt = if has_close {
-                        Some(settings_x + TICKER_LEGEND_ICON_BOX + TICKER_LEGEND_ICON_GAP)
-                    } else {
-                        None
-                    };
-                    (settings_x, close_x_opt)
-                } else if has_close {
-                    let close_x = free_right - TICKER_LEGEND_ICON_BOX;
-                    let settings_x =
-                        (close_x - TICKER_LEGEND_ICON_GAP - TICKER_LEGEND_ICON_BOX).max(free_left);
-                    (settings_x, Some(close_x))
-                } else {
-                    let settings_x = (free_right - TICKER_LEGEND_ICON_BOX).max(free_left);
-                    (settings_x, None)
-                };
-
-                let settings = Rectangle {
-                    x: settings_x,
-                    y: y_center - TICKER_LEGEND_ICON_BOX * 0.5,
-                    width: TICKER_LEGEND_ICON_BOX,
-                    height: TICKER_LEGEND_ICON_BOX,
-                };
-
-                let close = if let Some(close_x) = close_x_opt {
-                    Rectangle {
-                        x: close_x,
-                        y: y_center - TICKER_LEGEND_ICON_BOX * 0.5,
-                        width: TICKER_LEGEND_ICON_BOX,
-                        height: TICKER_LEGEND_ICON_BOX,
-                    }
-                } else {
-                    Rectangle {
-                        x: 0.0,
-                        y: 0.0,
-                        width: 0.0,
-                        height: 0.0,
-                    }
-                };
-
-                let content_right = if has_close {
-                    settings.x.max(close.x) + close.width
-                } else {
-                    settings.x + settings.width
-                };
-
-                let row_w = (content_right + TICKER_LEGEND_PADDING - bg.x).clamp(0.0, bg.width);
-
-                if show_icons {
-                    (settings, close, row_w)
-                } else {
-                    let hidden = Rectangle {
-                        x: 0.0,
-                        y: 0.0,
-                        width: 0.0,
-                        height: 0.0,
-                    };
-                    (hidden, hidden, row_w)
-                }
-            };
+            let (_, mut visibility, mut settings, mut close, row_w) =
+                Self::legend_controls(bg, text_end_x, y_center, false, true, true, has_close);
+            if !show_icons {
+                visibility = Rectangle::default();
+                settings = Rectangle::default();
+                close = Rectangle::default();
+            }
 
             rows.push(TickerLegendRowHit {
                 ticker: series.ticker_info,
@@ -851,6 +792,7 @@ impl<'a> KlineWidget<'a> {
                     height: TICKER_LEGEND_ROW_H,
                 },
                 settings,
+                visibility,
                 close,
                 has_close,
             });
@@ -880,13 +822,14 @@ impl<'a> KlineWidget<'a> {
                 return Some(TickerLegendHit::Icon(index, TickerLegendIconKind::Settings));
             }
 
+            if row.visibility.contains(plot_local) {
+                return Some(TickerLegendHit::Icon(
+                    index,
+                    TickerLegendIconKind::Visibility,
+                ));
+            }
             if row.has_close && row.close.contains(plot_local) {
-                let kind = if index == 0 {
-                    TickerLegendIconKind::Hide
-                } else {
-                    TickerLegendIconKind::Close
-                };
-                return Some(TickerLegendHit::Icon(index, kind));
+                return Some(TickerLegendHit::Icon(index, TickerLegendIconKind::Close));
             }
 
             return Some(TickerLegendHit::Row(index));
@@ -1489,7 +1432,7 @@ impl<'a> KlineWidget<'a> {
                     + PANEL_TITLE_TOP_PAD
                     + (indicator_index as f32 + 0.5) * TICKER_LEGEND_ROW_H;
                 let (_, visibility, settings, close, row_w) = Self::legend_controls(
-                    panel.plot, text_end_x, y_center, false, false, true, true,
+                    panel.plot, text_end_x, y_center, false, true, true, true,
                 );
 
                 rows.push(IndicatorLegendRowHit {
@@ -1948,6 +1891,10 @@ impl<'a> KlineWidget<'a> {
         hovered: bool,
         palette: &Extended,
     ) {
+        if rect.width <= 0.0 || rect.height <= 0.0 {
+            return;
+        }
+
         let text = if hovered {
             palette.background.strongest.text
         } else {
@@ -2002,11 +1949,12 @@ impl<'a> KlineWidget<'a> {
                 .get(index)
                 .map(series_display_name)
                 .unwrap_or_else(|| row.ticker.ticker.symbol_and_exchange_string());
-            let row_alpha = if index == 0 && !self.candlestick.visible {
-                HIDDEN_LEGEND_ALPHA
+            let visible = if index == 0 {
+                self.candlestick.visible
             } else {
-                1.0
+                self.series_participates_in_primary_plot(row.ticker)
             };
+            let row_alpha = if !visible { HIDDEN_LEGEND_ALPHA } else { 1.0 };
             let label_color = if index == 0 && !matches!(scene.primary.mark, MarkKind::Line) {
                 palette.background.base.text
             } else {
@@ -2151,26 +2099,25 @@ impl<'a> KlineWidget<'a> {
                     palette,
                 );
 
-                if row.has_close {
-                    let secondary_kind = if index == 0 {
-                        TickerLegendIconKind::Hide
-                    } else {
-                        TickerLegendIconKind::Close
-                    };
-                    let secondary_content = if index == 0 {
-                        secondary_kind.icon(self.candlestick.visible)
-                    } else {
-                        secondary_kind.icon(true)
-                    };
-                    let close_hovered = scene
+                Self::draw_legend_icon_button(
+                    frame,
+                    to_root(row.visibility),
+                    TickerLegendIconKind::Visibility.icon(visible),
+                    scene
                         .interaction
                         .target
-                        .ticker_icon_is_hovered(index, secondary_kind);
+                        .ticker_icon_is_hovered(index, TickerLegendIconKind::Visibility),
+                    palette,
+                );
+                if row.has_close {
                     Self::draw_legend_icon_button(
                         frame,
                         close_root,
-                        secondary_content,
-                        close_hovered,
+                        TickerLegendIconKind::Close.icon(true),
+                        scene
+                            .interaction
+                            .target
+                            .ticker_icon_is_hovered(index, TickerLegendIconKind::Close),
                         palette,
                     );
                 }

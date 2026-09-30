@@ -1,3 +1,4 @@
+use crate::chart::Basis;
 use crate::config::theme::{ThemeColor, ThemeColorRole, ThemeColorShade};
 use exchange::{
     SizeUnit, TickerInfo, Trade, UnixMs,
@@ -102,13 +103,18 @@ pub(crate) struct BigTradesCache {
 }
 
 impl BigTradesCache {
-    pub(crate) fn new(threshold: u64, trades: &[Trade], ticker_info: &TickerInfo) -> Self {
+    pub(crate) fn new(
+        threshold: u64,
+        trades: &[Trade],
+        ticker_info: &TickerInfo,
+        basis: Basis,
+    ) -> Self {
         let mut cache = Self {
             threshold,
             entries: Vec::new(),
             consumed: 0,
         };
-        cache.fold(trades, ticker_info);
+        cache.fold(trades, ticker_info, basis);
         cache
     }
 
@@ -128,8 +134,9 @@ impl BigTradesCache {
         &self.entries[start..end]
     }
 
-    pub(crate) fn fold(&mut self, trades: &[Trade], ticker_info: &TickerInfo) {
+    pub(crate) fn fold(&mut self, trades: &[Trade], ticker_info: &TickerInfo, basis: Basis) {
         let start = self.consumed.min(trades.len());
+        let previous_len = self.entries.len();
         let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
         let market_type = ticker_info.market_type();
         let threshold = self.threshold as f64;
@@ -149,6 +156,13 @@ impl BigTradesCache {
                     })
                 }),
         );
+        if basis.is_time()
+            && !self.entries[previous_len.saturating_sub(1)..]
+                .is_sorted_by_key(|entry| (entry.time, entry.index))
+        {
+            self.entries
+                .sort_unstable_by_key(|entry| (entry.time, entry.index));
+        }
         self.consumed = trades.len();
     }
 

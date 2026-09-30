@@ -110,34 +110,7 @@ impl std::fmt::Display for IndicatorGraphDiagnostic {
     }
 }
 
-enum IndicatorRuntimePhase {
-    Rebuild,
-    Creation,
-    Reconfiguration,
-}
-
-impl std::fmt::Display for IndicatorRuntimePhase {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(match self {
-            Self::Rebuild => "rebuild",
-            Self::Creation => "creation",
-            Self::Reconfiguration => "reconfiguration",
-        })
-    }
-}
-
-struct IndicatorRuntimeDiagnostic {
-    phase: IndicatorRuntimePhase,
-    error: IndicatorConfigError,
-}
-
-impl std::fmt::Display for IndicatorRuntimeDiagnostic {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "{}: {}", self.phase, self.error)
-    }
-}
-
-/// Owns every active indicator instance and its pane-indexed output stores.
+/// Owns active indicator runtimes, output stores, and the selected dependency graph.
 #[derive(Default)]
 pub struct IndicatorHost {
     entries: Vec<IndicatorRuntimeEntry>,
@@ -146,7 +119,7 @@ pub struct IndicatorHost {
     dependencies: FxHashMap<IndicatorInstanceId, Vec<IndicatorInstanceId>>,
     dependents: FxHashMap<IndicatorInstanceId, Vec<IndicatorInstanceId>>,
     graph_diagnostics: FxHashMap<IndicatorInstanceId, IndicatorGraphDiagnostic>,
-    runtime_diagnostics: FxHashMap<IndicatorInstanceId, IndicatorRuntimeDiagnostic>,
+    runtime_diagnostics: FxHashMap<IndicatorInstanceId, IndicatorConfigError>,
     blocked_nodes: FxHashSet<IndicatorInstanceId>,
 }
 
@@ -154,16 +127,14 @@ impl IndicatorHost {
     fn record_runtime_diagnostic(
         &mut self,
         instance: &IndicatorInstance,
-        phase: IndicatorRuntimePhase,
         error: IndicatorConfigError,
     ) {
-        let diagnostic = IndicatorRuntimeDiagnostic { phase, error };
         log::error!(
-            "indicator {} (instance {:?}) runtime failure: {diagnostic}",
+            "indicator {} (instance {:?}) runtime rebuild failure: {error}",
             instance.kind.id(),
             instance.id
         );
-        self.runtime_diagnostics.insert(instance.id, diagnostic);
+        self.runtime_diagnostics.insert(instance.id, error);
     }
 
     fn clear_runtime_diagnostic(&mut self, id: IndicatorInstanceId) {
@@ -282,7 +253,7 @@ impl IndicatorHost {
                 .unwrap_or(usize::MAX)
         });
         self.rebuild_entry_indices();
-        self.rebuild_graph(instances);
+        self.rebuild_graph(active, instances);
     }
 
     pub fn recalculate(
@@ -296,15 +267,11 @@ impl IndicatorHost {
             match IndicatorRuntimeEntry::new(instance) {
                 Ok(Some(entry)) => rebuilt.entries.push(entry),
                 Ok(None) => {}
-                Err(error) => rebuilt.record_runtime_diagnostic(
-                    instance,
-                    IndicatorRuntimePhase::Rebuild,
-                    error,
-                ),
+                Err(error) => rebuilt.record_runtime_diagnostic(instance, error),
             };
         }
         rebuilt.rebuild_entry_indices();
-        rebuilt.rebuild_graph(instances);
+        rebuilt.rebuild_graph(active, instances);
         for frame in frames {
             rebuilt.evaluate_closed(frame);
         }
@@ -319,22 +286,14 @@ impl IndicatorHost {
     ) {
         let affected = self.dependent_ids(dirty);
         let affected_set = affected.iter().copied().collect::<FxHashSet<_>>();
-        let mut active = self
-            .entries
-            .iter()
-            .map(|entry| entry.id)
-            .collect::<Vec<_>>();
+        let mut active = self.execution_order.clone();
         for id in dirty {
             if !active.contains(id) {
                 active.push(*id);
             }
         }
 
-        if self
-            .entries
-            .iter()
-            .all(|entry| affected_set.contains(&entry.id))
-        {
+        if active.iter().all(|id| affected_set.contains(id)) {
             self.recalculate(&active, instances, frames);
             return;
         }
@@ -355,7 +314,7 @@ impl IndicatorHost {
                     replacements.insert(*id, None);
                 }
                 Err(error) => {
-                    self.record_runtime_diagnostic(instance, IndicatorRuntimePhase::Rebuild, error);
+                    self.record_runtime_diagnostic(instance, error);
                     replacements.insert(*id, None);
                 }
             }
@@ -375,7 +334,7 @@ impl IndicatorHost {
             }
         }
         self.rebuild_entry_indices();
-        self.rebuild_graph(instances);
+        self.rebuild_graph(&active, instances);
         for frame in frames {
             self.evaluate_nodes(&affected_set, frame, false);
         }
@@ -386,129 +345,28 @@ impl IndicatorHost {
         active: &[IndicatorInstanceId],
         instances: &IndicatorInstanceStore,
     ) -> Vec<IndicatorInstanceId> {
-        let previous = self
-            .entries
-            .iter()
-            .map(|entry| {
-                (
-                    entry.id,
-                    (
-                        entry.kind.clone(),
-                        entry.config.clone(),
-                        entry.source_bindings.clone(),
-                        entry.base_source_selections.clone(),
-                    ),
-                )
-            })
-            .collect::<FxHashMap<_, _>>();
         let changed = active
             .iter()
             .copied()
-            .filter_map(|id| {
-                let instance = instances.get(id)?;
-                instance.kind.is_registered().then_some((id, instance))
+            .filter(|id| {
+                instances.get(*id).is_some_and(|instance| {
+                    instance.kind.is_registered()
+                        && self.entry_indices.get(id).is_none_or(|index| {
+                            let entry = &self.entries[*index];
+                            entry.kind != instance.kind
+                                || entry.config != instance.config
+                                || entry.source_bindings != instance.source_bindings
+                                || entry.base_source_selections != instance.base_source_selections
+                        })
+                })
             })
-            .filter(|(id, instance)| {
-                previous.get(id)
-                    != Some(&(
-                        instance.kind.clone(),
-                        instance.config.clone(),
-                        instance.source_bindings.clone(),
-                        instance.base_source_selections.clone(),
-                    ))
-            })
-            .map(|(id, _)| id)
             .collect::<Vec<_>>();
-        self.runtime_diagnostics.retain(|id, _| {
-            active.contains(id)
-                && instances
-                    .get(*id)
-                    .is_some_and(|instance| instance.kind.is_registered())
-        });
         self.entries.retain(|entry| {
             active.contains(&entry.id)
+                && !changed.contains(&entry.id)
                 && instances
                     .get(entry.id)
                     .is_some_and(|instance| instance.kind.is_registered())
-        });
-        for id in active {
-            let Some(instance) = instances.get(*id) else {
-                continue;
-            };
-            if !instance.kind.is_registered() {
-                continue;
-            }
-
-            if let Some(entry_index) = self.entries.iter().position(|entry| entry.id == *id) {
-                if self.entries[entry_index].kind != instance.kind {
-                    match IndicatorRuntimeEntry::new(instance) {
-                        Ok(Some(replacement)) => {
-                            self.entries[entry_index] = replacement;
-                            self.clear_runtime_diagnostic(instance.id);
-                        }
-                        Ok(None) => {
-                            self.entries.remove(entry_index);
-                            self.clear_runtime_diagnostic(instance.id);
-                        }
-                        Err(error) => {
-                            self.entries.remove(entry_index);
-                            self.record_runtime_diagnostic(
-                                instance,
-                                IndicatorRuntimePhase::Creation,
-                                error,
-                            );
-                        }
-                    }
-                } else {
-                    let config_changed = self.entries[entry_index].config != instance.config;
-                    if config_changed {
-                        let result = self.entries[entry_index]
-                            .runtime
-                            .set_config(&instance.config);
-                        match result {
-                            Ok(true) => {
-                                self.entries[entry_index].config = instance.config.clone();
-                                self.clear_runtime_diagnostic(instance.id);
-                            }
-                            Ok(false) => {}
-                            Err(error) => {
-                                self.entries.remove(entry_index);
-                                self.record_runtime_diagnostic(
-                                    instance,
-                                    IndicatorRuntimePhase::Reconfiguration,
-                                    error,
-                                );
-                            }
-                        }
-                    }
-                    if let Some(entry) = self
-                        .entries
-                        .get_mut(entry_index)
-                        .filter(|entry| entry.id == *id)
-                    {
-                        entry.source_bindings = instance.source_bindings.clone();
-                        entry.base_source_selections = instance.base_source_selections.clone();
-                    }
-                }
-            } else {
-                match IndicatorRuntimeEntry::new(instance) {
-                    Ok(Some(entry)) => {
-                        self.entries.push(entry);
-                        self.clear_runtime_diagnostic(instance.id);
-                    }
-                    Ok(None) => self.clear_runtime_diagnostic(instance.id),
-                    Err(error) => self.record_runtime_diagnostic(
-                        instance,
-                        IndicatorRuntimePhase::Creation,
-                        error,
-                    ),
-                }
-            }
-        }
-        self.entries.retain(|entry| {
-            instances
-                .get(entry.id)
-                .is_some_and(|instance| instance.kind == entry.kind)
         });
         self.runtime_diagnostics.retain(|id, _| {
             active.contains(id)
@@ -523,38 +381,8 @@ impl IndicatorHost {
                 .unwrap_or(usize::MAX)
         });
         self.rebuild_entry_indices();
-        self.rebuild_graph(instances);
+        self.rebuild_graph(active, instances);
         changed
-    }
-
-    pub fn validate_bindings(
-        &self,
-        active: &[IndicatorInstanceId],
-        instances: &IndicatorInstanceStore,
-    ) -> Result<(), String> {
-        let mut candidate = Self::default();
-        for id in active {
-            let Some(instance) = instances.get(*id) else {
-                continue;
-            };
-            if !instance.kind.is_registered() {
-                continue;
-            }
-            let Some(entry) =
-                IndicatorRuntimeEntry::new(instance).map_err(|error| error.to_string())?
-            else {
-                continue;
-            };
-            candidate.entries.push(entry);
-        }
-        candidate.rebuild_entry_indices();
-        candidate.rebuild_graph(instances);
-        candidate
-            .graph_diagnostics
-            .values()
-            .next()
-            .map(|diagnostic| diagnostic.to_string())
-            .map_or(Ok(()), Err)
     }
 
     pub fn validate_source_binding(
@@ -600,64 +428,6 @@ impl IndicatorHost {
         Ok(())
     }
 
-    pub fn reconfigure(
-        &mut self,
-        instance: &IndicatorInstance,
-        instances: &IndicatorInstanceStore,
-    ) {
-        if !instance.kind.is_registered() {
-            self.entries.retain(|entry| entry.id != instance.id);
-            self.clear_runtime_diagnostic(instance.id);
-            self.rebuild_entry_indices();
-            self.rebuild_graph(instances);
-            return;
-        }
-        let Some(entry_index) = self.entry_indices.get(&instance.id).copied() else {
-            if !self.runtime_diagnostics.contains_key(&instance.id) {
-                return;
-            }
-            match IndicatorRuntimeEntry::new(instance) {
-                Ok(Some(entry)) => {
-                    self.entries.push(entry);
-                    self.clear_runtime_diagnostic(instance.id);
-                }
-                Ok(None) => self.clear_runtime_diagnostic(instance.id),
-                Err(error) => self.record_runtime_diagnostic(
-                    instance,
-                    IndicatorRuntimePhase::Reconfiguration,
-                    error,
-                ),
-            }
-            self.rebuild_entry_indices();
-            self.rebuild_graph(instances);
-            return;
-        };
-        let Some(entry) = self.entries.get_mut(entry_index) else {
-            return;
-        };
-        if entry.kind != instance.kind || entry.config == instance.config {
-            return;
-        }
-        let result = entry.runtime.set_config(&instance.config);
-        match result {
-            Ok(true) => {
-                entry.config = instance.config.clone();
-                self.clear_runtime_diagnostic(instance.id);
-            }
-            Ok(false) => {}
-            Err(error) => {
-                self.entries.retain(|entry| entry.id != instance.id);
-                self.rebuild_entry_indices();
-                self.rebuild_graph(instances);
-                self.record_runtime_diagnostic(
-                    instance,
-                    IndicatorRuntimePhase::Reconfiguration,
-                    error,
-                );
-            }
-        }
-    }
-
     pub fn evaluate_closed(&mut self, frame: &IndicatorFrame) {
         let order = self.execution_order.clone();
         for id in order {
@@ -674,32 +444,9 @@ impl IndicatorHost {
         self.evaluate_nodes(&selected, frame, false);
     }
 
-    pub fn evaluate_closed_for(&mut self, ids: &[IndicatorInstanceId], frame: &IndicatorFrame) {
-        let affected = self
-            .dependent_ids(ids)
-            .into_iter()
-            .collect::<FxHashSet<_>>();
-        self.evaluate_nodes(&affected, frame, false);
-    }
-
-    pub fn preview_open(&mut self, frame: &IndicatorFrame) {
-        let order = self.execution_order.clone();
-        for id in order {
-            self.evaluate_entry(id, frame, true);
-        }
-    }
-
     pub fn preview_open_selected(&mut self, ids: &[IndicatorInstanceId], frame: &IndicatorFrame) {
         let selected = ids.iter().copied().collect::<FxHashSet<_>>();
         self.evaluate_nodes(&selected, frame, true);
-    }
-
-    pub fn preview_open_for(&mut self, id: IndicatorInstanceId, frame: &IndicatorFrame) {
-        let affected = self
-            .dependent_ids(&[id])
-            .into_iter()
-            .collect::<FxHashSet<_>>();
-        self.evaluate_nodes(&affected, frame, true);
     }
 
     fn evaluate_nodes(
@@ -793,34 +540,36 @@ impl IndicatorHost {
         frame
     }
 
-    fn rebuild_graph(&mut self, instances: &IndicatorInstanceStore) {
+    fn rebuild_graph(
+        &mut self,
+        active_ids: &[IndicatorInstanceId],
+        instances: &IndicatorInstanceStore,
+    ) {
         self.execution_order.clear();
         self.dependencies.clear();
         self.dependents.clear();
         self.graph_diagnostics.clear();
         self.blocked_nodes.clear();
-        let ids = self
-            .entries
+        let ids = active_ids
             .iter()
-            .map(|entry| entry.id)
-            .collect::<Vec<_>>();
-        let active = self
-            .entry_indices
-            .keys()
             .copied()
-            .collect::<BTreeSet<IndicatorInstanceId>>();
-        for entry in &self.entries {
-            let Some(instance) = instances.get(entry.id) else {
+            .filter(|id| {
+                instances
+                    .get(*id)
+                    .is_some_and(|instance| instance.kind.is_registered())
+            })
+            .collect::<Vec<_>>();
+        let active = ids.iter().copied().collect::<BTreeSet<_>>();
+        for id in &ids {
+            let Some(instance) = instances.get(*id) else {
                 continue;
             };
             if !instance.source_bindings.is_empty()
-                && !entry.kind.definition().has_numeric_plot_layers()
+                && !instance.kind.definition().has_numeric_plot_layers()
             {
-                self.graph_diagnostics.insert(
-                    entry.id,
-                    IndicatorGraphDiagnostic::AttachedHasNoNumericPlotLayer,
-                );
-                self.blocked_nodes.insert(entry.id);
+                self.graph_diagnostics
+                    .insert(*id, IndicatorGraphDiagnostic::AttachedHasNoNumericPlotLayer);
+                self.blocked_nodes.insert(*id);
                 continue;
             }
             for source_id in instance.source_bindings.keys() {
@@ -829,15 +578,15 @@ impl IndicatorHost {
                     Ok(None) => continue,
                     Err(problem) => {
                         self.graph_diagnostics
-                            .entry(entry.id)
+                            .entry(*id)
                             .or_insert(IndicatorGraphDiagnostic::InvalidSourceBinding(problem));
                         continue;
                     }
                 };
-                let dependencies = self.dependencies.entry(entry.id).or_default();
+                let dependencies = self.dependencies.entry(*id).or_default();
                 if !dependencies.contains(&target.id) {
                     dependencies.push(target.id);
-                    self.dependents.entry(target.id).or_default().push(entry.id);
+                    self.dependents.entry(target.id).or_default().push(*id);
                 }
             }
         }
@@ -871,10 +620,16 @@ impl IndicatorHost {
         }
     }
 
-    pub fn has_input_consumer(&self, source: IndicatorInputSource) -> bool {
-        self.entries
-            .iter()
-            .any(|entry| entry.kind.definition().uses(source))
+    pub fn has_input_consumer(
+        &self,
+        source: IndicatorInputSource,
+        instances: &IndicatorInstanceStore,
+    ) -> bool {
+        self.execution_order.iter().any(|id| {
+            instances
+                .get(*id)
+                .is_some_and(|instance| instance.kind.definition().uses(source))
+        })
     }
 
     pub fn output_value_for(
@@ -1016,13 +771,6 @@ impl IndicatorHost {
             })
     }
 
-    pub fn region_outputs_for(
-        &self,
-        id: IndicatorInstanceId,
-    ) -> Vec<indicator_engine::RegionOutput> {
-        self.region_outputs_for_range(id, None)
-    }
-
     pub fn region_outputs_for_range(
         &self,
         id: IndicatorInstanceId,
@@ -1062,33 +810,13 @@ impl IndicatorHost {
             return Some(diagnostic.to_string());
         }
         if let Some(diagnostic) = self.runtime_diagnostics.get(&id) {
-            return Some(diagnostic.to_string());
+            return Some(format!("rebuild: {diagnostic}"));
         }
 
         self.entry_indices
             .get(&id)
             .and_then(|entry_index| self.entries.get(*entry_index))
             .and_then(|entry| entry.runtime.diagnostic().map(str::to_owned))
-    }
-
-    pub fn diagnostics(&self) -> Vec<(IndicatorInstanceId, String)> {
-        let mut diagnostics = BTreeMap::new();
-        for (id, diagnostic) in &self.graph_diagnostics {
-            diagnostics.insert(*id, diagnostic.to_string());
-        }
-        for (id, diagnostic) in &self.runtime_diagnostics {
-            diagnostics
-                .entry(*id)
-                .or_insert_with(|| diagnostic.to_string());
-        }
-        for entry in &self.entries {
-            if let Some(diagnostic) = entry.runtime.diagnostic() {
-                diagnostics
-                    .entry(entry.id)
-                    .or_insert_with(|| diagnostic.to_owned());
-            }
-        }
-        diagnostics.into_iter().collect()
     }
 
     fn rebuild_entry_indices(&mut self) {

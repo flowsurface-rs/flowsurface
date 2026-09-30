@@ -724,9 +724,10 @@ impl<'a> KlineWidget<'a> {
         panel_index: usize,
         value_id: PanelValueId,
     ) -> bool {
-        self.panel_output_layers(panel_index)
-            .iter()
-            .any(|layer| layer.base_output.instance_id == value_id && layer.visible)
+        self.composition
+            .panels
+            .get(panel_index)
+            .is_some_and(|panel| panel.indicator_visible(value_id))
     }
 
     pub(super) fn resolved_indicator_layer_for_composition_layer(

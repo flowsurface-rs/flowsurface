@@ -43,8 +43,7 @@ struct PresentationParts {
 
 #[derive(Debug, Clone, Default)]
 struct IndicatorOutputStore {
-    series: FxHashMap<String, FxHashMap<usize, Value>>,
-    series_colors: FxHashMap<String, FxHashMap<usize, Option<Color>>>,
+    series: FxHashMap<String, FxHashMap<usize, SeriesOutput>>,
     markers: BTreeMap<String, BTreeMap<usize, MarkerOutput>>,
     segments: BTreeMap<String, BTreeMap<usize, SegmentOutput>>,
     levels: BTreeMap<String, HorizontalLevelOutput>,
@@ -53,6 +52,12 @@ struct IndicatorOutputStore {
     regions: BTreeMap<String, BTreeMap<i64, RegionOutput>>,
     persistent_regions: PersistentRegionStore,
     preview_persistent_regions: Option<PersistentRegionStore>,
+}
+
+#[derive(Debug, Clone)]
+struct SeriesOutput {
+    value: Value,
+    color: Option<Color>,
 }
 
 #[derive(Debug, Clone)]
@@ -125,15 +130,11 @@ impl PersistentRegionStore {
 
 impl IndicatorOutputStore {
     fn series_value(&self, plot: &str, index: usize) -> Option<&Value> {
-        self.series.get(plot)?.get(&index)
+        Some(&self.series.get(plot)?.get(&index)?.value)
     }
 
     fn series_color(&self, plot: &str, index: usize) -> Option<Color> {
-        self.series_colors
-            .get(plot)
-            .and_then(|values| values.get(&index))
-            .copied()
-            .flatten()
+        self.series.get(plot)?.get(&index)?.color
     }
 
     fn marker_values_at(&self, index: usize) -> Vec<MarkerOutput> {
@@ -193,18 +194,14 @@ impl IndicatorOutputStore {
         for values in self.series.values_mut() {
             values.remove(&output.index);
         }
-        for values in self.series_colors.values_mut() {
-            values.remove(&output.index);
-        }
         for plot in output.plots.iter() {
-            self.series
-                .entry(plot.id.clone())
-                .or_default()
-                .insert(output.index, plot.value.clone());
-            self.series_colors
-                .entry(plot.id.clone())
-                .or_default()
-                .insert(output.index, plot.color);
+            self.series.entry(plot.id.clone()).or_default().insert(
+                output.index,
+                SeriesOutput {
+                    value: plot.value.clone(),
+                    color: plot.color,
+                },
+            );
         }
         for values in self.markers.values_mut() {
             values.remove(&output.index);
@@ -253,9 +250,13 @@ impl IndicatorOutputStore {
                 .insert(region.key, region.clone());
         }
         if preview {
-            let mut persistent_regions = self.persistent_regions.clone();
-            persistent_regions.apply_updates(&output.region_updates);
-            self.preview_persistent_regions = Some(persistent_regions);
+            self.preview_persistent_regions = if output.region_updates.is_empty() {
+                None
+            } else {
+                let mut persistent_regions = self.persistent_regions.clone();
+                persistent_regions.apply_updates(&output.region_updates);
+                Some(persistent_regions)
+            };
         } else {
             self.persistent_regions
                 .apply_updates(&output.region_updates);
@@ -1132,7 +1133,6 @@ impl IndicatorRegistration {
 
 pub(crate) struct ScriptIndicatorRuntime {
     compiled: Arc<CompiledIndicator>,
-    config: IndicatorConfig,
     instance: Option<IndicatorInstance>,
     outputs: IndicatorOutputStore,
     diagnostic: Option<String>,
@@ -1146,7 +1146,6 @@ impl ScriptIndicatorRuntime {
         let instance = Self::instantiate(&compiled, &config)?;
         Ok(Self {
             compiled,
-            config,
             instance: Some(instance),
             outputs: IndicatorOutputStore::default(),
             diagnostic: None,
@@ -1167,36 +1166,22 @@ impl ScriptIndicatorRuntime {
     }
 
     fn instantiate(
-        compiled: &CompiledIndicator,
+        compiled: &Arc<CompiledIndicator>,
         config: &IndicatorConfig,
     ) -> Result<IndicatorInstance, IndicatorConfigError> {
         let next_config = config_to_runtime(config, &compiled.descriptor)?;
-        compiled
-            .instantiate_with_limits(next_config, RuntimeLimits::untrusted())
-            .map_err(|error| {
-                IndicatorConfigError::Deserialize(format!(
-                    "indicator could not be planned: {error}"
-                ))
-            })
+        IndicatorInstance::with_limits(
+            Arc::clone(compiled),
+            next_config,
+            RuntimeLimits::untrusted(),
+        )
+        .map_err(|error| {
+            IndicatorConfigError::Deserialize(format!("indicator could not be planned: {error}"))
+        })
     }
 }
 
 impl ScriptIndicatorRuntime {
-    pub(super) fn set_config(
-        &mut self,
-        config: &IndicatorConfig,
-    ) -> Result<bool, IndicatorConfigError> {
-        if self.config == *config {
-            return Ok(false);
-        }
-        let instance = Self::instantiate(&self.compiled, config)?;
-        self.instance = Some(instance);
-        self.config = config.clone();
-        self.outputs = IndicatorOutputStore::default();
-        self.diagnostic = None;
-        Ok(true)
-    }
-
     pub(super) fn evaluate_closed(&mut self, frame: &IndicatorFrame) {
         if self.diagnostic.is_some() {
             return;

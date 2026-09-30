@@ -47,7 +47,10 @@ use exchange::{
 };
 use iced::{
     Alignment, Element, Length, Renderer, Theme, padding,
-    widget::{button, center, column, container, pane_grid, pick_list, row, rule, text, tooltip},
+    widget::{
+        button, center, column, container, pane_grid, pick_list, responsive, row, rule, text,
+        tooltip,
+    },
 };
 use std::time::Instant;
 
@@ -1134,12 +1137,69 @@ impl State {
         theme_accents: ThemeAccents,
     ) -> Option<Element<'a, Message>> {
         let page = self.inspector?;
+        if !self.supports_inspector(page) {
+            return None;
+        }
+
+        let title = match page {
+            InspectorPage::PaneSettings => "Pane settings".to_owned(),
+            InspectorPage::Indicators => "Add indicators or studies".to_owned(),
+            InspectorPage::KlineSettings => {
+                let Content::Kline {
+                    chart: Some(chart), ..
+                } = &self.content
+                else {
+                    return None;
+                };
+                chart.contextual_settings_title()?
+            }
+        };
+
+        let close = button(icon_text(Icon::Close, 14))
+            .style(|theme, status| style::button::transparent(theme, status, false))
+            .on_press(Message::ToggleInspector(pane, page));
+        let header = row![
+            widget::text::title(title)
+                .wrapping(iced::widget::text::Wrapping::Word)
+                .width(Length::Fill),
+            close,
+        ]
+        .align_y(Alignment::Center)
+        .spacing(8);
+
+        Some(
+            container(column![
+                header,
+                rule::horizontal(1.0).style(style::split_ruler),
+                responsive(move |size| {
+                    self.inspector_body_view(pane, page, theme_accents, size.height)
+                        .unwrap_or_else(|| column![].into())
+                }),
+            ])
+            .width(240)
+            .height(Length::Fill)
+            .padding([4, 8])
+            .style(style::chart_sidebar_container)
+            .into(),
+        )
+    }
+
+    fn inspector_body_view<'a>(
+        &'a self,
+        pane: pane_grid::Pane,
+        page: InspectorPage,
+        theme_accents: ThemeAccents,
+        available_height: f32,
+    ) -> Option<Element<'a, Message>> {
         let (body, footer) = match page {
             InspectorPage::PaneSettings => {
                 let (sections, footer) = self
                     .pane_settings_content(pane, theme_accents)?
                     .into_parts();
-                (InspectorBody::view(sections), footer)
+                (
+                    sections,
+                    footer.map(|footer| (InspectorFooter::HEIGHT, footer)),
+                )
             }
             InspectorPage::Indicators => (
                 InspectorBody::view_without_scroll(self.indicators_sidebar_view(pane)?),
@@ -1155,24 +1215,22 @@ impl State {
                 let (body, footer) = chart.contextual_settings_view(theme_accents)?;
                 let map = move |message| Message::PaneEvent(pane, Event::KlineInteraction(message));
                 (
-                    InspectorBody::view(body.map(map)),
-                    footer.map(|footer| footer.map(map)),
+                    body.map(map),
+                    footer.map(|(height, footer)| (height, footer.map(map))),
                 )
             }
         };
-        Some(
-            container(column![
-                body,
-                footer
-                    .map(InspectorFooter::view)
-                    .unwrap_or_else(|| column![].into()),
-            ])
-            .width(240)
-            .height(Length::Fill)
-            .padding([4, 8])
-            .style(style::chart_sidebar_container)
-            .into(),
-        )
+        let body = if page == InspectorPage::Indicators {
+            body
+        } else {
+            let footer_height = footer.as_ref().map_or(0.0, |(height, _)| *height);
+            InspectorBody::view(body, (available_height - footer_height).max(0.0))
+        };
+        let mut content = column![body];
+        if let Some((height, footer)) = footer {
+            content = content.push(InspectorFooter::view(footer, height));
+        }
+        Some(content.into())
     }
 
     pub fn indicators_sidebar_view<'a>(

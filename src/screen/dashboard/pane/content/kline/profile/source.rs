@@ -1,9 +1,15 @@
 use data::chart::kline::FetchRange;
 use exchange::{Kline, TickerInfo, Timeframe, UnixMs};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 const PROFILE_KLINE_RETAINED_SPANS: u64 = 8;
 const PROFILE_KLINE_MAX_BARS: u64 = 250_000;
+
+struct MissingRangePlan {
+    windows: Vec<(UnixMs, UnixMs)>,
+    cutoff: UnixMs,
+    ranges: Vec<(UnixMs, UnixMs)>,
+}
 
 #[derive(Default)]
 pub(super) struct ProfileKlineSource {
@@ -12,6 +18,7 @@ pub(super) struct ProfileKlineSource {
     empty_ranges: Vec<(UnixMs, UnixMs)>,
     retained: Option<(UnixMs, UnixMs)>,
     revision: u64,
+    missing_plan: Option<MissingRangePlan>,
 }
 
 impl ProfileKlineSource {
@@ -34,7 +41,9 @@ impl ProfileKlineSource {
             {
                 continue;
             }
-            self.bars.insert(bar.time, *bar);
+            if self.bars.insert(bar.time, *bar).is_none() {
+                self.missing_plan = None;
+            }
             changed.push(bar.time);
         }
         if !changed.is_empty() {
@@ -86,6 +95,7 @@ impl ProfileKlineSource {
             merged.push((start, end));
         }
         self.empty_ranges = merged;
+        self.missing_plan = None;
         self.revision = self.revision.wrapping_add(1);
         true
     }
@@ -94,23 +104,16 @@ impl ProfileKlineSource {
         (self.timeframe == Some(timeframe)).then_some(&self.bars)
     }
 
-    pub fn bars(&self, timeframe: Timeframe) -> Vec<Kline> {
-        self.bars_ref(timeframe)
-            .map(|bars| bars.values().copied().collect())
-            .unwrap_or_default()
-    }
-
     pub fn revision(&self) -> u64 {
         self.revision
     }
 
     pub fn fetch_ranges(
-        &self,
+        &mut self,
         windows: &[(UnixMs, UnixMs)],
         now: UnixMs,
         ticker_info: TickerInfo,
         timeframe: Timeframe,
-        covered_bars: &[Kline],
     ) -> Vec<(FetchRange, Vec<TickerInfo>)> {
         if self.timeframe != Some(timeframe) {
             return Vec::new();
@@ -118,28 +121,36 @@ impl ProfileKlineSource {
         let Some(retained) = self.retained else {
             return Vec::new();
         };
-        let covered_times = covered_bars
-            .iter()
-            .map(|bar| bar.time)
-            .collect::<BTreeSet<_>>();
-        let mut missing = windows
-            .iter()
-            .copied()
-            .filter_map(|(start, end)| {
-                let start = start.max(retained.0);
-                let end = end.min(retained.1);
-                (start < end).then_some((start, end))
-            })
-            .flat_map(|(start, end)| {
-                self.missing_ranges(start, end, now, timeframe, &covered_times)
-            })
-            .collect::<Vec<_>>();
-        missing.sort_unstable();
-        missing.dedup();
+        let cutoff = now.floor_to(timeframe);
+        if !self
+            .missing_plan
+            .as_ref()
+            .is_some_and(|plan| plan.windows == windows && plan.cutoff == cutoff)
+        {
+            let mut ranges = windows
+                .iter()
+                .copied()
+                .filter_map(|(start, end)| {
+                    let start = start.max(retained.0);
+                    let end = end.min(retained.1);
+                    (start < end).then_some((start, end))
+                })
+                .flat_map(|(start, end)| self.missing_ranges(start, end, cutoff, timeframe))
+                .collect::<Vec<_>>();
+            ranges.sort_unstable();
+            ranges.dedup();
+            self.missing_plan = Some(MissingRangePlan {
+                windows: windows.to_vec(),
+                cutoff,
+                ranges,
+            });
+        }
 
-        missing
+        self.missing_plan
+            .as_ref()
             .into_iter()
-            .map(|(from, to)| {
+            .flat_map(|plan| &plan.ranges)
+            .map(|&(from, to)| {
                 (
                     FetchRange::ProfileKline {
                         timeframe,
@@ -200,6 +211,10 @@ impl ProfileKlineSource {
             })
             .unwrap_or(desired);
         let retained_changed = self.retained != Some(next);
+        if !retained_changed && !timeframe_changed {
+            return false;
+        }
+        self.missing_plan = None;
         self.retained = Some(next);
         self.bars.retain(|time, _| contains(next, *time));
         self.empty_ranges = self
@@ -210,10 +225,8 @@ impl ProfileKlineSource {
                 (clipped.0 < clipped.1).then_some(clipped)
             })
             .collect();
-        if retained_changed || timeframe_changed {
-            self.revision = self.revision.wrapping_add(1);
-        }
-        retained_changed || timeframe_changed
+        self.revision = self.revision.wrapping_add(1);
+        true
     }
 
     pub fn is_active(&self, timeframe: Timeframe, time: UnixMs) -> bool {
@@ -239,6 +252,7 @@ impl ProfileKlineSource {
             self.empty_ranges.clear();
             self.retained = None;
             self.timeframe = None;
+            self.missing_plan = None;
             self.revision = self.revision.wrapping_add(1);
         }
         changed
@@ -250,7 +264,6 @@ impl ProfileKlineSource {
         end: UnixMs,
         now: UnixMs,
         timeframe: Timeframe,
-        covered_times: &BTreeSet<UnixMs>,
     ) -> Vec<(UnixMs, UnixMs)> {
         let start = start.floor_to(timeframe);
         let end = end
@@ -265,9 +278,7 @@ impl ProfileKlineSource {
         let mut missing_start = None;
         let mut expected = start;
         while expected < end {
-            let covered = covered_times.contains(&expected)
-                || self.bars.contains_key(&expected)
-                || self.empty_range_contains(expected);
+            let covered = self.bars.contains_key(&expected) || self.empty_range_contains(expected);
             if covered {
                 if let Some(from) = missing_start.take() {
                     missing.push((from, expected));

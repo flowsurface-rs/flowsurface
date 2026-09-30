@@ -211,12 +211,15 @@ impl TimeSeries<KlineDataPoint> {
         }
         let mut updated_times = FxHashSet::default();
 
-        for trade in buffer {
-            let rounded_time = trade.time.floor_to(self.interval);
-
+        for run in buffer.chunk_by(|left, right| {
+            left.time.floor_to(self.interval) == right.time.floor_to(self.interval)
+        }) {
+            let rounded_time = run[0].time.floor_to(self.interval);
             if let Some(entry) = self.datapoints.get_mut(&rounded_time) {
                 updated_times.insert(rounded_time);
-                entry.add_trade(trade, self.tick_size);
+                for trade in run {
+                    entry.add_trade(trade, self.tick_size);
+                }
             }
         }
 

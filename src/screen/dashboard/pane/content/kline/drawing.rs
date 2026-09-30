@@ -338,13 +338,12 @@ impl DrawingState {
         .width(Length::Shrink)
         .height(Length::Fill)
         .style(style::scroll_bar);
-        let toolbar = iced::widget::mouse_area(
+        let toolbar = iced::widget::opaque(
             iced::widget::container(iced::widget::row![drag_handle, scrollable_controls])
                 .style(style::chart_toolbar)
                 .width(Length::Shrink)
                 .height(FLOATING_TOOLBAR_HEIGHT),
-        )
-        .interaction(iced::mouse::Interaction::Idle);
+        );
         let position = self.floating_toolbar.position_within(overlay_size);
 
         iced::widget::container(

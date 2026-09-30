@@ -467,6 +467,7 @@ pub enum TpoCalculationError {
 
 pub struct TradeTpoCache {
     settings: TpoProfileSettings,
+    edits: TpoBoundaryEdits,
     trade_count: usize,
     profiles: BTreeMap<UnixMs, TradeTpoProfileCache>,
 }
@@ -498,27 +499,10 @@ impl TradeTpoCache {
         validate_settings(settings)?;
         let mut cache = Self {
             settings,
+            edits,
             trade_count: 0,
             profiles: BTreeMap::new(),
         };
-        let Some(first_trade) = trades.iter().map(|trade| trade.time).min() else {
-            return Ok(cache);
-        };
-        let Some(last_trade) = trades.iter().map(|trade| trade.time).max() else {
-            return Ok(cache);
-        };
-
-        let first = settings.anchor.floor(first_trade);
-        let last = settings.anchor.offset(settings.anchor.floor(last_trade), 1);
-        for window in edits
-            .boundaries_between(first, last, settings.anchor)
-            .windows(2)
-        {
-            cache.profiles.insert(
-                window[0],
-                TradeTpoProfileCache::new(window[0], window[1], settings.letter_period),
-            );
-        }
         if !cache.sync(trades) {
             unreachable!("trade cache ranges cover all source trades");
         }
@@ -530,19 +514,23 @@ impl TradeTpoCache {
             return false;
         }
         let new_trades = &trades[self.trade_count..];
-        if new_trades
-            .iter()
-            .any(|trade| self.profile_start_for(trade.time).is_none())
-        {
-            return false;
+        if let Some((first, last)) = new_trades.iter().map(|trade| trade.time).fold(
+            None,
+            |range: Option<(UnixMs, UnixMs)>, time| {
+                Some(range.map_or((time, time), |(first, last)| {
+                    (first.min(time), last.max(time))
+                }))
+            },
+        ) {
+            self.extend_windows(first, last.saturating_add(1));
         }
         for trade in new_trades {
             let start = self
                 .profile_start_for(trade.time)
-                .expect("trade profile was checked above");
+                .expect("trade cache ranges cover all source trades");
             self.profiles
                 .get_mut(&start)
-                .expect("trade profile was checked above")
+                .expect("trade cache range exists")
                 .add_trade(trade, self.settings);
         }
         self.trade_count = trades.len();
@@ -576,6 +564,35 @@ impl TradeTpoCache {
             .range(..=time)
             .next_back()
             .and_then(|(&start, profile)| (time < profile.end).then_some(start))
+    }
+
+    fn extend_windows(&mut self, start: UnixMs, end: UnixMs) {
+        let anchor = self.settings.anchor;
+
+        let start = anchor.floor(start);
+        let end = anchor.offset(anchor.floor(end.saturating_sub(1)), 1);
+
+        let (start, end) = match (
+            self.profiles.first_key_value(),
+            self.profiles.last_key_value(),
+        ) {
+            (Some((&first, _)), Some((_, last))) => {
+                if start >= first && end <= last.end {
+                    return;
+                }
+                (start.min(first), end.max(last.end))
+            }
+            _ => (start, end),
+        };
+
+        for (start, end) in self
+            .edits
+            .profile_ranges_overlapping(start, end, self.settings.anchor)
+        {
+            self.profiles.entry(start).or_insert_with(|| {
+                TradeTpoProfileCache::new(start, end, self.settings.letter_period)
+            });
+        }
     }
 }
 

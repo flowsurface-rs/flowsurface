@@ -595,13 +595,17 @@ impl<'a> OverlayCanvas<'a> {
         x: f32,
         y: f32,
     ) {
+        let palette = theme.extended_palette();
+        let stroke =
+            style::dashed_line(theme).with_color(palette.background.base.text.scale_alpha(0.35));
+
         frame.stroke(
             &Path::line(Point::new(x, 0.0), Point::new(x, bounds.height)),
-            style::dashed_line(theme),
+            stroke,
         );
         frame.stroke(
             &Path::line(Point::new(0.0, y), Point::new(bounds.width, y)),
-            style::dashed_line(theme),
+            stroke,
         );
     }
 
@@ -614,6 +618,10 @@ impl<'a> OverlayCanvas<'a> {
         y: f32,
         rect: Rectangle,
     ) {
+        let palette = theme.extended_palette();
+        let stroke =
+            style::dashed_line(theme).with_color(palette.background.base.text.scale_alpha(0.35));
+
         let cut_left = (rect.x - HIGHLIGHT_CROSSHAIR_GAP_PX).clamp(0.0, bounds.width);
         let cut_right = (rect.x + rect.width + HIGHLIGHT_CROSSHAIR_GAP_PX).clamp(0.0, bounds.width);
         let cut_top = (rect.y - HIGHLIGHT_CROSSHAIR_GAP_PX).clamp(0.0, bounds.height);
@@ -624,19 +632,19 @@ impl<'a> OverlayCanvas<'a> {
             if cut_top > 0.0 {
                 frame.stroke(
                     &Path::line(Point::new(x, 0.0), Point::new(x, cut_top)),
-                    style::dashed_line(theme),
+                    stroke,
                 );
             }
             if cut_bottom < bounds.height {
                 frame.stroke(
                     &Path::line(Point::new(x, cut_bottom), Point::new(x, bounds.height)),
-                    style::dashed_line(theme),
+                    stroke,
                 );
             }
         } else {
             frame.stroke(
                 &Path::line(Point::new(x, 0.0), Point::new(x, bounds.height)),
-                style::dashed_line(theme),
+                stroke,
             );
         }
 
@@ -644,19 +652,19 @@ impl<'a> OverlayCanvas<'a> {
             if cut_left > 0.0 {
                 frame.stroke(
                     &Path::line(Point::new(0.0, y), Point::new(cut_left, y)),
-                    style::dashed_line(theme),
+                    stroke,
                 );
             }
             if cut_right < bounds.width {
                 frame.stroke(
                     &Path::line(Point::new(cut_right, y), Point::new(bounds.width, y)),
-                    style::dashed_line(theme),
+                    stroke,
                 );
             }
         } else {
             frame.stroke(
                 &Path::line(Point::new(0.0, y), Point::new(bounds.width, y)),
-                style::dashed_line(theme),
+                stroke,
             );
         }
     }

@@ -248,7 +248,11 @@ impl DataUpdate<'_> {
                     return KlineDataChange::Unchanged;
                 }
 
-                let change = data.insert_historical_open_interest(*ticker_info, series);
+                let change = data.insert_historical_open_interest(
+                    *ticker_info,
+                    series,
+                    indicators.instances(),
+                );
                 if let Some(req_id) = req_id {
                     let KlineDataChange::HistoricalInput { update, .. } = &change else {
                         unreachable!("open-interest update returned another outcome")

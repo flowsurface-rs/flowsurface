@@ -705,12 +705,20 @@ impl<'a> KlineWidget<'a> {
             .first()
             .map(|series| series.tick_size().to_f32_lossy() * 0.5)
             .unwrap_or(0.0);
+        let visible_series: Vec<_> = self
+            .series
+            .iter()
+            .map(|series| self.series_participates_in_primary_plot(series.ticker_info))
+            .collect();
         self.for_each_bar_unit_index_with_units(
             x_axis,
             bar_units,
             min_x_unit,
             max_x_unit,
             |series_index, _bar_index, _series, _unit, point| {
+                if !visible_series[series_index] {
+                    return;
+                }
                 let Some(anchor) = anchors
                     .get(series_index)
                     .copied()
@@ -1362,12 +1370,20 @@ impl<'a> KlineWidget<'a> {
         let include_footprint_range = self.trade_data_enabled && self.footprint.visible;
         let mut has_footprint_rows = false;
 
+        let visible_series: Vec<_> = self
+            .series
+            .iter()
+            .map(|series| self.series_participates_in_primary_plot(series.ticker_info))
+            .collect();
         self.for_each_bar_unit_index_with_units(
             x_axis,
             bar_units,
             min_x_unit,
             max_x_unit,
             |series_index, _bar_index, _series, _unit, point| {
+                if !visible_series[series_index] {
+                    return;
+                }
                 let (low, high) = if series_index == 0 && include_primary_ohlc_range {
                     (point.kline.low, point.kline.high)
                 } else {
@@ -1884,11 +1900,22 @@ impl<'a> KlineWidget<'a> {
         let root_bounds = layout.bounds();
         let panel_layout = PanelLayoutTree::from_layout(layout, &self.composition.panels)?;
         let activity = state.scene_activity();
-        let Some(base) = state.scene_cache.get(self.version, &panel_layout) else {
-            return self.compute_scene_uncached(layout, cursor, activity, &state.study_objects);
-        };
 
-        self.build_scene_from_base(base, root_bounds, cursor, activity, &state.study_objects)
+        let mut scene = if let Some(base) = state.scene_cache.get(self.version, &panel_layout) {
+            self.build_scene_from_base(base, root_bounds, cursor, activity, &state.study_objects)
+        } else {
+            self.compute_scene_uncached(layout, cursor, activity, &state.study_objects)
+        }?;
+
+        scene.interaction.target = state.interaction.resolve_cursor_target(
+            scene.interaction.target,
+            cursor
+                .position_in(root_bounds)
+                .map_or(LayoutHitZone::Outside, |local| scene.layout.hit_test(local)),
+            &self.drawing_snapshot,
+        );
+
+        Some(scene)
     }
 
     fn compute_scene_base(&self, panel_layout: PanelLayoutTree) -> Option<SceneBase> {

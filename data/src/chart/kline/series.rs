@@ -839,7 +839,7 @@ impl KlineSeries {
             return IndicatorUpdateScope::From(self.point_count());
         }
         merge_trade_time_range(&mut self.trade_time_range, trades);
-        self.raw_trades.extend_from_slice(trades);
+        self.append_raw_trades(trades);
         self.fold_big_trades_cache();
         self.recurring_profile_caches.clear();
         let PlotData::TickBased(tick_aggr) = &mut self.data else {
@@ -863,9 +863,8 @@ impl KlineSeries {
             return IndicatorUpdateScope::From(self.point_count());
         }
         merge_trade_time_range(&mut self.trade_time_range, trades);
-        if self.sync_big_trades_cache(trades) {
-            self.trade_sequence_id = uuid::Uuid::new_v4();
-        }
+        self.append_raw_trades(trades);
+        self.fold_big_trades_cache();
         if self
             .time_trade_timeframe
             .is_some_and(|current| current != timeframe)
@@ -1013,60 +1012,8 @@ impl KlineSeries {
         self.trade_time_range
     }
 
-    /// Keeps raw trades time-ordered and reports whether existing indices moved.
-    fn append_raw_trades(&mut self, trades: &[Trade]) -> bool {
-        if trades.is_empty() {
-            return false;
-        }
-
-        let sorted_trades = if trades.windows(2).any(|pair| pair[0].time > pair[1].time) {
-            let mut sorted = trades.to_vec();
-            sorted.sort_unstable_by_key(|trade| trade.time);
-            Some(sorted)
-        } else {
-            None
-        };
-        let trades = sorted_trades.as_deref().unwrap_or(trades);
-        let previous_len = self.raw_trades.len();
-        let insert_at = self
-            .raw_trades
-            .partition_point(|trade| trade.time <= trades[0].time);
-
-        if self
-            .raw_trades
-            .get(insert_at)
-            .is_none_or(|next| next.time >= trades[trades.len() - 1].time)
-        {
-            self.raw_trades.extend_from_slice(trades);
-            self.raw_trades[insert_at..].rotate_right(trades.len());
-        } else {
-            let existing = std::mem::take(&mut self.raw_trades);
-            let mut merged = Vec::with_capacity(existing.len() + trades.len());
-            let (mut old, mut new) = (0, 0);
-            while old < existing.len() && new < trades.len() {
-                if existing[old].time <= trades[new].time {
-                    merged.push(existing[old]);
-                    old += 1;
-                } else {
-                    merged.push(trades[new]);
-                    new += 1;
-                }
-            }
-            merged.extend_from_slice(&existing[old..]);
-            merged.extend_from_slice(&trades[new..]);
-            self.raw_trades = merged;
-        }
-        insert_at < previous_len
-    }
-
-    fn sync_big_trades_cache(&mut self, trades: &[Trade]) -> bool {
-        let reordered = self.append_raw_trades(trades);
-        if reordered {
-            self.rebuild_big_trades_cache();
-        } else {
-            self.fold_big_trades_cache();
-        }
-        reordered
+    fn append_raw_trades(&mut self, trades: &[Trade]) {
+        self.raw_trades.extend_from_slice(trades);
     }
 
     /// Rebuilds the big-trade cache for `threshold`, or drops it when no study needs it.
@@ -1087,6 +1034,7 @@ impl KlineSeries {
             threshold,
             &self.raw_trades,
             &self.ticker_info,
+            self.basis(),
         ));
     }
 
@@ -1110,6 +1058,7 @@ impl KlineSeries {
     }
 
     fn fold_big_trades_cache(&mut self) {
+        let basis = self.basis();
         let Self {
             raw_trades,
             ticker_info,
@@ -1117,23 +1066,8 @@ impl KlineSeries {
             ..
         } = self;
         if let Some(cache) = big_trades_cache {
-            cache.fold(raw_trades, ticker_info);
+            cache.fold(raw_trades, ticker_info, basis);
         }
-    }
-
-    fn rebuild_big_trades_cache(&mut self) {
-        let Some(threshold) = self
-            .big_trades_cache
-            .as_ref()
-            .map(BigTradesCache::threshold)
-        else {
-            return;
-        };
-        self.big_trades_cache = Some(BigTradesCache::new(
-            threshold,
-            &self.raw_trades,
-            &self.ticker_info,
-        ));
     }
 
     fn reset_big_trades_cache(&mut self) {
@@ -1142,6 +1076,7 @@ impl KlineSeries {
         }
     }
 
+    /// Retained trades in arrival order; appending history preserves existing indices.
     pub fn raw_trades(&self) -> &[Trade] {
         &self.raw_trades
     }

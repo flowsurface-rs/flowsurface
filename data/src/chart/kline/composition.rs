@@ -731,7 +731,7 @@ impl Default for LayerStyle {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LayerSpec {
     pub id: LayerId,
     pub name: String,
@@ -776,7 +776,7 @@ impl LayerSource {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PanelSpec {
     pub id: PanelId,
     pub role: PanelRole,
@@ -792,6 +792,18 @@ pub struct PanelSpec {
 }
 
 impl PanelSpec {
+    pub fn indicator_visible(&self, id: PanelValueId) -> bool {
+        self.layers.iter().any(|layer| {
+            layer.visible
+                && (!matches!(self.presentation, PanelPresentation::Table)
+                    || layer.purpose == LayerPurpose::TableBinding)
+                && layer
+                    .source
+                    .indicator_output()
+                    .is_some_and(|output| output.instance_id == id)
+        })
+    }
+
     pub fn data_hint(&self) -> PanelDataHint {
         if matches!(self.presentation, PanelPresentation::Table) {
             return PanelDataHint::TableLike;
@@ -880,6 +892,30 @@ pub struct ChartComposition {
 }
 
 impl ChartComposition {
+    pub fn comparison_layer(&self, ticker: TickerInfo) -> Option<&LayerSpec> {
+        let panel = self.panel(self.primary_panel_id()?)?;
+        let name = ticker.ticker.symbol_and_exchange_string();
+        panel.layers.iter().find(|layer| {
+            matches!(
+                layer.source,
+                LayerSource::RawKline {
+                    source: DataSourceId::Synthetic("Comparison")
+                }
+            ) && layer.name == name
+        })
+    }
+
+    pub fn toggle_comparison_visibility(&mut self, ticker: TickerInfo) -> bool {
+        let Some(panel_id) = self.primary_panel_id() else {
+            return false;
+        };
+        let Some(layer) = self.comparison_layer(ticker) else {
+            return false;
+        };
+        let (layer_id, visible) = (layer.id, !layer.visible);
+        self.set_panel_layer_visibility(panel_id, layer_id, visible)
+    }
+
     pub fn prototype_kline() -> Self {
         let mut composition = Self {
             panels: Vec::new(),
