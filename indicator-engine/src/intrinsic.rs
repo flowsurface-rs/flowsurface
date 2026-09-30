@@ -197,6 +197,7 @@ pub struct IntrinsicEvalContext<'a> {
     pub bar_time: i64,
     pub max_heap_bytes: usize,
     pub max_window_length: usize,
+    pub fixed_window: bool,
     pub max_collection_elements: usize,
     pub states: &'a mut BTreeMap<CallSiteId, IntrinsicState>,
 }
@@ -206,14 +207,12 @@ pub type IntrinsicEvaluator = for<'a> fn(
     CallSiteId,
     &[Value],
 ) -> Result<Value, IntrinsicError>;
-pub type StateFactory = fn() -> IntrinsicState;
 
 #[derive(Clone)]
 pub struct IntrinsicDefinition {
     pub name: QualifiedName,
     pub signature: IntrinsicSignature,
     pub effects: IntrinsicEffects,
-    pub state_factory: Option<StateFactory>,
     pub evaluator: IntrinsicEvaluator,
 }
 
@@ -240,186 +239,92 @@ impl IntrinsicRegistry {
             definitions: Vec::new(),
             ids: BTreeMap::new(),
         };
-        registry.register(
-            "math.abs",
-            math_abs(),
-            IntrinsicEffects::PURE,
-            None,
-            eval_abs,
-        );
+        registry.register("math.abs", math_abs(), IntrinsicEffects::PURE, eval_abs);
         registry.register(
             "math.max",
             math_min_max(true),
             IntrinsicEffects::PURE,
-            None,
             eval_max,
         );
         registry.register(
             "math.min",
             math_min_max(true),
             IntrinsicEffects::PURE,
-            None,
             eval_min,
         );
-        registry.register(
-            "ta.sma",
-            ta_average(),
-            IntrinsicEffects::STATEFUL,
-            Some(|| IntrinsicState::Sma {
-                values: VecDeque::new(),
-            }),
-            eval_sma,
-        );
-        registry.register(
-            "ta.ema",
-            ta_average(),
-            IntrinsicEffects::STATEFUL,
-            Some(|| IntrinsicState::Ema { previous: None }),
-            eval_ema,
-        );
-        registry.register(
-            "ta.rma",
-            ta_average(),
-            IntrinsicEffects::STATEFUL,
-            Some(|| IntrinsicState::Rma { previous: None }),
-            eval_rma,
-        );
+        registry.register("ta.sma", ta_average(), IntrinsicEffects::STATEFUL, eval_sma);
+        registry.register("ta.ema", ta_average(), IntrinsicEffects::STATEFUL, eval_ema);
+        registry.register("ta.rma", ta_average(), IntrinsicEffects::STATEFUL, eval_rma);
         registry.register(
             "ta.rsi",
             ta_rsi_signature(),
             IntrinsicEffects::STATEFUL,
-            Some(|| IntrinsicState::Rsi {
-                previous_source: None,
-                initial_gain_sum: 0.0,
-                initial_loss_sum: 0.0,
-                initial_count: 0,
-                average_gain: None,
-                average_loss: None,
-            }),
             eval_rsi,
         );
         registry.register(
             "ta.previous_when",
             ta_previous_when_signature(),
             IntrinsicEffects::STATEFUL,
-            Some(|| IntrinsicState::PreviousWhen { value: None }),
             eval_previous_when,
         );
-        registry.register(
-            "ta.vwma",
-            ta_vwma(),
-            IntrinsicEffects::STATEFUL,
-            Some(|| IntrinsicState::Vwma {
-                values: VecDeque::new(),
-            }),
-            eval_vwma,
-        );
+        registry.register("ta.vwma", ta_vwma(), IntrinsicEffects::STATEFUL, eval_vwma);
         registry.register(
             "ta.highest",
             ta_window(),
             IntrinsicEffects::STATEFUL,
-            Some(|| IntrinsicState::Window {
-                maximum: true,
-                values: VecDeque::new(),
-            }),
             eval_highest,
         );
         registry.register(
             "ta.lowest",
             ta_window(),
             IntrinsicEffects::STATEFUL,
-            Some(|| IntrinsicState::Window {
-                maximum: false,
-                values: VecDeque::new(),
-            }),
             eval_lowest,
         );
         registry.register(
             "ta.pivothigh",
             ta_pivot(),
             IntrinsicEffects::STATEFUL,
-            Some(|| IntrinsicState::Pivot {
-                maximum: true,
-                values: VecDeque::new(),
-            }),
             eval_pivothigh,
         );
         registry.register(
             "ta.pivotlow",
             ta_pivot(),
             IntrinsicEffects::STATEFUL,
-            Some(|| IntrinsicState::Pivot {
-                maximum: false,
-                values: VecDeque::new(),
-            }),
             eval_pivotlow,
         );
-        registry.register(
-            "ta.cum",
-            ta_cum(),
-            IntrinsicEffects::STATEFUL,
-            Some(|| IntrinsicState::Cum { total: 0.0 }),
-            eval_cum,
-        );
+        registry.register("ta.cum", ta_cum(), IntrinsicEffects::STATEFUL, eval_cum);
         registry.register(
             "ta.stdev",
             ta_window(),
             IntrinsicEffects::STATEFUL,
-            Some(|| IntrinsicState::Stdev {
-                values: VecDeque::new(),
-            }),
             eval_stdev,
         );
-        registry.register(
-            "ta.dev",
-            ta_window(),
-            IntrinsicEffects::STATEFUL,
-            Some(|| IntrinsicState::Dev {
-                values: VecDeque::new(),
-            }),
-            eval_dev,
-        );
+        registry.register("ta.dev", ta_window(), IntrinsicEffects::STATEFUL, eval_dev);
         registry.register(
             "ta.highestbars",
             ta_window(),
             IntrinsicEffects::STATEFUL,
-            Some(|| IntrinsicState::ExtremeBars {
-                maximum: true,
-                values: VecDeque::new(),
-            }),
             eval_highest_bars,
         );
         registry.register(
             "ta.lowestbars",
             ta_window(),
             IntrinsicEffects::STATEFUL,
-            Some(|| IntrinsicState::ExtremeBars {
-                maximum: false,
-                values: VecDeque::new(),
-            }),
             eval_lowest_bars,
         );
         registry.register(
             "ta.tr",
             ta_tr_signature(),
             IntrinsicEffects::STATEFUL,
-            Some(|| IntrinsicState::TrueRange {
-                previous_close: None,
-            }),
             eval_true_range,
         );
         registry.register(
             "ta.avwap",
             ta_avwap_signature(),
             IntrinsicEffects::STATEFUL,
-            Some(|| IntrinsicState::AnchoredVwap {
-                anchor: 0,
-                price_volume: 0.0,
-                volume: 0.0,
-            }),
             eval_anchored_vwap,
         );
-        registry.register("nz", nz_signature(), IntrinsicEffects::PURE, None, eval_nz);
+        registry.register("nz", nz_signature(), IntrinsicEffects::PURE, eval_nz);
         registry.register(
             "na",
             signature(
@@ -431,21 +336,18 @@ impl IntrinsicRegistry {
                 false,
             ),
             IntrinsicEffects::PURE,
-            None,
             eval_na,
         );
         registry.register(
             "coalesce",
             coalesce_signature(),
             IntrinsicEffects::PURE,
-            None,
             eval_coalesce,
         );
         registry.register(
             "select",
             select_signature(),
             IntrinsicEffects::PURE,
-            None,
             eval_select,
         );
         registry.register(
@@ -459,21 +361,18 @@ impl IntrinsicRegistry {
                 false,
             ),
             IntrinsicEffects::PURE,
-            None,
             eval_tostring,
         );
         registry.register(
             "color.rgb",
             color_rgb_signature(),
             IntrinsicEffects::PURE,
-            None,
             eval_color_rgb,
         );
         registry.register(
             "array.new",
             signature(Vec::new(), Type::simple(ValueType::Array), true),
             IntrinsicEffects::PURE,
-            None,
             eval_array_new,
         );
         registry.register(
@@ -493,7 +392,6 @@ impl IntrinsicRegistry {
                 false,
             ),
             IntrinsicEffects::PURE,
-            None,
             eval_array_push,
         );
         registry.register(
@@ -513,7 +411,6 @@ impl IntrinsicRegistry {
                 false,
             ),
             IntrinsicEffects::PURE,
-            None,
             eval_array_get,
         );
         registry.register(
@@ -527,14 +424,12 @@ impl IntrinsicRegistry {
                 false,
             ),
             IntrinsicEffects::PURE,
-            None,
             eval_array_size,
         );
         registry.register(
             "record.new",
             signature(Vec::new(), Type::simple(ValueType::Record), false),
             IntrinsicEffects::PURE,
-            None,
             eval_record_new,
         );
         registry.register(
@@ -558,7 +453,6 @@ impl IntrinsicRegistry {
                 false,
             ),
             IntrinsicEffects::PURE,
-            None,
             eval_record_set,
         );
         registry.register(
@@ -578,7 +472,6 @@ impl IntrinsicRegistry {
                 false,
             ),
             IntrinsicEffects::PURE,
-            None,
             eval_record_get,
         );
         registry
@@ -598,7 +491,6 @@ impl IntrinsicRegistry {
         name: &'static str,
         signature: IntrinsicSignature,
         effects: IntrinsicEffects,
-        state_factory: Option<StateFactory>,
         evaluator: IntrinsicEvaluator,
     ) -> IntrinsicId {
         let id = IntrinsicId(self.definitions.len());
@@ -607,7 +499,6 @@ impl IntrinsicRegistry {
             name,
             signature,
             effects,
-            state_factory,
             evaluator,
         });
         id
@@ -1467,10 +1358,12 @@ fn eval_pivot(
             "pivot mode changed at a call site",
         ));
     }
-    values.push_back(source);
-    while values.len() > context.max_window_length {
-        values.pop_front();
-    }
+    let retained_length = if context.fixed_window {
+        length
+    } else {
+        context.max_window_length
+    };
+    push_window(values, source, retained_length);
     if values.len() < length {
         return Ok(Value::Na);
     }

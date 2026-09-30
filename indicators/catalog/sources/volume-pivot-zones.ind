@@ -50,13 +50,11 @@ state next_key = 0
 state zones = array.new()
 next_zones = array.new()
 
-bull_wick_target = ta.lowest(chart.low, length)
 bull_close_target = ta.lowest(chart.close, length)
-bull_target = select(mitigation == "Wick", bull_wick_target, bull_close_target)
+bull_target = select(mitigation == "Wick", structure_lower, bull_close_target)
 
-bear_wick_target = ta.highest(chart.high, length)
 bear_close_target = ta.highest(chart.close, length)
-bear_target = select(mitigation == "Wick", bear_wick_target, bear_close_target)
+bear_target = select(mitigation == "Wick", structure_upper, bear_close_target)
 
 if new_bullish_zone {
     next_key := next_key + 1

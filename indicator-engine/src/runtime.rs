@@ -7,7 +7,7 @@ use crate::hir::{
     BarStateField, BinaryOperator, ExprId, ExpressionKind, SourceInputSlot, StateSlot,
     StatementKind,
 };
-use crate::intrinsic::{IntrinsicError, IntrinsicEvalContext, IntrinsicRegistry, IntrinsicState};
+use crate::intrinsic::{IntrinsicError, IntrinsicEvalContext, IntrinsicState, WarmupSpec};
 use crate::scene::Color;
 use crate::types::{ArrayValue, IndicatorConfig, InputType, InputValue, Value};
 use std::collections::{BTreeMap, VecDeque};
@@ -580,7 +580,6 @@ pub struct IndicatorInstance {
     current_bar_index: usize,
     current_frame: Option<IndicatorFrame>,
     executed_nodes: usize,
-    registry: IntrinsicRegistry,
     previewing: bool,
     limits: RuntimeLimits,
     break_requested: bool,
@@ -605,11 +604,13 @@ impl std::fmt::Debug for IndicatorInstance {
 }
 
 impl IndicatorInstance {
-    pub(crate) fn with_limits(
+    /// Instantiate a shared compiled program without copying its HIR or registry.
+    pub fn with_limits(
         compiled: Arc<CompiledIndicator>,
-        plan: InstancePlan,
+        config: IndicatorConfig,
         limits: RuntimeLimits,
-    ) -> Self {
+    ) -> Result<Self, PlanningError> {
+        let plan = InstancePlan::from_compiled(&compiled, config)?;
         let committed = CommittedState {
             states: Arc::new(vec![StateValue::Uninitialized; compiled.program.states]),
             function_states: Arc::new(BTreeMap::new()),
@@ -619,13 +620,12 @@ impl IndicatorInstance {
             ),
             intrinsics: Arc::new(BTreeMap::new()),
         };
-        Self {
+        Ok(Self {
             working: WorkingState::from_committed(&committed, compiled.program.series),
             locals: vec![Value::Na; compiled.program.locals],
             current_bar_index: 0,
             current_frame: None,
             executed_nodes: 0,
-            registry: compiled.registry.clone(),
             previewing: false,
             limits,
             break_requested: false,
@@ -640,7 +640,7 @@ impl IndicatorInstance {
             compiled,
             plan,
             committed,
-        }
+        })
     }
 
     fn evaluate_frame(
@@ -720,8 +720,7 @@ impl IndicatorInstance {
     /// The caller must recalculate the loaded closed frames before requesting
     /// an open preview.
     pub fn reset(&mut self, config: IndicatorConfig) -> Result<(), PlanningError> {
-        let plan = InstancePlan::from_compiled(&self.compiled, config)?;
-        let replacement = Self::with_limits(self.compiled.clone(), plan, self.limits);
+        let replacement = Self::with_limits(Arc::clone(&self.compiled), config, self.limits)?;
         *self = replacement;
         Ok(())
     }
@@ -1313,6 +1312,7 @@ impl IndicatorInstance {
             return Ok(false);
         };
         if self
+            .compiled
             .registry
             .get(intrinsic)
             .is_none_or(|definition| definition.name != "array.push")
@@ -1526,14 +1526,28 @@ impl IndicatorInstance {
                     .iter()
                     .map(|argument| self.evaluate_expression(*argument))
                     .collect::<Result<Vec<_>, _>>()?;
-                let (stateful, state_factory, evaluator) = self
+                let (stateful, evaluator, fixed_window) = self
+                    .compiled
                     .registry
                     .get(intrinsic)
                     .map(|definition| {
+                        let fixed_argument = |index: usize| {
+                            arguments.get(index).is_some_and(|argument| {
+                                self.compiled.program.expressions[argument.0].is_fixed
+                            })
+                        };
+                        let fixed_window = match &definition.signature.warmup {
+                            Some(WarmupSpec::Window { argument, .. }) => fixed_argument(*argument),
+                            Some(WarmupSpec::Centered {
+                                left_argument,
+                                right_argument,
+                            }) => fixed_argument(*left_argument) && fixed_argument(*right_argument),
+                            None => false,
+                        };
                         (
                             definition.effects.stateful,
-                            definition.state_factory,
                             definition.evaluator,
+                            fixed_window,
                         )
                     })
                     .ok_or(RuntimeError::UnknownIntrinsic(intrinsic))?;
@@ -1541,17 +1555,13 @@ impl IndicatorInstance {
                     self.resource_check_dirty = true;
                 }
                 let state_call_site = self.state_call_site(call_site);
-                if let Some(factory) = state_factory
-                    && !self.working.intrinsics.contains_key(&state_call_site)
-                {
-                    Arc::make_mut(&mut self.working.intrinsics).insert(state_call_site, factory());
-                }
                 let (result, state_heap_exceeded) = {
                     let mut context = IntrinsicEvalContext {
                         bar_index: self.current_bar_index,
                         bar_time: self.current_frame.as_ref().map_or(0, |frame| frame.time),
                         max_heap_bytes: self.limits.max_heap_bytes,
                         max_window_length: self.limits.max_window_length,
+                        fixed_window,
                         max_collection_elements: self.limits.max_collection_elements,
                         states: Arc::make_mut(&mut self.working.intrinsics),
                     };

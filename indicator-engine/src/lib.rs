@@ -172,13 +172,6 @@ pub(crate) fn compile_with_registry(
 }
 
 impl CompiledIndicator {
-    pub(crate) fn plan(
-        &self,
-        config: IndicatorConfig,
-    ) -> Result<runtime::InstancePlan, PlanningError> {
-        runtime::InstancePlan::from_compiled(self, config)
-    }
-
     /// Static bars of history the plotted values need before they are
     /// meaningful, resolved from constants, inputs, and windowed intrinsics.
     pub fn warmup_bars(&self, config: &IndicatorConfig) -> Option<usize> {
@@ -223,12 +216,7 @@ impl CompiledIndicator {
         config: IndicatorConfig,
         limits: RuntimeLimits,
     ) -> Result<IndicatorInstance, PlanningError> {
-        let plan = self.plan(config)?;
-        Ok(IndicatorInstance::with_limits(
-            Arc::new(self.clone()),
-            plan,
-            limits,
-        ))
+        IndicatorInstance::with_limits(Arc::new(self.clone()), config, limits)
     }
 }
 

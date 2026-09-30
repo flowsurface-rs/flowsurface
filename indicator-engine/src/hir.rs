@@ -142,6 +142,7 @@ pub struct TypedExpression {
     pub kind: ExpressionKind,
     pub ty: Type,
     pub series_slot: Option<SeriesSlot>,
+    pub is_fixed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

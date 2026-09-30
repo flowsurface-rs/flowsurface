@@ -330,6 +330,48 @@ impl LoweringContext {
         }
     }
 
+    pub(super) fn resolve_fixed_expressions(&mut self) {
+        let inputs = self
+            .ir
+            .program
+            .inputs
+            .iter()
+            .map(|(slot, _)| *slot)
+            .collect::<BTreeSet<_>>();
+        // Operands precede their expressions. Mutable locals and unknown values
+        // cannot establish a fixed rolling-window length.
+        for index in 0..self.ir.program.expressions.len() {
+            let fixed = |expression: ExprId| self.ir.program.expressions[expression.0].is_fixed;
+            let is_fixed = match &self.ir.program.expressions[index].kind {
+                ExpressionKind::Constant(_) | ExpressionKind::LoadInput(_) => true,
+                ExpressionKind::LoadLocal(slot) if !self.scope.mutable_values[slot.0] => {
+                    inputs.contains(slot) || self.scope.local_definitions[slot.0].is_some_and(fixed)
+                }
+                ExpressionKind::Unary { operand, .. } => fixed(*operand),
+                ExpressionKind::Binary { left, right, .. } => fixed(*left) && fixed(*right),
+                ExpressionKind::Conditional {
+                    condition,
+                    when_true,
+                    when_false,
+                } => fixed(*condition) && fixed(*when_true) && fixed(*when_false),
+                ExpressionKind::Coalesce { source, fallback } => fixed(*source) && fixed(*fallback),
+                ExpressionKind::Switch {
+                    operand,
+                    branches,
+                    fallback,
+                } => {
+                    fixed(*operand)
+                        && branches
+                            .iter()
+                            .all(|(condition, result)| fixed(*condition) && fixed(*result))
+                        && fallback.is_none_or(fixed)
+                }
+                _ => false,
+            };
+            self.ir.program.expressions[index].is_fixed = is_fixed;
+        }
+    }
+
     pub(super) fn retained_series(&self) -> Vec<bool> {
         let mut retained = vec![false; self.ir.next_series];
         for (history, _) in &self.ir.history_expressions {
@@ -428,6 +470,7 @@ impl LoweringContext {
             kind,
             ty,
             series_slot,
+            is_fixed: false,
         });
         id
     }
