@@ -41,10 +41,11 @@ pub trait Study: Sized + Copy + 'static {
         &self,
         basis: data::chart::Basis,
         theme_accents: ThemeAccents,
-        _tab: inspector::InspectorTab,
+        tab: inspector::InspectorTab,
         on_change: impl Fn(Self) -> Message<Self> + Copy + 'a,
-    ) -> Element<'a, Message<Self>> {
-        self.view_config(basis, theme_accents, on_change)
+    ) -> Option<Element<'a, Message<Self>>> {
+        (tab == inspector::InspectorTab::Inputs)
+            .then(|| self.view_config(basis, theme_accents, on_change))
     }
 }
 
@@ -864,8 +865,8 @@ fn tpo_study_config_view<'a>(
     })
     .width(Length::Fill);
 
-    let value_area = classic_slider_row(
-        Some(text("Value area")),
+    let value_area_target = classic_slider_row(
+        Some(text("% of TPOs")),
         f32::from(MIN_TPO_VALUE_AREA_PERCENT)..=f32::from(MAX_TPO_VALUE_AREA_PERCENT),
         f32::from(value_area_percent.clamp(MIN_TPO_VALUE_AREA_PERCENT, MAX_TPO_VALUE_AREA_PERCENT)),
         move |value| {
@@ -884,9 +885,9 @@ fn tpo_study_config_view<'a>(
     );
 
     let color_controls = [
-        (TpoColorSlot::Letters, "Letters"),
+        (TpoColorSlot::ValueAreaCells, "Value area"),
+        (TpoColorSlot::OutsideValueArea, "Outside value area"),
         (TpoColorSlot::Poc, "POC"),
-        (TpoColorSlot::ValueArea, "Value area"),
         (TpoColorSlot::InitialBalance, "Initial balance"),
         (TpoColorSlot::SinglePrint, "Single print"),
         (TpoColorSlot::PoorExtremes, "Poor high/low"),
@@ -894,7 +895,7 @@ fn tpo_study_config_view<'a>(
     .into_iter()
     .map(|(slot, label)| {
         let enabled = match slot {
-            TpoColorSlot::Letters | TpoColorSlot::ValueArea => true,
+            TpoColorSlot::OutsideValueArea | TpoColorSlot::ValueAreaCells => true,
             TpoColorSlot::Poc => colors.show_poc,
             TpoColorSlot::InitialBalance => colors.show_initial_balance,
             TpoColorSlot::SinglePrint => colors.show_single_print,
@@ -919,7 +920,7 @@ fn tpo_study_config_view<'a>(
             })
         });
         let title = match slot {
-            TpoColorSlot::Letters | TpoColorSlot::ValueArea => {
+            TpoColorSlot::OutsideValueArea | TpoColorSlot::ValueAreaCells => {
                 crate::widget::text::body(label).into()
             }
             TpoColorSlot::Poc
@@ -944,8 +945,8 @@ fn tpo_study_config_view<'a>(
     match layout {
         StudyConfigLayout::Card => {
             content = content.push(study_setting("Anchor (UTC)", anchor_picker, layout));
-            content = content.push(study_setting("Letter period", period_picker, layout));
-            content = content.push(value_area);
+            content = content.push(study_setting("Bracket duration", period_picker, layout));
+            content = content.push(value_area_target);
             content = content.push(rule::horizontal(1.0).style(style::split_ruler));
             content = content.push(column(color_controls).spacing(8));
             content.padding(8).spacing(12).into()
@@ -954,8 +955,13 @@ fn tpo_study_config_view<'a>(
             match tab {
                 inspector::InspectorTab::Inputs => {
                     content = content.push(study_setting("Anchor (UTC)", anchor_picker, layout));
-                    content = content.push(study_setting("Letter period", period_picker, layout));
-                    content = content.push(study_setting("Value area", value_area, layout));
+                    content =
+                        content.push(study_setting("Bracket duration", period_picker, layout));
+                    content = content.push(study_setting(
+                        "Value area target",
+                        value_area_target,
+                        layout,
+                    ));
                 }
                 inspector::InspectorTab::Style => {
                     content = content.push(column(color_controls).spacing(8));
@@ -969,9 +975,9 @@ fn tpo_study_config_view<'a>(
 
 #[derive(Debug, Clone, Copy)]
 enum TpoColorSlot {
-    Letters,
+    OutsideValueArea,
     Poc,
-    ValueArea,
+    ValueAreaCells,
     InitialBalance,
     SinglePrint,
     PoorExtremes,
@@ -979,9 +985,9 @@ enum TpoColorSlot {
 
 fn tpo_color_for(colors: TpoColorConfig, slot: TpoColorSlot) -> data::config::theme::ThemeColor {
     match slot {
-        TpoColorSlot::Letters => colors.letters,
+        TpoColorSlot::OutsideValueArea => colors.letters,
         TpoColorSlot::Poc => colors.poc,
-        TpoColorSlot::ValueArea => colors.value_area,
+        TpoColorSlot::ValueAreaCells => colors.value_area,
         TpoColorSlot::InitialBalance => colors.initial_balance,
         TpoColorSlot::SinglePrint => colors.single_print,
         TpoColorSlot::PoorExtremes => colors.poor_high,
@@ -994,7 +1000,7 @@ fn tpo_color_with(
     color: data::config::theme::ThemeColor,
 ) -> TpoColorConfig {
     match slot {
-        TpoColorSlot::Letters => TpoColorConfig {
+        TpoColorSlot::OutsideValueArea => TpoColorConfig {
             letters: color,
             ..colors
         },
@@ -1002,7 +1008,7 @@ fn tpo_color_with(
             poc: color,
             ..colors
         },
-        TpoColorSlot::ValueArea => TpoColorConfig {
+        TpoColorSlot::ValueAreaCells => TpoColorConfig {
             value_area: color,
             ..colors
         },
@@ -1034,7 +1040,7 @@ fn tpo_visibility_toggle<'a>(
         TpoColorSlot::InitialBalance => colors.show_initial_balance,
         TpoColorSlot::SinglePrint => colors.show_single_print,
         TpoColorSlot::PoorExtremes => colors.show_poor_high || colors.show_poor_low,
-        TpoColorSlot::Letters | TpoColorSlot::ValueArea => unreachable!(),
+        TpoColorSlot::OutsideValueArea | TpoColorSlot::ValueAreaCells => unreachable!(),
     };
     checkbox(enabled)
         .label(label)
@@ -1046,7 +1052,7 @@ fn tpo_visibility_toggle<'a>(
                 TpoColorSlot::InitialBalance => colors.with_show_initial_balance(enabled),
                 TpoColorSlot::SinglePrint => colors.with_show_single_print(enabled),
                 TpoColorSlot::PoorExtremes => colors.with_show_poor_extremes(enabled),
-                TpoColorSlot::Letters | TpoColorSlot::ValueArea => unreachable!(),
+                TpoColorSlot::OutsideValueArea | TpoColorSlot::ValueAreaCells => unreachable!(),
             };
             on_change(match study {
                 KlineStudy::TpoProfile {
@@ -1130,15 +1136,28 @@ impl Study for KlineStudy {
         theme_accents: ThemeAccents,
         tab: inspector::InspectorTab,
         on_change: impl Fn(Self) -> Message<Self> + Copy + 'a,
-    ) -> Element<'a, Message<Self>> {
-        kline_study_config_view(
+    ) -> Option<Element<'a, Message<Self>>> {
+        if tab == inspector::InspectorTab::Source
+            || (tab == inspector::InspectorTab::Inputs
+                && matches!(
+                    self,
+                    KlineStudy::VolumeProfile {
+                        schedule: VolumeProfileSchedule::VisibleRange,
+                        ..
+                    }
+                ))
+        {
+            return None;
+        }
+
+        Some(kline_study_config_view(
             self,
             basis,
             theme_accents,
             on_change,
             false,
             StudyConfigLayout::Inspector(tab),
-        )
+        ))
     }
 }
 

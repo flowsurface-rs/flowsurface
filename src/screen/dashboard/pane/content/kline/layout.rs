@@ -1,4 +1,5 @@
 use super::fetch::FetchCoordinator;
+use super::rebuild::RebuildCoordinator;
 use data::chart::Basis;
 use data::chart::kline::composition::{ChartComposition, MarkKind};
 use data::chart::kline::indicators::{
@@ -93,6 +94,7 @@ pub(super) struct IndicatorState {
     dirty_reasons: FxHashMap<IndicatorInstanceId, IndicatorRebuildReason>,
     dirty_epochs: FxHashMap<IndicatorInstanceId, u64>,
     preview_dirty: bool,
+    rebuild: RebuildCoordinator,
 }
 
 pub enum IndicatorCommand {
@@ -162,6 +164,7 @@ impl IndicatorState {
             dirty_reasons: FxHashMap::default(),
             dirty_epochs: FxHashMap::default(),
             preview_dirty: false,
+            rebuild: RebuildCoordinator::default(),
         }
     }
 
@@ -807,7 +810,7 @@ impl IndicatorState {
         *epoch = epoch.wrapping_add(1);
     }
 
-    pub(super) fn dirty_epochs_match(&self, snapshot: &[(IndicatorInstanceId, u64)]) -> bool {
+    fn dirty_epochs_match(&self, snapshot: &[(IndicatorInstanceId, u64)]) -> bool {
         snapshot
             .iter()
             .all(|(id, epoch)| self.dirty_epochs.get(id).copied().unwrap_or_default() == *epoch)
@@ -948,7 +951,64 @@ impl IndicatorState {
         groups
     }
 
-    pub(super) fn full_rebuild_plan(
+    pub(super) fn pending_rebuild_job(&self) -> Option<u64> {
+        self.rebuild.pending_job()
+    }
+
+    pub(super) fn rebuild_in_flight_ids(&self) -> Vec<IndicatorInstanceId> {
+        self.rebuild.in_flight_ids().to_vec()
+    }
+
+    pub(super) fn begin_full_rebuild(
+        &mut self,
+        data: &KlineData,
+        fetch: &FetchCoordinator,
+        trade_data_enabled: bool,
+        frame_revision: u64,
+    ) -> Option<impl std::future::Future<Output = u64> + Send + 'static + use<>> {
+        if self.pending_rebuild_job().is_some() {
+            return None;
+        }
+        let plan = self.full_rebuild_plan(data, fetch)?;
+        self.rebuild.begin(
+            plan,
+            self.selected_indicators(),
+            data.committed_indicator_frames(trade_data_enabled),
+            self.instances.clone(),
+            frame_revision,
+        )
+    }
+
+    pub(super) fn complete_full_rebuild(
+        &mut self,
+        data: &mut KlineData,
+        job_id: u64,
+        frame_revision: u64,
+        trade_data_enabled: bool,
+    ) -> bool {
+        let Some(completed) = self.rebuild.poll(job_id) else {
+            return false;
+        };
+        let snapshot = completed.snapshot;
+        if !(snapshot.frame_revision == frame_revision
+            && self.dirty_epochs_match(&snapshot.plan.dirty_epochs)
+            && snapshot.active_ids == self.selected_indicators())
+        {
+            return false;
+        }
+        self.accept_full_rebuild(
+            data,
+            completed.host,
+            &snapshot.frames,
+            &snapshot.plan.dirty_ids,
+            &snapshot.plan.replay_ids,
+            trade_data_enabled,
+        );
+        data.preview_indicator_open_for(&snapshot.plan.replay_ids, trade_data_enabled);
+        true
+    }
+
+    fn full_rebuild_plan(
         &self,
         data: &KlineData,
         fetch: &FetchCoordinator,
@@ -1015,7 +1075,7 @@ impl IndicatorState {
         })
     }
 
-    pub(super) fn accept_full_rebuild(
+    fn accept_full_rebuild(
         &mut self,
         data: &mut KlineData,
         host: IndicatorHost,

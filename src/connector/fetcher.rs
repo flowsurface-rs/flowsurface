@@ -332,6 +332,23 @@ impl RequestHandler {
         removed
     }
 
+    pub(crate) fn clear_pending_trade_requests(&mut self) -> Vec<Uuid> {
+        let removed = self
+            .requests
+            .iter()
+            .filter(|(_, request)| {
+                matches!(request.fetch_type, FetchRange::Trades(..))
+                    && request.status == RequestStatus::Pending
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        self.requests.retain(|_, request| {
+            !matches!(request.fetch_type, FetchRange::Trades(..))
+                || request.status != RequestStatus::Pending
+        });
+        removed
+    }
+
     pub(crate) fn reset_for_basis_change(&mut self) {
         self.requests.clear();
     }

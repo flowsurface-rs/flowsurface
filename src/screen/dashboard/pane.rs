@@ -1,4 +1,5 @@
 mod content;
+pub(crate) mod settings;
 mod state;
 
 use crate::connector::fetcher::FetchSpec;

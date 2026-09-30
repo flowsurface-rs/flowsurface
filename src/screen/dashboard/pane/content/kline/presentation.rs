@@ -67,16 +67,13 @@ impl<'a> IndicatorPresentationResolver<'a> {
                     .and_then(|mark| kind.mark_spec(mark))
                     .and_then(|spec| spec.required_input);
                 let fallback_mark = selected_mark.and_then(|mark| kind.fallback_mark_for(mark));
-                let base_message =
-                    self.data
-                        .indicator_host()
-                        .diagnostic_for(value_id)
-                        .or_else(|| {
-                            unavailable
-                                .iter()
-                                .find(|(entry_id, _)| *entry_id == value_id)
-                                .map(|(_, message)| message.as_str())
-                        });
+                let host_diagnostic = self.data.indicator_host().diagnostic_for(value_id);
+                let base_message = host_diagnostic.as_deref().or_else(|| {
+                    unavailable
+                        .iter()
+                        .find(|(entry_id, _)| *entry_id == value_id)
+                        .map(|(_, message)| message.as_str())
+                });
 
                 let (effective_mark, status) =
                     if self.indicators.hides_rebuild_output(value_id) && base_message.is_none() {

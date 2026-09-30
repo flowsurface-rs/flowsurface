@@ -5,7 +5,9 @@ use super::{
     BaseSeriesSource, IndicatorConfig, IndicatorConfigError, IndicatorId, IndicatorOutputRef,
     OutputValue,
 };
-use crate::chart::kline::{IndicatorInstance, IndicatorInstanceId, IndicatorInstanceStore};
+use crate::chart::kline::{
+    IndicatorInstance, IndicatorInstanceId, IndicatorInstanceStore, SourceBindingProblem,
+};
 use indicator_engine::{IndicatorFrame, SeriesInputValue};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::{BTreeMap, BTreeSet};
@@ -90,6 +92,51 @@ impl IndicatorRuntimeEntry {
     }
 }
 
+enum IndicatorGraphDiagnostic {
+    AttachedHasNoNumericPlotLayer,
+    InvalidSourceBinding(SourceBindingProblem),
+    DependencyCycle,
+}
+
+impl std::fmt::Display for IndicatorGraphDiagnostic {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AttachedHasNoNumericPlotLayer => {
+                formatter.write_str("attached indicator has no numeric plot layer")
+            }
+            Self::InvalidSourceBinding(problem) => write!(formatter, "{problem}"),
+            Self::DependencyCycle => formatter.write_str("indicator dependency cycle"),
+        }
+    }
+}
+
+enum IndicatorRuntimePhase {
+    Rebuild,
+    Creation,
+    Reconfiguration,
+}
+
+impl std::fmt::Display for IndicatorRuntimePhase {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Rebuild => "rebuild",
+            Self::Creation => "creation",
+            Self::Reconfiguration => "reconfiguration",
+        })
+    }
+}
+
+struct IndicatorRuntimeDiagnostic {
+    phase: IndicatorRuntimePhase,
+    error: IndicatorConfigError,
+}
+
+impl std::fmt::Display for IndicatorRuntimeDiagnostic {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}: {}", self.phase, self.error)
+    }
+}
+
 /// Owns every active indicator instance and its pane-indexed output stores.
 #[derive(Default)]
 pub struct IndicatorHost {
@@ -98,8 +145,8 @@ pub struct IndicatorHost {
     execution_order: Vec<IndicatorInstanceId>,
     dependencies: FxHashMap<IndicatorInstanceId, Vec<IndicatorInstanceId>>,
     dependents: FxHashMap<IndicatorInstanceId, Vec<IndicatorInstanceId>>,
-    graph_diagnostics: FxHashMap<IndicatorInstanceId, String>,
-    runtime_diagnostics: FxHashMap<IndicatorInstanceId, String>,
+    graph_diagnostics: FxHashMap<IndicatorInstanceId, IndicatorGraphDiagnostic>,
+    runtime_diagnostics: FxHashMap<IndicatorInstanceId, IndicatorRuntimeDiagnostic>,
     blocked_nodes: FxHashSet<IndicatorInstanceId>,
 }
 
@@ -107,10 +154,10 @@ impl IndicatorHost {
     fn record_runtime_diagnostic(
         &mut self,
         instance: &IndicatorInstance,
-        phase: &str,
-        error: impl std::fmt::Display,
+        phase: IndicatorRuntimePhase,
+        error: IndicatorConfigError,
     ) {
-        let diagnostic = format!("{phase}: {error}");
+        let diagnostic = IndicatorRuntimeDiagnostic { phase, error };
         log::error!(
             "indicator {} (instance {:?}) runtime failure: {diagnostic}",
             instance.kind.id(),
@@ -249,7 +296,11 @@ impl IndicatorHost {
             match IndicatorRuntimeEntry::new(instance) {
                 Ok(Some(entry)) => rebuilt.entries.push(entry),
                 Ok(None) => {}
-                Err(error) => rebuilt.record_runtime_diagnostic(instance, "rebuild", error),
+                Err(error) => rebuilt.record_runtime_diagnostic(
+                    instance,
+                    IndicatorRuntimePhase::Rebuild,
+                    error,
+                ),
             };
         }
         rebuilt.rebuild_entry_indices();
@@ -304,7 +355,7 @@ impl IndicatorHost {
                     replacements.insert(*id, None);
                 }
                 Err(error) => {
-                    self.record_runtime_diagnostic(instance, "rebuild", error);
+                    self.record_runtime_diagnostic(instance, IndicatorRuntimePhase::Rebuild, error);
                     replacements.insert(*id, None);
                 }
             }
@@ -401,7 +452,11 @@ impl IndicatorHost {
                         }
                         Err(error) => {
                             self.entries.remove(entry_index);
-                            self.record_runtime_diagnostic(instance, "creation", error);
+                            self.record_runtime_diagnostic(
+                                instance,
+                                IndicatorRuntimePhase::Creation,
+                                error,
+                            );
                         }
                     }
                 } else {
@@ -418,7 +473,11 @@ impl IndicatorHost {
                             Ok(false) => {}
                             Err(error) => {
                                 self.entries.remove(entry_index);
-                                self.record_runtime_diagnostic(instance, "reconfiguration", error);
+                                self.record_runtime_diagnostic(
+                                    instance,
+                                    IndicatorRuntimePhase::Reconfiguration,
+                                    error,
+                                );
                             }
                         }
                     }
@@ -438,7 +497,11 @@ impl IndicatorHost {
                         self.clear_runtime_diagnostic(instance.id);
                     }
                     Ok(None) => self.clear_runtime_diagnostic(instance.id),
-                    Err(error) => self.record_runtime_diagnostic(instance, "creation", error),
+                    Err(error) => self.record_runtime_diagnostic(
+                        instance,
+                        IndicatorRuntimePhase::Creation,
+                        error,
+                    ),
                 }
             }
         }
@@ -490,7 +553,7 @@ impl IndicatorHost {
             .graph_diagnostics
             .values()
             .next()
-            .cloned()
+            .map(|diagnostic| diagnostic.to_string())
             .map_or(Ok(()), Err)
     }
 
@@ -559,7 +622,11 @@ impl IndicatorHost {
                     self.clear_runtime_diagnostic(instance.id);
                 }
                 Ok(None) => self.clear_runtime_diagnostic(instance.id),
-                Err(error) => self.record_runtime_diagnostic(instance, "reconfiguration", error),
+                Err(error) => self.record_runtime_diagnostic(
+                    instance,
+                    IndicatorRuntimePhase::Reconfiguration,
+                    error,
+                ),
             }
             self.rebuild_entry_indices();
             self.rebuild_graph(instances);
@@ -582,7 +649,11 @@ impl IndicatorHost {
                 self.entries.retain(|entry| entry.id != instance.id);
                 self.rebuild_entry_indices();
                 self.rebuild_graph(instances);
-                self.record_runtime_diagnostic(instance, "reconfiguration", error);
+                self.record_runtime_diagnostic(
+                    instance,
+                    IndicatorRuntimePhase::Reconfiguration,
+                    error,
+                );
             }
         }
     }
@@ -747,7 +818,7 @@ impl IndicatorHost {
             {
                 self.graph_diagnostics.insert(
                     entry.id,
-                    "attached indicator has no numeric plot layer".to_owned(),
+                    IndicatorGraphDiagnostic::AttachedHasNoNumericPlotLayer,
                 );
                 self.blocked_nodes.insert(entry.id);
                 continue;
@@ -759,7 +830,7 @@ impl IndicatorHost {
                     Err(problem) => {
                         self.graph_diagnostics
                             .entry(entry.id)
-                            .or_insert_with(|| problem.to_string());
+                            .or_insert(IndicatorGraphDiagnostic::InvalidSourceBinding(problem));
                         continue;
                     }
                 };
@@ -795,7 +866,7 @@ impl IndicatorHost {
             self.blocked_nodes.insert(id);
             self.graph_diagnostics
                 .entry(id)
-                .or_insert_with(|| "indicator dependency cycle".to_owned());
+                .or_insert(IndicatorGraphDiagnostic::DependencyCycle);
             self.execution_order.push(id);
         }
     }
@@ -986,27 +1057,29 @@ impl IndicatorHost {
             .unwrap_or_default()
     }
 
-    pub fn diagnostic_for(&self, id: IndicatorInstanceId) -> Option<&str> {
+    pub fn diagnostic_for(&self, id: IndicatorInstanceId) -> Option<String> {
         if let Some(diagnostic) = self.graph_diagnostics.get(&id) {
-            return Some(diagnostic.as_str());
+            return Some(diagnostic.to_string());
         }
         if let Some(diagnostic) = self.runtime_diagnostics.get(&id) {
-            return Some(diagnostic.as_str());
+            return Some(diagnostic.to_string());
         }
 
         self.entry_indices
             .get(&id)
             .and_then(|entry_index| self.entries.get(*entry_index))
-            .and_then(|entry| entry.runtime.diagnostic())
+            .and_then(|entry| entry.runtime.diagnostic().map(str::to_owned))
     }
 
     pub fn diagnostics(&self) -> Vec<(IndicatorInstanceId, String)> {
         let mut diagnostics = BTreeMap::new();
         for (id, diagnostic) in &self.graph_diagnostics {
-            diagnostics.insert(*id, diagnostic.clone());
+            diagnostics.insert(*id, diagnostic.to_string());
         }
         for (id, diagnostic) in &self.runtime_diagnostics {
-            diagnostics.entry(*id).or_insert_with(|| diagnostic.clone());
+            diagnostics
+                .entry(*id)
+                .or_insert_with(|| diagnostic.to_string());
         }
         for entry in &self.entries {
             if let Some(diagnostic) = entry.runtime.diagnostic() {

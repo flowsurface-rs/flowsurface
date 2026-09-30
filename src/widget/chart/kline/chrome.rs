@@ -3,7 +3,7 @@ use super::composition::{MarkKind, PanelScaleMode};
 use super::layout::{
     LayoutHitZone, PanelLayoutTree, contains_inclusive, place_non_overlapping_labels,
 };
-use super::scene::Scene;
+use super::scene::{ChromeScene, CursorTarget, LegendTarget, Scene};
 use super::{
     CHAR_W, KlineWidget, KlineWidgetEvent, PANEL_TITLE_TOP_PAD, TEXT_SIZE, TICKER_LEGEND_PADDING,
     TICKER_LEGEND_ROW_H, TOOLTIP_ROW_LEFT_PAD,
@@ -2763,5 +2763,76 @@ impl<'a> KlineWidget<'a> {
                 ..Default::default()
             });
         }
+    }
+}
+
+pub(super) enum ChromeClick {
+    Event(KlineWidgetEvent),
+    Blocked,
+    Outside,
+}
+
+impl ChromeScene {
+    pub(super) fn resolve_click(
+        &self,
+        target: Option<CursorTarget>,
+        studies: Option<&StudiesLegend>,
+    ) -> ChromeClick {
+        let event = match target {
+            Some(CursorTarget::Legend(target)) => {
+                let event = match target {
+                    LegendTarget::Ticker {
+                        row,
+                        icon: Some(icon),
+                    } => self
+                        .ticker_legend
+                        .as_ref()
+                        .and_then(|legend| legend.rows.get(row))
+                        .map(|row| icon.into_event(row.ticker)),
+                    LegendTarget::Footprint { icon: Some(icon) } => Some(icon.into_event()),
+                    LegendTarget::StudyCategory { icon: Some(icon) } => {
+                        studies.map(|_| match icon {
+                            StudiesLegendIconKind::ExpandCollapse => {
+                                KlineWidgetEvent::StudiesExpansionToggled
+                            }
+                            StudiesLegendIconKind::Visibility => {
+                                KlineWidgetEvent::StudiesVisibilityToggled
+                            }
+                            StudiesLegendIconKind::Close => KlineWidgetEvent::StudiesRemove,
+                        })
+                    }
+                    LegendTarget::Study {
+                        row,
+                        icon: Some(icon),
+                    } => studies
+                        .and_then(|legend| legend.rows.get(row))
+                        .map(|row| match icon {
+                            StudyLegendIconKind::Visibility => {
+                                KlineWidgetEvent::StudyVisibilityToggled(row.id)
+                            }
+                            StudyLegendIconKind::Settings => {
+                                KlineWidgetEvent::StudySettings(row.id)
+                            }
+                            StudyLegendIconKind::Close => KlineWidgetEvent::StudyRemove(row.id),
+                        }),
+                    LegendTarget::Indicator {
+                        row,
+                        icon: Some(icon),
+                    } => self
+                        .indicator_legend
+                        .as_ref()
+                        .and_then(|legend| legend.rows.get(row))
+                        .map(|row| icon.into_event(row.value_id)),
+                    _ => None,
+                };
+                return event.map_or(ChromeClick::Blocked, ChromeClick::Event);
+            }
+            Some(CursorTarget::CornerControl(kind)) => kind.into_event(),
+            Some(CursorTarget::PanelControl { panel_index, kind }) => {
+                KlineWidgetEvent::PanelInteraction(kind.into_interaction_kind(panel_index))
+            }
+            _ => return ChromeClick::Outside,
+        };
+        ChromeClick::Event(event)
     }
 }

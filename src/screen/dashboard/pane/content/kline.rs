@@ -5,6 +5,7 @@ mod indicator_browser;
 mod layout;
 mod presentation;
 mod profile;
+mod rebuild;
 mod settings;
 mod studies;
 mod toolbar;
@@ -24,7 +25,7 @@ use crate::widget::chart::kline::{
     IndicatorPresentationContext, KlineWidget, KlineWidgetEvent, MIN_FULL_CACHE_REFRESH_INTERVAL,
     PanelInteraction, StudiesLegend, StudyLegendRow,
 };
-use crate::widget::inspector::{InspectorBody, InspectorContent, InspectorFooter};
+use crate::widget::inspector::InspectorContent;
 use crate::widget::series_editor::{self, SeriesStyleEntry};
 use crate::window::PixelRatio;
 use drawing::{DrawingEditState, DrawingMessage, DrawingState, DrawingTools, DrawingUpdate};
@@ -34,7 +35,7 @@ use history::DrawingHistory;
 use layout::{IndicatorChange, IndicatorRebuildReason, IndicatorState};
 pub use layout::{IndicatorCommand, IndicatorInputCommand, IndicatorStyleCommand};
 use presentation::IndicatorPresentationResolver;
-use profile::{ProfilePlan, ProfileState, ProfileTradeUpdate, profile_source_timeframe};
+use profile::{ProfilePlan, ProfileState, ProfileTradeUpdate};
 use settings::{ChartOptions, InspectorEffect, InspectorState, SettingsContext};
 pub use studies::StudyCommand;
 use studies::{StudyChange, StudyState};
@@ -50,7 +51,6 @@ use data::chart::kline::composition::{
     DEFAULT_MIN_PANEL_RATIO, MarkKind, PanelRole, PanelScaleMode,
 };
 use data::chart::kline::footprint::{ClusterKind, ClusterScaling};
-use data::chart::kline::indicators::IndicatorHost;
 use data::chart::kline::series::KlineSeries;
 use data::chart::kline::{
     self as persisted, CandlestickConfig, ChartSettings, DEFAULT_HORIZONTAL_SPACING_PX, FetchBatch,
@@ -62,11 +62,8 @@ use data::chart::kline::{
 };
 use exchange::adapter::StreamKind;
 use exchange::{TickMultiplier, TickerInfo, Timeframe, UnixMs};
-use indicator_engine::IndicatorFrame;
 
-use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::oneshot;
 
 const DEFAULT_HORIZONTAL_OFFSET_UNITS: f32 = 8.0;
 
@@ -75,42 +72,8 @@ const DEFAULT_TICK_MULTIPLIER: TickMultiplier = TickMultiplier(25);
 const FLOATING_TOOLBAR_MARGIN: f32 = 8.0;
 const FLOATING_TOOLBAR_HANDLE_WIDTH: f32 = 28.0;
 const FLOATING_TOOLBAR_HEIGHT: f32 = 36.0;
-const SIDEBAR_WIDTH: f32 = 228.0;
-const SIDEBAR_RETURN_BUTTON_WIDTH: f32 = 32.0;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-enum Sidebar {
-    #[default]
-    Drawings,
-    Settings,
-}
-
-enum IndicatorRebuildFailure {
-    WorkerPanicked(tokio::task::JoinError),
-    WorkerDropped,
-}
-
-impl std::fmt::Display for IndicatorRebuildFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::WorkerPanicked(error) => write!(f, "rebuild worker failed: {error}"),
-            Self::WorkerDropped => f.write_str("rebuild worker dropped without reporting a result"),
-        }
-    }
-}
-
-struct IndicatorRebuildState {
-    job_id: u64,
-    frame_revision: u64,
-    dirty_epochs: Vec<(IndicatorInstanceId, u64)>,
-    dirty_ids: Vec<IndicatorInstanceId>,
-    replay_ids: Vec<IndicatorInstanceId>,
-    active_ids: Vec<IndicatorInstanceId>,
-    frames: Arc<[IndicatorFrame]>,
-    result: oneshot::Receiver<Result<IndicatorHost, IndicatorRebuildFailure>>,
-}
-
 pub enum Action {
+    OpenSettings,
     RemoveSeries(TickerInfo),
     RequestFetch(Vec<FetchSpec>),
     OpenUrl(String),
@@ -129,7 +92,6 @@ pub enum Message {
     Chart(KlineWidgetEvent),
     Drawing(drawing::Event),
     ToggleDrawingSidebar,
-    ShowDrawingsPage,
     SeriesEditor(series_editor::Message),
     IndicatorBrowser(indicator_browser::Message),
     IndicatorRebuildCompleted { job_id: u64 },
@@ -155,7 +117,6 @@ pub struct KlineChart {
     profiles: ProfileState,
     inspector: InspectorState,
     indicator_browser: indicator_browser::State,
-    sidebar: Sidebar,
     drawing_sidebar_visible: bool,
     last_tick: Instant,
     cache_rev: u64,
@@ -163,8 +124,6 @@ pub struct KlineChart {
     data_redraw_pending: bool,
     settings_reconfigure_pending: bool,
     frame_revision: u64,
-    next_indicator_rebuild_job: u64,
-    indicator_rebuild: Option<IndicatorRebuildState>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -315,7 +274,6 @@ impl KlineChart {
             profiles: ProfileState::default(),
             inspector: InspectorState::default(),
             indicator_browser: indicator_browser::State::default(),
-            sidebar: Sidebar::Drawings,
             drawing_sidebar_visible: true,
             last_tick: Instant::now(),
             cache_rev: 0,
@@ -323,8 +281,6 @@ impl KlineChart {
             data_redraw_pending: false,
             settings_reconfigure_pending: false,
             frame_revision: 0,
-            next_indicator_rebuild_job: 0,
-            indicator_rebuild: None,
         };
 
         let _ = chart.data.add_ticker(base_ticker, chart.basis);
@@ -367,15 +323,8 @@ impl KlineChart {
                 self.complete_indicator_rebuild(job_id);
             }
             Message::ToggleDrawingSidebar => {
-                if self.sidebar != Sidebar::Drawings {
-                    self.show_sidebar(Sidebar::Drawings);
-                } else {
-                    self.drawing_sidebar_visible = !self.drawing_sidebar_visible;
-                    self.bump_rev();
-                }
-            }
-            Message::ShowDrawingsPage => {
-                self.show_sidebar(Sidebar::Drawings);
+                self.drawing_sidebar_visible = !self.drawing_sidebar_visible;
+                self.bump_rev();
             }
             Message::IndicatorBrowser(message) => match message {
                 indicator_browser::Message::SearchChanged(query) => {
@@ -393,7 +342,7 @@ impl KlineChart {
                 let effect = self
                     .with_settings_context(|inspector, context| inspector.update(message, context));
                 let action = self.apply_inspector_effect(effect);
-                self.reconcile_local_sidebar();
+                self.reconcile_settings_target();
                 return action;
             }
             Message::SeriesEditor(message) => {
@@ -401,7 +350,7 @@ impl KlineChart {
                     inspector.update(settings::Message::SeriesEditor(message), context)
                 });
                 let action = self.apply_inspector_effect(effect);
-                self.reconcile_local_sidebar();
+                self.reconcile_settings_target();
                 return action;
             }
             Message::Drawing(message) => {
@@ -433,7 +382,7 @@ impl KlineChart {
                     KlineWidgetEvent::StudySettings(id) => {
                         if self.studies.study(id).is_some() {
                             self.inspector.open_study(id);
-                            self.show_sidebar(Sidebar::Settings);
+                            return Some(Action::OpenSettings);
                         }
                     }
                     KlineWidgetEvent::StudyVisibilityToggled(id) => {
@@ -467,44 +416,20 @@ impl KlineChart {
                     }
                     KlineWidgetEvent::PanelInteraction(interaction) => match interaction {
                         PanelInteraction::YViewportChanged { panel_id, range } => {
-                            if let Some(primary_id) =
-                                self.indicators.composition().primary_panel_id()
-                                && primary_id == panel_id
-                            {
-                                if matches!(
-                                    self.indicators
-                                        .composition()
-                                        .panel_effective_scale_mode(primary_id),
-                                    Some(PanelScaleMode::PercentFromBase)
-                                ) {
-                                    return None;
-                                }
-
-                                if self.viewport.primary.set_range(range) {
-                                    self.bump_rev();
-                                }
-                            } else if self.viewport.indicator_y_ranges.set(panel_id, range) {
+                            let composition = self.indicators.composition();
+                            if !self.viewport.allows_panel_range(composition, panel_id) {
+                                return None;
+                            }
+                            if self.viewport.set_panel_range(composition, panel_id, range) {
                                 self.bump_rev();
                             }
                         }
                         PanelInteraction::YViewportReset { panel_id } => {
-                            if let Some(primary_id) =
-                                self.indicators.composition().primary_panel_id()
-                                && primary_id == panel_id
-                            {
-                                if matches!(
-                                    self.indicators
-                                        .composition()
-                                        .panel_effective_scale_mode(primary_id),
-                                    Some(PanelScaleMode::PercentFromBase)
-                                ) {
-                                    return None;
-                                }
-
-                                if self.viewport.primary.reset() {
-                                    self.bump_rev();
-                                }
-                            } else if self.viewport.indicator_y_ranges.reset(panel_id) {
+                            let composition = self.indicators.composition();
+                            if !self.viewport.allows_panel_range(composition, panel_id) {
+                                return None;
+                            }
+                            if self.viewport.reset_panel_range(composition, panel_id) {
                                 self.bump_rev();
                             }
                         }
@@ -566,16 +491,10 @@ impl KlineChart {
                         }
                     }
                     KlineWidgetEvent::PrimaryAutoscaleToggled => {
-                        let primary_panel_id = self.indicators.composition().primary_panel_id()?;
-
-                        let effective_scale = self
-                            .indicators
-                            .composition()
-                            .panel_effective_scale_mode(primary_panel_id)
-                            .unwrap_or(PanelScaleMode::Absolute);
-
-                        if !matches!(effective_scale, PanelScaleMode::PercentFromBase)
-                            && self.viewport.primary.toggle()
+                        self.indicators.composition().primary_panel_id()?;
+                        if self
+                            .viewport
+                            .toggle_primary_autoscale(self.indicators.composition())
                         {
                             self.bump_rev();
                         }
@@ -617,11 +536,11 @@ impl KlineChart {
                         } else {
                             self.inspector.open_series(ticker);
                         }
-                        self.show_sidebar(Sidebar::Settings);
+                        return Some(Action::OpenSettings);
                     }
                     KlineWidgetEvent::FootprintSettings => {
                         self.inspector.open_footprint();
-                        self.show_sidebar(Sidebar::Settings);
+                        return Some(Action::OpenSettings);
                     }
                     KlineWidgetEvent::CandlesticksVisibilityToggled => {
                         let _ = self.apply_command(ChartCommand::SetCandlestickVisible {
@@ -636,7 +555,7 @@ impl KlineChart {
                     KlineWidgetEvent::IndicatorSettings(id) => {
                         if let Some(indicator) = self.indicator_kind(id) {
                             self.inspector.open_indicator(id, indicator);
-                            self.show_sidebar(Sidebar::Settings);
+                            return Some(Action::OpenSettings);
                         }
                     }
                     KlineWidgetEvent::IndicatorVisibilityToggled(id) => {
@@ -668,7 +587,7 @@ impl KlineChart {
                         self.apply_drawing_update(update, before);
                     }
                 }
-                self.reconcile_local_sidebar();
+                self.reconcile_settings_target();
             }
         }
         None
@@ -713,103 +632,36 @@ impl KlineChart {
     }
 
     pub fn rebuild_indicators(&mut self) -> Option<iced::Task<Message>> {
-        if let Some(job_id) = self
-            .indicator_rebuild
-            .as_ref()
-            .map(|pending| pending.job_id)
-        {
+        if let Some(job_id) = self.indicators.pending_rebuild_job() {
             self.complete_indicator_rebuild(job_id);
         }
-        if self.indicator_rebuild.is_some() || self.settings_reconfigure_pending {
+        if self.indicators.pending_rebuild_job().is_some() || self.settings_reconfigure_pending {
             return None;
         }
 
-        let plan = self.indicators.full_rebuild_plan(&self.data, &self.fetch)?;
-        let active_ids = self.indicators.selected_indicators();
         let trade_data_enabled = self.trade_data_enabled();
-        let frames = self.data.committed_indicator_frames(trade_data_enabled);
-        let instances = self.indicators.instances().clone();
-        let frame_revision = self.frame_revision;
-        let job_id = self.next_indicator_rebuild_job.wrapping_add(1);
-        self.next_indicator_rebuild_job = job_id;
-
-        let (result_tx, result_rx) = oneshot::channel();
-        let worker_replay_ids = plan.replay_ids.clone();
-        let worker_frames = Arc::clone(&frames);
-        let worker = async move {
-            let result = tokio::task::spawn_blocking(move || {
-                let mut host = IndicatorHost::default();
-                host.recalculate(&worker_replay_ids, &instances, &worker_frames);
-                host
-            })
-            .await
-            .map_err(IndicatorRebuildFailure::WorkerPanicked);
-            let _ = result_tx.send(result);
-        };
-
-        self.indicator_rebuild = Some(IndicatorRebuildState {
-            job_id,
-            frame_revision,
-            dirty_epochs: plan.dirty_epochs,
-            dirty_ids: plan.dirty_ids,
-            replay_ids: plan.replay_ids,
-            active_ids,
-            frames,
-            result: result_rx,
-        });
+        let worker = self.indicators.begin_full_rebuild(
+            &self.data,
+            &self.fetch,
+            trade_data_enabled,
+            self.frame_revision,
+        )?;
         self.bump_rev();
-        Some(iced::Task::perform(worker, move |_| {
+        Some(iced::Task::perform(worker, |job_id| {
             Message::IndicatorRebuildCompleted { job_id }
         }))
     }
 
     fn complete_indicator_rebuild(&mut self, job_id: u64) {
-        let Some(pending) = self.indicator_rebuild.as_mut() else {
-            return;
-        };
-        if pending.job_id != job_id {
-            return;
-        }
-
-        let result = match pending.result.try_recv() {
-            Ok(result) => result,
-            Err(oneshot::error::TryRecvError::Empty) => return,
-            Err(oneshot::error::TryRecvError::Closed) => {
-                Err(IndicatorRebuildFailure::WorkerDropped)
-            }
-        };
-        let pending = self
-            .indicator_rebuild
-            .take()
-            .expect("indicator rebuild state exists");
-
-        let host = match result {
-            Ok(host) => host,
-            Err(failure) => {
-                log::error!("indicator rebuild job {job_id} failed: {failure}");
-                return;
-            }
-        };
-
-        if !(pending.frame_revision == self.frame_revision
-            && self.indicators.dirty_epochs_match(&pending.dirty_epochs)
-            && pending.active_ids == self.indicators.selected_indicators())
-        {
-            return;
-        }
-
         let trade_data_enabled = self.trade_data_enabled();
-        self.indicators.accept_full_rebuild(
+        if self.indicators.complete_full_rebuild(
             &mut self.data,
-            host,
-            &pending.frames,
-            &pending.dirty_ids,
-            &pending.replay_ids,
+            job_id,
+            self.frame_revision,
             trade_data_enabled,
-        );
-        self.data
-            .preview_indicator_open_for(&pending.replay_ids, trade_data_enabled);
-        self.bump_rev();
+        ) {
+            self.bump_rev();
+        }
     }
 
     fn bump_rev(&mut self) {
@@ -847,6 +699,7 @@ impl KlineChart {
         timezone: data::UserTimezone,
         pixel_ratio: PixelRatio,
         theme_accents: ThemeAccents,
+        inspector_open: bool,
     ) -> iced::Element<'_, Message> {
         let chart: iced::Element<'_, Message> = if self
             .data
@@ -858,11 +711,7 @@ impl KlineChart {
         } else {
             let indicator_presentation = self
                 .indicator_presentation_context()
-                .with_rebuild_in_flight_ids(
-                    self.indicator_rebuild
-                        .as_ref()
-                        .map_or_else(Vec::new, |pending| pending.replay_ids.clone()),
-                )
+                .with_rebuild_in_flight_ids(self.indicators.rebuild_in_flight_ids())
                 .with_pending_input_ids(self.indicators.pending_input_ids(&self.data, &self.fetch));
             let plan = self.profile_plan();
             let active_studies = self.studies.active();
@@ -956,7 +805,7 @@ impl KlineChart {
                 .with_indicator_presentation(indicator_presentation)
                 .with_timezone(timezone)
                 .with_version(self.cache_rev.wrapping_add(self.profiles.source_revision()))
-                .with_escape_enabled(self.can_handle_escape())
+                .with_should_capture_escape(inspector_open || self.can_handle_escape())
                 .into();
 
             iced::widget::container(chart)
@@ -1014,39 +863,14 @@ impl KlineChart {
             chart_stack.clip(true).into()
         };
 
-        let is_sidebar_visible = self.sidebar != Sidebar::Drawings || self.drawing_sidebar_visible;
-        if !is_sidebar_visible {
+        if !self.drawing_sidebar_visible {
             return chart;
         }
 
-        let sidebar = match self.sidebar {
-            Sidebar::Drawings => self
-                .drawings
+        iced::widget::row![
+            self.drawings
                 .sidebar_view(self.indicators.composition())
                 .map(Message::Drawing),
-            Sidebar::Settings => {
-                let Some((title, settings)) = self.contextual_settings_content(theme_accents)
-                else {
-                    return chart;
-                };
-
-                let header = sidebar_header(title);
-
-                let footer = {
-                    let context = self.settings_view_context();
-                    self.inspector.settings().footer_view(context)
-                };
-
-                sidebar_panel(
-                    header,
-                    InspectorBody::view(settings),
-                    footer.map(InspectorFooter::view),
-                )
-            }
-        };
-
-        iced::widget::row![
-            sidebar,
             iced::widget::rule::vertical(1.0).style(style::split_ruler),
             chart,
         ]
@@ -1065,25 +889,33 @@ impl KlineChart {
     }
 
     fn autoscale_plot_width_offset(&self) -> f32 {
-        let sidebar_width = match self.sidebar {
-            Sidebar::Drawings if self.drawing_sidebar_visible => {
-                self.drawings.tools.sidebar_width()
-            }
-            Sidebar::Drawings => return 0.0,
-            Sidebar::Settings => SIDEBAR_WIDTH,
-        };
-
-        (sidebar_width - DrawingTools::compact_sidebar_width()).max(0.0)
+        if !self.drawing_sidebar_visible {
+            return 0.0;
+        }
+        (self.drawings.tools.sidebar_width() - DrawingTools::compact_sidebar_width()).max(0.0)
     }
 
-    fn contextual_settings_content(
+    pub fn contextual_settings_view(
         &self,
         theme_accents: ThemeAccents,
-    ) -> Option<(String, iced::Element<'_, Message>)> {
-        let context = self.settings_view_context();
-        self.inspector
+    ) -> Option<(
+        iced::Element<'_, Message>,
+        Option<iced::Element<'_, Message>>,
+    )> {
+        let body = self
+            .inspector
             .settings()
-            .contextual_content(context, theme_accents)
+            .contextual_content(self.settings_view_context(), theme_accents)?;
+        let footer = self
+            .inspector
+            .settings()
+            .footer_view(self.settings_view_context());
+        Some((body, footer))
+    }
+
+    pub fn has_settings_target(&self) -> bool {
+        self.inspector
+            .has_contextual_target(&self.settings_view_context())
     }
 
     pub fn indicator_browser_view(&self) -> iced::Element<'_, Message> {
@@ -1099,30 +931,19 @@ impl KlineChart {
     }
 
     fn can_handle_escape(&self) -> bool {
-        self.inspector.is_confirming_reset()
-            || self.sidebar != Sidebar::Drawings
-            || self.drawings.tools.can_handle_escape()
+        self.inspector.is_confirming_reset() || self.drawings.tools.can_handle_escape()
     }
 
-    fn show_sidebar(&mut self, page: Sidebar) {
-        if self.sidebar == page && !self.settings_reconfigure_pending {
-            return;
+    pub fn flush_inspector_update(&mut self) {
+        if self.flush_settings_update() {
+            self.bump_rev();
         }
-
-        self.sidebar = page;
-        self.flush_settings_update();
-        self.bump_rev();
     }
 
-    fn reconcile_local_sidebar(&mut self) {
-        let settings_sidebar_open = self.sidebar == Sidebar::Settings;
-        let settings_target_missing = self.with_settings_context(|inspector, context| {
-            inspector.reconcile_missing_target(context);
-            settings_sidebar_open && !inspector.has_contextual_target(context)
+    fn reconcile_settings_target(&mut self) {
+        self.with_settings_context(|inspector, context| {
+            inspector.reconcile_missing_target(context)
         });
-        if settings_target_missing {
-            self.show_sidebar(Sidebar::Drawings);
-        }
     }
 
     fn apply_browser_action(&mut self, command: ChartCommand) -> Option<Action> {
@@ -1217,11 +1038,6 @@ impl KlineChart {
             return true;
         }
 
-        if self.sidebar != Sidebar::Drawings {
-            self.show_sidebar(Sidebar::Drawings);
-            return true;
-        }
-
         let before = self.drawings.tools.edit_state();
         let update = self.drawings.tools.handle_escape();
         if matches!(update, DrawingUpdate::None) {
@@ -1232,17 +1048,8 @@ impl KlineChart {
         true
     }
 
-    pub fn go_back(&mut self) -> bool {
-        if self.inspector.dismiss_reset_confirmation() {
-            return true;
-        }
-
-        if self.sidebar != Sidebar::Drawings {
-            self.show_sidebar(Sidebar::Drawings);
-            return true;
-        }
-
-        false
+    pub fn dismiss_reset_confirmation(&mut self) -> bool {
+        self.inspector.dismiss_reset_confirmation()
     }
 
     fn reconcile_data_requirements(&mut self, previous: KlineDataRequirements) {
@@ -1256,6 +1063,9 @@ impl KlineChart {
                 ],
                 IndicatorRebuildReason::TradeDataModeChanged,
             );
+        }
+        if previous.trades && !current.trades {
+            self.fetch.clear_pending_trade_requests();
         }
         if !current.open_interest {
             self.fetch.clear_open_interest_requests();
@@ -1364,7 +1174,9 @@ impl KlineChart {
                     Basis::Tick(_) => None,
                 };
                 let now = UnixMs::now();
-                let windows = self.profile_kline_fetch_windows(&profile_plan, window, now);
+                let windows = self
+                    .profiles
+                    .kline_fetch_windows(&profile_plan, window, now);
                 let visible_span = window
                     .map(|(start, end)| end.saturating_diff(start))
                     .filter(|span| *span > 0)
@@ -1656,66 +1468,8 @@ impl KlineChart {
         }
     }
 
-    fn profile_source_timeframe(&self) -> Timeframe {
-        match self.basis {
-            Basis::Time(timeframe) => profile_source_timeframe(timeframe),
-            Basis::Tick(_) => Timeframe::M1,
-        }
-    }
-
     fn profile_plan(&self) -> ProfilePlan {
-        let active_studies = self.studies.active();
-        let time_basis = self.basis.is_time();
-
-        let mut tpo_study = None;
-        let mut kline_volume_profiles = Vec::new();
-        let mut has_kline_source = false;
-        for study in active_studies {
-            if time_basis && tpo_study.is_none() && study.is_tpo_profile() {
-                tpo_study = Some(*study);
-            }
-            if time_basis && study.source() == StudyDataSource::Kline {
-                has_kline_source = true;
-                if let Some(schedule) = study.volume_profile_schedule() {
-                    kline_volume_profiles.push(schedule);
-                }
-            }
-        }
-
-        ProfilePlan {
-            kline_source_timeframe: has_kline_source.then(|| self.profile_source_timeframe()),
-            kline_volume_profiles,
-            tpo_study,
-            recurring_trade_profiles: self
-                .data
-                .recurring_profile_cache_requirements(active_studies, self.basis),
-        }
-    }
-
-    fn profile_kline_fetch_windows(
-        &self,
-        plan: &ProfilePlan,
-        visible_window: Option<(UnixMs, UnixMs)>,
-        now: UnixMs,
-    ) -> Vec<(UnixMs, UnixMs)> {
-        let anchor = plan
-            .tpo_study
-            .filter(|study| study.source() == StudyDataSource::Kline)
-            .and_then(|study| study.tpo_anchor())
-            .unwrap_or_default();
-        let fallback_start = anchor.floor(now);
-        let visible_window =
-            visible_window.unwrap_or_else(|| (fallback_start, anchor.offset(fallback_start, 1)));
-        let tpo_ranges = if plan
-            .tpo_study
-            .is_some_and(|study| study.source() == StudyDataSource::Kline)
-        {
-            self.profiles
-                .profile_ranges_overlapping(visible_window.0, visible_window.1, anchor)
-        } else {
-            Vec::new()
-        };
-        plan.fetch_windows(visible_window, &tpo_ranges)
+        ProfilePlan::new(self.basis, self.studies.active(), &self.data)
     }
 
     fn rebuild_tpo_profiles(&mut self) -> bool {
@@ -1857,27 +1611,8 @@ impl KlineChart {
     fn apply_drawing_update(&mut self, update: DrawingUpdate, before: DrawingEditState) {
         let after = self.drawings.tools.edit_state();
 
-        match update {
-            DrawingUpdate::AtomicEdit => {
-                self.history.finish_drawing(before.clone());
-                if before != after {
-                    self.history.record(before, after);
-                }
-            }
-            DrawingUpdate::GestureStarted { .. } => {
-                self.history.finish_drawing(before.clone());
-                self.history.begin_drawing(before);
-            }
-            DrawingUpdate::GestureUpdated => {}
-            DrawingUpdate::GestureFinished { .. } => {
-                self.history.finish_drawing(after);
-            }
-            DrawingUpdate::None | DrawingUpdate::StateOnly | DrawingUpdate::Visual => {
-                if self.history.has_pending_drawing() && !self.drawings.tools.is_dragging() {
-                    self.history.finish_drawing(after);
-                }
-            }
-        }
+        self.history
+            .apply_update(update, before, after, self.drawings.tools.is_dragging());
 
         if update.should_bump() {
             self.bump_rev();
@@ -1909,7 +1644,7 @@ impl KlineChart {
 
     pub fn apply_command(&mut self, command: ChartCommand) -> Option<ChartAction> {
         let action = self.apply_command_inner(command);
-        self.reconcile_local_sidebar();
+        self.reconcile_settings_target();
         action
     }
 
@@ -2376,7 +2111,6 @@ impl KlineChart {
         self.apply_shared_settings(&snapshot);
 
         self.drawing_sidebar_visible = config.drawing_sidebar_visible;
-        self.sidebar = Sidebar::Drawings;
         self.drawings.floating_toolbar =
             toolbar::FloatingToolbarState::from_position(config.floating_toolbar_position);
         let drawings = config
@@ -2435,7 +2169,7 @@ impl KlineChart {
         self.apply_shared_settings(snapshot);
         let selected_tickers = self.data.selected_tickers();
         self.fetch.rebuild_handlers(&selected_tickers);
-        self.reconcile_local_sidebar();
+        self.reconcile_settings_target();
         self.bump_rev();
 
         self.request_fetch_action(false).map(Action::RequestFetch)
@@ -2472,7 +2206,7 @@ impl KlineChart {
     }
 
     pub fn drawing_sidebar_visible(&self) -> bool {
-        self.sidebar == Sidebar::Drawings && self.drawing_sidebar_visible
+        self.drawing_sidebar_visible
     }
 
     fn indicator_requires_trade_data(&self, indicator: &IndicatorId) -> bool {
@@ -2633,44 +2367,4 @@ impl KlineChart {
                 .collect(),
         }
     }
-}
-
-fn sidebar_header<'a>(title: String) -> iced::Element<'a, Message> {
-    let title = iced::widget::container(
-        crate::widget::text::emphasis(title).wrapping(iced::widget::text::Wrapping::Glyph),
-    )
-    .width(iced::Length::Fill)
-    .height(iced::Length::Fill)
-    .align_y(iced::Alignment::Center)
-    .clip(true);
-
-    let return_button = iced::widget::button(style::icon_text(style::Icon::Return, 12))
-        .style(|theme, status| style::button::transparent(theme, status, false))
-        .on_press(Message::ShowDrawingsPage)
-        .width(iced::Length::Fixed(SIDEBAR_RETURN_BUTTON_WIDTH));
-
-    iced::widget::row![title, return_button]
-        .width(iced::Length::Fill)
-        .align_y(iced::Alignment::Center)
-        .height(iced::Length::Fixed(32.0))
-        .spacing(8)
-        .into()
-}
-
-fn sidebar_panel<'a>(
-    header: iced::Element<'a, Message>,
-    body: iced::Element<'a, Message>,
-    footer: Option<iced::Element<'a, Message>>,
-) -> iced::Element<'a, Message> {
-    iced::widget::container(iced::widget::column![
-        header,
-        iced::widget::rule::horizontal(1.0),
-        body,
-        footer.unwrap_or_else(|| iced::widget::column![].into()),
-    ])
-    .width(iced::Length::Fixed(SIDEBAR_WIDTH))
-    .height(iced::Length::Fill)
-    .padding([4, 8])
-    .style(style::chart_sidebar_container)
-    .into()
 }

@@ -234,6 +234,19 @@ impl FetchCoordinator {
         }
     }
 
+    pub fn clear_pending_trade_requests(&mut self) {
+        let request_ids = self
+            .request_handlers
+            .values_mut()
+            .flat_map(RequestHandler::clear_pending_trade_requests)
+            .collect::<Vec<_>>();
+        for req_id in request_ids {
+            if let Some(handle) = self.fetch_handles.remove(&req_id) {
+                handle.abort();
+            }
+        }
+    }
+
     pub fn pending_requests(&self) -> impl Iterator<Item = (TickerInfo, FetchRange)> + '_ {
         self.request_handlers
             .iter()

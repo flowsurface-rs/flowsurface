@@ -44,10 +44,12 @@ use drawing::{
 };
 use exchange::TickerInfo;
 use helpers::{ChartCoordinates, PixelGeometry};
+pub(crate) use interaction::SelectionDisposition;
 use interaction::{
-    CacheInvalidation, LayerContext, LayerEffects, LayerGesture, NavigationFallback, PointerMove,
-    ReleasedGesture, UserInteraction,
+    CacheInvalidation, DragAction, GestureSource, LayerContext, LayerEffects, LayerGesture,
+    PointerMove, PressAction, ReleasedGesture, UserInteraction,
 };
+pub(super) use interaction::{HorizontalWheelZoomMode, SceneActivity};
 use layout::{KlinePanelKind, LayoutHitZone, PanelLayoutNode, PanelLayoutTree};
 pub(crate) use presentation::IndicatorPresentationStatus;
 pub(crate) use presentation::{
@@ -56,7 +58,7 @@ pub(crate) use presentation::{
     resolve_indicator_presentation_status,
 };
 use primary_render::PrimaryPlotLayer;
-use scene::{CursorTarget, LegendTarget, Scene, SceneCache, TickIndex, XAxis};
+use scene::{CursorTarget, Scene, SceneCache, TickIndex, XAxis};
 use studies::{
     LayerPaintPhase, LayerPointerInput, StudyObject, StudyObjectEvent, StudyObjectKey, StudyStates,
 };
@@ -232,90 +234,6 @@ impl Regions {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum PressAction {
-    Ordinary,
-    DrawingPlacement,
-    Drawing {
-        selection: SelectionDisposition,
-        captures_outside_release: bool,
-    },
-    Layer {
-        key: StudyObjectKey,
-        selection: SelectionDisposition,
-        captures_outside_release: bool,
-    },
-}
-
-impl PressAction {
-    fn selection_disposition(self) -> SelectionDisposition {
-        match self {
-            Self::DrawingPlacement => SelectionDisposition::Preserve,
-            Self::Drawing { selection, .. } => selection,
-            Self::Ordinary => SelectionDisposition::Clear,
-            Self::Layer { selection, .. } => selection,
-        }
-    }
-
-    fn captures_outside_release(self) -> bool {
-        match self {
-            Self::DrawingPlacement => true,
-            Self::Drawing {
-                captures_outside_release,
-                ..
-            } => captures_outside_release,
-            Self::Layer {
-                captures_outside_release,
-                ..
-            } => captures_outside_release,
-            Self::Ordinary => false,
-        }
-    }
-
-    fn layer_key(self) -> Option<StudyObjectKey> {
-        match self {
-            Self::Layer { key, .. } => Some(key),
-            Self::Ordinary | Self::DrawingPlacement | Self::Drawing { .. } => None,
-        }
-    }
-
-    fn is_drawing(self) -> bool {
-        matches!(self, Self::Drawing { .. })
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-enum DragAction {
-    Split(usize),
-    Layer {
-        key: StudyObjectKey,
-        selection: SelectionDisposition,
-        active_outside_bounds: bool,
-        cursor: advanced::mouse::Interaction,
-    },
-    Drawing {
-        selection: SelectionDisposition,
-        active_outside_bounds: bool,
-        cursor: advanced::mouse::Interaction,
-    },
-    YAxisScale {
-        panel_index: usize,
-        anchor_y: f32,
-    },
-    XAxisScale {
-        initial_world: HorizontalWorld,
-        initial_right_unit: f32,
-    },
-    Pan {
-        panel_index: usize,
-        source_layer: Option<StudyObjectKey>,
-    },
-    Marquee {
-        panel_index: usize,
-        source_layer: Option<StudyObjectKey>,
-    },
-}
-
-#[derive(Debug, Clone, Copy)]
 enum DrawingPointerInput {
     Moved,
     DragReleased,
@@ -323,97 +241,10 @@ enum DrawingPointerInput {
     SelectionCleared,
 }
 
-impl DragAction {
-    fn scene_activity(self) -> SceneActivity {
-        match self {
-            Self::Pan { .. } => SceneActivity::Pan,
-            _ => SceneActivity::Drag,
-        }
-    }
-
-    fn active_outside_bounds(self) -> bool {
-        match self {
-            Self::Layer {
-                active_outside_bounds,
-                ..
-            }
-            | Self::Drawing {
-                active_outside_bounds,
-                ..
-            } => active_outside_bounds,
-            _ => matches!(
-                self,
-                Self::YAxisScale { .. } | Self::XAxisScale { .. } | Self::Marquee { .. }
-            ),
-        }
-    }
-
-    fn selection_disposition(self) -> SelectionDisposition {
-        match self {
-            Self::Layer { selection, .. } | Self::Drawing { selection, .. } => selection,
-            Self::Marquee { .. } => SelectionDisposition::Preserve,
-            _ => SelectionDisposition::Clear,
-        }
-    }
-
-    fn cursor_appearance(self) -> Option<advanced::mouse::Interaction> {
-        match self {
-            Self::Split(_) | Self::YAxisScale { .. } => {
-                Some(advanced::mouse::Interaction::ResizingVertically)
-            }
-            Self::Layer { cursor, .. } | Self::Drawing { cursor, .. } => Some(cursor),
-            Self::XAxisScale { .. } => Some(advanced::mouse::Interaction::ResizingHorizontally),
-            Self::Pan { .. } => Some(advanced::mouse::Interaction::Grabbing),
-            Self::Marquee { .. } => None,
-        }
-    }
-
-    fn layer_key(self) -> Option<StudyObjectKey> {
-        match self {
-            Self::Layer { key, .. } => Some(key),
-            Self::Pan { source_layer, .. } | Self::Marquee { source_layer, .. } => source_layer,
-            _ => None,
-        }
-    }
-
-    fn is_drawing(self) -> bool {
-        matches!(self, Self::Drawing { .. })
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum SceneActivity {
-    Idle,
-    Pan,
-    Drag,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SelectionDisposition {
-    Preserve,
-    Clear,
-}
-
 struct MarqueeGesture {
     panel_index: usize,
     start: Point,
     current: Point,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum HorizontalWheelZoomMode {
-    LiveEdge,
-    Cursor,
-}
-
-impl HorizontalWheelZoomMode {
-    fn from_modifiers(modifiers: keyboard::Modifiers) -> Self {
-        if modifiers.intersects(keyboard::Modifiers::COMMAND) {
-            Self::Cursor
-        } else {
-            Self::LiveEdge
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -428,15 +259,13 @@ struct GutterCacheKey {
 struct GeometryCacheKey {
     origin: Point,
     size: Size,
-    pixel_ratio: PixelRatio,
 }
 
 impl GeometryCacheKey {
-    fn new(rect: Rectangle, origin: Point, pixel_ratio: PixelRatio) -> Self {
+    fn new(rect: Rectangle, origin: Point) -> Self {
         Self {
             origin,
             size: rect.size(),
-            pixel_ratio,
         }
     }
 }
@@ -453,21 +282,23 @@ struct State {
     marquee_cache: canvas::Cache,
     study_underlay_cache: canvas::Cache,
     drawing_cache: canvas::Cache,
+
+    scene_cache: SceneCache,
     interaction: UserInteraction<PressAction, DragAction>,
     study_objects: StudyStates,
     drawing: WidgetDrawingState,
     y_axis_gutter_width: f32,
+
     gutter_cache_key: Option<GutterCacheKey>,
     plot_geometry_key: Option<GeometryCacheKey>,
-    drawing_geometry_key: Option<GeometryCacheKey>,
-    overlay_geometry_key: Option<GeometryCacheKey>,
-    interaction_text_geometry_key: Option<GeometryCacheKey>,
+    widget_geometry_key: Option<GeometryCacheKey>,
     x_axis_geometry_key: Option<GeometryCacheKey>,
+
     last_cache_rev: u64,
+    last_pixel_ratio: Option<PixelRatio>,
     last_cache_clear_at: Option<Instant>,
     last_theme_generation: Option<u64>,
     last_countdown_second: Option<i64>,
-    scene_cache: SceneCache,
 }
 
 impl Default for State {
@@ -489,10 +320,9 @@ impl Default for State {
             drawing: WidgetDrawingState::default(),
             y_axis_gutter_width: Y_AXIS_GUTTER,
             gutter_cache_key: None,
+            last_pixel_ratio: None,
             plot_geometry_key: None,
-            drawing_geometry_key: None,
-            overlay_geometry_key: None,
-            interaction_text_geometry_key: None,
+            widget_geometry_key: None,
             x_axis_geometry_key: None,
             last_cache_rev: 0,
             last_cache_clear_at: None,
@@ -599,7 +429,14 @@ impl State {
         let plot_origin = Point::new(bounds.x + regions.plot.x, bounds.y + regions.plot.y);
         let x_axis_origin = Point::new(bounds.x + regions.x_axis.x, bounds.y + regions.x_axis.y);
 
-        let plot_geometry_key = GeometryCacheKey::new(regions.plot, plot_origin, pixel_ratio);
+        if self.last_pixel_ratio != Some(pixel_ratio) {
+            self.plot_geometry_key = None;
+            self.widget_geometry_key = None;
+            self.x_axis_geometry_key = None;
+            self.last_pixel_ratio = Some(pixel_ratio);
+        }
+
+        let plot_geometry_key = GeometryCacheKey::new(regions.plot, plot_origin);
         if self.plot_geometry_key != Some(plot_geometry_key) {
             self.plot_background_cache.clear();
             self.plot_cache.clear();
@@ -607,38 +444,18 @@ impl State {
             self.price_bars_cache.clear();
             self.plot_geometry_key = Some(plot_geometry_key);
         }
-        if self.drawing_geometry_key
-            != Some(GeometryCacheKey::new(bounds, root_origin, pixel_ratio))
-        {
-            self.drawing_cache.clear();
-            self.drawing_geometry_key =
-                Some(GeometryCacheKey::new(bounds, root_origin, pixel_ratio));
-        }
-        let overlay_geometry_key = GeometryCacheKey::new(bounds, root_origin, pixel_ratio);
-        if self.overlay_geometry_key != Some(overlay_geometry_key) {
-            self.clear_overlay_caches();
-            self.overlay_geometry_key = Some(overlay_geometry_key);
-        }
-        Self::sync_geometry_cache(
-            &self.interaction_text_cache,
-            &mut self.interaction_text_geometry_key,
-            GeometryCacheKey::new(bounds, root_origin, pixel_ratio),
-        );
-        Self::sync_geometry_cache(
-            &self.x_axis_cache,
-            &mut self.x_axis_geometry_key,
-            GeometryCacheKey::new(regions.x_axis, x_axis_origin, pixel_ratio),
-        );
-    }
 
-    fn sync_geometry_cache(
-        cache: &canvas::Cache,
-        previous: &mut Option<GeometryCacheKey>,
-        next: GeometryCacheKey,
-    ) {
-        if *previous != Some(next) {
-            cache.clear();
-            *previous = Some(next);
+        let widget_geometry_key = GeometryCacheKey::new(bounds, root_origin);
+        if self.widget_geometry_key != Some(widget_geometry_key) {
+            self.drawing_cache.clear();
+            self.clear_overlay_caches();
+            self.widget_geometry_key = Some(widget_geometry_key);
+        }
+
+        let x_axis_geometry_key = GeometryCacheKey::new(regions.x_axis, x_axis_origin);
+        if self.x_axis_geometry_key != Some(x_axis_geometry_key) {
+            self.x_axis_cache.clear();
+            self.x_axis_geometry_key = Some(x_axis_geometry_key);
         }
     }
 }
@@ -730,7 +547,7 @@ pub struct KlineWidget<'a> {
     timezone: UserTimezone,
     version: u64,
     theme_accents: ThemeAccents,
-    escape_enabled: bool,
+    should_capture_escape: bool,
 }
 
 impl<'a> KlineWidget<'a> {
@@ -773,7 +590,7 @@ impl<'a> KlineWidget<'a> {
             timezone: UserTimezone::Utc,
             version: 0,
             theme_accents,
-            escape_enabled: false,
+            should_capture_escape: false,
         }
     }
 
@@ -841,7 +658,7 @@ impl<'a> KlineWidget<'a> {
         self
     }
 
-    pub(crate) fn with_indicator_ranges(mut self, ranges: &'a [(PanelId, YUnitRange)]) -> Self {
+    pub fn with_indicator_ranges(mut self, ranges: &'a [(PanelId, YUnitRange)]) -> Self {
         self.indicator_y_ranges = ranges;
         self
     }
@@ -895,8 +712,8 @@ impl<'a> KlineWidget<'a> {
         self
     }
 
-    pub fn with_escape_enabled(mut self, enabled: bool) -> Self {
-        self.escape_enabled = enabled;
+    pub fn with_should_capture_escape(mut self, should_capture_escape: bool) -> Self {
+        self.should_capture_escape = should_capture_escape;
         self
     }
 
@@ -960,65 +777,12 @@ impl<'a> KlineWidget<'a> {
         };
         let (_, gesture) = state.apply_interaction_effects(effects, shell, KlineWidgetEvent::Study);
         let Some(gesture) = gesture else { return false };
-        match gesture {
-            LayerGesture::Click {
-                selection,
-                captures_outside_release,
-            } => state.interaction.begin_click(
-                position,
-                PressAction::Layer {
-                    key,
-                    selection,
-                    captures_outside_release,
-                },
-            ),
-            LayerGesture::Drag {
-                selection,
-                active_outside_bounds,
-                cursor,
-            } => state.interaction.begin_drag_candidate(
-                position,
-                DragAction::Layer {
-                    key,
-                    selection,
-                    active_outside_bounds,
-                    cursor,
-                },
-            ),
-            LayerGesture::ClickOrNavigate {
-                selection,
-                captures_outside_release,
-                fallback,
-            } => {
-                let LayoutHitZone::PanelPlot(panel_index) = scene.layout.hit_test(position) else {
-                    return false;
-                };
-                let fallback = match fallback {
-                    NavigationFallback::PanOrMarquee
-                        if Self::is_command_modifier(state.interaction.modifiers()) =>
-                    {
-                        DragAction::Marquee {
-                            panel_index,
-                            source_layer: Some(key),
-                        }
-                    }
-                    _ => DragAction::Pan {
-                        panel_index,
-                        source_layer: Some(key),
-                    },
-                };
-                state.interaction.begin_click_or_drag(
-                    position,
-                    PressAction::Layer {
-                        key,
-                        selection,
-                        captures_outside_release,
-                    },
-                    fallback,
-                );
-            }
-        }
-        true
+        state.interaction.begin_layer_gesture(
+            gesture,
+            GestureSource::Study(key),
+            position,
+            scene.layout.hit_test(position),
+        )
     }
 
     fn begin_drawing_interaction<M>(
@@ -1039,62 +803,13 @@ impl<'a> KlineWidget<'a> {
         let (_, gesture) =
             state.apply_interaction_effects(effects, shell, KlineWidgetEvent::Drawing);
         let Some(gesture) = gesture else { return false };
-        match gesture {
-            LayerGesture::Click {
-                selection,
-                captures_outside_release,
-            } => state.interaction.begin_click(
-                position,
-                PressAction::Drawing {
-                    selection,
-                    captures_outside_release,
-                },
-            ),
-            LayerGesture::Drag {
-                selection,
-                active_outside_bounds,
-                cursor,
-            } => state.interaction.begin_drag_candidate(
-                position,
-                DragAction::Drawing {
-                    selection,
-                    active_outside_bounds,
-                    cursor,
-                },
-            ),
-            LayerGesture::ClickOrNavigate {
-                selection,
-                captures_outside_release,
-                fallback,
-            } => {
-                let LayoutHitZone::PanelPlot(panel_index) = scene.layout.hit_test(position) else {
-                    return false;
-                };
-                let fallback = match fallback {
-                    NavigationFallback::PanOrMarquee
-                        if Self::is_command_modifier(state.interaction.modifiers()) =>
-                    {
-                        DragAction::Marquee {
-                            panel_index,
-                            source_layer: None,
-                        }
-                    }
-                    _ => DragAction::Pan {
-                        panel_index,
-                        source_layer: None,
-                    },
-                };
-                state.interaction.begin_click_or_drag(
-                    position,
-                    PressAction::Drawing {
-                        selection,
-                        captures_outside_release,
-                    },
-                    fallback,
-                );
-            }
-        }
-        true
+
+        state.interaction.begin_layer_gesture(
+            gesture,
+            GestureSource::Drawing,
+            position,
+            scene.layout.hit_test(position),
+        )
     }
 
     fn is_command_modifier(modifiers: keyboard::Modifiers) -> bool {
@@ -1325,7 +1040,6 @@ impl<'a> KlineWidget<'a> {
                         KlineWidgetDrawingEvent::MarqueeSelected(selected),
                     )));
                 }
-                state.clear_overlay_caches();
                 state.clear_all_caches();
                 capture = true;
                 if let (Some(context), Some(key)) =
@@ -1362,7 +1076,6 @@ impl<'a> KlineWidget<'a> {
         }
 
         if outside_bounds {
-            state.clear_overlay_caches();
             state.clear_all_caches();
         }
         if capture {
@@ -1642,10 +1355,8 @@ where
             return;
         }
 
-        {
-            let state = tree.state.downcast_mut::<State>();
-            self.ensure_scene_base(state, layout);
-        }
+        let state = tree.state.downcast_mut::<State>();
+        self.ensure_scene_base(state, layout);
 
         match event {
             Event::Keyboard(keyboard::Event::KeyPressed {
@@ -1654,11 +1365,10 @@ where
                 modifiers,
                 ..
             }) => {
-                let state = tree.state.downcast_mut::<State>();
                 state.interaction.set_modifiers(*modifiers);
                 state.clear_overlay_caches();
 
-                if self.escape_enabled
+                if self.should_capture_escape
                     && cursor.is_over(layout.bounds())
                     && matches!(key, keyboard::Key::Named(keyboard::key::Named::Escape))
                 {
@@ -1700,18 +1410,10 @@ where
                     _ => {}
                 }
             }
-            Event::Keyboard(keyboard::Event::KeyReleased { modifiers, .. }) => {
-                let state = tree.state.downcast_mut::<State>();
-                state.interaction.set_modifiers(*modifiers);
-                state.clear_overlay_caches();
-                shell.publish(M::from(KlineWidgetEvent::from(
-                    KlineWidgetDrawingEvent::MagnetModifierChanged(Self::is_command_modifier(
-                        *modifiers,
-                    )),
-                )));
-            }
-            Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
-                let state = tree.state.downcast_mut::<State>();
+            Event::Keyboard(
+                keyboard::Event::KeyReleased { modifiers, .. }
+                | keyboard::Event::ModifiersChanged(modifiers),
+            ) => {
                 state.interaction.set_modifiers(*modifiers);
                 state.clear_overlay_caches();
                 shell.publish(M::from(KlineWidgetEvent::from(
@@ -1721,7 +1423,6 @@ where
                 )));
             }
             Event::Mouse(mouse_event) => {
-                let state = tree.state.downcast_mut::<State>();
                 let bounds = layout.bounds();
                 let left_release = matches!(
                     mouse_event,
@@ -1763,12 +1464,6 @@ where
                     .as_ref()
                     .map(|scene| scene.chrome.corner_controls.as_slice())
                     .unwrap_or(&[]);
-                let ticker_legend = scene
-                    .as_ref()
-                    .and_then(|scene| scene.chrome.ticker_legend.as_ref());
-                let indicator_legend = scene
-                    .as_ref()
-                    .and_then(|scene| scene.chrome.indicator_legend.as_ref());
 
                 match mouse_event {
                     mouse::Event::WheelScrolled { delta } => {
@@ -1913,114 +1608,23 @@ where
                             return;
                         }
 
-                        if let (
-                            Some(legend),
-                            Some(CursorTarget::Legend(LegendTarget::Ticker {
-                                row: row_index,
-                                icon: Some(icon_kind),
-                            })),
-                        ) = (ticker_legend, cursor_target)
-                            && let Some(row) = legend.rows.get(row_index)
-                        {
-                            shell.publish(M::from(icon_kind.into_event(row.ticker)));
-                            state.clear_all_caches();
-                            shell.capture_event();
-                            return;
-                        }
-
-                        if let Some(CursorTarget::Legend(LegendTarget::Footprint {
-                            icon: Some(icon_kind),
-                        })) = cursor_target
-                        {
-                            shell.publish(M::from(icon_kind.into_event()));
-                            state.clear_all_caches();
-                            shell.capture_event();
-                            return;
-                        }
-
-                        if let Some(CursorTarget::Legend(LegendTarget::StudyCategory {
-                            icon: Some(icon_kind),
-                        })) = cursor_target
-                            && self.study_legend.is_some()
-                        {
-                            let event = match icon_kind {
-                                chrome::StudiesLegendIconKind::ExpandCollapse => {
-                                    KlineWidgetEvent::StudiesExpansionToggled
-                                }
-                                chrome::StudiesLegendIconKind::Visibility => {
-                                    KlineWidgetEvent::StudiesVisibilityToggled
-                                }
-                                chrome::StudiesLegendIconKind::Close => {
-                                    KlineWidgetEvent::StudiesRemove
-                                }
-                            };
-                            shell.publish(M::from(event));
-                            state.clear_all_caches();
-                            shell.capture_event();
-                            return;
-                        }
-
-                        if let Some(CursorTarget::Legend(LegendTarget::Study {
-                            row: row_index,
-                            icon: Some(icon_kind),
-                        })) = cursor_target
-                            && let Some(row) = self
-                                .study_legend
+                        let chrome_click =
+                            scene
                                 .as_ref()
-                                .and_then(|legend| legend.rows.get(row_index))
-                        {
-                            let event = match icon_kind {
-                                chrome::StudyLegendIconKind::Visibility => {
-                                    KlineWidgetEvent::StudyVisibilityToggled(row.id)
-                                }
-                                chrome::StudyLegendIconKind::Settings => {
-                                    KlineWidgetEvent::StudySettings(row.id)
-                                }
-                                chrome::StudyLegendIconKind::Close => {
-                                    KlineWidgetEvent::StudyRemove(row.id)
-                                }
-                            };
-                            shell.publish(M::from(event));
-                            state.clear_all_caches();
-                            shell.capture_event();
-                            return;
-                        }
-
-                        if let (
-                            Some(legend),
-                            Some(CursorTarget::Legend(LegendTarget::Indicator {
-                                row: row_index,
-                                icon: Some(icon_kind),
-                            })),
-                        ) = (indicator_legend, cursor_target)
-                            && let Some(row) = legend.rows.get(row_index)
-                        {
-                            shell.publish(M::from(icon_kind.into_event(row.value_id)));
-                            state.clear_all_caches();
-                            shell.capture_event();
-                            return;
-                        }
-
-                        if let Some(CursorTarget::CornerControl(kind)) = cursor_target {
-                            shell.publish(M::from(kind.into_event()));
-                            state.clear_all_caches();
-                            shell.capture_event();
-                            return;
-                        }
-
-                        if matches!(cursor_target, Some(CursorTarget::Legend(_))) {
-                            return;
-                        }
-
-                        if let Some(CursorTarget::PanelControl { panel_index, kind }) =
-                            cursor_target
-                        {
-                            let interaction = kind.into_interaction_kind(panel_index);
-
-                            shell.publish(M::from(KlineWidgetEvent::PanelInteraction(interaction)));
-                            state.clear_all_caches();
-                            shell.capture_event();
-                            return;
+                                .map_or(chrome::ChromeClick::Outside, |scene| {
+                                    scene
+                                        .chrome
+                                        .resolve_click(cursor_target, self.study_legend.as_ref())
+                                });
+                        match chrome_click {
+                            chrome::ChromeClick::Event(event) => {
+                                shell.publish(M::from(event));
+                                state.clear_all_caches();
+                                shell.capture_event();
+                                return;
+                            }
+                            chrome::ChromeClick::Blocked => return,
+                            chrome::ChromeClick::Outside => {}
                         }
 
                         let layer_hit = match cursor_target {
@@ -2031,32 +1635,6 @@ where
                             Some(CursorTarget::Drawing(hit)) => Some(hit),
                             _ => None,
                         };
-                        if self.drawing_snapshot.allows_panning()
-                            && matches!(zone, LayoutHitZone::PanelPlot(_))
-                            && let Some(scene) = scene.as_ref()
-                        {
-                            self.broadcast_study_object_pointer(
-                                LayerPointerInput::PlotPressed {
-                                    target: layer_hit.map(|hit| hit.key),
-                                },
-                                self.layer_context(
-                                    scene,
-                                    Some(cursor_pos),
-                                    state.interaction.modifiers(),
-                                ),
-                                state,
-                                shell,
-                            );
-                        }
-                        if let Some(hit) = layer_hit.filter(|hit| hit.precedes_tools)
-                            && let Some(scene) = scene.as_ref()
-                            && self.begin_study_object_interaction(
-                                hit.key, scene, cursor_pos, state, shell,
-                            )
-                        {
-                            return;
-                        }
-
                         if (self.drawing_snapshot.measure.is_some()
                             || state
                                 .interaction
@@ -2082,6 +1660,31 @@ where
                                 shell.capture_event();
                                 return;
                             }
+                        }
+                        if self.drawing_snapshot.allows_panning()
+                            && matches!(zone, LayoutHitZone::PanelPlot(_))
+                            && let Some(scene) = scene.as_ref()
+                        {
+                            self.broadcast_study_object_pointer(
+                                LayerPointerInput::PlotPressed {
+                                    target: layer_hit.map(|hit| hit.key),
+                                },
+                                self.layer_context(
+                                    scene,
+                                    Some(cursor_pos),
+                                    state.interaction.modifiers(),
+                                ),
+                                state,
+                                shell,
+                            );
+                        }
+                        if let Some(hit) = layer_hit.filter(|hit| hit.precedes_tools)
+                            && let Some(scene) = scene.as_ref()
+                            && self.begin_study_object_interaction(
+                                hit.key, scene, cursor_pos, state, shell,
+                            )
+                        {
+                            return;
                         }
 
                         if let Some(hit) = layer_hit.filter(|hit| !hit.precedes_tools)
@@ -2195,7 +1798,6 @@ where
                                 shell.publish(M::from(KlineWidgetEvent::from(
                                     KlineWidgetDrawingEvent::AnchorPressed(anchor),
                                 )));
-                                state.clear_overlay_caches();
                                 state.clear_all_caches();
                                 shell.capture_event();
                             } else {
@@ -2220,7 +1822,6 @@ where
                             KlineWidgetDrawingEvent::DraftCanceled,
                         )));
                         self.cancel_pointer(state, layout, cursor, shell);
-                        state.clear_overlay_caches();
                         state.clear_all_caches();
                         shell.capture_event();
                     }
@@ -2431,10 +2032,8 @@ where
                 }
             }
             Event::Window(window::Event::RedrawRequested(now)) => {
-                let state = tree.state.downcast_mut::<State>();
-                if let Some(layout_tree) =
-                    PanelLayoutTree::from_layout(layout, &self.composition.panels)
-                {
+                let layout_tree = PanelLayoutTree::from_layout(layout, &self.composition.panels);
+                if let Some(layout_tree) = layout_tree.as_ref() {
                     state.sync_geometry_cache_keys(
                         layout.bounds(),
                         layout_tree.regions,
@@ -2473,9 +2072,7 @@ where
                     }
                 }
 
-                if let Some(plot_width) =
-                    PanelLayoutTree::from_layout(layout, &self.composition.panels)
-                        .and_then(|layout| layout.primary_plot_width())
+                if let Some(plot_width) = layout_tree.and_then(|layout| layout.primary_plot_width())
                     && self.known_plot_width != Some(plot_width)
                 {
                     shell.publish(M::from(KlineWidgetEvent::PlotWidthChanged(plot_width)));

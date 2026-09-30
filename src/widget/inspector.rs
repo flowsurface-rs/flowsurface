@@ -40,10 +40,10 @@ where
     )
 }
 
-pub(crate) fn tabs<'a, Message>(
+fn tabs<'a, Message>(
     selected_tab: InspectorTab,
+    available_tabs: &[InspectorTab],
     on_select: impl Fn(InspectorTab) -> Message + Copy + 'a,
-    show_source: bool,
 ) -> Element<'a, Message>
 where
     Message: Clone + 'a,
@@ -89,24 +89,52 @@ where
     };
 
     let mut tab_buttons = row![];
-    if show_source {
-        tab_buttons = tab_buttons.push(tab_button("i", InspectorTab::Source, Length::Shrink));
+    for tab in available_tabs {
+        let (label, width) = match tab {
+            InspectorTab::Source => ("i", Length::Shrink),
+            InspectorTab::Inputs => ("Inputs", Length::FillPortion(1)),
+            InspectorTab::Style => ("Style", Length::FillPortion(1)),
+        };
+        tab_buttons = tab_buttons.push(tab_button(label, *tab, width));
     }
-    tab_buttons = tab_buttons
-        .push(tab_button(
-            "Inputs",
-            InspectorTab::Inputs,
-            Length::FillPortion(1),
-        ))
-        .push(tab_button(
-            "Style",
-            InspectorTab::Style,
-            Length::FillPortion(1),
-        ));
 
     column![container(tab_buttons).center_x(Length::Fill)]
         .spacing(4)
         .into()
+}
+
+pub(crate) fn tabbed_content<'a, Message>(
+    selected_tab: InspectorTab,
+    on_select: impl Fn(InspectorTab) -> Message + Copy + 'a,
+    contents: impl IntoIterator<Item = (InspectorTab, Option<Element<'a, Message>>)>,
+) -> Element<'a, Message>
+where
+    Message: Clone + 'a,
+{
+    let mut contents = contents
+        .into_iter()
+        .filter_map(|(tab, content)| content.map(|content| (tab, content)))
+        .collect::<Vec<_>>();
+    contents.sort_by_key(|(tab, _)| match tab {
+        InspectorTab::Source => 0,
+        InspectorTab::Inputs => 1,
+        InspectorTab::Style => 2,
+    });
+    let Some((first_tab, _)) = contents.first() else {
+        return column![].into();
+    };
+    let selected_tab = if contents.iter().any(|(tab, _)| *tab == selected_tab) {
+        selected_tab
+    } else {
+        *first_tab
+    };
+    let available_tabs = contents.iter().map(|(tab, _)| *tab).collect::<Vec<_>>();
+    let tabs = tabs(selected_tab, &available_tabs, on_select);
+    let Some((_, content)) = contents.into_iter().find(|(tab, _)| *tab == selected_tab) else {
+        return column![].into();
+    };
+
+    column![tabs, content].spacing(MODAL_SECTION_SPACING).into()
 }
 
 pub struct InspectorSection<'a, Message> {

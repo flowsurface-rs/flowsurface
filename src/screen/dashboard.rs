@@ -7,7 +7,7 @@ use crate::{
         fetcher::{self, FetchedData},
         stream::ResolvedStream,
     },
-    screen::sidebar::{self, tickers_table::TickersTable},
+    screen::sidebar::tickers_table::TickersTable,
     style,
     theme::ThemeAccents,
     widget::toast::Toast,
@@ -74,8 +74,6 @@ impl Default for Dashboard {
 
 #[derive(Debug, Clone)]
 pub enum Event {
-    OpenInspector(sidebar::InspectorMode),
-    ToggleInspector(sidebar::InspectorMode),
     OpenUrlRequested(String),
     Notification(Toast),
     DistributeFetchedData {
@@ -306,13 +304,14 @@ impl Dashboard {
                 pane::Message::Merge => {
                     return (self.merge_pane(main_window), None);
                 }
-                pane::Message::OpenInspector(pane, mode) => {
+                pane::Message::ToggleInspector(pane, page) => {
                     self.set_focus(window, pane);
-                    return (Task::none(), Some(Event::OpenInspector(mode)));
-                }
-                pane::Message::ToggleInspector(pane, mode) => {
-                    self.set_focus(window, pane);
-                    return (Task::none(), Some(Event::ToggleInspector(mode)));
+                    let task = self
+                        .get_mut_pane(main_window.id, window, pane)
+                        .and_then(|state| state.toggle_inspector(page))
+                        .map(iced::widget::operation::focus)
+                        .unwrap_or_else(Task::none);
+                    return (task, None);
                 }
                 pane::Message::SyncKlineSettings(pane) => {
                     return (
@@ -601,7 +600,6 @@ impl Dashboard {
         tickers_table: &'a TickersTable,
         timezone: UserTimezone,
         pixel_ratio: PixelRatio,
-        inspector_mode: Option<sidebar::InspectorMode>,
         theme_accents: ThemeAccents,
     ) -> Element<'a, Message> {
         let pane_grid: Element<_> = PaneGrid::new(&self.panes, |id, pane, maximized| {
@@ -616,7 +614,6 @@ impl Dashboard {
                 timezone,
                 pixel_ratio,
                 tickers_table,
-                is_focused.then_some(inspector_mode).flatten(),
                 theme_accents,
             )
         })
@@ -638,7 +635,6 @@ impl Dashboard {
         tickers_table: &'a TickersTable,
         timezone: UserTimezone,
         pixel_ratio: PixelRatio,
-        inspector_mode: Option<sidebar::InspectorMode>,
         theme_accents: ThemeAccents,
     ) -> Element<'a, Message> {
         if let Some((state, _)) = self.popout.get(&window) {
@@ -655,9 +651,6 @@ impl Dashboard {
                         timezone,
                         pixel_ratio,
                         tickers_table,
-                        (self.focus == Some((window, id)))
-                            .then_some(inspector_mode)
-                            .flatten(),
                         theme_accents,
                     )
                 })

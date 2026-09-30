@@ -1,4 +1,4 @@
-use super::drawing::DrawingEditState;
+use super::drawing::{DrawingEditState, DrawingUpdate};
 use std::collections::VecDeque;
 
 const HISTORY_LIMIT: usize = 100;
@@ -16,6 +16,36 @@ pub(super) struct DrawingHistory {
 }
 
 impl DrawingHistory {
+    pub(super) fn apply_update(
+        &mut self,
+        update: DrawingUpdate,
+        before: DrawingEditState,
+        after: DrawingEditState,
+        is_dragging: bool,
+    ) {
+        match update {
+            DrawingUpdate::AtomicEdit => {
+                self.finish_drawing(before.clone());
+                if before != after {
+                    self.record(before, after);
+                }
+            }
+            DrawingUpdate::GestureStarted { .. } => {
+                self.finish_drawing(before.clone());
+                self.begin_drawing(before);
+            }
+            DrawingUpdate::GestureUpdated => {}
+            DrawingUpdate::GestureFinished { .. } => {
+                self.finish_drawing(after);
+            }
+            DrawingUpdate::None | DrawingUpdate::StateOnly | DrawingUpdate::Visual => {
+                if self.has_pending_drawing() && !is_dragging {
+                    self.finish_drawing(after);
+                }
+            }
+        }
+    }
+
     pub(super) fn record(&mut self, before: DrawingEditState, after: DrawingEditState) {
         self.pending_drawing = None;
         self.redo.clear();

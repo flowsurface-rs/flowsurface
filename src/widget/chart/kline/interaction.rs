@@ -1,5 +1,8 @@
 use super::helpers::ChartCoordinates;
+use super::layout::LayoutHitZone;
 use super::scene::Scene;
+use super::studies::StudyObjectKey;
+use data::chart::kline::HorizontalWorld;
 use iced::advanced::mouse::Interaction;
 use iced::event::Status;
 use iced::{Point, Vector, keyboard};
@@ -25,22 +28,191 @@ pub(super) enum NavigationFallback {
     PanOrMarquee,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SelectionDisposition {
+    Preserve,
+    Clear,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(super) enum LayerGesture {
     Click {
-        selection: super::SelectionDisposition,
+        selection: SelectionDisposition,
         captures_outside_release: bool,
     },
     Drag {
-        selection: super::SelectionDisposition,
+        selection: SelectionDisposition,
         active_outside_bounds: bool,
         cursor: Interaction,
     },
     ClickOrNavigate {
-        selection: super::SelectionDisposition,
+        selection: SelectionDisposition,
         captures_outside_release: bool,
         fallback: NavigationFallback,
     },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) enum PressAction {
+    Ordinary,
+    DrawingPlacement,
+    Drawing {
+        selection: SelectionDisposition,
+        captures_outside_release: bool,
+    },
+    Layer {
+        key: StudyObjectKey,
+        selection: SelectionDisposition,
+        captures_outside_release: bool,
+    },
+}
+
+impl PressAction {
+    pub(super) fn selection_disposition(self) -> SelectionDisposition {
+        match self {
+            Self::DrawingPlacement => SelectionDisposition::Preserve,
+            Self::Drawing { selection, .. } => selection,
+            Self::Ordinary => SelectionDisposition::Clear,
+            Self::Layer { selection, .. } => selection,
+        }
+    }
+
+    pub(super) fn captures_outside_release(self) -> bool {
+        match self {
+            Self::DrawingPlacement => true,
+            Self::Drawing {
+                captures_outside_release,
+                ..
+            } => captures_outside_release,
+            Self::Layer {
+                captures_outside_release,
+                ..
+            } => captures_outside_release,
+            Self::Ordinary => false,
+        }
+    }
+
+    pub(super) fn layer_key(self) -> Option<StudyObjectKey> {
+        match self {
+            Self::Layer { key, .. } => Some(key),
+            Self::Ordinary | Self::DrawingPlacement | Self::Drawing { .. } => None,
+        }
+    }
+
+    pub(super) fn is_drawing(self) -> bool {
+        matches!(self, Self::Drawing { .. })
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) enum DragAction {
+    Split(usize),
+    Layer {
+        key: StudyObjectKey,
+        selection: SelectionDisposition,
+        active_outside_bounds: bool,
+        cursor: Interaction,
+    },
+    Drawing {
+        selection: SelectionDisposition,
+        active_outside_bounds: bool,
+        cursor: Interaction,
+    },
+    YAxisScale {
+        panel_index: usize,
+        anchor_y: f32,
+    },
+    XAxisScale {
+        initial_world: HorizontalWorld,
+        initial_right_unit: f32,
+    },
+    Pan {
+        panel_index: usize,
+        source_layer: Option<StudyObjectKey>,
+    },
+    Marquee {
+        panel_index: usize,
+        source_layer: Option<StudyObjectKey>,
+    },
+}
+
+impl DragAction {
+    pub(super) fn scene_activity(self) -> SceneActivity {
+        match self {
+            Self::Pan { .. } => SceneActivity::Pan,
+            _ => SceneActivity::Drag,
+        }
+    }
+
+    pub(super) fn active_outside_bounds(self) -> bool {
+        match self {
+            Self::Layer {
+                active_outside_bounds,
+                ..
+            }
+            | Self::Drawing {
+                active_outside_bounds,
+                ..
+            } => active_outside_bounds,
+            _ => matches!(
+                self,
+                Self::YAxisScale { .. } | Self::XAxisScale { .. } | Self::Marquee { .. }
+            ),
+        }
+    }
+
+    pub(super) fn selection_disposition(self) -> SelectionDisposition {
+        match self {
+            Self::Layer { selection, .. } | Self::Drawing { selection, .. } => selection,
+            Self::Marquee { .. } => SelectionDisposition::Preserve,
+            _ => SelectionDisposition::Clear,
+        }
+    }
+
+    pub(super) fn cursor_appearance(self) -> Option<Interaction> {
+        match self {
+            Self::Split(_) | Self::YAxisScale { .. } => Some(Interaction::ResizingVertically),
+            Self::Layer { cursor, .. } | Self::Drawing { cursor, .. } => Some(cursor),
+            Self::XAxisScale { .. } => Some(Interaction::ResizingHorizontally),
+            Self::Pan { .. } => Some(Interaction::Grabbing),
+            Self::Marquee { .. } => None,
+        }
+    }
+
+    pub(super) fn layer_key(self) -> Option<StudyObjectKey> {
+        match self {
+            Self::Layer { key, .. } => Some(key),
+            Self::Pan { source_layer, .. } | Self::Marquee { source_layer, .. } => source_layer,
+            _ => None,
+        }
+    }
+
+    pub(super) fn is_drawing(self) -> bool {
+        matches!(self, Self::Drawing { .. })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SceneActivity {
+    Idle,
+    Pan,
+    Drag,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HorizontalWheelZoomMode {
+    LiveEdge,
+    Cursor,
+}
+
+impl HorizontalWheelZoomMode {
+    pub(super) fn from_modifiers(modifiers: keyboard::Modifiers) -> Self {
+        if modifiers.intersects(keyboard::Modifiers::COMMAND) {
+            Self::Cursor
+        } else {
+            Self::LiveEdge
+        }
+    }
 }
 
 pub(super) struct LayerEffects<E> {
@@ -345,5 +517,94 @@ impl<C: Copy, D: Copy> UserInteraction<C, D> {
             PointerGesture::Dragging(drag) => Some(drag.motion),
             PointerGesture::Idle => None,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) enum GestureSource {
+    Drawing,
+    Study(StudyObjectKey),
+}
+
+impl UserInteraction<PressAction, DragAction> {
+    pub(super) fn begin_layer_gesture(
+        &mut self,
+        gesture: LayerGesture,
+        source: GestureSource,
+        position: Point,
+        zone: LayoutHitZone,
+    ) -> bool {
+        let press_action = |selection, captures_outside_release| match source {
+            GestureSource::Drawing => PressAction::Drawing {
+                selection,
+                captures_outside_release,
+            },
+            GestureSource::Study(key) => PressAction::Layer {
+                key,
+                selection,
+                captures_outside_release,
+            },
+        };
+        match gesture {
+            LayerGesture::Click {
+                selection,
+                captures_outside_release,
+            } => {
+                self.begin_click(position, press_action(selection, captures_outside_release));
+            }
+            LayerGesture::Drag {
+                selection,
+                active_outside_bounds,
+                cursor,
+            } => {
+                let action = match source {
+                    GestureSource::Drawing => DragAction::Drawing {
+                        selection,
+                        active_outside_bounds,
+                        cursor,
+                    },
+                    GestureSource::Study(key) => DragAction::Layer {
+                        key,
+                        selection,
+                        active_outside_bounds,
+                        cursor,
+                    },
+                };
+                self.begin_drag_candidate(position, action);
+            }
+            LayerGesture::ClickOrNavigate {
+                selection,
+                captures_outside_release,
+                fallback,
+            } => {
+                let LayoutHitZone::PanelPlot(panel_index) = zone else {
+                    return false;
+                };
+                let source_layer = match source {
+                    GestureSource::Drawing => None,
+                    GestureSource::Study(key) => Some(key),
+                };
+                let drag = match fallback {
+                    NavigationFallback::PanOrMarquee
+                        if self.modifiers().intersects(keyboard::Modifiers::COMMAND) =>
+                    {
+                        DragAction::Marquee {
+                            panel_index,
+                            source_layer,
+                        }
+                    }
+                    _ => DragAction::Pan {
+                        panel_index,
+                        source_layer,
+                    },
+                };
+                self.begin_click_or_drag(
+                    position,
+                    press_action(selection, captures_outside_release),
+                    drag,
+                );
+            }
+        }
+        true
     }
 }

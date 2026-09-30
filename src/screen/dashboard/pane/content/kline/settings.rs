@@ -649,59 +649,49 @@ pub fn kline_indicator_cfg_view<'a>(
         theme_accents,
     );
 
-    let input_settings = data_config
-        .as_ref()
-        .map(|config| {
-            config
-                .clone()
-                .settings_for(
-                    &indicator,
-                    IndicatorSettingsContext {
-                        basis,
-                        input_coverage: input_coverage.clone(),
-                    },
-                )
-                .unwrap_or_default()
-        })
-        .unwrap_or_default();
-    let selected_tab = modal.tab();
-    let tabs = inspector::tabs(
-        selected_tab,
+    let input_content = data_config.and_then(|config| {
+        let settings = config
+            .clone()
+            .settings_for(
+                &indicator,
+                IndicatorSettingsContext {
+                    basis,
+                    input_coverage: input_coverage.clone(),
+                },
+            )
+            .unwrap_or_default();
+        indicator_settings_content(settings, &composition, config, &indicator, modal)
+    });
+    let mut style_sections = Vec::new();
+    if let Some(mark_section) = mark_section {
+        style_sections.push(mark_section.into_element());
+    }
+    style_sections.extend(channel_style_section);
+    let style_content = if style_sections.is_empty() {
+        None
+    } else {
+        Some(
+            column(style_sections)
+                .spacing(inspector::MODAL_SECTION_SPACING)
+                .into(),
+        )
+    };
+
+    inspector::tabbed_content(
+        modal.tab(),
         move |tab| Message::Indicator {
             instance_id,
             message: IndicatorIdSettingsMessage::TabSelected(tab),
         },
-        true,
-    );
-
-    let settings_content: Element<'a, Message> = match selected_tab {
-        inspector::InspectorTab::Inputs => data_config.map_or_else(
-            || column![].into(),
-            |config| {
-                indicator_settings_content(input_settings, &composition, config, &indicator, modal)
-            },
-        ),
-        inspector::InspectorTab::Style => {
-            let mut style_settings = column![].spacing(inspector::MODAL_SECTION_SPACING);
-            for section in [
-                mark_section.map(InspectorSection::into_element),
-                Some(channel_style_section),
-            ]
-            .into_iter()
-            .flatten()
-            {
-                style_settings = style_settings.push(section);
-            }
-            style_settings.into()
-        }
-        inspector::InspectorTab::Source => {
-            indicator_source_section(instance_id, author, description, source)
-        }
-    };
-
-    column![tabs, settings_content]
-        .spacing(inspector::MODAL_SECTION_SPACING)
-        .into()
+        [
+            (inspector::InspectorTab::Inputs, input_content),
+            (inspector::InspectorTab::Style, style_content),
+            (
+                inspector::InspectorTab::Source,
+                indicator_source_section(instance_id, author, description, source),
+            ),
+        ],
+    )
 }
 
 fn indicator_source_section<'a>(
@@ -709,7 +699,11 @@ fn indicator_source_section<'a>(
     author: Option<IndicatorAuthor>,
     description: Option<String>,
     source: Option<String>,
-) -> Element<'a, Message> {
+) -> Option<Element<'a, Message>> {
+    if author.is_none() && description.is_none() && source.is_none() {
+        return None;
+    }
+
     let author = author
         .map(|author| indicator_external_link(instance_id, author.name, author.url))
         .unwrap_or_else(|| {
@@ -729,19 +723,21 @@ fn indicator_source_section<'a>(
                 .into()
         });
 
-    column![
-        inspector::setting_section("Author", author)
-            .with_modal_container()
-            .into_element(),
-        inspector::setting_section("Description", description)
-            .with_modal_container()
-            .into_element(),
-        inspector::setting_section("Source", source)
-            .with_modal_container()
-            .into_element(),
-    ]
-    .spacing(inspector::MODAL_SECTION_SPACING)
-    .into()
+    Some(
+        column![
+            inspector::setting_section("Author", author)
+                .with_modal_container()
+                .into_element(),
+            inspector::setting_section("Description", description)
+                .with_modal_container()
+                .into_element(),
+            inspector::setting_section("Source", source)
+                .with_modal_container()
+                .into_element(),
+        ]
+        .spacing(inspector::MODAL_SECTION_SPACING)
+        .into(),
+    )
 }
 
 fn indicator_external_link<'a>(
@@ -772,7 +768,7 @@ fn indicator_settings_content<'a>(
     config: IndicatorConfig,
     indicator: &IndicatorId,
     modal: &'a IndicatorSettingsState,
-) -> Element<'a, Message> {
+) -> Option<Element<'a, Message>> {
     let mut inputs = Vec::new();
     for source_setting in &composition.source_settings {
         let section = if source_setting.choices.is_empty() {
@@ -830,9 +826,15 @@ fn indicator_settings_content<'a>(
         inputs.push(inspector::modal_container(column(sections).spacing(12)));
     }
 
-    column(inputs)
-        .spacing(inspector::MODAL_SECTION_SPACING)
-        .into()
+    if inputs.is_empty() {
+        None
+    } else {
+        Some(
+            column(inputs)
+                .spacing(inspector::MODAL_SECTION_SPACING)
+                .into(),
+        )
+    }
 }
 
 fn indicator_setting_view<'a>(
@@ -1141,7 +1143,7 @@ fn indicator_channel_style_section<'a>(
     style_config: IndicatorStyleOverrides,
     active_style_slots: Vec<ResolvedIndicatorStyleSlot>,
     theme_accents: ThemeAccents,
-) -> Element<'a, Message> {
+) -> Option<Element<'a, Message>> {
     let fill_style_slots = indicator
         .fill_specs()
         .iter()
@@ -1208,9 +1210,15 @@ fn indicator_channel_style_section<'a>(
         sections.insert(fill_section_index.unwrap_or(sections.len()), fill_section);
     }
 
-    column(sections)
-        .spacing(inspector::MODAL_SECTION_SPACING)
-        .into()
+    if sections.is_empty() {
+        None
+    } else {
+        Some(
+            column(sections)
+                .spacing(inspector::MODAL_SECTION_SPACING)
+                .into(),
+        )
+    }
 }
 
 fn indicator_style_controls<'a>(
@@ -1588,19 +1596,30 @@ fn study_cfg_view(
     basis: data::chart::Basis,
     theme_accents: ThemeAccents,
 ) -> Element<'static, Message> {
-    let tabs = inspector::tabs(modal.tab(), Message::StudyTabSelected, false);
-    let settings = study
-        .view_config_without_reset(
-            basis,
-            theme_accents,
-            modal.tab(),
-            study::Message::StudyValueChanged,
-        )
-        .map(Message::Study);
+    let content_for_tab = |tab| {
+        study
+            .view_config_without_reset(basis, theme_accents, tab, study::Message::StudyValueChanged)
+            .map(|content| content.map(Message::Study))
+    };
 
-    column![tabs, settings]
-        .spacing(inspector::MODAL_SECTION_SPACING)
-        .into()
+    inspector::tabbed_content(
+        modal.tab(),
+        Message::StudyTabSelected,
+        [
+            (
+                inspector::InspectorTab::Inputs,
+                content_for_tab(inspector::InspectorTab::Inputs),
+            ),
+            (
+                inspector::InspectorTab::Style,
+                content_for_tab(inspector::InspectorTab::Style),
+            ),
+            (
+                inspector::InspectorTab::Source,
+                content_for_tab(inspector::InspectorTab::Source),
+            ),
+        ],
+    )
 }
 
 fn candlestick_color_section<'a>(
@@ -1836,22 +1855,11 @@ impl State {
         &'a self,
         context: SettingsContext<'a>,
         theme_accents: ThemeAccents,
-    ) -> Option<(String, Element<'a, ChartMessage>)> {
-        let title = match &self.target {
-            SettingsTarget::Main => return None,
-            SettingsTarget::Indicator(modal) => modal.indicator().to_string(),
-            SettingsTarget::Candlestick => "Base ticker".to_owned(),
-            SettingsTarget::Series(_) => "Comparison ticker".to_owned(),
-            SettingsTarget::Footprint => "Footprint".to_owned(),
-            SettingsTarget::Study(modal) => context
-                .studies
-                .study(modal.study_id())
-                .map_or_else(|| "Study".to_owned(), |study| study.to_string()),
-        };
+    ) -> Option<Element<'a, ChartMessage>> {
         let presentation = context.presentation();
 
         let content = match &self.target {
-            SettingsTarget::Main => unreachable!(),
+            SettingsTarget::Main => return None,
             SettingsTarget::Indicator(modal) => kline_indicator_cfg_view(
                 modal,
                 context
@@ -1916,7 +1924,7 @@ impl State {
                 }),
         };
 
-        Some((title, content.map(ChartMessage::Settings)))
+        Some(content.map(ChartMessage::Settings))
     }
 
     pub(super) fn footer_view<'a>(

@@ -17,14 +17,16 @@ use crate::{
         pane::{Modal, mini_tickers_list::MiniPanel, stack_modal},
     },
     screen::{
-        dashboard::pane::Action,
-        sidebar::{pane_settings as settings, tickers_table::TickersTable},
+        dashboard::pane::{Action, settings},
+        sidebar::tickers_table::TickersTable,
     },
     style::{self, Icon, icon_text},
     theme::ThemeAccents,
     widget::{
-        self, button_with_tooltip, inspector::InspectorContent, link_group_button,
-        press_button_with_tooltip, toast::Toast,
+        self, button_with_tooltip,
+        inspector::{InspectorBody, InspectorContent, InspectorFooter},
+        link_group_button, press_button_with_tooltip,
+        toast::Toast,
     },
     window::{self, PixelRatio, Window},
 };
@@ -45,7 +47,7 @@ use exchange::{
 };
 use iced::{
     Alignment, Element, Length, Renderer, Theme, padding,
-    widget::{button, center, column, container, pane_grid, pick_list, row, text, tooltip},
+    widget::{button, center, column, container, pane_grid, pick_list, row, rule, text, tooltip},
 };
 use std::time::Instant;
 
@@ -56,6 +58,13 @@ pub enum Effect {
     SwitchTickersInGroup(TickerInfo),
     FocusWidget(iced::widget::Id),
     OpenUrl(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InspectorPage {
+    PaneSettings,
+    Indicators,
+    KlineSettings,
 }
 
 #[derive(Debug, Clone)]
@@ -72,8 +81,7 @@ pub enum Message {
     Merge,
     SwitchLinkGroup(pane_grid::Pane, Option<LinkGroup>),
     VisualConfigChanged(pane_grid::Pane, VisualConfig, bool),
-    OpenInspector(pane_grid::Pane, crate::screen::sidebar::InspectorMode),
-    ToggleInspector(pane_grid::Pane, crate::screen::sidebar::InspectorMode),
+    ToggleInspector(pane_grid::Pane, InspectorPage),
     SyncKlineSettings(pane_grid::Pane),
     PaneEvent(pane_grid::Pane, Event),
 }
@@ -94,6 +102,7 @@ pub enum Event {
 }
 
 pub struct State {
+    inspector: Option<InspectorPage>,
     id: uuid::Uuid,
     pub modal: Option<Modal>,
     pub content: Content,
@@ -174,7 +183,8 @@ impl State {
         tickers: Vec<TickerInfo>,
         kind: ContentKind,
     ) -> Vec<StreamKind> {
-        if !(self.content.kind() == kind) {
+        if self.content.kind() != kind {
+            self.close_inspector();
             self.settings.selected_basis = None;
             self.settings.tick_multiply = None;
         }
@@ -298,6 +308,7 @@ impl State {
         };
 
         self.content = content;
+        self.reconcile_inspector();
         self.streams = ResolvedStream::Ready(streams.clone());
 
         streams
@@ -421,7 +432,6 @@ impl State {
         timezone: UserTimezone,
         pixel_ratio: PixelRatio,
         tickers_table: &'a TickersTable,
-        active_inspector: Option<crate::screen::sidebar::InspectorMode>,
         theme_accents: ThemeAccents,
     ) -> pane_grid::Content<'a, Message, Theme, Renderer> {
         let mut top_left_buttons = if Content::Starter == self.content {
@@ -511,15 +521,9 @@ impl State {
 
         let compact_controls = if self.modal == Some(Modal::Controls) {
             Some(
-                container(self.view_controls(
-                    id,
-                    panes,
-                    maximized,
-                    window != main_window.id,
-                    active_inspector,
-                ))
-                .style(style::chart_modal)
-                .into(),
+                container(self.view_controls(id, panes, maximized, window != main_window.id))
+                    .style(style::chart_modal)
+                    .into(),
             )
         } else {
             None
@@ -575,7 +579,7 @@ impl State {
             }
         };
 
-        let body = match &self.content {
+        let base = match &self.content {
             Content::Starter => {
                 let content_picklist =
                     pick_list(ContentKind::ALL, Some(ContentKind::Starter), move |kind| {
@@ -598,18 +602,15 @@ impl State {
                 )
                 .into();
 
-                self.compose_stack_view(base, id, compact_controls, None, tickers_table)
+                base
             }
             Content::TimeAndSales(panel) => {
                 if let Some(panel) = panel {
-                    let base = panel.view(timezone).map(move |message| {
+                    panel.view(timezone).map(move |message| {
                         Message::PaneEvent(id, Event::TimeAndSalesInteraction(message))
-                    });
-
-                    self.compose_stack_view(base, id, compact_controls, None, tickers_table)
+                    })
                 } else {
-                    let base = uninitialized_base(ContentKind::TimeAndSales);
-                    self.compose_stack_view(base, id, compact_controls, None, tickers_table)
+                    uninitialized_base(ContentKind::TimeAndSales)
                 }
             }
             Content::Ladder(panel) => {
@@ -643,14 +644,11 @@ impl State {
 
                     top_left_buttons = top_left_buttons.push(modifiers);
 
-                    let base = panel.view(timezone).map(move |message| {
+                    panel.view(timezone).map(move |message| {
                         Message::PaneEvent(id, Event::LadderInteraction(message))
-                    });
-
-                    self.compose_stack_view(base, id, compact_controls, None, tickers_table)
+                    })
                 } else {
-                    let base = uninitialized_base(ContentKind::Ladder);
-                    self.compose_stack_view(base, id, compact_controls, None, tickers_table)
+                    uninitialized_base(ContentKind::Ladder)
                 }
             }
             Content::Kline { chart, .. } => {
@@ -676,25 +674,18 @@ impl State {
 
                     top_left_buttons = top_left_buttons.push(modifiers);
 
-                    let base =
-                        chart
-                            .view(timezone, pixel_ratio, theme_accents)
-                            .map(move |message| {
-                                Message::PaneEvent(id, Event::KlineInteraction(message))
-                            });
-
-                    let selected_series = chart.basis().is_time().then_some(chart.series());
-
-                    self.compose_stack_view(
-                        base,
-                        id,
-                        compact_controls,
-                        selected_series,
-                        tickers_table,
-                    )
+                    chart
+                        .view(
+                            timezone,
+                            pixel_ratio,
+                            theme_accents,
+                            self.inspector.is_some(),
+                        )
+                        .map(move |message| {
+                            Message::PaneEvent(id, Event::KlineInteraction(message))
+                        })
                 } else {
-                    let base = uninitialized_base(ContentKind::CandlestickChart);
-                    self.compose_stack_view(base, id, compact_controls, None, tickers_table)
+                    uninitialized_base(ContentKind::CandlestickChart)
                 }
             }
             Content::ShaderHeatmap { chart, .. } => {
@@ -738,13 +729,27 @@ impl State {
 
                     top_left_buttons = top_left_buttons.push(modifiers);
 
-                    self.compose_stack_view(base, id, compact_controls, None, tickers_table)
+                    base
                 } else {
-                    let base = uninitialized_base(ContentKind::ShaderHeatmap);
-                    self.compose_stack_view(base, id, compact_controls, None, tickers_table)
+                    uninitialized_base(ContentKind::ShaderHeatmap)
                 }
             }
         };
+
+        let selected_series = match &self.content {
+            Content::Kline {
+                chart: Some(chart), ..
+            } if chart.basis().is_time() => Some(chart.series()),
+            _ => None,
+        };
+        let body = self.compose_stack_view(
+            base,
+            id,
+            compact_controls,
+            selected_series,
+            tickers_table,
+            theme_accents,
+        );
 
         let body = column![
             iced::widget::rule::horizontal(1.0).style(style::split_ruler),
@@ -775,13 +780,7 @@ impl State {
                 pane_grid::Controls::new(compact_control)
             } else {
                 pane_grid::Controls::dynamic(
-                    self.view_controls(
-                        id,
-                        panes,
-                        maximized,
-                        window != main_window.id,
-                        active_inspector,
-                    ),
+                    self.view_controls(id, panes, maximized, window != main_window.id),
                     compact_control,
                 )
             }
@@ -797,7 +796,7 @@ impl State {
         .controls(top_right_buttons)
         .style(style::pane_title_bar);
 
-        content.title_bar(if self.modal.is_none() && active_inspector.is_none() {
+        content.title_bar(if self.modal.is_none() && self.inspector.is_none() {
             title_bar
         } else {
             title_bar.always_show_controls()
@@ -805,6 +804,12 @@ impl State {
     }
 
     pub fn update(&mut self, msg: Event, chart_settings: &mut ChartSettings) -> Option<Effect> {
+        let effect = self.update_event(msg, chart_settings);
+        self.reconcile_inspector();
+        effect
+    }
+
+    fn update_event(&mut self, msg: Event, chart_settings: &mut ChartSettings) -> Option<Effect> {
         match msg {
             Event::ShowModal(requested_modal) => {
                 return self.show_modal_with_focus(requested_modal);
@@ -813,6 +818,7 @@ impl State {
                 self.modal = None;
             }
             Event::ContentSelected(kind) => {
+                self.close_inspector();
                 self.content = Content::placeholder(kind);
                 self.settings.visual_config = None;
 
@@ -826,6 +832,15 @@ impl State {
                 }
             }
             Event::KlineInteraction(message) => {
+                if matches!(
+                    message,
+                    content::kline::Message::Chart(
+                        widget::chart::kline::KlineWidgetEvent::EscapePressed
+                    )
+                ) && (self.modal.take().is_some() || self.go_back())
+                {
+                    return None;
+                }
                 let action = match &mut self.content {
                     Content::Kline { chart: Some(c), .. } => c.update(message, chart_settings),
                     _ => None,
@@ -834,6 +849,9 @@ impl State {
 
                 if let Some(action) = action {
                     match action {
+                        KlineAction::OpenSettings => {
+                            self.set_inspector(Some(InspectorPage::KlineSettings));
+                        }
                         KlineAction::RequestFetch(fetch) => {
                             return Some(Effect::RequestFetch(fetch));
                         }
@@ -1060,38 +1078,101 @@ impl State {
         None
     }
 
-    pub fn has_pane_settings(&self) -> bool {
+    fn supports_inspector(&self, page: InspectorPage) -> bool {
         match &self.content {
-            Content::Kline { chart: Some(_), .. }
-            | Content::ShaderHeatmap { chart: Some(_), .. }
+            Content::Kline {
+                chart: Some(chart), ..
+            } => match page {
+                InspectorPage::PaneSettings | InspectorPage::Indicators => true,
+                InspectorPage::KlineSettings => chart.has_settings_target(),
+            },
+            Content::ShaderHeatmap { chart: Some(_), .. }
             | Content::TimeAndSales(Some(_))
-            | Content::Ladder(Some(_)) => true,
-            Content::Starter
-            | Content::Kline { chart: None, .. }
-            | Content::ShaderHeatmap { chart: None, .. }
-            | Content::TimeAndSales(None)
-            | Content::Ladder(None) => false,
+            | Content::Ladder(Some(_)) => page == InspectorPage::PaneSettings,
+            _ => false,
         }
     }
 
-    pub fn supports_inspector(&self, mode: crate::screen::sidebar::InspectorMode) -> bool {
-        match &self.content {
-            Content::Kline { chart: Some(_), .. } => matches!(
-                mode,
-                crate::screen::sidebar::InspectorMode::PaneSettings
-                    | crate::screen::sidebar::InspectorMode::Indicators
-            ),
-            Content::ShaderHeatmap { chart: Some(_), .. }
-            | Content::TimeAndSales(Some(_))
-            | Content::Ladder(Some(_)) => {
-                mode == crate::screen::sidebar::InspectorMode::PaneSettings
-            }
-            Content::Starter
-            | Content::Kline { chart: None, .. }
-            | Content::ShaderHeatmap { chart: None, .. }
-            | Content::TimeAndSales(None)
-            | Content::Ladder(None) => false,
+    fn set_inspector(&mut self, page: Option<InspectorPage>) {
+        if let Content::Kline {
+            chart: Some(chart), ..
+        } = &mut self.content
+        {
+            chart.flush_inspector_update();
+            chart.dismiss_reset_confirmation();
         }
+        self.inspector = page.filter(|page| self.supports_inspector(*page));
+    }
+
+    pub fn toggle_inspector(&mut self, page: InspectorPage) -> Option<iced::widget::Id> {
+        self.set_inspector((self.inspector != Some(page)).then_some(page));
+        (self.inspector == Some(InspectorPage::Indicators))
+            .then(|| self.indicators_sidebar_focus_id())
+            .flatten()
+    }
+
+    pub fn close_inspector(&mut self) -> bool {
+        let was_open = self.inspector.is_some();
+        if was_open {
+            self.set_inspector(None);
+        }
+        was_open
+    }
+
+    fn reconcile_inspector(&mut self) {
+        if self
+            .inspector
+            .is_some_and(|page| !self.supports_inspector(page))
+        {
+            self.close_inspector();
+        }
+    }
+
+    fn inspector_view<'a>(
+        &'a self,
+        pane: pane_grid::Pane,
+        theme_accents: ThemeAccents,
+    ) -> Option<Element<'a, Message>> {
+        let page = self.inspector?;
+        let (body, footer) = match page {
+            InspectorPage::PaneSettings => {
+                let (sections, footer) = self
+                    .pane_settings_content(pane, theme_accents)?
+                    .into_parts();
+                (InspectorBody::view(sections), footer)
+            }
+            InspectorPage::Indicators => (
+                InspectorBody::view_without_scroll(self.indicators_sidebar_view(pane)?),
+                None,
+            ),
+            InspectorPage::KlineSettings => {
+                let Content::Kline {
+                    chart: Some(chart), ..
+                } = &self.content
+                else {
+                    return None;
+                };
+                let (body, footer) = chart.contextual_settings_view(theme_accents)?;
+                let map = move |message| Message::PaneEvent(pane, Event::KlineInteraction(message));
+                (
+                    InspectorBody::view(body.map(map)),
+                    footer.map(|footer| footer.map(map)),
+                )
+            }
+        };
+        Some(
+            container(column![
+                body,
+                footer
+                    .map(InspectorFooter::view)
+                    .unwrap_or_else(|| column![].into()),
+            ])
+            .width(240)
+            .height(Length::Fill)
+            .padding([4, 8])
+            .style(style::chart_sidebar_container)
+            .into(),
+        )
     }
 
     pub fn indicators_sidebar_view<'a>(
@@ -1127,16 +1208,12 @@ impl State {
         total_panes: usize,
         is_maximized: bool,
         is_popout: bool,
-        active_inspector: Option<crate::screen::sidebar::InspectorMode>,
     ) -> Element<'_, Message> {
         let control_btn_style = |is_active: bool| {
             move |theme: &Theme, status: button::Status| {
                 style::button::transparent(theme, status, is_active)
             }
         };
-
-        let treat_as_starter =
-            matches!(&self.content, Content::Starter) || !self.content.initialized();
 
         let tooltip_pos = tooltip::Position::Bottom;
         let mut buttons = row![];
@@ -1157,34 +1234,17 @@ impl State {
             ));
         }
 
-        {
-            let inspector_btn_message = |mode, active_inspector| {
-                if active_inspector == Some(mode) {
-                    Message::ToggleInspector(pane, mode)
-                } else {
-                    Message::OpenInspector(pane, mode)
-                }
-            };
-
-            if !treat_as_starter && matches!(&self.content, Content::Kline { .. }) {
-                let mode = crate::screen::sidebar::InspectorMode::Indicators;
+        for (page, icon, label) in [
+            (InspectorPage::Indicators, Icon::ChartOutline, "Indicators"),
+            (InspectorPage::PaneSettings, Icon::Cog, "Pane settings"),
+        ] {
+            if self.supports_inspector(page) {
                 buttons = buttons.push(press_button_with_tooltip(
-                    icon_text(Icon::ChartOutline, 12),
-                    inspector_btn_message(mode, active_inspector),
-                    Some("Indicators"),
+                    icon_text(icon, 12),
+                    Message::ToggleInspector(pane, page),
+                    Some(label),
                     tooltip_pos,
-                    control_btn_style(active_inspector == Some(mode)),
-                ));
-            }
-
-            if self.has_pane_settings() {
-                let mode = crate::screen::sidebar::InspectorMode::PaneSettings;
-                buttons = buttons.push(press_button_with_tooltip(
-                    icon_text(Icon::Cog, 12),
-                    inspector_btn_message(mode, active_inspector),
-                    None,
-                    tooltip_pos,
-                    control_btn_style(active_inspector == Some(mode)),
+                    control_btn_style(self.inspector == Some(page)),
                 ));
             }
         }
@@ -1248,7 +1308,20 @@ impl State {
         compact_controls: Option<Element<'a, Message>>,
         selected_tickers: Option<&'a [data::chart::kline::series::KlineSeries]>,
         tickers_table: &'a TickersTable,
+        theme_accents: ThemeAccents,
     ) -> Element<'a, Message> {
+        let base = if let Some(inspector) = self.inspector_view(pane, theme_accents) {
+            row![
+                base,
+                rule::vertical(1.0).style(style::split_ruler),
+                inspector
+            ]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+        } else {
+            base
+        };
         let base =
             widget::toast::Manager::new(base, &self.notifications, Alignment::End, move |msg| {
                 Message::PaneEvent(pane, Event::DeleteNotification(msg))
@@ -1322,11 +1395,11 @@ impl State {
         if let Content::Kline {
             chart: Some(chart), ..
         } = &mut self.content
+            && chart.dismiss_reset_confirmation()
         {
-            return chart.go_back();
+            return true;
         }
-
-        false
+        self.close_inspector()
     }
 
     pub fn pane_settings_content<'a>(
@@ -1454,6 +1527,7 @@ impl State {
         }
 
         let action = self.content.apply_settings_snapshot(snapshot);
+        self.reconcile_inspector();
         let stream_plan_changed =
             matches!(snapshot, PaneSettingsSnapshot::Kline(_)) && self.sync_kline_streams();
 
@@ -1467,6 +1541,7 @@ impl State {
 impl Default for State {
     fn default() -> Self {
         Self {
+            inspector: None,
             id: uuid::Uuid::new_v4(),
             modal: None,
             content: Content::Starter,

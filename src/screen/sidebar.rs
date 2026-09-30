@@ -1,52 +1,30 @@
 use self::tickers_table::TickersTable;
-use super::dashboard::{Dashboard, pane};
 use crate::{
     TooltipPosition,
     style::{Icon, icon_text},
-    theme::ThemeAccents,
-    widget::{
-        button_with_tooltip,
-        inspector::{InspectorBody, InspectorContent, InspectorFooter},
-    },
-    window,
+    widget::button_with_tooltip,
 };
 use data::sidebar;
 
 use iced::{
-    Alignment, Element, Length, Subscription, Task,
+    Alignment, Element, Subscription, Task,
     widget::responsive,
-    widget::{button, column, container, row, rule, space},
+    widget::{column, row, space},
 };
 use rustc_hash::FxHashMap;
 
-pub(crate) mod pane_settings;
 pub(crate) mod tickers_table;
-
-const INSPECTOR_SIDEBAR_WIDTH: f32 = 240.0;
-const INSPECTOR_SIDEBAR_HEADER_HEIGHT: f32 = 32.0;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InspectorMode {
-    PaneSettings,
-    Indicators,
-}
 
 #[derive(Debug, Clone)]
 pub enum Message {
     ToggleSidebarMenu(Option<sidebar::Menu>),
     SetSidebarPosition(sidebar::Position),
     TickersTable(self::tickers_table::Message),
-    CloseInspector,
-    PaneInspector {
-        window: window::Id,
-        message: pane::Message,
-    },
 }
 
 pub struct Sidebar {
     pub state: data::Sidebar,
     pub tickers_table: TickersTable,
-    inspector: Option<InspectorMode>,
 }
 
 pub enum Action {
@@ -56,10 +34,6 @@ pub enum Action {
     ),
     ErrorOccurred(data::InternalError),
     MenuChanged(Option<sidebar::Menu>),
-    PaneInspector {
-        window: window::Id,
-        message: pane::Message,
-    },
 }
 
 impl Sidebar {
@@ -81,7 +55,6 @@ impl Sidebar {
             Self {
                 state: sidebar_state.clone(),
                 tickers_table,
-                inspector: None,
             },
             initial_fetch.map(Message::TickersTable),
         )
@@ -96,15 +69,6 @@ impl Sidebar {
             }
             Message::SetSidebarPosition(position) => {
                 self.state.position = position;
-            }
-            Message::CloseInspector => {
-                self.close_inspector();
-            }
-            Message::PaneInspector { window, message } => {
-                return (
-                    Task::none(),
-                    Some(Action::PaneInspector { window, message }),
-                );
             }
             Message::TickersTable(msg) => {
                 let action = self.tickers_table.update(msg);
@@ -131,136 +95,6 @@ impl Sidebar {
         }
 
         (Task::none(), None)
-    }
-
-    pub(crate) fn open_inspector(
-        &mut self,
-        mode: InspectorMode,
-        dashboard: &Dashboard,
-        main_window: window::Id,
-    ) -> Task<Message> {
-        let Some(state) = dashboard.focused_pane(main_window) else {
-            self.inspector = None;
-            return Task::none();
-        };
-
-        if !state.supports_inspector(mode) {
-            self.inspector = None;
-            return Task::none();
-        }
-
-        self.inspector = Some(mode);
-        if mode == InspectorMode::Indicators {
-            return state
-                .indicators_sidebar_focus_id()
-                .map(iced::widget::operation::focus)
-                .unwrap_or_else(Task::none);
-        }
-
-        Task::none()
-    }
-
-    pub(crate) fn toggle_inspector(
-        &mut self,
-        mode: InspectorMode,
-        dashboard: &Dashboard,
-        main_window: window::Id,
-    ) -> Task<Message> {
-        if self.inspector == Some(mode) {
-            self.inspector = None;
-            return Task::none();
-        }
-
-        self.open_inspector(mode, dashboard, main_window)
-    }
-
-    pub(crate) fn sync_inspector(&mut self, dashboard: &Dashboard, main_window: window::Id) {
-        let Some(mode) = self.inspector else {
-            return;
-        };
-
-        if dashboard
-            .focused_pane(main_window)
-            .is_none_or(|state| !state.supports_inspector(mode))
-        {
-            self.inspector = None;
-        }
-    }
-
-    pub(crate) fn close_inspector(&mut self) -> bool {
-        self.inspector.take().is_some()
-    }
-
-    pub(crate) fn inspector_mode(&self) -> Option<InspectorMode> {
-        self.inspector
-    }
-
-    pub(crate) fn inspector_view<'a>(
-        &'a self,
-        dashboard: &'a Dashboard,
-        main_window: window::Id,
-        theme_accents: ThemeAccents,
-    ) -> Option<Element<'a, Message>> {
-        let mode = self.inspector?;
-        let (window, pane) = dashboard.focus?;
-        let state = dashboard.get_pane(main_window, window, pane)?;
-
-        let pane_title = state.content.kind().to_string();
-
-        let (content, footer): (Element<'a, Message>, Option<Element<'a, Message>>) = match mode {
-            InspectorMode::PaneSettings => {
-                let pane_settings = state
-                    .pane_settings_content(pane, theme_accents)
-                    .map(|view| view.map(move |message| Message::PaneInspector { window, message }))
-                    .unwrap_or_else(|| InspectorContent::new(vec![]));
-
-                let (sections, footer) = pane_settings.into_parts();
-                (
-                    InspectorBody::view(sections),
-                    footer.map(InspectorFooter::view),
-                )
-            }
-            InspectorMode::Indicators => (
-                InspectorBody::view_without_scroll(
-                    state
-                        .indicators_sidebar_view(pane)
-                        .map(|view| {
-                            view.map(move |message| Message::PaneInspector { window, message })
-                        })
-                        .unwrap_or_else(|| column![].into()),
-                ),
-                None,
-            ),
-        };
-
-        let close = button(crate::style::icon_text(crate::style::Icon::Close, 14))
-            .style(|theme, status| crate::style::button::transparent(theme, status, false))
-            .padding([4, 8])
-            .on_press(Message::CloseInspector);
-        let header = row![
-            crate::widget::text::title(pane_title),
-            space::horizontal(),
-            close,
-        ]
-        .align_y(Alignment::Center)
-        .height(Length::Fixed(INSPECTOR_SIDEBAR_HEADER_HEIGHT))
-        .spacing(8);
-
-        let inspector_content = column![
-            header,
-            rule::horizontal(1.0),
-            content,
-            footer.unwrap_or_else(|| column![].into()),
-        ];
-
-        Some(
-            container(inspector_content)
-                .width(Length::Fixed(INSPECTOR_SIDEBAR_WIDTH))
-                .height(Length::Fill)
-                .padding([4, 8])
-                .style(crate::style::chart_sidebar_container)
-                .into(),
-        )
     }
 
     pub fn view(&self, audio_volume: Option<f32>) -> Element<'_, Message> {

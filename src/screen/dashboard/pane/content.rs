@@ -8,7 +8,7 @@ use super::{
     state::{Event, Message},
 };
 use crate::{
-    screen::sidebar::pane_settings::{
+    screen::dashboard::pane::settings::{
         self, heatmap_shader_cfg_view, ladder_cfg_view, timesales_cfg_view,
     },
     theme::ThemeAccents,
@@ -385,9 +385,9 @@ impl PartialEq for Content {
     }
 }
 
-fn settings_message(pane: pane_grid::Pane, message: pane_settings::Message) -> Message {
+fn settings_message(pane: pane_grid::Pane, message: settings::Message) -> Message {
     match message {
-        pane_settings::Message::VisualConfigChanged { config, sync_all } => {
+        settings::Message::VisualConfigChanged { config, sync_all } => {
             Message::VisualConfigChanged(pane, config, sync_all)
         }
         message => Message::PaneEvent(pane, Event::Settings(message)),
