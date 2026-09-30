@@ -1254,11 +1254,15 @@ impl IndicatorInstance {
                 collection,
                 body,
             } => {
-                let values = match self.evaluate_expression(collection)? {
-                    Value::Array(values) => values.as_slice().to_vec(),
-                    Value::Tuple(values) => values,
-                    _ => Vec::new(),
+                let (array, tuple) = match self.evaluate_expression(collection)? {
+                    Value::Array(values) => (Some(values), Vec::new()),
+                    Value::Tuple(values) => (None, values),
+                    _ => (None, Vec::new()),
                 };
+                let values = array
+                    .iter()
+                    .flat_map(|values| values.as_slice().iter().cloned())
+                    .chain(tuple);
                 for value in values {
                     if let Some(local) = self.locals.get_mut(target.0) {
                         *local = value;
