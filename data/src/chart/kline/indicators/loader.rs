@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 /// Filesystem sources used to build the process-wide indicator catalog.
 ///
-/// Core sources are managed by the host application, while installed paths
+/// Core sources are managed by the data crate, while installed paths
 /// belong to the user or a development workflow.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndicatorCatalogPaths {
@@ -37,7 +37,24 @@ impl IndicatorCatalogPaths {
 }
 
 pub fn initialize_indicator_catalog() -> Result<(), String> {
-    initialize_indicator_catalog_with_paths(&IndicatorCatalogPaths::from_data_directory())
+    let additional_files =
+        indicator_paths_from_args().map_err(|error| format!("Invalid indicator path: {error}"))?;
+    let (mut paths, seed_core) = match std::env::var_os("FLOWSURFACE_INDICATORS_PATH") {
+        Some(root) => (IndicatorCatalogPaths::from_indicator_root(root), false),
+        None => (IndicatorCatalogPaths::from_data_directory(), true),
+    };
+    paths.additional_files.extend(additional_files);
+
+    if seed_core {
+        super::bundled::seed_core_sources(&paths.core_directory)
+            .map_err(|error| format!("Failed to synchronize core indicators: {error}"))?;
+    }
+
+    initialize_indicator_catalog_with_paths(&paths)
+        .map_err(|error| format!("Failed to load indicators: {error}"))?;
+
+    super::bundled::validate_core_catalog()
+        .map_err(|error| format!("Failed to load core indicators: {error}"))
 }
 
 pub fn initialize_indicator_catalog_with_paths(
@@ -51,6 +68,45 @@ pub fn initialize_indicator_catalog_with_paths(
     )
     .map(|_| ())
     .map_err(|error| error.to_string())
+}
+
+fn indicator_paths_from_args() -> Result<Vec<PathBuf>, String> {
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    let mut paths = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        if args[index] == "--indicator-path" {
+            let path = args
+                .get(index + 1)
+                .ok_or_else(|| "--indicator-path requires an explicit .ind file".to_owned())?;
+            paths.push(validate_indicator_path(PathBuf::from(path))?);
+            index += 2;
+            continue;
+        } else if let Some(path) = args[index].strip_prefix("--indicator-path=") {
+            if path.trim().is_empty() {
+                return Err("--indicator-path requires an explicit .ind file".to_owned());
+            }
+            paths.push(validate_indicator_path(PathBuf::from(path))?);
+        }
+        index += 1;
+    }
+    Ok(paths)
+}
+
+fn validate_indicator_path(path: PathBuf) -> Result<PathBuf, String> {
+    if path.is_dir() {
+        return Err(format!(
+            "{} is a directory; --indicator-path accepts an explicit .ind file",
+            path.display()
+        ));
+    }
+    if path.extension().and_then(|extension| extension.to_str()) != Some("ind") {
+        return Err(format!(
+            "{}: --indicator-path accepts only .ind source files",
+            path.display()
+        ));
+    }
+    Ok(path)
 }
 
 #[derive(Debug)]

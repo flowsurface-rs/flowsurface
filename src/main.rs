@@ -2,7 +2,6 @@
 
 mod audio;
 mod connector;
-mod indicator_core;
 mod layout;
 mod logger;
 mod modal;
@@ -50,7 +49,7 @@ fn main() {
         logger::report_stderr(&format!("Failed to initialize logger: {err}"));
     }
 
-    if let Err(error) = indicator_core::initialize() {
+    if let Err(error) = data::initialize_indicator_catalog() {
         logger::report_stderr(&error);
         std::process::exit(1);
     }
