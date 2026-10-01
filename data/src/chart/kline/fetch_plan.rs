@@ -88,7 +88,7 @@ impl FetchPlanInput<'_> {
 
         if empty_base {
             let end = initial_end;
-            let start = end.saturating_sub(base_span);
+            let start = end.saturating_sub(comparison_span);
             batches.push(FetchBatch {
                 stage: FetchStage::PrimaryPlot,
                 range: FetchRange::Kline(start, end),
