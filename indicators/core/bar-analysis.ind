@@ -6,7 +6,7 @@ buy = select(has_trade_data, chart.trade.buy_qty, na)
 sell = select(has_trade_data, chart.trade.sell_qty, na)
 total = buy + sell
 delta = buy - sell
-delta_pct = select(math.abs(total) <= 0.00000011920929, 0, delta / total * 100)
+delta_pct = select(total == 0, 0, delta / total * 100)
 plot(delta, id = "value", title = "Delta", precision = "instrument", color_slot = "main", overlay = false, layer = false)
 plot(buy, id = "bar_analysis.buy", title = "Buy", precision = "instrument", color_slot = "positive", overlay = false, layer = false)
 plot(sell, id = "bar_analysis.sell", title = "Sell", precision = "instrument", color_slot = "negative", overlay = false, layer = false)

@@ -1,5 +1,5 @@
 language(1)
-indicator("Volume Weighted Average Price", id = "catalog.vwap", sourceable = true, max_bars_back = 1)
+indicator("Volume Weighted Average Price", id = "core.vwap", sourceable = true, max_bars_back = 1)
 display(view = "primary_overlay", layer_name = "VWAP")
 period = input.int(20, "Lookback period", min = 1, max = 500)
 value = ta.vwma(chart.close, chart.volume, period)

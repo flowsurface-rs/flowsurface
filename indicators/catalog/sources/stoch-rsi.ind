@@ -13,7 +13,7 @@ rsi = ta.rsi(source, rsi_length)
 lowest = ta.lowest(rsi, stoch_length)
 highest = ta.highest(rsi, stoch_length)
 range = highest - lowest
-raw = select(range <= 0.000001, 50, (rsi - lowest) / range * 100)
+raw = select(range == 0, 50, (rsi - lowest) / range * 100)
 k = ta.sma(raw, k_smoothing)
 d = ta.sma(k, d_smoothing)
 plot(k, id = "value", title = "K", precision = "decimals:2", color_slot = "main", width = 1.2)

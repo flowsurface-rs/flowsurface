@@ -1744,8 +1744,8 @@ mod tests {
                 Some(FrameField::ChartClose),
             ),
             (
-                "../indicators/catalog/sources/bollinger-bands.ind",
-                "catalog.bollinger-bands",
+                "../indicators/core/bollinger-bands.ind",
+                "core.bollinger-bands",
                 Some(FrameField::ChartClose),
             ),
             (

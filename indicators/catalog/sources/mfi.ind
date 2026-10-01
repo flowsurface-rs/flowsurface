@@ -11,7 +11,7 @@ negative = select(typical < typical[1], typical * chart.volume, 0)
 positive_average = ta.sma(positive, period)
 negative_average = ta.sma(negative, period)
 ratio = positive_average / negative_average
-value = select(negative_average <= 0.000001, 100, 100 - 100 / (1 + ratio))
+value = select(negative_average == 0, 100, 100 - 100 / (1 + ratio))
 plot(value, id = "value", title = "MFI", precision = "decimals:2", color_slot = "main", width = 1.2)
 plot(upper_band, id = "upper", title = "Overbought", precision = "decimals:2", color_slot = "upper", layer_title = "OB", width = 0.9)
 plot(lower_band, id = "lower", title = "Oversold", precision = "decimals:2", color_slot = "lower", layer_title = "OS", width = 0.9)
