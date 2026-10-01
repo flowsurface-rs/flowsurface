@@ -18,6 +18,7 @@ use crate::{
         self, ModifierKind,
         pane::{Modal, mini_tickers_list::MiniPanel, stack_modal},
     },
+    notify::Notifications,
     screen::{
         dashboard::pane::Action,
         sidebar::{pane_settings as settings, tickers_table::TickersTable},
@@ -26,7 +27,7 @@ use crate::{
     theme::ThemeAccents,
     widget::{
         self, button_with_tooltip, inspector::InspectorContent, link_group_button,
-        press_button_with_tooltip, toast::Toast,
+        press_button_with_tooltip,
     },
     window::{self, PixelRatio, Window},
 };
@@ -100,7 +101,7 @@ pub struct State {
     pub modal: Option<Modal>,
     pub content: Content,
     pub settings: Settings,
-    pub notifications: Vec<Toast>,
+    pub notifications: Notifications,
     pub streams: ResolvedStream,
     pub link_group: Option<LinkGroup>,
 }
@@ -576,7 +577,7 @@ impl State {
                         .align_x(Alignment::Center)
                         .spacing(12),
                     ),
-                    &self.notifications,
+                    self.notifications.toasts(),
                     Alignment::End,
                     move |msg| Message::PaneEvent(id, Event::DeleteNotification(msg)),
                 )
@@ -851,9 +852,7 @@ impl State {
                 }
             }
             Event::DeleteNotification(idx) => {
-                if idx < self.notifications.len() {
-                    self.notifications.remove(idx);
-                }
+                self.notifications.remove(idx);
             }
             Event::StreamModifierChanged(message) => {
                 if let Some(Modal::StreamModifier(mut modifier)) = self.modal.take() {
@@ -1239,11 +1238,13 @@ impl State {
         selected_tickers: Option<&'a [TickerInfo]>,
         tickers_table: &'a TickersTable,
     ) -> Element<'a, Message> {
-        let base =
-            widget::toast::Manager::new(base, &self.notifications, Alignment::End, move |msg| {
-                Message::PaneEvent(pane, Event::DeleteNotification(msg))
-            })
-            .into();
+        let base = widget::toast::Manager::new(
+            base,
+            self.notifications.toasts(),
+            Alignment::End,
+            move |msg| Message::PaneEvent(pane, Event::DeleteNotification(msg)),
+        )
+        .into();
 
         let on_blur = Message::PaneEvent(pane, Event::HideModal);
 
@@ -1519,7 +1520,7 @@ impl Default for State {
             content: Content::Starter,
             settings: Settings::default(),
             streams: ResolvedStream::waiting(vec![]),
-            notifications: vec![],
+            notifications: Notifications::new(),
             link_group: None,
         }
     }

@@ -119,10 +119,10 @@ impl RequestHandler {
             match status {
                 RequestStatus::Completed => return Ok(None),
                 RequestStatus::NoData => return Err(ReqError::NoData),
-                RequestStatus::Pending if !matches!(fetch, FetchRange::Kline(..)) => {
+                RequestStatus::Pending if !is_history_fetch(&fetch) => {
                     return Err(ReqError::Overlaps);
                 }
-                RequestStatus::Failed(ts) if !matches!(fetch, FetchRange::Kline(..)) => {
+                RequestStatus::Failed(ts) if !is_history_fetch(&fetch) => {
                     let now_ms = chrono::Utc::now().timestamp_millis() as u64;
                     if now_ms.saturating_sub(ts) > Self::RETRY_AFTER_MS {
                         if let Some(existing) = self.requests.get_mut(&existing_id) {
@@ -137,7 +137,7 @@ impl RequestHandler {
             }
         }
 
-        if matches!(fetch, FetchRange::Kline(..)) {
+        if is_history_fetch(&fetch) {
             if self.requests.values().any(|existing| {
                 existing.status == RequestStatus::Pending && existing.overlaps(&fetch)
             }) {
@@ -291,9 +291,20 @@ impl FetchRequest {
     fn overlaps(&self, range: &FetchRange) -> bool {
         match (&self.fetch_type, range) {
             (FetchRange::Kline(s1, e1), FetchRange::Kline(s2, e2)) => s1 <= e2 && s2 <= e1,
+            (
+                FetchRange::OpenInterest { from: s1, to: e1 },
+                FetchRange::OpenInterest { from: s2, to: e2 },
+            ) => s1 <= e2 && s2 <= e1,
             _ => false,
         }
     }
+}
+
+fn is_history_fetch(range: &FetchRange) -> bool {
+    matches!(
+        range,
+        FetchRange::Kline(..) | FetchRange::OpenInterest { .. }
+    )
 }
 
 pub struct FetchSpec {
