@@ -4,7 +4,7 @@ use crate::widget::inspector::{InspectorContent, InspectorSection};
 use data::chart::kline::IndicatorId;
 use data::chart::kline::{
     IndicatorUnsupportedReason, KlineStudy,
-    indicators::{IndicatorInputSource, declared_input_requirements},
+    indicators::{IndicatorInputSource, all_indicators, declared_input_requirements},
 };
 use iced::{
     Alignment, Element, Length,
@@ -166,8 +166,8 @@ pub fn view<'a>(chart: &'a KlineChart, picker: &'a State) -> Element<'a, KlineMe
         .filter_map(|id| chart.indicator_kind(id))
         .collect::<Vec<_>>();
     let active_indicator_counts = group_active_indicators(&active_indicators);
-    let available_indicators: Vec<_> = std::iter::once(chart.ticker_info().ticker.market_type())
-        .flat_map(IndicatorId::for_market)
+    let available_indicators: Vec<_> = all_indicators()
+        .into_iter()
         .map(|indicator| {
             let unavailable_reason = super::IndicatorPresentationResolver::new(
                 &chart.indicators,
@@ -193,7 +193,7 @@ pub fn view<'a>(chart: &'a KlineChart, picker: &'a State) -> Element<'a, KlineMe
 
     let available_studies = KlineStudy::ALL
         .into_iter()
-        .filter_map(|study| study.normalized_for_basis(chart.basis()))
+        .map(|study| study.normalized_for_basis(chart.basis()).unwrap_or(study))
         .map(|study| {
             let available =
                 chart

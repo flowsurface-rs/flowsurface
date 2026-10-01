@@ -1103,6 +1103,23 @@ impl IndicatorRegistration {
         &self,
         context: AvailabilityContext,
     ) -> Option<IndicatorUnsupportedReason> {
+        let basis = match context.basis {
+            Basis::Time(_) => indicator_engine::TimeOrTick::Time,
+            Basis::Tick(_) => indicator_engine::TimeOrTick::Tick,
+        };
+        if self
+            .compiled
+            .descriptor
+            .bases
+            .as_ref()
+            .is_some_and(|bases| !bases.contains(&basis))
+        {
+            return Some(IndicatorUnsupportedReason::BasisNotSupported);
+        }
+        if basis == indicator_engine::TimeOrTick::Tick && self.compiled.requires_anchored_history()
+        {
+            return Some(IndicatorUnsupportedReason::IncompleteHistory);
+        }
         if self.compiled.requirements.open_interest {
             let Basis::Time(timeframe) = context.basis else {
                 return Some(IndicatorUnsupportedReason::BasisNotSupported);
@@ -1400,6 +1417,55 @@ mod tests {
             open_interest: None,
             series_inputs: Vec::new().into(),
         }])
+    }
+
+    #[test]
+    fn basis_restrictions_and_anchored_history_availability() {
+        let ticker = exchange::TickerInfo::new(
+            exchange::Ticker::new("BTCUSDT", exchange::adapter::Exchange::BinanceLinear),
+            0.1,
+            0.001,
+            None,
+        );
+        for (source, origin, tick_reason) in [
+            (
+                include_str!("../../../../../indicators/catalog/sources/trade-count.ind"),
+                PackageOrigin::Installed,
+                Some(IndicatorUnsupportedReason::BasisNotSupported),
+            ),
+            (
+                include_str!("../../../../../indicators/core/anchored-vwap.ind"),
+                PackageOrigin::Core,
+                Some(IndicatorUnsupportedReason::IncompleteHistory),
+            ),
+            (
+                "language(1)\nindicator(\"Restricted anchor\", id = \"catalog.restricted-anchor\", bases = [\"time\"])\nformat(precision = \"base_ticker_min_tick\")\nplot(ta.avwap(chart.close, chart.volume, \"Day\"))",
+                PackageOrigin::Installed,
+                Some(IndicatorUnsupportedReason::BasisNotSupported),
+            ),
+            (
+                "language(1)\nindicator(\"Plain\", id = \"catalog.plain\")\nformat(precision = \"base_ticker_min_tick\")\nplot(chart.close)",
+                PackageOrigin::Installed,
+                None,
+            ),
+        ] {
+            let compiled = indicator_engine::compile(source, "availability.ind")
+                .expect("source should compile");
+            let registration = registration(compiled, origin).expect("source should register");
+            for (basis, expected) in [
+                (Basis::Time(exchange::Timeframe::M1), None),
+                (Basis::Tick(crate::aggr::TickCount(100)), tick_reason),
+                (Basis::Time(exchange::Timeframe::M1), None),
+            ] {
+                assert_eq!(
+                    registration.unsupported_reason(AvailabilityContext {
+                        basis,
+                        base_ticker: ticker
+                    }),
+                    expected
+                );
+            }
+        }
     }
 
     #[test]

@@ -258,7 +258,9 @@ fn unavailable_indicator_message(
             format!("{name} is not available for {basis}.")
         }
         IndicatorUnsupportedReason::IncompleteHistory => {
-            "Anchored VWAP requires complete history from its anchor; tick charts currently contain live data only.".to_owned()
+            format!(
+                "{name} requires complete history from its anchor; tick charts currently contain live data only."
+            )
         }
         IndicatorUnsupportedReason::SourceNotSupported => {
             format!("{name} is not available for {}.", base_ticker.exchange())
