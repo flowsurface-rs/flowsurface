@@ -1,5 +1,5 @@
 language(1)
-indicator("Open Interest", id = "core.open-interest", sourceable = true, max_bars_back = 2)
+indicator("Open Interest", id = "core.open-interest", sourceable = true, max_bars_back = 2, bases = ["time"])
 format(precision = "base_ticker_min_qty", axis_labels = "abbreviated", header_labels = "commas")
 show_change_bars = input.bool(false, "Show change bars", group = "display")
 value = open_interest

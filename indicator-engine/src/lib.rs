@@ -206,6 +206,11 @@ impl CompiledIndicator {
         )
     }
 
+    /// Whether the compiled program contains calculations requiring complete anchor history.
+    pub fn requires_anchored_history(&self) -> bool {
+        warmup::requires_anchored_history(&self.program, &self.registry)
+    }
+
     /// Create an instance that evaluates only the frames supplied by the chart.
     pub fn instantiate(&self, config: IndicatorConfig) -> Result<IndicatorInstance, PlanningError> {
         self.instantiate_with_limits(config, RuntimeLimits::default())
@@ -273,6 +278,65 @@ mod tests {
             .find(|plot| plot.id == id)
             .map(|plot| &plot.value)
             .expect("plot output should be present")
+    }
+
+    #[test]
+    fn indicator_basis_restrictions() {
+        for (declaration, expected) in [
+            ("", None),
+            (", bases = [\"time\"]", Some(vec![TimeOrTick::Time])),
+            (", bases = [\"tick\"]", Some(vec![TimeOrTick::Tick])),
+            (
+                ", bases = [\"time\", \"tick\"]",
+                Some(vec![TimeOrTick::Time, TimeOrTick::Tick]),
+            ),
+            (
+                ", bases = [\"tick\", \"tick\"]",
+                Some(vec![TimeOrTick::Tick]),
+            ),
+        ] {
+            let source = format!(
+                "language(1)\nindicator(\"Bases\", id = \"test.bases\"{declaration})\nformat(precision = \"base_ticker_min_tick\")\nplot(chart.close)"
+            );
+            let compiled = compile(&source, "bases.ind").expect("valid basis restriction");
+            assert_eq!(compiled.descriptor.bases, expected);
+        }
+        for declaration in [
+            "[]",
+            "[\"range\"]",
+            "[1]",
+            "[\"time\", false]",
+            "\"time\"",
+            "chart.close",
+        ] {
+            let source = format!(
+                "language(1)\nindicator(\"Bases\", id = \"test.bases\", bases = {declaration})\nformat(precision = \"base_ticker_min_tick\")\nplot(chart.close)"
+            );
+            let error = compile(&source, "bases.ind").expect_err("invalid basis restriction");
+            assert!(
+                error
+                    .iter()
+                    .any(|diagnostic| diagnostic.message.contains("bases"))
+            );
+        }
+    }
+
+    #[test]
+    fn anchored_history_is_inferred_through_functions() {
+        for (body, expected) in [
+            ("plot(chart.close)", false),
+            ("plot(ta.avwap(chart.close, chart.volume, \"Day\"))", true),
+            (
+                "fn anchored(price) { return ta.avwap(price, chart.volume, \"Week\") }\nplot(anchored(chart.close))",
+                true,
+            ),
+        ] {
+            let source = format!(
+                "language(1)\nindicator(\"History\", id = \"test.history\")\nformat(precision = \"base_ticker_min_tick\")\n{body}"
+            );
+            let compiled = compile(&source, "history.ind").expect("history source should compile");
+            assert_eq!(compiled.requires_anchored_history(), expected);
+        }
     }
 
     #[test]

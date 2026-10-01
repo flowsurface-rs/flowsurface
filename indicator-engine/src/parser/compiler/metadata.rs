@@ -1,7 +1,7 @@
 use super::super::ast::{AstCall, AstExpression};
 use super::context::{LoweringContext, argument_at};
 use crate::diagnostics::{Diagnostic, Span};
-use crate::frame::FrameField;
+use crate::frame::{FrameField, TimeOrTick};
 use crate::hir::{ExpressionKind, LocalSlot, SourceInputSlot, StatementKind, TypedStatement};
 use crate::scene::*;
 use crate::types::*;
@@ -27,6 +27,7 @@ impl LoweringContext {
         let mut source = None;
         let mut sourceable = false;
         let mut optional_trades = false;
+        let mut bases = None;
         let mut max_bars_back = 5_000;
         if let Some(call) = call {
             self.validate_named_arguments(
@@ -40,6 +41,7 @@ impl LoweringContext {
                     "source",
                     "sourceable",
                     "optional_trades",
+                    "bases",
                     "max_bars_back",
                 ],
             );
@@ -126,6 +128,7 @@ impl LoweringContext {
                     );
                 }
             }
+            bases = self.indicator_bases(call);
             if let Some(value) = self.static_named_value(call, "max_bars_back") {
                 if let Value::Int(value) = value
                     && value > 0
@@ -164,12 +167,49 @@ impl LoweringContext {
             source,
             sourceable,
             optional_trades,
+            bases,
             max_bars_back,
             inputs: Vec::new(),
             series_inputs: Vec::new(),
             plots: Vec::new(),
             presentation: IndicatorPresentation::default(),
         }
+    }
+
+    fn indicator_bases(&mut self, call: &AstCall) -> Option<Vec<TimeOrTick>> {
+        let argument = call
+            .arguments
+            .iter()
+            .find(|argument| argument.name.as_deref() == Some("bases"))?;
+        let AstExpression::Array(elements, _) = &argument.expression else {
+            self.error(
+                call.span,
+                "indicator bases must be a non-empty array of string literals",
+            );
+            return None;
+        };
+        if elements.is_empty() {
+            self.error(call.span, "indicator bases must not be empty");
+            return None;
+        }
+        let mut bases = Vec::new();
+        for element in elements {
+            let basis = match element {
+                AstExpression::String(value, _) if value == "time" => TimeOrTick::Time,
+                AstExpression::String(value, _) if value == "tick" => TimeOrTick::Tick,
+                _ => {
+                    self.error(
+                        element.span(),
+                        "indicator bases entries must be \"time\" or \"tick\"",
+                    );
+                    return None;
+                }
+            };
+            if !bases.contains(&basis) {
+                bases.push(basis);
+            }
+        }
+        Some(bases)
     }
 
     pub(super) fn compile_input(

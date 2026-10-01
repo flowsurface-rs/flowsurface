@@ -38,17 +38,10 @@ pub(super) fn anchor_start(
     config: &IndicatorConfig,
     reference_time: i64,
 ) -> Option<i64> {
-    let (avwap, _) = registry.find("ta.avwap")?;
     let mut evaluator = Evaluator::new(program, registry, descriptor, config, usize::MAX);
     let mut earliest: Option<i64> = None;
-    for expression in &program.expressions {
-        if let ExpressionKind::IntrinsicCall {
-            intrinsic,
-            arguments,
-            ..
-        } = &expression.kind
-            && *intrinsic == avwap
-            && let Some(anchor) = arguments.get(2).copied()
+    for arguments in anchored_arguments(program, registry) {
+        if let Some(anchor) = arguments.get(2).copied()
             && let Some(Value::String(name)) = evaluator.static_value(anchor)
             && let Some(start) = crate::intrinsic::anchored_start(reference_time, &name)
         {
@@ -56,6 +49,31 @@ pub(super) fn anchor_start(
         }
     }
     earliest
+}
+
+pub(super) fn requires_anchored_history(
+    program: &HirProgram,
+    registry: &IntrinsicRegistry,
+) -> bool {
+    anchored_arguments(program, registry).next().is_some()
+}
+
+fn anchored_arguments<'a>(
+    program: &'a HirProgram,
+    registry: &IntrinsicRegistry,
+) -> impl Iterator<Item = &'a [ExprId]> {
+    let avwap = registry.find("ta.avwap").map(|(id, _)| id);
+    program
+        .expressions
+        .iter()
+        .filter_map(move |expression| match &expression.kind {
+            ExpressionKind::IntrinsicCall {
+                intrinsic,
+                arguments,
+                ..
+            } if Some(*intrinsic) == avwap => Some(arguments.as_slice()),
+            _ => None,
+        })
 }
 
 struct Evaluator<'a> {

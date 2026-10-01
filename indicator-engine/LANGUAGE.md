@@ -52,6 +52,16 @@ bounded `for`/`while` loops, non-recursive functions, tuples, arrays, records,
 destructuring, switch expressions, history indexing, and named arguments are
 supported.
 
+## Chart basis restrictions
+
+`indicator(..., bases = ["time"])` restricts an indicator to time charts;
+`bases = ["tick"]` restricts it to tick charts. Omit `bases` for no restriction,
+or include both values. The list must be non-empty and contain only these
+string literals; duplicates are normalized. Restrictions are enforced by the
+host, separately from inferred data requirements. Calculations using
+`ta.avwap` require complete anchor history and are unavailable on tick charts
+while those charts contain live data only.
+
 ## Inputs
 
 Inputs are top-level bindings. The first two arguments are the default value

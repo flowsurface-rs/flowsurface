@@ -459,6 +459,7 @@ pub struct IndicatorDescriptor {
     pub source: Option<String>,
     pub sourceable: bool,
     pub optional_trades: bool,
+    pub bases: Option<Vec<crate::frame::TimeOrTick>>,
     pub max_bars_back: usize,
     pub inputs: Vec<InputDescriptor>,
     pub series_inputs: Vec<SeriesInputDescriptor>,
