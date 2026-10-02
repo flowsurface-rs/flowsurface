@@ -343,38 +343,11 @@ impl<'a> KlineWidget<'a> {
 
     pub(super) fn required_y_axis_gutter(&self, scene: &Scene) -> f32 {
         let label_width = |label: &str| label.chars().count() as f32 * CHAR_W;
-        let mut widest_label = self
+        let widest_label = self
             .y_axis_label_specs(scene)
             .into_iter()
             .map(|(_, label, _)| label_width(&label))
             .fold(0.0, f32::max);
-
-        let (min_value, max_value) = scene
-            .primary
-            .value_scale
-            .values_f32(scene.primary.domain.active());
-        for value in [min_value, max_value] {
-            widest_label = widest_label.max(label_width(&scene.format_primary_cursor_label(value)));
-        }
-
-        for indicator in &scene.indicator_panels {
-            if self.indicator_is_unavailable(indicator.value_id) {
-                continue;
-            }
-            if matches!(indicator.presentation, PanelPresentation::Table) {
-                continue;
-            }
-
-            let panel_precision = self.panel_value_precision(indicator.panel_index);
-            for value in [indicator.min_value(), indicator.max_value()] {
-                widest_label = widest_label.max(label_width(&self.format_panel_axis_value(
-                    indicator.panel_index,
-                    panel_precision,
-                    value,
-                    0.01,
-                )));
-            }
-        }
 
         (widest_label + Y_AXIS_LABEL_LEFT_INSET * 2.0).max(Y_AXIS_GUTTER)
     }

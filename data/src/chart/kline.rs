@@ -4,7 +4,6 @@ pub mod composition;
 pub mod drawing;
 pub mod fetch_plan;
 pub mod footprint;
-pub mod indicator_layout;
 pub mod indicators;
 pub mod poc;
 pub mod series;
@@ -24,7 +23,6 @@ use composition::{
     PanelValuePrecision as DomainPanelValuePrecision,
 };
 pub use fetch_plan::{FetchBatch, FetchPlanInput, FetchRange, FetchStage, visible_window};
-pub use indicator_layout::IndicatorLayout;
 pub use indicators::{
     BaseSeriesSource, CatalogInstallError, IndicatorAuthor, IndicatorCatalog, IndicatorColorSpec,
     IndicatorConfigError, IndicatorDefinition, IndicatorDefinitionError, IndicatorFillGeometry,
@@ -634,7 +632,7 @@ impl IndicatorInstanceStore {
         self.instances.iter().find(|instance| instance.id == id)
     }
 
-    pub(crate) fn warmup_bars(&self, id: IndicatorInstanceId) -> Option<u64> {
+    pub fn warmup_bars(&self, id: IndicatorInstanceId) -> Option<u64> {
         self.warmup_bars_by_id.get(&id).copied().unwrap_or_else(|| {
             self.get(id)
                 .and_then(|instance| instance.kind.warmup_bars(&instance.config))

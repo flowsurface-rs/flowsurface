@@ -6,7 +6,7 @@ use super::layout::{
 use super::scene::{ChromeScene, CursorTarget, LegendTarget, Scene};
 use super::{
     CHAR_W, KlineWidget, KlineWidgetEvent, PANEL_TITLE_TOP_PAD, TEXT_SIZE, TICKER_LEGEND_PADDING,
-    TICKER_LEGEND_ROW_H, TOOLTIP_ROW_LEFT_PAD,
+    TICKER_LEGEND_ROW_H, TOOLTIP_ROW_LEFT_PAD, Y_AXIS_LABEL_LEFT_INSET,
 };
 use crate::style;
 use data::chart::kline::KlineStudyId;
@@ -278,23 +278,6 @@ pub(super) struct StudiesLegendRowHit {
     pub(super) visible: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum StudyLegendIconKind {
-    Visibility,
-    Settings,
-    Close,
-}
-
-impl StudyLegendIconKind {
-    fn icon(self, visible: bool) -> style::Icon {
-        match self {
-            Self::Visibility => style::Icon::visibility(visible),
-            Self::Settings => style::Icon::Cog,
-            Self::Close => style::Icon::Close,
-        }
-    }
-}
-
 pub(crate) struct StudyLegendRow {
     pub(crate) id: KlineStudyId,
     pub(crate) label: String,
@@ -314,10 +297,7 @@ impl StudiesLegend {
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct StudyLegendRowHit {
-    pub(super) row_rect: Rectangle,
-    pub(super) visibility: Rectangle,
-    pub(super) settings: Rectangle,
-    pub(super) close: Rectangle,
+    pub(super) controls: LegendRowControls,
     pub(super) visible: bool,
 }
 
@@ -333,17 +313,17 @@ pub(super) enum StudyLegendHit {
     CategoryRow,
     CategoryIcon(StudiesLegendIconKind),
     StudyRow(usize),
-    StudyIcon(usize, StudyLegendIconKind),
+    StudyIcon(usize, LegendRowAction),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum IndicatorLegendIconKind {
+pub(super) enum LegendRowAction {
     Visibility,
     Settings,
     Close,
 }
 
-impl IndicatorLegendIconKind {
+impl LegendRowAction {
     fn icon(self, visible: bool) -> style::Icon {
         match self {
             Self::Visibility => style::Icon::visibility(visible),
@@ -351,12 +331,77 @@ impl IndicatorLegendIconKind {
             Self::Close => style::Icon::Close,
         }
     }
+}
 
-    pub(super) fn into_event(self, value_id: super::PanelValueId) -> KlineWidgetEvent {
-        match self {
-            Self::Visibility => KlineWidgetEvent::IndicatorVisibilityToggled(value_id),
-            Self::Settings => KlineWidgetEvent::IndicatorSettings(value_id),
-            Self::Close => KlineWidgetEvent::IndicatorRemove(value_id),
+#[derive(Debug, Clone, Copy)]
+enum LegendRowHit {
+    Row,
+    Action(LegendRowAction),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct LegendRowControls {
+    row_rect: Rectangle,
+    visibility: Rectangle,
+    settings: Rectangle,
+    close: Rectangle,
+}
+
+impl LegendRowControls {
+    fn new(panel: Rectangle, row_x: f32, text_end_x: f32, y_center: f32) -> Self {
+        let (_, visibility, settings, close, width) =
+            KlineWidget::legend_controls(panel, text_end_x, y_center, false, true, true, true);
+        Self {
+            row_rect: Rectangle {
+                x: row_x,
+                y: y_center - TICKER_LEGEND_ROW_H * 0.5,
+                width,
+                height: TICKER_LEGEND_ROW_H,
+            },
+            visibility,
+            settings,
+            close,
+        }
+    }
+
+    fn buttons(&self) -> [(LegendRowAction, Rectangle); 3] {
+        [
+            (LegendRowAction::Visibility, self.visibility),
+            (LegendRowAction::Settings, self.settings),
+            (LegendRowAction::Close, self.close),
+        ]
+    }
+
+    fn hit(&self, point: Point) -> Option<LegendRowHit> {
+        self.row_rect.contains(point).then(|| {
+            self.buttons()
+                .into_iter()
+                .find_map(|(action, rect)| rect.contains(point).then_some(action))
+                .map_or(LegendRowHit::Row, LegendRowHit::Action)
+        })
+    }
+
+    fn draw(
+        &self,
+        frame: &mut canvas::Frame,
+        plot_origin: Point,
+        visible: bool,
+        hovered: Option<LegendRowAction>,
+        palette: &Extended,
+    ) {
+        for (action, rect) in self.buttons() {
+            let rect = Rectangle {
+                x: rect.x + plot_origin.x,
+                y: rect.y + plot_origin.y,
+                ..rect
+            };
+            KlineWidget::draw_legend_icon_button(
+                frame,
+                rect,
+                action.icon(visible),
+                hovered == Some(action),
+                palette,
+            );
         }
     }
 }
@@ -365,10 +410,7 @@ impl IndicatorLegendIconKind {
 pub(super) struct IndicatorLegendRowHit {
     pub(super) value_id: super::PanelValueId,
     pub(super) y_center: f32,
-    pub(super) row_rect: Rectangle,
-    pub(super) visibility: Rectangle,
-    pub(super) settings: Rectangle,
-    pub(super) close: Rectangle,
+    pub(super) controls: LegendRowControls,
     pub(super) visible: bool,
     pub(super) primary_overlay: bool,
 }
@@ -381,7 +423,7 @@ pub(super) struct IndicatorLegendLayout {
 #[derive(Debug, Clone, Copy)]
 pub(super) enum IndicatorLegendHit {
     Row(usize),
-    Icon(usize, IndicatorLegendIconKind),
+    Icon(usize, LegendRowAction),
 }
 
 impl<'a> KlineWidget<'a> {
@@ -392,11 +434,6 @@ impl<'a> KlineWidget<'a> {
         palette: &Extended,
         generated_accents: &[iced::Color; ACCENT_COUNT],
     ) {
-        let primary_plot = scene.primary_plot();
-        let plot_origin = scene.layout.regions.plot;
-        let split_x = plot_origin.x + primary_plot.x + primary_plot.width;
-        let axis_width = scene.layout.regions.y_axis.width;
-
         for (index, label_y) in self.primary_series_end_label_positions(scene) {
             let Some(series) = self.series.get(index) else {
                 continue;
@@ -414,12 +451,32 @@ impl<'a> KlineWidget<'a> {
             } else {
                 iced::Color::BLACK
             };
-            let label = series_display_name(series);
+            let anchor = scene
+                .primary
+                .series_percent_anchors
+                .get(index)
+                .copied()
+                .flatten();
+            let value = anchor
+                .filter(|anchor| anchor.abs() > f32::EPSILON)
+                .map(|anchor| {
+                    format!(
+                        "{:+.2}%",
+                        ((bar.close.to_f32_lossy() / anchor) - 1.0) * 100.0
+                    )
+                })
+                .unwrap_or_else(|| scene.format_primary_cursor_label(bar.close.to_f32_lossy()));
             let label_height = TEXT_SIZE + 4.0;
+            let value_rect = scene.layout.y_axis_badge_bounds(
+                label_y - label_height * 0.5,
+                label_height,
+                value.chars().count() as f32 * CHAR_W,
+            );
+            let label = series_display_name(series);
             let label_width = label.chars().count() as f32 * CHAR_W + 8.0;
             let rect = Rectangle {
-                x: split_x - label_width,
-                y: label_y - label_height * 0.5,
+                x: value_rect.x - label_width,
+                y: value_rect.y,
                 width: label_width,
                 height: label_height,
             };
@@ -436,31 +493,10 @@ impl<'a> KlineWidget<'a> {
                 ..Default::default()
             });
 
-            let anchor = scene
-                .primary
-                .series_percent_anchors
-                .get(index)
-                .copied()
-                .flatten();
-            let value = anchor
-                .filter(|anchor| anchor.abs() > f32::EPSILON)
-                .map(|anchor| {
-                    format!(
-                        "{:+.2}%",
-                        ((bar.close.to_f32_lossy() / anchor) - 1.0) * 100.0
-                    )
-                })
-                .unwrap_or_else(|| scene.format_primary_cursor_label(bar.close.to_f32_lossy()));
-            let value_rect = Rectangle {
-                x: split_x,
-                y: rect.y,
-                width: axis_width,
-                height: rect.height,
-            };
             frame.fill_rectangle(value_rect.position(), value_rect.size(), color);
             frame.fill_text(canvas::Text {
                 content: value,
-                position: Point::new(value_rect.x + 4.0, label_y),
+                position: Point::new(value_rect.x + Y_AXIS_LABEL_LEFT_INSET, label_y),
                 color: text_color,
                 size: TEXT_SIZE.into(),
                 align_x: iced::Alignment::Start.into(),
@@ -969,20 +1005,8 @@ impl<'a> KlineWidget<'a> {
                 let row_x = panel.plot.x + STUDY_LEGEND_INDENT;
                 let text_end_x =
                     row_x + TOOLTIP_ROW_LEFT_PAD + label.chars().count() as f32 * CHAR_W;
-                let (_, visibility, settings, close, row_w) = Self::legend_controls(
-                    panel.plot, text_end_x, y_center, false, true, true, true,
-                );
-
                 rows.push(StudyLegendRowHit {
-                    row_rect: Rectangle {
-                        x: row_x,
-                        y: row_top,
-                        width: row_w,
-                        height: TICKER_LEGEND_ROW_H,
-                    },
-                    visibility,
-                    settings,
-                    close,
+                    controls: LegendRowControls::new(panel.plot, row_x, text_end_x, y_center),
                     visible: study.visible,
                 });
             }
@@ -1023,29 +1047,12 @@ impl<'a> KlineWidget<'a> {
         }
 
         for (index, row) in legend.rows.iter().enumerate() {
-            if !row.row_rect.contains(plot_local) {
-                continue;
+            if let Some(hit) = row.controls.hit(plot_local) {
+                return Some(match hit {
+                    LegendRowHit::Action(action) => StudyLegendHit::StudyIcon(index, action),
+                    LegendRowHit::Row => StudyLegendHit::StudyRow(index),
+                });
             }
-
-            if row.visibility.contains(plot_local) {
-                return Some(StudyLegendHit::StudyIcon(
-                    index,
-                    StudyLegendIconKind::Visibility,
-                ));
-            }
-
-            if row.settings.contains(plot_local) {
-                return Some(StudyLegendHit::StudyIcon(
-                    index,
-                    StudyLegendIconKind::Settings,
-                ));
-            }
-
-            if row.close.contains(plot_local) {
-                return Some(StudyLegendHit::StudyIcon(index, StudyLegendIconKind::Close));
-            }
-
-            return Some(StudyLegendHit::StudyRow(index));
         }
 
         None
@@ -1355,12 +1362,16 @@ impl<'a> KlineWidget<'a> {
     ) -> f32 {
         if show_buttons {
             let plot_x = scene.layout.regions.plot.x;
-            return [row.visibility, row.settings, row.close]
-                .iter()
-                .filter(|rect| rect.width > 0.0)
-                .map(|rect| plot_x + rect.x + rect.width)
-                .max_by(f32::total_cmp)
-                .unwrap_or(row_rect.x);
+            return [
+                row.controls.visibility,
+                row.controls.settings,
+                row.controls.close,
+            ]
+            .iter()
+            .filter(|rect| rect.width > 0.0)
+            .map(|rect| plot_x + rect.x + rect.width)
+            .max_by(f32::total_cmp)
+            .unwrap_or(row_rect.x);
         }
 
         let values_visible = scene.interaction.readouts_visible()
@@ -1431,22 +1442,16 @@ impl<'a> KlineWidget<'a> {
                 let y_center = panel.plot.y
                     + PANEL_TITLE_TOP_PAD
                     + (indicator_index as f32 + 0.5) * TICKER_LEGEND_ROW_H;
-                let (_, visibility, settings, close, row_w) = Self::legend_controls(
-                    panel.plot, text_end_x, y_center, false, true, true, true,
-                );
 
                 rows.push(IndicatorLegendRowHit {
                     value_id,
                     y_center,
-                    row_rect: Rectangle {
-                        x: panel.plot.x,
-                        y: y_center - TICKER_LEGEND_ROW_H * 0.5,
-                        width: row_w,
-                        height: TICKER_LEGEND_ROW_H,
-                    },
-                    visibility,
-                    settings,
-                    close,
+                    controls: LegendRowControls::new(
+                        panel.plot,
+                        panel.plot.x,
+                        text_end_x,
+                        y_center,
+                    ),
                     visible: self.panel_indicator_visible(panel_index, value_id),
                     primary_overlay: false,
                 });
@@ -1464,22 +1469,16 @@ impl<'a> KlineWidget<'a> {
                 let title = self.indicator_title(primary_panel, true, *value_id);
                 let title_x = self.indicator_label_x(panel.plot.x, *value_id);
                 let text_end_x = title_x + title.chars().count() as f32 * CHAR_W;
-                let (_, visibility, settings, close, row_w) = Self::legend_controls(
-                    panel.plot, text_end_x, y_center, false, true, true, true,
-                );
 
                 rows.push(IndicatorLegendRowHit {
                     value_id: *value_id,
                     y_center,
-                    row_rect: Rectangle {
-                        x: panel.plot.x,
-                        y: row_top,
-                        width: row_w,
-                        height: TICKER_LEGEND_ROW_H,
-                    },
-                    visibility,
-                    settings,
-                    close,
+                    controls: LegendRowControls::new(
+                        panel.plot,
+                        panel.plot.x,
+                        text_end_x,
+                        y_center,
+                    ),
                     visible: *visible,
                     primary_overlay: true,
                 });
@@ -1576,32 +1575,12 @@ impl<'a> KlineWidget<'a> {
     ) -> Option<IndicatorLegendHit> {
         let plot_local = layout.plot_local_point(root_local)?;
         for (index, row) in legend.rows.iter().enumerate() {
-            if !row.row_rect.contains(plot_local) {
-                continue;
+            if let Some(hit) = row.controls.hit(plot_local) {
+                return Some(match hit {
+                    LegendRowHit::Action(action) => IndicatorLegendHit::Icon(index, action),
+                    LegendRowHit::Row => IndicatorLegendHit::Row(index),
+                });
             }
-
-            if row.visibility.contains(plot_local) {
-                return Some(IndicatorLegendHit::Icon(
-                    index,
-                    IndicatorLegendIconKind::Visibility,
-                ));
-            }
-
-            if row.settings.contains(plot_local) {
-                return Some(IndicatorLegendHit::Icon(
-                    index,
-                    IndicatorLegendIconKind::Settings,
-                ));
-            }
-
-            if row.close.contains(plot_local) {
-                return Some(IndicatorLegendHit::Icon(
-                    index,
-                    IndicatorLegendIconKind::Close,
-                ));
-            }
-
-            return Some(IndicatorLegendHit::Row(index));
         }
 
         None
@@ -2351,20 +2330,24 @@ impl<'a> KlineWidget<'a> {
                 continue;
             };
 
-            let row_rect = to_root(row.row_rect);
+            let row_rect = to_root(row.controls.row_rect);
             let hovered_row = scene.interaction.target.study_row_is_hovered(index);
             let label = &study.label;
             let label_end_x =
                 row_rect.x + TOOLTIP_ROW_LEFT_PAD + label.chars().count() as f32 * CHAR_W;
             let content_end_x = if hovered_row {
-                [row.visibility, row.settings, row.close]
-                    .iter()
-                    .map(|rect| {
-                        let rect = to_root(*rect);
-                        rect.x + rect.width
-                    })
-                    .max_by(f32::total_cmp)
-                    .unwrap_or(label_end_x)
+                [
+                    row.controls.visibility,
+                    row.controls.settings,
+                    row.controls.close,
+                ]
+                .iter()
+                .map(|rect| {
+                    let rect = to_root(*rect);
+                    rect.x + rect.width
+                })
+                .max_by(f32::total_cmp)
+                .unwrap_or(label_end_x)
             } else {
                 label_end_x
             };
@@ -2408,37 +2391,15 @@ impl<'a> KlineWidget<'a> {
                 continue;
             }
 
-            let visibility = to_root(row.visibility);
-            let settings = to_root(row.settings);
-            let close = to_root(row.close);
-            Self::draw_legend_icon_button(
+            let hovered = match scene.interaction.target {
+                CursorTarget::Legend(LegendTarget::Study { row, icon }) if row == index => icon,
+                _ => None,
+            };
+            row.controls.draw(
                 frame,
-                visibility,
-                StudyLegendIconKind::Visibility.icon(row.visible),
-                scene
-                    .interaction
-                    .target
-                    .study_icon_is_hovered(index, StudyLegendIconKind::Visibility),
-                palette,
-            );
-            Self::draw_legend_icon_button(
-                frame,
-                settings,
-                StudyLegendIconKind::Settings.icon(row.visible),
-                scene
-                    .interaction
-                    .target
-                    .study_icon_is_hovered(index, StudyLegendIconKind::Settings),
-                palette,
-            );
-            Self::draw_legend_icon_button(
-                frame,
-                close,
-                StudyLegendIconKind::Close.icon(row.visible),
-                scene
-                    .interaction
-                    .target
-                    .study_icon_is_hovered(index, StudyLegendIconKind::Close),
+                scene.layout.regions.plot.position(),
+                row.visible,
+                hovered,
                 palette,
             );
         }
@@ -2464,7 +2425,7 @@ impl<'a> KlineWidget<'a> {
         let row_hover_fill = palette.background.strong.color.scale_alpha(0.22);
 
         for (index, row) in legend.rows.iter().enumerate() {
-            let row_rect = to_root(row.row_rect);
+            let row_rect = to_root(row.controls.row_rect);
             let show_buttons = scene.interaction.target.indicator_row_is_hovered(index);
             let show_values = !show_buttons
                 && (scene.interaction.readouts_visible()
@@ -2587,39 +2548,17 @@ impl<'a> KlineWidget<'a> {
             }
 
             if show_buttons {
-                let visibility_hovered = scene
-                    .interaction
-                    .target
-                    .indicator_icon_is_hovered(index, IndicatorLegendIconKind::Visibility);
-                Self::draw_legend_icon_button(
+                let hovered = match scene.interaction.target {
+                    CursorTarget::Legend(LegendTarget::Indicator { row, icon }) if row == index => {
+                        icon
+                    }
+                    _ => None,
+                };
+                row.controls.draw(
                     frame,
-                    to_root(row.visibility),
-                    IndicatorLegendIconKind::Visibility.icon(row.visible),
-                    visibility_hovered,
-                    palette,
-                );
-
-                let settings_hovered = scene
-                    .interaction
-                    .target
-                    .indicator_icon_is_hovered(index, IndicatorLegendIconKind::Settings);
-                Self::draw_legend_icon_button(
-                    frame,
-                    to_root(row.settings),
-                    IndicatorLegendIconKind::Settings.icon(row.visible),
-                    settings_hovered,
-                    palette,
-                );
-
-                let close_hovered = scene
-                    .interaction
-                    .target
-                    .indicator_icon_is_hovered(index, IndicatorLegendIconKind::Close);
-                Self::draw_legend_icon_button(
-                    frame,
-                    to_root(row.close),
-                    IndicatorLegendIconKind::Close.icon(row.visible),
-                    close_hovered,
+                    scene.layout.regions.plot.position(),
+                    row.visible,
+                    hovered,
                     palette,
                 );
             }
@@ -2754,13 +2693,11 @@ impl ChromeScene {
                     } => studies
                         .and_then(|legend| legend.rows.get(row))
                         .map(|row| match icon {
-                            StudyLegendIconKind::Visibility => {
+                            LegendRowAction::Visibility => {
                                 KlineWidgetEvent::StudyVisibilityToggled(row.id)
                             }
-                            StudyLegendIconKind::Settings => {
-                                KlineWidgetEvent::StudySettings(row.id)
-                            }
-                            StudyLegendIconKind::Close => KlineWidgetEvent::StudyRemove(row.id),
+                            LegendRowAction::Settings => KlineWidgetEvent::StudySettings(row.id),
+                            LegendRowAction::Close => KlineWidgetEvent::StudyRemove(row.id),
                         }),
                     LegendTarget::Indicator {
                         row,
@@ -2769,7 +2706,17 @@ impl ChromeScene {
                         .indicator_legend
                         .as_ref()
                         .and_then(|legend| legend.rows.get(row))
-                        .map(|row| icon.into_event(row.value_id)),
+                        .map(|row| match icon {
+                            LegendRowAction::Visibility => {
+                                KlineWidgetEvent::IndicatorVisibilityToggled(row.value_id)
+                            }
+                            LegendRowAction::Settings => {
+                                KlineWidgetEvent::IndicatorSettings(row.value_id)
+                            }
+                            LegendRowAction::Close => {
+                                KlineWidgetEvent::IndicatorRemove(row.value_id)
+                            }
+                        }),
                     _ => None,
                 };
                 return event.map_or(ChromeClick::Blocked, ChromeClick::Event);

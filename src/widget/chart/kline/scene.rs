@@ -1,9 +1,9 @@
 use super::YUnit;
 use super::chrome::{
     CornerControlHit, CornerControlKind, FootprintLegendHit, FootprintLegendIconKind,
-    FootprintLegendLayout, IndicatorLegendHit, IndicatorLegendIconKind, IndicatorLegendLayout,
-    PanelControlHit, PanelControlKind, StudiesLegendIconKind, StudyLegendHit, StudyLegendIconKind,
-    StudyLegendLayout, TickerLegendHit, TickerLegendIconKind, TickerLegendLayout,
+    FootprintLegendLayout, IndicatorLegendHit, IndicatorLegendLayout, LegendRowAction,
+    PanelControlHit, PanelControlKind, StudiesLegendIconKind, StudyLegendHit, StudyLegendLayout,
+    TickerLegendHit, TickerLegendIconKind, TickerLegendLayout,
 };
 use super::composition::{
     MarkKind, PanelPresentation, PanelScaleMode, PanelValueId, PanelValuePrecision,
@@ -372,11 +372,11 @@ pub(super) enum LegendTarget {
     },
     Study {
         row: usize,
-        icon: Option<StudyLegendIconKind>,
+        icon: Option<LegendRowAction>,
     },
     Indicator {
         row: usize,
-        icon: Option<IndicatorLegendIconKind>,
+        icon: Option<LegendRowAction>,
     },
 }
 
@@ -515,16 +515,6 @@ impl CursorTarget {
         )
     }
 
-    pub(super) fn study_icon_is_hovered(self, index: usize, kind: StudyLegendIconKind) -> bool {
-        matches!(
-            self,
-            Self::Legend(LegendTarget::Study {
-                row,
-                icon: Some(icon),
-            }) if row == index && icon == kind
-        )
-    }
-
     pub(super) fn indicator_row_is_hovered(self, index: usize) -> bool {
         matches!(
             self,
@@ -537,20 +527,6 @@ impl CursorTarget {
             Self::Legend(LegendTarget::Indicator { row, .. }) => Some(row),
             _ => None,
         }
-    }
-
-    pub(super) fn indicator_icon_is_hovered(
-        self,
-        index: usize,
-        kind: IndicatorLegendIconKind,
-    ) -> bool {
-        matches!(
-            self,
-            Self::Legend(LegendTarget::Indicator {
-                row,
-                icon: Some(icon),
-            }) if row == index && icon == kind
-        )
     }
 
     pub(super) fn panel_control_is_hovered(

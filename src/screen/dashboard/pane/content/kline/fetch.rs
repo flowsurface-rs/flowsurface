@@ -1,7 +1,7 @@
 use crate::connector::fetcher::{FetchSpec, RequestHandler};
 use data::chart::Basis;
 use data::chart::kline::FetchRange;
-use exchange::{TickerInfo, UnixMs, adapter::StreamKind};
+use exchange::{TickerInfo, adapter::StreamKind};
 use iced::task::Handle;
 use rustc_hash::FxHashMap;
 
@@ -130,36 +130,6 @@ impl FetchCoordinator {
         if let Some(req_id) = req_id {
             self.mark_completed(ticker_info, req_id);
         }
-    }
-
-    pub fn trade_range_is_covered(
-        &self,
-        ticker_info: TickerInfo,
-        start: UnixMs,
-        end: UnixMs,
-    ) -> bool {
-        if start >= end {
-            return true;
-        }
-        let Some(handler) = self.request_handlers.get(&ticker_info) else {
-            return false;
-        };
-        let mut ranges = handler.completed_trade_ranges().collect::<Vec<_>>();
-        ranges.sort_unstable_by_key(|(from, _)| *from);
-        let mut covered_until = start;
-        for (from, to) in ranges {
-            if to <= covered_until {
-                continue;
-            }
-            if from > covered_until {
-                return false;
-            }
-            covered_until = covered_until.max(to);
-            if covered_until >= end {
-                return true;
-            }
-        }
-        false
     }
 
     fn finish_request(

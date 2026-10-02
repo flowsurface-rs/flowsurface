@@ -13,10 +13,13 @@ pub enum DataUpdate<'a> {
         timeframe: Timeframe,
         ticker_info: TickerInfo,
         klines: &'a [Kline],
+        is_batches_done: bool,
+        has_data: bool,
     },
     /// Refreshes only the chart's visual tail. The indicator engine consumes
     /// committed historical snapshots, not this provisional websocket value.
     LiveKline {
+        timeframe: Timeframe,
         ticker_info: &'a TickerInfo,
         kline: &'a Kline,
     },
@@ -45,6 +48,14 @@ pub(super) enum DataUpdateEffect {
 }
 
 impl DataUpdate<'_> {
+    pub(super) fn kline_timeframe(&self) -> Option<Timeframe> {
+        match self {
+            DataUpdate::HistoricalKlines { timeframe, .. }
+            | DataUpdate::LiveKline { timeframe, .. } => Some(*timeframe),
+            _ => None,
+        }
+    }
+
     pub(super) fn apply(
         &self,
         basis: Basis,
@@ -195,7 +206,9 @@ impl DataUpdate<'_> {
                 }
                 change
             }
-            DataUpdate::LiveKline { ticker_info, kline } => {
+            DataUpdate::LiveKline {
+                ticker_info, kline, ..
+            } => {
                 data.update_live_kline(ticker_info, kline, basis, indicator_ids, trade_data_enabled)
             }
             DataUpdate::LiveTrades {
@@ -251,7 +264,7 @@ impl DataUpdate<'_> {
                 let change = data.insert_historical_open_interest(
                     *ticker_info,
                     series,
-                    indicators.instances(),
+                    &indicators.instances,
                 );
                 if let Some(req_id) = req_id {
                     let KlineDataChange::HistoricalInput { update, .. } = &change else {

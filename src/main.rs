@@ -245,12 +245,17 @@ impl Flowsurface {
                         log::info!("a stream disconnected from WS: {reason:?}");
                     }
                     exchange::Event::DepthReceived(stream, update_t, depth) => {
-                        let task = dashboard.ingest_depth(&stream, update_t, depth, main_window_id);
+                        let task =
+                            dashboard.ingest_live_depth(&stream, update_t, depth, main_window_id);
                         return self.map_dashboard_task(task, None);
                     }
                     exchange::Event::TradesReceived(stream, update_t, buffer) => {
-                        let task =
-                            dashboard.ingest_trades(&stream, &buffer, update_t, main_window_id);
+                        let task = dashboard.ingest_live_trades(
+                            &stream,
+                            &buffer,
+                            update_t,
+                            main_window_id,
+                        );
 
                         if let Some(msg) = self.audio_stream.try_play_sound(&stream, &buffer) {
                             self.notifications.push(Toast::error(msg));
@@ -259,7 +264,7 @@ impl Flowsurface {
                         return self.map_dashboard_task(task, None);
                     }
                     exchange::Event::KlineReceived(stream, kline) => {
-                        let task = dashboard.update_latest_klines(&stream, &kline, main_window_id);
+                        let task = dashboard.ingest_live_kline(&stream, &kline, main_window_id);
                         return self.map_dashboard_task(task, None);
                     }
                 }
@@ -413,6 +418,13 @@ impl Flowsurface {
                                 Task::none()
                             }
                         }
+                    }
+                    Some(dashboard::Event::OpenNetworkSettings) => {
+                        return self.update(Message::Sidebar(
+                            screen::sidebar::Message::ToggleSidebarMenu(Some(
+                                sidebar::Menu::Network,
+                            )),
+                        ));
                     }
                     Some(dashboard::Event::RequestPalette) => {
                         let theme = self.theme.current().clone();

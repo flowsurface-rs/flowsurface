@@ -1,3 +1,4 @@
+use super::history::DrawingHistory;
 use super::toolbar::{FloatingToolbarEvent, FloatingToolbarState};
 use super::{FLOATING_TOOLBAR_HANDLE_WIDTH, FLOATING_TOOLBAR_HEIGHT};
 use crate::style;
@@ -250,6 +251,7 @@ impl DrawingUpdate {
 
 #[derive(Default)]
 pub(super) struct DrawingState {
+    history: DrawingHistory,
     pub(super) tools: DrawingTools,
     pub(super) floating_toolbar: FloatingToolbarState,
 }
@@ -262,13 +264,69 @@ pub enum Event {
 
 impl DrawingState {
     pub(super) fn update(&mut self, event: Event, settings: &mut DrawingSettings) -> DrawingUpdate {
-        match event {
+        let before = self.tools.edit_state();
+        let update = match event {
             Event::Tools(message) => self.tools.update(message, settings),
             Event::FloatingToolbar(event) => {
                 self.floating_toolbar.update(event);
                 DrawingUpdate::None
             }
-        }
+        };
+        self.record_update(update, before)
+    }
+
+    fn record_update(&mut self, update: DrawingUpdate, before: DrawingEditState) -> DrawingUpdate {
+        self.history.apply_update(
+            update,
+            before,
+            self.tools.edit_state(),
+            self.tools.is_dragging(),
+        );
+        update
+    }
+
+    pub(super) fn handle_widget_drawing_event(
+        &mut self,
+        event: KlineWidgetDrawingEvent,
+        settings: &DrawingSettings,
+    ) -> DrawingUpdate {
+        let before = self.tools.edit_state();
+        let update = self.tools.handle_widget_drawing_event(event, settings);
+        self.record_update(update, before)
+    }
+
+    pub(super) fn handle_escape(&mut self) -> DrawingUpdate {
+        let before = self.tools.edit_state();
+        let update = self.tools.handle_escape();
+        self.record_update(update, before)
+    }
+
+    pub(super) fn finish_pending_edit(&mut self) {
+        self.history.finish_drawing(self.tools.edit_state());
+    }
+
+    pub(super) fn clear_history(&mut self) {
+        self.history.clear();
+    }
+
+    pub(super) fn undo(&mut self) -> bool {
+        self.finish_pending_edit();
+        let Some(entry) = self.history.pop_undo() else {
+            return false;
+        };
+        self.tools.restore_edit_state(entry.before.clone());
+        self.history.push_redo(entry);
+        true
+    }
+
+    pub(super) fn redo(&mut self) -> bool {
+        self.finish_pending_edit();
+        let Some(entry) = self.history.pop_redo() else {
+            return false;
+        };
+        self.tools.restore_edit_state(entry.after.clone());
+        self.history.push_undo(entry);
+        true
     }
 
     pub(super) fn view<'a>(&'a self, theme_accents: ThemeAccents) -> iced::Element<'a, Event> {

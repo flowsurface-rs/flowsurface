@@ -171,7 +171,7 @@ pub fn view<'a>(chart: &'a KlineChart, picker: &'a State) -> Element<'a, KlineMe
     let available_indicators: Vec<_> = all_indicators()
         .into_iter()
         .map(|indicator| {
-            let unavailable_reason = super::IndicatorPresentationResolver::new(
+            let unavailable_reason = super::presentation::IndicatorPresentationResolver::new(
                 &chart.indicators,
                 &chart.data,
                 chart.basis,
@@ -195,7 +195,7 @@ pub fn view<'a>(chart: &'a KlineChart, picker: &'a State) -> Element<'a, KlineMe
 
     let available_studies = KlineStudy::ALL
         .into_iter()
-        .filter_map(|study| study.normalized_for_basis(chart.basis()))
+        .map(|study| study.normalized_for_basis(chart.basis()).unwrap_or(study))
         .map(|study| {
             let availability =
                 chart
@@ -452,7 +452,10 @@ fn study_row(
     );
 
     let tooltip = match availability {
-        StudyAvailability::Available | StudyAvailability::UnsupportedBasis => None,
+        StudyAvailability::Available => None,
+        StudyAvailability::UnsupportedBasis => {
+            Some("Not available for the selected chart basis".to_owned())
+        }
         StudyAvailability::RequiresTradeData => {
             Some("Enable trade data to use this study".to_owned())
         }

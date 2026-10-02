@@ -1389,6 +1389,66 @@ mod tests {
     }
 
     #[test]
+    fn basis_restrictions_and_anchored_history_availability() {
+        let ticker = exchange::TickerInfo::new(
+            exchange::Ticker::new("BTCUSDT", exchange::adapter::Exchange::BinanceLinear),
+            0.1,
+            0.001,
+            None,
+        );
+        for (source, origin, tick_reason) in [
+            (
+                r#"language(1)
+indicator("Trade Count", id = "catalog.trade-count", sourceable = true, max_bars_back = 1, bases = ["time"])
+display(layer_name = "Trades")
+format(precision = "fixed_step:1", axis_labels = "abbreviated", header_labels = "commas", scale = "fit_visible_include_zero", max_decimals = 0)
+value = chart.trade.count
+plot(value, id = "value", title = "Trade count", precision = "decimals:0", style = "histogram", color_slot = "main", layer_title = "Trades", overlay = false)
+
+style("main", title = "Line")
+style("bars", title = "Bars", role = "secondary")
+mark(title = "Line", source = "value", kind = "line", color_slot = "main")
+mark(title = "Bars", source = "value", kind = "histogram", color_slot = "bars")
+"#,
+                PackageOrigin::Installed,
+                Some(IndicatorUnsupportedReason::BasisNotSupported),
+            ),
+            (
+                include_str!("../../../../indicators/sources/anchored-vwap.ind"),
+                PackageOrigin::Bundled,
+                Some(IndicatorUnsupportedReason::IncompleteHistory),
+            ),
+            (
+                "language(1)\nindicator(\"Restricted anchor\", id = \"catalog.restricted-anchor\", bases = [\"time\"])\nformat(precision = \"base_ticker_min_tick\")\nplot(ta.avwap(chart.close, chart.volume, \"Day\"))",
+                PackageOrigin::Installed,
+                Some(IndicatorUnsupportedReason::BasisNotSupported),
+            ),
+            (
+                "language(1)\nindicator(\"Plain\", id = \"catalog.plain\")\nformat(precision = \"base_ticker_min_tick\")\nplot(chart.close)",
+                PackageOrigin::Installed,
+                None,
+            ),
+        ] {
+            let compiled = indicator_engine::compile(source, "availability.ind")
+                .expect("source should compile");
+            let registration = registration(compiled, origin).expect("source should register");
+            for (basis, expected) in [
+                (Basis::Time(exchange::Timeframe::M1), None),
+                (Basis::Tick(crate::aggr::TickCount(100)), tick_reason),
+                (Basis::Time(exchange::Timeframe::M1), None),
+            ] {
+                assert_eq!(
+                    registration.unsupported_reason(AvailabilityContext {
+                        basis,
+                        base_ticker: ticker
+                    }),
+                    expected
+                );
+            }
+        }
+    }
+
+    #[test]
     fn indicator_metadata_is_exposed_to_host_definition() {
         let compiled = indicator_engine::compile(
             r#"

@@ -19,7 +19,7 @@ impl std::fmt::Display for RebuildFailure {
 }
 
 pub(super) struct RebuildSnapshot {
-    pub(super) frame_revision: u64,
+    pub(super) committed_frames_revision: u64,
     pub(super) plan: IndicatorRebuildPlan,
     pub(super) active_ids: Vec<IndicatorInstanceId>,
     pub(super) frames: Arc<[IndicatorFrame]>,
@@ -59,7 +59,7 @@ impl RebuildCoordinator {
         active_ids: Vec<IndicatorInstanceId>,
         frames: Arc<[IndicatorFrame]>,
         instances: IndicatorInstanceStore,
-        frame_revision: u64,
+        committed_frames_revision: u64,
     ) -> Option<impl std::future::Future<Output = u64> + Send + 'static + use<>> {
         if self.pending.is_some() {
             return None;
@@ -72,7 +72,7 @@ impl RebuildCoordinator {
         self.pending = Some(PendingRebuild {
             job_id,
             snapshot: RebuildSnapshot {
-                frame_revision,
+                committed_frames_revision,
                 plan,
                 active_ids,
                 frames,

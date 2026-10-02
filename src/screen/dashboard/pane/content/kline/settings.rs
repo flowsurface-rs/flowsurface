@@ -1,5 +1,4 @@
 use super::layout::IndicatorState;
-use super::presentation::IndicatorPresentationCache;
 use super::studies::StudyState;
 use super::{ChartCommand, IndicatorInputCommand, IndicatorStyleCommand, Message as ChartMessage};
 use crate::widget::chart::kline::{IndicatorPresentationContext, ResolvedIndicatorStyleSlot};
@@ -10,8 +9,8 @@ use crate::{
     tooltip,
     widget::{
         classic_slider_row,
-        inspector::{self, InspectorContent, InspectorSection},
-        series_editor::{self, SeriesStyleEntry, TickerSeriesEditor},
+        inspector::{self, InspectorSection},
+        series_editor::{self, SeriesStyleEntry},
         study_configurator as study, theme_color_control,
     },
 };
@@ -43,8 +42,6 @@ pub(super) struct SettingsContext<'a> {
     pub(super) data: &'a KlineData,
     pub(super) indicators: &'a IndicatorState,
     pub(super) studies: &'a StudyState,
-    pub(super) presentation: &'a IndicatorPresentationCache,
-    pub(super) series_editor: Option<&'a TickerSeriesEditor>,
     pub(super) trade_data_enabled: bool,
 }
 
@@ -55,7 +52,6 @@ impl<'a> SettingsContext<'a> {
         data: &'a KlineData,
         indicators: &'a IndicatorState,
         studies: &'a StudyState,
-        presentation: &'a IndicatorPresentationCache,
         trade_data_enabled: bool,
     ) -> Self {
         Self {
@@ -64,19 +60,12 @@ impl<'a> SettingsContext<'a> {
             data,
             indicators,
             studies,
-            presentation,
-            series_editor: None,
             trade_data_enabled,
         }
     }
 
-    fn series_editor(&self) -> &'a TickerSeriesEditor {
-        self.series_editor
-            .expect("settings view requires the series editor")
-    }
-
     fn presentation(&self) -> IndicatorPresentationContext {
-        self.presentation.context(self.indicators)
+        self.indicators.presentation_context()
     }
 
     fn series_style_entry(&self, ticker: TickerInfo) -> Option<SeriesStyleEntry> {
@@ -201,12 +190,13 @@ impl<'a> SettingsContext<'a> {
         let Some(source_instance) = self.indicators.indicator(source_id) else {
             return Vec::new();
         };
-        let Some(source_panel_id) = self.indicators.layout().indicator_panel_id(source_id) else {
+        let Some(source_panel_id) = self.indicators.composition.indicator_panel_id(source_id)
+        else {
             return Vec::new();
         };
         if self
             .indicators
-            .composition()
+            .composition
             .panel(source_panel_id)
             .is_none_or(|panel| {
                 panel.presentation != data::chart::kline::composition::PanelPresentation::Plot
@@ -307,7 +297,6 @@ impl ChartOptions {
 
 #[derive(Default)]
 pub(super) struct InspectorState {
-    series_editor: TickerSeriesEditor,
     settings: State,
 }
 
@@ -319,17 +308,12 @@ pub(super) enum InspectorEffect {
 }
 
 impl InspectorState {
-    pub(super) fn has_contextual_target(&self, context: &SettingsContext<'_>) -> bool {
-        match &self.settings.target {
-            SettingsTarget::Main => false,
-            SettingsTarget::Indicator(modal) => context
-                .indicators
-                .indicator_kind(modal.instance_id())
-                .is_some(),
-            SettingsTarget::Study(modal) => context.studies.study(modal.study_id()).is_some(),
-            SettingsTarget::Series(ticker) => context.series_style_entry(*ticker).is_some(),
-            SettingsTarget::Candlestick | SettingsTarget::Footprint => true,
-        }
+    pub(super) fn has_contextual_target(&self) -> bool {
+        !matches!(self.settings.target, SettingsTarget::Main)
+    }
+
+    pub(super) fn close_contextual_settings(&mut self) {
+        self.settings.set_target(SettingsTarget::Main);
     }
 
     pub(super) fn reconcile_missing_target(&mut self, context: &SettingsContext<'_>) {
@@ -381,24 +365,21 @@ impl InspectorState {
         &self.settings
     }
 
-    pub(super) fn series_editor(&self) -> &TickerSeriesEditor {
-        &self.series_editor
-    }
-
-    pub(super) fn series_editor_mut(&mut self) -> &mut TickerSeriesEditor {
-        &mut self.series_editor
-    }
-
     pub(super) fn update(
         &mut self,
         message: Message,
         context: &SettingsContext<'_>,
     ) -> InspectorEffect {
         if let Message::SeriesEditor(message) = message {
-            let Some(change) = self.series_editor.update(message) else {
+            let ticker = match self.settings.target {
+                SettingsTarget::Candlestick => context.data.base_ticker(),
+                SettingsTarget::Series(ticker) => ticker,
+                _ => return InspectorEffect::None,
+            };
+            let Some(entry) = context.series_style_entry(ticker) else {
                 return InspectorEffect::None;
             };
-            return InspectorEffect::Command(match change {
+            return InspectorEffect::Command(match entry.change(message) {
                 series_editor::Change::ColorChanged(ticker_info, color) => {
                     ChartCommand::SetSeriesColor { ticker_info, color }
                 }
@@ -1350,45 +1331,6 @@ pub enum CandlestickSettingsMessage {
     Reset,
 }
 
-pub(super) fn data_settings_content(
-    trade_data_enabled: bool,
-    legend_visibility: LegendVisibility,
-    trade_data_lock_reason: Option<&'static str>,
-) -> InspectorContent<'static, Message> {
-    let trade_data_enabled_checkbox = checkbox(trade_data_enabled)
-        .label("Trade data")
-        .on_toggle_maybe(
-            trade_data_lock_reason
-                .is_none()
-                .then_some(Message::TradeDataEnabledChanged),
-        );
-    let trade_data_setting = column![trade_data_enabled_checkbox].spacing(4);
-    let trade_data_enabled_checkbox = tooltip(
-        trade_data_setting,
-        Some(
-            trade_data_lock_reason
-                .unwrap_or("Allow plots that need trade data to subscribe and fetch it"),
-        ),
-        TooltipPosition::Left,
-    );
-
-    let legend_picklist = tooltip(
-        pick_list(
-            LegendVisibility::ALL,
-            Some(legend_visibility),
-            Message::LegendVisibilityChanged,
-        )
-        .width(Length::Fill),
-        None,
-        TooltipPosition::Left,
-    );
-
-    InspectorContent::new(vec![
-        InspectorSection::titled("Data", trade_data_enabled_checkbox).with_modal_container(),
-        InspectorSection::titled("Legend visibility", legend_picklist).with_modal_container(),
-    ])
-}
-
 fn footprint_section(config: FootprintConfig) -> Element<'static, Message> {
     let cluster_picklist = pick_list(ClusterKind::ALL, Some(config.cluster_kind), move |kind| {
         Message::ClusterKindSelected(kind)
@@ -1660,7 +1602,6 @@ fn candlestick_cfg_view<'a>(
     ticker: TickerInfo,
     config: CandlestickConfig,
     mark: MarkKind,
-    series_editor: &'a TickerSeriesEditor,
     base_series: Option<SeriesStyleEntry>,
     theme_accents: ThemeAccents,
 ) -> Element<'a, Message> {
@@ -1717,9 +1658,7 @@ fn candlestick_cfg_view<'a>(
             content = content.push(
                 InspectorSection::titled(
                     "Line style",
-                    series_editor
-                        .view(&series, theme_accents)
-                        .map(Message::SeriesEditor),
+                    series.view(theme_accents).map(Message::SeriesEditor),
                 )
                 .with_modal_container()
                 .into_element(),
@@ -1733,7 +1672,6 @@ fn candlestick_cfg_view<'a>(
 
 fn series_cfg_view<'a>(
     ticker: TickerInfo,
-    series_editor: &'a TickerSeriesEditor,
     series: Option<SeriesStyleEntry>,
     theme_accents: ThemeAccents,
 ) -> Element<'a, Message> {
@@ -1746,9 +1684,7 @@ fn series_cfg_view<'a>(
         content = content.push(
             InspectorSection::titled(
                 "Line",
-                series_editor
-                    .view(&series, theme_accents)
-                    .map(Message::SeriesEditor),
+                series.view(theme_accents).map(Message::SeriesEditor),
             )
             .with_modal_container()
             .into_element(),
@@ -1932,16 +1868,12 @@ impl State {
                     .indicators
                     .primary_mark()
                     .unwrap_or(MarkKind::Candle),
-                context.series_editor(),
                 context.series_style_entry(context.data.base_ticker()),
                 theme_accents,
             ),
-            SettingsTarget::Series(ticker) => series_cfg_view(
-                *ticker,
-                context.series_editor(),
-                context.series_style_entry(*ticker),
-                theme_accents,
-            ),
+            SettingsTarget::Series(ticker) => {
+                series_cfg_view(*ticker, context.series_style_entry(*ticker), theme_accents)
+            }
             SettingsTarget::Footprint => footprint_cfg_view(
                 context.options.footprint,
                 context.trade_data_enabled,

@@ -75,6 +75,7 @@ impl Default for Dashboard {
 #[derive(Debug, Clone)]
 pub enum Event {
     OpenUrlRequested(String),
+    OpenNetworkSettings,
     Notification(Toast),
     DistributeFetchedData {
         pane_id: uuid::Uuid,
@@ -169,12 +170,7 @@ impl Dashboard {
                 Some(id) => {
                     if let Some(state) = self.get_mut_pane_state_by_uuid(main_window.id, id) {
                         if let DashboardError::Fetch(msg, Some(req_id)) = &err {
-                            let pane::Content::Kline { chart: Some(c), .. } = &mut state.content
-                            else {
-                                return (Task::none(), None);
-                            };
-
-                            if !c.apply_fetch_update(pane::FetchUpdate::Failed(*req_id)) {
+                            if !state.content.apply_fetch_failure(*req_id) {
                                 return (Task::none(), None);
                             }
                             log::error!("Fetch error: {msg}");
@@ -356,6 +352,9 @@ impl Dashboard {
                         }
                         pane::Effect::FocusWidget(id) => {
                             return (iced::widget::operation::focus(id), None);
+                        }
+                        pane::Effect::OpenNetworkSettings => {
+                            return (Task::none(), Some(Event::OpenNetworkSettings));
                         }
                         pane::Effect::OpenUrl(url) => {
                             return (Task::none(), Some(Event::OpenUrlRequested(url)));
@@ -906,13 +905,11 @@ impl Dashboard {
                         }
                     } else if let Some(pane_state) =
                         self.get_mut_pane_state_by_uuid(main_window, pane_id)
-                        && let pane::Content::Kline { chart: Some(c), .. } = &mut pane_state.content
                         && let Some(req_id) = req_id
                     {
-                        c.apply_fetch_update(pane::FetchUpdate::TradeFetchNoData {
-                            ticker_info: stream_type.ticker_info(),
-                            req_id,
-                        });
+                        pane_state
+                            .content
+                            .apply_trade_fetch_no_data(stream_type.ticker_info(), req_id);
                     }
                 } else {
                     let filtered_batch = batch
@@ -985,29 +982,13 @@ impl Dashboard {
             };
         };
 
-        match &mut pane_state.content {
-            pane::Content::Kline { chart: Some(c), .. } => {
-                c.apply_data(pane::DataUpdate::HistoricalTrades {
-                    ticker_info,
-                    trades,
-                    is_batches_done,
-                    req_id,
-                });
-
-                Ok(())
-            }
-            pane::Content::Kline { chart: None, .. } if req_id.is_some() => Ok(()),
-            pane::Content::Kline { chart: None, .. } => Err(DashboardError::Unknown(
-                "fetched trades but no chart found".to_string(),
-            )),
-            _ if req_id.is_some() => Ok(()),
-            _ => Err(DashboardError::Unknown(
-                "No matching chart found for fetched trades".to_string(),
-            )),
-        }
+        pane_state
+            .content
+            .insert_historical_trades(ticker_info, trades, is_batches_done, req_id)
+            .map_err(|reason| DashboardError::Unknown(reason.to_string()))
     }
 
-    pub fn update_latest_klines(
+    pub fn ingest_live_kline(
         &mut self,
         stream: &StreamKind,
         kline: &Kline,
@@ -1018,18 +999,7 @@ impl Dashboard {
         self.iter_all_panes_mut(main_window)
             .for_each(|(_, _, pane_state)| {
                 if pane_state.matches_stream(stream) {
-                    if let pane::Content::Kline { chart: Some(c), .. } = &mut pane_state.content {
-                        let ticker_info = stream.ticker_info();
-                        if let StreamKind::Kline { timeframe, .. } = stream {
-                            c.apply_live_profile_kline(*timeframe, ticker_info, kline);
-                            if c.basis() == data::chart::Basis::Time(*timeframe) {
-                                c.apply_data(pane::DataUpdate::LiveKline {
-                                    ticker_info: &ticker_info,
-                                    kline,
-                                });
-                            }
-                        }
-                    }
+                    pane_state.content.ingest_live_kline(stream, kline);
                     found_match = true;
                 }
             });
@@ -1042,7 +1012,7 @@ impl Dashboard {
         }
     }
 
-    pub fn ingest_depth(
+    pub fn ingest_live_depth(
         &mut self,
         stream: &StreamKind,
         update_t: UnixMs,
@@ -1054,21 +1024,9 @@ impl Dashboard {
         self.iter_all_panes_mut(main_window)
             .for_each(|(_, _, pane_state)| {
                 if pane_state.matches_stream(stream) {
-                    match &mut pane_state.content {
-                        pane::Content::ShaderHeatmap { chart, .. } => {
-                            if let Some(c) = chart {
-                                c.insert_depth(&depth, update_t);
-                            }
-                        }
-                        pane::Content::Ladder(panel) => {
-                            if let Some(panel) = panel {
-                                panel.insert_depth(&depth, update_t);
-                            }
-                        }
-                        _ => {
-                            log::error!("No chart found for the stream: {stream:?}");
-                        }
-                    }
+                    pane_state
+                        .content
+                        .ingest_live_depth(stream, &depth, update_t);
                     found_match = true;
                 }
             });
@@ -1080,7 +1038,7 @@ impl Dashboard {
         }
     }
 
-    pub fn ingest_trades(
+    pub fn ingest_live_trades(
         &mut self,
         stream: &StreamKind,
         buffer: &[Trade],
@@ -1092,33 +1050,9 @@ impl Dashboard {
         self.iter_all_panes_mut(main_window)
             .for_each(|(_, _, pane_state)| {
                 if pane_state.matches_stream(stream) {
-                    match &mut pane_state.content {
-                        pane::Content::ShaderHeatmap { chart, .. } => {
-                            if let Some(c) = chart {
-                                c.insert_trades(buffer, update_t);
-                            }
-                        }
-                        pane::Content::Kline { chart: Some(c), .. } => {
-                            let ticker_info = stream.ticker_info();
-                            c.apply_data(pane::DataUpdate::LiveTrades {
-                                ticker_info: &ticker_info,
-                                trades: buffer,
-                            });
-                        }
-                        pane::Content::TimeAndSales(panel) => {
-                            if let Some(p) = panel {
-                                p.insert_buffer(buffer);
-                            }
-                        }
-                        pane::Content::Ladder(panel) => {
-                            if let Some(p) = panel {
-                                p.insert_trades(buffer);
-                            }
-                        }
-                        _ => {
-                            log::error!("No chart found for the stream: {stream:?}");
-                        }
-                    }
+                    pane_state
+                        .content
+                        .ingest_live_trades(stream, buffer, update_t);
                     found_match = true;
                 }
             });
@@ -1352,7 +1286,8 @@ impl Dashboard {
                 .chain(self.refresh_streams(main_window)),
             pane::Effect::SwitchTickersInGroup(_)
             | pane::Effect::FocusWidget(_)
-            | pane::Effect::OpenUrl(_) => Task::none(),
+            | pane::Effect::OpenUrl(_)
+            | pane::Effect::OpenNetworkSettings => Task::none(),
         }
     }
 

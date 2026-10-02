@@ -1,5 +1,7 @@
 use super::fetch::FetchCoordinator;
+use super::presentation::{IndicatorPresentationCache, IndicatorPresentationResolver};
 use super::rebuild::RebuildCoordinator;
+use crate::widget::chart::kline::IndicatorPresentationContext;
 use data::chart::Basis;
 use data::chart::kline::composition::{ChartComposition, MarkKind};
 use data::chart::kline::indicators::{
@@ -9,8 +11,8 @@ use data::chart::kline::indicators::{
 use data::chart::kline::{
     BaseSeriesSource, IndicatorConfig, IndicatorId, IndicatorInputCoverage,
     IndicatorInputCoverageState, IndicatorInputSource, IndicatorInstance, IndicatorInstanceId,
-    IndicatorInstanceStore, IndicatorLayout, IndicatorOutputRef, IndicatorStyleOverrides,
-    IndicatorUpdateScope, KlineData, KlineIndexChange, LineStrokeStyle, ThemeAccent,
+    IndicatorInstanceStore, IndicatorOutputRef, IndicatorStyleOverrides, IndicatorUpdateScope,
+    KlineData, KlineIndexChange, LineStrokeStyle, ThemeAccent,
 };
 use data::config::theme::{ThemeColor, ThemeColorShade};
 use exchange::TickerInfo;
@@ -52,6 +54,12 @@ pub(super) struct IndicatorRebuildPlan {
     pub(super) dirty_epochs: Vec<(IndicatorInstanceId, u64)>,
 }
 
+struct IndicatorRebuildGroup {
+    dirty_ids: Vec<IndicatorInstanceId>,
+    calculation_ids: Vec<IndicatorInstanceId>,
+    scope: IndicatorUpdateScope,
+}
+
 impl IndicatorRebuildReason {
     pub(super) fn allows_partial_recalculation(self) -> bool {
         matches!(
@@ -88,9 +96,10 @@ impl IndicatorRebuildReason {
 }
 
 pub(super) struct IndicatorState {
-    layout: IndicatorLayout,
-    instances: IndicatorInstanceStore,
-    input_coverage: IndicatorInputCoverage,
+    presentation: IndicatorPresentationCache,
+    pub(super) composition: ChartComposition,
+    pub(super) instances: IndicatorInstanceStore,
+    pub(super) input_coverage: IndicatorInputCoverage,
     dirty_reasons: FxHashMap<IndicatorInstanceId, IndicatorRebuildReason>,
     dirty_epochs: FxHashMap<IndicatorInstanceId, u64>,
     preview_dirty: bool,
@@ -155,11 +164,15 @@ impl IndicatorState {
         let default_volume = IndicatorInstanceId::default_for(&default_volume_id);
         let instances = IndicatorInstanceStore::from_instances(vec![IndicatorInstance::new(
             default_volume,
-            default_volume_id,
+            default_volume_id.clone(),
         )]);
 
+        let mut composition = ChartComposition::prototype_kline();
+        let _ = composition.add_indicator(default_volume, default_volume_id);
+
         Self {
-            layout: IndicatorLayout::new(default_volume),
+            presentation: IndicatorPresentationCache::default(),
+            composition,
             instances,
             input_coverage: IndicatorInputCoverage::default(),
             dirty_reasons: FxHashMap::default(),
@@ -169,8 +182,24 @@ impl IndicatorState {
         }
     }
 
+    pub(super) fn refresh_presentation(
+        &mut self,
+        data: &KlineData,
+        basis: Basis,
+        trade_data_enabled: bool,
+    ) {
+        let resolver = IndicatorPresentationResolver::new(self, data, basis, trade_data_enabled);
+        if let Some(presentation) = self.presentation.refreshed(resolver) {
+            self.presentation = presentation;
+        }
+    }
+
+    pub(super) fn presentation_context(&self) -> IndicatorPresentationContext {
+        self.presentation.context(self)
+    }
+
     pub(super) fn mark_rebuild_pending(&mut self, reason: IndicatorRebuildReason) {
-        let selected_indicators = self.layout.selected_indicators();
+        let selected_indicators = self.composition.selected_indicators();
         self.dirty_reasons
             .retain(|id, _| selected_indicators.contains(id));
         for id in selected_indicators {
@@ -178,54 +207,9 @@ impl IndicatorState {
         }
     }
 
-    pub(super) fn layout(&self) -> &IndicatorLayout {
-        &self.layout
-    }
-
-    pub(super) fn composition(&self) -> &ChartComposition {
-        self.layout.composition()
-    }
-
-    pub(super) fn composition_mut(&mut self) -> &mut ChartComposition {
-        self.layout.composition_mut()
-    }
-
-    pub(super) fn replace_layout(&mut self, layout: IndicatorLayout) {
-        self.layout = layout;
-    }
-
-    pub(super) fn replace_instances(&mut self, instances: IndicatorInstanceStore) {
-        self.instances = instances;
-    }
-
-    pub(super) fn sync_comparison_sources(
-        &mut self,
-        base_ticker: TickerInfo,
-        selected_tickers: &[TickerInfo],
-    ) {
-        self.layout
-            .sync_comparison_sources(base_ticker, selected_tickers);
-    }
-
     pub(super) fn reconcile_attached_indicator_placements(&mut self) -> bool {
-        self.layout
+        self.composition
             .reconcile_attached_indicator_placements(&self.instances)
-    }
-
-    pub(super) fn restore_primary_scale_after_comparisons(&mut self) -> bool {
-        self.layout.restore_primary_scale_after_comparisons()
-    }
-
-    pub(super) fn layout_mut(&mut self) -> &mut IndicatorLayout {
-        &mut self.layout
-    }
-
-    pub(super) fn instances(&self) -> &IndicatorInstanceStore {
-        &self.instances
-    }
-
-    pub(super) fn input_coverage(&self) -> &IndicatorInputCoverage {
-        &self.input_coverage
     }
 
     pub(super) fn remap_coverage(&mut self, change: KlineIndexChange) {
@@ -270,7 +254,7 @@ impl IndicatorState {
     }
 
     pub(super) fn selected_indicators(&self) -> Vec<IndicatorInstanceId> {
-        self.layout.selected_indicators()
+        self.composition.selected_indicators()
     }
 
     pub(super) fn indicator(&self, id: IndicatorInstanceId) -> Option<&IndicatorInstance> {
@@ -313,7 +297,7 @@ impl IndicatorState {
     }
 
     pub(super) fn primary_mark(&self) -> Option<MarkKind> {
-        self.layout.primary_mark()
+        self.composition.primary_mark()
     }
 
     pub(super) fn unsupported_reason(
@@ -466,16 +450,19 @@ impl IndicatorState {
                         &input_id,
                     )
                     .is_err()
-                    || self.layout.indicator_output_panel_id(&source).is_none()
+                    || self
+                        .composition
+                        .indicator_output_panel_id(&source)
+                        .is_none()
                 {
                     return IndicatorChange::Unchanged;
                 }
 
-                let mut candidate_layout = self.layout.clone();
-                let _ =
-                    candidate_layout.reconcile_attached_indicator_placements(&candidate_instances);
+                let mut candidate_composition = self.composition.clone();
+                let _ = candidate_composition
+                    .reconcile_attached_indicator_placements(&candidate_instances);
                 self.instances = candidate_instances;
-                self.layout = candidate_layout;
+                self.composition = candidate_composition;
                 IndicatorChange::Reconcile {
                     request_fetch: false,
                 }
@@ -581,7 +568,7 @@ impl IndicatorState {
             }
             IndicatorCommand::StyleChanged(IndicatorStyleCommand::Reset(id)) => {
                 let style_changed = self.instances.reset_style(id);
-                let mark_changed = self.layout.reset_indicator_mark(id);
+                let mark_changed = self.composition.reset_indicator_mark(id);
                 if style_changed || mark_changed {
                     IndicatorChange::Visual
                 } else {
@@ -590,7 +577,7 @@ impl IndicatorState {
             }
             IndicatorCommand::StyleChanged(IndicatorStyleCommand::Mark { id, mark }) => {
                 let kind = self.indicator(id).map(|instance| instance.kind.clone());
-                if self.layout.set_indicator_mark(id, mark, kind.as_ref()) {
+                if self.composition.set_indicator_mark(id, mark, kind.as_ref()) {
                     IndicatorChange::Visual
                 } else {
                     IndicatorChange::Unchanged
@@ -603,7 +590,7 @@ impl IndicatorState {
         &mut self,
         id: IndicatorInstanceId,
     ) -> IndicatorChange {
-        if self.layout.toggle_indicator_visibility(id) {
+        if self.composition.toggle_indicator_visibility(id) {
             IndicatorChange::Visual
         } else {
             IndicatorChange::Unchanged
@@ -623,10 +610,7 @@ impl IndicatorState {
             return IndicatorChange::Unchanged;
         }
         let id = self.create_indicator_instance(kind.clone(), data);
-        if !self
-            .layout
-            .add_indicator(id, kind, data.base_ticker().market_type())
-        {
+        if !self.composition.add_indicator(id, kind) {
             let _ = self.instances.remove(id);
             return IndicatorChange::Unchanged;
         }
@@ -673,16 +657,11 @@ impl IndicatorState {
         if !candidate_instances.update_source_binding(id, input_id.clone(), Some(source.clone())) {
             return IndicatorChange::Unchanged;
         }
-        let mut candidate_layout = self.layout.clone();
-        if !candidate_layout.add_indicator_on_source(
-            id,
-            kind.clone(),
-            data.base_ticker().market_type(),
-            &source,
-        ) {
+        let mut candidate_composition = self.composition.clone();
+        if !candidate_composition.add_indicator_on_source(id, kind.clone(), &source) {
             return IndicatorChange::Unchanged;
         }
-        let active_indicators = candidate_layout.selected_indicators();
+        let active_indicators = candidate_composition.selected_indicators();
         if data
             .validate_indicator_source_binding(
                 &active_indicators,
@@ -695,7 +674,7 @@ impl IndicatorState {
             return IndicatorChange::Unchanged;
         }
         self.instances = candidate_instances;
-        self.layout = candidate_layout;
+        self.composition = candidate_composition;
         if let Some(spec) = kind.color_specs().first() {
             let color = spec.default_color();
             let _ = self.instances.update_color(
@@ -790,14 +769,14 @@ impl IndicatorState {
 
         let mut changed = false;
         for removal_id in removal_ids {
-            changed |= self.layout.remove_indicator(removal_id);
+            changed |= self.composition.remove_indicator(removal_id);
             changed |= self.instances.remove(removal_id).is_some();
         }
         changed
     }
 
     pub(super) fn mark_rebuild(&mut self, id: IndicatorInstanceId, reason: IndicatorRebuildReason) {
-        if !self.layout.selected_indicators().contains(&id) {
+        if !self.composition.selected_indicators().contains(&id) {
             return;
         }
 
@@ -970,7 +949,7 @@ impl IndicatorState {
         data: &KlineData,
         fetch: &FetchCoordinator,
         trade_data_enabled: bool,
-        frame_revision: u64,
+        committed_frames_revision: u64,
     ) -> Option<impl std::future::Future<Output = u64> + Send + 'static + use<>> {
         if self.pending_rebuild_job().is_some() {
             return None;
@@ -981,7 +960,7 @@ impl IndicatorState {
             self.selected_indicators(),
             data.committed_indicator_frames(trade_data_enabled),
             self.instances.clone(),
-            frame_revision,
+            committed_frames_revision,
         )
     }
 
@@ -989,14 +968,14 @@ impl IndicatorState {
         &mut self,
         data: &mut KlineData,
         job_id: u64,
-        frame_revision: u64,
+        committed_frames_revision: u64,
         trade_data_enabled: bool,
     ) -> bool {
         let Some(completed) = self.rebuild.poll(job_id) else {
             return false;
         };
         let snapshot = completed.snapshot;
-        if !(snapshot.frame_revision == frame_revision
+        if !(snapshot.committed_frames_revision == committed_frames_revision
             && self.dirty_epochs_match(&snapshot.plan.dirty_epochs)
             && snapshot.active_ids == self.selected_indicators())
         {
@@ -1014,11 +993,11 @@ impl IndicatorState {
         true
     }
 
-    fn full_rebuild_plan(
+    fn ready_rebuild_groups(
         &self,
         data: &KlineData,
         fetch: &FetchCoordinator,
-    ) -> Option<IndicatorRebuildPlan> {
+    ) -> Vec<IndicatorRebuildGroup> {
         let active = self.selected_indicators();
         let dirty = self
             .dirty_reasons
@@ -1026,42 +1005,56 @@ impl IndicatorState {
             .copied()
             .filter(|id| active.contains(id))
             .collect::<Vec<_>>();
-        if dirty.is_empty() {
-            return None;
-        }
+        self.rebuild_groups(data, &dirty)
+            .into_iter()
+            .filter_map(|group| {
+                let calculation_ids = data.calculation_indicator_ids(&group);
+                let waits_for_complete_inputs = group.iter().any(|id| {
+                    self.rebuild_reason(*id)
+                        .is_some_and(|reason| !reason.allows_partial_recalculation())
+                });
+                if waits_for_complete_inputs
+                    && self.has_pending_inputs(&calculation_ids, data, fetch)
+                {
+                    return None;
+                }
+                let scope = group
+                    .iter()
+                    .map(|id| self.rebuild_scope(*id))
+                    .reduce(IndicatorUpdateScope::merge)
+                    .unwrap_or(IndicatorUpdateScope::Full);
+                let scope = if data.has_indicator_entries(&group) {
+                    scope
+                } else {
+                    IndicatorUpdateScope::Full
+                };
+                Some(IndicatorRebuildGroup {
+                    dirty_ids: group,
+                    calculation_ids,
+                    scope,
+                })
+            })
+            .collect()
+    }
 
+    fn full_rebuild_plan(
+        &self,
+        data: &KlineData,
+        fetch: &FetchCoordinator,
+    ) -> Option<IndicatorRebuildPlan> {
         let mut dirty_ids = Vec::new();
         let mut replay_ids = Vec::new();
-        for group in self.rebuild_groups(data, &dirty) {
-            let calculation_ids = data.calculation_indicator_ids(&group);
-            let waits_for_complete_inputs = group.iter().any(|id| {
-                self.rebuild_reason(*id)
-                    .is_some_and(|reason| !reason.allows_partial_recalculation())
-            });
-            if waits_for_complete_inputs && self.has_pending_inputs(&calculation_ids, data, fetch) {
-                continue;
-            }
-
-            let scope = group
-                .iter()
-                .map(|id| self.rebuild_scope(*id))
-                .reduce(IndicatorUpdateScope::merge)
-                .unwrap_or(IndicatorUpdateScope::Full);
-            let scope = if scope.is_full() || data.has_indicator_entries(&group) {
-                scope
-            } else {
-                IndicatorUpdateScope::Full
-            };
-            if !scope.is_full() {
-                continue;
-            }
-
-            for id in group {
+        for group in self
+            .ready_rebuild_groups(data, fetch)
+            .into_iter()
+            .filter(|group| group.scope.is_full())
+        {
+            for id in group.dirty_ids {
                 if !dirty_ids.contains(&id) {
                     dirty_ids.push(id);
                 }
             }
-            for id in calculation_ids {
+            for id in group.calculation_ids {
                 if !replay_ids.contains(&id) {
                     replay_ids.push(id);
                 }
@@ -1108,39 +1101,26 @@ impl IndicatorState {
         }
         let active = self.selected_indicators();
         self.dirty_reasons.retain(|id, _| active.contains(id));
-        let dirty = self.dirty_reasons.keys().copied().collect::<Vec<_>>();
 
         let mut rebuilt_ids = Vec::new();
         let mut incremental_frames = Vec::new();
         let mut changed = false;
 
-        for group in self.rebuild_groups(data, &dirty) {
-            let waits_for_complete_inputs = group.iter().any(|id| {
-                self.rebuild_reason(*id)
-                    .is_some_and(|reason| !reason.allows_partial_recalculation())
-            });
-            if waits_for_complete_inputs && self.has_pending_inputs(&group, data, fetch) {
-                continue;
-            }
-
-            let scope = group
-                .iter()
-                .map(|id| self.rebuild_scope(*id))
-                .reduce(IndicatorUpdateScope::merge)
-                .unwrap_or(IndicatorUpdateScope::Full);
-            let scope = if scope.is_full() || data.has_indicator_entries(&group) {
-                scope
-            } else {
-                IndicatorUpdateScope::Full
-            };
-            if scope.is_full() {
-                continue;
-            }
-            let frames =
-                data.recalculate_indicators(&self.instances, &group, scope, trade_data_enabled);
+        for group in self
+            .ready_rebuild_groups(data, fetch)
+            .into_iter()
+            .filter(|group| !group.scope.is_full())
+        {
+            let frames = data.recalculate_indicators(
+                &self.instances,
+                &group.dirty_ids,
+                group.scope,
+                trade_data_enabled,
+            );
             incremental_frames.extend(frames.iter().cloned());
-            self.dirty_reasons.retain(|id, _| !group.contains(id));
-            rebuilt_ids.extend(group);
+            self.dirty_reasons
+                .retain(|id, _| !group.dirty_ids.contains(id));
+            rebuilt_ids.extend(group.dirty_ids);
             changed = true;
         }
 

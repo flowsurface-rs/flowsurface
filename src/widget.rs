@@ -31,6 +31,45 @@ pub const PANE_CONTROL_BTN_HEIGHT: f32 = 26.0;
 #[allow(dead_code)]
 pub const DEFAULT_TOOLTIP_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
+#[derive(Debug, Clone, Copy, Default)]
+pub enum BannerKind {
+    #[default]
+    Normal,
+    Warning,
+    Error,
+}
+
+pub fn banner<'a, Message: 'a>(
+    message: impl iced::widget::text::IntoFragment<'a>,
+    kind: BannerKind,
+) -> Element<'a, Message> {
+    container(
+        row![
+            container(iced_text("!").size(style::text_size::SECTION)).padding([0, 8]),
+            iced_text(message)
+                .wrapping(iced::widget::text::Wrapping::Word)
+                .size(style::text_size::SMALL)
+                .width(Fill),
+        ]
+        .spacing(4)
+        .align_y(Alignment::Center),
+    )
+    .padding(6)
+    .width(Fill)
+    .style(move |theme: &Theme| {
+        let palette = theme.palette();
+        iced::widget::container::Style {
+            text_color: Some(match kind {
+                BannerKind::Normal => palette.text,
+                BannerKind::Warning => palette.warning,
+                BannerKind::Error => palette.danger,
+            }),
+            ..style::modal_container(theme)
+        }
+    })
+    .into()
+}
+
 pub fn tooltip<'a, Message: 'a>(
     content: impl Into<Element<'a, Message>>,
     tooltip: Option<&'a str>,

@@ -122,10 +122,10 @@ impl RequestHandler {
             match status {
                 RequestStatus::Completed => return Ok(None),
                 RequestStatus::NoData => return Err(ReqError::NoData),
-                RequestStatus::Pending if !is_kline_fetch(&fetch) => {
+                RequestStatus::Pending if !is_history_fetch(&fetch) => {
                     return Err(ReqError::Overlaps);
                 }
-                RequestStatus::Failed(ts) if !is_kline_fetch(&fetch) => {
+                RequestStatus::Failed(ts) if !is_history_fetch(&fetch) => {
                     let now_ms = chrono::Utc::now().timestamp_millis() as u64;
                     if now_ms.saturating_sub(ts) > Self::RETRY_AFTER_MS {
                         if let Some(existing) = self.requests.get_mut(&existing_id) {
@@ -140,7 +140,7 @@ impl RequestHandler {
             }
         }
 
-        if is_kline_fetch(&fetch) {
+        if is_history_fetch(&fetch) {
             if self.requests.values().any(|existing| {
                 existing.status == RequestStatus::Pending && existing.overlaps(&fetch)
             }) {
@@ -191,21 +191,6 @@ impl RequestHandler {
         self.requests.values().any(|request| {
             request.status == RequestStatus::Pending
                 && matches!(request.fetch_type, FetchRange::Trades(..))
-        })
-    }
-
-    pub(crate) fn completed_trade_ranges(&self) -> impl Iterator<Item = (UnixMs, UnixMs)> + '_ {
-        self.requests.values().filter_map(|request| {
-            if !matches!(
-                &request.status,
-                RequestStatus::Completed | RequestStatus::NoData
-            ) {
-                return None;
-            }
-            match request.fetch_type {
-                FetchRange::Trades(from, to) => Some((from, to)),
-                _ => None,
-            }
         })
     }
 
@@ -403,6 +388,10 @@ impl FetchRequest {
         match (&self.fetch_type, range) {
             (FetchRange::Kline(s1, e1), FetchRange::Kline(s2, e2)) => s1 <= e2 && s2 <= e1,
             (
+                FetchRange::OpenInterest { from: s1, to: e1 },
+                FetchRange::OpenInterest { from: s2, to: e2 },
+            ) => s1 <= e2 && s2 <= e1,
+            (
                 FetchRange::ProfileKline {
                     timeframe: t1,
                     from: s1,
@@ -419,10 +408,10 @@ impl FetchRequest {
     }
 }
 
-fn is_kline_fetch(range: &FetchRange) -> bool {
+fn is_history_fetch(range: &FetchRange) -> bool {
     matches!(
         range,
-        FetchRange::Kline(..) | FetchRange::ProfileKline { .. }
+        FetchRange::Kline(..) | FetchRange::ProfileKline { .. } | FetchRange::OpenInterest { .. }
     )
 }
 

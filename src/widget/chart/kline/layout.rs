@@ -1,6 +1,6 @@
 use super::Regions;
 use super::composition::{PanelRole, PanelSpec};
-use super::{KlineWidget, PANEL_SPLITTER_HEIGHT};
+use super::{KlineWidget, PANEL_SPLITTER_HEIGHT, Y_AXIS_LABEL_LEFT_INSET};
 use iced::advanced::Layout;
 use iced::{Point, Rectangle};
 
@@ -202,6 +202,22 @@ impl PanelLayoutTree {
 
     pub(super) fn panel(&self, index: usize) -> Option<&PanelLayoutNode> {
         self.panels.get(index)
+    }
+
+    pub(super) fn y_axis_badge_bounds(&self, y: f32, height: f32, content_width: f32) -> Rectangle {
+        let axis = self.regions.y_axis;
+        let right = axis.x + axis.width;
+        let width = axis
+            .width
+            .max(content_width + Y_AXIS_LABEL_LEFT_INSET * 2.0)
+            .min((right - self.regions.plot.x).max(0.0));
+
+        Rectangle {
+            x: right - width,
+            y,
+            width,
+            height,
+        }
     }
 
     pub(super) fn primary_plot_width(&self) -> Option<f32> {

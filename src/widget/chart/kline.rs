@@ -557,6 +557,7 @@ impl<'a> KlineWidget<'a> {
         basis: Basis,
         composition: &'a ChartComposition,
         indicator_instances: &'a IndicatorInstanceStore,
+        indicator_presentation: IndicatorPresentationContext,
         theme_accents: ThemeAccents,
     ) -> Self {
         Self {
@@ -586,7 +587,7 @@ impl<'a> KlineWidget<'a> {
             primary_viewport: PrimaryViewportState::Auto,
             primary_scale_inverted: false,
             indicator_y_ranges: &[],
-            indicator_presentation: IndicatorPresentationContext::default(),
+            indicator_presentation,
             timezone: UserTimezone::Utc,
             version: 0,
             theme_accents,
@@ -660,14 +661,6 @@ impl<'a> KlineWidget<'a> {
 
     pub fn with_indicator_ranges(mut self, ranges: &'a [(PanelId, YUnitRange)]) -> Self {
         self.indicator_y_ranges = ranges;
-        self
-    }
-
-    pub fn with_indicator_presentation(
-        mut self,
-        presentation: IndicatorPresentationContext,
-    ) -> Self {
-        self.indicator_presentation = presentation;
         self
     }
 

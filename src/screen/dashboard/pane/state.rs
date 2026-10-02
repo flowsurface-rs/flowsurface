@@ -1,7 +1,7 @@
 use super::content::{
     self, Content,
     heatmap::HeatmapShader,
-    kline::{Action as KlineAction, ChartCommand, DataUpdate, FetchUpdate, KlineChart},
+    kline::{Action as KlineAction, ChartCommand},
     ladder::Ladder,
     timesales::TimeAndSales,
 };
@@ -16,6 +16,7 @@ use crate::{
         self, ModifierKind,
         pane::{Modal, mini_tickers_list::MiniPanel, stack_modal},
     },
+    notify::Notifications,
     screen::{
         dashboard::pane::{Action, settings},
         sidebar::tickers_table::TickersTable,
@@ -26,7 +27,6 @@ use crate::{
         self, button_with_tooltip,
         inspector::{InspectorBody, InspectorContent, InspectorFooter},
         link_group_button, press_button_with_tooltip,
-        toast::Toast,
     },
     window::{self, PixelRatio, Window},
 };
@@ -61,13 +61,13 @@ pub enum Effect {
     SwitchTickersInGroup(TickerInfo),
     FocusWidget(iced::widget::Id),
     OpenUrl(String),
+    OpenNetworkSettings,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InspectorPage {
     PaneSettings,
     Indicators,
-    KlineSettings,
 }
 
 #[derive(Debug, Clone)]
@@ -110,7 +110,7 @@ pub struct State {
     pub modal: Option<Modal>,
     pub content: Content,
     pub settings: Settings,
-    pub notifications: Vec<Toast>,
+    pub notifications: Notifications,
     pub streams: ResolvedStream,
     pub link_group: Option<LinkGroup>,
 }
@@ -323,20 +323,8 @@ impl State {
         ticker_info: TickerInfo,
         series: &OpenInterestSeries,
     ) {
-        match &mut self.content {
-            Content::Kline { chart, .. } => {
-                let Some(chart) = chart else {
-                    return;
-                };
-                chart.apply_data(DataUpdate::HistoricalOpenInterest {
-                    req_id,
-                    ticker_info,
-                    series,
-                });
-            }
-            _ if req_id.is_some() => {}
-            _ => log::error!("pane content not candlestick"),
-        }
+        self.content
+            .insert_historical_open_interest(req_id, ticker_info, series);
     }
 
     pub fn insert_hist_klines(
@@ -348,72 +336,19 @@ impl State {
         is_batches_done: bool,
         has_data: bool,
     ) {
-        match &mut self.content {
-            Content::Kline { chart, .. } => {
-                if chart.is_none() && req_id.is_some() {
-                    return;
-                }
-
-                if let Some(chart) = chart.as_mut()
-                    && chart.accepts_profile_kline_source(timeframe, ticker_info)
-                    && req_id.is_some_and(|req_id| chart.is_profile_kline_request(req_id))
-                {
-                    chart.insert_historical_profile_klines(
-                        req_id,
-                        timeframe,
-                        ticker_info,
-                        klines,
-                        is_batches_done,
-                        has_data,
-                    );
-                    return;
-                }
-
-                if chart.is_none() {
-                    let mut tickers = Vec::new();
-
-                    if let Some(ready_streams) = self.streams.ready_iter() {
-                        for stream in ready_streams {
-                            let info = stream.ticker_info();
-                            if !tickers.contains(&info) {
-                                tickers.push(info);
-                            }
-                        }
-                    }
-
-                    if tickers.is_empty() {
-                        tickers.push(ticker_info);
-                    }
-
-                    *chart = Some(Box::new(KlineChart::new_with_tickers(
-                        Basis::Time(timeframe),
-                        &tickers,
-                    )));
-                }
-
-                let Some(chart) = chart else {
-                    panic!("Kline chart chart wasn't initialized when inserting klines");
-                };
-
-                if chart.basis() != Basis::Time(timeframe) {
-                    log::warn!(
-                        "Ignoring stale kline fetch for timeframe {:?}; chart basis = {:?}",
-                        timeframe,
-                        chart.basis()
-                    );
-                    return;
-                }
-
-                chart.apply_data(DataUpdate::HistoricalKlines {
-                    req_id,
-                    timeframe,
-                    ticker_info,
-                    klines,
-                });
-            }
-            _ if req_id.is_some() => {}
-            _ => log::error!("pane content not candlestick"),
-        }
+        self.content.insert_historical_klines(
+            self.streams
+                .ready_iter()
+                .into_iter()
+                .flatten()
+                .map(|stream| stream.ticker_info()),
+            req_id,
+            timeframe,
+            ticker_info,
+            klines,
+            is_batches_done,
+            has_data,
+        );
     }
 
     fn has_stream(&self) -> bool {
@@ -599,7 +534,7 @@ impl State {
                         .align_x(Alignment::Center)
                         .spacing(12),
                     ),
-                    &self.notifications,
+                    self.notifications.toasts(),
                     Alignment::End,
                     move |msg| Message::PaneEvent(id, Event::DeleteNotification(msg)),
                 )
@@ -659,7 +594,7 @@ impl State {
                     let selected_basis = chart.basis();
                     let tick_multiplier = chart.tick_multiplier();
                     let kind = ModifierKind::Candlestick(selected_basis, tick_multiplier);
-                    let ticker_info = chart.ticker_info();
+                    let ticker_info = chart.base_ticker_info();
 
                     let modifiers = row![
                         basis_modifier(id, selected_basis, modifier, kind),
@@ -852,11 +787,11 @@ impl State {
 
                 if let Some(action) = action {
                     match action {
-                        KlineAction::OpenSettings => {
-                            self.set_inspector(Some(InspectorPage::KlineSettings));
-                        }
                         KlineAction::RequestFetch(fetch) => {
                             return Some(Effect::RequestFetch(fetch));
+                        }
+                        KlineAction::OpenNetworkSettings => {
+                            return Some(Effect::OpenNetworkSettings);
                         }
                         KlineAction::OpenUrl(url) => return Some(Effect::OpenUrl(url)),
                         KlineAction::RemoveSeries(ti) => {
@@ -887,9 +822,7 @@ impl State {
                 }
             }
             Event::DeleteNotification(idx) => {
-                if idx < self.notifications.len() {
-                    self.notifications.remove(idx);
-                }
+                self.notifications.remove(idx);
             }
             Event::StreamModifierChanged(message) => {
                 if let Some(Modal::StreamModifier(mut modifier)) = self.modal.take() {
@@ -1083,12 +1016,7 @@ impl State {
 
     fn supports_inspector(&self, page: InspectorPage) -> bool {
         match &self.content {
-            Content::Kline {
-                chart: Some(chart), ..
-            } => match page {
-                InspectorPage::PaneSettings | InspectorPage::Indicators => true,
-                InspectorPage::KlineSettings => chart.has_settings_target(),
-            },
+            Content::Kline { chart: Some(_), .. } => true,
             Content::ShaderHeatmap { chart: Some(_), .. }
             | Content::TimeAndSales(Some(_))
             | Content::Ladder(Some(_)) => page == InspectorPage::PaneSettings,
@@ -1097,13 +1025,6 @@ impl State {
     }
 
     fn set_inspector(&mut self, page: Option<InspectorPage>) {
-        if let Content::Kline {
-            chart: Some(chart), ..
-        } = &mut self.content
-        {
-            chart.flush_inspector_update();
-            chart.dismiss_reset_confirmation();
-        }
         self.inspector = page.filter(|page| self.supports_inspector(*page));
     }
 
@@ -1144,15 +1065,6 @@ impl State {
         let title = match page {
             InspectorPage::PaneSettings => "Pane settings".to_owned(),
             InspectorPage::Indicators => "Add indicators or studies".to_owned(),
-            InspectorPage::KlineSettings => {
-                let Content::Kline {
-                    chart: Some(chart), ..
-                } = &self.content
-                else {
-                    return None;
-                };
-                chart.contextual_settings_title()?
-            }
         };
 
         let close = button(icon_text(Icon::Close, 14))
@@ -1205,20 +1117,6 @@ impl State {
                 InspectorBody::view_without_scroll(self.indicators_sidebar_view(pane)?),
                 None,
             ),
-            InspectorPage::KlineSettings => {
-                let Content::Kline {
-                    chart: Some(chart), ..
-                } = &self.content
-                else {
-                    return None;
-                };
-                let (body, footer) = chart.contextual_settings_view(theme_accents)?;
-                let map = move |message| Message::PaneEvent(pane, Event::KlineInteraction(message));
-                (
-                    body.map(map),
-                    footer.map(|(height, footer)| (height, footer.map(map))),
-                )
-            }
         };
         let body = if page == InspectorPage::Indicators {
             body
@@ -1288,7 +1186,7 @@ impl State {
                 ),
                 Some("Drawing tools"),
                 tooltip_pos,
-                control_btn_style(chart.drawing_sidebar_visible()),
+                control_btn_style(chart.left_sidebar_visible()),
             ));
         }
 
@@ -1380,11 +1278,13 @@ impl State {
         } else {
             base
         };
-        let base =
-            widget::toast::Manager::new(base, &self.notifications, Alignment::End, move |msg| {
-                Message::PaneEvent(pane, Event::DeleteNotification(msg))
-            })
-            .into();
+        let base = widget::toast::Manager::new(
+            base,
+            self.notifications.toasts(),
+            Alignment::End,
+            move |msg| Message::PaneEvent(pane, Event::DeleteNotification(msg)),
+        )
+        .into();
 
         let on_blur = Message::PaneEvent(pane, Event::HideModal);
 
@@ -1453,11 +1353,20 @@ impl State {
         if let Content::Kline {
             chart: Some(chart), ..
         } = &mut self.content
-            && chart.dismiss_reset_confirmation()
+            && chart.go_back()
         {
             return true;
         }
-        self.close_inspector()
+        if self.close_inspector() {
+            return true;
+        }
+        if let Content::Kline {
+            chart: Some(chart), ..
+        } = &mut self.content
+        {
+            return chart.handle_escape();
+        }
+        false
     }
 
     pub fn pane_settings_content<'a>(
@@ -1554,12 +1463,7 @@ impl State {
                 .into_iter()
                 .map(|request| (request.req_id, request.fetch, request.stream)),
             |req_id, handle| {
-                if let Content::Kline {
-                    chart: Some(chart), ..
-                } = &mut self.content
-                {
-                    chart.apply_fetch_update(FetchUpdate::FetchHandle { req_id, handle });
-                }
+                self.content.apply_fetch_handle(req_id, handle);
             },
         )
     }
@@ -1605,7 +1509,7 @@ impl Default for State {
             content: Content::Starter,
             settings: Settings::default(),
             streams: ResolvedStream::waiting(vec![]),
-            notifications: vec![],
+            notifications: Notifications::new(),
             link_group: None,
         }
     }

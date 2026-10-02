@@ -154,7 +154,7 @@ pub(crate) struct ResolvedIndicatorPresentation {
     pub(crate) active_readouts: Vec<IndicatorReadoutSpec>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct IndicatorPresentationContext {
     pub(crate) input_coverage: IndicatorInputCoverage,
     presentations: Arc<[ResolvedIndicatorPresentation]>,

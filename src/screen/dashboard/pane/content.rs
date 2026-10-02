@@ -16,18 +16,19 @@ use crate::{
 };
 use data::{
     PaneSettingsSnapshot, PaneSettingsTransfer,
-    chart::Basis,
+    chart::{Basis, kline::OpenInterestSeries},
     layout::pane::{ContentKind, Settings, VisualConfig},
 };
-use exchange::{TickerInfo, Timeframe};
+use exchange::{Kline, TickerInfo, Timeframe, Trade, UnixMs, adapter::StreamKind, depth::Depth};
 use iced::{
     Alignment,
+    task::Handle,
     widget::{button, pane_grid, row, space},
 };
 use std::time::Instant;
 
 use heatmap::HeatmapShader;
-use kline::{Action as KlineAction, ChartCommand, KlineChart};
+use kline::{Action as KlineAction, ChartCommand, DataUpdate, FetchUpdate, KlineChart};
 use ladder::Ladder;
 use timesales::TimeAndSales;
 
@@ -73,8 +74,8 @@ impl Content {
         };
 
         let mut chart = saved_layout.as_ref().map_or_else(
-            || KlineChart::new_with_tickers(basis, tickers),
-            |layout| KlineChart::new_with_tickers_and_config(basis, tickers, layout),
+            || KlineChart::new(basis, tickers),
+            |layout| KlineChart::new_with_config(basis, tickers, layout),
         );
         if let Some(multiplier) = settings.tick_multiply {
             let _ = chart.apply_command(ChartCommand::SetTickMultiplier { multiplier });
@@ -186,7 +187,7 @@ impl Content {
 
     pub fn last_tick(&self) -> Option<Instant> {
         match self {
-            Content::Kline { chart, .. } => Some(chart.as_ref()?.last_update()),
+            Content::Kline { chart, .. } => Some(chart.as_ref()?.last_maintenance_at()),
             Content::TimeAndSales(panel) => Some(panel.as_ref()?.last_update()),
             Content::Ladder(panel) => Some(panel.as_ref()?.last_update()),
             Content::Starter => None,
@@ -271,6 +272,207 @@ impl Content {
         } = self
         {
             chart.redraw_data_if_due(now);
+        }
+    }
+
+    pub fn ingest_live_kline(&mut self, stream: &StreamKind, kline: &Kline) {
+        if let Self::Kline {
+            chart: Some(chart), ..
+        } = self
+            && let StreamKind::Kline {
+                timeframe,
+                ticker_info,
+            } = stream
+        {
+            chart.apply_data(DataUpdate::LiveKline {
+                timeframe: *timeframe,
+                ticker_info,
+                kline,
+            });
+        }
+    }
+
+    pub fn ingest_live_trades(&mut self, stream: &StreamKind, trades: &[Trade], update_t: UnixMs) {
+        match self {
+            Self::ShaderHeatmap { chart, .. } => {
+                if let Some(chart) = chart {
+                    chart.insert_trades(trades, update_t);
+                }
+            }
+            Self::Kline {
+                chart: Some(chart), ..
+            } => {
+                let ticker_info = stream.ticker_info();
+                chart.apply_data(DataUpdate::LiveTrades {
+                    ticker_info: &ticker_info,
+                    trades,
+                });
+            }
+            Self::TimeAndSales(panel) => {
+                if let Some(panel) = panel {
+                    panel.insert_buffer(trades);
+                }
+            }
+            Self::Ladder(panel) => {
+                if let Some(panel) = panel {
+                    panel.insert_trades(trades);
+                }
+            }
+            _ => log::error!("No chart found for the stream: {stream:?}"),
+        }
+    }
+
+    pub fn ingest_live_depth(&mut self, stream: &StreamKind, depth: &Depth, update_t: UnixMs) {
+        match self {
+            Self::ShaderHeatmap { chart, .. } => {
+                if let Some(chart) = chart {
+                    chart.insert_depth(depth, update_t);
+                }
+            }
+            Self::Ladder(panel) => {
+                if let Some(panel) = panel {
+                    panel.insert_depth(depth, update_t);
+                }
+            }
+            _ => log::error!("No chart found for the stream: {stream:?}"),
+        }
+    }
+
+    pub fn insert_historical_trades(
+        &mut self,
+        ticker_info: TickerInfo,
+        trades: &[Trade],
+        is_batches_done: bool,
+        req_id: Option<uuid::Uuid>,
+    ) -> Result<(), &'static str> {
+        match self {
+            Self::Kline {
+                chart: Some(chart), ..
+            } => {
+                chart.apply_data(DataUpdate::HistoricalTrades {
+                    ticker_info,
+                    trades,
+                    is_batches_done,
+                    req_id,
+                });
+                Ok(())
+            }
+            Self::Kline { chart: None, .. } if req_id.is_some() => Ok(()),
+            Self::Kline { chart: None, .. } => Err("fetched trades but no chart found"),
+            _ if req_id.is_some() => Ok(()),
+            _ => Err("No matching chart found for fetched trades"),
+        }
+    }
+
+    pub(super) fn insert_historical_klines(
+        &mut self,
+        tickers: impl IntoIterator<Item = TickerInfo>,
+        req_id: Option<uuid::Uuid>,
+        timeframe: Timeframe,
+        ticker_info: TickerInfo,
+        klines: &[Kline],
+        is_batches_done: bool,
+        has_data: bool,
+    ) {
+        let Self::Kline { chart, .. } = self else {
+            if req_id.is_none() {
+                log::error!("pane content not candlestick");
+            }
+            return;
+        };
+
+        if chart.is_none() {
+            if req_id.is_some() {
+                return;
+            }
+
+            let mut initial_tickers = Vec::new();
+            for ticker in tickers {
+                if !initial_tickers.contains(&ticker) {
+                    initial_tickers.push(ticker);
+                }
+            }
+            if initial_tickers.is_empty() {
+                initial_tickers.push(ticker_info);
+            }
+
+            *chart = Some(Box::new(KlineChart::new(
+                Basis::Time(timeframe),
+                &initial_tickers,
+            )));
+        }
+
+        if let Some(chart) = chart.as_mut() {
+            chart.apply_data(DataUpdate::HistoricalKlines {
+                req_id,
+                timeframe,
+                ticker_info,
+                klines,
+                is_batches_done,
+                has_data,
+            });
+        }
+    }
+
+    pub(super) fn insert_historical_open_interest(
+        &mut self,
+        req_id: Option<uuid::Uuid>,
+        ticker_info: TickerInfo,
+        series: &OpenInterestSeries,
+    ) {
+        let Self::Kline { chart, .. } = self else {
+            if req_id.is_none() {
+                log::error!("pane content not candlestick");
+            }
+            return;
+        };
+
+        if let Some(chart) = chart.as_mut() {
+            chart.apply_data(DataUpdate::HistoricalOpenInterest {
+                req_id,
+                ticker_info,
+                series,
+            });
+        }
+    }
+
+    pub fn apply_fetch_failure(&mut self, req_id: uuid::Uuid) -> bool {
+        if let Self::Kline {
+            chart: Some(chart), ..
+        } = self
+        {
+            chart.apply_fetch_update(FetchUpdate::Failed(req_id))
+        } else {
+            false
+        }
+    }
+
+    pub fn apply_trade_fetch_no_data(
+        &mut self,
+        ticker_info: TickerInfo,
+        req_id: uuid::Uuid,
+    ) -> bool {
+        if let Self::Kline {
+            chart: Some(chart), ..
+        } = self
+        {
+            chart.apply_fetch_update(FetchUpdate::TradeFetchNoData {
+                ticker_info,
+                req_id,
+            })
+        } else {
+            false
+        }
+    }
+
+    pub(super) fn apply_fetch_handle(&mut self, req_id: uuid::Uuid, handle: Handle) -> bool {
+        if let Self::Kline {
+            chart: Some(chart), ..
+        } = self
+        {
+            chart.apply_fetch_update(FetchUpdate::FetchHandle { req_id, handle })
+        } else {
+            false
         }
     }
 

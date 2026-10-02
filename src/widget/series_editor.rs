@@ -31,91 +31,23 @@ pub struct SeriesStyleEntry {
     pub stroke_style: LineStrokeStyle,
 }
 
-#[derive(Default)]
-pub struct TickerSeriesEditor {
-    pub show_config_for: Option<TickerInfo>,
-    pub editing_color: Option<SeriesColor>,
-    pub editing_line_width: Option<u8>,
-    pub editing_stroke_style: Option<LineStrokeStyle>,
-}
-
-impl TickerSeriesEditor {
-    pub fn open_for(
-        &mut self,
-        ticker: TickerInfo,
-        color: SeriesColor,
-        line_width: u8,
-        stroke_style: LineStrokeStyle,
-    ) {
-        self.show_config_for = Some(ticker);
-        self.editing_color = Some(color);
-        self.editing_line_width = Some(line_width);
-        self.editing_stroke_style = Some(stroke_style);
-    }
-
-    pub fn is_open_for(&self, ticker: TickerInfo) -> bool {
-        self.show_config_for == Some(ticker)
-    }
-
-    pub fn update(&mut self, message: Message) -> Option<Change> {
+impl SeriesStyleEntry {
+    pub fn change(&self, message: Message) -> Change {
+        let theme_color = self.color.theme_color().unwrap_or_default();
         match message {
             Message::ColorAccentChanged(accent) => {
-                let shade = self.editing_theme_color().shade;
-                self.update_theme_color(accent, shade)
+                Change::ColorChanged(self.ticker, SeriesColor::theme(accent, theme_color.shade))
             }
             Message::ColorShadeChanged(shade) => {
-                let accent = self.editing_theme_color().accent;
-                self.update_theme_color(accent, shade)
+                Change::ColorChanged(self.ticker, SeriesColor::theme(theme_color.accent, shade))
             }
-            Message::LineWidthChanged(width) => {
-                self.editing_line_width = Some(width);
-                self.show_config_for
-                    .map(|ticker| Change::LineWidthChanged(ticker, width))
-            }
-            Message::StrokeStyleChanged(stroke_style) => {
-                self.editing_stroke_style = Some(stroke_style);
-                self.show_config_for
-                    .map(|ticker| Change::StrokeStyleChanged(ticker, stroke_style))
-            }
+            Message::LineWidthChanged(width) => Change::LineWidthChanged(self.ticker, width),
+            Message::StrokeStyleChanged(style) => Change::StrokeStyleChanged(self.ticker, style),
         }
     }
 
-    fn editing_theme_color(&self) -> data::config::theme::ThemeColor {
-        self.editing_color
-            .and_then(SeriesColor::theme_color)
-            .unwrap_or_default()
-    }
-
-    fn update_theme_color(
-        &mut self,
-        accent: Option<ThemeAccent>,
-        shade: ThemeColorShade,
-    ) -> Option<Change> {
-        let color = SeriesColor::theme(accent, shade);
-        self.editing_color = Some(color);
-        self.show_config_for
-            .map(|ticker| Change::ColorChanged(ticker, color))
-    }
-
-    pub(crate) fn view<'a>(
-        &'a self,
-        entry: &SeriesStyleEntry,
-        theme_accents: ThemeAccents,
-    ) -> Element<'a, Message> {
-        let is_open_for_entry = self.is_open_for(entry.ticker);
-        let color = is_open_for_entry
-            .then_some(self.editing_color)
-            .flatten()
-            .unwrap_or(entry.color);
-        let line_width = is_open_for_entry
-            .then_some(self.editing_line_width)
-            .flatten()
-            .unwrap_or(entry.line_width);
-        let stroke_style = is_open_for_entry
-            .then_some(self.editing_stroke_style)
-            .flatten()
-            .unwrap_or(entry.stroke_style);
-        let theme_color = color.theme_color().unwrap_or_default();
+    pub(crate) fn view<'a>(&self, theme_accents: ThemeAccents) -> Element<'a, Message> {
+        let theme_color = self.color.theme_color().unwrap_or_default();
         let color_choices =
             theme_color_control(theme_color, theme_accents, Message::ColorAccentChanged);
 
@@ -124,14 +56,14 @@ impl TickerSeriesEditor {
         let line_width_slider = classic_slider_row(
             Some(text("Width")),
             MIN_LINE_WIDTH..=MAX_LINE_WIDTH,
-            line_width,
+            self.line_width,
             Message::LineWidthChanged,
             |value| value.to_string(),
             Some(1),
         );
         let stroke_picker = pick_list(
             LineStrokeStyle::ALL,
-            Some(stroke_style),
+            Some(self.stroke_style),
             Message::StrokeStyleChanged,
         )
         .width(Length::Fill);
@@ -147,12 +79,5 @@ impl TickerSeriesEditor {
         column![color_controls, stroke_and_shade, line_width_slider,]
             .spacing(4)
             .into()
-    }
-
-    pub fn close(&mut self) {
-        self.show_config_for = None;
-        self.editing_color = None;
-        self.editing_line_width = None;
-        self.editing_stroke_style = None;
     }
 }

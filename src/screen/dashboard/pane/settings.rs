@@ -2,13 +2,16 @@ use crate::widget::study_configurator;
 use data::layout::pane::VisualConfig;
 
 mod heatmap;
+mod kline;
 mod ladder;
 mod timesales;
 
 pub use heatmap::heatmap_shader_cfg_view;
-use iced::{Element, widget::button};
+pub use kline::kline_cfg_view;
 pub use ladder::ladder_cfg_view;
 pub use timesales::timesales_cfg_view;
+
+use iced::{Element, widget::button};
 
 #[derive(Debug, Clone)]
 pub enum Message {

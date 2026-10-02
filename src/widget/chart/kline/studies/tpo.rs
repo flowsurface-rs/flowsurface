@@ -22,6 +22,7 @@ const TPO_ACTION_BUTTON_GAP_PX: f32 = 3.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TpoInteraction {
+    SplitAt { boundary: UnixMs },
     MergeLeft { boundary: UnixMs },
     MoveBoundary { from: UnixMs, to: UnixMs },
     Reset { start: UnixMs, end: UnixMs },
@@ -29,12 +30,13 @@ pub enum TpoInteraction {
 
 #[derive(Debug, Clone, Copy)]
 struct TpoProfileGeometry {
-    pub(super) index: usize,
-    pub(super) start: UnixMs,
-    pub(super) end: UnixMs,
-    pub(super) overlay_bounds: Rectangle,
-    pub(super) button_bounds: Option<Rectangle>,
-    pub(super) reset_button_bounds: Option<Rectangle>,
+    index: usize,
+    start: UnixMs,
+    end: UnixMs,
+    overlay_bounds: Rectangle,
+    control_row_y: f32,
+    button_bounds: Option<Rectangle>,
+    reset_button_bounds: Option<Rectangle>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -308,8 +310,9 @@ impl TpoView<'_> {
                     width: visible_right - visible_left,
                     height: visible_bottom - visible_top,
                 };
-                let button_y = (overlay_bounds.y + TPO_ACTION_BUTTON_GAP_PX)
-                    .min(scene.layout.regions.plot.y + plot_bottom - TPO_ACTION_BUTTON_HEIGHT_PX);
+                let button_y =
+                    (overlay_bounds.y - TPO_ACTION_BUTTON_GAP_PX - TPO_ACTION_BUTTON_HEIGHT_PX)
+                        .max(scene.layout.regions.plot.y + plot.y);
                 let selected = selected_profile == Some(profile.start);
                 let reset_visible = selected
                     && self
@@ -361,6 +364,7 @@ impl TpoView<'_> {
                     start: profile.start,
                     end: profile.end,
                     overlay_bounds,
+                    control_row_y: button_y,
                     button_bounds,
                     reset_button_bounds,
                 })
@@ -620,6 +624,51 @@ impl TpoView<'_> {
                     .with_width(border_width),
             );
 
+            let plot = scene.primary_plot();
+            let plot_left = scene.layout.regions.plot.x + plot.x;
+            let plot_top = scene.layout.regions.plot.y + plot.y;
+            let handle_y = geometry.overlay_bounds.center().y - 10.0;
+            let boundaries = [
+                (geometry.index > 0).then_some(geometry.start),
+                self.object
+                    .profiles
+                    .get(geometry.index + 1)
+                    .map(|profile| profile.start),
+            ];
+            for boundary in boundaries.into_iter().flatten() {
+                let Some(unit) = scene.x.axis.unit_from_time_f32(boundary) else {
+                    continue;
+                };
+                let x = scene.layout.regions.plot.x + scene.map_x_plot_f32(unit);
+                if x - 6.0 < plot_left
+                    || x + 6.0 > plot_left + plot.width
+                    || handle_y < plot_top
+                    || handle_y + 20.0 > plot_top + plot.height
+                {
+                    continue;
+                }
+                let handle =
+                    canvas::Path::rectangle(Point::new(x - 6.0, handle_y), Size::new(12.0, 20.0));
+                frame.fill(&handle, palette.background.base.color);
+                frame.stroke(
+                    &handle,
+                    canvas::Stroke::default()
+                        .with_color(border_color)
+                        .with_width(border_width),
+                );
+                for offset in [-2.0, 2.0] {
+                    frame.stroke(
+                        &canvas::Path::line(
+                            Point::new(x + offset, handle_y + 6.0),
+                            Point::new(x + offset, handle_y + 14.0),
+                        ),
+                        canvas::Stroke::default()
+                            .with_color(border_color)
+                            .with_width(border_width),
+                    );
+                }
+            }
+
             for (button, label) in [
                 (geometry.reset_button_bounds, "Reset"),
                 (geometry.button_bounds, "Merge ←"),
@@ -679,12 +728,6 @@ impl TpoView<'_> {
     ) {
         let marker_width = CHAR_W;
         let marker_height = TEXT_SIZE;
-        if geometry.overlay_bounds.width < marker_width
-            || geometry.overlay_bounds.height < marker_height
-        {
-            return;
-        }
-
         let marker_right = geometry
             .reset_button_bounds
             .or(geometry.button_bounds)
@@ -693,8 +736,11 @@ impl TpoView<'_> {
                     - TPO_ACTION_BUTTON_GAP_PX,
                 |button| button.x - TPO_ACTION_BUTTON_GAP_PX,
             );
+        if marker_right - marker_width < geometry.overlay_bounds.x + TPO_ACTION_BUTTON_GAP_PX {
+            return;
+        }
         let marker_x = marker_right - marker_width * 0.5;
-        let marker_y = geometry.overlay_bounds.y + TPO_ACTION_BUTTON_GAP_PX + marker_height * 0.5;
+        let marker_y = geometry.control_row_y + TPO_ACTION_BUTTON_HEIGHT_PX * 0.5;
 
         frame.fill_text(canvas::Text {
             content: "!".to_owned(),

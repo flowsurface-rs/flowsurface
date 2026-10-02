@@ -3,7 +3,9 @@ use super::composition::{MarkKind, PanelId};
 use super::helpers::PixelGeometry;
 use super::interaction::{CacheInvalidation, LayerContext, LayerEffects, LayerGesture};
 use super::layout::contains_inclusive;
-use super::{KlinePanelKind, SelectionDisposition, TEXT_SIZE, Y_AXIS_LABEL_LEFT_INSET, YUnit};
+use super::{
+    CHAR_W, KlinePanelKind, SelectionDisposition, TEXT_SIZE, Y_AXIS_LABEL_LEFT_INSET, YUnit,
+};
 use crate::style;
 
 use data::config::theme::{ACCENT_COUNT, ThemeColor, ThemeColorRole};
@@ -1282,31 +1284,29 @@ impl DrawingView<'_> {
     ) {
         let scene = self.context.scene;
         let y_label_h = TEXT_SIZE + 6.0;
-        let y_axis = scene.layout.regions.y_axis;
         let y_min = clamp_bounds.y;
         let y_max = (clamp_bounds.y + clamp_bounds.height - y_label_h).max(y_min);
         let y_label_y = (y - (y_label_h / 2.0)).clamp(y_min, y_max);
-        let label_bounds = Rectangle {
-            x: y_axis.x,
-            y: y_label_y,
-            width: y_axis.width,
-            height: y_label_h,
-        };
+        let label_bounds = scene.layout.y_axis_badge_bounds(
+            y_label_y,
+            y_label_h,
+            text.chars().count() as f32 * CHAR_W,
+        );
 
         if !filter.reserve(label_bounds) {
             return;
         }
 
         frame.fill_rectangle(
-            Point::new(y_axis.x, y_label_y),
-            Size::new(y_axis.width, y_label_h),
+            label_bounds.position(),
+            label_bounds.size(),
             background_color,
         );
 
         frame.fill_text(canvas::Text {
             content: text.to_string(),
             position: Point::new(
-                y_axis.x + Y_AXIS_LABEL_LEFT_INSET,
+                label_bounds.x + Y_AXIS_LABEL_LEFT_INSET,
                 y_label_y + y_label_h / 2.0,
             ),
             color: text_color,
@@ -1336,24 +1336,25 @@ impl DrawingView<'_> {
         } else {
             TEXT_SIZE + 6.0
         };
-        let y_axis = scene.layout.regions.y_axis;
         let y_min = clamp_bounds.y;
         let y_max = (clamp_bounds.y + clamp_bounds.height - y_label_h).max(y_min);
         let y_label_y = (y - (y_label_h / 2.0)).clamp(y_min, y_max);
-        let label_bounds = Rectangle {
-            x: y_axis.x,
-            y: y_label_y,
-            width: y_axis.width,
-            height: y_label_h,
-        };
+        let value_width = value_text.chars().count() as f32 * CHAR_W;
+        let timer_width = timer_text.map_or(0.0, |text| {
+            text.chars().count() as f32 * CHAR_W * (TEXT_SIZE - 1.0) / TEXT_SIZE
+        });
+        let label_bounds =
+            scene
+                .layout
+                .y_axis_badge_bounds(y_label_y, y_label_h, value_width.max(timer_width));
 
         if !filter.reserve(label_bounds) {
             return;
         }
 
         frame.fill_rectangle(
-            Point::new(y_axis.x, y_label_y),
-            Size::new(y_axis.width, y_label_h),
+            label_bounds.position(),
+            label_bounds.size(),
             background_color,
         );
 
@@ -1362,7 +1363,7 @@ impl DrawingView<'_> {
         } else {
             y_label_y + y_label_h / 2.0
         };
-        let text_x = y_axis.x + Y_AXIS_LABEL_LEFT_INSET;
+        let text_x = label_bounds.x + Y_AXIS_LABEL_LEFT_INSET;
         frame.fill_text(canvas::Text {
             content: value_text.to_string(),
             position: Point::new(text_x, value_y),
