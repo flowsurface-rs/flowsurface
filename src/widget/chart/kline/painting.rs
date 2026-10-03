@@ -369,8 +369,10 @@ pub(super) struct KeyedCache {
 
 impl KeyedCache {
     pub(super) fn prepare(&mut self, layer: ResolvedLayer) {
-        self.geometry.clear();
-        self.layer = Some(layer);
+        if self.layer.as_ref() != Some(&layer) {
+            self.geometry.clear();
+            self.layer = Some(layer);
+        }
     }
 
     pub(super) fn resolved(&self) -> Option<&ResolvedLayer> {

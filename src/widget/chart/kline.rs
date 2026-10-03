@@ -15,7 +15,7 @@ use axes::AxisInputs;
 use iced::widget::canvas;
 use scene::{
     BarUnitWindow, CursorInfo, IndicatorPanelScene, LegendTarget, PanelDomainState,
-    PanelValueScale, PrimaryPercentScaleState, PrimaryScale, SceneBase, XViewport,
+    PanelValueScale, PrimaryPercentScaleState, PrimaryScale, SceneBase, SceneCacheEntry, XViewport,
 };
 
 pub(crate) use chrome::{StudiesLegend, StudyLegendRow};
@@ -1426,13 +1426,14 @@ impl<'a> KlineWidget<'a> {
         self.build_scene_from_base(&base, layout.bounds(), cursor, activity, layers)
     }
 
-    fn ensure_scene_base(&self, state: &mut State, layout: Layout<'_>) {
-        let Some(panel_layout) = PanelLayoutTree::from_layout(layout, &self.composition.panels)
-        else {
-            return;
-        };
+    fn ensure_scene_base<'s>(
+        &self,
+        state: &'s mut State,
+        layout: Layout<'_>,
+    ) -> Option<&'s SceneCacheEntry> {
+        let panel_layout = PanelLayoutTree::from_layout(layout, &self.composition.panels)?;
 
-        let _ = state
+        state
             .scene_cache
             .get_or_build(self.version, panel_layout, |panel_layout| {
                 let base = self.compute_scene_base(panel_layout)?;
@@ -1445,7 +1446,7 @@ impl<'a> KlineWidget<'a> {
                 )?;
                 let labels = self.axes(&scene).y_labels();
                 Some((base, labels))
-            });
+            })
     }
 
     fn cached_scene(
@@ -1933,13 +1934,9 @@ where
             let mut node = build_layout(gutter);
 
             for _ in 0..2 {
-                let required = {
-                    let provisional_layout = iced_layout::Layout::new(&node);
-                    self.ensure_scene_base(state, provisional_layout);
-                    PanelLayoutTree::from_layout(provisional_layout, &self.composition.panels)
-                        .and_then(|layout| state.scene_cache.get(self.version, &layout))
-                        .map(|entry| entry.y_axis_labels.required_gutter())
-                };
+                let required = self
+                    .ensure_scene_base(state, iced_layout::Layout::new(&node))
+                    .map(|entry| entry.y_axis_labels.required_gutter());
 
                 let Some(required) = required else {
                     break;
