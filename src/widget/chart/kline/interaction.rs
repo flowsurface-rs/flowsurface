@@ -1,12 +1,13 @@
 pub(super) mod navigation;
 
 use super::layout::LayoutHitZone;
-use super::painting::RenderRequest;
+use super::painting::{RenderRequest, RenderScheduler};
 use super::scene::ChartCoordinates;
 use super::scene::{CursorTarget, Scene};
 use super::studies::StudyObjectKey;
 use data::chart::kline::HorizontalWorld;
 use data::chart::kline::drawing::{DrawingMeasure, DrawingSnapshot};
+use iced::advanced::Shell;
 use iced::advanced::mouse::Interaction;
 use iced::event::Status;
 use iced::{Point, Vector, keyboard};
@@ -231,6 +232,23 @@ impl<E> Default for LayerEffects<E> {
 }
 
 impl<E> LayerEffects<E> {
+    pub(super) fn apply<M>(
+        self,
+        scheduler: &mut RenderScheduler,
+        shell: &mut Shell<'_, M>,
+        map_event: impl Fn(E) -> M,
+    ) -> (bool, Option<LayerGesture>) {
+        for event in self.events {
+            shell.publish(map_event(event));
+        }
+        scheduler.request(self.render_request);
+        let captured = self.status == Status::Captured;
+        if captured {
+            shell.capture_event();
+        }
+        (captured, self.gesture)
+    }
+
     pub(super) fn captured(render_request: RenderRequest) -> Self {
         Self {
             render_request,

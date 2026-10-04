@@ -131,17 +131,6 @@ impl KlineData {
         self.indicator_host.has_entries(ids)
     }
 
-    pub fn validate_indicator_source_binding(
-        &self,
-        active_indicators: &[IndicatorInstanceId],
-        indicators: &IndicatorInstanceStore,
-        id: IndicatorInstanceId,
-        input_id: &str,
-    ) -> Result<(), String> {
-        self.indicator_host
-            .validate_source_binding(active_indicators, indicators, id, input_id)
-    }
-
     pub fn tick_multiplier(&self) -> TickMultiplier {
         self.tick_multiplier
     }

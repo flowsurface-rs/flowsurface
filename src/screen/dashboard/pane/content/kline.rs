@@ -27,7 +27,7 @@ use crate::window::PixelRatio;
 
 use drawing::{DrawingMessage, DrawingState, DrawingTools, DrawingUpdate};
 use fetch::FetchCoordinator;
-use layout::{IndicatorChange, IndicatorRebuildReason, IndicatorState};
+use layout::{IndicatorRebuildReason, IndicatorState};
 use settings::{ChartOptions, InspectorEffect, InspectorState, SettingsContext};
 use studies::{StudyChange, StudyCommand, StudyState};
 use updates::DataUpdateEffect;
@@ -258,7 +258,7 @@ impl KlineChart {
                     KlineWidgetEvent::PanelInteraction(interaction) => match interaction {
                         PanelInteraction::YViewportChanged { panel_id, range } => {
                             let composition = &self.indicators.composition;
-                            if !self.viewport.allows_panel_range(composition, panel_id) {
+                            if !viewport::allows_panel_range(composition, panel_id) {
                                 return None;
                             }
                             if self.viewport.set_panel_range(composition, panel_id, range) {
@@ -267,7 +267,7 @@ impl KlineChart {
                         }
                         PanelInteraction::YViewportReset { panel_id } => {
                             let composition = &self.indicators.composition;
-                            if !self.viewport.allows_panel_range(composition, panel_id) {
+                            if !viewport::allows_panel_range(composition, panel_id) {
                                 return None;
                             }
                             if self.viewport.reset_panel_range(composition, panel_id) {
@@ -1343,7 +1343,7 @@ impl KlineChart {
                 has_data,
             } => {
                 let is_study_request =
-                    req_id.is_some_and(|req_id| self.studies.is_kline_request(&self.fetch, req_id));
+                    req_id.is_some_and(|req_id| self.fetch.is_profile_request(req_id));
                 let applied = is_study_request
                     && self.studies.insert_historical_klines(
                         self.basis,
@@ -1499,7 +1499,8 @@ impl KlineChart {
             }
             ChartCommand::AddIndicator(kind) => {
                 let change = self.indicators.add_indicator(kind, self.basis, &self.data);
-                request_fetch = self.apply_indicator_change(change, &mut dirty, &mut policy);
+                request_fetch =
+                    change.apply(&mut self.indicators, &self.data, &mut dirty, &mut policy);
                 None
             }
             ChartCommand::AddIndicatorOnSource {
@@ -1510,17 +1511,20 @@ impl KlineChart {
                 let change = self
                     .indicators
                     .add_indicator_on_source(kind, input_id, source, self.basis, &self.data);
-                request_fetch = self.apply_indicator_change(change, &mut dirty, &mut policy);
+                request_fetch =
+                    change.apply(&mut self.indicators, &self.data, &mut dirty, &mut policy);
                 None
             }
             ChartCommand::RemoveIndicator(id) => {
                 let change = self.indicators.remove_indicator(id);
-                request_fetch = self.apply_indicator_change(change, &mut dirty, &mut policy);
+                request_fetch =
+                    change.apply(&mut self.indicators, &self.data, &mut dirty, &mut policy);
                 None
             }
             ChartCommand::Indicator(command) => {
-                let change = self.indicators.apply(command, &self.data);
-                request_fetch = self.apply_indicator_change(change, &mut dirty, &mut policy);
+                let change = self.indicators.apply(command);
+                request_fetch =
+                    change.apply(&mut self.indicators, &self.data, &mut dirty, &mut policy);
                 None
             }
             ChartCommand::Study(command) => {
@@ -1650,40 +1654,6 @@ impl KlineChart {
         *dirty = true;
     }
 
-    fn apply_indicator_change(
-        &mut self,
-        change: IndicatorChange,
-        dirty: &mut bool,
-        policy: &mut UpdatePolicy,
-    ) -> bool {
-        match change {
-            IndicatorChange::Unchanged => false,
-            IndicatorChange::Visual => {
-                *policy = UpdatePolicy::Redraw;
-                *dirty = true;
-                false
-            }
-            IndicatorChange::Reconfigure { id, request_fetch } => {
-                if *policy != UpdatePolicy::ImmediateReconfigure {
-                    *policy = UpdatePolicy::DeferredReconfigure;
-                }
-                self.indicators.mark_with_dependents(
-                    &self.data,
-                    &[id],
-                    IndicatorRebuildReason::IndicatorSettingsChanged,
-                );
-
-                *dirty = true;
-                request_fetch
-            }
-            IndicatorChange::Reconcile { request_fetch } => {
-                *policy = UpdatePolicy::ImmediateReconfigure;
-                *dirty = true;
-                request_fetch
-            }
-        }
-    }
-
     fn apply_study_command(
         &mut self,
         command: StudyCommand,
@@ -1748,9 +1718,7 @@ impl KlineChart {
         let drawings = config
             .drawings
             .iter()
-            .filter(|drawing| {
-                DrawingTools::drawing_panels_exist(&self.indicators.composition, &drawing.object)
-            })
+            .filter(|drawing| drawing.object.panels_exist(&self.indicators.composition))
             .cloned()
             .collect();
         self.drawings.tools = DrawingTools::from_parts(config.active_drawing_tool, drawings);

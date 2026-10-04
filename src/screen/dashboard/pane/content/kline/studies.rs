@@ -211,10 +211,6 @@ impl StudyState {
         }
     }
 
-    pub(super) fn is_kline_request(&self, fetch: &FetchCoordinator, req_id: uuid::Uuid) -> bool {
-        fetch.is_profile_request(req_id)
-    }
-
     fn accepts_kline_source(
         &self,
         basis: Basis,

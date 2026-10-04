@@ -16,6 +16,7 @@ use crate::{
 };
 use data::chart::kline::KlineData;
 use data::chart::kline::footprint::{ClusterKind, ClusterScaling};
+use data::chart::kline::indicators::{AvailabilityContext, unsupported_reason};
 use data::chart::kline::{
     BaseSeriesSource, CandlestickColorSlot, CandlestickConfig, FootprintConfig,
     FootprintImbalanceConfig, FootprintPocColorConfig, FootprintPocColorSlot, FootprintPocConfig,
@@ -236,9 +237,14 @@ impl<'a> SettingsContext<'a> {
         IndicatorId::for_market(self.data.base_ticker().market_type())
             .into_iter()
             .filter(|kind| {
-                self.indicators
-                    .unsupported_reason(kind, self.basis, self.data.base_ticker())
-                    .is_none()
+                unsupported_reason(
+                    kind,
+                    AvailabilityContext {
+                        basis: self.basis,
+                        base_ticker: self.data.base_ticker(),
+                    },
+                )
+                .is_none()
                     && kind
                         .definition()
                         .source_inputs
@@ -351,13 +357,13 @@ impl InspectorState {
         indicator: IndicatorId,
     ) {
         let mut modal: IndicatorSettingsState = IndicatorSettingsState::new(instance_id, indicator);
-        modal.select_tab(self.settings.selected_tab());
+        modal.select_tab(self.settings.target.selected_tab());
         self.settings.set_target(SettingsTarget::Indicator(modal));
     }
 
     pub(super) fn open_study(&mut self, study_id: KlineStudyId) {
         let mut modal = StudySettingsState::new(study_id);
-        modal.select_tab(self.settings.selected_tab());
+        modal.select_tab(self.settings.target.selected_tab());
         self.settings.set_target(SettingsTarget::Study(modal));
     }
 
@@ -1703,41 +1709,9 @@ enum SettingsTarget {
     Study(StudySettingsState),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ResetScope {
-    Inputs,
-    Style,
-    All,
-}
-
-impl ResetScope {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Inputs => "Reset inputs",
-            Self::Style => "Reset style",
-            Self::All => "Reset settings",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(super) struct State {
-    target: SettingsTarget,
-    reset_confirmation: Option<ResetScope>,
-}
-
-impl Default for State {
-    fn default() -> Self {
-        Self {
-            target: SettingsTarget::Main,
-            reset_confirmation: None,
-        }
-    }
-}
-
-impl State {
+impl SettingsTarget {
     fn reset_message(&self, context: &SettingsContext<'_>, scope: ResetScope) -> Option<Message> {
-        match &self.target {
+        match self {
             SettingsTarget::Main | SettingsTarget::Footprint => {
                 Some(Message::ResetFootprintSettings)
             }
@@ -1765,22 +1739,8 @@ impl State {
         }
     }
 
-    fn cancel_reset_confirmation(&mut self) {
-        self.reset_confirmation = None;
-    }
-
-    fn confirmed_reset_message(&mut self, context: &SettingsContext<'_>) -> Option<Message> {
-        let scope = self.reset_confirmation.take()?;
-        self.reset_message(context, scope)
-    }
-
-    fn set_target(&mut self, target: SettingsTarget) {
-        self.target = target;
-        self.cancel_reset_confirmation();
-    }
-
     fn selected_tab(&self) -> inspector::InspectorTab {
-        match &self.target {
+        match self {
             SettingsTarget::Indicator(modal) => modal.tab(),
             SettingsTarget::Study(modal) => modal.tab(),
             SettingsTarget::Main
@@ -1790,24 +1750,8 @@ impl State {
         }
     }
 
-    fn reconcile_missing_target(&mut self, context: &SettingsContext<'_>) {
-        let missing = match &self.target {
-            SettingsTarget::Indicator(modal) => context
-                .indicators
-                .indicator_kind(modal.instance_id())
-                .is_none(),
-            SettingsTarget::Study(modal) => context.studies.study(modal.study_id()).is_none(),
-            SettingsTarget::Series(ticker) => context.series_style_entry(*ticker).is_none(),
-            SettingsTarget::Main | SettingsTarget::Candlestick | SettingsTarget::Footprint => false,
-        };
-        if missing {
-            self.target = SettingsTarget::Main;
-            self.cancel_reset_confirmation();
-        }
-    }
-
-    pub(super) fn contextual_title(&self, context: SettingsContext<'_>) -> Option<String> {
-        Some(match &self.target {
+    fn contextual_title(&self, context: SettingsContext<'_>) -> Option<String> {
+        Some(match self {
             SettingsTarget::Main => return None,
             SettingsTarget::Indicator(modal) => modal.indicator().to_string(),
             SettingsTarget::Candlestick => "Base ticker".to_owned(),
@@ -1820,14 +1764,14 @@ impl State {
         })
     }
 
-    pub(super) fn contextual_content<'a>(
+    fn contextual_content<'a>(
         &'a self,
         context: SettingsContext<'a>,
         theme_accents: ThemeAccents,
     ) -> Option<(Option<inspector::InspectorTab>, Element<'a, ChartMessage>)> {
         let presentation = context.presentation();
 
-        let content = match &self.target {
+        let content = match self {
             SettingsTarget::Main => return None,
             SettingsTarget::Indicator(modal) => {
                 let (tab, content) = kline_indicator_cfg_view(
@@ -1888,6 +1832,82 @@ impl State {
 
         Some((None, content.map(ChartMessage::Settings)))
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResetScope {
+    Inputs,
+    Style,
+    All,
+}
+
+impl ResetScope {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Inputs => "Reset inputs",
+            Self::Style => "Reset style",
+            Self::All => "Reset settings",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct State {
+    target: SettingsTarget,
+    reset_confirmation: Option<ResetScope>,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            target: SettingsTarget::Main,
+            reset_confirmation: None,
+        }
+    }
+}
+
+impl State {
+    pub(super) fn contextual_title(&self, context: SettingsContext<'_>) -> Option<String> {
+        self.target.contextual_title(context)
+    }
+
+    pub(super) fn contextual_content<'a>(
+        &'a self,
+        context: SettingsContext<'a>,
+        theme_accents: ThemeAccents,
+    ) -> Option<(Option<inspector::InspectorTab>, Element<'a, ChartMessage>)> {
+        self.target.contextual_content(context, theme_accents)
+    }
+
+    fn cancel_reset_confirmation(&mut self) {
+        self.reset_confirmation = None;
+    }
+
+    fn confirmed_reset_message(&mut self, context: &SettingsContext<'_>) -> Option<Message> {
+        let scope = self.reset_confirmation.take()?;
+        self.target.reset_message(context, scope)
+    }
+
+    fn set_target(&mut self, target: SettingsTarget) {
+        self.target = target;
+        self.cancel_reset_confirmation();
+    }
+
+    fn reconcile_missing_target(&mut self, context: &SettingsContext<'_>) {
+        let missing = match &self.target {
+            SettingsTarget::Indicator(modal) => context
+                .indicators
+                .indicator_kind(modal.instance_id())
+                .is_none(),
+            SettingsTarget::Study(modal) => context.studies.study(modal.study_id()).is_none(),
+            SettingsTarget::Series(ticker) => context.series_style_entry(*ticker).is_none(),
+            SettingsTarget::Main | SettingsTarget::Candlestick | SettingsTarget::Footprint => false,
+        };
+        if missing {
+            self.target = SettingsTarget::Main;
+            self.cancel_reset_confirmation();
+        }
+    }
 
     pub(super) fn footer_view<'a>(
         &'a self,
@@ -1904,7 +1924,7 @@ impl State {
             Some(inspector::InspectorTab::Source) => return None,
             None => ResetScope::All,
         };
-        self.reset_message(&context, scope)?;
+        self.target.reset_message(&context, scope)?;
         let confirming_reset = self.reset_confirmation == Some(scope);
 
         let reset: Element<'_, ChartMessage> = if confirming_reset {
@@ -1985,7 +2005,7 @@ impl State {
 
         match message {
             Message::ResetRequested(scope) => {
-                self.reset_confirmation = self.reset_message(context, scope).map(|_| scope);
+                self.reset_confirmation = self.target.reset_message(context, scope).map(|_| scope);
             }
             Message::ResetConfirmed => {
                 let Some(message) = self.confirmed_reset_message(context) else {

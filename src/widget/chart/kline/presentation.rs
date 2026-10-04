@@ -1666,16 +1666,7 @@ impl<'a> IndicatorView<'a> {
     ) -> iced::Color {
         let configured = value_id
             .and_then(|id| self.indicator_instance(id))
-            .and_then(|instance| {
-                instance.style_overrides.color(color_slot).or_else(|| {
-                    instance
-                        .kind
-                        .color_specs()
-                        .iter()
-                        .find(|spec| spec.id == color_slot)
-                        .map(|spec| spec.default_color())
-                })
-            });
+            .and_then(|instance| instance.configured_color(color_slot));
         let color =
             configured.unwrap_or_else(|| ThemeColor::new(color_role, ThemeColorShade::Base));
         crate::widget::resolve_theme_color(color, palette, generated_accents).scale_alpha(
@@ -1695,16 +1686,7 @@ impl<'a> IndicatorView<'a> {
     ) -> iced::Color {
         let configured = value_id
             .and_then(|id| self.indicator_instance(id))
-            .and_then(|instance| {
-                instance.style_overrides.color(slot).or_else(|| {
-                    instance
-                        .kind
-                        .color_specs()
-                        .iter()
-                        .find(|spec| spec.id == slot)
-                        .map(|spec| spec.default_color())
-                })
-            })
+            .and_then(|instance| instance.configured_color(slot))
             .unwrap_or_else(|| ThemeColor::new(ThemeColorRole::Neutral, ThemeColorShade::Base));
         crate::widget::resolve_theme_color(configured, palette, generated_accents)
     }

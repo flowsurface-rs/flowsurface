@@ -1,5 +1,5 @@
 use super::YUnit;
-use super::composition::PanelId;
+use super::composition::{ChartComposition, PanelId};
 use crate::config::theme::{ThemeAccent, ThemeColorShade};
 use exchange::UnixMs;
 use serde::{Deserialize, Serialize};
@@ -485,6 +485,21 @@ pub enum DrawingDraft {
 }
 
 impl DrawingDraft {
+    pub fn update_anchor(&mut self, anchor: DrawingAnchor) -> bool {
+        match self {
+            DrawingDraft::Trendline { start, current, .. }
+            | DrawingDraft::Box { start, current, .. } => {
+                if anchor.panel_id != start.panel_id {
+                    return false;
+                }
+
+                *current = anchor;
+            }
+        }
+
+        true
+    }
+
     pub fn tool(&self) -> DrawingTool {
         match self {
             Self::Trendline { .. } => DrawingTool::Trendline,
@@ -585,6 +600,18 @@ pub enum AxisLabelAnchor {
 }
 
 impl DrawingObject {
+    pub fn panels_exist(&self, composition: &ChartComposition) -> bool {
+        let panel_exists = |panel_id: PanelId| composition.panel(panel_id).is_some();
+
+        match self {
+            DrawingObject::Trendline { start, end } | DrawingObject::Box { start, end, .. } => {
+                panel_exists(start.panel_id) && panel_exists(end.panel_id)
+            }
+            DrawingObject::HorizontalLine { panel_id, .. } => panel_exists(*panel_id),
+            DrawingObject::VerticalLine { .. } => true,
+        }
+    }
+
     fn normalized_box(
         mut start: DrawingAnchor,
         mut end: DrawingAnchor,

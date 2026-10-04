@@ -1450,18 +1450,47 @@ impl DrawingHit {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(super) struct DrawingDrag {
+struct DrawingDrag {
     id: DrawingId,
     target: DrawingDragTarget,
     panel_id: PanelId,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(super) enum DrawingPointerInput {
+    Moved,
+    DragReleased,
+    Cancelled,
+    SelectionCleared,
+}
+
 #[derive(Default)]
 pub(super) struct WidgetDrawingState {
-    pub(super) drag: Option<DrawingDrag>,
+    drag: Option<DrawingDrag>,
 }
 
 impl DrawingView<'_> {
+    pub(super) fn pointer(
+        &self,
+        input: DrawingPointerInput,
+        state: &mut WidgetDrawingState,
+    ) -> LayerEffects<KlineWidgetDrawingEvent> {
+        match input {
+            DrawingPointerInput::Moved => state
+                .drag
+                .map_or_else(LayerEffects::default, |drag| self.update_drag(drag)),
+            DrawingPointerInput::DragReleased => state
+                .drag
+                .take()
+                .map_or_else(LayerEffects::default, DrawingDrag::release),
+            DrawingPointerInput::Cancelled => {
+                state.drag = None;
+                LayerEffects::default()
+            }
+            DrawingPointerInput::SelectionCleared => self.deselect(),
+        }
+    }
+
     pub(super) fn hit(&self, point: Point) -> Option<DrawingHit> {
         if !matches!(
             self.context.scene.layout.hit_test(point),
@@ -1559,7 +1588,7 @@ impl DrawingView<'_> {
         effects
     }
 
-    pub(super) fn update_drag(&self, drag: DrawingDrag) -> LayerEffects<KlineWidgetDrawingEvent> {
+    fn update_drag(&self, drag: DrawingDrag) -> LayerEffects<KlineWidgetDrawingEvent> {
         let Some(point) = self.context.position else {
             return LayerEffects::default();
         };
@@ -1577,7 +1606,7 @@ impl DrawingView<'_> {
 }
 
 impl DrawingView<'_> {
-    pub(super) fn deselect(&self) -> LayerEffects<KlineWidgetDrawingEvent> {
+    fn deselect(&self) -> LayerEffects<KlineWidgetDrawingEvent> {
         if self.snapshot.selected_drawings.is_empty() {
             return LayerEffects::default();
         }
@@ -1590,7 +1619,7 @@ impl DrawingView<'_> {
 }
 
 impl DrawingDrag {
-    pub(super) fn release(self) -> LayerEffects<KlineWidgetDrawingEvent> {
+    fn release(self) -> LayerEffects<KlineWidgetDrawingEvent> {
         let mut effects = LayerEffects::captured(RenderRequest::All);
         effects.publish(KlineWidgetDrawingEvent::DragFinished { id: self.id });
         effects

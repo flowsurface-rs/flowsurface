@@ -1,6 +1,5 @@
 use super::history::DrawingHistory;
-use super::toolbar::{FloatingToolbarEvent, FloatingToolbarState};
-use super::{FLOATING_TOOLBAR_HANDLE_WIDTH, FLOATING_TOOLBAR_HEIGHT};
+use super::toolbar::{self, FloatingToolbarEvent, FloatingToolbarState};
 use crate::style;
 use crate::theme::ThemeAccents;
 use crate::widget::chart::kline::drawing::{
@@ -333,7 +332,10 @@ impl DrawingState {
         let floating_toolbar = iced::widget::responsive(move |overlay_size| {
             self.tools
                 .selected_toolbar_view(theme_accents, Event::Tools)
-                .map(|controls| self.floating_toolbar_content(controls, overlay_size))
+                .map(|controls| {
+                    self.floating_toolbar
+                        .content(controls, overlay_size, Event::FloatingToolbar)
+                })
                 .unwrap_or_else(|| self.empty_floating_toolbar_content())
         });
 
@@ -344,7 +346,7 @@ impl DrawingState {
 
         if self.floating_toolbar.is_dragging {
             overlay = overlay.push(iced::widget::responsive(move |overlay_size| {
-                self.floating_toolbar_drag_capture(overlay_size)
+                toolbar::drag_capture(overlay_size).map(Event::FloatingToolbar)
             }));
         }
 
@@ -366,75 +368,6 @@ impl DrawingState {
             .width(Length::Fill)
             .height(Length::Fill)
             .into()
-    }
-
-    fn floating_toolbar_content<'a>(
-        &'a self,
-        controls: iced::Element<'a, Event>,
-        overlay_size: iced::Size,
-    ) -> iced::Element<'a, Event> {
-        let drag_handle = iced::widget::mouse_area(
-            iced::widget::container(style::icon_text(style::Icon::DragHandle, 12))
-                .width(FLOATING_TOOLBAR_HANDLE_WIDTH)
-                .height(Length::Fill)
-                .align_x(iced::alignment::Horizontal::Center)
-                .align_y(iced::alignment::Vertical::Center),
-        )
-        .on_move(|cursor| Event::FloatingToolbar(FloatingToolbarEvent::HandleMoved(cursor)))
-        .on_press(Event::FloatingToolbar(FloatingToolbarEvent::DragStarted))
-        .interaction(iced::mouse::Interaction::Grab);
-
-        let scrollable_controls = iced::widget::scrollable::Scrollable::with_direction(
-            controls,
-            iced::widget::scrollable::Direction::Horizontal(
-                iced::widget::scrollable::Scrollbar::new()
-                    .width(6)
-                    .scroller_width(6),
-            ),
-        )
-        .anchor_left()
-        .width(Length::Shrink)
-        .height(Length::Fill)
-        .style(style::scroll_bar);
-        let toolbar = iced::widget::opaque(
-            iced::widget::container(iced::widget::row![drag_handle, scrollable_controls])
-                .style(style::chart_toolbar)
-                .width(Length::Shrink)
-                .height(FLOATING_TOOLBAR_HEIGHT),
-        );
-        let position = self.floating_toolbar.position_within(overlay_size);
-
-        iced::widget::container(
-            iced::widget::column![
-                iced::widget::space::vertical().height(position.y),
-                iced::widget::row![iced::widget::space::horizontal().width(position.x), toolbar,],
-            ]
-            .width(Length::Fill)
-            .height(Length::Fill),
-        )
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
-    }
-
-    fn floating_toolbar_drag_capture<'a>(
-        &'a self,
-        overlay_size: iced::Size,
-    ) -> iced::Element<'a, Event> {
-        iced::widget::mouse_area(
-            iced::widget::space::horizontal()
-                .width(Length::Fill)
-                .height(Length::Fill),
-        )
-        .on_move(move |cursor| {
-            Event::FloatingToolbar(FloatingToolbarEvent::DragMoved {
-                cursor,
-                overlay_size,
-            })
-        })
-        .on_release(Event::FloatingToolbar(FloatingToolbarEvent::DragFinished))
-        .interaction(iced::mouse::Interaction::Grabbing)
-        .into()
     }
 }
 
@@ -1806,18 +1739,7 @@ impl DrawingTools {
             return false;
         };
 
-        match draft {
-            DrawingDraft::Trendline { start, current, .. }
-            | DrawingDraft::Box { start, current, .. } => {
-                if anchor.panel_id != start.panel_id {
-                    return false;
-                }
-
-                *current = anchor;
-            }
-        }
-
-        true
+        draft.update_anchor(anchor)
     }
 
     fn commit_drawing_draft(&mut self, end: DrawingAnchor) -> Option<DrawingId> {
@@ -2237,21 +2159,6 @@ impl DrawingTools {
         match self.sidebar_page {
             SidebarPage::Tools => SIDEBAR_WIDTH,
             SidebarPage::ObjectList => OBJECT_LIST_SIDEBAR_WIDTH,
-        }
-    }
-
-    pub(super) fn drawing_panels_exist(
-        composition: &ChartComposition,
-        object: &DrawingObject,
-    ) -> bool {
-        let panel_exists = |panel_id: PanelId| composition.panel(panel_id).is_some();
-
-        match object {
-            DrawingObject::Trendline { start, end } | DrawingObject::Box { start, end, .. } => {
-                panel_exists(start.panel_id) && panel_exists(end.panel_id)
-            }
-            DrawingObject::HorizontalLine { panel_id, .. } => panel_exists(*panel_id),
-            DrawingObject::VerticalLine { .. } => true,
         }
     }
 }

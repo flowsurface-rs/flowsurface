@@ -385,49 +385,6 @@ impl IndicatorHost {
         changed
     }
 
-    pub fn validate_source_binding(
-        &self,
-        active: &[IndicatorInstanceId],
-        instances: &IndicatorInstanceStore,
-        id: IndicatorInstanceId,
-        input_id: &str,
-    ) -> Result<(), String> {
-        let active = active
-            .iter()
-            .copied()
-            .collect::<BTreeSet<IndicatorInstanceId>>();
-        let Some(instance) = instances.get(id) else {
-            return Err(format!(
-                "source binding references missing indicator instance {id:?}"
-            ));
-        };
-        if !active.contains(&id) {
-            return Err("source binding target is not active".to_owned());
-        }
-        if !instance.kind.definition().has_numeric_plot_layers() {
-            return Err("attached indicator has no numeric plot layer".to_owned());
-        }
-        let Some(target) = instances
-            .dependency_target(instance, input_id, &active)
-            .map_err(|problem| problem.to_string())?
-        else {
-            return Ok(());
-        };
-
-        let edges = instances.dependency_edges(&active, Some((id, input_id)));
-        let mut pending = vec![target.id];
-        let mut visited = FxHashSet::default();
-        while let Some(current) = pending.pop() {
-            if current == id {
-                return Err("indicator dependency cycle".to_owned());
-            }
-            if visited.insert(current) {
-                pending.extend(edges.get(&current).into_iter().flatten().copied());
-            }
-        }
-        Ok(())
-    }
-
     pub fn evaluate_closed(&mut self, frame: &IndicatorFrame) {
         let order = self.execution_order.clone();
         for id in order {

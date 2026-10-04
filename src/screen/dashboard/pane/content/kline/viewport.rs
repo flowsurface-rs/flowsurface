@@ -14,23 +14,13 @@ pub(super) struct ViewportState {
 }
 
 impl ViewportState {
-    pub(super) fn allows_panel_range(
-        &self,
-        composition: &ChartComposition,
-        panel_id: PanelId,
-    ) -> bool {
-        composition.primary_panel_id() != Some(panel_id)
-            || composition.panel_effective_scale_mode(panel_id)
-                != Some(PanelScaleMode::PercentFromBase)
-    }
-
     pub(super) fn set_panel_range(
         &mut self,
         composition: &ChartComposition,
         panel_id: PanelId,
         range: YUnitRange,
     ) -> bool {
-        if !self.allows_panel_range(composition, panel_id) {
+        if !allows_panel_range(composition, panel_id) {
             return false;
         }
         if composition.primary_panel_id() == Some(panel_id) {
@@ -45,7 +35,7 @@ impl ViewportState {
         composition: &ChartComposition,
         panel_id: PanelId,
     ) -> bool {
-        if !self.allows_panel_range(composition, panel_id) {
+        if !allows_panel_range(composition, panel_id) {
             return false;
         }
         if composition.primary_panel_id() == Some(panel_id) {
@@ -57,7 +47,7 @@ impl ViewportState {
 
     pub(super) fn toggle_primary_autoscale(&mut self, composition: &ChartComposition) -> bool {
         composition.primary_panel_id().is_some_and(|panel_id| {
-            self.allows_panel_range(composition, panel_id) && self.primary.toggle()
+            allows_panel_range(composition, panel_id) && self.primary.toggle()
         })
     }
 
@@ -126,4 +116,9 @@ impl PanelViewportStore {
     pub(super) fn retain(&mut self, mut should_retain: impl FnMut(PanelId) -> bool) {
         self.values.retain(|(panel_id, _)| should_retain(*panel_id));
     }
+}
+
+pub(super) fn allows_panel_range(composition: &ChartComposition, panel_id: PanelId) -> bool {
+    composition.primary_panel_id() != Some(panel_id)
+        || composition.panel_effective_scale_mode(panel_id) != Some(PanelScaleMode::PercentFromBase)
 }

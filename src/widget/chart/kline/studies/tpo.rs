@@ -803,44 +803,6 @@ impl TpoView<'_> {
         self.tpo_hit_test(point, state.selected_profile)
     }
 
-    fn begin(&self, hit: TpoHit, state: &mut TpoState) -> LayerEffects<TpoInteraction> {
-        let mut effects = LayerEffects::captured(RenderRequest::Interaction);
-        let gesture = match hit {
-            TpoHit::Click(click) => {
-                state.pending_click = Some(click);
-                LayerGesture::ClickOrNavigate {
-                    selection: super::super::SelectionDisposition::Clear,
-                    captures_outside_release: true,
-                    fallback: if matches!(click, TpoClick::Profile { .. }) {
-                        NavigationFallback::PanOrMarquee
-                    } else {
-                        NavigationFallback::Pan
-                    },
-                }
-            }
-            TpoHit::Boundary {
-                boundary,
-                minimum,
-                maximum,
-            } => {
-                state.selected_profile = Some(boundary);
-                state.drag = Some(TpoDrag {
-                    boundary,
-                    preview: boundary,
-                    minimum,
-                    maximum,
-                });
-                LayerGesture::Drag {
-                    selection: super::super::SelectionDisposition::Clear,
-                    active_outside_bounds: true,
-                    cursor: iced::advanced::mouse::Interaction::ResizingHorizontally,
-                }
-            }
-        };
-        effects.gesture = Some(gesture);
-        effects
-    }
-
     fn update_drag(&self, drag: &mut TpoDrag) -> LayerEffects<TpoInteraction> {
         let Some(point) = self.context.position else {
             return LayerEffects::default();
@@ -857,6 +819,44 @@ impl TpoView<'_> {
 }
 
 impl TpoState {
+    fn begin(&mut self, hit: TpoHit) -> LayerEffects<TpoInteraction> {
+        let mut effects = LayerEffects::captured(RenderRequest::Interaction);
+        let gesture = match hit {
+            TpoHit::Click(click) => {
+                self.pending_click = Some(click);
+                LayerGesture::ClickOrNavigate {
+                    selection: super::super::SelectionDisposition::Clear,
+                    captures_outside_release: true,
+                    fallback: if matches!(click, TpoClick::Profile { .. }) {
+                        NavigationFallback::PanOrMarquee
+                    } else {
+                        NavigationFallback::Pan
+                    },
+                }
+            }
+            TpoHit::Boundary {
+                boundary,
+                minimum,
+                maximum,
+            } => {
+                self.selected_profile = Some(boundary);
+                self.drag = Some(TpoDrag {
+                    boundary,
+                    preview: boundary,
+                    minimum,
+                    maximum,
+                });
+                LayerGesture::Drag {
+                    selection: super::super::SelectionDisposition::Clear,
+                    active_outside_bounds: true,
+                    cursor: iced::advanced::mouse::Interaction::ResizingHorizontally,
+                }
+            }
+        };
+        effects.gesture = Some(gesture);
+        effects
+    }
+
     fn release_press(&mut self, press: TpoClick, confirmed: bool) -> LayerEffects<TpoInteraction> {
         if !confirmed {
             return LayerEffects::default();
@@ -935,9 +935,7 @@ impl TpoObject<'_> {
                 };
                 self.view(context)
                     .hit(point, state)
-                    .map_or_else(LayerEffects::default, |hit| {
-                        self.view(context).begin(hit, state)
-                    })
+                    .map_or_else(LayerEffects::default, |hit| state.begin(hit))
             }
             LayerPointerInput::Moved => state
                 .drag

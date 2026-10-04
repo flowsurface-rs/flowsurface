@@ -39,15 +39,15 @@ use data::chart::kline::{HorizontalWorld, IndicatorHost, IndicatorInstanceStore}
 pub(crate) use data::chart::kline::{YUnit, YUnitRange};
 
 use drawing::{
-    DrawingDrag, DrawingMeasure, DrawingSnapshot, DrawingTool, DrawingView,
+    DrawingMeasure, DrawingPointerInput, DrawingSnapshot, DrawingTool, DrawingView,
     KlineWidgetDrawingEvent, WidgetDrawingState,
 };
 use exchange::TickerInfo;
 pub(super) use interaction::SceneActivity;
 pub(crate) use interaction::SelectionDisposition;
 use interaction::{
-    DragAction, GestureSource, LayerContext, LayerEffects, LayerGesture, PointerMove, PressAction,
-    ReleasedGesture, UserInteraction,
+    DragAction, GestureSource, LayerContext, PointerMove, PressAction, ReleasedGesture,
+    UserInteraction,
 };
 use layout::{KlinePanelKind, LayoutHitZone, PanelLayoutTree};
 use painting::{
@@ -72,7 +72,7 @@ use iced::{
     window,
 };
 use iced_core::renderer::Quad;
-use std::{convert::identity, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 const Y_AXIS_GUTTER: f32 = 66.0;
 const X_AXIS_HEIGHT: f32 = 24.0;
@@ -118,14 +118,6 @@ enum PaintStep {
     PanelControls,
     StudyControls,
     Canvas(CanvasLayer),
-}
-
-#[derive(Debug, Clone, Copy)]
-enum DrawingPointerInput {
-    Moved,
-    DragReleased,
-    Cancelled,
-    SelectionCleared,
 }
 
 struct MarqueeGesture {
@@ -177,26 +169,6 @@ impl Default for State {
 }
 
 impl State {
-    fn apply_interaction_effects<M, E>(
-        &mut self,
-        effects: LayerEffects<E>,
-        shell: &mut Shell<'_, M>,
-        map_event: impl Fn(E) -> KlineWidgetEvent,
-    ) -> (bool, Option<LayerGesture>)
-    where
-        M: Clone + From<KlineWidgetEvent>,
-    {
-        for event in effects.events {
-            shell.publish(M::from(map_event(event)));
-        }
-        self.scheduler.request(effects.render_request);
-        let captured = effects.status == iced::event::Status::Captured;
-        if captured {
-            shell.capture_event();
-        }
-        (captured, effects.gesture)
-    }
-
     fn marquee(&self) -> Option<MarqueeGesture> {
         let DragAction::Marquee { panel_index, .. } = self.interaction.drag_action()? else {
             return None;
@@ -739,7 +711,9 @@ impl<'a> KlineWidget<'a> {
         ) else {
             return false;
         };
-        let (_, gesture) = state.apply_interaction_effects(effects, shell, KlineWidgetEvent::Study);
+        let (_, gesture) = effects.apply(&mut state.scheduler, shell, |event| {
+            M::from(KlineWidgetEvent::Study(event))
+        });
         let Some(gesture) = gesture else { return false };
         state.interaction.begin_layer_gesture(
             gesture,
@@ -764,8 +738,9 @@ impl<'a> KlineWidget<'a> {
             return false;
         };
         let effects = view.begin(hit, &mut state.drawing);
-        let (_, gesture) =
-            state.apply_interaction_effects(effects, shell, KlineWidgetEvent::Drawing);
+        let (_, gesture) = effects.apply(&mut state.scheduler, shell, |event| {
+            M::from(KlineWidgetEvent::Drawing(event))
+        });
         let Some(gesture) = gesture else { return false };
 
         state.interaction.begin_layer_gesture(
@@ -799,8 +774,10 @@ impl<'a> KlineWidget<'a> {
         self.study_objects
             .pointer(key, input, context, &mut state.study_objects)
             .is_some_and(|effects| {
-                state
-                    .apply_interaction_effects(effects, shell, KlineWidgetEvent::Study)
+                effects
+                    .apply(&mut state.scheduler, shell, |event| {
+                        M::from(KlineWidgetEvent::Study(event))
+                    })
                     .0
             })
     }
@@ -820,8 +797,10 @@ impl<'a> KlineWidget<'a> {
             .pointer_all(input, context, &mut state.study_objects);
         let mut captured = false;
         for effects in effects {
-            captured |= state
-                .apply_interaction_effects(effects, shell, KlineWidgetEvent::Study)
+            captured |= effects
+                .apply(&mut state.scheduler, shell, |event| {
+                    M::from(KlineWidgetEvent::Study(event))
+                })
                 .0;
         }
         captured
@@ -838,24 +817,11 @@ impl<'a> KlineWidget<'a> {
         M: Clone + From<KlineWidgetEvent>,
     {
         let view = self.drawing_view_at(context.scene, context.position, context.modifiers);
-        let effects = match input {
-            DrawingPointerInput::Moved => state
-                .drawing
-                .drag
-                .map_or_else(LayerEffects::default, |drag| view.update_drag(drag)),
-            DrawingPointerInput::DragReleased => state
-                .drawing
-                .drag
-                .take()
-                .map_or_else(LayerEffects::default, DrawingDrag::release),
-            DrawingPointerInput::Cancelled => {
-                state.drawing.drag = None;
-                LayerEffects::default()
-            }
-            DrawingPointerInput::SelectionCleared => view.deselect(),
-        };
-        state
-            .apply_interaction_effects(effects, shell, KlineWidgetEvent::Drawing)
+        let effects = view.pointer(input, &mut state.drawing);
+        effects
+            .apply(&mut state.scheduler, shell, |event| {
+                M::from(KlineWidgetEvent::Drawing(event))
+            })
             .0
     }
 
@@ -1208,7 +1174,7 @@ impl<'a> KlineWidget<'a> {
             .chrome
             .ticker_legend
             .as_ref()
-            .and_then(|legend| chrome::legend::hit_ticker_legend(&scene.layout, legend, local));
+            .and_then(|legend| legend.hit_test(&scene.layout, local));
 
         if ticker_hit.is_some() {
             scene.chrome.ticker_legend = self.legend_view().build_ticker_legend_layout(
@@ -1217,27 +1183,30 @@ impl<'a> KlineWidget<'a> {
                 self.legend_visibility.legend_values_always_visible(),
                 true,
             );
-            ticker_hit =
-                scene.chrome.ticker_legend.as_ref().and_then(|legend| {
-                    chrome::legend::hit_ticker_legend(&scene.layout, legend, local)
-                });
+            ticker_hit = scene
+                .chrome
+                .ticker_legend
+                .as_ref()
+                .and_then(|legend| legend.hit_test(&scene.layout, local));
         }
 
-        let footprint_hit =
-            scene.chrome.footprint_legend.as_ref().and_then(|legend| {
-                chrome::legend::hit_footprint_legend(&scene.layout, legend, local)
-            });
+        let footprint_hit = scene
+            .chrome
+            .footprint_legend
+            .as_ref()
+            .and_then(|legend| legend.hit_test(&scene.layout, local));
 
         let study_hit = scene
             .chrome
             .study_legend
             .as_ref()
-            .and_then(|legend| chrome::legend::hit_study_legend(&scene.layout, legend, local));
+            .and_then(|legend| legend.hit_test(&scene.layout, local));
 
-        let mut indicator_hit =
-            scene.chrome.indicator_legend.as_ref().and_then(|legend| {
-                chrome::legend::hit_indicator_legend(&scene.layout, legend, local)
-            });
+        let mut indicator_hit = scene
+            .chrome
+            .indicator_legend
+            .as_ref()
+            .and_then(|legend| legend.hit_test(&scene.layout, local));
 
         if indicator_hit.is_some() {
             scene.chrome.indicator_legend = self.legend_view().build_indicator_legend_layout(
@@ -1250,9 +1219,11 @@ impl<'a> KlineWidget<'a> {
                     show_legend_values,
                 ),
             );
-            indicator_hit = scene.chrome.indicator_legend.as_ref().and_then(|legend| {
-                chrome::legend::hit_indicator_legend(&scene.layout, legend, local)
-            });
+            indicator_hit = scene
+                .chrome
+                .indicator_legend
+                .as_ref()
+                .and_then(|legend| legend.hit_test(&scene.layout, local));
         }
 
         scene.interaction.controls_visible_for_panel = hovered_control
@@ -1656,7 +1627,7 @@ impl<'a> KlineWidget<'a> {
         };
 
         if self.trade_data_enabled && show_legends {
-            scene.chrome.footprint_legend = self.legend_view().build_footprint_legend_layout(
+            scene.chrome.footprint_legend = chrome::legend::FootprintLegendLayout::new(
                 &base.layout,
                 primary_panel,
                 chrome::legend::tooltip_rows_before_studies(
@@ -2090,7 +2061,7 @@ where
                             state.interaction.modifiers(),
                             scene.as_ref(),
                         );
-                        state.apply_interaction_effects(effects, shell, identity);
+                        effects.apply(&mut state.scheduler, shell, M::from);
                     }
                     mouse::Event::ButtonPressed(mouse::Button::Left) => {
                         let chrome_click =
@@ -2119,7 +2090,7 @@ where
                         );
 
                         if let Some(effects) = self.navigation().axis_reset(zone, click_kind) {
-                            state.apply_interaction_effects(effects, shell, identity);
+                            effects.apply(&mut state.scheduler, shell, M::from);
                             return;
                         }
 
@@ -2212,7 +2183,7 @@ where
                                 cursor_pos,
                                 &mut state.interaction,
                             ) {
-                                state.apply_interaction_effects(effects, shell, identity);
+                                effects.apply(&mut state.scheduler, shell, M::from);
                             } else {
                                 self.cancel_pointer(state, layout, cursor, shell);
                             }
@@ -2318,11 +2289,9 @@ where
                                     &mut state.study_objects,
                                 )
                             {
-                                state.apply_interaction_effects(
-                                    effects,
-                                    shell,
-                                    KlineWidgetEvent::Study,
-                                );
+                                effects.apply(&mut state.scheduler, shell, |event| {
+                                    M::from(KlineWidgetEvent::Study(event))
+                                });
                             }
                         } else if let Some(DragAction::Drawing { .. }) = drag_action {
                             if let Some(scene) = self.cached_scene(state, layout, cursor) {
@@ -2351,7 +2320,7 @@ where
                                     &layout_tree,
                                     scene.as_ref(),
                                 );
-                                state.apply_interaction_effects(effects, shell, identity);
+                                effects.apply(&mut state.scheduler, shell, M::from);
                             }
                         } else if state.marquee().is_some() {
                             state.scheduler.request(RenderRequest::Interaction);
@@ -2389,7 +2358,7 @@ where
                                 &layout_tree,
                                 scene.as_ref(),
                             );
-                            state.apply_interaction_effects(effects, shell, identity);
+                            effects.apply(&mut state.scheduler, shell, M::from);
                         }
                     }
                     _ => {}

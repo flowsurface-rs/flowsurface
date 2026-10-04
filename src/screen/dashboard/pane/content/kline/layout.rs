@@ -1,3 +1,4 @@
+use super::UpdatePolicy;
 use super::fetch::FetchCoordinator;
 use super::presentation::{IndicatorPresentationCache, IndicatorPresentationResolver};
 use super::rebuild::RebuildCoordinator;
@@ -5,8 +6,8 @@ use crate::widget::chart::kline::IndicatorPresentationContext;
 use data::chart::Basis;
 use data::chart::kline::composition::{ChartComposition, MarkKind};
 use data::chart::kline::indicators::{
-    AvailabilityContext, IndicatorHost, IndicatorPanelRecipe, IndicatorUnsupportedReason,
-    declared_input_requirements,
+    AvailabilityContext, IndicatorHost, IndicatorPanelRecipe, declared_input_requirements,
+    unsupported_reason,
 };
 use data::chart::kline::{
     BaseSeriesSource, IndicatorConfig, IndicatorId, IndicatorInputCoverage,
@@ -38,6 +39,43 @@ pub(super) enum IndicatorChange {
     Reconcile {
         request_fetch: bool,
     },
+}
+
+impl IndicatorChange {
+    pub(super) fn apply(
+        self,
+        indicators: &mut IndicatorState,
+        data: &KlineData,
+        dirty: &mut bool,
+        policy: &mut UpdatePolicy,
+    ) -> bool {
+        match self {
+            IndicatorChange::Unchanged => false,
+            IndicatorChange::Visual => {
+                *policy = UpdatePolicy::Redraw;
+                *dirty = true;
+                false
+            }
+            IndicatorChange::Reconfigure { id, request_fetch } => {
+                if *policy != UpdatePolicy::ImmediateReconfigure {
+                    *policy = UpdatePolicy::DeferredReconfigure;
+                }
+                indicators.mark_with_dependents(
+                    data,
+                    &[id],
+                    IndicatorRebuildReason::IndicatorSettingsChanged,
+                );
+
+                *dirty = true;
+                request_fetch
+            }
+            IndicatorChange::Reconcile { request_fetch } => {
+                *policy = UpdatePolicy::ImmediateReconfigure;
+                *dirty = true;
+                request_fetch
+            }
+        }
+    }
 }
 
 #[derive(Default)]
@@ -300,18 +338,6 @@ impl IndicatorState {
         self.composition.primary_mark()
     }
 
-    pub(super) fn unsupported_reason(
-        &self,
-        indicator: &IndicatorId,
-        basis: Basis,
-        base_ticker: TickerInfo,
-    ) -> Option<IndicatorUnsupportedReason> {
-        data::chart::kline::indicators::unsupported_reason(
-            indicator,
-            AvailabilityContext { basis, base_ticker },
-        )
-    }
-
     pub(super) fn history_requirement(
         &self,
         active_indicators: &[IndicatorInstanceId],
@@ -333,8 +359,7 @@ impl IndicatorState {
                 continue;
             };
             if !instance.kind.is_registered()
-                || self
-                    .unsupported_reason(&instance.kind, basis, base_ticker)
+                || unsupported_reason(&instance.kind, AvailabilityContext { basis, base_ticker })
                     .is_some()
             {
                 continue;
@@ -362,8 +387,7 @@ impl IndicatorState {
         basis: Basis,
         base_ticker: TickerInfo,
     ) -> bool {
-        self.unsupported_reason(indicator, basis, base_ticker)
-            .is_none()
+        unsupported_reason(indicator, AvailabilityContext { basis, base_ticker }).is_none()
             && declared_input_requirements(indicator)
                 .into_iter()
                 .any(|requirement| {
@@ -377,10 +401,7 @@ impl IndicatorState {
         basis: Basis,
         base_ticker: TickerInfo,
     ) -> Option<IndicatorInputSource> {
-        if self
-            .unsupported_reason(indicator, basis, base_ticker)
-            .is_some()
-        {
+        if unsupported_reason(indicator, AvailabilityContext { basis, base_ticker }).is_some() {
             return None;
         }
         declared_input_requirements(indicator)
@@ -395,7 +416,7 @@ impl IndicatorState {
             .map(|requirement| requirement.source)
     }
 
-    pub(super) fn apply(&mut self, command: IndicatorCommand, data: &KlineData) -> IndicatorChange {
+    pub(super) fn apply(&mut self, command: IndicatorCommand) -> IndicatorChange {
         match command {
             IndicatorCommand::InputChanged(IndicatorInputCommand::DataConfig { id, config }) => {
                 let requests_history = self.selected_indicators().contains(&id);
@@ -442,13 +463,8 @@ impl IndicatorState {
                     return IndicatorChange::Unchanged;
                 }
                 let active_indicators = self.selected_indicators();
-                if data
-                    .validate_indicator_source_binding(
-                        &active_indicators,
-                        &candidate_instances,
-                        id,
-                        &input_id,
-                    )
+                if candidate_instances
+                    .validate_source_binding(&active_indicators, id, &input_id)
                     .is_err()
                     || self
                         .composition
@@ -600,9 +616,14 @@ impl IndicatorState {
         basis: Basis,
         data: &KlineData,
     ) -> IndicatorChange {
-        if self
-            .unsupported_reason(&kind, basis, data.base_ticker())
-            .is_some()
+        if unsupported_reason(
+            &kind,
+            AvailabilityContext {
+                basis,
+                base_ticker: data.base_ticker(),
+            },
+        )
+        .is_some()
         {
             return IndicatorChange::Unchanged;
         }
@@ -630,9 +651,14 @@ impl IndicatorState {
             .iter()
             .filter(|input| input.allow_indicator)
             .collect::<Vec<_>>();
-        if self
-            .unsupported_reason(&kind, basis, data.base_ticker())
-            .is_some()
+        if unsupported_reason(
+            &kind,
+            AvailabilityContext {
+                basis,
+                base_ticker: data.base_ticker(),
+            },
+        )
+        .is_some()
             || !self.selected_indicators().contains(&source.instance_id)
             || inputs.len() != 1
             || inputs[0].id != input_id
@@ -659,13 +685,8 @@ impl IndicatorState {
             return IndicatorChange::Unchanged;
         }
         let active_indicators = candidate_composition.selected_indicators();
-        if data
-            .validate_indicator_source_binding(
-                &active_indicators,
-                &candidate_instances,
-                id,
-                &input_id,
-            )
+        if candidate_instances
+            .validate_source_binding(&active_indicators, id, &input_id)
             .is_err()
         {
             return IndicatorChange::Unchanged;
@@ -896,43 +917,6 @@ impl IndicatorState {
         }
     }
 
-    fn rebuild_groups(
-        &self,
-        data: &KlineData,
-        dirty: &[IndicatorInstanceId],
-    ) -> Vec<Vec<IndicatorInstanceId>> {
-        let mut groups: Vec<Vec<IndicatorInstanceId>> = Vec::new();
-
-        for root in dirty {
-            let mut group = data
-                .dependent_indicator_ids(&[*root])
-                .into_iter()
-                .filter(|id| dirty.contains(id))
-                .collect::<Vec<_>>();
-            if !group.contains(root) {
-                group.push(*root);
-            }
-
-            let mut index = 0;
-            while index < groups.len() {
-                if groups[index].iter().any(|id| group.contains(id)) {
-                    let merged = groups.remove(index);
-                    for id in merged {
-                        if !group.contains(&id) {
-                            group.push(id);
-                        }
-                    }
-                    index = 0;
-                } else {
-                    index += 1;
-                }
-            }
-            groups.push(group);
-        }
-
-        groups
-    }
-
     pub(super) fn pending_rebuild_job(&self) -> Option<u64> {
         self.rebuild.pending_job()
     }
@@ -1002,7 +986,7 @@ impl IndicatorState {
             .copied()
             .filter(|id| active.contains(id))
             .collect::<Vec<_>>();
-        self.rebuild_groups(data, &dirty)
+        rebuild_groups(data, &dirty)
             .into_iter()
             .filter_map(|group| {
                 let calculation_ids = data.calculation_indicator_ids(&group);
@@ -1219,4 +1203,40 @@ impl IndicatorState {
         definition.uses(IndicatorInputSource::Trades)
             || definition.uses(IndicatorInputSource::DirectionalVolume)
     }
+}
+
+fn rebuild_groups(
+    data: &KlineData,
+    dirty: &[IndicatorInstanceId],
+) -> Vec<Vec<IndicatorInstanceId>> {
+    let mut groups: Vec<Vec<IndicatorInstanceId>> = Vec::new();
+
+    for root in dirty {
+        let mut group = data
+            .dependent_indicator_ids(&[*root])
+            .into_iter()
+            .filter(|id| dirty.contains(id))
+            .collect::<Vec<_>>();
+        if !group.contains(root) {
+            group.push(*root);
+        }
+
+        let mut index = 0;
+        while index < groups.len() {
+            if groups[index].iter().any(|id| group.contains(id)) {
+                let merged = groups.remove(index);
+                for id in merged {
+                    if !group.contains(&id) {
+                        group.push(id);
+                    }
+                }
+                index = 0;
+            } else {
+                index += 1;
+            }
+        }
+        groups.push(group);
+    }
+
+    groups
 }

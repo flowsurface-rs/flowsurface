@@ -193,40 +193,6 @@ impl<'a> LegendView<'a> {
         Some(TickerLegendLayout { bg, rows })
     }
 
-    pub(crate) fn build_footprint_legend_layout(
-        &self,
-        layout: &PanelLayoutTree,
-        primary_panel: usize,
-        preceding_rows: usize,
-        cluster_kind: ClusterKind,
-    ) -> Option<FootprintLegendLayout> {
-        let panel = layout.panel(primary_panel)?;
-        let row_top = panel.plot.y
-            + PANEL_TITLE_TOP_PAD
-            + TICKER_LEGEND_PADDING
-            + preceding_rows as f32 * TICKER_LEGEND_ROW_H;
-        let y_center = row_top + TICKER_LEGEND_ROW_H * 0.5;
-        let label = format!("Footprint · {cluster_kind}");
-        let text_end_x =
-            panel.plot.x + TOOLTIP_ROW_LEFT_PAD + label.chars().count() as f32 * CHAR_W;
-        let (_, _, settings, hide, row_w) =
-            legend_controls(panel.plot, text_end_x, y_center, false, false, true, true);
-
-        Some(FootprintLegendLayout {
-            row: FootprintLegendRowHit {
-                row_rect: Rectangle {
-                    x: panel.plot.x,
-                    y: row_top,
-                    width: row_w,
-                    height: TICKER_LEGEND_ROW_H,
-                },
-                settings,
-                hide,
-            },
-            cluster_kind,
-        })
-    }
-
     pub(crate) fn build_study_legend_layout(
         &self,
         layout: &PanelLayoutTree,
@@ -1726,59 +1692,6 @@ pub(crate) fn indicator_marker_x(row_x: f32) -> f32 {
     row_x + TOOLTIP_ROW_LEFT_PAD
 }
 
-pub(crate) fn hit_ticker_legend(
-    layout: &PanelLayoutTree,
-    legend: &TickerLegendLayout,
-    root_local: Point,
-) -> Option<TickerLegendHit> {
-    let plot_local = layout.plot_local_point(root_local)?;
-    if !legend.bg.contains(plot_local) {
-        return None;
-    }
-
-    for (index, row) in legend.rows.iter().enumerate() {
-        if !row.row_rect.contains(plot_local) {
-            continue;
-        }
-
-        if row.settings.contains(plot_local) {
-            return Some(TickerLegendHit::Icon(index, TickerLegendIconKind::Settings));
-        }
-
-        if row.visibility.contains(plot_local) {
-            return Some(TickerLegendHit::Icon(
-                index,
-                TickerLegendIconKind::Visibility,
-            ));
-        }
-        if row.has_close && row.close.contains(plot_local) {
-            return Some(TickerLegendHit::Icon(index, TickerLegendIconKind::Close));
-        }
-
-        return Some(TickerLegendHit::Row(index));
-    }
-
-    None
-}
-
-pub(crate) fn hit_footprint_legend(
-    layout: &PanelLayoutTree,
-    legend: &FootprintLegendLayout,
-    root_local: Point,
-) -> Option<FootprintLegendHit> {
-    let plot_local = layout.plot_local_point(root_local)?;
-    if !legend.row.row_rect.contains(plot_local) {
-        return None;
-    }
-    if legend.row.settings.contains(plot_local) {
-        return Some(FootprintLegendHit::Icon(FootprintLegendIconKind::Settings));
-    }
-    if legend.row.hide.contains(plot_local) {
-        return Some(FootprintLegendHit::Icon(FootprintLegendIconKind::Hide));
-    }
-    Some(FootprintLegendHit::Row)
-}
-
 pub(crate) fn tooltip_rows_before_studies(
     ticker_legend: Option<&TickerLegendLayout>,
     footprint_legend: Option<&FootprintLegendLayout>,
@@ -1788,45 +1701,6 @@ pub(crate) fn tooltip_rows_before_studies(
         .map(|legend| legend.rows.len())
         .unwrap_or(usize::from(show_legend_values))
         + usize::from(footprint_legend.is_some())
-}
-
-pub(crate) fn hit_study_legend(
-    layout: &PanelLayoutTree,
-    legend: &StudyLegendLayout,
-    root_local: Point,
-) -> Option<StudyLegendHit> {
-    let plot_local = layout.plot_local_point(root_local)?;
-
-    if legend.category.row_rect.contains(plot_local) {
-        if legend.category.expand.contains(plot_local) {
-            return Some(StudyLegendHit::CategoryIcon(
-                StudiesLegendIconKind::ExpandCollapse,
-            ));
-        }
-
-        if legend.category.visibility.contains(plot_local) {
-            return Some(StudyLegendHit::CategoryIcon(
-                StudiesLegendIconKind::Visibility,
-            ));
-        }
-
-        if legend.category.close.contains(plot_local) {
-            return Some(StudyLegendHit::CategoryIcon(StudiesLegendIconKind::Close));
-        }
-
-        return Some(StudyLegendHit::CategoryRow);
-    }
-
-    for (index, row) in legend.rows.iter().enumerate() {
-        if let Some(hit) = row.controls.hit(plot_local) {
-            return Some(match hit {
-                LegendRowHit::Action(action) => StudyLegendHit::StudyIcon(index, action),
-                LegendRowHit::Row => StudyLegendHit::StudyRow(index),
-            });
-        }
-    }
-
-    None
 }
 
 pub(crate) fn tooltip_rows_before_indicators(
@@ -1839,24 +1713,6 @@ pub(crate) fn tooltip_rows_before_indicators(
         + study_legend
             .map(|legend| legend.rows.len() + 1)
             .unwrap_or_default()
-}
-
-pub(crate) fn hit_indicator_legend(
-    layout: &PanelLayoutTree,
-    legend: &IndicatorLegendLayout,
-    root_local: Point,
-) -> Option<IndicatorLegendHit> {
-    let plot_local = layout.plot_local_point(root_local)?;
-    for (index, row) in legend.rows.iter().enumerate() {
-        if let Some(hit) = row.controls.hit(plot_local) {
-            return Some(match hit {
-                LegendRowHit::Action(action) => IndicatorLegendHit::Icon(index, action),
-                LegendRowHit::Row => IndicatorLegendHit::Row(index),
-            });
-        }
-    }
-
-    None
 }
 
 fn legend_controls(
@@ -2009,6 +1865,43 @@ pub(crate) struct TickerLegendLayout {
     pub(crate) rows: Vec<TickerLegendRowHit>,
 }
 
+impl TickerLegendLayout {
+    pub(crate) fn hit_test(
+        &self,
+        layout: &PanelLayoutTree,
+        root_local: Point,
+    ) -> Option<TickerLegendHit> {
+        let plot_local = layout.plot_local_point(root_local)?;
+        if !self.bg.contains(plot_local) {
+            return None;
+        }
+
+        for (index, row) in self.rows.iter().enumerate() {
+            if !row.row_rect.contains(plot_local) {
+                continue;
+            }
+
+            if row.settings.contains(plot_local) {
+                return Some(TickerLegendHit::Icon(index, TickerLegendIconKind::Settings));
+            }
+
+            if row.visibility.contains(plot_local) {
+                return Some(TickerLegendHit::Icon(
+                    index,
+                    TickerLegendIconKind::Visibility,
+                ));
+            }
+            if row.has_close && row.close.contains(plot_local) {
+                return Some(TickerLegendHit::Icon(index, TickerLegendIconKind::Close));
+            }
+
+            return Some(TickerLegendHit::Row(index));
+        }
+
+        None
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum TickerLegendHit {
     Row(usize),
@@ -2048,6 +1941,59 @@ struct FootprintLegendRowHit {
 pub(crate) struct FootprintLegendLayout {
     row: FootprintLegendRowHit,
     cluster_kind: ClusterKind,
+}
+
+impl FootprintLegendLayout {
+    pub(crate) fn new(
+        layout: &PanelLayoutTree,
+        primary_panel: usize,
+        preceding_rows: usize,
+        cluster_kind: ClusterKind,
+    ) -> Option<Self> {
+        let panel = layout.panel(primary_panel)?;
+        let row_top = panel.plot.y
+            + PANEL_TITLE_TOP_PAD
+            + TICKER_LEGEND_PADDING
+            + preceding_rows as f32 * TICKER_LEGEND_ROW_H;
+        let y_center = row_top + TICKER_LEGEND_ROW_H * 0.5;
+        let label = format!("Footprint · {cluster_kind}");
+        let text_end_x =
+            panel.plot.x + TOOLTIP_ROW_LEFT_PAD + label.chars().count() as f32 * CHAR_W;
+        let (_, _, settings, hide, row_w) =
+            legend_controls(panel.plot, text_end_x, y_center, false, false, true, true);
+
+        Some(Self {
+            row: FootprintLegendRowHit {
+                row_rect: Rectangle {
+                    x: panel.plot.x,
+                    y: row_top,
+                    width: row_w,
+                    height: TICKER_LEGEND_ROW_H,
+                },
+                settings,
+                hide,
+            },
+            cluster_kind,
+        })
+    }
+
+    pub(crate) fn hit_test(
+        &self,
+        layout: &PanelLayoutTree,
+        root_local: Point,
+    ) -> Option<FootprintLegendHit> {
+        let plot_local = layout.plot_local_point(root_local)?;
+        if !self.row.row_rect.contains(plot_local) {
+            return None;
+        }
+        if self.row.settings.contains(plot_local) {
+            return Some(FootprintLegendHit::Icon(FootprintLegendIconKind::Settings));
+        }
+        if self.row.hide.contains(plot_local) {
+            return Some(FootprintLegendHit::Icon(FootprintLegendIconKind::Hide));
+        }
+        Some(FootprintLegendHit::Row)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2118,6 +2064,47 @@ pub(crate) struct StudyLegendLayout {
     category: StudiesLegendRowHit,
     study_count: usize,
     rows: Vec<StudyLegendRowHit>,
+}
+
+impl StudyLegendLayout {
+    pub(crate) fn hit_test(
+        &self,
+        layout: &PanelLayoutTree,
+        root_local: Point,
+    ) -> Option<StudyLegendHit> {
+        let plot_local = layout.plot_local_point(root_local)?;
+
+        if self.category.row_rect.contains(plot_local) {
+            if self.category.expand.contains(plot_local) {
+                return Some(StudyLegendHit::CategoryIcon(
+                    StudiesLegendIconKind::ExpandCollapse,
+                ));
+            }
+
+            if self.category.visibility.contains(plot_local) {
+                return Some(StudyLegendHit::CategoryIcon(
+                    StudiesLegendIconKind::Visibility,
+                ));
+            }
+
+            if self.category.close.contains(plot_local) {
+                return Some(StudyLegendHit::CategoryIcon(StudiesLegendIconKind::Close));
+            }
+
+            return Some(StudyLegendHit::CategoryRow);
+        }
+
+        for (index, row) in self.rows.iter().enumerate() {
+            if let Some(hit) = row.controls.hit(plot_local) {
+                return Some(match hit {
+                    LegendRowHit::Action(action) => StudyLegendHit::StudyIcon(index, action),
+                    LegendRowHit::Row => StudyLegendHit::StudyRow(index),
+                });
+            }
+        }
+
+        None
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2230,6 +2217,26 @@ pub(crate) struct IndicatorLegendRowHit {
 #[derive(Debug, Clone)]
 pub(crate) struct IndicatorLegendLayout {
     pub(crate) rows: Vec<IndicatorLegendRowHit>,
+}
+
+impl IndicatorLegendLayout {
+    pub(crate) fn hit_test(
+        &self,
+        layout: &PanelLayoutTree,
+        root_local: Point,
+    ) -> Option<IndicatorLegendHit> {
+        let plot_local = layout.plot_local_point(root_local)?;
+        for (index, row) in self.rows.iter().enumerate() {
+            if let Some(hit) = row.controls.hit(plot_local) {
+                return Some(match hit {
+                    LegendRowHit::Action(action) => IndicatorLegendHit::Icon(index, action),
+                    LegendRowHit::Row => IndicatorLegendHit::Row(index),
+                });
+            }
+        }
+
+        None
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

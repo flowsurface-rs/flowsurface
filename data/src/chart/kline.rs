@@ -67,6 +67,7 @@ pub use viewport::{
     YUnitRange, ZOOM_SENSITIVITY,
 };
 
+use rustc_hash::FxHashSet;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -556,6 +557,72 @@ pub struct IndicatorInstance {
 }
 
 impl IndicatorInstance {
+    pub fn update_source_binding(
+        &mut self,
+        input_id: impl Into<String>,
+        output: Option<IndicatorOutputRef>,
+    ) -> bool {
+        let input_id = input_id.into();
+        if !self
+            .kind
+            .definition()
+            .source_inputs
+            .iter()
+            .any(|input| input.id == input_id)
+        {
+            return false;
+        }
+        match output {
+            Some(output) => {
+                let binding_changed = self.source_bindings.get(&input_id) != Some(&output);
+                let base_selection_removed = self.base_source_selections.remove(&input_id);
+                self.source_bindings.insert(input_id, output);
+                binding_changed || base_selection_removed.is_some()
+            }
+            None => self.source_bindings.remove(&input_id).is_some(),
+        }
+    }
+
+    pub fn update_base_source(
+        &mut self,
+        input_id: impl Into<String>,
+        source: Option<BaseSeriesSource>,
+    ) -> bool {
+        let input_id = input_id.into();
+        if !self
+            .kind
+            .definition()
+            .source_inputs
+            .iter()
+            .any(|input| input.id == input_id)
+        {
+            return false;
+        }
+        if self.source_bindings.contains_key(&input_id) {
+            return false;
+        }
+        match source {
+            Some(source) => {
+                if self.base_source_selections.get(&input_id) == Some(&source) {
+                    return false;
+                }
+                self.base_source_selections.insert(input_id, source);
+                true
+            }
+            None => self.base_source_selections.remove(&input_id).is_some(),
+        }
+    }
+
+    pub fn configured_color(&self, slot: &str) -> Option<ThemeColor> {
+        self.style_overrides.color(slot).or_else(|| {
+            self.kind
+                .color_specs()
+                .iter()
+                .find(|spec| spec.id == slot)
+                .map(|spec| spec.default_color())
+        })
+    }
+
     pub fn new(id: IndicatorInstanceId, kind: IndicatorId) -> Self {
         let config = IndicatorConfig::default_for(&kind);
         Self {
@@ -597,6 +664,48 @@ impl PartialEq for IndicatorInstanceStore {
 }
 
 impl IndicatorInstanceStore {
+    pub fn validate_source_binding(
+        &self,
+        active: &[IndicatorInstanceId],
+        id: IndicatorInstanceId,
+        input_id: &str,
+    ) -> Result<(), String> {
+        let active = active
+            .iter()
+            .copied()
+            .collect::<BTreeSet<IndicatorInstanceId>>();
+        let Some(instance) = self.get(id) else {
+            return Err(format!(
+                "source binding references missing indicator instance {id:?}"
+            ));
+        };
+        if !active.contains(&id) {
+            return Err("source binding target is not active".to_owned());
+        }
+        if !instance.kind.definition().has_numeric_plot_layers() {
+            return Err("attached indicator has no numeric plot layer".to_owned());
+        }
+        let Some(target) = self
+            .dependency_target(instance, input_id, &active)
+            .map_err(|problem| problem.to_string())?
+        else {
+            return Ok(());
+        };
+
+        let edges = self.dependency_edges(&active, Some((id, input_id)));
+        let mut pending = vec![target.id];
+        let mut visited = FxHashSet::default();
+        while let Some(current) = pending.pop() {
+            if current == id {
+                return Err("indicator dependency cycle".to_owned());
+            }
+            if visited.insert(current) {
+                pending.extend(edges.get(&current).into_iter().flatten().copied());
+            }
+        }
+        Ok(())
+    }
+
     pub fn source_offsets(&self) -> Vec<i64> {
         let mut offsets = vec![0];
         for instance in self.instances() {
@@ -737,28 +846,10 @@ impl IndicatorInstanceStore {
         input_id: impl Into<String>,
         output: Option<IndicatorOutputRef>,
     ) -> bool {
-        let Some(instance) = self.instances.iter_mut().find(|instance| instance.id == id) else {
-            return false;
-        };
-        let input_id = input_id.into();
-        if !instance
-            .kind
-            .definition()
-            .source_inputs
-            .iter()
-            .any(|input| input.id == input_id)
-        {
-            return false;
-        }
-        match output {
-            Some(output) => {
-                let binding_changed = instance.source_bindings.get(&input_id) != Some(&output);
-                let base_selection_removed = instance.base_source_selections.remove(&input_id);
-                instance.source_bindings.insert(input_id, output);
-                binding_changed || base_selection_removed.is_some()
-            }
-            None => instance.source_bindings.remove(&input_id).is_some(),
-        }
+        self.instances
+            .iter_mut()
+            .find(|instance| instance.id == id)
+            .is_some_and(|instance| instance.update_source_binding(input_id, output))
     }
 
     pub fn update_base_source(
@@ -767,32 +858,10 @@ impl IndicatorInstanceStore {
         input_id: impl Into<String>,
         source: Option<BaseSeriesSource>,
     ) -> bool {
-        let Some(instance) = self.instances.iter_mut().find(|instance| instance.id == id) else {
-            return false;
-        };
-        let input_id = input_id.into();
-        if !instance
-            .kind
-            .definition()
-            .source_inputs
-            .iter()
-            .any(|input| input.id == input_id)
-        {
-            return false;
-        }
-        if instance.source_bindings.contains_key(&input_id) {
-            return false;
-        }
-        match source {
-            Some(source) => {
-                if instance.base_source_selections.get(&input_id) == Some(&source) {
-                    return false;
-                }
-                instance.base_source_selections.insert(input_id, source);
-                true
-            }
-            None => instance.base_source_selections.remove(&input_id).is_some(),
-        }
+        self.instances
+            .iter_mut()
+            .find(|instance| instance.id == id)
+            .is_some_and(|instance| instance.update_base_source(input_id, source))
     }
 
     pub fn update_color(

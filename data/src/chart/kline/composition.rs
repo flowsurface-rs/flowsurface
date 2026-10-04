@@ -797,6 +797,88 @@ pub struct PanelSpec {
 }
 
 impl PanelSpec {
+    pub fn effective_data_kind(&self) -> LayerDataKind {
+        let fallback = match self.role {
+            PanelRole::Primary => LayerDataKind::Ohlc,
+            PanelRole::Auxiliary => LayerDataKind::Scalar,
+        };
+
+        self.base_layer
+            .and_then(|base| self.layers.iter().find(|layer| layer.id == base))
+            .or_else(|| self.layers.first())
+            .map(|layer| layer.data_kind)
+            .unwrap_or(fallback)
+    }
+
+    pub fn effective_mark(&self) -> MarkKind {
+        let fallback = match self.role {
+            PanelRole::Primary => default_mark_for_data_kind(LayerDataKind::Ohlc),
+            PanelRole::Auxiliary => MarkKind::Bar(BarMode::Histogram(HistogramMode::Plain)),
+        };
+
+        let base_layer_id = self
+            .base_layer
+            .or_else(|| self.layers.first().map(|layer| layer.id));
+
+        let resolved_marks = self.resolved_marks();
+
+        base_layer_id
+            .and_then(|base| {
+                resolved_marks
+                    .iter()
+                    .find(|(layer_id, _)| *layer_id == base)
+                    .map(|(_, mark)| *mark)
+            })
+            .or_else(|| resolved_marks.first().map(|(_, mark)| *mark))
+            .unwrap_or(fallback)
+    }
+
+    pub fn resolved_marks(&self) -> Vec<(LayerId, MarkKind)> {
+        let is_multi_source = self.uses_multi_source();
+
+        self.layers
+            .iter()
+            .map(|layer| {
+                let mut mark = layer.effective_mark();
+
+                if self.comparison_policy.force_line_for_non_base_sources
+                    && is_multi_source
+                    && self.base_layer != Some(layer.id)
+                {
+                    mark = MarkKind::Line;
+                }
+
+                (layer.id, resolve_mark_for_data_kind(mark, layer.data_kind))
+            })
+            .collect()
+    }
+
+    fn add_layer(&mut self, layer: LayerSpec) -> bool {
+        let layer_id = layer.id;
+        self.layers.push(layer);
+        if self.base_layer.is_none() {
+            self.base_layer = Some(layer_id);
+        }
+        self.enforce_comparison_mark_policy();
+
+        true
+    }
+
+    fn remove_layer(&mut self, layer_id: LayerId) -> bool {
+        let Some(index) = self.layers.iter().position(|layer| layer.id == layer_id) else {
+            return false;
+        };
+
+        self.layers.remove(index);
+
+        if self.base_layer == Some(layer_id) {
+            self.base_layer = self.layers.first().map(|layer| layer.id);
+        }
+
+        self.enforce_comparison_mark_policy();
+        true
+    }
+
     pub fn indicator_visible(&self, id: PanelValueId) -> bool {
         self.layers.iter().any(|layer| {
             layer.visible
@@ -1013,45 +1095,15 @@ impl ChartComposition {
     }
 
     pub fn panel_effective_data_kind(&self, panel_id: PanelId) -> Option<LayerDataKind> {
-        let panel = self.panel(panel_id)?;
-
-        let fallback = match panel.role {
-            PanelRole::Primary => LayerDataKind::Ohlc,
-            PanelRole::Auxiliary => LayerDataKind::Scalar,
-        };
-
-        panel
-            .base_layer
-            .and_then(|base| panel.layers.iter().find(|layer| layer.id == base))
-            .or_else(|| panel.layers.first())
-            .map(|layer| layer.data_kind)
-            .or(Some(fallback))
+        self.panel(panel_id).map(PanelSpec::effective_data_kind)
     }
 
     pub fn panel_effective_mark(&self, panel_id: PanelId) -> Option<MarkKind> {
-        let panel = self.panel(panel_id)?;
+        self.panel(panel_id).map(PanelSpec::effective_mark)
+    }
 
-        let fallback = match panel.role {
-            PanelRole::Primary => default_mark_for_data_kind(LayerDataKind::Ohlc),
-            PanelRole::Auxiliary => MarkKind::Bar(BarMode::Histogram(HistogramMode::Plain)),
-        };
-
-        let base_layer_id = panel
-            .base_layer
-            .or_else(|| panel.layers.first().map(|layer| layer.id));
-
-        self.resolved_panel_marks(panel_id)
-            .and_then(|resolved_marks| {
-                base_layer_id
-                    .and_then(|base| {
-                        resolved_marks
-                            .iter()
-                            .find(|(layer_id, _)| *layer_id == base)
-                            .map(|(_, mark)| *mark)
-                    })
-                    .or_else(|| resolved_marks.first().map(|(_, mark)| *mark))
-            })
-            .or(Some(fallback))
+    pub fn resolved_panel_marks(&self, panel_id: PanelId) -> Option<Vec<(LayerId, MarkKind)>> {
+        self.panel(panel_id).map(PanelSpec::resolved_marks)
     }
 
     pub fn panel_value_precision(&self, panel_id: PanelId) -> Option<PanelValuePrecision> {
@@ -1221,18 +1273,13 @@ impl ChartComposition {
     }
 
     fn add_layer_to_panel(&mut self, panel_id: PanelId, layer: LayerSpec) -> bool {
-        let Some(panel) = self.panel_mut(panel_id) else {
-            return false;
-        };
+        self.panel_mut(panel_id)
+            .is_some_and(|panel| panel.add_layer(layer))
+    }
 
-        let layer_id = layer.id;
-        panel.layers.push(layer);
-        if panel.base_layer.is_none() {
-            panel.base_layer = Some(layer_id);
-        }
-        panel.enforce_comparison_mark_policy();
-
-        true
+    fn remove_layer_from_panel(&mut self, panel_id: PanelId, layer_id: LayerId) -> bool {
+        self.panel_mut(panel_id)
+            .is_some_and(|panel| panel.remove_layer(layer_id))
     }
 
     fn add_comparison_source_to_panel(
@@ -1363,49 +1410,6 @@ impl ChartComposition {
         };
 
         layer.mark_override = Some(MarkKind::Bar(mode));
-        panel.enforce_comparison_mark_policy();
-        true
-    }
-
-    pub fn resolved_panel_marks(&self, panel_id: PanelId) -> Option<Vec<(LayerId, MarkKind)>> {
-        let panel = self.panel(panel_id)?;
-        let is_multi_source = panel.uses_multi_source();
-
-        Some(
-            panel
-                .layers
-                .iter()
-                .map(|layer| {
-                    let mut mark = layer.effective_mark();
-
-                    if panel.comparison_policy.force_line_for_non_base_sources
-                        && is_multi_source
-                        && panel.base_layer != Some(layer.id)
-                    {
-                        mark = MarkKind::Line;
-                    }
-
-                    (layer.id, resolve_mark_for_data_kind(mark, layer.data_kind))
-                })
-                .collect(),
-        )
-    }
-
-    fn remove_layer_from_panel(&mut self, panel_id: PanelId, layer_id: LayerId) -> bool {
-        let Some(panel) = self.panel_mut(panel_id) else {
-            return false;
-        };
-
-        let Some(index) = panel.layers.iter().position(|layer| layer.id == layer_id) else {
-            return false;
-        };
-
-        panel.layers.remove(index);
-
-        if panel.base_layer == Some(layer_id) {
-            panel.base_layer = panel.layers.first().map(|layer| layer.id);
-        }
-
         panel.enforce_comparison_mark_policy();
         true
     }
