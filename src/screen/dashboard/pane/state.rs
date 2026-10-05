@@ -22,7 +22,7 @@ use crate::{
         sidebar::tickers_table::TickersTable,
     },
     style::{self, Icon, icon_text},
-    theme::ThemeAccents,
+    theme::{ThemeAccents, ThemeState},
     widget::{
         self, button_with_tooltip,
         inspector::{InspectorBody, InspectorContent, InspectorFooter},
@@ -370,8 +370,9 @@ impl State {
         timezone: UserTimezone,
         pixel_ratio: PixelRatio,
         tickers_table: &'a TickersTable,
-        theme_accents: ThemeAccents,
+        theme: &'a ThemeState,
     ) -> pane_grid::Content<'a, Message, Theme, Renderer> {
+        let theme_accents = theme.accents();
         let mut top_left_buttons = if Content::Starter == self.content {
             row![]
         } else {
@@ -613,12 +614,7 @@ impl State {
                     top_left_buttons = top_left_buttons.push(modifiers);
 
                     chart
-                        .view(
-                            timezone,
-                            pixel_ratio,
-                            theme_accents,
-                            self.inspector.is_some(),
-                        )
+                        .view(timezone, pixel_ratio, theme, self.inspector.is_some())
                         .map(move |message| {
                             Message::PaneEvent(id, Event::KlineInteraction(message))
                         })

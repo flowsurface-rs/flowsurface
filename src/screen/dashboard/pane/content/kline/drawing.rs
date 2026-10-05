@@ -19,7 +19,7 @@ use iced::{Element, Length};
 
 const SIDEBAR_WIDTH: f32 = 36.0;
 const OBJECT_LIST_SIDEBAR_WIDTH: f32 = 196.0;
-pub(super) const DRAWING_SIDEBAR_PADDING: f32 = 4.0;
+const DRAWING_SIDEBAR_PADDING: f32 = 4.0;
 const DRAWING_STROKE_WIDTH_STEP: f32 = 0.5;
 const DRAWING_FILL_ALPHA: f32 = 0.16;
 const DRAWING_TOOLBAR_SHADE_WIDTH: f32 = 76.0;
@@ -233,7 +233,7 @@ pub enum DrawingUpdate {
 }
 
 impl DrawingUpdate {
-    pub fn should_bump(self) -> bool {
+    pub(super) fn should_bump(self) -> bool {
         matches!(
             self,
             Self::Visual
@@ -725,7 +725,7 @@ impl DrawingTools {
             || self.sidebar_page == SidebarPage::ObjectList
     }
 
-    pub fn from_parts(active_tool: DrawingTool, mut drawings: Vec<DrawingEntity>) -> Self {
+    pub(crate) fn from_parts(active_tool: DrawingTool, mut drawings: Vec<DrawingEntity>) -> Self {
         drawings.retain(|drawing| drawing.object.coordinates_match(DrawingX::default()));
         for drawing in &mut drawings {
             if matches!(&drawing.object, DrawingObject::Box { .. }) {
@@ -757,7 +757,7 @@ impl DrawingTools {
         }
     }
 
-    pub fn active_tool(&self) -> DrawingTool {
+    pub(crate) fn active_tool(&self) -> DrawingTool {
         self.active_tool
     }
 
@@ -765,7 +765,7 @@ impl DrawingTools {
         self.active_tool.supports_magnet() && (self.magnet_enabled || self.magnet_modifier_active)
     }
 
-    pub fn time_drawings(&self) -> &[DrawingEntity] {
+    pub(super) fn time_drawings(&self) -> &[DrawingEntity] {
         if self.tick_mode {
             &self.inactive_drawings
         } else {
@@ -773,7 +773,7 @@ impl DrawingTools {
         }
     }
 
-    pub fn set_basis(&mut self, basis: data::chart::Basis) {
+    pub(super) fn set_basis(&mut self, basis: data::chart::Basis) {
         let tick_mode = !basis.is_time();
         if tick_mode != self.tick_mode {
             std::mem::swap(&mut self.drawings, &mut self.inactive_drawings);
@@ -783,7 +783,7 @@ impl DrawingTools {
         self.clear_interaction();
     }
 
-    pub fn sync_tick_sequence(&mut self, sequence_id: Option<uuid::Uuid>) -> bool {
+    pub(super) fn sync_tick_sequence(&mut self, sequence_id: Option<uuid::Uuid>) -> bool {
         if self.tick_sequence_id == sequence_id {
             return false;
         }
@@ -918,7 +918,7 @@ impl DrawingTools {
         })
     }
 
-    pub fn update(
+    pub(crate) fn update(
         &mut self,
         message: DrawingMessage,
         settings: &mut DrawingSettings,
@@ -1058,7 +1058,7 @@ impl DrawingTools {
         }
     }
 
-    pub fn sidebar_view<'a, Message>(
+    pub(crate) fn sidebar_view<'a, Message>(
         &'a self,
         composition: &'a ChartComposition,
         on_sidebar_message: fn(DrawingMessage) -> Message,
@@ -1074,7 +1074,7 @@ impl DrawingTools {
         }
     }
 
-    pub fn selected_toolbar_view<'a, Message>(
+    fn selected_toolbar_view<'a, Message>(
         &'a self,
         theme_accents: ThemeAccents,
         on_sidebar_message: fn(DrawingMessage) -> Message,
@@ -1398,7 +1398,7 @@ impl DrawingTools {
             .padding([4, 2])
     }
 
-    pub fn snapshot(&self) -> DrawingSnapshot<'_> {
+    pub(crate) fn snapshot(&self) -> DrawingSnapshot<'_> {
         DrawingSnapshot::new(
             self.active_tool,
             self.magnet_enabled,
@@ -1409,7 +1409,7 @@ impl DrawingTools {
         )
     }
 
-    pub fn handle_widget_drawing_event(
+    pub(super) fn handle_widget_drawing_event(
         &mut self,
         event: KlineWidgetDrawingEvent,
         settings: &DrawingSettings,
@@ -1529,7 +1529,7 @@ impl DrawingTools {
         }
     }
 
-    pub fn handle_escape(&mut self) -> DrawingUpdate {
+    pub(crate) fn handle_escape(&mut self) -> DrawingUpdate {
         if self.set_sidebar_page(SidebarPage::Tools) {
             return DrawingUpdate::Visual;
         }
@@ -1561,19 +1561,19 @@ impl DrawingTools {
         DrawingUpdate::None
     }
 
-    pub fn drawing_draft(&self) -> Option<&DrawingDraft> {
+    pub(crate) fn drawing_draft(&self) -> Option<&DrawingDraft> {
         match &self.interaction {
             DrawingInteraction::Drafting(draft) => Some(draft),
             DrawingInteraction::Idle | DrawingInteraction::Dragging(_) => None,
         }
     }
 
-    pub fn select_drawing(&mut self, selected: Option<DrawingId>) -> bool {
+    fn select_drawing(&mut self, selected: Option<DrawingId>) -> bool {
         let ids = selected.into_iter().collect::<Vec<_>>();
         self.select_drawings(ids)
     }
 
-    pub fn select_drawings(&mut self, selected: Vec<DrawingId>) -> bool {
+    fn select_drawings(&mut self, selected: Vec<DrawingId>) -> bool {
         if selected
             .iter()
             .any(|id| !self.drawings.iter().any(|drawing| drawing.id == *id))
@@ -1590,7 +1590,7 @@ impl DrawingTools {
         true
     }
 
-    pub fn remove_selected_drawing(&mut self) -> bool {
+    fn remove_selected_drawing(&mut self) -> bool {
         let ids = self.selected_drawings.clone();
         if ids.is_empty() {
             return false;
@@ -1708,7 +1708,7 @@ impl DrawingTools {
         object_changed || default_changed
     }
 
-    pub fn remove_drawing(&mut self, id: DrawingId) -> bool {
+    fn remove_drawing(&mut self, id: DrawingId) -> bool {
         let Some(index) = self.drawings.iter().position(|drawing| drawing.id == id) else {
             return false;
         };
@@ -1729,7 +1729,7 @@ impl DrawingTools {
         true
     }
 
-    pub fn remove_all_drawings(&mut self) -> bool {
+    fn remove_all_drawings(&mut self) -> bool {
         if self.drawings.is_empty()
             && matches!(self.interaction, DrawingInteraction::Idle)
             && self.selected_drawings.is_empty()
@@ -1743,7 +1743,7 @@ impl DrawingTools {
         true
     }
 
-    pub fn start_drawing_from_anchor(
+    fn start_drawing_from_anchor(
         &mut self,
         anchor: DrawingAnchor,
         settings: &DrawingSettings,
@@ -1798,7 +1798,7 @@ impl DrawingTools {
         }
     }
 
-    pub fn update_drawing_draft_anchor(&mut self, anchor: DrawingAnchor) -> bool {
+    fn update_drawing_draft_anchor(&mut self, anchor: DrawingAnchor) -> bool {
         if !self.accepts_anchor(anchor) {
             return false;
         }
@@ -1820,7 +1820,7 @@ impl DrawingTools {
         true
     }
 
-    pub fn commit_drawing_draft(&mut self, end: DrawingAnchor) -> Option<DrawingId> {
+    fn commit_drawing_draft(&mut self, end: DrawingAnchor) -> Option<DrawingId> {
         if !self.accepts_anchor(end) {
             return None;
         }
@@ -1830,7 +1830,7 @@ impl DrawingTools {
         Some(self.push_drawing(object, style))
     }
 
-    pub fn cancel_drawing_draft(&mut self) -> bool {
+    fn cancel_drawing_draft(&mut self) -> bool {
         if !matches!(self.interaction, DrawingInteraction::Drafting(_)) {
             return false;
         }
@@ -1839,7 +1839,7 @@ impl DrawingTools {
         true
     }
 
-    pub fn prune_panel_drawings(&mut self, panel_id: PanelId) -> bool {
+    pub(super) fn prune_panel_drawings(&mut self, panel_id: PanelId) -> bool {
         let before = self.drawings.len() + self.inactive_drawings.len();
         self.drawings
             .retain(|drawing| !drawing.belongs_to_panel(panel_id));
@@ -2240,7 +2240,10 @@ impl DrawingTools {
         }
     }
 
-    pub fn drawing_panels_exist(composition: &ChartComposition, object: &DrawingObject) -> bool {
+    pub(super) fn drawing_panels_exist(
+        composition: &ChartComposition,
+        object: &DrawingObject,
+    ) -> bool {
         let panel_exists = |panel_id: PanelId| composition.panel(panel_id).is_some();
 
         match object {

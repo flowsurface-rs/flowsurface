@@ -215,7 +215,7 @@ impl StudyState {
         fetch.is_profile_request(req_id)
     }
 
-    pub(super) fn accepts_kline_source(
+    fn accepts_kline_source(
         &self,
         basis: Basis,
         data: &KlineData,
@@ -455,7 +455,7 @@ impl StudyState {
         }
     }
 
-    pub(super) fn legend_expanded(&self) -> bool {
+    fn legend_expanded(&self) -> bool {
         self.legend_expanded
     }
 

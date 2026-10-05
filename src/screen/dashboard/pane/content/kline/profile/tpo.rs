@@ -48,12 +48,12 @@ pub(super) struct TpoState {
 }
 
 impl TpoState {
-    pub fn invalidate(&mut self) {
+    pub(crate) fn invalidate(&mut self) {
         self.rebuild_state = TpoRebuildState::Full;
         self.last_rebuild_source = None;
     }
 
-    pub fn clear_source(&mut self) -> bool {
+    pub(super) fn clear_source(&mut self) -> bool {
         let changed = !self.profiles.is_empty() || self.error.is_some();
         self.profiles.clear();
         self.error = None;
@@ -65,7 +65,7 @@ impl TpoState {
         changed
     }
 
-    pub fn rebuild(
+    pub(crate) fn rebuild(
         &mut self,
         study: Option<KlineStudy>,
         load_bars: impl Fn(TpoBarScope) -> Vec<Kline>,
@@ -136,7 +136,7 @@ impl TpoState {
         self.apply_result(key, result, now)
     }
 
-    pub fn rebuild_trades(
+    pub(super) fn rebuild_trades(
         &mut self,
         study: Option<KlineStudy>,
         trades: &[Trade],
@@ -342,13 +342,13 @@ impl TpoState {
             .is_some_and(|key| key.source == source && key.source_timeframe == source_timeframe)
     }
 
-    pub fn mark_kline_bars_dirty(&mut self, timeframe: Timeframe, bars: &[UnixMs]) {
+    pub(super) fn mark_kline_bars_dirty(&mut self, timeframe: Timeframe, bars: &[UnixMs]) {
         if self.uses_source(StudyDataSource::Kline, timeframe) {
             self.mark_times_dirty(bars.iter().copied());
         }
     }
 
-    pub fn apply_trade_update(&mut self, update: ProfileTradeUpdate<'_>) {
+    pub(super) fn apply_trade_update(&mut self, update: ProfileTradeUpdate<'_>) {
         match update {
             ProfileTradeUpdate::Live(trades) => self.mark_live_trades_dirty(trades),
             ProfileTradeUpdate::Historical {
@@ -445,15 +445,15 @@ impl TpoState {
         }
     }
 
-    pub fn profiles(&self) -> &[TpoProfile] {
+    pub(crate) fn profiles(&self) -> &[TpoProfile] {
         &self.profiles
     }
 
-    pub fn edits(&self) -> &TpoBoundaryEdits {
+    pub(crate) fn edits(&self) -> &TpoBoundaryEdits {
         &self.edits
     }
 
-    pub fn profile_ranges_overlapping(
+    pub(super) fn profile_ranges_overlapping(
         &self,
         start: UnixMs,
         end: UnixMs,
@@ -462,11 +462,11 @@ impl TpoState {
         self.edits.profile_ranges_overlapping(start, end, anchor)
     }
 
-    pub fn restore_edits(&mut self, edits: TpoBoundaryEdits) {
+    pub(super) fn restore_edits(&mut self, edits: TpoBoundaryEdits) {
         self.edits = edits;
     }
 
-    pub fn apply_edit(&mut self, edit: TpoEditCommand, anchor: TpoAnchor) {
+    pub(super) fn apply_edit(&mut self, edit: TpoEditCommand, anchor: TpoAnchor) {
         match edit {
             TpoEditCommand::SplitAt(boundary) => self.edits.split_at(boundary),
             TpoEditCommand::MergeAt(boundary) => self.edits.merge_at(boundary),

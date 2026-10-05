@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use self::source::ProfileKlineSource;
 use self::tpo::{TpoBarScope, TpoState};
 
-pub(super) fn profile_source_timeframe(chart_timeframe: Timeframe) -> Timeframe {
+fn profile_source_timeframe(chart_timeframe: Timeframe) -> Timeframe {
     if chart_timeframe <= Timeframe::H2 {
         Timeframe::M1
     } else if chart_timeframe <= Timeframe::H4 {
@@ -28,7 +28,7 @@ pub(super) fn profile_source_timeframe(chart_timeframe: Timeframe) -> Timeframe 
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct ProfilePlan {
     pub(super) kline_source_timeframe: Option<Timeframe>,
-    pub(super) kline_volume_profiles: Vec<VolumeProfileSchedule>,
+    kline_volume_profiles: Vec<VolumeProfileSchedule>,
     pub(super) tpo_study: Option<KlineStudy>,
     pub(super) recurring_trade_profiles: Vec<(Timeframe, PriceStep)>,
 }
@@ -71,7 +71,7 @@ impl ProfilePlan {
         )
     }
 
-    pub(super) fn fetch_windows(
+    fn fetch_windows(
         &self,
         visible_window: (UnixMs, UnixMs),
         tpo_ranges: &[(UnixMs, UnixMs)],

@@ -281,7 +281,7 @@ impl KlineStudy {
         Self::ALL.to_vec()
     }
 
-    pub fn default_for_type(self) -> Self {
+    fn default_for_type(self) -> Self {
         Self::ALL
             .into_iter()
             .find(|default| default.is_same_type(self))
@@ -595,14 +595,14 @@ impl KlineStudy {
         }
     }
 
-    pub const fn volume_profile_width_percent(self) -> Option<u8> {
+    const fn volume_profile_width_percent(self) -> Option<u8> {
         match self {
             Self::VolumeProfile { width_percent, .. } => Some(width_percent),
             Self::TpoProfile { .. } | Self::BigTrades { .. } => None,
         }
     }
 
-    pub const fn volume_profile_opacity_percent(self) -> Option<u8> {
+    const fn volume_profile_opacity_percent(self) -> Option<u8> {
         match self {
             Self::VolumeProfile {
                 opacity_percent, ..

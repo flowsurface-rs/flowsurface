@@ -341,7 +341,7 @@ impl ProfileAccumulator {
         })
     }
 
-    pub(crate) fn add_kline(&mut self, bar: &Kline) {
+    fn add_kline(&mut self, bar: &Kline) {
         let tick_size = self.price_step;
         let (up_total, down_total) = bar.volume.buy_sell().unwrap_or_else(|| {
             let total = bar.volume.total();

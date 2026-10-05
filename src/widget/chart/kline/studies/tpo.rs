@@ -1,7 +1,8 @@
-use super::super::helpers::{PixelGeometry, PixelSpan};
-use super::super::interaction::{
-    CacheInvalidation, LayerContext, LayerEffects, LayerGesture, NavigationFallback,
-};
+use super::super::chrome::PreparedChrome;
+use super::super::interaction::{LayerContext, LayerEffects, LayerGesture, NavigationFallback};
+use super::super::painting::PaintInputs;
+use super::super::painting::RenderRequest;
+use super::super::painting::{PixelGeometry, PixelSpan};
 use super::super::scene::Scene;
 use super::super::{CHAR_W, TEXT_SIZE};
 use super::{LayerHit, LayerPaintPhase, LayerPointerInput, StudyObjectKey};
@@ -40,7 +41,7 @@ struct TpoProfileGeometry {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum TpoHit {
+enum TpoHit {
     Click(TpoClick),
     Boundary {
         boundary: UnixMs,
@@ -50,7 +51,7 @@ pub(super) enum TpoHit {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum TpoClick {
+enum TpoClick {
     Reset {
         start: UnixMs,
         end: UnixMs,
@@ -79,7 +80,7 @@ pub(crate) struct TpoState {
 }
 
 impl TpoState {
-    pub(super) fn clear_selection(&mut self) -> bool {
+    fn clear_selection(&mut self) -> bool {
         self.selected_profile.take().is_some()
     }
 }
@@ -99,7 +100,7 @@ impl<'a> TpoObject<'a> {
         }
     }
 
-    pub(super) fn view<'b>(&'b self, context: LayerContext<'b>) -> TpoView<'b> {
+    fn view<'b>(&'b self, context: LayerContext<'b>) -> TpoView<'b> {
         TpoView {
             object: self,
             context,
@@ -107,7 +108,7 @@ impl<'a> TpoObject<'a> {
     }
 }
 
-pub(super) struct TpoView<'a> {
+struct TpoView<'a> {
     object: &'a TpoObject<'a>,
     context: LayerContext<'a>,
 }
@@ -372,9 +373,9 @@ impl TpoView<'_> {
             .collect()
     }
 
-    pub(super) fn fill_tpo_profile_overlay(
+    fn fill_tpo_profile_overlay(
         &self,
-        frame: &mut canvas::Frame,
+        frame: &mut PaintInputs,
         palette: &Extended,
         generated_accents: &[iced::Color; ACCENT_COUNT],
         pixels: PixelGeometry,
@@ -516,7 +517,7 @@ impl TpoView<'_> {
                         );
                     }
                 }
-                let line = |frame: &mut canvas::Frame,
+                let line = |frame: &mut PaintInputs,
                             price: Option<Price>,
                             configured: data::config::theme::ThemeColor,
                             width: f32| {
@@ -573,7 +574,7 @@ impl TpoView<'_> {
                             content: TpoProfile::letter_label(usize::from(*period_index)),
                             position: Point::new(x, y),
                             color: color(text_color(row.price)),
-                            size: row_height.min(column_width * 0.8).max(8.0).into(),
+                            size: row_height.min(24.0).min(column_width * 0.8).max(8.0).into(),
                             align_x: iced::Alignment::Center.into(),
                             align_y: iced::Alignment::Center.into(),
                             font: style::AZERET_MONO,
@@ -585,9 +586,9 @@ impl TpoView<'_> {
         });
     }
 
-    pub(super) fn fill_tpo_profile_controls(
+    fn fill_tpo_profile_interaction(
         &self,
-        frame: &mut canvas::Frame,
+        frame: &mut PaintInputs,
         palette: &Extended,
         pixels: PixelGeometry,
         selected_profile: Option<UnixMs>,
@@ -599,6 +600,49 @@ impl TpoView<'_> {
             return;
         }
 
+        let (border_width, _) = pixels.quantized_stroke_width(1.25);
+        let border_color = palette.primary.base.color.scale_alpha(0.95);
+        for geometry in geometries
+            .iter()
+            .filter(|geometry| selected_profile == Some(geometry.start))
+        {
+            frame.stroke(
+                &canvas::Path::rectangle(
+                    geometry.overlay_bounds.position(),
+                    geometry.overlay_bounds.size(),
+                ),
+                canvas::Stroke::default()
+                    .with_color(border_color)
+                    .with_width(border_width),
+            );
+        }
+
+        let Some(boundary_preview) = boundary_preview else {
+            return;
+        };
+        let Some(unit) = scene.x.axis.unit_from_time_f32(boundary_preview) else {
+            return;
+        };
+        let plot = scene.primary_plot();
+        let x = scene.layout.regions.plot.x + scene.map_x_plot_f32(unit);
+        let y = scene.layout.regions.plot.y + plot.y;
+        frame.stroke(
+            &canvas::Path::line(Point::new(x, y), Point::new(x, y + plot.height)),
+            style::dashed_line_from_palette(palette)
+                .with_color(palette.primary.base.color)
+                .with_width(border_width),
+        );
+    }
+
+    fn prepare_tpo_profile_controls(
+        &self,
+        frame: &mut PreparedChrome,
+        palette: &Extended,
+        pixels: PixelGeometry,
+        selected_profile: Option<UnixMs>,
+    ) {
+        let scene = self.context.scene;
+        let geometries = self.tpo_profile_geometries(selected_profile);
         let (border_width, _) = pixels.quantized_stroke_width(1.25);
         let border_color = palette.primary.base.color.scale_alpha(0.95);
         for geometry in &geometries {
@@ -614,16 +658,6 @@ impl TpoView<'_> {
             .iter()
             .filter(|geometry| selected_profile == Some(geometry.start))
         {
-            frame.stroke(
-                &canvas::Path::rectangle(
-                    geometry.overlay_bounds.position(),
-                    geometry.overlay_bounds.size(),
-                ),
-                canvas::Stroke::default()
-                    .with_color(border_color)
-                    .with_width(border_width),
-            );
-
             let plot = scene.primary_plot();
             let plot_left = scene.layout.regions.plot.x + plot.x;
             let plot_top = scene.layout.regions.plot.y + plot.y;
@@ -647,24 +681,17 @@ impl TpoView<'_> {
                 {
                     continue;
                 }
-                let handle =
-                    canvas::Path::rectangle(Point::new(x - 6.0, handle_y), Size::new(12.0, 20.0));
-                frame.fill(&handle, palette.background.base.color);
-                frame.stroke(
-                    &handle,
-                    canvas::Stroke::default()
-                        .with_color(border_color)
-                        .with_width(border_width),
+                frame.fill_bordered_rectangle(
+                    Rectangle::new(Point::new(x - 6.0, handle_y), Size::new(12.0, 20.0)),
+                    palette.background.base.color,
+                    border_color,
+                    border_width,
                 );
                 for offset in [-2.0, 2.0] {
-                    frame.stroke(
-                        &canvas::Path::line(
-                            Point::new(x + offset, handle_y + 6.0),
-                            Point::new(x + offset, handle_y + 14.0),
-                        ),
-                        canvas::Stroke::default()
-                            .with_color(border_color)
-                            .with_width(border_width),
+                    frame.fill_rectangle(
+                        Point::new(x + offset - border_width * 0.5, handle_y + 6.0),
+                        Size::new(border_width, 8.0),
+                        border_color,
                     );
                 }
             }
@@ -676,16 +703,11 @@ impl TpoView<'_> {
                 let Some(button) = button else {
                     continue;
                 };
-                frame.fill_rectangle(
-                    button.position(),
-                    button.size(),
+                frame.fill_bordered_rectangle(
+                    button,
                     palette.primary.base.color.scale_alpha(0.92),
-                );
-                frame.stroke(
-                    &canvas::Path::rectangle(button.position(), button.size()),
-                    canvas::Stroke::default()
-                        .with_color(palette.primary.strong.text.scale_alpha(0.85))
-                        .with_width(border_width),
+                    palette.primary.strong.text.scale_alpha(0.85),
+                    border_width,
                 );
                 frame.fill_text(canvas::Text {
                     content: label.to_owned(),
@@ -702,27 +724,11 @@ impl TpoView<'_> {
                 });
             }
         }
-
-        let Some(boundary_preview) = boundary_preview else {
-            return;
-        };
-        let Some(unit) = scene.x.axis.unit_from_time_f32(boundary_preview) else {
-            return;
-        };
-        let plot = scene.primary_plot();
-        let x = scene.layout.regions.plot.x + scene.map_x_plot_f32(unit);
-        let y = scene.layout.regions.plot.y + plot.y;
-        frame.stroke(
-            &canvas::Path::line(Point::new(x, y), Point::new(x, y + plot.height)),
-            style::dashed_line_from_palette(palette)
-                .with_color(palette.primary.base.color)
-                .with_width(border_width),
-        );
     }
 
     fn fill_tpo_incomplete_marker(
         &self,
-        frame: &mut canvas::Frame,
+        frame: &mut PreparedChrome,
         geometry: &TpoProfileGeometry,
         palette: &Extended,
     ) {
@@ -756,15 +762,15 @@ impl TpoView<'_> {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(super) struct TpoDrag {
+struct TpoDrag {
     boundary: UnixMs,
-    pub(super) preview: UnixMs,
+    preview: UnixMs,
     minimum: Option<UnixMs>,
     maximum: Option<UnixMs>,
 }
 
 impl TpoState {
-    pub(super) fn selected_profile(&self) -> Option<UnixMs> {
+    fn selected_profile(&self) -> Option<UnixMs> {
         self.selected_profile
     }
 }
@@ -777,7 +783,7 @@ impl TpoHit {
         }
     }
 
-    pub(super) fn cursor_appearance(self) -> iced::advanced::mouse::Interaction {
+    fn cursor_appearance(self) -> iced::advanced::mouse::Interaction {
         match self {
             Self::Boundary { .. } => iced::advanced::mouse::Interaction::ResizingHorizontally,
             Self::Click(_) => iced::advanced::mouse::Interaction::Pointer,
@@ -786,7 +792,7 @@ impl TpoHit {
 }
 
 impl TpoView<'_> {
-    pub(super) fn hit(&self, point: Point, state: &TpoState) -> Option<TpoHit> {
+    fn hit(&self, point: Point, state: &TpoState) -> Option<TpoHit> {
         if self.context.scene.layout.hit_test(point)
             != super::super::layout::LayoutHitZone::PanelPlot(
                 self.context.scene.primary.panel_index,
@@ -797,8 +803,8 @@ impl TpoView<'_> {
         self.tpo_hit_test(point, state.selected_profile)
     }
 
-    pub(super) fn begin(&self, hit: TpoHit, state: &mut TpoState) -> LayerEffects<TpoInteraction> {
-        let mut effects = LayerEffects::captured(CacheInvalidation::Overlay);
+    fn begin(&self, hit: TpoHit, state: &mut TpoState) -> LayerEffects<TpoInteraction> {
+        let mut effects = LayerEffects::captured(RenderRequest::Interaction);
         let gesture = match hit {
             TpoHit::Click(click) => {
                 state.pending_click = Some(click);
@@ -835,7 +841,7 @@ impl TpoView<'_> {
         effects
     }
 
-    pub(super) fn update_drag(&self, drag: &mut TpoDrag) -> LayerEffects<TpoInteraction> {
+    fn update_drag(&self, drag: &mut TpoDrag) -> LayerEffects<TpoInteraction> {
         let Some(point) = self.context.position else {
             return LayerEffects::default();
         };
@@ -843,7 +849,7 @@ impl TpoView<'_> {
             self.tpo_boundary_from_cursor(point, drag.boundary, drag.minimum, drag.maximum)
         {
             drag.preview = preview;
-            LayerEffects::captured(CacheInvalidation::Overlay)
+            LayerEffects::captured(RenderRequest::Interaction)
         } else {
             LayerEffects::default()
         }
@@ -855,7 +861,7 @@ impl TpoState {
         if !confirmed {
             return LayerEffects::default();
         }
-        let mut effects = LayerEffects::captured(CacheInvalidation::All);
+        let mut effects = LayerEffects::captured(RenderRequest::All);
         match press {
             TpoClick::Reset { start, end } => effects.publish(TpoInteraction::Reset { start, end }),
             TpoClick::MergeLeft {
@@ -867,7 +873,7 @@ impl TpoState {
             }
             TpoClick::Profile { start } => {
                 self.selected_profile = (self.selected_profile != Some(start)).then_some(start);
-                effects.invalidation = CacheInvalidation::Overlay;
+                effects.render_request = RenderRequest::Interaction;
             }
         }
         effects
@@ -875,7 +881,7 @@ impl TpoState {
 
     fn release_drag(&mut self, drag: TpoDrag) -> LayerEffects<TpoInteraction> {
         self.selected_profile = Some(drag.preview);
-        let mut effects = LayerEffects::captured(CacheInvalidation::All);
+        let mut effects = LayerEffects::captured(RenderRequest::All);
         if drag.boundary != drag.preview {
             effects.publish(TpoInteraction::MoveBoundary {
                 from: drag.boundary,
@@ -887,12 +893,9 @@ impl TpoState {
 }
 
 impl TpoState {
-    fn plot_pressed(&mut self, target_is_self: bool) -> LayerEffects<TpoInteraction> {
+    fn plot_clicked(&mut self, target_is_self: bool) -> LayerEffects<TpoInteraction> {
         if !target_is_self && self.clear_selection() {
-            LayerEffects {
-                invalidation: CacheInvalidation::Overlay,
-                ..LayerEffects::default()
-            }
+            LayerEffects::captured(RenderRequest::Interaction)
         } else {
             LayerEffects::default()
         }
@@ -923,8 +926,8 @@ impl TpoObject<'_> {
         state: &mut TpoState,
     ) -> LayerEffects<TpoInteraction> {
         match input {
-            LayerPointerInput::PlotPressed { target } => {
-                state.plot_pressed(target == Some(self.key))
+            LayerPointerInput::PlotClicked { target } => {
+                state.plot_clicked(target == Some(self.key))
             }
             LayerPointerInput::Pressed => {
                 let Some(point) = context.position else {
@@ -960,12 +963,28 @@ impl TpoObject<'_> {
         }
     }
 
+    pub(super) fn prepare_controls(
+        &self,
+        context: LayerContext<'_>,
+        state: &TpoState,
+        controls: &mut PreparedChrome,
+        palette: &Extended,
+        pixels: PixelGeometry,
+    ) {
+        self.view(context).prepare_tpo_profile_controls(
+            controls,
+            palette,
+            pixels,
+            state.selected_profile(),
+        );
+    }
+
     pub(super) fn paint(
         &self,
         phase: LayerPaintPhase,
         context: LayerContext<'_>,
         state: &TpoState,
-        frame: &mut canvas::Frame,
+        frame: &mut PaintInputs,
         palette: &Extended,
         accents: &[iced::Color; ACCENT_COUNT],
         pixels: PixelGeometry,
@@ -977,7 +996,7 @@ impl TpoObject<'_> {
             }
             LayerPaintPhase::BeforeIndicators | LayerPaintPhase::AfterIndicators => {}
             LayerPaintPhase::Overlay => {
-                view.fill_tpo_profile_controls(
+                view.fill_tpo_profile_interaction(
                     frame,
                     palette,
                     pixels,
@@ -1004,7 +1023,6 @@ fn tpo_row_height(scene: &Scene, profile: &TpoProfile, anchor: Option<f32>) -> f
                 (y1.is_finite() && y2.is_finite()).then_some((y1 - y2).abs())
             })
             .fold(f32::INFINITY, f32::min)
-            .min(24.0)
     };
 
     if row_height.is_finite() {

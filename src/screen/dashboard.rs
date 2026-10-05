@@ -9,7 +9,7 @@ use crate::{
     },
     screen::sidebar::tickers_table::TickersTable,
     style,
-    theme::ThemeAccents,
+    theme::ThemeState,
     widget::toast::Toast,
     window::{self, PixelRatio, Window},
 };
@@ -599,7 +599,7 @@ impl Dashboard {
         tickers_table: &'a TickersTable,
         timezone: UserTimezone,
         pixel_ratio: PixelRatio,
-        theme_accents: ThemeAccents,
+        theme: &'a ThemeState,
     ) -> Element<'a, Message> {
         let pane_grid: Element<_> = PaneGrid::new(&self.panes, |id, pane, maximized| {
             let is_focused = self.focus == Some((main_window.id, id));
@@ -613,7 +613,7 @@ impl Dashboard {
                 timezone,
                 pixel_ratio,
                 tickers_table,
-                theme_accents,
+                theme,
             )
         })
         .min_size(240)
@@ -634,7 +634,7 @@ impl Dashboard {
         tickers_table: &'a TickersTable,
         timezone: UserTimezone,
         pixel_ratio: PixelRatio,
-        theme_accents: ThemeAccents,
+        theme: &'a ThemeState,
     ) -> Element<'a, Message> {
         if let Some((state, _)) = self.popout.get(&window) {
             let content = container(
@@ -650,7 +650,7 @@ impl Dashboard {
                         timezone,
                         pixel_ratio,
                         tickers_table,
-                        theme_accents,
+                        theme,
                     )
                 })
                 .on_click(pane::Message::PaneClicked),

@@ -151,7 +151,7 @@ impl KlineData {
         self.series.get(idx)
     }
 
-    pub fn base_series_mut(&mut self) -> Option<&mut KlineSeries> {
+    fn base_series_mut(&mut self) -> Option<&mut KlineSeries> {
         let idx = self.series_index.get(&self.base_ticker).copied()?;
         self.series.get_mut(idx)
     }

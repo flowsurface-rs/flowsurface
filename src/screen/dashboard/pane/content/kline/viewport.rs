@@ -1,5 +1,5 @@
 use super::{DEFAULT_HORIZONTAL_OFFSET_UNITS, DEFAULT_HORIZONTAL_SPACING_PX};
-use crate::widget::chart::kline::{PrimaryViewportState, YUnitRange};
+use data::chart::kline::viewport::{PrimaryViewportState, YUnitRange};
 use data::chart::kline::{
     HorizontalWorld,
     composition::{ChartComposition, PanelId, PanelScaleMode},

@@ -1,7 +1,8 @@
 use super::super::interaction::LayerContext;
+use super::super::painting::PaintInputs;
 use super::LayerPaintPhase;
 use crate::widget::chart::kline::footprint::{self, PixelRows};
-use crate::widget::chart::kline::helpers::PixelGeometry;
+use crate::widget::chart::kline::painting::PixelGeometry;
 use crate::widget::chart::kline::scene::Scene;
 use crate::widget::resolve_theme_color;
 use data::chart::kline::footprint::ClusterKind;
@@ -14,7 +15,6 @@ use data::config::theme::ACCENT_COUNT;
 use exchange::unit::Qty;
 use exchange::{Kline, UnixMs};
 use iced::theme::palette::Extended;
-use iced::widget::canvas;
 use iced::{Point, Size};
 use std::collections::BTreeMap;
 
@@ -57,7 +57,7 @@ impl<'a> VolumeProfileObject<'a> {
         &self,
         phase: LayerPaintPhase,
         context: LayerContext<'_>,
-        frame: &mut canvas::Frame,
+        frame: &mut PaintInputs,
         palette: &Extended,
         accents: &[iced::Color; ACCENT_COUNT],
         pixels: PixelGeometry,
@@ -67,9 +67,9 @@ impl<'a> VolumeProfileObject<'a> {
         }
     }
 
-    pub(super) fn draw_profile_distribution(
+    fn draw_profile_distribution(
         &self,
-        frame: &mut canvas::Frame,
+        frame: &mut PaintInputs,
         scene: &Scene,
         palette: &Extended,
         generated_accents: &[iced::Color; ACCENT_COUNT],
@@ -267,7 +267,7 @@ impl<'a> VolumeProfileObject<'a> {
 
     fn fill_volume_profile_overlay(
         &self,
-        frame: &mut canvas::Frame,
+        frame: &mut PaintInputs,
         context: LayerContext<'_>,
         palette: &Extended,
         generated_accents: &[iced::Color; ACCENT_COUNT],

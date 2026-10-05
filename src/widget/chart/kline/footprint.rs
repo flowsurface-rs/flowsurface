@@ -1,9 +1,25 @@
-use super::helpers::PixelGeometry;
-use super::*;
+use super::composition::MarkKind;
+use super::painting::PaintInputs;
+use super::painting::PixelGeometry;
+use super::scene::Scene;
+use super::{CHAR_W, TEXT_SIZE};
+use crate::style;
 use data::chart::kline::footprint::{ClusterKind, KlineTrades};
+use data::chart::kline::poc::NPoc;
+use data::chart::kline::series::KlineSeries;
+use data::chart::kline::viewport::{TickIndex, XAxis};
+use data::chart::kline::{
+    CandlestickColorSlot, CandlestickConfig, FootprintConfig, FootprintPocColorSlot,
+};
+use data::config::theme::ACCENT_COUNT;
 use data::config::theme::{composite_color, contrast_ratio};
 use data::util::abbr_large_numbers;
+use exchange::UnixMs;
 use exchange::unit::{Price, PriceStep, Qty};
+use iced::theme::palette::Extended;
+use iced::widget::canvas;
+use iced::{Point, Rectangle, Size};
+use std::collections::BTreeMap;
 
 pub(super) struct PixelRows {
     top: f32,
@@ -54,7 +70,7 @@ impl PixelRows {
         }
     }
 
-    pub(super) fn is_empty(&self) -> bool {
+    fn is_empty(&self) -> bool {
         self.touched.iter().all(|&index| {
             let (buy, sell) = self.quantities[index];
             buy.is_zero() && sell.is_zero()
@@ -125,7 +141,7 @@ const FOOTPRINT_TEXT_MIN_WIDTH_CHARS: usize = 4;
 const FOOTPRINT_TEXT_MIN_SIZE_PX: f32 = 5.0;
 
 #[derive(Clone, Copy, Debug)]
-pub(super) enum FootprintTextMode {
+enum FootprintTextMode {
     Hidden,
     FixedSize(f32),
 }
@@ -138,7 +154,7 @@ impl FootprintTextMode {
         }
     }
 
-    pub(super) fn row_intersects_plot(
+    fn row_intersects_plot(
         self,
         y: f32,
         row_height: f32,
@@ -159,7 +175,7 @@ impl FootprintTextMode {
     }
 }
 
-pub(super) struct FootprintImbalance<'a> {
+struct FootprintImbalance<'a> {
     footprint: &'a KlineTrades,
     price: Price,
     tick_size: PriceStep,
@@ -169,7 +185,7 @@ pub(super) struct FootprintImbalance<'a> {
 }
 
 impl<'a> FootprintImbalance<'a> {
-    pub(super) fn new(
+    fn new(
         footprint: &'a KlineTrades,
         price: Price,
         tick_size: PriceStep,
@@ -261,7 +277,7 @@ impl FootprintLane {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(super) struct FootprintColumnLayout {
+struct FootprintColumnLayout {
     sell_cluster: FootprintLane,
     sell_marker: Option<FootprintLane>,
     candle: FootprintLane,
@@ -271,7 +287,7 @@ pub(super) struct FootprintColumnLayout {
 }
 
 impl FootprintColumnLayout {
-    pub(super) fn new(x_center: f32, width: f32, reserve_marker_lanes: bool) -> Self {
+    fn new(x_center: f32, width: f32, reserve_marker_lanes: bool) -> Self {
         let width = width.max(1.0);
         let marker_width = if reserve_marker_lanes && width >= 12.0 {
             (width * 0.08).clamp(1.0, 3.0)
@@ -331,7 +347,7 @@ impl FootprintColumnLayout {
     }
 }
 
-pub(super) fn resolve_footprint_text_mode(
+fn resolve_footprint_text_mode(
     column_width: f32,
     reserve_marker_lanes: bool,
     minimum_row_height: Option<f32>,
@@ -370,7 +386,7 @@ pub(super) fn resolve_footprint_text_mode(
     }
 }
 
-pub(super) fn footprint_text_content_lengths(
+fn footprint_text_content_lengths(
     cluster_kind: ClusterKind,
     sell_qty: f64,
     buy_qty: f64,
@@ -404,7 +420,7 @@ pub(super) fn footprint_text_content_lengths(
 }
 
 fn draw_footprint_bid_ask_row(
-    frame: &mut canvas::Frame,
+    frame: &mut PaintInputs,
     layout: FootprintColumnLayout,
     y: f32,
     row_height: f32,
@@ -476,8 +492,8 @@ fn draw_footprint_bid_ask_row(
     }
 }
 
-pub(super) fn draw_footprint_cluster_row(
-    frame: &mut canvas::Frame,
+fn draw_footprint_cluster_row(
+    frame: &mut PaintInputs,
     cluster_kind: ClusterKind,
     layout: FootprintColumnLayout,
     y: f32,
@@ -573,7 +589,7 @@ pub(super) fn draw_footprint_cluster_row(
 }
 
 fn draw_footprint_volume_profile_row(
-    frame: &mut canvas::Frame,
+    frame: &mut PaintInputs,
     layout: FootprintColumnLayout,
     y: f32,
     row_height: f32,
@@ -631,7 +647,7 @@ fn draw_footprint_volume_profile_row(
 }
 
 fn draw_footprint_delta_profile_row(
-    frame: &mut canvas::Frame,
+    frame: &mut PaintInputs,
     layout: FootprintColumnLayout,
     y: f32,
     row_height: f32,
@@ -680,8 +696,8 @@ fn draw_footprint_delta_profile_row(
     );
 }
 
-pub(super) fn draw_footprint_table_row(
-    frame: &mut canvas::Frame,
+fn draw_footprint_table_row(
+    frame: &mut PaintInputs,
     layout: FootprintColumnLayout,
     y: f32,
     row_height: f32,
@@ -805,7 +821,7 @@ pub(super) fn draw_footprint_table_row(
 }
 
 fn draw_footprint_row_text(
-    frame: &mut canvas::Frame,
+    frame: &mut PaintInputs,
     quantity: f64,
     position: Point,
     text_size: Option<f32>,
@@ -827,7 +843,7 @@ fn draw_footprint_row_text(
 }
 
 fn draw_footprint_text(
-    frame: &mut canvas::Frame,
+    frame: &mut PaintInputs,
     content: String,
     position: Point,
     text_size: f32,
@@ -868,8 +884,8 @@ fn footprint_table_text_color(cell_color: iced::Color, palette: &Extended) -> ic
     }
 }
 
-pub(super) fn draw_footprint_candle(
-    frame: &mut canvas::Frame,
+fn draw_footprint_candle(
+    frame: &mut PaintInputs,
     layout: FootprintColumnLayout,
     y_open: f32,
     y_high: f32,
@@ -907,3 +923,440 @@ pub(super) fn draw_footprint_candle(
             .with_color(color.scale_alpha(0.6)),
     );
 }
+
+pub(super) struct FootprintRenderer<'a> {
+    pub(super) series: &'a [KlineSeries],
+    pub(super) candlestick: &'a CandlestickConfig,
+    pub(super) footprint: &'a FootprintConfig,
+}
+
+impl FootprintRenderer<'_> {
+    pub(super) fn candlestick_color(
+        &self,
+        bullish: bool,
+        palette: &Extended,
+        generated_accents: &[iced::Color; ACCENT_COUNT],
+    ) -> iced::Color {
+        let slot = if bullish {
+            CandlestickColorSlot::Bullish
+        } else {
+            CandlestickColorSlot::Bearish
+        };
+        crate::widget::resolve_theme_color(
+            self.candlestick.colors.color_for(slot),
+            palette,
+            generated_accents,
+        )
+        .scale_alpha(self.candlestick.opacity_ratio())
+    }
+
+    pub(super) fn fill_footprint_overlay(
+        &self,
+        frame: &mut PaintInputs,
+        scene: &Scene,
+        palette: &Extended,
+        generated_accents: &[iced::Color; ACCENT_COUNT],
+        draw_clusters: bool,
+        pixels: PixelGeometry,
+    ) {
+        let Some(base_series) = self.series.first() else {
+            return;
+        };
+        let tick_size = base_series.tick_size();
+        let anchor = scene
+            .primary
+            .series_percent_anchors
+            .first()
+            .copied()
+            .flatten();
+        let min_row_height = pixels.logical_width_from_physical(1);
+        let in_visible_range =
+            |x_unit: i64| x_unit >= scene.x.min_unit && x_unit <= scene.x.max_unit;
+        let coalesce = draw_clusters && coalesce_price_rows(scene, tick_size, anchor, pixels);
+
+        let mut pixel_rows = BTreeMap::new();
+        if coalesce {
+            scene.for_each_bar(self.series, |series_index, index, _, _, point| {
+                if series_index != 0 || point.footprint.trades.is_empty() {
+                    return;
+                }
+                let mut rows = PixelRows::new(*scene.primary_plot(), pixels);
+                for (price, group) in &point.footprint.trades {
+                    let y = scene.map_primary_plot_with_anchor_f32(price.to_f32_lossy(), anchor);
+                    rows.add(y, group.buy_qty, group.sell_qty);
+                }
+                if !rows.is_empty() {
+                    pixel_rows.insert(index, rows);
+                }
+            });
+        }
+        let max_cluster_qty = if coalesce {
+            pixel_rows
+                .values()
+                .map(|rows| rows.max_qty(self.footprint.cluster_kind))
+                .max()
+                .unwrap_or_default()
+                .to_f64()
+        } else if draw_clusters {
+            let visible_point_range = scene.bar_units.first().map(|units| {
+                let range = units.index_range(scene.x.min_unit, scene.x.max_unit);
+                let (start, end) = (range.start, range.end);
+                let end = end.min(units.values().len()).min(
+                    base_series
+                        .point_count()
+                        .saturating_sub(units.start_index()),
+                );
+                units.global_range(start..end)
+            });
+            let (lowest, highest) = scene.primary_domain_value_range();
+            visible_point_range
+                .map(|point_range| {
+                    base_series
+                        .max_cluster_qty_in_point_range(
+                            self.footprint.cluster_kind,
+                            point_range,
+                            lowest,
+                            highest,
+                        )
+                        .to_f64()
+                })
+                .unwrap_or_default()
+        } else {
+            0.0
+        };
+
+        let primary_plot = *scene.primary_plot();
+        let footprint_width =
+            (scene.logical_bar_spacing() - FOOTPRINT_CELL_INSET_PX * 2.0).max(1.0);
+        let imbalance = (self.footprint.imbalance.show && !coalesce).then(|| {
+            (
+                self.footprint.imbalance.threshold_percent,
+                self.footprint.imbalance.ignore_zeros,
+                crate::widget::resolve_theme_color(
+                    self.footprint.imbalance.color,
+                    palette,
+                    generated_accents,
+                ),
+            )
+        });
+        let primary_plot_bottom = primary_plot.y + primary_plot.height;
+        let mut minimum_row_height: Option<f32> = None;
+        let mut maximum_content_chars = 0;
+        if draw_clusters && !coalesce {
+            scene.for_each_bar(self.series, |series_index, _, _series, x_unit, point| {
+                if series_index != 0 || !in_visible_range(x_unit) {
+                    return;
+                }
+
+                let footprint = point.footprint;
+                for (price, group) in &footprint.trades {
+                    let row_height =
+                        row_height(scene, *price, tick_size, anchor).max(min_row_height);
+                    let y = scene.map_primary_plot_with_anchor_f32(price.to_f32_lossy(), anchor);
+                    let cell_height = (row_height - min_row_height).max(min_row_height);
+                    let row_top = y - cell_height * 0.5;
+                    let row_bottom = row_top + cell_height;
+                    if row_bottom < primary_plot.y || row_top > primary_plot_bottom {
+                        continue;
+                    }
+
+                    minimum_row_height = Some(
+                        minimum_row_height.map_or(row_height, |minimum| minimum.min(row_height)),
+                    );
+
+                    let [sell_chars, buy_chars] = footprint_text_content_lengths(
+                        self.footprint.cluster_kind,
+                        group.sell_qty.to_f64(),
+                        group.buy_qty.to_f64(),
+                    );
+                    let row_max_chars = sell_chars.max(buy_chars);
+                    if row_max_chars == 0 {
+                        continue;
+                    }
+
+                    maximum_content_chars = maximum_content_chars.max(row_max_chars);
+                }
+            });
+        }
+        let text_mode = resolve_footprint_text_mode(
+            footprint_width,
+            imbalance.is_some(),
+            minimum_row_height,
+            maximum_content_chars,
+        );
+        let draw_candlesticks = self.candlestick.visible
+            && matches!(scene.primary.mark, MarkKind::Candle | MarkKind::Bar(_));
+
+        frame.with_clip(primary_plot, |frame| {
+            scene.for_each_bar(
+                self.series,
+                |series_index, index, _series, x_unit, point| {
+                    if series_index != 0 || !in_visible_range(x_unit) {
+                        return;
+                    }
+
+                    let series_anchor = scene
+                        .primary
+                        .series_percent_anchors
+                        .first()
+                        .copied()
+                        .flatten();
+                    let y_open = scene.map_primary_plot_with_anchor_f32(
+                        point.kline.open.to_f32_lossy(),
+                        series_anchor,
+                    );
+                    let y_high = scene.map_primary_plot_with_anchor_f32(
+                        point.kline.high.to_f32_lossy(),
+                        series_anchor,
+                    );
+                    let y_low = scene.map_primary_plot_with_anchor_f32(
+                        point.kline.low.to_f32_lossy(),
+                        series_anchor,
+                    );
+                    let y_close = scene.map_primary_plot_with_anchor_f32(
+                        point.kline.close.to_f32_lossy(),
+                        series_anchor,
+                    );
+                    let footprint = point.footprint;
+                    let x_center = scene.map_x_plot(x_unit);
+                    let layout = FootprintColumnLayout::new(
+                        x_center,
+                        footprint_width,
+                        imbalance.is_some() && !footprint.trades.is_empty(),
+                    );
+
+                    if let Some(rows) = pixel_rows.get(&index) {
+                        let scale = self.footprint.cluster_scaling.effective_qty(
+                            max_cluster_qty,
+                            rows.max_qty(self.footprint.cluster_kind),
+                        );
+                        for (y, buy, sell) in rows.rows() {
+                            draw_footprint_cluster_row(
+                                frame,
+                                self.footprint.cluster_kind,
+                                layout,
+                                y,
+                                rows.bucket_height,
+                                min_row_height,
+                                sell.to_f64(),
+                                buy.to_f64(),
+                                scale,
+                                FootprintTextMode::Hidden,
+                                palette,
+                                None,
+                            );
+                        }
+                    } else if draw_clusters && !coalesce {
+                        let cluster_scale = self.footprint.cluster_scaling.effective_qty(
+                            max_cluster_qty,
+                            footprint.max_cluster_qty_all(self.footprint.cluster_kind),
+                        );
+                        for (price, group) in &footprint.trades {
+                            let row_height =
+                                row_height(scene, *price, tick_size, anchor).max(min_row_height);
+                            let y = scene
+                                .map_primary_plot_with_anchor_f32(price.to_f32_lossy(), anchor);
+                            if !text_mode.row_intersects_plot(
+                                y,
+                                row_height,
+                                min_row_height,
+                                primary_plot,
+                            ) {
+                                continue;
+                            }
+                            draw_footprint_cluster_row(
+                                frame,
+                                self.footprint.cluster_kind,
+                                layout,
+                                y,
+                                row_height,
+                                min_row_height,
+                                group.sell_qty.to_f64(),
+                                group.buy_qty.to_f64(),
+                                cluster_scale,
+                                text_mode,
+                                palette,
+                                imbalance.map(|(threshold_percent, ignore_zeros, color)| {
+                                    FootprintImbalance::new(
+                                        footprint,
+                                        *price,
+                                        tick_size,
+                                        threshold_percent,
+                                        ignore_zeros,
+                                        color,
+                                    )
+                                }),
+                            );
+                        }
+                    }
+
+                    if draw_candlesticks {
+                        draw_footprint_candle(
+                            frame,
+                            layout,
+                            y_open,
+                            y_high,
+                            y_low,
+                            y_close,
+                            pixels,
+                            self.candlestick_color(
+                                point.kline.close >= point.kline.open,
+                                palette,
+                                generated_accents,
+                            ),
+                        );
+                    }
+                },
+            );
+        });
+    }
+
+    pub(super) fn fill_footprint_poc_overlay(
+        &self,
+        frame: &mut PaintInputs,
+        scene: &Scene,
+        palette: &Extended,
+        generated_accents: &[iced::Color; ACCENT_COUNT],
+        pixels: PixelGeometry,
+    ) {
+        if !self.footprint.visible {
+            return;
+        }
+
+        let config = self.footprint.poc;
+        if !config.show_poc && !config.show_npoc {
+            return;
+        }
+        let Some(base_series) = self.series.first() else {
+            return;
+        };
+        let point_count = base_series.point_count();
+        let (earliest, latest) = match scene.x.axis {
+            XAxis::Time { .. } => {
+                let (Some(earliest), Some(latest)) = (
+                    scene.x.axis.time_from_unit(scene.x.min_unit),
+                    scene.x.axis.time_from_unit(scene.x.max_unit),
+                ) else {
+                    return;
+                };
+                (earliest, latest)
+            }
+            XAxis::Tick { .. } => {
+                let to_forward_index = |unit: i64| {
+                    scene
+                        .x
+                        .axis
+                        .tick_from_unit(unit)
+                        .map(|from_latest| {
+                            point_count
+                                .saturating_sub(1)
+                                .saturating_sub(from_latest.as_u64() as usize)
+                        })
+                        .unwrap_or_default()
+                };
+                (
+                    UnixMs::new(to_forward_index(scene.x.min_unit) as u64),
+                    UnixMs::new(to_forward_index(scene.x.max_unit) as u64),
+                )
+            }
+        };
+        let lines = base_series.footprint_poc_lines(earliest, latest);
+        if lines.is_empty() {
+            return;
+        }
+
+        let primary_plot = *scene.primary_plot();
+        let tick_size = base_series.tick_size();
+        let min_row_height = pixels.logical_width_from_physical(1);
+        let naked_line_end = primary_plot.x + primary_plot.width;
+        let npoc_color = crate::widget::resolve_theme_color(
+            config.colors.color_for(FootprintPocColorSlot::Npoc),
+            palette,
+            generated_accents,
+        )
+        .scale_alpha(0.7);
+        let poc_color = crate::widget::resolve_theme_color(
+            config.colors.color_for(FootprintPocColorSlot::Poc),
+            palette,
+            generated_accents,
+        )
+        .scale_alpha(0.85);
+        let anchor = scene
+            .primary
+            .series_percent_anchors
+            .first()
+            .copied()
+            .flatten();
+        let x_for_time = |value: UnixMs| -> Option<f32> {
+            scene
+                .x
+                .axis
+                .unit_from_time_f32(value)
+                .map(|unit| scene.map_x_plot_f32(unit))
+        };
+        let x_for_tick_from_latest = |value: UnixMs| -> Option<f32> {
+            Some(
+                scene
+                    .x
+                    .axis
+                    .unit_from_tick(TickIndex::from_u64(value.as_u64())) as f32,
+            )
+            .map(|unit| scene.map_x_plot_f32(unit))
+        };
+        let x_for_tick_start = |value: UnixMs| -> Option<f32> {
+            let index = usize::try_from(value.as_u64()).ok()?;
+            let from_latest = point_count.checked_sub(index.checked_add(1)?)?;
+            x_for_tick_from_latest(UnixMs::new(from_latest as u64))
+        };
+        frame.with_clip(primary_plot, |frame| {
+            for line in lines {
+                let start_x = match scene.x.axis {
+                    XAxis::Time { .. } => x_for_time(line.start),
+                    XAxis::Tick { .. } => x_for_tick_start(line.start),
+                };
+                let Some(start_x) = start_x else {
+                    continue;
+                };
+                let (end_x, color) = match line.poc.status {
+                    NPoc::Naked if config.show_npoc => (naked_line_end, npoc_color),
+                    NPoc::Filled { at } if config.show_poc => {
+                        let x = match scene.x.axis {
+                            XAxis::Time { .. } => x_for_time(UnixMs::new(at)),
+                            XAxis::Tick { .. } => x_for_tick_from_latest(UnixMs::new(at)),
+                        };
+                        (x.unwrap_or(naked_line_end), poc_color)
+                    }
+                    NPoc::Filled { .. } => continue,
+                    NPoc::None => continue,
+                    _ => continue,
+                };
+                if !start_x.is_finite() || !end_x.is_finite() {
+                    continue;
+                }
+
+                let poc_y =
+                    scene.map_primary_plot_with_anchor_f32(line.poc.price.to_f32_lossy(), anchor);
+                if !poc_y.is_finite() {
+                    continue;
+                }
+                let poc_price = line.poc.price;
+                let Some(line) = pixels.positive_x_span(start_x, end_x) else {
+                    continue;
+                };
+                let raw_line_height = row_height(scene, poc_price, tick_size, anchor)
+                    .abs()
+                    .max(min_row_height)
+                    .min(1.0_f32.max(min_row_height));
+                let line_span = pixels
+                    .snapped_y_span(poc_y - raw_line_height * 0.5, poc_y + raw_line_height * 0.5);
+                frame.fill_rectangle(
+                    Point::new(line.start, line_span.start),
+                    Size::new(line.size, line_span.size),
+                    color,
+                );
+            }
+        });
+    }
+}
+
+const FOOTPRINT_CELL_INSET_PX: f32 = 2.0;

@@ -30,7 +30,7 @@ pub struct FetchCoordinator {
 }
 
 impl FetchCoordinator {
-    pub fn new(tickers: &[TickerInfo]) -> Self {
+    pub(crate) fn new(tickers: &[TickerInfo]) -> Self {
         let mut coordinator = Self {
             request_handlers: FxHashMap::default(),
             fetch_handles: FxHashMap::default(),
@@ -39,24 +39,24 @@ impl FetchCoordinator {
         coordinator
     }
 
-    pub fn reset(&mut self) {
+    pub(crate) fn reset(&mut self) {
         self.clear_fetch_state();
         self.request_handlers.clear();
     }
 
-    pub fn accepts_data(&self, req_id: uuid::Uuid) -> bool {
+    pub(super) fn accepts_data(&self, req_id: uuid::Uuid) -> bool {
         self.request_handlers
             .values()
             .any(|handler| handler.is_pending(req_id))
     }
 
-    pub fn is_profile_request(&self, req_id: uuid::Uuid) -> bool {
+    pub(crate) fn is_profile_request(&self, req_id: uuid::Uuid) -> bool {
         self.request_handlers
             .values()
             .any(|handler| handler.is_profile_request(req_id))
     }
 
-    pub fn set_handle(&mut self, req_id: uuid::Uuid, handle: Handle) -> bool {
+    pub(super) fn set_handle(&mut self, req_id: uuid::Uuid, handle: Handle) -> bool {
         if self.accepts_data(req_id) {
             self.fetch_handles.insert(req_id, handle);
             true
@@ -66,7 +66,7 @@ impl FetchCoordinator {
         }
     }
 
-    pub fn mark_failed(&mut self, req_id: uuid::Uuid) -> bool {
+    pub(crate) fn mark_failed(&mut self, req_id: uuid::Uuid) -> bool {
         if !self.accepts_data(req_id) {
             log::debug!("Ignoring stale fetch error: {:?}", req_id);
             return false;
@@ -89,13 +89,13 @@ impl FetchCoordinator {
         true
     }
 
-    pub fn mark_completed(&mut self, ticker_info: TickerInfo, req_id: uuid::Uuid) {
+    pub(crate) fn mark_completed(&mut self, ticker_info: TickerInfo, req_id: uuid::Uuid) {
         self.finish_request(ticker_info, req_id, |handler| {
             handler.mark_completed(req_id)
         });
     }
 
-    pub fn mark_profile_completed(
+    pub(crate) fn mark_profile_completed(
         &mut self,
         ticker_info: TickerInfo,
         req_id: uuid::Uuid,
@@ -109,15 +109,15 @@ impl FetchCoordinator {
         Some(fetch)
     }
 
-    pub fn mark_failed_for(&mut self, ticker_info: TickerInfo, req_id: uuid::Uuid) {
+    pub(super) fn mark_failed_for(&mut self, ticker_info: TickerInfo, req_id: uuid::Uuid) {
         self.finish_request(ticker_info, req_id, |handler| handler.mark_failed(req_id));
     }
 
-    pub fn mark_no_data(&mut self, ticker_info: TickerInfo, req_id: uuid::Uuid) -> bool {
+    pub(crate) fn mark_no_data(&mut self, ticker_info: TickerInfo, req_id: uuid::Uuid) -> bool {
         self.finish_request(ticker_info, req_id, |handler| handler.mark_no_data(req_id))
     }
 
-    pub fn complete_trade_fetch(
+    pub(super) fn complete_trade_fetch(
         &mut self,
         ticker_info: TickerInfo,
         req_id: Option<uuid::Uuid>,
@@ -149,11 +149,11 @@ impl FetchCoordinator {
         true
     }
 
-    pub fn add_ticker(&mut self, ticker_info: TickerInfo) {
+    pub(super) fn add_ticker(&mut self, ticker_info: TickerInfo) {
         self.request_handlers.entry(ticker_info).or_default();
     }
 
-    pub fn remove_ticker(&mut self, ticker_info: TickerInfo) {
+    pub(super) fn remove_ticker(&mut self, ticker_info: TickerInfo) {
         if let Some(handler) = self.request_handlers.remove(&ticker_info) {
             for req_id in handler.request_ids() {
                 self.fetch_handles.remove(&req_id);
@@ -161,14 +161,14 @@ impl FetchCoordinator {
         }
     }
 
-    pub fn rebuild_handlers(&mut self, tickers: &[TickerInfo]) {
+    pub(super) fn rebuild_handlers(&mut self, tickers: &[TickerInfo]) {
         self.reset();
         for &ticker in tickers {
             self.add_ticker(ticker);
         }
     }
 
-    pub fn reset_for_basis_change(&mut self) {
+    pub(crate) fn reset_for_basis_change(&mut self) {
         self.clear_fetch_state();
         for handler in self.request_handlers.values_mut() {
             handler.reset_for_basis_change();
@@ -178,7 +178,7 @@ impl FetchCoordinator {
     /// Open Interest is a disposable input cache. Once its last consumer is
     /// removed, completed request markers must be discarded as well so a
     /// later consumer can reacquire the same viewport range.
-    pub fn clear_open_interest_requests(&mut self) {
+    pub(crate) fn clear_open_interest_requests(&mut self) {
         let request_ids = self
             .request_handlers
             .values_mut()
@@ -191,7 +191,7 @@ impl FetchCoordinator {
         }
     }
 
-    pub fn clear_pending_profile_requests(&mut self) {
+    pub(crate) fn clear_pending_profile_requests(&mut self) {
         let request_ids = self
             .request_handlers
             .values_mut()
@@ -204,7 +204,7 @@ impl FetchCoordinator {
         }
     }
 
-    pub fn clear_pending_trade_requests(&mut self) {
+    pub(crate) fn clear_pending_trade_requests(&mut self) {
         let request_ids = self
             .request_handlers
             .values_mut()
@@ -217,7 +217,7 @@ impl FetchCoordinator {
         }
     }
 
-    pub fn pending_requests(&self) -> impl Iterator<Item = (TickerInfo, FetchRange)> + '_ {
+    pub(super) fn pending_requests(&self) -> impl Iterator<Item = (TickerInfo, FetchRange)> + '_ {
         self.request_handlers
             .iter()
             .flat_map(|(&ticker_info, handler)| {
@@ -267,7 +267,7 @@ impl FetchCoordinator {
         }
     }
 
-    pub fn collect_requests(
+    pub(super) fn collect_requests(
         &mut self,
         batches: impl IntoIterator<Item = (FetchRange, Vec<TickerInfo>)>,
         basis: Basis,

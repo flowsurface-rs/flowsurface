@@ -43,7 +43,7 @@ impl IndicatorId {
         self.id()
     }
 
-    pub fn supports_market(&self, market: exchange::adapter::MarketKind) -> bool {
+    fn supports_market(&self, market: exchange::adapter::MarketKind) -> bool {
         let supported_markets = &self.definition().supported_markets;
         supported_markets.is_empty() || supported_markets.contains(&market)
     }
@@ -76,7 +76,7 @@ impl IndicatorId {
             .unwrap_or_default()
     }
 
-    pub fn normalized_config(&self, config: IndicatorConfig) -> IndicatorConfig {
+    fn normalized_config(&self, config: IndicatorConfig) -> IndicatorConfig {
         catalog()
             .get(self)
             .map(|registration| registration.normalize_config(config.clone()))
@@ -544,11 +544,11 @@ pub struct IndicatorCatalog {
 
 impl IndicatorCatalog {
     /// Build an isolated catalog for validation or integration tests.
-    pub(crate) fn from_registrations(registrations: Vec<IndicatorRegistration>) -> Self {
+    fn from_registrations(registrations: Vec<IndicatorRegistration>) -> Self {
         Self::from_registrations_with_diagnostics(registrations, Vec::new())
     }
 
-    pub(crate) fn from_registrations_with_diagnostics(
+    fn from_registrations_with_diagnostics(
         mut registrations: Vec<IndicatorRegistration>,
         mut diagnostics: Vec<String>,
     ) -> Self {

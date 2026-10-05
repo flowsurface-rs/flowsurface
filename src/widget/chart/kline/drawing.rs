@@ -1,8 +1,10 @@
 use super::composition::PanelScaleMode;
 use super::composition::{MarkKind, PanelId};
-use super::helpers::PixelGeometry;
-use super::interaction::{CacheInvalidation, LayerContext, LayerEffects, LayerGesture};
+use super::interaction::{LayerContext, LayerEffects, LayerGesture};
 use super::layout::contains_inclusive;
+use super::painting::PaintInputs;
+use super::painting::PixelGeometry;
+use super::painting::RenderRequest;
 use super::{
     CHAR_W, KlinePanelKind, SelectionDisposition, TEXT_SIZE, Y_AXIS_LABEL_LEFT_INSET, YUnit,
 };
@@ -20,12 +22,12 @@ const DRAWING_HANDLE_RADIUS_PX: f32 = 4.0;
 const DRAWING_HANDLE_HIT_RADIUS_PX: f32 = 8.0;
 
 #[derive(Default)]
-pub(in crate::widget::chart::kline) struct AxisBadgeFilter {
+pub(super) struct AxisBadgeFilter {
     occupied: Vec<Rectangle>,
 }
 
 impl AxisBadgeFilter {
-    pub(in crate::widget::chart::kline) fn reserve(&mut self, bounds: Rectangle) -> bool {
+    fn reserve(&mut self, bounds: Rectangle) -> bool {
         if self
             .occupied
             .iter()
@@ -83,7 +85,7 @@ fn nearest_y_unit(target: YUnit, candidates: impl IntoIterator<Item = YUnit>) ->
         .min_by_key(|candidate| candidate.0.abs_diff(target.0))
 }
 
-pub(in crate::widget::chart::kline) struct DrawingView<'a> {
+pub(super) struct DrawingView<'a> {
     snapshot: DrawingSnapshot<'a>,
     context: LayerContext<'a>,
 }
@@ -154,9 +156,7 @@ impl DrawingView<'_> {
         }
     }
 
-    pub(in crate::widget::chart::kline) fn drawing_anchor_from_scene_cursor(
-        &self,
-    ) -> Option<DrawingAnchor> {
+    fn drawing_anchor_from_scene_cursor(&self) -> Option<DrawingAnchor> {
         let cursor = self.context.scene.interaction.cursor?;
         let panel_id = self.context.coordinates.panel_id(cursor.panel_index)?;
         let x = self.anchor_x_for_cursor_unit(cursor.x_unit)?;
@@ -169,7 +169,7 @@ impl DrawingView<'_> {
         })
     }
 
-    pub(in crate::widget::chart::kline) fn drawing_anchor_from_scene_point(
+    pub(super) fn drawing_anchor_from_scene_point(
         &self,
         panel_id: PanelId,
         cursor_local: Point,
@@ -228,7 +228,7 @@ impl DrawingView<'_> {
         })
     }
 
-    pub(in crate::widget::chart::kline) fn drawing_draft_anchor_from_scene_point(
+    pub(super) fn drawing_draft_anchor_from_scene_point(
         &self,
         panel_id: PanelId,
         cursor_local: Point,
@@ -249,9 +249,7 @@ impl DrawingView<'_> {
         )
     }
 
-    pub(in crate::widget::chart::kline) fn primary_magnetic_drawing_anchor_at_cursor(
-        &self,
-    ) -> Option<DrawingAnchor> {
+    pub(super) fn primary_magnetic_drawing_anchor_at_cursor(&self) -> Option<DrawingAnchor> {
         let scene = self.context.scene;
         let cursor = scene.interaction.cursor?;
         let anchor = self.drawing_anchor_from_scene_cursor()?;
@@ -272,7 +270,7 @@ impl DrawingView<'_> {
 
         let series = self.context.coordinates.series.first()?;
         let units = scene.bar_units.first()?;
-        let unit_index = units.values.binary_search(&x_unit).ok()?;
+        let unit_index = units.values().binary_search(&x_unit).ok()?;
         let source_index = units.global_index(unit_index)?;
         let bar = series.point_at(source_index)?.kline;
         let value_scale = self
@@ -301,10 +299,7 @@ impl DrawingView<'_> {
         Some(anchor)
     }
 
-    pub(in crate::widget::chart::kline) fn panel_plot_bounds_in_overlay(
-        &self,
-        panel_index: usize,
-    ) -> Option<Rectangle> {
+    pub(super) fn panel_plot_bounds_in_overlay(&self, panel_index: usize) -> Option<Rectangle> {
         let scene = self.context.scene;
         let panel = scene.layout.panel(panel_index)?;
         Some(Rectangle {
@@ -315,7 +310,7 @@ impl DrawingView<'_> {
         })
     }
 
-    pub(in crate::widget::chart::kline) fn plot_bounds_in_overlay(&self) -> Rectangle {
+    pub(super) fn plot_bounds_in_overlay(&self) -> Rectangle {
         self.context.scene.layout.regions.plot
     }
 
@@ -330,11 +325,7 @@ impl DrawingView<'_> {
         Some(scene.layout.regions.plot.x + scene.map_x_plot_f32(x_unit as f32))
     }
 
-    pub(in crate::widget::chart::kline) fn y_overlay_for_value(
-        &self,
-        panel_id: PanelId,
-        y_unit: YUnit,
-    ) -> Option<f32> {
+    pub(super) fn y_overlay_for_value(&self, panel_id: PanelId, y_unit: YUnit) -> Option<f32> {
         let scene = self.context.scene;
         let panel_index = self.context.coordinates.panel_index_for_id(panel_id)?;
         let panel = scene.layout.panel(panel_index)?;
@@ -476,7 +467,7 @@ impl DrawingView<'_> {
 
     fn draw_drawing_object(
         &self,
-        frame: &mut canvas::Frame,
+        frame: &mut PaintInputs,
         object: &DrawingObject,
         style: DrawingStyle,
         palette: &Extended,
@@ -484,16 +475,11 @@ impl DrawingView<'_> {
         selected: bool,
         pixels: PixelGeometry,
     ) {
-        let raw_stroke_width = if selected {
-            style.normalized_stroke_width() + 0.6
-        } else {
-            style.normalized_stroke_width()
-        };
+        let raw_stroke_width = style.normalized_stroke_width() + if selected { 0.6 } else { 0.0 };
         let (stroke_width, stroke_width_phys) = pixels.quantized_stroke_width(raw_stroke_width);
         let stroke = canvas::Stroke::default()
             .with_color(iced_color(style.stroke_color, palette, generated_accents))
             .with_width(stroke_width);
-
         match object {
             DrawingObject::Trendline { start, end } => {
                 let Some((start, end, _, _, bounds)) =
@@ -503,9 +489,8 @@ impl DrawingView<'_> {
                 };
                 let start = pixels.snap_point_for_stroke(start, stroke_width_phys);
                 let end = pixels.snap_point_for_stroke(end, stroke_width_phys);
-
                 frame.with_clip(bounds, |frame| {
-                    frame.stroke(&canvas::Path::line(start, end), stroke);
+                    frame.stroke(&canvas::Path::line(start, end), stroke)
                 });
             }
             DrawingObject::Box {
@@ -518,19 +503,16 @@ impl DrawingView<'_> {
                 else {
                     return;
                 };
-
                 let left = origin.x;
                 let right = origin.x + size.width;
                 let top = origin.y;
                 let bottom = origin.y + size.height;
-
                 let fill_span = pixels.snapped_x_span(left, right);
                 let fill_top = pixels.snapped_y_span(top, bottom);
                 let left_stroke = pixels.snap_stroke_center_x(left, stroke_width_phys);
                 let right_stroke = pixels.snap_stroke_center_x(right, stroke_width_phys);
                 let top_stroke = pixels.snap_stroke_center_y(top, stroke_width_phys);
                 let bottom_stroke = pixels.snap_stroke_center_y(bottom, stroke_width_phys);
-
                 frame.with_clip(bounds, |frame| {
                     if let Some(fill) = style.fill_color {
                         frame.fill_rectangle(
@@ -539,35 +521,26 @@ impl DrawingView<'_> {
                             iced_color(fill, palette, generated_accents),
                         );
                     }
-
-                    frame.stroke(
-                        &canvas::Path::line(
+                    for (start, end) in [
+                        (
                             Point::new(left_stroke, top_stroke),
                             Point::new(right_stroke, top_stroke),
                         ),
-                        stroke,
-                    );
-                    frame.stroke(
-                        &canvas::Path::line(
+                        (
                             Point::new(right_stroke, top_stroke),
                             Point::new(right_stroke, bottom_stroke),
                         ),
-                        stroke,
-                    );
-                    frame.stroke(
-                        &canvas::Path::line(
+                        (
                             Point::new(right_stroke, bottom_stroke),
                             Point::new(left_stroke, bottom_stroke),
                         ),
-                        stroke,
-                    );
-                    frame.stroke(
-                        &canvas::Path::line(
+                        (
                             Point::new(left_stroke, bottom_stroke),
                             Point::new(left_stroke, top_stroke),
                         ),
-                        stroke,
-                    );
+                    ] {
+                        frame.stroke(&canvas::Path::line(start, end), stroke);
+                    }
                 });
             }
             DrawingObject::HorizontalLine {
@@ -581,10 +554,8 @@ impl DrawingView<'_> {
                 else {
                     return;
                 };
-
                 let y = pixels.snap_stroke_center_y(y, stroke_width_phys);
                 let start_x = pixels.snap_stroke_center_x(start_x, stroke_width_phys);
-
                 frame.with_clip(bounds, |frame| {
                     frame.stroke(
                         &canvas::Path::line(
@@ -592,24 +563,22 @@ impl DrawingView<'_> {
                             Point::new(bounds.x + bounds.width, y),
                         ),
                         stroke,
-                    );
+                    )
                 });
             }
             DrawingObject::VerticalLine { x } => {
-                let Some((plot, x)) = self.drawing_vertical_line_geometry(*x) else {
+                let Some((bounds, x)) = self.drawing_vertical_line_geometry(*x) else {
                     return;
                 };
-
                 let x = pixels.snap_stroke_center_x(x, stroke_width_phys);
-
-                frame.with_clip(plot, |frame| {
+                frame.with_clip(bounds, |frame| {
                     frame.stroke(
                         &canvas::Path::line(
-                            Point::new(x, plot.y),
-                            Point::new(x, plot.y + plot.height),
+                            Point::new(x, bounds.y),
+                            Point::new(x, bounds.y + bounds.height),
                         ),
                         stroke,
-                    );
+                    )
                 });
             }
         }
@@ -692,7 +661,7 @@ impl DrawingView<'_> {
 
     fn draw_selected_drawing_handles(
         &self,
-        frame: &mut canvas::Frame,
+        frame: &mut PaintInputs,
         palette: &Extended,
         pixels: PixelGeometry,
         object: &DrawingObject,
@@ -726,7 +695,7 @@ impl DrawingView<'_> {
         });
     }
 
-    pub(super) fn hit_test_selected_drawing_handle(
+    fn hit_test_selected_drawing_handle(
         &self,
         point: Point,
     ) -> Option<(DrawingId, DrawingHandleKind)> {
@@ -761,26 +730,24 @@ impl DrawingView<'_> {
 
     pub(super) fn fill_drawing_objects(
         &self,
-        frame: &mut canvas::Frame,
+        frame: &mut PaintInputs,
         palette: &Extended,
         generated_accents: &[iced::Color; ACCENT_COUNT],
         pixels: PixelGeometry,
     ) {
-        let drawing_state = &self.snapshot;
-
-        for drawing in drawing_state
+        for drawing in self
+            .snapshot
             .entities
             .iter()
             .filter(|drawing| drawing.visible)
         {
-            let selected = drawing_state.selected_drawings.contains(&drawing.id);
             self.draw_drawing_object(
                 frame,
                 &drawing.object,
                 drawing.style,
                 palette,
                 generated_accents,
-                selected,
+                self.snapshot.selected_drawings.contains(&drawing.id),
                 pixels,
             );
         }
@@ -788,7 +755,7 @@ impl DrawingView<'_> {
 
     pub(super) fn fill_drawing_interaction(
         &self,
-        frame: &mut canvas::Frame,
+        frame: &mut PaintInputs,
         palette: &Extended,
         generated_accents: &[iced::Color; ACCENT_COUNT],
         pixels: PixelGeometry,
@@ -826,7 +793,7 @@ impl DrawingView<'_> {
 
     fn fill_measure(
         &self,
-        frame: &mut canvas::Frame,
+        frame: &mut PaintInputs,
         palette: &Extended,
         measure: DrawingMeasure,
         pixels: PixelGeometry,
@@ -931,7 +898,7 @@ impl DrawingView<'_> {
 
     fn fill_measure_bubble(
         &self,
-        frame: &mut canvas::Frame,
+        frame: &mut PaintInputs,
         palette: &Extended,
         bounds: Rectangle,
         color: iced::Color,
@@ -1076,7 +1043,7 @@ impl DrawingView<'_> {
         }
     }
 
-    pub(super) fn hit_test_drawings(&self, point: Point) -> Option<DrawingId> {
+    fn hit_test_drawings(&self, point: Point) -> Option<DrawingId> {
         self.snapshot
             .entities
             .iter()
@@ -1086,7 +1053,7 @@ impl DrawingView<'_> {
             .map(|drawing| drawing.id)
     }
 
-    pub(in crate::widget::chart::kline) fn clipped_marquee_rect(
+    pub(super) fn clipped_marquee_rect(
         &self,
         panel_index: usize,
         start: Point,
@@ -1102,7 +1069,7 @@ impl DrawingView<'_> {
         intersect_bounds(rect, panel_bounds)
     }
 
-    pub(in crate::widget::chart::kline) fn marquee_selected_drawings(
+    pub(super) fn marquee_selected_drawings(
         &self,
         panel_index: usize,
         start: Point,
@@ -1207,9 +1174,9 @@ impl DrawingView<'_> {
         }
     }
 
-    pub(in crate::widget::chart::kline) fn draw_x_axis_badge(
+    pub(super) fn draw_x_axis_badge(
         &self,
-        frame: &mut canvas::Frame,
+        frame: &mut PaintInputs,
         palette: &Extended,
         x: f32,
         text: &str,
@@ -1252,9 +1219,9 @@ impl DrawingView<'_> {
         });
     }
 
-    pub(in crate::widget::chart::kline) fn draw_y_axis_badge(
+    pub(super) fn draw_y_axis_badge(
         &self,
-        frame: &mut canvas::Frame,
+        frame: &mut PaintInputs,
         palette: &Extended,
         y: f32,
         text: &str,
@@ -1272,9 +1239,9 @@ impl DrawingView<'_> {
         );
     }
 
-    pub(in crate::widget::chart::kline) fn draw_y_axis_badge_with_colors(
+    fn draw_y_axis_badge_with_colors(
         &self,
-        frame: &mut canvas::Frame,
+        frame: &mut PaintInputs,
         y: f32,
         text: &str,
         clamp_bounds: Rectangle,
@@ -1318,9 +1285,9 @@ impl DrawingView<'_> {
         });
     }
 
-    pub(in crate::widget::chart::kline) fn draw_y_axis_badge_with_timer(
+    pub(super) fn draw_y_axis_badge_with_timer(
         &self,
-        frame: &mut canvas::Frame,
+        frame: &mut PaintInputs,
         y: f32,
         value_text: &str,
         timer_text: Option<&str>,
@@ -1329,7 +1296,7 @@ impl DrawingView<'_> {
         value_text_color: iced::Color,
         timer_text_color: iced::Color,
         filter: &mut AxisBadgeFilter,
-    ) {
+    ) -> Option<canvas::Text> {
         let scene = self.context.scene;
         let y_label_h = if timer_text.is_some() {
             TEXT_SIZE * 2.0 + 4.0
@@ -1349,7 +1316,7 @@ impl DrawingView<'_> {
                 .y_axis_badge_bounds(y_label_y, y_label_h, value_width.max(timer_width));
 
         if !filter.reserve(label_bounds) {
-            return;
+            return None;
         }
 
         frame.fill_rectangle(
@@ -1379,23 +1346,21 @@ impl DrawingView<'_> {
             ..Default::default()
         });
 
-        if let Some(timer_text) = timer_text {
-            frame.fill_text(canvas::Text {
-                content: timer_text.to_string(),
-                position: Point::new(text_x, y_label_y + 15.0),
-                color: timer_text_color,
-                size: (TEXT_SIZE - 1.0).into(),
-                align_x: iced::Alignment::Start.into(),
-                align_y: iced::Alignment::Start.into(),
-                font: style::AZERET_MONO,
-                ..Default::default()
-            });
-        }
+        timer_text.map(|timer_text| canvas::Text {
+            content: timer_text.to_string(),
+            position: Point::new(text_x, y_label_y + 15.0),
+            color: timer_text_color,
+            size: (TEXT_SIZE - 1.0).into(),
+            align_x: iced::Alignment::Start.into(),
+            align_y: iced::Alignment::Start.into(),
+            font: style::AZERET_MONO,
+            ..Default::default()
+        })
     }
 
-    pub(in crate::widget::chart::kline) fn fill_active_drawing_axis_labels(
+    pub(super) fn fill_active_drawing_axis_labels(
         &self,
-        frame: &mut canvas::Frame,
+        frame: &mut PaintInputs,
         palette: &Extended,
         filter: &mut AxisBadgeFilter,
         pixels: PixelGeometry,
@@ -1473,6 +1438,7 @@ impl DrawingHit {
             Self::Body { .. } => 1,
         }
     }
+
     pub(super) fn cursor_appearance(self) -> iced::advanced::mouse::Interaction {
         match self {
             Self::Handle { .. } | Self::Body { selected: true, .. } => {
@@ -1528,7 +1494,7 @@ impl DrawingView<'_> {
             && let Some(anchor) = anchor
         {
             let target = DrawingDragTarget::Handle(kind);
-            let mut effects = LayerEffects::captured(CacheInvalidation::All);
+            let mut effects = LayerEffects::captured(RenderRequest::All);
             effects.publish(KlineWidgetDrawingEvent::DragStarted {
                 id,
                 target,
@@ -1557,7 +1523,7 @@ impl DrawingView<'_> {
         let Some(id) = id else {
             return LayerEffects::default();
         };
-        let mut effects = LayerEffects::captured(CacheInvalidation::All);
+        let mut effects = LayerEffects::captured(RenderRequest::All);
         if !self.snapshot.selected_drawings.contains(&id) {
             effects.publish(KlineWidgetDrawingEvent::Selected(Some(id)));
         }
@@ -1600,7 +1566,7 @@ impl DrawingView<'_> {
         let Some(anchor) = self.drawing_anchor_from_scene_point(drag.panel_id, point) else {
             return LayerEffects::default();
         };
-        let mut effects = LayerEffects::captured(CacheInvalidation::All);
+        let mut effects = LayerEffects::captured(RenderRequest::All);
         effects.publish(KlineWidgetDrawingEvent::DragMoved {
             id: drag.id,
             target: drag.target,
@@ -1617,7 +1583,7 @@ impl DrawingView<'_> {
         }
         LayerEffects {
             events: vec![KlineWidgetDrawingEvent::Selected(None)],
-            invalidation: CacheInvalidation::All,
+            render_request: RenderRequest::All,
             ..LayerEffects::default()
         }
     }
@@ -1625,7 +1591,7 @@ impl DrawingView<'_> {
 
 impl DrawingDrag {
     pub(super) fn release(self) -> LayerEffects<KlineWidgetDrawingEvent> {
-        let mut effects = LayerEffects::captured(CacheInvalidation::All);
+        let mut effects = LayerEffects::captured(RenderRequest::All);
         effects.publish(KlineWidgetDrawingEvent::DragFinished { id: self.id });
         effects
     }
@@ -1705,8 +1671,8 @@ fn point_segment_distance(point: Point, a: Point, b: Point) -> f32 {
     ((point.x - proj_x).powi(2) + (point.y - proj_y).powi(2)).sqrt()
 }
 
-pub(in crate::widget::chart::kline) fn fill_marquee_rectangle(
-    frame: &mut canvas::Frame,
+pub(super) fn fill_marquee_rectangle(
+    frame: &mut PaintInputs,
     bounds: Rectangle,
     palette: &Extended,
 ) {

@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 const COMPARISON_SOURCE_ID: DataSourceId = DataSourceId::Synthetic("Comparison");
 
 pub const DEFAULT_MIN_PANEL_RATIO: f32 = 0.08;
-pub const DEFAULT_AUXILIARY_PANEL_RATIO: f32 = 0.15;
+const DEFAULT_AUXILIARY_PANEL_RATIO: f32 = 0.15;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PanelId(pub u32);
@@ -105,7 +105,7 @@ pub enum BarMode {
     Histogram(HistogramMode),
 }
 
-pub const fn default_bar_mode_for_data_kind(data_kind: LayerDataKind) -> BarMode {
+const fn default_bar_mode_for_data_kind(data_kind: LayerDataKind) -> BarMode {
     match data_kind {
         LayerDataKind::Histogram => BarMode::Histogram(HistogramMode::Plain),
         LayerDataKind::Ohlc | LayerDataKind::Scalar | LayerDataKind::Range => BarMode::Regular,
@@ -575,7 +575,7 @@ impl PanelValuePrecision {
         (y_unit.0 as f64) * step
     }
 
-    pub fn quantize_value(
+    fn quantize_value(
         self,
         value: f64,
         base_ticker: Option<TickerInfo>,
@@ -755,7 +755,7 @@ impl LayerSpec {
         self.mark_override.unwrap_or(self.mark)
     }
 
-    pub fn is_histogram_like(&self) -> bool {
+    fn is_histogram_like(&self) -> bool {
         matches!(self.axis, AxisBinding::Secondary)
             || matches!(self.data_kind, LayerDataKind::Histogram)
     }
@@ -809,7 +809,7 @@ impl PanelSpec {
         })
     }
 
-    pub fn data_hint(&self) -> PanelDataHint {
+    fn data_hint(&self) -> PanelDataHint {
         if matches!(self.presentation, PanelPresentation::Table) {
             return PanelDataHint::TableLike;
         }
@@ -821,7 +821,7 @@ impl PanelSpec {
         }
     }
 
-    pub fn source_count(&self) -> usize {
+    fn source_count(&self) -> usize {
         self.layers
             .iter()
             .filter_map(LayerSpec::source_id)
@@ -833,7 +833,7 @@ impl PanelSpec {
         self.source_count() > 1
     }
 
-    pub fn effective_scale_mode(&self) -> PanelScaleMode {
+    fn effective_scale_mode(&self) -> PanelScaleMode {
         if self.comparison_policy.force_percent_scale_on_multi_source && self.uses_multi_source() {
             PanelScaleMode::PercentFromBase
         } else {
@@ -851,7 +851,7 @@ impl PanelSpec {
         }
     }
 
-    pub fn set_layer_mark(&mut self, layer_id: LayerId, mark: MarkKind) -> bool {
+    fn set_layer_mark(&mut self, layer_id: LayerId, mark: MarkKind) -> bool {
         let is_multi_source = self.uses_multi_source();
         let force_line = self.comparison_policy.force_line_for_non_base_sources
             && is_multi_source
@@ -865,7 +865,7 @@ impl PanelSpec {
         true
     }
 
-    pub fn enforce_comparison_mark_policy(&mut self) {
+    fn enforce_comparison_mark_policy(&mut self) {
         if !(self.comparison_policy.force_line_for_non_base_sources && self.uses_multi_source()) {
             return;
         }
@@ -1004,7 +1004,7 @@ impl ChartComposition {
         self.panels.iter().find(|panel| panel.id == panel_id)
     }
 
-    pub fn panel_mut(&mut self, panel_id: PanelId) -> Option<&mut PanelSpec> {
+    fn panel_mut(&mut self, panel_id: PanelId) -> Option<&mut PanelSpec> {
         self.panels.iter_mut().find(|panel| panel.id == panel_id)
     }
 
@@ -1147,7 +1147,7 @@ impl ChartComposition {
 
     /// Returns `None` if no primary panel exists or it cannot supply the
     /// minimum auxiliary height while retaining its own minimum height.
-    pub fn add_aux_panel(
+    fn add_aux_panel(
         &mut self,
         title: impl Into<String>,
         layers: Vec<LayerSpec>,
@@ -1164,8 +1164,13 @@ impl ChartComposition {
         if available_height + f32::EPSILON < DEFAULT_MIN_PANEL_RATIO {
             return None;
         }
-        let auxiliary_height =
-            DEFAULT_AUXILIARY_PANEL_RATIO.min(available_height.max(DEFAULT_MIN_PANEL_RATIO));
+        let preferred_height = self
+            .panels
+            .last()
+            .filter(|panel| panel.role == PanelRole::Auxiliary)
+            .and_then(|_| heights.last().copied())
+            .unwrap_or(DEFAULT_AUXILIARY_PANEL_RATIO);
+        let auxiliary_height = preferred_height.min(available_height.max(DEFAULT_MIN_PANEL_RATIO));
         let panel_id = self.new_panel_id();
         let base_layer = layers.first().map(|layer| layer.id);
         self.panels.push(PanelSpec {
@@ -1189,7 +1194,7 @@ impl ChartComposition {
         Some(panel_id)
     }
 
-    pub fn add_table_panel(
+    fn add_table_panel(
         &mut self,
         title: impl Into<String>,
         source: DataSourceId,
@@ -1215,7 +1220,7 @@ impl ChartComposition {
         Some(panel_id)
     }
 
-    pub fn add_layer_to_panel(&mut self, panel_id: PanelId, layer: LayerSpec) -> bool {
+    fn add_layer_to_panel(&mut self, panel_id: PanelId, layer: LayerSpec) -> bool {
         let Some(panel) = self.panel_mut(panel_id) else {
             return false;
         };
@@ -1230,7 +1235,7 @@ impl ChartComposition {
         true
     }
 
-    pub fn add_comparison_source_to_panel(
+    fn add_comparison_source_to_panel(
         &mut self,
         panel_id: PanelId,
         source: DataSourceId,
@@ -1278,7 +1283,7 @@ impl ChartComposition {
         true
     }
 
-    pub fn set_panel_layer_mark(
+    fn set_panel_layer_mark(
         &mut self,
         panel_id: PanelId,
         layer_id: LayerId,
@@ -1291,7 +1296,7 @@ impl ChartComposition {
         panel.set_layer_mark(layer_id, mark)
     }
 
-    pub fn set_panel_layer_visibility(
+    fn set_panel_layer_visibility(
         &mut self,
         panel_id: PanelId,
         layer_id: LayerId,
@@ -1312,7 +1317,7 @@ impl ChartComposition {
         true
     }
 
-    pub fn clear_panel_layer_mark(&mut self, panel_id: PanelId, layer_id: LayerId) -> bool {
+    fn clear_panel_layer_mark(&mut self, panel_id: PanelId, layer_id: LayerId) -> bool {
         let Some(panel) = self.panel_mut(panel_id) else {
             return false;
         };
@@ -1322,7 +1327,7 @@ impl ChartComposition {
         layer.mark_override.take().is_some()
     }
 
-    pub fn set_panel_layer_data_kind(
+    fn set_panel_layer_data_kind(
         &mut self,
         panel_id: PanelId,
         layer_id: LayerId,
@@ -1343,7 +1348,7 @@ impl ChartComposition {
         true
     }
 
-    pub fn set_panel_layer_bar_mode(
+    fn set_panel_layer_bar_mode(
         &mut self,
         panel_id: PanelId,
         layer_id: LayerId,
@@ -1386,7 +1391,7 @@ impl ChartComposition {
         )
     }
 
-    pub fn remove_layer_from_panel(&mut self, panel_id: PanelId, layer_id: LayerId) -> bool {
+    fn remove_layer_from_panel(&mut self, panel_id: PanelId, layer_id: LayerId) -> bool {
         let Some(panel) = self.panel_mut(panel_id) else {
             return false;
         };
@@ -1451,7 +1456,7 @@ impl ChartComposition {
         true
     }
 
-    pub fn new_layer(
+    fn new_layer(
         &mut self,
         name: impl Into<String>,
         source: LayerSource,
@@ -1552,7 +1557,7 @@ impl ChartComposition {
         }
     }
 
-    pub fn set_panel_mark(&mut self, panel_index: usize, mark: MarkKind) -> bool {
+    fn set_panel_mark(&mut self, panel_index: usize, mark: MarkKind) -> bool {
         let Some((panel_id, layer_id)) = self.panel_base_layer_ids(panel_index) else {
             return false;
         };
@@ -1785,7 +1790,7 @@ impl ChartComposition {
         self.set_panel_layer_data_kind(panel_id, layer_id, data_kind)
     }
 
-    pub fn set_panel_bar_mode(&mut self, panel_index: usize, mode: BarMode) -> bool {
+    fn set_panel_bar_mode(&mut self, panel_index: usize, mode: BarMode) -> bool {
         let Some((panel_id, layer_id)) = self.panel_base_layer_ids(panel_index) else {
             return false;
         };

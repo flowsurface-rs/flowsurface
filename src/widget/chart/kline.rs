@@ -1,64 +1,65 @@
 mod axes;
 mod chrome;
-pub(crate) mod composition;
 pub(crate) mod drawing;
 mod footprint;
-mod helpers;
 mod interaction;
 mod layout;
 mod overlay;
+mod painting;
 mod presentation;
-mod primary_render;
 mod scene;
-mod scene_builder;
 pub(crate) mod studies;
+
+use axes::AxisInputs;
+
+use iced::widget::canvas;
+use scene::{
+    BarUnitWindow, CursorInfo, IndicatorPanelScene, LegendTarget, PanelDomainState,
+    PanelValueScale, PrimaryPercentScaleState, PrimaryScale, SceneBase, XViewport,
+};
 
 pub(crate) use chrome::{StudiesLegend, StudyLegendRow};
 
-use crate::{style, theme::ThemeAccents, window::PixelRatio};
+use crate::widget::chart::kline::chrome::PreparedPanelControls;
+use crate::{style, theme::ThemeState, window::PixelRatio};
 use composition::{
-    ChartComposition, DEFAULT_MIN_PANEL_RATIO, LayerDataKind, MarkKind, PanelId, PanelRole,
-    PanelScaleMode, PanelValueId,
+    BarMode, ChartComposition, DEFAULT_MIN_PANEL_RATIO, HistogramMode, MarkKind, PanelId,
+    PanelRole, PanelScaleMode, PanelValueId, PanelValuePrecision,
 };
 use data::UserTimezone;
 use data::chart::Basis;
-use data::chart::kline::poc::NPoc;
+use data::chart::kline::composition;
 use data::chart::kline::series::KlineSeries;
+pub(crate) use data::chart::kline::viewport::PrimaryViewportState;
 use data::chart::kline::{
-    CandlestickColorSlot, CandlestickConfig, DEFAULT_HORIZONTAL_SPACING_PX, FootprintConfig,
-    FootprintPocColorSlot, KlineStudyId, LegendVisibility,
+    CandlestickConfig, DEFAULT_HORIZONTAL_SPACING_PX, FootprintConfig, KlineStudyId,
+    LegendVisibility,
 };
 use data::chart::kline::{HorizontalWorld, IndicatorHost, IndicatorInstanceStore};
-pub(crate) use data::chart::kline::{PanelYValueRange, YUnit, YUnitRange};
-use data::chart::ticks::{
-    Y_LABEL_DENSITY,
-    x::{TimeTickLabel, TimeTickTier},
-    x_labels_that_fit,
-    y::{TickValue, YAxisScale},
-    y_labels_that_fit,
-};
-use data::config::theme::ThemeColorRole;
+pub(crate) use data::chart::kline::{YUnit, YUnitRange};
+
 use drawing::{
-    AxisBadgeFilter, DrawingDrag, DrawingMeasure, DrawingSnapshot, DrawingTool, DrawingView,
+    DrawingDrag, DrawingMeasure, DrawingSnapshot, DrawingTool, DrawingView,
     KlineWidgetDrawingEvent, WidgetDrawingState,
 };
 use exchange::TickerInfo;
-use helpers::{ChartCoordinates, PixelGeometry};
+pub(super) use interaction::SceneActivity;
 pub(crate) use interaction::SelectionDisposition;
 use interaction::{
-    CacheInvalidation, DragAction, GestureSource, LayerContext, LayerEffects, LayerGesture,
-    PointerMove, PressAction, ReleasedGesture, UserInteraction,
+    DragAction, GestureSource, LayerContext, LayerEffects, LayerGesture, PointerMove, PressAction,
+    ReleasedGesture, UserInteraction,
 };
-pub(super) use interaction::{HorizontalWheelZoomMode, SceneActivity};
-use layout::{KlinePanelKind, LayoutHitZone, PanelLayoutNode, PanelLayoutTree};
+use layout::{KlinePanelKind, LayoutHitZone, PanelLayoutTree};
+use painting::{
+    CanvasLayer, CanvasLayers, LayerPlacement, PaintInputs, PixelGeometry, RenderRequest,
+    RenderScheduler, ResolvedLayer,
+};
 pub(crate) use presentation::IndicatorPresentationStatus;
 pub(crate) use presentation::{
-    IndicatorBarValues, IndicatorPresentationContext, ResolvedIndicatorLayer,
-    ResolvedIndicatorPresentation, ResolvedIndicatorStyleSlot, resolve_indicator_bar_values,
-    resolve_indicator_presentation_status,
+    IndicatorPresentationContext, ResolvedIndicatorLayer, ResolvedIndicatorPresentation,
+    ResolvedIndicatorStyleSlot, resolve_indicator_presentation_status,
 };
-use primary_render::PrimaryPlotLayer;
-use scene::{CursorTarget, Scene, SceneCache, TickIndex, XAxis};
+use scene::{ChartCoordinates, CursorTarget, Scene, SceneCache, TickIndex, XAxis};
 use studies::{
     LayerPaintPhase, LayerPointerInput, StudyObject, StudyObjectEvent, StudyObjectKey, StudyStates,
 };
@@ -66,13 +67,12 @@ use studies::{
 use iced::advanced::widget::tree::{self, Tree};
 use iced::advanced::{self, Clipboard, Layout, Shell, Widget, layout as iced_layout, renderer};
 use iced::theme::palette::Extended;
-use iced::widget::canvas;
 use iced::{
     Element, Event, Length, Point, Rectangle, Renderer, Size, Theme, Vector, keyboard, mouse,
     window,
 };
 use iced_core::renderer::Quad;
-use std::time::{Duration, Instant};
+use std::{convert::identity, sync::Arc, time::Duration};
 
 const Y_AXIS_GUTTER: f32 = 66.0;
 const X_AXIS_HEIGHT: f32 = 24.0;
@@ -82,10 +82,7 @@ const TEXT_SIZE: f32 = 12.0;
 const CHAR_W: f32 = TEXT_SIZE * 0.64;
 const Y_AXIS_LABEL_LEFT_INSET: f32 = 4.0;
 const PANEL_SPLITTER_HEIGHT: f32 = 1.0;
-const PIXELS_PER_SCROLL_LINE: f32 = 40.0;
-const HORIZONTAL_DRAG_SCALE_DELTA_PER_PX: f32 = 0.3 / 9.0;
 const PANEL_TITLE_TOP_PAD: f32 = 4.0;
-const Y_AXIS_DRAG_SCALE_DELTA_PER_PX: f32 = 0.1;
 
 const TICKER_LEGEND_PADDING: f32 = 4.0;
 const TOOLTIP_ROW_LEFT_PAD: f32 = TICKER_LEGEND_PADDING * 2.0;
@@ -96,141 +93,31 @@ const TICKER_LEGEND_ROW_H: f32 = TEXT_SIZE + 6.0;
 /// # Note
 ///
 /// Keep plot, widget, and legend passes separate because `iced_wgpu` renders
-/// meshes before text within each renderer layer.
-const PAINT_ORDER: [PaintStep; 12] = [
-    PaintStep::Root(RootPaintStep::Separators),
-    PaintStep::Plot(PrimaryPlotLayer::Background),
-    PaintStep::Plot(PrimaryPlotLayer::Objects),
-    PaintStep::Plot(PrimaryPlotLayer::Foreground),
-    PaintStep::Root(RootPaintStep::Objects),
-    PaintStep::Plot(PrimaryPlotLayer::PriceBars),
-    PaintStep::Root(RootPaintStep::YAxis),
-    PaintStep::Root(RootPaintStep::XAxis),
-    PaintStep::Widget(WidgetPaintStep::Overlay),
-    PaintStep::Widget(WidgetPaintStep::InteractionText),
-    PaintStep::Widget(WidgetPaintStep::Marquee),
-    PaintStep::Widget(WidgetPaintStep::Legends),
+/// quads before meshes and text within each renderer layer.
+const PAINT_ORDER: [PaintStep; 14] = [
+    PaintStep::Canvas(CanvasLayer::Background),
+    PaintStep::Canvas(CanvasLayer::StudyUnderlay),
+    PaintStep::Canvas(CanvasLayer::Foreground),
+    PaintStep::Canvas(CanvasLayer::Drawings),
+    PaintStep::Canvas(CanvasLayer::PriceBars),
+    PaintStep::Canvas(CanvasLayer::YAxis),
+    PaintStep::Canvas(CanvasLayer::XAxis),
+    PaintStep::Canvas(CanvasLayer::Overlay),
+    PaintStep::Canvas(CanvasLayer::InteractionText),
+    PaintStep::Canvas(CanvasLayer::Marquee),
+    PaintStep::StudyControls,
+    PaintStep::Legends,
+    PaintStep::Separators,
+    PaintStep::PanelControls,
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PaintStep {
-    Root(RootPaintStep),
-    Plot(PrimaryPlotLayer),
-    Widget(WidgetPaintStep),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RootPaintStep {
-    Separators,
-    Objects,
-    YAxis,
-    XAxis,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WidgetPaintStep {
-    Overlay,
-    InteractionText,
-    Marquee,
     Legends,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct OverlayChannelSpec<'a> {
-    pub(crate) label: &'a str,
-    pub(crate) source: &'a str,
-    pub(crate) line_width: f32,
-    pub(crate) color_role: ThemeColorRole,
-    pub(crate) color_slot: &'a str,
-    pub(crate) style_by: Option<&'a str>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PrimaryViewportState {
-    Auto,
-    Manual { range: Option<YUnitRange> },
-}
-
-impl PrimaryViewportState {
-    pub(crate) fn is_auto(self) -> bool {
-        matches!(self, Self::Auto)
-    }
-
-    pub(crate) fn range(self) -> Option<YUnitRange> {
-        match self {
-            Self::Auto => None,
-            Self::Manual { range } => range,
-        }
-    }
-
-    pub(crate) fn disable(&mut self) -> bool {
-        if !self.is_auto() {
-            return false;
-        }
-
-        *self = Self::Manual { range: None };
-        true
-    }
-
-    pub(crate) fn set_range(&mut self, range: YUnitRange) -> bool {
-        let next = Self::Manual { range: Some(range) };
-        if *self == next {
-            return false;
-        }
-
-        *self = next;
-        true
-    }
-
-    pub(crate) fn reset(&mut self) -> bool {
-        if matches!(self, Self::Auto) {
-            return false;
-        }
-
-        *self = Self::Auto;
-        true
-    }
-
-    pub(crate) fn toggle(&mut self) -> bool {
-        if self.is_auto() {
-            *self = Self::Manual { range: None };
-        } else {
-            *self = Self::Auto;
-        }
-        true
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Regions {
-    pub plot: Rectangle,
-    pub x_axis: Rectangle,
-    pub y_axis: Rectangle,
-}
-
-impl Regions {
-    pub fn from_layout(root: iced_core::Layout<'_>) -> Self {
-        let root_bounds = root.bounds();
-
-        let row = root.child(0);
-        let x_abs = root.child(1).bounds();
-
-        let plot_abs = row.child(0).bounds();
-        let y_abs = row.child(1).bounds();
-
-        let to_local = |r: Rectangle| Rectangle {
-            x: r.x - root_bounds.x,
-            y: r.y - root_bounds.y,
-            width: r.width,
-            height: r.height,
-        };
-
-        Regions {
-            plot: to_local(plot_abs),
-            y_axis: to_local(y_abs),
-            x_axis: to_local(x_abs),
-        }
-    }
+    Separators,
+    PanelControls,
+    StudyControls,
+    Canvas(CanvasLayer),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -255,79 +142,35 @@ struct GutterCacheKey {
     panel_count: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct GeometryCacheKey {
-    origin: Point,
-    size: Size,
-}
-
-impl GeometryCacheKey {
-    fn new(rect: Rectangle, origin: Point) -> Self {
-        Self {
-            origin,
-            size: rect.size(),
-        }
-    }
-}
-
 struct State {
-    plot_background_cache: canvas::Cache,
-    plot_cache: canvas::Cache,
-    price_bars_cache: canvas::Cache,
-    y_axis_cache: canvas::Cache,
-    x_axis_cache: canvas::Cache,
-    overlay_cache: canvas::Cache,
-    legend_cache: canvas::Cache,
-    interaction_text_cache: canvas::Cache,
-    marquee_cache: canvas::Cache,
-    study_underlay_cache: canvas::Cache,
-    drawing_cache: canvas::Cache,
-
+    layers: CanvasLayers,
+    scheduler: RenderScheduler,
+    interaction_text: Option<overlay::InteractionTextInputs>,
+    panel_controls: Option<chrome::PreparedPanelControls>,
+    study_controls: Option<chrome::PreparedChrome>,
+    legends: Option<chrome::PreparedChrome>,
     scene_cache: SceneCache,
     interaction: UserInteraction<PressAction, DragAction>,
     study_objects: StudyStates,
     drawing: WidgetDrawingState,
     y_axis_gutter_width: f32,
-
     gutter_cache_key: Option<GutterCacheKey>,
-    plot_geometry_key: Option<GeometryCacheKey>,
-    widget_geometry_key: Option<GeometryCacheKey>,
-    x_axis_geometry_key: Option<GeometryCacheKey>,
-
-    last_cache_rev: u64,
-    last_pixel_ratio: Option<PixelRatio>,
-    last_cache_clear_at: Option<Instant>,
-    last_theme_generation: Option<u64>,
-    last_countdown_second: Option<i64>,
 }
 
 impl Default for State {
     fn default() -> Self {
         Self {
-            plot_background_cache: canvas::Cache::new(),
-            plot_cache: canvas::Cache::new(),
-            price_bars_cache: canvas::Cache::new(),
-            y_axis_cache: canvas::Cache::new(),
-            x_axis_cache: canvas::Cache::new(),
-            overlay_cache: canvas::Cache::new(),
-            legend_cache: canvas::Cache::new(),
-            interaction_text_cache: canvas::Cache::new(),
-            marquee_cache: canvas::Cache::new(),
-            study_underlay_cache: canvas::Cache::new(),
-            drawing_cache: canvas::Cache::new(),
+            layers: CanvasLayers::default(),
+            scheduler: RenderScheduler::default(),
+            interaction_text: None,
+            panel_controls: None,
+            study_controls: None,
+            legends: None,
             interaction: UserInteraction::default(),
             study_objects: StudyStates::default(),
             drawing: WidgetDrawingState::default(),
             y_axis_gutter_width: Y_AXIS_GUTTER,
             gutter_cache_key: None,
-            last_pixel_ratio: None,
-            plot_geometry_key: None,
-            widget_geometry_key: None,
-            x_axis_geometry_key: None,
-            last_cache_rev: 0,
-            last_cache_clear_at: None,
-            last_theme_generation: None,
-            last_countdown_second: None,
             scene_cache: SceneCache::default(),
         }
     }
@@ -346,22 +189,12 @@ impl State {
         for event in effects.events {
             shell.publish(M::from(map_event(event)));
         }
-        match effects.invalidation {
-            CacheInvalidation::None => {}
-            CacheInvalidation::Overlay => self.clear_overlay_caches(),
-            CacheInvalidation::All => self.clear_all_caches(),
-        }
+        self.scheduler.request(effects.render_request);
         let captured = effects.status == iced::event::Status::Captured;
         if captured {
             shell.capture_event();
         }
         (captured, effects.gesture)
-    }
-
-    fn scene_activity(&self) -> SceneActivity {
-        self.interaction
-            .drag_action()
-            .map_or(SceneActivity::Idle, DragAction::scene_activity)
     }
 
     fn marquee(&self) -> Option<MarqueeGesture> {
@@ -374,89 +207,6 @@ impl State {
             start: motion.origin,
             current: motion.current,
         })
-    }
-
-    fn clear_all_caches(&mut self) {
-        self.plot_background_cache.clear();
-        self.plot_cache.clear();
-        self.study_underlay_cache.clear();
-        self.drawing_cache.clear();
-        self.price_bars_cache.clear();
-        self.y_axis_cache.clear();
-        self.x_axis_cache.clear();
-        self.clear_overlay_caches();
-        self.marquee_cache.clear();
-    }
-
-    fn cache_refresh_at(
-        &self,
-        version: u64,
-        now: Instant,
-        minimum_interval: Duration,
-    ) -> Option<Instant> {
-        (self.last_cache_rev != version).then(|| {
-            self.last_cache_clear_at
-                .map_or(now, |last_clear| last_clear + minimum_interval)
-        })
-    }
-
-    fn mark_cache_refreshed(&mut self, version: u64, now: Instant) {
-        self.last_cache_rev = version;
-        self.last_cache_clear_at = Some(now);
-    }
-
-    fn clear_overlay_caches(&mut self) {
-        self.overlay_cache.clear();
-        self.legend_cache.clear();
-        self.interaction_text_cache.clear();
-    }
-
-    fn clear_cursor_caches(&mut self) {
-        self.clear_overlay_caches();
-
-        if self.marquee().is_some() {
-            self.marquee_cache.clear();
-        }
-    }
-
-    fn sync_geometry_cache_keys(
-        &mut self,
-        bounds: Rectangle,
-        regions: Regions,
-        pixel_ratio: PixelRatio,
-    ) {
-        let root_origin = Point::new(bounds.x, bounds.y);
-        let plot_origin = Point::new(bounds.x + regions.plot.x, bounds.y + regions.plot.y);
-        let x_axis_origin = Point::new(bounds.x + regions.x_axis.x, bounds.y + regions.x_axis.y);
-
-        if self.last_pixel_ratio != Some(pixel_ratio) {
-            self.plot_geometry_key = None;
-            self.widget_geometry_key = None;
-            self.x_axis_geometry_key = None;
-            self.last_pixel_ratio = Some(pixel_ratio);
-        }
-
-        let plot_geometry_key = GeometryCacheKey::new(regions.plot, plot_origin);
-        if self.plot_geometry_key != Some(plot_geometry_key) {
-            self.plot_background_cache.clear();
-            self.plot_cache.clear();
-            self.study_underlay_cache.clear();
-            self.price_bars_cache.clear();
-            self.plot_geometry_key = Some(plot_geometry_key);
-        }
-
-        let widget_geometry_key = GeometryCacheKey::new(bounds, root_origin);
-        if self.widget_geometry_key != Some(widget_geometry_key) {
-            self.drawing_cache.clear();
-            self.clear_overlay_caches();
-            self.widget_geometry_key = Some(widget_geometry_key);
-        }
-
-        let x_axis_geometry_key = GeometryCacheKey::new(regions.x_axis, x_axis_origin);
-        if self.x_axis_geometry_key != Some(x_axis_geometry_key) {
-            self.x_axis_cache.clear();
-            self.x_axis_geometry_key = Some(x_axis_geometry_key);
-        }
     }
 }
 
@@ -523,13 +273,13 @@ impl From<KlineWidgetDrawingEvent> for KlineWidgetEvent {
     }
 }
 
-pub struct KlineWidget<'a> {
+pub(crate) struct KlineWidget<'a> {
     series: &'a [KlineSeries],
     indicator_host: &'a IndicatorHost,
     composition: &'a ChartComposition,
     indicator_instances: &'a IndicatorInstanceStore,
     drawing_snapshot: DrawingSnapshot<'a>,
-    study_objects: Vec<StudyObject<'a>>,
+    study_objects: studies::StudyObjects<'a>,
     study_legend: Option<chrome::StudiesLegend>,
     legend_visibility: LegendVisibility,
     candlestick: CandlestickConfig,
@@ -546,7 +296,7 @@ pub struct KlineWidget<'a> {
     indicator_presentation: IndicatorPresentationContext,
     timezone: UserTimezone,
     version: u64,
-    theme_accents: ThemeAccents,
+    theme: &'a ThemeState,
     should_capture_escape: bool,
 }
 
@@ -558,7 +308,7 @@ impl<'a> KlineWidget<'a> {
         composition: &'a ChartComposition,
         indicator_instances: &'a IndicatorInstanceStore,
         indicator_presentation: IndicatorPresentationContext,
-        theme_accents: ThemeAccents,
+        theme: &'a ThemeState,
     ) -> Self {
         Self {
             series,
@@ -573,7 +323,7 @@ impl<'a> KlineWidget<'a> {
                 None,
                 None,
             ),
-            study_objects: Vec::new(),
+            study_objects: studies::StudyObjects::default(),
             study_legend: None,
             legend_visibility: LegendVisibility::default(),
             candlestick: CandlestickConfig::default(),
@@ -590,12 +340,12 @@ impl<'a> KlineWidget<'a> {
             indicator_presentation,
             timezone: UserTimezone::Utc,
             version: 0,
-            theme_accents,
+            theme,
             should_capture_escape: false,
         }
     }
 
-    pub(crate) fn with_study_legend(mut self, legend: chrome::StudiesLegend) -> Self {
+    pub fn with_study_legend(mut self, legend: chrome::StudiesLegend) -> Self {
         self.study_legend = Some(legend);
         self
     }
@@ -635,7 +385,7 @@ impl<'a> KlineWidget<'a> {
         self
     }
 
-    pub(crate) fn with_primary_viewport(mut self, viewport: PrimaryViewportState) -> Self {
+    pub fn with_primary_viewport(mut self, viewport: PrimaryViewportState) -> Self {
         self.primary_viewport = viewport;
         self
     }
@@ -670,34 +420,7 @@ impl<'a> KlineWidget<'a> {
     }
 
     fn indicator_is_unavailable(&self, value_id: Option<PanelValueId>) -> bool {
-        value_id.is_some_and(|value_id| self.indicator_presentation.is_unavailable(value_id))
-    }
-
-    pub(super) fn indicator_unavailable_message(
-        &self,
-        value_id: Option<PanelValueId>,
-    ) -> Option<&str> {
-        let value_id = value_id?;
-        self.indicator_presentation.unavailable_message(value_id)
-    }
-
-    pub(super) fn indicator_marker(&self, value_id: PanelValueId) -> Option<(&'static str, bool)> {
-        if self.indicator_presentation.is_loading(value_id) {
-            return Some(("...", true));
-        }
-        self.indicator_unavailable_message(Some(value_id))
-            .map(|_| ("!", false))
-    }
-
-    pub(super) fn indicator_label_x(&self, row_x: f32, value_id: PanelValueId) -> f32 {
-        let marker_width = self.indicator_marker(value_id).map_or(0.0, |(marker, _)| {
-            marker.chars().count() as f32 * CHAR_W + TICKER_LEGEND_PADDING
-        });
-        row_x + TOOLTIP_ROW_LEFT_PAD + marker_width
-    }
-
-    pub(super) fn indicator_marker_x(&self, row_x: f32) -> f32 {
-        row_x + TOOLTIP_ROW_LEFT_PAD
+        self.indicators().indicator_is_unavailable(value_id)
     }
 
     pub fn with_version(mut self, rev: u64) -> Self {
@@ -710,14 +433,47 @@ impl<'a> KlineWidget<'a> {
         self
     }
 
-    fn series_participates_in_primary_plot(&self, ticker: TickerInfo) -> bool {
-        self.series
-            .first()
-            .is_some_and(|series| series.ticker_info == ticker)
-            || self
-                .composition
-                .comparison_layer(ticker)
-                .is_some_and(|layer| layer.visible)
+    fn plot_renderer(&self) -> painting::plot::PlotRenderer<'_> {
+        painting::plot::PlotRenderer {
+            coordinates: self.coordinates(),
+            indicators: self.indicators(),
+            footprints: footprint::FootprintRenderer {
+                series: self.series,
+                candlestick: &self.candlestick,
+                footprint: &self.footprint,
+            },
+            study_objects: &self.study_objects,
+            trade_data_enabled: self.trade_data_enabled,
+        }
+    }
+
+    fn overlay_view<'b>(&'b self, scene: &'b Scene) -> overlay::OverlayView<'b> {
+        overlay::OverlayView {
+            coordinates: self.coordinates(),
+            indicators: self.indicators(),
+            drawing: self.drawing_view(scene),
+        }
+    }
+
+    fn legend_view(&self) -> chrome::legend::LegendView<'_> {
+        chrome::legend::LegendView {
+            coordinates: self.coordinates(),
+            indicators: self.indicators(),
+            candlestick: &self.candlestick,
+            footprint: &self.footprint,
+            study_legend: self.study_legend.as_ref(),
+            legend_visibility: self.legend_visibility,
+        }
+    }
+
+    fn indicators(&self) -> presentation::IndicatorView<'_> {
+        presentation::IndicatorView {
+            series: self.series,
+            composition: self.composition,
+            host: self.indicator_host,
+            instances: self.indicator_instances,
+            presentation: &self.indicator_presentation,
+        }
     }
 
     fn coordinates(&self) -> ChartCoordinates<'_> {
@@ -726,6 +482,30 @@ impl<'a> KlineWidget<'a> {
             composition: self.composition,
             basis: self.basis,
             timezone: self.timezone,
+        }
+    }
+
+    fn axes<'b>(&'b self, scene: &'b Scene) -> axes::AxisView<'b> {
+        axes::AxisView {
+            scene,
+            coordinates: self.coordinates(),
+            indicators: self.indicators(),
+        }
+    }
+
+    fn navigation(&self) -> interaction::navigation::NavigationView<'_> {
+        interaction::navigation::NavigationView {
+            viewports: self.viewports(),
+            horizontal_world: self.horizontal_world,
+        }
+    }
+
+    fn viewports(&self) -> scene::viewport::PanelViewportView<'_> {
+        scene::viewport::PanelViewportView {
+            coordinates: self.coordinates(),
+            pixel_ratio: self.pixel_ratio,
+            primary_viewport: self.primary_viewport,
+            indicator_y_ranges: self.indicator_y_ranges,
         }
     }
 
@@ -740,6 +520,187 @@ impl<'a> KlineWidget<'a> {
             coordinates: self.coordinates(),
             position,
             modifiers,
+        }
+    }
+
+    fn prepare_render_inputs(
+        &self,
+        state: &mut State,
+        scene: Option<&Scene>,
+        bounds: Rectangle,
+        request: RenderRequest,
+        utc_ms: u64,
+    ) {
+        if request == RenderRequest::None {
+            if let (Some(prepared), Some(layer)) = (
+                state.interaction_text.as_ref(),
+                state.layers[CanvasLayer::InteractionText].resolved(),
+            ) {
+                let layer = layer.with_inputs(prepared.resolve(utc_ms));
+                state.layers[CanvasLayer::InteractionText].prepare(layer);
+            }
+            return;
+        }
+        let Some(scene) = scene else {
+            let root_origin = bounds.position();
+            for (layer, cache) in &mut state.layers {
+                if request == RenderRequest::All || layer.is_interaction() {
+                    cache.prepare(ResolvedLayer {
+                        root_origin,
+                        placement: LayerPlacement::Widget(bounds.size()),
+                        pixel_ratio: self.pixel_ratio,
+                        inputs: PaintInputs::default(),
+                    });
+                }
+            }
+            state.interaction_text = None;
+            state.panel_controls = None;
+            state.study_controls = None;
+            state.legends = None;
+            return;
+        };
+        let palette = self.theme.current().extended_palette();
+
+        state.panel_controls = Some(PreparedPanelControls::new(
+            scene,
+            bounds,
+            palette,
+            self.primary_viewport.is_auto(),
+        ));
+
+        let generated_accents = self.theme.accents();
+        let accents = generated_accents.as_array();
+
+        let root_origin = Point::new(bounds.x, bounds.y);
+        let root_pixels = PixelGeometry::new(self.pixel_ratio, root_origin);
+        let drawing_magnet = self.drawing_magnet_enabled(state.interaction.modifiers());
+
+        let mut legends = chrome::PreparedChrome::new(bounds);
+        self.legend_view()
+            .fill_legends(&mut legends, scene, palette, accents);
+        state.legends = Some(legends);
+        let mut study_controls = chrome::PreparedChrome::new(bounds);
+        self.study_objects.prepare_controls(
+            self.layer_context(scene, None, state.interaction.modifiers()),
+            &state.study_objects,
+            &mut study_controls,
+            palette,
+            root_pixels,
+        );
+        state.study_controls = Some(study_controls);
+
+        for step in PAINT_ORDER {
+            let PaintStep::Canvas(layer) = step else {
+                continue;
+            };
+            if request != RenderRequest::All
+                && !(request == RenderRequest::Interaction && layer.is_interaction())
+            {
+                continue;
+            }
+            let placement = match layer {
+                CanvasLayer::Background
+                | CanvasLayer::StudyUnderlay
+                | CanvasLayer::Foreground
+                | CanvasLayer::PriceBars => LayerPlacement::Plot(scene.plot_rect()),
+                CanvasLayer::YAxis => LayerPlacement::Axis(scene.layout.regions.y_axis),
+                CanvasLayer::XAxis => LayerPlacement::Axis(scene.layout.regions.x_axis),
+                _ => LayerPlacement::Widget(bounds.size()),
+            };
+            let origin = placement.origin();
+            let pixels = PixelGeometry::new(
+                self.pixel_ratio,
+                Point::new(bounds.x + origin.x, bounds.y + origin.y),
+            );
+            let mut inputs = PaintInputs::default();
+            match layer {
+                CanvasLayer::Background
+                | CanvasLayer::StudyUnderlay
+                | CanvasLayer::Foreground
+                | CanvasLayer::PriceBars => {
+                    self.plot_renderer().paint(
+                        &mut inputs,
+                        scene,
+                        &state.study_objects,
+                        palette,
+                        accents,
+                        pixels,
+                        layer,
+                    );
+                    if layer == CanvasLayer::Foreground {
+                        self.fill_panel_titles(&mut inputs, scene, palette);
+                        self.overlay_view(scene)
+                            .paint_last_price_line(&mut inputs, scene, palette);
+                    }
+                }
+                CanvasLayer::Drawings => self
+                    .drawing_view_at(scene, None, state.interaction.modifiers())
+                    .fill_drawing_objects(&mut inputs, palette, accents, pixels),
+                CanvasLayer::YAxis => self.fill_y_axis_labels(
+                    &mut inputs,
+                    scene,
+                    state
+                        .scene_cache
+                        .get(self.version, &scene.layout)
+                        .map(|entry| &entry.y_axis_labels),
+                    palette,
+                ),
+                CanvasLayer::XAxis => {
+                    self.axes(scene)
+                        .x_labels(pixels)
+                        .paint(&mut inputs, palette, &[])
+                }
+                CanvasLayer::Overlay => {
+                    self.overlay_view(scene).paint(
+                        &mut inputs,
+                        scene,
+                        palette,
+                        accents,
+                        root_pixels,
+                        drawing_magnet,
+                    );
+                    self.study_objects.paint(
+                        LayerPaintPhase::Overlay,
+                        self.layer_context(scene, None, state.interaction.modifiers()),
+                        &state.study_objects,
+                        &mut inputs,
+                        palette,
+                        accents,
+                        root_pixels,
+                    );
+                    if self.drawing_snapshot.has_state() {
+                        self.drawing_view_at(scene, None, state.interaction.modifiers())
+                            .fill_drawing_interaction(&mut inputs, palette, accents, root_pixels);
+                    }
+                }
+                CanvasLayer::InteractionText => {
+                    let prepared = self.overlay_view(scene).text_inputs(
+                        scene,
+                        palette,
+                        drawing_magnet,
+                        root_pixels,
+                    );
+                    inputs = prepared.resolve(utc_ms);
+                    state.interaction_text = Some(prepared);
+                }
+                CanvasLayer::Marquee => {
+                    if let Some(marquee) = state.marquee()
+                        && let Some(rect) = self.drawing_view(scene).clipped_marquee_rect(
+                            marquee.panel_index,
+                            marquee.start,
+                            marquee.current,
+                        )
+                    {
+                        drawing::fill_marquee_rectangle(&mut inputs, rect, palette);
+                    }
+                }
+            }
+            state.layers[layer].prepare(ResolvedLayer {
+                root_origin,
+                placement,
+                pixel_ratio: self.pixel_ratio,
+                inputs,
+            });
         }
     }
 
@@ -770,7 +731,7 @@ impl<'a> KlineWidget<'a> {
     where
         M: Clone + From<KlineWidgetEvent>,
     {
-        let Some(effects) = self.study_object_pointer(
+        let Some(effects) = self.study_objects.pointer(
             key,
             LayerPointerInput::Pressed,
             self.layer_context(scene, Some(position), state.interaction.modifiers()),
@@ -835,7 +796,8 @@ impl<'a> KlineWidget<'a> {
     where
         M: Clone + From<KlineWidgetEvent>,
     {
-        self.study_object_pointer(key, input, context, &mut state.study_objects)
+        self.study_objects
+            .pointer(key, input, context, &mut state.study_objects)
             .is_some_and(|effects| {
                 state
                     .apply_interaction_effects(effects, shell, KlineWidgetEvent::Study)
@@ -853,7 +815,9 @@ impl<'a> KlineWidget<'a> {
     where
         M: Clone + From<KlineWidgetEvent>,
     {
-        let effects = self.study_objects_pointer_all(input, context, &mut state.study_objects);
+        let effects = self
+            .study_objects
+            .pointer_all(input, context, &mut state.study_objects);
         let mut captured = false;
         for effects in effects {
             captured |= state
@@ -954,8 +918,12 @@ impl<'a> KlineWidget<'a> {
         let outcome = state.interaction.release(position);
         let (selection, had_gesture) = match outcome {
             ReleasedGesture::Idle => return,
-            ReleasedGesture::Pressed { action, .. } => (
-                action.selection_disposition(),
+            ReleasedGesture::Pressed { action, click } => (
+                if click == interaction::ClickOutcome::Confirmed {
+                    action.selection_disposition()
+                } else {
+                    SelectionDisposition::Preserve
+                },
                 action.captures_outside_release(),
             ),
             ReleasedGesture::Drag { action, .. } => (action.selection_disposition(), true),
@@ -972,6 +940,28 @@ impl<'a> KlineWidget<'a> {
         {
             capture |= self.apply_drawing_pointer(
                 DrawingPointerInput::SelectionCleared,
+                context,
+                state,
+                shell,
+            );
+        }
+
+        if let ReleasedGesture::Pressed {
+            action,
+            click: interaction::ClickOutcome::Confirmed,
+        } = outcome
+            && let Some(context) = layer_context
+            && position.is_some_and(|point| {
+                matches!(
+                    context.scene.layout.hit_test(point),
+                    LayoutHitZone::PanelPlot(_)
+                )
+            })
+        {
+            capture |= self.broadcast_study_object_pointer(
+                LayerPointerInput::PlotClicked {
+                    target: action.layer_key(),
+                },
                 context,
                 state,
                 shell,
@@ -1043,7 +1033,7 @@ impl<'a> KlineWidget<'a> {
                         KlineWidgetDrawingEvent::MarqueeSelected(selected),
                     )));
                 }
-                state.clear_all_caches();
+                state.scheduler.request(RenderRequest::All);
                 capture = true;
                 if let (Some(context), Some(key)) =
                     (layer_context, press_action.and_then(PressAction::layer_key))
@@ -1079,62 +1069,728 @@ impl<'a> KlineWidget<'a> {
         }
 
         if outside_bounds {
-            state.clear_all_caches();
+            state.scheduler.request(RenderRequest::All);
         }
         if capture {
             shell.capture_event();
         }
     }
 
-    fn paint_separators(renderer: &mut Renderer, scene: &Scene, theme: &Theme) {
-        use advanced::Renderer as _;
+    fn panel_count(&self) -> usize {
+        self.composition.panel_count().max(1)
+    }
 
-        let plot_rect = scene.plot_rect();
-        let splitter_color = style::split_ruler(theme).color;
+    fn panel_id(&self, panel_index: usize) -> Option<composition::PanelId> {
+        self.coordinates().panel_id(panel_index)
+    }
 
-        for splitter in &scene.layout.splitters {
-            renderer.fill_quad(
-                Quad {
-                    bounds: Rectangle {
-                        x: plot_rect.x + splitter.x,
-                        y: plot_rect.y + splitter.y,
-                        width: splitter.width + scene.layout.regions.y_axis.width,
-                        height: splitter.height,
-                    },
-                    snap: true,
-                    ..Default::default()
-                },
-                splitter_color,
+    fn panel_value_precision(&self, panel_index: usize) -> Option<PanelValuePrecision> {
+        self.coordinates().panel_value_precision(panel_index)
+    }
+
+    fn default_mark_for_panel(kind: KlinePanelKind) -> MarkKind {
+        match kind {
+            KlinePanelKind::PrimaryChart => MarkKind::Candle,
+            KlinePanelKind::Indicator => MarkKind::Bar(BarMode::Histogram(HistogramMode::Plain)),
+        }
+    }
+
+    fn resolved_panel_mark(&self, panel_index: usize, panel_kind: KlinePanelKind) -> MarkKind {
+        let Some(panel_id) = self.panel_id(panel_index) else {
+            return Self::default_mark_for_panel(panel_kind);
+        };
+
+        self.composition
+            .panel_effective_mark(panel_id)
+            .unwrap_or_else(|| Self::default_mark_for_panel(panel_kind))
+    }
+
+    fn resolved_panel_scale_mode(&self, panel_index: usize) -> PanelScaleMode {
+        let Some(panel) = self.composition.panels.get(panel_index) else {
+            return PanelScaleMode::Absolute;
+        };
+
+        self.composition
+            .panel_effective_scale_mode(panel.id)
+            .unwrap_or(PanelScaleMode::Absolute)
+    }
+
+    fn base_ticker_info(&self) -> Option<exchange::TickerInfo> {
+        self.coordinates().base_ticker_info()
+    }
+
+    fn panel_value_scale(&self, panel_index: usize) -> PanelValueScale {
+        self.coordinates().panel_value_scale(panel_index)
+    }
+
+    fn resolve_x_axis(&self) -> Option<XAxis> {
+        match self.basis {
+            data::chart::Basis::Time(timeframe) => {
+                let anchor = self
+                    .series
+                    .iter()
+                    .filter_map(|series| series.latest_point())
+                    .map(|point| point.kline.time)
+                    .max()?;
+
+                Some(XAxis::Time { timeframe, anchor })
+            }
+            data::chart::Basis::Tick(_) => {
+                if self.max_points_available() == 0 {
+                    None
+                } else {
+                    Some(XAxis::Tick {
+                        anchor: TickIndex::ZERO,
+                    })
+                }
+            }
+        }
+    }
+
+    fn max_points_available(&self) -> usize {
+        self.series
+            .iter()
+            .map(KlineSeries::point_count)
+            .max()
+            .unwrap_or_default()
+    }
+
+    fn build_bar_units(&self, axis: XAxis, min: i64, max: i64) -> Vec<BarUnitWindow> {
+        self.series
+            .iter()
+            .map(|series| series.bar_unit_window(axis, min, max))
+            .collect()
+    }
+
+    fn data_x_bounds(&self, x_axis: XAxis) -> Option<(i64, i64)> {
+        match x_axis {
+            XAxis::Time { .. } => self
+                .series
+                .iter()
+                .filter_map(|series| {
+                    let first = series.first_point()?.kline.time;
+                    let last = series.latest_point()?.kline.time;
+                    Some((x_axis.unit_from_time(first), x_axis.unit_from_time(last)))
+                })
+                .reduce(|(min_unit, max_unit), (first, last)| {
+                    (min_unit.min(first), max_unit.max(last))
+                }),
+            XAxis::Tick { .. } => {
+                let point_count = self.max_points_available();
+                let last = x_axis.unit_from_tick(TickIndex::ZERO);
+                let first = x_axis
+                    .unit_from_tick(TickIndex::from_u64(point_count.saturating_sub(1) as u64));
+                Some((first, last))
+            }
+        }
+    }
+
+    fn apply_cursor_interaction(
+        &self,
+        scene: &mut Scene,
+        cursor_root_local: Option<Point>,
+        primary_panel: usize,
+        primary_plot: Rectangle,
+        show_legend_values: bool,
+        activity: SceneActivity,
+        layers: &StudyStates,
+    ) {
+        let Some(local) = cursor_root_local else {
+            return;
+        };
+
+        let hovered_control =
+            chrome::hit_panel_control(&scene.layout, &scene.chrome.panel_controls, local);
+        let hovered_corner_control =
+            chrome::hit_corner_control(&scene.chrome.corner_controls, local);
+
+        let mut ticker_hit = scene
+            .chrome
+            .ticker_legend
+            .as_ref()
+            .and_then(|legend| chrome::legend::hit_ticker_legend(&scene.layout, legend, local));
+
+        if ticker_hit.is_some() {
+            scene.chrome.ticker_legend = self.legend_view().build_ticker_legend_layout(
+                &scene.layout,
+                primary_panel,
+                self.legend_visibility.legend_values_always_visible(),
+                true,
+            );
+            ticker_hit =
+                scene.chrome.ticker_legend.as_ref().and_then(|legend| {
+                    chrome::legend::hit_ticker_legend(&scene.layout, legend, local)
+                });
+        }
+
+        let footprint_hit =
+            scene.chrome.footprint_legend.as_ref().and_then(|legend| {
+                chrome::legend::hit_footprint_legend(&scene.layout, legend, local)
+            });
+
+        let study_hit = scene
+            .chrome
+            .study_legend
+            .as_ref()
+            .and_then(|legend| chrome::legend::hit_study_legend(&scene.layout, legend, local));
+
+        let mut indicator_hit =
+            scene.chrome.indicator_legend.as_ref().and_then(|legend| {
+                chrome::legend::hit_indicator_legend(&scene.layout, legend, local)
+            });
+
+        if indicator_hit.is_some() {
+            scene.chrome.indicator_legend = self.legend_view().build_indicator_legend_layout(
+                &scene.layout,
+                primary_panel,
+                chrome::legend::tooltip_rows_before_indicators(
+                    scene.chrome.ticker_legend.as_ref(),
+                    scene.chrome.footprint_legend.as_ref(),
+                    scene.chrome.study_legend.as_ref(),
+                    show_legend_values,
+                ),
+            );
+            indicator_hit = scene.chrome.indicator_legend.as_ref().and_then(|legend| {
+                chrome::legend::hit_indicator_legend(&scene.layout, legend, local)
+            });
+        }
+
+        scene.interaction.controls_visible_for_panel = hovered_control
+            .map(|hit| hit.panel_index)
+            .or_else(|| match scene.layout.hit_test(local) {
+                LayoutHitZone::PanelPlot(panel_index) | LayoutHitZone::PanelXAxis(panel_index) => {
+                    Some(panel_index)
+                }
+                _ => None,
+            });
+
+        let zone = scene.layout.hit_test(local);
+
+        let layer_target = if self.drawing_snapshot.allows_panning() {
+            let drawing_hit = self.drawing_view(scene).hit(local);
+            let study_hit = self.study_objects.hit_test(
+                self.layer_context(scene, Some(local), iced::keyboard::Modifiers::empty()),
+                layers,
+            );
+            match (drawing_hit, study_hit) {
+                (Some(drawing), Some(study)) if drawing.priority() >= study.priority => {
+                    Some(CursorTarget::Drawing(drawing))
+                }
+                (_, Some(study)) => Some(CursorTarget::StudyObject(study)),
+                (Some(drawing), None) => Some(CursorTarget::Drawing(drawing)),
+                (None, None) => None,
+            }
+        } else {
+            None
+        };
+
+        let target = match activity {
+            SceneActivity::Pan => CursorTarget::ActivePan,
+            SceneActivity::Drag => CursorTarget::ActiveDrag,
+            SceneActivity::Idle => {
+                if let Some(hit) = ticker_hit {
+                    CursorTarget::Legend(LegendTarget::from(hit))
+                } else if let Some(hit) = footprint_hit {
+                    CursorTarget::Legend(LegendTarget::from(hit))
+                } else if let Some(hit) = study_hit {
+                    CursorTarget::Legend(LegendTarget::from(hit))
+                } else if let Some(hit) = indicator_hit {
+                    CursorTarget::Legend(LegendTarget::from(hit))
+                } else if let Some(control) = hovered_corner_control {
+                    CursorTarget::CornerControl(control.kind)
+                } else if let Some(control) = hovered_control {
+                    CursorTarget::PanelControl {
+                        panel_index: control.panel_index,
+                        kind: control.kind,
+                    }
+                } else if let Some(target) = layer_target {
+                    target
+                } else {
+                    match zone {
+                        LayoutHitZone::PanelPlot(panel_index) => CursorTarget::Plot(panel_index),
+                        LayoutHitZone::Splitter(index) => CursorTarget::Splitter(index),
+                        LayoutHitZone::YAxis(index) => CursorTarget::YAxis(index),
+                        LayoutHitZone::PanelXAxis(index) => CursorTarget::PanelXAxis(index),
+                        LayoutHitZone::BottomXAxis => CursorTarget::BottomXAxis,
+                        LayoutHitZone::Outside => CursorTarget::Outside,
+                    }
+                }
+            }
+        };
+        scene.interaction.target = target;
+
+        if !matches!(zone, LayoutHitZone::PanelPlot(_)) {
+            return;
+        }
+
+        let Some(plot_local) = scene.layout.plot_local_point(local) else {
+            return;
+        };
+
+        let x_plot = plot_local.x.clamp(0.0, primary_plot.width.max(1.0));
+        let snapped_x_unit = scene.unit_from_plot_x(x_plot);
+        let snapped_x_plot = scene
+            .map_x_plot(snapped_x_unit)
+            .clamp(0.0, scene.x_axis_plot_width().max(1.0));
+
+        let LayoutHitZone::PanelPlot(panel_index) = zone else {
+            return;
+        };
+        let Some(panel) = scene.layout.panel(panel_index) else {
+            return;
+        };
+
+        let value_scale = self.panel_value_scale(panel_index);
+        let y_in_panel = (plot_local.y - panel.plot.y).clamp(0.0, panel.plot.height.max(1.0));
+
+        let (y_primary_unit, y_indicator_unit, snapped_y_plot) = match panel.kind {
+            KlinePanelKind::PrimaryChart => {
+                let value_ratio = scene.primary_value_ratio_at_plot_y(y_in_panel);
+                let uses_display_transform = scene
+                    .primary
+                    .mode
+                    .uses_display_transform(scene.can_use_log_primary_scale());
+
+                let (y_primary_unit, snapped_y_plot) = if uses_display_transform {
+                    let (min_display, max_display) = scene.primary_domain_display_values();
+                    let y_display_value = min_display + ((max_display - min_display) * value_ratio);
+                    let y_primary_unit = value_scale
+                        .value_to_unit_f32(scene.primary_display_to_value(y_display_value));
+                    let y_primary_value = value_scale.unit_to_value_f32(y_primary_unit);
+                    let y_plot = scene
+                        .map_primary_plot_with_anchor_f32(y_primary_value, scene.primary.anchor)
+                        .clamp(panel.plot.y, panel.plot.y + panel.plot.height);
+
+                    (y_primary_unit, y_plot)
+                } else {
+                    let y_primary_unit = Scene::lerp_unit(
+                        scene.primary.domain.active().min(),
+                        scene.primary.domain.active().max(),
+                        value_ratio,
+                    );
+                    let y_plot = scene
+                        .map_primary_plot_unit(y_primary_unit)
+                        .clamp(panel.plot.y, panel.plot.y + panel.plot.height);
+
+                    (y_primary_unit, y_plot)
+                };
+
+                (Some(y_primary_unit), None, snapped_y_plot)
+            }
+            KlinePanelKind::Indicator => {
+                if self.indicator_is_unavailable(
+                    self.indicators().indicator_panel_value_id(panel_index),
+                ) {
+                    (None, None, panel.plot.y + y_in_panel)
+                } else {
+                    let indicator_ratio = 1.0 - (y_in_panel / panel.plot.height.max(1.0));
+                    let y_indicator_unit = scene
+                        .indicator_panel_config(panel_index)
+                        .map(|indicator| {
+                            Scene::lerp_unit(
+                                indicator.domain.active().min(),
+                                indicator.domain.active().max(),
+                                indicator_ratio,
+                            )
+                        })
+                        .unwrap_or_else(|| Scene::lerp_unit(YUnit(0), YUnit(1), indicator_ratio));
+                    let snapped_y_plot = scene
+                        .map_indicator_plot_unit(panel_index, y_indicator_unit)
+                        .map(|y| y.clamp(panel.plot.y, panel.plot.y + panel.plot.height))
+                        .unwrap_or(panel.plot.y + y_in_panel);
+
+                    (None, Some(y_indicator_unit), snapped_y_plot)
+                }
+            }
+        };
+
+        scene.interaction.cursor = Some(CursorInfo {
+            x_unit: snapped_x_unit,
+            panel_index,
+            y_primary_unit,
+            y_indicator_unit,
+            x_plot: snapped_x_plot,
+            y_plot: snapped_y_plot,
+        });
+    }
+
+    fn compute_scene_uncached(
+        &self,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        activity: SceneActivity,
+        layers: &StudyStates,
+    ) -> Option<Scene> {
+        let panel_layout = PanelLayoutTree::from_layout(layout, &self.composition.panels)?;
+        let base = self.compute_scene_base(panel_layout)?;
+        self.build_scene_from_base(&base, layout.bounds(), cursor, activity, layers)
+    }
+
+    fn ensure_scene_base(&self, state: &mut State, layout: Layout<'_>) {
+        let Some(panel_layout) = PanelLayoutTree::from_layout(layout, &self.composition.panels)
+        else {
+            return;
+        };
+
+        let _ = state
+            .scene_cache
+            .get_or_build(self.version, panel_layout, |panel_layout| {
+                let base = self.compute_scene_base(panel_layout)?;
+                let scene = self.build_scene_from_base(
+                    &base,
+                    layout.bounds(),
+                    mouse::Cursor::Unavailable,
+                    SceneActivity::Idle,
+                    &state.study_objects,
+                )?;
+                let labels = self.axes(&scene).y_labels();
+                Some((base, labels))
+            });
+    }
+
+    fn cached_scene(
+        &self,
+        state: &State,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+    ) -> Option<Scene> {
+        let root_bounds = layout.bounds();
+        let panel_layout = PanelLayoutTree::from_layout(layout, &self.composition.panels)?;
+        let activity = state
+            .interaction
+            .drag_action()
+            .map_or(SceneActivity::Idle, DragAction::scene_activity);
+
+        let mut scene = if let Some(entry) = state.scene_cache.get(self.version, &panel_layout) {
+            self.build_scene_from_base(
+                &entry.base,
+                root_bounds,
+                cursor,
+                activity,
+                &state.study_objects,
+            )
+        } else {
+            self.compute_scene_uncached(layout, cursor, activity, &state.study_objects)
+        }?;
+
+        scene.interaction.target = state.interaction.resolve_cursor_target(
+            scene.interaction.target,
+            cursor
+                .position_in(root_bounds)
+                .map_or(LayoutHitZone::Outside, |local| scene.layout.hit_test(local)),
+            &self.drawing_snapshot,
+        );
+
+        Some(scene)
+    }
+
+    fn compute_scene_base(&self, panel_layout: PanelLayoutTree) -> Option<SceneBase> {
+        let primary_panel = panel_layout
+            .panels
+            .iter()
+            .position(|panel| panel.kind == KlinePanelKind::PrimaryChart)?;
+        let primary_mark = self.resolved_panel_mark(primary_panel, KlinePanelKind::PrimaryChart);
+        let primary_scale_mode = self.resolved_panel_scale_mode(primary_panel);
+        let primary_plot = panel_layout.panel(primary_panel)?.plot;
+
+        let x_axis_plot_width = panel_layout.primary_plot_width()?;
+        let horizontal_world = self.horizontal_world;
+        let autoscale_plot_width = (x_axis_plot_width + self.autoscale_plot_width_offset).max(1.0);
+
+        let x_axis = self.resolve_x_axis()?;
+        let (data_min_x, data_max_x) = self.data_x_bounds(x_axis)?;
+        let (domain_min_extension, domain_max_extension) =
+            x_axis.output_domain_expansion(self.indicator_instances.max_positive_output_offset());
+        let data_bounds = (
+            data_min_x.saturating_add(domain_min_extension),
+            data_max_x.saturating_add(domain_max_extension),
+        );
+        let (min_x_unit, max_x_unit, right_x_unit) =
+            horizontal_world.visible_window(data_bounds, x_axis_plot_width);
+        let (autoscale_min_x_unit, autoscale_max_x_unit, _) =
+            horizontal_world.visible_window(data_bounds, autoscale_plot_width);
+        let (source_min_x_unit, source_max_x_unit) = x_axis.source_window(
+            autoscale_min_x_unit,
+            autoscale_max_x_unit,
+            &self.indicator_instances.source_offsets(),
+        );
+        let bar_units: Arc<[BarUnitWindow]> =
+            Arc::from(self.build_bar_units(x_axis, source_min_x_unit, source_max_x_unit));
+        let x_world = horizontal_world.axis_at_right_unit(right_x_unit);
+        let fractional_x_offset = right_x_unit - max_x_unit as f32;
+        let domains = scene::domain::WindowDomains {
+            windows: data::chart::kline::series::KlineWindows {
+                series: self.series,
+                windows: bar_units.as_ref(),
+                axis: x_axis,
+            },
+            indicators: self.indicators(),
+            coordinates: self.coordinates(),
+            min_x_unit: autoscale_min_x_unit,
+            max_x_unit: autoscale_max_x_unit,
+            include_footprint_range: self.trade_data_enabled && self.footprint.visible,
+        };
+        let primary_value_precision = self.panel_value_precision(primary_panel);
+        let (min_primary_unit, max_primary_unit) =
+            domains.primary_domain(primary_value_precision, primary_mark, primary_plot.height)?;
+        let primary_value_scale = self.panel_value_scale(primary_panel);
+
+        let indicator_panels: Vec<IndicatorPanelScene> = panel_layout
+            .panels
+            .iter()
+            .enumerate()
+            .filter_map(|(panel_index, panel)| {
+                if panel.kind != KlinePanelKind::Indicator {
+                    return None;
+                }
+
+                let scale_mode = self.resolved_panel_scale_mode(panel_index);
+
+                let value_id = self.indicators().indicator_panel_value_id(panel_index);
+                let output_layers = self
+                    .indicators()
+                    .panel_output_layers(panel_index)
+                    .into_iter()
+                    .filter(|layer| layer.visible && layer.purpose.is_plot())
+                    .collect::<Vec<_>>();
+                let value_precision = self.panel_value_precision(panel_index);
+                let value_scale = self.panel_value_scale(panel_index);
+                let independent_domain_units =
+                    domains.indicator_domain(&output_layers, value_precision, true, scale_mode);
+                let independent_domain = independent_domain_units
+                    .map(|(min_unit, max_unit)| YUnitRange::new(min_unit, max_unit));
+                let (min_unit, max_unit) = domains
+                    .indicator_domain(&output_layers, value_precision, false, scale_mode)
+                    .or(independent_domain_units)
+                    .unwrap_or((YUnit(0), YUnit(1)));
+                let domain = PanelDomainState::new(YUnitRange::new(min_unit, max_unit));
+
+                Some(IndicatorPanelScene {
+                    panel_index,
+                    value_id,
+                    value_scale,
+                    domain,
+                    independent_domain,
+                    presentation: self
+                        .composition
+                        .panels
+                        .get(panel_index)
+                        .map(|panel| panel.presentation)
+                        .unwrap_or_default(),
+                })
+            })
+            .collect();
+
+        let PrimaryPercentScaleState {
+            primary_scale_anchor,
+            series_percent_anchors,
+            primary_domain_display_override,
+        } = domains.percent_scale_state(primary_mark, primary_scale_mode)?;
+
+        let panel_controls =
+            chrome::build_panel_control_hits(self.coordinates(), &panel_layout, primary_panel);
+        let corner_controls = chrome::build_corner_control_hits(&panel_layout, primary_scale_mode);
+        let primary_value_step = primary_value_scale.quantization_step_f32();
+        let primary_value_decimals = primary_value_precision
+            .and_then(|precision| precision.decimals(self.base_ticker_info()));
+        Some(SceneBase {
+            layout: panel_layout,
+            x: XViewport {
+                axis: x_axis,
+                world: x_world,
+                fractional_offset: fractional_x_offset,
+                min_unit: min_x_unit,
+                max_unit: max_x_unit,
+            },
+            bar_units,
+            primary: PrimaryScale {
+                panel_index: primary_panel,
+                domain: PanelDomainState::new(YUnitRange::new(min_primary_unit, max_primary_unit)),
+                display_domain_override: primary_domain_display_override,
+                value_scale: primary_value_scale,
+                mark: primary_mark,
+                mode: primary_scale_mode,
+                inverted: self.primary_scale_inverted,
+                anchor: primary_scale_anchor,
+                value_step: primary_value_step,
+                value_decimals: primary_value_decimals,
+                series_percent_anchors,
+            },
+            indicator_panels,
+            panel_controls,
+            corner_controls,
+        })
+    }
+
+    fn build_scene_from_base(
+        &self,
+        base: &SceneBase,
+        root_bounds: Rectangle,
+        cursor: mouse::Cursor,
+        activity: SceneActivity,
+        layers: &StudyStates,
+    ) -> Option<Scene> {
+        let primary_panel = base.primary.panel_index;
+        let primary_plot = base.layout.panel(primary_panel)?.plot;
+        let cursor_root_local = cursor.position_in(root_bounds);
+        let hovering_plot = cursor_root_local
+            .map(|local| matches!(base.layout.hit_test(local), LayoutHitZone::PanelPlot(_)))
+            .unwrap_or(false);
+        let show_legend_values = self.legend_visibility.legend_values_always_visible()
+            || (activity == SceneActivity::Idle && hovering_plot);
+        let show_legends = self.legend_visibility.legend_always_visible() || hovering_plot;
+        let keep_ticker_names = self.series.len() > 1;
+
+        let mut scene = Scene::from_base(base);
+        self.viewports().apply_panel_viewports(&mut scene);
+        scene.chrome.ticker_legend = if show_legends || keep_ticker_names {
+            self.legend_view().build_ticker_legend_layout(
+                &base.layout,
+                primary_panel,
+                show_legend_values,
+                false,
+            )
+        } else {
+            None
+        };
+
+        if self.trade_data_enabled && show_legends {
+            scene.chrome.footprint_legend = self.legend_view().build_footprint_legend_layout(
+                &base.layout,
+                primary_panel,
+                chrome::legend::tooltip_rows_before_studies(
+                    scene.chrome.ticker_legend.as_ref(),
+                    None,
+                    show_legend_values,
+                ),
+                self.footprint.cluster_kind,
+            );
+        }
+        if show_legends {
+            scene.chrome.study_legend = self.legend_view().build_study_legend_layout(
+                &base.layout,
+                primary_panel,
+                chrome::legend::tooltip_rows_before_studies(
+                    scene.chrome.ticker_legend.as_ref(),
+                    scene.chrome.footprint_legend.as_ref(),
+                    show_legend_values,
+                ),
+            );
+            scene.chrome.indicator_legend = self.legend_view().build_indicator_legend_layout(
+                &base.layout,
+                primary_panel,
+                chrome::legend::tooltip_rows_before_indicators(
+                    scene.chrome.ticker_legend.as_ref(),
+                    scene.chrome.footprint_legend.as_ref(),
+                    scene.chrome.study_legend.as_ref(),
+                    show_legend_values,
+                ),
             );
         }
 
-        renderer.fill_quad(
-            Quad {
-                bounds: Rectangle {
-                    x: plot_rect.x,
-                    y: plot_rect.y + plot_rect.height,
-                    width: plot_rect.width + scene.layout.regions.y_axis.width,
-                    height: 1.0,
-                },
-                snap: true,
-                ..Default::default()
-            },
-            splitter_color,
+        self.apply_cursor_interaction(
+            &mut scene,
+            cursor_root_local,
+            primary_panel,
+            primary_plot,
+            show_legend_values,
+            activity,
+            layers,
         );
+        Some(scene)
+    }
 
-        renderer.fill_quad(
-            Quad {
-                bounds: Rectangle {
-                    x: plot_rect.x + plot_rect.width,
-                    y: plot_rect.y,
-                    width: 1.0,
-                    height: plot_rect.height,
-                },
-                snap: true,
+    fn fill_panel_titles(&self, frame: &mut PaintInputs, scene: &Scene, palette: &Extended) {
+        for (panel_index, panel) in scene.layout.panels.iter().enumerate() {
+            let Some(title) = self
+                .coordinates()
+                .resolved_panel_title(panel_index, panel.kind)
+            else {
+                continue;
+            };
+
+            if panel.kind == KlinePanelKind::Indicator
+                && self
+                    .indicators()
+                    .indicator_panel_value_id(panel_index)
+                    .is_some()
+            {
+                continue;
+            }
+
+            let value_id = self.indicators().indicator_panel_value_id(panel_index);
+            let title_x = value_id.map_or(panel.plot.x + TOOLTIP_ROW_LEFT_PAD, |value_id| {
+                self.legend_view().indicator_label_x(panel.plot.x, value_id)
+            });
+            let title_y = panel.plot.y + PANEL_TITLE_TOP_PAD + TICKER_LEGEND_ROW_H * 0.5;
+
+            if let Some(value_id) = value_id
+                && let Some((marker, loading)) = self.legend_view().indicator_marker(value_id)
+            {
+                frame.fill_text(canvas::Text {
+                    content: marker.to_owned(),
+                    position: Point::new(chrome::legend::indicator_marker_x(panel.plot.x), title_y),
+                    color: if loading {
+                        palette.background.base.text.scale_alpha(0.72)
+                    } else {
+                        palette.danger.base.color
+                    },
+                    size: TEXT_SIZE.into(),
+                    align_x: iced::Alignment::Start.into(),
+                    align_y: iced::Alignment::Center.into(),
+                    font: style::AZERET_MONO,
+                    ..Default::default()
+                });
+            }
+
+            frame.fill_text(canvas::Text {
+                content: title.to_string(),
+                position: Point::new(title_x, title_y),
+                color: palette.background.base.text,
+                size: TEXT_SIZE.into(),
+                align_x: iced::Alignment::Start.into(),
+                align_y: iced::Alignment::Center.into(),
+                font: style::AZERET_MONO,
                 ..Default::default()
-            },
-            splitter_color,
-        );
+            });
+        }
+    }
+
+    fn fill_y_axis_labels(
+        &self,
+        frame: &mut PaintInputs,
+        scene: &Scene,
+        measured: Option<&AxisInputs>,
+        palette: &Extended,
+    ) {
+        let fallback;
+        let labels = match measured {
+            Some(labels) => labels,
+            None => {
+                fallback = self.axes(scene).y_labels();
+                &fallback
+            }
+        };
+        let centers: Vec<f32> = self
+            .overlay_view(scene)
+            .series_end_label_positions(scene)
+            .into_iter()
+            .map(|(_, center)| center)
+            .collect();
+        labels.paint(frame, palette, &centers);
+    }
+
+    fn normalized_panel_splits(&self) -> Vec<f32> {
+        if self.panel_count() <= 1 {
+            Vec::new()
+        } else {
+            self.composition.normalized_splits(DEFAULT_MIN_PANEL_RATIO)
+        }
+    }
+
+    pub fn with_study_object(mut self, object: StudyObject<'a>) -> Self {
+        self.study_objects.register(object);
+        self
     }
 }
 
@@ -1148,7 +1804,8 @@ where
 
     fn state(&self) -> tree::State {
         let mut state = State::default();
-        self.reconcile_study_states(&mut state.study_objects);
+        self.study_objects
+            .reconcile_states(&mut state.study_objects);
         tree::State::new(state)
     }
 
@@ -1165,7 +1822,7 @@ where
                     .and_then(DragAction::layer_key)
             });
         if let Some(key) = active_key {
-            let current_object = self.study_objects.iter().find(|object| object.key() == key);
+            let current_object = self.study_objects.get(key);
             let previous_state = state.study_objects.get(&key);
             let state_matches = match (current_object, previous_state) {
                 (Some(object), Some(previous_state)) => object.matches_state(previous_state),
@@ -1174,10 +1831,11 @@ where
             };
             if !state_matches {
                 let _ = state.interaction.cancel_pointer();
-                state.clear_all_caches();
+                state.scheduler.request(RenderRequest::All);
             }
         }
-        self.reconcile_study_states(&mut state.study_objects);
+        self.study_objects
+            .reconcile_states(&mut state.study_objects);
     }
 
     fn size(&self) -> Size<Length> {
@@ -1196,49 +1854,6 @@ where
         let panel_count = self.panel_count();
 
         let build_layout = |y_axis_gutter: f32| {
-            let build_panel_stack = |stack_size: Size| {
-                let plot_heights = self.panel_plot_heights(stack_size.height, panel_count);
-                let mut children =
-                    Vec::with_capacity(panel_count.saturating_mul(3).saturating_sub(1));
-
-                let mut y = 0.0;
-
-                for panel_index in 0..panel_count {
-                    let plot_h = plot_heights.get(panel_index).copied().unwrap_or_default();
-
-                    children.push(
-                        iced_layout::Node::new(Size::new(stack_size.width, plot_h))
-                            .move_to(Point::new(0.0, y)),
-                    );
-                    y += plot_h;
-
-                    let axis_h = if panel_index + 1 == panel_count {
-                        (stack_size.height - y).max(0.0)
-                    } else {
-                        0.0
-                    };
-
-                    children.push(
-                        iced_layout::Node::new(Size::new(stack_size.width, axis_h))
-                            .move_to(Point::new(0.0, y)),
-                    );
-                    y += axis_h;
-
-                    if panel_index + 1 < panel_count {
-                        children.push(
-                            iced_layout::Node::new(Size::new(
-                                stack_size.width,
-                                PANEL_SPLITTER_HEIGHT,
-                            ))
-                            .move_to(Point::new(0.0, y)),
-                        );
-                        y += PANEL_SPLITTER_HEIGHT;
-                    }
-                }
-
-                iced_layout::Node::with_children(stack_size, children)
-            };
-
             let row_node = iced_layout::next_to_each_other(
                 &limits.shrink(Size::new(0.0, X_AXIS_HEIGHT)),
                 0.0,
@@ -1249,7 +1864,12 @@ where
                         Length::Fill,
                     );
 
-                    build_panel_stack(stack_node.size())
+                    layout::build_panel_stack(
+                        panel_count,
+                        &self.normalized_panel_splits(),
+                        stack_node.size(),
+                        PANEL_SPLITTER_HEIGHT,
+                    )
                 },
                 |l| iced_layout::atomic(l, y_axis_gutter, Length::Fill),
             );
@@ -1296,6 +1916,7 @@ where
                 .any(|(panel_index, panel)| {
                     panel.role == PanelRole::Auxiliary
                         && self
+                            .indicators()
                             .indicator_panel_value_id(panel_index)
                             .is_some_and(|value_id| {
                                 self.indicator_presentation.is_loading(value_id)
@@ -1308,26 +1929,23 @@ where
         } else if state.gutter_cache_key == Some(gutter_cache_key) {
             state.y_axis_gutter_width
         } else {
-            let mut gutter = Y_AXIS_GUTTER;
+            let mut gutter = state.y_axis_gutter_width;
             let mut node = build_layout(gutter);
 
             for _ in 0..2 {
                 let required = {
                     let provisional_layout = iced_layout::Layout::new(&node);
-                    self.compute_scene_uncached(
-                        provisional_layout,
-                        mouse::Cursor::Unavailable,
-                        SceneActivity::Idle,
-                        &state.study_objects,
-                    )
-                    .map(|scene| self.required_y_axis_gutter(&scene))
+                    self.ensure_scene_base(state, provisional_layout);
+                    PanelLayoutTree::from_layout(provisional_layout, &self.composition.panels)
+                        .and_then(|layout| state.scene_cache.get(self.version, &layout))
+                        .map(|entry| entry.y_axis_labels.required_gutter())
                 };
 
                 let Some(required) = required else {
                     break;
                 };
 
-                if required <= gutter + f32::EPSILON {
+                if (required - gutter).abs() <= f32::EPSILON {
                     break;
                 }
 
@@ -1340,7 +1958,9 @@ where
             gutter
         };
 
-        build_layout(y_axis_gutter)
+        let node = build_layout(y_axis_gutter);
+        self.ensure_scene_base(state, iced_layout::Layout::new(&node));
+        node
     }
 
     fn update(
@@ -1369,7 +1989,7 @@ where
                 ..
             }) => {
                 state.interaction.set_modifiers(*modifiers);
-                state.clear_overlay_caches();
+                state.scheduler.request(RenderRequest::Interaction);
 
                 if self.should_capture_escape
                     && cursor.is_over(layout.bounds())
@@ -1418,7 +2038,7 @@ where
                 | keyboard::Event::ModifiersChanged(modifiers),
             ) => {
                 state.interaction.set_modifiers(*modifiers);
-                state.clear_overlay_caches();
+                state.scheduler.request(RenderRequest::Interaction);
                 shell.publish(M::from(KlineWidgetEvent::from(
                     KlineWidgetDrawingEvent::MagnetModifierChanged(Self::is_command_modifier(
                         *modifiers,
@@ -1452,136 +2072,28 @@ where
                     if let Some(global) = cursor.position() {
                         Point::new(global.x - bounds.x, global.y - bounds.y)
                     } else {
-                        state.clear_cursor_caches();
+                        state.scheduler.request(RenderRequest::Interaction);
                         return;
                     }
                 } else {
-                    state.clear_cursor_caches();
+                    state.scheduler.request(RenderRequest::Interaction);
                     return;
                 };
 
                 let zone = layout_tree.hit_test(cursor_pos);
                 let scene = self.cached_scene(state, layout, cursor);
                 let cursor_target = scene.as_ref().map(|scene| scene.interaction.target);
-                let corner_controls = scene
-                    .as_ref()
-                    .map(|scene| scene.chrome.corner_controls.as_slice())
-                    .unwrap_or(&[]);
 
                 match mouse_event {
                     mouse::Event::WheelScrolled { delta } => {
-                        let scroll_y = {
-                            let delta = match delta {
-                                mouse::ScrollDelta::Lines { y, .. } => *y,
-                                mouse::ScrollDelta::Pixels { y, .. } => *y / PIXELS_PER_SCROLL_LINE,
-                            };
-
-                            if delta.is_finite() { delta } else { 0.0 }
-                        };
-
-                        if scroll_y.abs() <= f32::EPSILON {
-                            return;
-                        }
-
-                        match zone {
-                            LayoutHitZone::PanelPlot(_)
-                            | LayoutHitZone::PanelXAxis(_)
-                            | LayoutHitZone::BottomXAxis => {
-                                if matches!(zone, LayoutHitZone::PanelPlot(_))
-                                    && matches!(
-                                        cursor_target,
-                                        Some(CursorTarget::PanelControl { .. })
-                                    )
-                                {
-                                    return;
-                                }
-
-                                if matches!(zone, LayoutHitZone::PanelPlot(_))
-                                    && matches!(cursor_target, Some(CursorTarget::CornerControl(_)))
-                                {
-                                    return;
-                                }
-
-                                if matches!(zone, LayoutHitZone::PanelPlot(_))
-                                    && matches!(cursor_target, Some(CursorTarget::Legend(_)))
-                                {
-                                    return;
-                                }
-
-                                let horizontal_zoom_mode = if matches!(
-                                    zone,
-                                    LayoutHitZone::PanelXAxis(_) | LayoutHitZone::BottomXAxis
-                                ) {
-                                    HorizontalWheelZoomMode::Cursor
-                                } else {
-                                    HorizontalWheelZoomMode::from_modifiers(
-                                        state.interaction.modifiers(),
-                                    )
-                                };
-                                let horizontal_zoom_delta = scroll_y / 2.0;
-
-                                if horizontal_zoom_delta.abs() <= f32::EPSILON {
-                                    return;
-                                }
-
-                                let scene = match zone {
-                                    LayoutHitZone::PanelPlot(_)
-                                    | LayoutHitZone::PanelXAxis(_)
-                                    | LayoutHitZone::BottomXAxis => {
-                                        self.cached_scene(state, layout, cursor)
-                                    }
-                                    _ => None,
-                                };
-                                let horizontal_world = scene.as_ref().map(|scene| {
-                                    self.horizontal_world_for_cursor(
-                                        scene,
-                                        cursor_pos.x,
-                                        horizontal_zoom_delta,
-                                        horizontal_zoom_mode,
-                                    )
-                                });
-                                let new_world = horizontal_world.unwrap_or(self.horizontal_world);
-                                let horizontal_changed = new_world != self.horizontal_world;
-
-                                if horizontal_changed {
-                                    shell.publish(M::from(
-                                        KlineWidgetEvent::HorizontalWorldChanged(new_world),
-                                    ));
-                                    state.clear_all_caches();
-                                    shell.capture_event();
-                                }
-                            }
-                            LayoutHitZone::YAxis(panel_index) => {
-                                let Some(scene) = self.cached_scene(state, layout, cursor) else {
-                                    return;
-                                };
-
-                                let Some(panel_id) = self.panel_id(panel_index) else {
-                                    return;
-                                };
-
-                                let Some(viewport) = self.panel_viewport_after_y_zoom(
-                                    &scene,
-                                    panel_index,
-                                    cursor_pos.y,
-                                    scroll_y,
-                                ) else {
-                                    return;
-                                };
-
-                                let interaction = PanelInteraction::YViewportChanged {
-                                    panel_id,
-                                    range: viewport,
-                                };
-
-                                shell.publish(M::from(KlineWidgetEvent::PanelInteraction(
-                                    interaction,
-                                )));
-                                state.clear_all_caches();
-                                shell.capture_event();
-                            }
-                            _ => {}
-                        }
+                        let effects = self.navigation().wheel(
+                            *delta,
+                            zone,
+                            cursor_pos,
+                            state.interaction.modifiers(),
+                            scene.as_ref(),
+                        );
+                        state.apply_interaction_effects(effects, shell, identity);
                     }
                     mouse::Event::ButtonPressed(mouse::Button::Left) => {
                         let chrome_click =
@@ -1595,7 +2107,7 @@ where
                         match chrome_click {
                             chrome::ChromeClick::Event(event) => {
                                 shell.publish(M::from(event));
-                                state.clear_all_caches();
+                                state.scheduler.request(RenderRequest::All);
                                 shell.capture_event();
                                 return;
                             }
@@ -1609,24 +2121,8 @@ where
                             PressAction::Ordinary,
                         );
 
-                        if let LayoutHitZone::YAxis(panel_index) = zone
-                            && click_kind == Some(iced_core::mouse::click::Kind::Double)
-                            && let Some(panel_id) = self.panel_id(panel_index)
-                        {
-                            let interaction = PanelInteraction::YViewportReset { panel_id };
-
-                            shell.publish(M::from(KlineWidgetEvent::PanelInteraction(interaction)));
-                            state.clear_all_caches();
-                            return;
-                        }
-
-                        if matches!(
-                            zone,
-                            LayoutHitZone::BottomXAxis | LayoutHitZone::PanelXAxis(_)
-                        ) && click_kind == Some(iced_core::mouse::click::Kind::Double)
-                        {
-                            shell.publish(M::from(KlineWidgetEvent::XAxisDoubleClick));
-                            state.clear_all_caches();
+                        if let Some(effects) = self.navigation().axis_reset(zone, click_kind) {
+                            state.apply_interaction_effects(effects, shell, identity);
                             return;
                         }
 
@@ -1659,27 +2155,10 @@ where
                                 shell.publish(M::from(KlineWidgetEvent::from(
                                     KlineWidgetDrawingEvent::MeasureClick(anchor),
                                 )));
-                                state.clear_all_caches();
+                                state.scheduler.request(RenderRequest::All);
                                 shell.capture_event();
                                 return;
                             }
-                        }
-                        if self.drawing_snapshot.allows_panning()
-                            && matches!(zone, LayoutHitZone::PanelPlot(_))
-                            && let Some(scene) = scene.as_ref()
-                        {
-                            self.broadcast_study_object_pointer(
-                                LayerPointerInput::PlotPressed {
-                                    target: layer_hit.map(|hit| hit.key),
-                                },
-                                self.layer_context(
-                                    scene,
-                                    Some(cursor_pos),
-                                    state.interaction.modifiers(),
-                                ),
-                                state,
-                                shell,
-                            );
                         }
                         if let Some(hit) = layer_hit.filter(|hit| hit.precedes_tools)
                             && let Some(scene) = scene.as_ref()
@@ -1717,54 +2196,26 @@ where
                                     source_layer: None,
                                 },
                             );
-                            state.clear_cursor_caches();
+                            state.scheduler.request(RenderRequest::Interaction);
                             shell.capture_event();
                             return;
                         }
 
-                        if let LayoutHitZone::Splitter(split_index) = zone {
-                            state
-                                .interaction
-                                .begin_drag_candidate(cursor_pos, DragAction::Split(split_index));
-                            shell.capture_event();
-                        } else if let LayoutHitZone::YAxis(panel_index) = zone {
-                            let primary_panel_id = self.composition.primary_panel_id();
-                            let is_primary_axis = self.panel_id(panel_index) == primary_panel_id;
-                            let allows_primary_manual_zoom = primary_panel_id.is_some_and(|id| {
-                                !matches!(
-                                    self.composition.panel_effective_scale_mode(id),
-                                    Some(PanelScaleMode::PercentFromBase)
-                                )
-                            });
-                            if is_primary_axis && allows_primary_manual_zoom {
-                                shell.publish(M::from(KlineWidgetEvent::PrimaryAutoscaleDisabled));
-                            }
-                            let anchor_y = layout_tree
-                                .panel(panel_index)
-                                .map_or(cursor_pos.y, |panel| {
-                                    layout_tree.regions.plot.y + panel.plot.center().y
-                                });
-                            state.interaction.begin_drag_candidate(
-                                cursor_pos,
-                                DragAction::YAxisScale {
-                                    panel_index,
-                                    anchor_y,
-                                },
-                            );
-                            shell.capture_event();
-                        } else if matches!(
+                        if matches!(
                             zone,
-                            LayoutHitZone::PanelXAxis(_) | LayoutHitZone::BottomXAxis
+                            LayoutHitZone::Splitter(_)
+                                | LayoutHitZone::YAxis(_)
+                                | LayoutHitZone::PanelXAxis(_)
+                                | LayoutHitZone::BottomXAxis
                         ) {
-                            if let Some(scene) = self.cached_scene(state, layout, cursor) {
-                                state.interaction.begin_drag_candidate(
-                                    cursor_pos,
-                                    DragAction::XAxisScale {
-                                        initial_world: self.horizontal_world,
-                                        initial_right_unit: scene.effective_right_x_unit(),
-                                    },
-                                );
-                                shell.capture_event();
+                            if let Some(effects) = self.navigation().begin_axis_drag(
+                                zone,
+                                &layout_tree,
+                                scene.as_ref(),
+                                cursor_pos,
+                                &mut state.interaction,
+                            ) {
+                                state.apply_interaction_effects(effects, shell, identity);
                             } else {
                                 self.cancel_pointer(state, layout, cursor, shell);
                             }
@@ -1801,7 +2252,7 @@ where
                                 shell.publish(M::from(KlineWidgetEvent::from(
                                     KlineWidgetDrawingEvent::AnchorPressed(anchor),
                                 )));
-                                state.clear_all_caches();
+                                state.scheduler.request(RenderRequest::All);
                                 shell.capture_event();
                             } else {
                                 self.cancel_pointer(state, layout, cursor, shell);
@@ -1809,8 +2260,9 @@ where
                         } else if self.drawing_snapshot.allows_panning()
                             && let LayoutHitZone::PanelPlot(panel_index) = zone
                         {
-                            state.interaction.begin_drag_candidate(
+                            state.interaction.begin_click_or_drag(
                                 cursor_pos,
+                                PressAction::Ordinary,
                                 DragAction::Pan {
                                     panel_index,
                                     source_layer: None,
@@ -1825,14 +2277,14 @@ where
                             KlineWidgetDrawingEvent::DraftCanceled,
                         )));
                         self.cancel_pointer(state, layout, cursor, shell);
-                        state.clear_all_caches();
+                        state.scheduler.request(RenderRequest::All);
                         shell.capture_event();
                     }
                     mouse::Event::ButtonReleased(mouse::Button::Left) => {
                         self.finish_interaction_release(state, layout, cursor, false, shell);
                     }
                     mouse::Event::CursorMoved { .. } => {
-                        state.clear_cursor_caches();
+                        state.scheduler.request(RenderRequest::Interaction);
                         let pointer_move = state.interaction.pointer_moved(cursor_pos);
                         if matches!(pointer_move, PointerMove::Pending) {
                             shell.capture_event();
@@ -1858,7 +2310,7 @@ where
                         let drag_action = state.interaction.drag_action();
                         if let Some(DragAction::Layer { key, .. }) = drag_action {
                             if let Some(scene) = self.cached_scene(state, layout, cursor)
-                                && let Some(effects) = self.study_object_pointer(
+                                && let Some(effects) = self.study_objects.pointer(
                                     key,
                                     LayerPointerInput::Moved,
                                     self.layer_context(
@@ -1888,87 +2340,24 @@ where
                                     shell,
                                 );
                             }
-                        } else if let Some(DragAction::XAxisScale {
-                            initial_world,
-                            initial_right_unit,
-                        }) = drag_action
+                        } else if let Some(
+                            action @ (DragAction::XAxisScale { .. }
+                            | DragAction::Split(_)
+                            | DragAction::YAxisScale { .. }),
+                        ) = drag_action
                         {
-                            let Some(anchor_x) =
-                                state.interaction.motion().map(|motion| motion.origin.x)
-                            else {
-                                return;
-                            };
-                            let total_delta = (anchor_x - cursor_pos.x).round()
-                                * HORIZONTAL_DRAG_SCALE_DELTA_PER_PX;
-                            if total_delta.abs() > f32::EPSILON
-                                && let Some(scene) = self.cached_scene(state, layout, cursor)
-                            {
-                                let right_edge = scene.x_axis_plot_width().max(1.0);
-                                let anchor_x =
-                                    (anchor_x - scene.layout.regions.plot.x).clamp(0.0, right_edge);
-                                let world = initial_world.zoom_around_screen(
-                                    initial_right_unit,
-                                    anchor_x,
-                                    right_edge,
-                                    total_delta,
+                            if let Some(motion) = state.interaction.motion() {
+                                let effects = self.navigation().drag(
+                                    action,
+                                    motion,
+                                    pointer_delta,
+                                    &layout_tree,
+                                    scene.as_ref(),
                                 );
-
-                                if world != self.horizontal_world {
-                                    shell.publish(M::from(
-                                        KlineWidgetEvent::HorizontalWorldChanged(world),
-                                    ));
-                                    state.clear_all_caches();
-                                    shell.capture_event();
-                                }
-                            }
-                        } else if let Some(DragAction::Split(split_index)) = drag_action {
-                            if let Some(split) = self.split_ratio_from_cursor(
-                                cursor_pos.y,
-                                &layout_tree,
-                                split_index,
-                            ) {
-                                let interaction = PanelInteraction::SplitChanged {
-                                    index: split_index,
-                                    split,
-                                };
-
-                                shell.publish(M::from(KlineWidgetEvent::PanelInteraction(
-                                    interaction,
-                                )));
-                                state.clear_all_caches();
-                                shell.capture_event();
-                            }
-                        } else if let Some(DragAction::YAxisScale {
-                            panel_index,
-                            anchor_y,
-                        }) = drag_action
-                        {
-                            let dy_px = pointer_delta.y;
-                            let scale_delta = (-dy_px) * Y_AXIS_DRAG_SCALE_DELTA_PER_PX;
-
-                            if scale_delta.abs() > f32::EPSILON
-                                && let Some(scene) = self.cached_scene(state, layout, cursor)
-                                && let Some(panel_id) = self.panel_id(panel_index)
-                                && let Some(viewport) = self.panel_viewport_after_y_zoom(
-                                    &scene,
-                                    panel_index,
-                                    anchor_y,
-                                    scale_delta,
-                                )
-                            {
-                                let interaction = PanelInteraction::YViewportChanged {
-                                    panel_id,
-                                    range: viewport,
-                                };
-
-                                shell.publish(M::from(KlineWidgetEvent::PanelInteraction(
-                                    interaction,
-                                )));
-                                state.clear_all_caches();
-                                shell.capture_event();
+                                state.apply_interaction_effects(effects, shell, identity);
                             }
                         } else if state.marquee().is_some() {
-                            state.clear_cursor_caches();
+                            state.scheduler.request(RenderRequest::Interaction);
                             shell.capture_event();
                         } else if let Some(draft_panel_id) = self.drawing_snapshot.draft_panel_id()
                             && !matches!(
@@ -1991,44 +2380,19 @@ where
                             shell.publish(M::from(KlineWidgetEvent::from(
                                 KlineWidgetDrawingEvent::AnchorMoved(anchor),
                             )));
-                            state.clear_cursor_caches();
+                            state.scheduler.request(RenderRequest::Interaction);
                             shell.capture_event();
-                        } else if let Some(DragAction::Pan { panel_index, .. }) = drag_action {
-                            if Self::hit_corner_control(corner_controls, cursor_pos).is_some() {
-                                return;
-                            }
-
-                            let dx_px = pointer_delta.x;
-                            let dy_px = pointer_delta.y;
-                            let spacing = self.horizontal_world.spacing();
-                            let offset = self.horizontal_world.offset() - dx_px / spacing;
-
-                            if (offset - self.horizontal_world.offset()).abs() > f32::EPSILON {
-                                shell.publish(M::from(KlineWidgetEvent::HorizontalOffsetChanged(
-                                    offset,
-                                )));
-                                state.clear_all_caches();
-                            }
-
-                            if dy_px.abs() > f32::EPSILON
-                                && let Some(scene) = self.cached_scene(state, layout, cursor)
-                                && let Some(panel_id) = self.panel_id(panel_index)
-                                && let Some(viewport) = self.panel_viewport_after_primary_y_pan(
-                                    &scene,
-                                    panel_index,
-                                    dy_px,
-                                )
-                            {
-                                let interaction = PanelInteraction::YViewportChanged {
-                                    panel_id,
-                                    range: viewport,
-                                };
-
-                                shell.publish(M::from(KlineWidgetEvent::PanelInteraction(
-                                    interaction,
-                                )));
-                                state.clear_all_caches();
-                            }
+                        } else if let Some(action @ DragAction::Pan { .. }) = drag_action
+                            && let Some(motion) = state.interaction.motion()
+                        {
+                            let effects = self.navigation().drag(
+                                action,
+                                motion,
+                                pointer_delta,
+                                &layout_tree,
+                                scene.as_ref(),
+                            );
+                            state.apply_interaction_effects(effects, shell, identity);
                         }
                     }
                     _ => {}
@@ -2036,42 +2400,38 @@ where
             }
             Event::Window(window::Event::RedrawRequested(now)) => {
                 let layout_tree = PanelLayoutTree::from_layout(layout, &self.composition.panels);
-                if let Some(layout_tree) = layout_tree.as_ref() {
-                    state.sync_geometry_cache_keys(
-                        layout.bounds(),
-                        layout_tree.regions,
-                        self.pixel_ratio,
-                    );
-                }
-                if state.last_theme_generation != Some(self.theme_accents.generation()) {
-                    state.clear_all_caches();
-                    state.last_theme_generation = Some(self.theme_accents.generation());
-                }
-
-                if let Some(refresh_at) =
-                    state.cache_refresh_at(self.version, *now, MIN_FULL_CACHE_REFRESH_INTERVAL)
+                if let Some(panel_layout) = layout_tree.as_ref()
+                    && (state.scene_cache.get(self.version, panel_layout).is_some()
+                        || state.scheduler.presentation().is_some())
                 {
-                    if *now >= refresh_at {
-                        state.clear_all_caches();
-                        state.mark_cache_refreshed(self.version, *now);
-                    } else {
-                        shell.request_redraw_at(refresh_at);
+                    let request = state.scheduler.admit(
+                        self.version,
+                        *now,
+                        layout.bounds(),
+                        panel_layout,
+                        self.pixel_ratio,
+                        self.theme.accents().generation(),
+                    );
+                    let scene = (request != RenderRequest::None)
+                        .then(|| self.cached_scene(state, layout, cursor))
+                        .flatten();
+                    if let Some(scene) = scene.as_ref() {
+                        for (panel_id, range) in self.viewports().reconciled_y_ranges(scene) {
+                            shell.publish(M::from(KlineWidgetEvent::PanelInteraction(
+                                PanelInteraction::YViewportChanged { panel_id, range },
+                            )));
+                        }
                     }
-                }
-
-                if let Some(scene) = self.cached_scene(state, layout, cursor) {
-                    for (panel_id, range) in self.reconciled_y_ranges(&scene) {
-                        shell.publish(M::from(KlineWidgetEvent::PanelInteraction(
-                            PanelInteraction::YViewportChanged { panel_id, range },
-                        )));
-                    }
-                }
-
-                if self.basis.is_time() {
-                    let second = chrono::Utc::now().timestamp();
-                    if state.last_countdown_second != Some(second) {
-                        state.interaction_text_cache.clear();
-                        state.last_countdown_second = Some(second);
+                    let utc_ms = chrono::Utc::now().timestamp_millis() as u64;
+                    self.prepare_render_inputs(
+                        state,
+                        scene.as_ref(),
+                        layout.bounds(),
+                        request,
+                        utc_ms,
+                    );
+                    if let Some(deadline) = state.scheduler.data_deadline(self.version, *now) {
+                        shell.request_redraw_at(deadline);
                     }
                 }
 
@@ -2091,190 +2451,152 @@ where
         renderer: &mut Renderer,
         theme: &Theme,
         _style: &renderer::Style,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
+        _layout: Layout<'_>,
+        _cursor: mouse::Cursor,
         _viewport: &Rectangle,
     ) {
         let state = tree.state.downcast_ref::<State>();
-        let Some(scene) = self.cached_scene(state, layout, cursor) else {
-            return;
-        };
-        let bounds = layout.bounds();
 
         use advanced::Renderer as _;
-        use iced::advanced::graphics::geometry::Renderer as _;
-        renderer.with_translation(Vector::new(bounds.x, bounds.y), |renderer| {
-            let plot_rect = scene.plot_rect();
-            let palette = theme.extended_palette();
-            let generated_accents = self.theme_accents.as_array();
-
-            for step in PAINT_ORDER {
-                match step {
-                    PaintStep::Root(pass) => match pass {
-                        RootPaintStep::Separators => {
-                            Self::paint_separators(renderer, &scene, theme);
-                        }
-                        RootPaintStep::Objects => {
-                            let overlay_pixels = PixelGeometry::new(
-                                self.pixel_ratio,
-                                Point::new(bounds.x, bounds.y),
-                            );
-                            let geometry =
-                                state.drawing_cache.draw(renderer, bounds.size(), |frame| {
-                                    self.drawing_view_at(
-                                        &scene,
-                                        None,
-                                        state.interaction.modifiers(),
-                                    )
-                                    .fill_drawing_objects(
-                                        frame,
-                                        palette,
-                                        generated_accents,
-                                        overlay_pixels,
-                                    );
-                                });
-                            renderer.draw_geometry(geometry);
-                        }
-                        RootPaintStep::YAxis => {
-                            let rect = scene.layout.regions.y_axis;
-                            let geometry =
-                                state.y_axis_cache.draw(renderer, rect.size(), |frame| {
-                                    self.fill_y_axis_labels(frame, &scene, palette)
-                                });
-                            renderer.with_translation(Vector::new(rect.x, rect.y), |renderer| {
-                                renderer.draw_geometry(geometry);
-                            });
-                        }
-                        RootPaintStep::XAxis => {
-                            let rect = scene.layout.regions.x_axis;
-                            let x_axis_pixels = PixelGeometry::new(
-                                self.pixel_ratio,
-                                Point::new(bounds.x + rect.x, bounds.y + rect.y),
-                            );
-                            let geometry =
-                                state.x_axis_cache.draw(renderer, rect.size(), |frame| {
-                                    self.fill_x_axis_labels(frame, &scene, palette, x_axis_pixels)
-                                });
-                            renderer.with_translation(Vector::new(rect.x, rect.y), |renderer| {
-                                renderer.draw_geometry(geometry);
-                            });
-                        }
-                    },
-                    PaintStep::Plot(layer) => {
-                        let cache = match layer {
-                            PrimaryPlotLayer::Background => &state.plot_background_cache,
-                            PrimaryPlotLayer::Objects => &state.study_underlay_cache,
-                            PrimaryPlotLayer::Foreground => &state.plot_cache,
-                            PrimaryPlotLayer::PriceBars => &state.price_bars_cache,
-                        };
-                        let plot_pixels = PixelGeometry::new(
-                            self.pixel_ratio,
-                            Point::new(bounds.x + plot_rect.x, bounds.y + plot_rect.y),
-                        );
-                        let geometry = cache.draw(renderer, plot_rect.size(), |frame| {
-                            self.fill_main_geometry(
-                                frame,
-                                &scene,
-                                &state.study_objects,
-                                palette,
-                                generated_accents,
-                                plot_pixels,
-                                layer,
-                            );
-                        });
-                        renderer.with_layer(plot_rect, |renderer| {
-                            renderer.with_translation(
-                                Vector::new(plot_rect.x, plot_rect.y),
-                                |renderer| {
-                                    renderer.draw_geometry(geometry);
-                                },
-                            );
-                        });
+        use advanced::graphics::geometry::Renderer as _;
+        use advanced::text::Renderer as _;
+        for step in PAINT_ORDER {
+            match step {
+                PaintStep::StudyControls => {
+                    if let Some(controls) = &state.study_controls {
+                        controls.draw(renderer);
                     }
-                    PaintStep::Widget(layer) => {
-                        let overlay_pixels =
-                            PixelGeometry::new(self.pixel_ratio, Point::new(bounds.x, bounds.y));
-                        let drawing_magnet =
-                            self.drawing_magnet_enabled(state.interaction.modifiers());
-                        let geometry = match layer {
-                            WidgetPaintStep::Legends => {
-                                state.legend_cache.draw(renderer, bounds.size(), |frame| {
-                                    self.fill_legends(frame, &scene, palette, generated_accents);
-                                })
-                            }
-                            WidgetPaintStep::Overlay => {
-                                state.overlay_cache.draw(renderer, bounds.size(), |frame| {
-                                    self.fill_overlay(
-                                        frame,
-                                        &scene,
-                                        palette,
-                                        generated_accents,
-                                        overlay_pixels,
-                                        drawing_magnet,
-                                    );
-                                    self.paint_study_objects(
-                                        LayerPaintPhase::Overlay,
-                                        self.layer_context(
-                                            &scene,
-                                            None,
-                                            state.interaction.modifiers(),
-                                        ),
-                                        &state.study_objects,
-                                        frame,
-                                        palette,
-                                        generated_accents,
-                                        overlay_pixels,
-                                    );
-                                    if self.drawing_snapshot.has_state() {
-                                        self.drawing_view_at(
-                                            &scene,
-                                            None,
-                                            state.interaction.modifiers(),
-                                        )
-                                        .fill_drawing_interaction(
-                                            frame,
-                                            palette,
-                                            generated_accents,
-                                            overlay_pixels,
+                }
+                PaintStep::Legends => {
+                    if let Some(legends) = &state.legends {
+                        legends.draw(renderer);
+                    }
+                }
+                PaintStep::Separators => {
+                    if let Some(environment) = state.scheduler.presentation() {
+                        let origin = environment.bounds.position();
+
+                        renderer.with_translation(Vector::new(origin.x, origin.y), |renderer| {
+                            renderer.with_layer(
+                                Rectangle::with_size(environment.bounds.size()),
+                                |renderer| {
+                                    let layout = &environment.layout;
+                                    let plot_rect = layout.regions.plot;
+                                    let splitter_color = style::split_ruler(theme).color;
+
+                                    for splitter in &layout.splitters {
+                                        renderer.fill_quad(
+                                            Quad {
+                                                bounds: Rectangle {
+                                                    x: plot_rect.x + splitter.x,
+                                                    y: plot_rect.y + splitter.y,
+                                                    width: splitter.width
+                                                        + layout.regions.y_axis.width,
+                                                    height: splitter.height,
+                                                },
+                                                snap: true,
+                                                ..Default::default()
+                                            },
+                                            splitter_color,
                                         );
                                     }
-                                })
-                            }
-                            WidgetPaintStep::InteractionText => state.interaction_text_cache.draw(
-                                renderer,
-                                bounds.size(),
-                                |frame| {
-                                    self.fill_overlay_interaction_text(
-                                        frame,
-                                        &scene,
-                                        palette,
-                                        drawing_magnet,
-                                        overlay_pixels,
+
+                                    renderer.fill_quad(
+                                        Quad {
+                                            bounds: Rectangle {
+                                                x: plot_rect.x,
+                                                y: plot_rect.y + plot_rect.height,
+                                                width: plot_rect.width
+                                                    + layout.regions.y_axis.width,
+                                                height: 1.0,
+                                            },
+                                            snap: true,
+                                            ..Default::default()
+                                        },
+                                        splitter_color,
+                                    );
+
+                                    renderer.fill_quad(
+                                        Quad {
+                                            bounds: Rectangle {
+                                                x: plot_rect.x + plot_rect.width,
+                                                y: plot_rect.y,
+                                                width: 1.0,
+                                                height: plot_rect.height,
+                                            },
+                                            snap: true,
+                                            ..Default::default()
+                                        },
+                                        splitter_color,
                                     );
                                 },
-                            ),
-                            WidgetPaintStep::Marquee => {
-                                state.marquee_cache.draw(renderer, bounds.size(), |frame| {
-                                    if let Some(marquee) = state.marquee()
-                                        && let Some(rect) =
-                                            self.drawing_view(&scene).clipped_marquee_rect(
-                                                marquee.panel_index,
-                                                marquee.start,
-                                                marquee.current,
-                                            )
-                                    {
-                                        drawing::fill_marquee_rectangle(frame, rect, palette);
-                                    }
-                                })
-                            }
-                        };
-                        renderer.with_layer(Rectangle::with_size(bounds.size()), |renderer| {
-                            renderer.draw_geometry(geometry);
+                            );
                         });
                     }
                 }
+                PaintStep::PanelControls => {
+                    if let Some(controls) = &state.panel_controls {
+                        renderer.with_translation(
+                            Vector::new(controls.bounds.x, controls.bounds.y),
+                            |renderer| {
+                                let clip = Rectangle::with_size(controls.bounds.size());
+                                renderer.with_layer(clip, |renderer| {
+                                    for control in &controls.buttons {
+                                        renderer.fill_quad(
+                                            Quad {
+                                                bounds: control.bounds,
+                                                snap: false,
+                                                ..Default::default()
+                                            },
+                                            control.background,
+                                        );
+                                        renderer.fill_text(
+                                            control.text.clone(),
+                                            control.bounds.center(),
+                                            control.text_color,
+                                            clip,
+                                        );
+                                    }
+                                });
+                            },
+                        );
+                    }
+                }
+                PaintStep::Canvas(layer) => {
+                    let cache = &state.layers[layer];
+                    let Some(layer) = cache.resolved() else {
+                        continue;
+                    };
+                    let geometry = cache
+                        .geometry
+                        .draw(renderer, layer.placement.size(), |frame| {
+                            layer.inputs.replay(frame)
+                        });
+
+                    renderer.with_translation(
+                        Vector::new(layer.root_origin.x, layer.root_origin.y),
+                        |renderer| match layer.placement {
+                            LayerPlacement::Axis(bounds) => renderer
+                                .with_translation(Vector::new(bounds.x, bounds.y), |renderer| {
+                                    renderer.draw_geometry(geometry)
+                                }),
+                            LayerPlacement::Plot(bounds) => {
+                                renderer.with_layer(bounds, |renderer| {
+                                    renderer.with_translation(
+                                        Vector::new(bounds.x, bounds.y),
+                                        |renderer| renderer.draw_geometry(geometry),
+                                    );
+                                })
+                            }
+                            LayerPlacement::Widget(size) => renderer
+                                .with_layer(Rectangle::with_size(size), |renderer| {
+                                    renderer.draw_geometry(geometry)
+                                }),
+                        },
+                    );
+                }
             }
-        });
+        }
     }
 
     fn mouse_interaction(

@@ -75,11 +75,11 @@ pub const MAX_CANDLESTICK_OPACITY_PERCENT: u8 = 100;
 pub const MIN_LINE_WIDTH: u8 = 1;
 pub const MAX_LINE_WIDTH: u8 = 4;
 
-pub const DEFAULT_FOOTPRINT_IMBALANCE_THRESHOLD_PERCENT: usize = 200;
-pub const DEFAULT_FOOTPRINT_IMBALANCE_IGNORE_ZEROS: bool = true;
-pub const DEFAULT_FOOTPRINT_IMBALANCE_COLOR: ThemeColor =
+const DEFAULT_FOOTPRINT_IMBALANCE_THRESHOLD_PERCENT: usize = 200;
+const DEFAULT_FOOTPRINT_IMBALANCE_IGNORE_ZEROS: bool = true;
+const DEFAULT_FOOTPRINT_IMBALANCE_COLOR: ThemeColor =
     ThemeColor::new(ThemeColorRole::Warning, ThemeColorShade::Strong);
-pub const DEFAULT_CANDLESTICK_OPACITY_PERCENT: u8 = 100;
+const DEFAULT_CANDLESTICK_OPACITY_PERCENT: u8 = 100;
 
 const DEFAULT_INDICATOR_INSTANCE_ID_BASE: u64 = 1 << 63;
 
@@ -514,7 +514,7 @@ impl IndicatorStyleOverrides {
         self
     }
 
-    pub fn normalized_for_slots(self, slots: &[indicators::IndicatorColorSpec]) -> Self {
+    fn normalized_for_slots(self, slots: &[indicators::IndicatorColorSpec]) -> Self {
         let mut normalized = self.normalized();
         normalized
             .colors
@@ -597,6 +597,57 @@ impl PartialEq for IndicatorInstanceStore {
 }
 
 impl IndicatorInstanceStore {
+    pub fn source_offsets(&self) -> Vec<i64> {
+        let mut offsets = vec![0];
+        for instance in self.instances() {
+            let kind = &instance.kind;
+            offsets.extend(
+                kind.output_channels()
+                    .iter()
+                    .map(|output| i64::from(output.offset_bars)),
+            );
+
+            for fill in kind.fill_specs() {
+                let channel_offset = |source: &IndicatorOverlaySource| {
+                    let IndicatorOverlaySource::Channel(channel) = source;
+                    kind.output_channels()
+                        .iter()
+                        .find(|output| output.id == *channel)
+                        .map(|output| i64::from(output.offset_bars))
+                        .unwrap_or_default()
+                };
+                offsets.push(if fill.upper_offset_bars == 0 {
+                    channel_offset(&fill.upper)
+                } else {
+                    i64::from(fill.upper_offset_bars)
+                });
+                offsets.push(if fill.lower_offset_bars == 0 {
+                    channel_offset(&fill.lower)
+                } else {
+                    i64::from(fill.lower_offset_bars)
+                });
+            }
+        }
+        offsets
+    }
+
+    pub fn max_positive_output_offset(&self) -> i64 {
+        self.instances()
+            .iter()
+            .filter_map(|instance| {
+                instance
+                    .kind
+                    .output_channels()
+                    .iter()
+                    .map(|output| output.offset_bars)
+                    .filter(|offset| *offset > 0)
+                    .max()
+            })
+            .map(i64::from)
+            .max()
+            .unwrap_or_default()
+    }
+
     pub fn from_instances(instances: Vec<IndicatorInstance>) -> Self {
         let mut store = Self::default();
         for instance in instances {
@@ -1408,7 +1459,7 @@ pub fn panel_config_from_spec(panel: &PanelSpec) -> PanelConfig {
     }
 }
 
-pub fn layer_config_from_spec(layer: &LayerSpec) -> LayerConfig {
+fn layer_config_from_spec(layer: &LayerSpec) -> LayerConfig {
     LayerConfig {
         id: layer.id.0,
         name: layer.name.clone(),
@@ -1439,7 +1490,7 @@ pub fn panel_spec_from_config(panel: &PanelConfig) -> PanelSpec {
     }
 }
 
-pub fn layer_spec_from_config(layer: &LayerConfig) -> LayerSpec {
+fn layer_spec_from_config(layer: &LayerConfig) -> LayerSpec {
     let source = layer_source_into_domain(layer.source.clone());
     LayerSpec {
         id: composition::LayerId(layer.id),

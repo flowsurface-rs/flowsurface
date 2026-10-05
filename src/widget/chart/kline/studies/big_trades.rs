@@ -1,7 +1,8 @@
 use super::super::interaction::LayerContext;
+use super::super::painting::PaintInputs;
 use super::LayerPaintPhase;
 use crate::widget::chart::kline::footprint::row_height;
-use crate::widget::chart::kline::helpers::PixelGeometry;
+use crate::widget::chart::kline::painting::PixelGeometry;
 use crate::widget::chart::kline::scene::XAxis;
 use crate::widget::resolve_theme_color;
 use data::chart::Basis;
@@ -51,7 +52,7 @@ impl BigTradesObject {
         &self,
         phase: LayerPaintPhase,
         context: LayerContext<'_>,
-        frame: &mut canvas::Frame,
+        frame: &mut PaintInputs,
         palette: &Extended,
         accents: &[iced::Color; ACCENT_COUNT],
         pixels: PixelGeometry,
@@ -63,7 +64,7 @@ impl BigTradesObject {
 
     fn fill(
         &self,
-        frame: &mut canvas::Frame,
+        frame: &mut PaintInputs,
         context: LayerContext<'_>,
         palette: &Extended,
         generated_accents: &[iced::Color; ACCENT_COUNT],

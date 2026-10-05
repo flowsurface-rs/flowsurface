@@ -1,15 +1,15 @@
+use super::painting::PaintInputs;
 mod big_trades;
 mod tpo;
 mod volume_profile;
 
-use super::helpers::PixelGeometry;
 use super::interaction::{LayerContext, LayerEffects};
+use super::painting::PixelGeometry;
 pub(crate) use big_trades::BigTradesObject;
 use data::chart::kline::KlineStudyId;
 use data::config::theme::ACCENT_COUNT;
 use iced::advanced::mouse::Interaction;
 use iced::theme::palette::Extended;
-use iced::widget::canvas;
 use rustc_hash::FxHashMap;
 pub(crate) use tpo::{TpoInteraction, TpoObject};
 pub(crate) use volume_profile::{ProfileBarSource, VolumeProfileObject};
@@ -32,10 +32,15 @@ pub(crate) struct LayerHit {
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum LayerPointerInput {
-    PlotPressed { target: Option<StudyObjectKey> },
+    /// Clear selection outside the target after a confirmed plot click.
+    PlotClicked {
+        target: Option<StudyObjectKey>,
+    },
     Pressed,
     Moved,
-    Clicked { confirmed: bool },
+    Clicked {
+        confirmed: bool,
+    },
     DragReleased,
     Cancelled,
 }
@@ -64,7 +69,7 @@ pub(super) enum StudyObjectState {
 }
 
 impl StudyObject<'_> {
-    pub(super) fn key(&self) -> StudyObjectKey {
+    fn key(&self) -> StudyObjectKey {
         match self {
             Self::Tpo(object) => object.key(),
             Self::VolumeProfiles(_) => StudyObjectKey::VolumeProfiles,
@@ -115,7 +120,7 @@ impl StudyObject<'_> {
         phase: LayerPaintPhase,
         context: LayerContext<'_>,
         state: Option<&StudyObjectState>,
-        frame: &mut canvas::Frame,
+        frame: &mut PaintInputs,
         palette: &Extended,
         accents: &[iced::Color; ACCENT_COUNT],
         pixels: PixelGeometry,
@@ -138,66 +143,71 @@ impl StudyObject<'_> {
 
 pub(super) type StudyStates = FxHashMap<StudyObjectKey, StudyObjectState>;
 
-impl<'a> super::KlineWidget<'a> {
-    pub(crate) fn with_study_object(mut self, object: StudyObject<'a>) -> Self {
+#[derive(Default)]
+pub(super) struct StudyObjects<'a> {
+    objects: Vec<StudyObject<'a>>,
+}
+
+impl<'a> StudyObjects<'a> {
+    pub(super) fn register(&mut self, object: StudyObject<'a>) {
         let key = object.key();
         assert!(
-            self.study_objects
+            self.objects
                 .iter()
                 .all(|registered| registered.key() != key)
         );
-        self.study_objects.push(object);
-        self
+        self.objects.push(object);
     }
 
-    pub(super) fn hit_test_study_objects(
+    pub(super) fn get(&self, key: StudyObjectKey) -> Option<&StudyObject<'a>> {
+        self.objects.iter().find(|object| object.key() == key)
+    }
+
+    pub(super) fn hit_test(
         &self,
         context: LayerContext<'_>,
         states: &StudyStates,
     ) -> Option<LayerHit> {
-        self.study_objects
+        self.objects
             .iter()
             .filter_map(|object| object.hit_test(context, states.get(&object.key())))
             .max_by_key(|hit| hit.priority)
     }
 
-    pub(super) fn study_object_pointer(
+    pub(super) fn pointer(
         &self,
         key: StudyObjectKey,
         input: LayerPointerInput,
         context: LayerContext<'_>,
         states: &mut StudyStates,
     ) -> Option<LayerEffects<StudyObjectEvent>> {
-        let object = self
-            .study_objects
-            .iter()
-            .find(|object| object.key() == key)?;
+        let object = self.get(key)?;
         Some(object.pointer(input, context, states.get_mut(&key)))
     }
 
-    pub(super) fn study_objects_pointer_all(
+    pub(super) fn pointer_all(
         &self,
         input: LayerPointerInput,
         context: LayerContext<'_>,
         states: &mut StudyStates,
     ) -> Vec<LayerEffects<StudyObjectEvent>> {
-        self.study_objects
+        self.objects
             .iter()
             .map(|object| object.pointer(input, context, states.get_mut(&object.key())))
             .collect()
     }
 
-    pub(super) fn paint_study_objects(
+    pub(super) fn paint(
         &self,
         phase: LayerPaintPhase,
         context: LayerContext<'_>,
         states: &StudyStates,
-        frame: &mut canvas::Frame,
+        frame: &mut PaintInputs,
         palette: &Extended,
         accents: &[iced::Color; ACCENT_COUNT],
         pixels: PixelGeometry,
     ) {
-        for object in &self.study_objects {
+        for object in &self.objects {
             object.paint(
                 phase,
                 context,
@@ -210,14 +220,31 @@ impl<'a> super::KlineWidget<'a> {
         }
     }
 
-    pub(super) fn reconcile_study_states(&self, states: &mut StudyStates) {
+    pub(super) fn prepare_controls(
+        &self,
+        context: LayerContext<'_>,
+        states: &StudyStates,
+        controls: &mut super::chrome::PreparedChrome,
+        palette: &Extended,
+        pixels: PixelGeometry,
+    ) {
+        for object in &self.objects {
+            if let StudyObject::Tpo(object) = object
+                && let Some(StudyObjectState::Tpo(state)) = states.get(&object.key())
+            {
+                object.prepare_controls(context, state, controls, palette, pixels);
+            }
+        }
+    }
+
+    pub(super) fn reconcile_states(&self, states: &mut StudyStates) {
         states.retain(|key, state| {
-            self.study_objects
+            self.objects
                 .iter()
                 .find(|object| object.key() == *key)
                 .is_some_and(|object| object.matches_state(state))
         });
-        for object in &self.study_objects {
+        for object in &self.objects {
             if let Some(new_state) = object.new_state() {
                 states.entry(object.key()).or_insert(new_state);
             }

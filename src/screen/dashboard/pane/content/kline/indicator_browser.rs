@@ -130,7 +130,7 @@ impl Default for State {
 }
 
 impl State {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             search_query: String::new(),
             search_box_id: iced::widget::Id::unique(),
@@ -142,7 +142,7 @@ impl State {
         self.search_query = query;
     }
 
-    pub fn search_box_id(&self) -> iced::widget::Id {
+    pub(crate) fn search_box_id(&self) -> iced::widget::Id {
         self.search_box_id.clone()
     }
 
@@ -160,7 +160,7 @@ impl State {
     }
 }
 
-pub fn view<'a>(chart: &'a KlineChart, picker: &'a State) -> Element<'a, KlineMessage> {
+pub(crate) fn view<'a>(chart: &'a KlineChart, picker: &'a State) -> Element<'a, KlineMessage> {
     let active_indicators = chart
         .selected_indicators()
         .into_iter()

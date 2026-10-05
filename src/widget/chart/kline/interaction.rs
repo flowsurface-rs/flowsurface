@@ -1,5 +1,8 @@
-use super::helpers::ChartCoordinates;
+pub(super) mod navigation;
+
 use super::layout::LayoutHitZone;
+use super::painting::RenderRequest;
+use super::scene::ChartCoordinates;
 use super::scene::{CursorTarget, Scene};
 use super::studies::StudyObjectKey;
 use data::chart::kline::HorizontalWorld;
@@ -14,13 +17,6 @@ pub(super) struct LayerContext<'a> {
     pub(super) coordinates: ChartCoordinates<'a>,
     pub(super) modifiers: keyboard::Modifiers,
     pub(super) position: Option<Point>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum CacheInvalidation {
-    None,
-    Overlay,
-    All,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,7 +161,7 @@ impl DragAction {
     pub(super) fn selection_disposition(self) -> SelectionDisposition {
         match self {
             Self::Layer { selection, .. } | Self::Drawing { selection, .. } => selection,
-            Self::Marquee { .. } => SelectionDisposition::Preserve,
+            Self::Pan { .. } | Self::Marquee { .. } => SelectionDisposition::Preserve,
             _ => SelectionDisposition::Clear,
         }
     }
@@ -218,7 +214,7 @@ impl HorizontalWheelZoomMode {
 
 pub(super) struct LayerEffects<E> {
     pub(super) events: Vec<E>,
-    pub(super) invalidation: CacheInvalidation,
+    pub(super) render_request: RenderRequest,
     pub(super) status: Status,
     pub(super) gesture: Option<LayerGesture>,
 }
@@ -227,7 +223,7 @@ impl<E> Default for LayerEffects<E> {
     fn default() -> Self {
         Self {
             events: Vec::new(),
-            invalidation: CacheInvalidation::None,
+            render_request: RenderRequest::None,
             status: Status::Ignored,
             gesture: None,
         }
@@ -235,9 +231,9 @@ impl<E> Default for LayerEffects<E> {
 }
 
 impl<E> LayerEffects<E> {
-    pub(super) fn captured(invalidation: CacheInvalidation) -> Self {
+    pub(super) fn captured(render_request: RenderRequest) -> Self {
         Self {
-            invalidation,
+            render_request,
             status: Status::Captured,
             ..Self::default()
         }
@@ -250,7 +246,7 @@ impl<E> LayerEffects<E> {
     pub(super) fn map_events<T>(self, mut map: impl FnMut(E) -> T) -> LayerEffects<T> {
         LayerEffects {
             events: self.events.into_iter().map(&mut map).collect(),
-            invalidation: self.invalidation,
+            render_request: self.render_request,
             status: self.status,
             gesture: self.gesture,
         }

@@ -15,7 +15,7 @@ mod viewport;
 use crate::connector::fetcher::FetchSpec;
 use crate::screen::dashboard::pane::ChartAction;
 use crate::style;
-use crate::theme::ThemeAccents;
+use crate::theme::{ThemeAccents, ThemeState};
 use crate::widget::chart::kline::studies::StudyObjectEvent;
 use crate::widget::chart::kline::{
     IndicatorPresentationContext, KlineWidget, KlineWidgetEvent, MIN_FULL_CACHE_REFRESH_INTERVAL,
@@ -33,10 +33,10 @@ use studies::{StudyChange, StudyCommand, StudyState};
 use updates::DataUpdateEffect;
 use viewport::ViewportState;
 
-pub use fetch::FetchUpdate;
-pub use layout::{IndicatorCommand, IndicatorInputCommand, IndicatorStyleCommand};
+pub(crate) use fetch::FetchUpdate;
+pub(crate) use layout::{IndicatorCommand, IndicatorInputCommand, IndicatorStyleCommand};
 pub(crate) use settings::Message as SettingsMessage;
-pub use updates::DataUpdate;
+pub(crate) use updates::DataUpdate;
 
 use data::chart::Basis;
 use data::chart::kline::composition::{
@@ -103,7 +103,7 @@ pub struct KlineChart {
 }
 
 impl KlineChart {
-    pub fn new(basis: Basis, tickers: &[TickerInfo]) -> Self {
+    pub(crate) fn new(basis: Basis, tickers: &[TickerInfo]) -> Self {
         let base_ticker = tickers
             .first()
             .copied()
@@ -149,7 +149,7 @@ impl KlineChart {
         chart
     }
 
-    pub fn new_with_config(
+    pub(crate) fn new_with_config(
         basis: Basis,
         tickers: &[TickerInfo],
         config: &persisted::Config,
@@ -160,7 +160,7 @@ impl KlineChart {
         chart
     }
 
-    pub fn update(
+    pub(crate) fn update(
         &mut self,
         message: Message,
         chart_settings: &mut ChartSettings,
@@ -437,13 +437,14 @@ impl KlineChart {
         None
     }
 
-    pub fn view(
-        &self,
+    pub(crate) fn view<'a>(
+        &'a self,
         timezone: data::UserTimezone,
         pixel_ratio: PixelRatio,
-        theme_accents: ThemeAccents,
+        theme: &'a ThemeState,
         inspector_open: bool,
-    ) -> iced::Element<'_, Message> {
+    ) -> iced::Element<'a, Message> {
+        let theme_accents = theme.accents();
         let chart: iced::Element<'_, Message> =
             if self.data.series().iter().all(KlineSeries::is_empty) {
                 iced::widget::center(iced::widget::text("Waiting for data...").size(16)).into()
@@ -463,7 +464,7 @@ impl KlineChart {
                     &self.indicators.composition,
                     &self.indicators.instances,
                     indicator_presentation,
-                    theme_accents,
+                    theme,
                 )
                 .with_drawing_snapshot(drawing_snapshot)
                 .with_candlestick_config(self.options.candlestick)
@@ -570,7 +571,7 @@ impl KlineChart {
         .into()
     }
 
-    pub fn invalidate(&mut self, now: Option<Instant>) -> Option<ChartAction> {
+    pub(crate) fn invalidate(&mut self, now: Option<Instant>) -> Option<ChartAction> {
         if let Some(ts) = now {
             self.last_maintenance_at = ts;
 
@@ -595,7 +596,7 @@ impl KlineChart {
         None
     }
 
-    pub fn rebuild_indicators(&mut self) -> Option<iced::Task<Message>> {
+    pub(crate) fn rebuild_indicators(&mut self) -> Option<iced::Task<Message>> {
         if let Some(job_id) = self.indicators.pending_rebuild_job() {
             self.complete_indicator_rebuild(job_id);
         }
@@ -655,7 +656,7 @@ impl KlineChart {
         true
     }
 
-    pub fn pane_settings_view(&self) -> InspectorContent<'static, Message> {
+    pub(crate) fn pane_settings_view(&self) -> InspectorContent<'static, Message> {
         super::settings::kline_cfg_view(
             self.trade_data_enabled(),
             self.options.legend_visibility,
@@ -663,15 +664,15 @@ impl KlineChart {
         )
     }
 
-    pub fn indicator_browser_view(&self) -> iced::Element<'_, Message> {
+    pub(crate) fn indicator_browser_view(&self) -> iced::Element<'_, Message> {
         indicator_browser::view(self, &self.indicator_browser)
     }
 
-    pub fn indicator_browser_focus_id(&self) -> iced::widget::Id {
+    pub(crate) fn indicator_browser_focus_id(&self) -> iced::widget::Id {
         self.indicator_browser.search_box_id()
     }
 
-    pub fn indicator_kind(&self, id: IndicatorInstanceId) -> Option<IndicatorId> {
+    pub(crate) fn indicator_kind(&self, id: IndicatorInstanceId) -> Option<IndicatorId> {
         self.indicators.indicator_kind(id)
     }
 
@@ -694,31 +695,31 @@ impl KlineChart {
         self.inspector.has_contextual_target()
     }
 
-    pub fn base_ticker_info(&self) -> TickerInfo {
+    pub(crate) fn base_ticker_info(&self) -> TickerInfo {
         self.data.base_ticker()
     }
 
-    pub fn series(&self) -> &[KlineSeries] {
+    pub(crate) fn series(&self) -> &[KlineSeries] {
         self.data.series()
     }
 
-    pub fn studies(&self) -> &[KlineStudy] {
+    pub(crate) fn studies(&self) -> &[KlineStudy] {
         self.studies.active()
     }
 
-    pub fn basis(&self) -> Basis {
+    pub(crate) fn basis(&self) -> Basis {
         self.basis
     }
 
-    pub fn selected_indicators(&self) -> Vec<IndicatorInstanceId> {
+    pub(crate) fn selected_indicators(&self) -> Vec<IndicatorInstanceId> {
         self.indicators.selected_indicators()
     }
 
-    pub fn last_maintenance_at(&self) -> Instant {
+    pub(crate) fn last_maintenance_at(&self) -> Instant {
         self.last_maintenance_at
     }
 
-    pub fn tick_multiplier(&self) -> TickMultiplier {
+    pub(crate) fn tick_multiplier(&self) -> TickMultiplier {
         self.data.tick_multiplier()
     }
 
@@ -799,11 +800,11 @@ impl KlineChart {
         true
     }
 
-    pub fn go_back(&mut self) -> bool {
+    pub(crate) fn go_back(&mut self) -> bool {
         self.inspector.dismiss_reset_confirmation() || self.close_contextual_settings()
     }
 
-    pub fn left_sidebar_visible(&self) -> bool {
+    pub(crate) fn left_sidebar_visible(&self) -> bool {
         self.has_settings_target() || self.drawing_sidebar_visible
     }
 
@@ -1003,7 +1004,7 @@ impl KlineChart {
         update(&mut self.inspector, &context)
     }
 
-    pub fn handle_escape(&mut self) -> bool {
+    pub(crate) fn handle_escape(&mut self) -> bool {
         if self.go_back() {
             return true;
         }
@@ -1272,7 +1273,7 @@ impl KlineChart {
         }
     }
 
-    pub fn apply_fetch_update(&mut self, update: FetchUpdate) -> bool {
+    pub(crate) fn apply_fetch_update(&mut self, update: FetchUpdate) -> bool {
         match update {
             FetchUpdate::Failed(req_id) => self.fetch.mark_failed(req_id),
             FetchUpdate::TradeFetchNoData {
@@ -1283,7 +1284,7 @@ impl KlineChart {
         }
     }
 
-    pub fn apply_data(&mut self, update: DataUpdate<'_>) {
+    pub(crate) fn apply_data(&mut self, update: DataUpdate<'_>) {
         if let Some(timeframe) = update.kline_timeframe()
             && self.basis != Basis::Time(timeframe)
         {
@@ -1371,7 +1372,7 @@ impl KlineChart {
         }
     }
 
-    pub fn apply_command(&mut self, command: ChartCommand) -> Option<ChartAction> {
+    pub(crate) fn apply_command(&mut self, command: ChartCommand) -> Option<ChartAction> {
         let action = self.apply_command_inner(command);
         self.reconcile_settings_target();
         action
@@ -1793,7 +1794,10 @@ impl KlineChart {
         self.render_invalidation.invalidate();
     }
 
-    pub fn apply_settings_snapshot(&mut self, snapshot: &SettingsSnapshot) -> Option<Action> {
+    pub(crate) fn apply_settings_snapshot(
+        &mut self,
+        snapshot: &SettingsSnapshot,
+    ) -> Option<Action> {
         self.apply_shared_settings(snapshot);
         let selected_tickers = self.data.selected_tickers();
         self.fetch.rebuild_handlers(&selected_tickers);
@@ -1804,7 +1808,7 @@ impl KlineChart {
         self.request_fetch_action(false).map(Action::RequestFetch)
     }
 
-    pub fn trade_data_enabled(&self) -> bool {
+    pub(crate) fn trade_data_enabled(&self) -> bool {
         self.data_requirements().trades
     }
 
@@ -1847,11 +1851,11 @@ impl KlineChart {
         requirements
     }
 
-    pub fn settings_snapshot(&self) -> SettingsSnapshot {
+    pub(crate) fn settings_snapshot(&self) -> SettingsSnapshot {
         self.serializable_config().settings_snapshot()
     }
 
-    pub fn desired_streams(&self) -> Vec<StreamKind> {
+    pub(crate) fn desired_streams(&self) -> Vec<StreamKind> {
         match self.basis {
             Basis::Time(timeframe) => {
                 let mut streams = Vec::new();
@@ -1877,7 +1881,7 @@ impl KlineChart {
         }
     }
 
-    pub fn serializable_config(&self) -> persisted::Config {
+    pub(crate) fn serializable_config(&self) -> persisted::Config {
         let studies = self.studies.snapshot();
         persisted::Config {
             primary_scale_inverted: self.viewport.primary_scale_inverted,

@@ -728,7 +728,7 @@ impl Flowsurface {
                     tickers_table,
                     self.timezone,
                     pixel_ratio,
-                    self.theme.accents(),
+                    &self.theme,
                 )
                 .map(move |msg| Message::Dashboard {
                     layout_id: None,
@@ -778,7 +778,7 @@ impl Flowsurface {
                         tickers_table,
                         self.timezone,
                         pixel_ratio,
-                        self.theme.accents(),
+                        &self.theme,
                     )
                     .map(move |msg| Message::Dashboard {
                         layout_id: None,

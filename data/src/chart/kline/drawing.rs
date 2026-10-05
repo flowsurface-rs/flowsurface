@@ -316,7 +316,7 @@ impl<'a> DrawingSnapshot<'a> {
             .filter(|drawing| drawing.visible && self.selected_drawings.contains(&drawing.id))
     }
 
-    pub fn selected_visible_drawing(&self) -> Option<&'a DrawingEntity> {
+    fn selected_visible_drawing(&self) -> Option<&'a DrawingEntity> {
         if self.selected_drawings.len() == 1 {
             self.selected_visible_drawings().next()
         } else {
@@ -585,7 +585,7 @@ pub enum AxisLabelAnchor {
 }
 
 impl DrawingObject {
-    pub fn normalized_box(
+    fn normalized_box(
         mut start: DrawingAnchor,
         mut end: DrawingAnchor,
         extend_right: bool,

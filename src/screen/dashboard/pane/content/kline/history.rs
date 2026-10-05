@@ -55,7 +55,7 @@ impl DrawingHistory {
         self.undo.push_back(DrawingEdit { before, after });
     }
 
-    pub(super) fn begin_drawing(&mut self, before: DrawingEditState) {
+    fn begin_drawing(&mut self, before: DrawingEditState) {
         self.pending_drawing = Some(before);
     }
 
@@ -68,7 +68,7 @@ impl DrawingHistory {
         }
     }
 
-    pub(super) fn has_pending_drawing(&self) -> bool {
+    fn has_pending_drawing(&self) -> bool {
         self.pending_drawing.is_some()
     }
 

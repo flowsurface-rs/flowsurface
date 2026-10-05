@@ -1,7 +1,8 @@
-use super::Regions;
+use super::Y_AXIS_LABEL_LEFT_INSET;
 use super::composition::{PanelRole, PanelSpec};
-use super::{KlineWidget, PANEL_SPLITTER_HEIGHT, Y_AXIS_LABEL_LEFT_INSET};
+use iced::Size;
 use iced::advanced::Layout;
+use iced::advanced::layout as iced_layout;
 use iced::{Point, Rectangle};
 
 /// Guard area on the edges of the axis
@@ -115,7 +116,7 @@ pub(super) struct PanelLayoutNode {
     pub(super) kind: KlinePanelKind,
     pub(super) plot: Rectangle,
     pub(super) y_axis: Rectangle,
-    pub(super) x_axis: Rectangle,
+    x_axis: Rectangle,
 }
 
 impl PanelLayoutNode {
@@ -308,69 +309,148 @@ impl PanelLayoutTree {
     }
 }
 
-impl<'a> KlineWidget<'a> {
-    pub(super) fn panel_plot_heights(
-        &self,
-        panel_stack_height: f32,
-        panel_count: usize,
-    ) -> Vec<f32> {
-        if panel_count == 0 {
-            return Vec::new();
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct Regions {
+    pub(super) plot: Rectangle,
+    pub(super) x_axis: Rectangle,
+    pub(super) y_axis: Rectangle,
+}
+
+impl Regions {
+    fn from_layout(root: iced_core::Layout<'_>) -> Self {
+        let root_bounds = root.bounds();
+
+        let row = root.child(0);
+        let x_abs = root.child(1).bounds();
+
+        let plot_abs = row.child(0).bounds();
+        let y_abs = row.child(1).bounds();
+
+        let to_local = |r: Rectangle| Rectangle {
+            x: r.x - root_bounds.x,
+            y: r.y - root_bounds.y,
+            width: r.width,
+            height: r.height,
+        };
+
+        Regions {
+            plot: to_local(plot_abs),
+            y_axis: to_local(y_abs),
+            x_axis: to_local(x_abs),
         }
+    }
+}
 
-        let non_plot = panel_count.saturating_sub(1) as f32 * PANEL_SPLITTER_HEIGHT;
-        let usable = (panel_stack_height - non_plot).max(0.0);
-
-        if panel_count == 1 {
-            return vec![usable];
-        }
-
-        let mut splits = self.normalized_panel_splits();
-        let split_count = panel_count.saturating_sub(1);
-
-        if splits.len() > split_count {
-            splits.truncate(split_count);
-        }
-
-        for index in splits.len()..split_count {
-            let fallback = (index + 1) as f32 / panel_count as f32;
-            splits.push(fallback);
-        }
-
-        let mut heights = Vec::with_capacity(panel_count);
-        let mut previous = 0.0;
-
-        for split in splits {
-            let boundary = (split.clamp(0.0, 1.0) * usable)
-                .round()
-                .clamp(previous, usable);
-            heights.push((boundary - previous).max(0.0));
-            previous = boundary;
-        }
-
-        heights.push((usable - previous).max(0.0));
-        heights
+fn panel_plot_heights(
+    panel_stack_height: f32,
+    panel_count: usize,
+    normalized_splits: &[f32],
+    splitter_height: f32,
+) -> Vec<f32> {
+    if panel_count == 0 {
+        return Vec::new();
     }
 
+    let non_plot = panel_count.saturating_sub(1) as f32 * splitter_height;
+    let usable = (panel_stack_height - non_plot).max(0.0);
+
+    if panel_count == 1 {
+        return vec![usable];
+    }
+
+    let mut splits = normalized_splits.to_vec();
+    let split_count = panel_count.saturating_sub(1);
+
+    if splits.len() > split_count {
+        splits.truncate(split_count);
+    }
+
+    for index in splits.len()..split_count {
+        let fallback = (index + 1) as f32 / panel_count as f32;
+        splits.push(fallback);
+    }
+
+    let mut heights = Vec::with_capacity(panel_count);
+    let mut previous = 0.0;
+
+    for split in splits {
+        let boundary = (split.clamp(0.0, 1.0) * usable)
+            .round()
+            .clamp(previous, usable);
+        heights.push((boundary - previous).max(0.0));
+        previous = boundary;
+    }
+
+    heights.push((usable - previous).max(0.0));
+    heights
+}
+
+pub(super) fn build_panel_stack(
+    panel_count: usize,
+    normalized_splits: &[f32],
+    stack_size: Size,
+    splitter_height: f32,
+) -> iced_layout::Node {
+    let plot_heights = panel_plot_heights(
+        stack_size.height,
+        panel_count,
+        normalized_splits,
+        splitter_height,
+    );
+    let mut children = Vec::with_capacity(panel_count.saturating_mul(3).saturating_sub(1));
+
+    let mut y = 0.0;
+
+    for panel_index in 0..panel_count {
+        let plot_h = plot_heights.get(panel_index).copied().unwrap_or_default();
+
+        children.push(
+            iced_layout::Node::new(Size::new(stack_size.width, plot_h)).move_to(Point::new(0.0, y)),
+        );
+        y += plot_h;
+
+        let axis_h = if panel_index + 1 == panel_count {
+            (stack_size.height - y).max(0.0)
+        } else {
+            0.0
+        };
+
+        children.push(
+            iced_layout::Node::new(Size::new(stack_size.width, axis_h)).move_to(Point::new(0.0, y)),
+        );
+        y += axis_h;
+
+        if panel_index + 1 < panel_count {
+            children.push(
+                iced_layout::Node::new(Size::new(stack_size.width, splitter_height))
+                    .move_to(Point::new(0.0, y)),
+            );
+            y += splitter_height;
+        }
+    }
+
+    iced_layout::Node::with_children(stack_size, children)
+}
+
+impl PanelLayoutTree {
     pub(super) fn split_ratio_from_cursor(
         &self,
         cursor_y: f32,
-        layout: &PanelLayoutTree,
         split_index: usize,
+        splitter_height: f32,
     ) -> Option<f32> {
-        let panel_count = layout.panels.len();
+        let panel_count = self.panels.len();
         let split_count = panel_count.saturating_sub(1);
 
         if split_count == 0 || split_index >= split_count {
             return None;
         }
 
-        let local_y = (cursor_y - layout.regions.plot.y).clamp(0.0, layout.regions.plot.height);
-        let usable_plot_height: f32 = layout.panels.iter().map(|panel| panel.plot.height).sum();
+        let local_y = (cursor_y - self.regions.plot.y).clamp(0.0, self.regions.plot.height);
+        let usable_plot_height: f32 = self.panels.iter().map(|panel| panel.plot.height).sum();
         let usable = usable_plot_height.max(1.0);
 
-        let fixed_before =
-            (split_index as f32 * PANEL_SPLITTER_HEIGHT) + (PANEL_SPLITTER_HEIGHT * 0.5);
+        let fixed_before = (split_index as f32 * splitter_height) + (splitter_height * 0.5);
         let boundary = (local_y - fixed_before).round().clamp(0.0, usable);
 
         Some((boundary / usable).clamp(0.0, 1.0))

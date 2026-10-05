@@ -379,7 +379,7 @@ impl IndicatorDefinition {
         self.outputs.iter().find(|output| output.id == id)
     }
 
-    pub fn numeric_plot_output(&self, id: &str) -> Option<&OutputChannelSpec> {
+    fn numeric_plot_output(&self, id: &str) -> Option<&OutputChannelSpec> {
         let output = self.output(id)?;
         (output.value_type == OutputValueType::Number
             && self

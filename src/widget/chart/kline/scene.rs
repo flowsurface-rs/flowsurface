@@ -1,4 +1,7 @@
-use super::YUnit;
+pub(super) mod domain;
+pub(super) mod viewport;
+use super::KlineWidgetEvent;
+use super::chrome::{ChromeClick, StudiesLegend};
 use super::chrome::{
     CornerControlHit, CornerControlKind, FootprintLegendHit, FootprintLegendIconKind,
     FootprintLegendLayout, IndicatorLegendHit, IndicatorLegendLayout, LegendRowAction,
@@ -6,140 +9,27 @@ use super::chrome::{
     TickerLegendHit, TickerLegendIconKind, TickerLegendLayout,
 };
 use super::composition::{
-    MarkKind, PanelPresentation, PanelScaleMode, PanelValueId, PanelValuePrecision,
+    ChartComposition, MarkKind, PanelId, PanelPresentation, PanelScaleMode, PanelValueId,
+    PanelValueLabelPolicy, PanelValuePrecision,
 };
 use super::drawing::DrawingHit;
+use super::layout::KlinePanelKind;
 use super::layout::PanelLayoutTree;
 use super::studies::LayerHit;
-use data::chart::kline::viewport::{ChartCoord, ChartStepMs, YUnitRange};
+use super::{KlineSeries, YUnit};
+use data::chart::kline::viewport::YUnitRange;
+use data::{UserTimezone, chart::Basis};
 
 use data::chart::kline::WorldAxis;
 use data::chart::ticks::{Y_LABEL_DENSITY, y::YAxisScale, y_labels_that_fit};
 use exchange::{TickerInfo, Timeframe, UnixMs, unit::Price};
 
 use iced::Rectangle;
-use std::ops::Range;
 use std::sync::Arc;
 
-pub(super) const Y_UNIT_STEP_FALLBACK: f32 = 1e-4;
+pub(super) use data::chart::kline::viewport::PanelValueScale;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) struct TickIndex(u64);
-
-impl TickIndex {
-    pub(super) const ZERO: Self = Self(0);
-
-    #[inline]
-    pub(super) fn as_u64(self) -> u64 {
-        self.0
-    }
-
-    pub(super) fn from_u64(value: u64) -> Self {
-        Self(value)
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(super) enum XAxis {
-    Time {
-        timeframe: Timeframe,
-        anchor: UnixMs,
-    },
-    Tick {
-        anchor: TickIndex,
-    },
-}
-
-impl XAxis {
-    #[inline]
-    pub(super) fn unit_from_time(self, value: UnixMs) -> i64 {
-        match self {
-            Self::Time { timeframe, anchor } => {
-                let aligned = ChartCoord::from_unix_ms(value.floor_to(timeframe)).get();
-                let anchor = ChartCoord::from_unix_ms(anchor).get();
-                let step = ChartStepMs::from_u64(timeframe.to_milliseconds().max(1)).get();
-
-                aligned.saturating_sub(anchor) / step
-            }
-            Self::Tick { .. } => 0,
-        }
-    }
-
-    pub(super) fn unit_from_time_f32(self, value: UnixMs) -> Option<f32> {
-        match self {
-            Self::Time { timeframe, anchor } => {
-                let delta_ms = value.as_u64() as f64 - anchor.as_u64() as f64;
-                Some((delta_ms / timeframe.to_milliseconds().max(1) as f64) as f32)
-            }
-            Self::Tick { .. } => None,
-        }
-    }
-
-    #[inline]
-    pub(super) fn unit_from_tick(self, value: TickIndex) -> i64 {
-        match self {
-            Self::Tick { anchor } => {
-                let anchor = ChartCoord::from_u64_clamped(anchor.as_u64()).get();
-                let index = ChartCoord::from_u64_clamped(value.as_u64()).get();
-
-                anchor.saturating_sub(index)
-            }
-            Self::Time { .. } => 0,
-        }
-    }
-
-    #[inline]
-    pub(super) fn time_from_unit(self, unit: i64) -> Option<UnixMs> {
-        match self {
-            Self::Time { timeframe, anchor } => {
-                let step = i64::try_from(timeframe.to_milliseconds()).unwrap_or(i64::MAX);
-                Some(anchor.saturating_add_signed(unit.saturating_mul(step)))
-            }
-            Self::Tick { .. } => None,
-        }
-    }
-
-    pub(super) fn time_from_unit_f32(self, unit: f32) -> Option<UnixMs> {
-        if !unit.is_finite() {
-            return None;
-        }
-
-        match self {
-            Self::Time { timeframe, anchor } => {
-                let offset = (f64::from(unit) * timeframe.to_milliseconds() as f64).round();
-                let offset = offset.clamp(i64::MIN as f64, i64::MAX as f64) as i64;
-                Some(anchor.saturating_add_signed(offset))
-            }
-            Self::Tick { .. } => None,
-        }
-    }
-
-    #[inline]
-    pub(super) fn tick_from_unit(self, unit: i64) -> Option<TickIndex> {
-        match self {
-            Self::Tick { anchor } => {
-                let anchor = anchor.as_u64();
-                if unit >= 0 {
-                    anchor.checked_sub(unit as u64).map(TickIndex)
-                } else {
-                    anchor.checked_add(unit.unsigned_abs()).map(TickIndex)
-                }
-            }
-            Self::Time { .. } => None,
-        }
-    }
-
-    #[inline]
-    pub(super) fn step_ms(self, step_units: i64) -> u64 {
-        match self {
-            Self::Time { timeframe, .. } => {
-                let step = step_units.max(1) as u64;
-                timeframe.to_milliseconds().max(1).saturating_mul(step)
-            }
-            Self::Tick { .. } => 1,
-        }
-    }
-}
+pub(super) use data::chart::kline::viewport::{BarUnitWindow, TickIndex, XAxis};
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct CursorInfo {
@@ -149,132 +39,6 @@ pub(super) struct CursorInfo {
     pub(super) y_indicator_unit: Option<YUnit>,
     pub(super) x_plot: f32,
     pub(super) y_plot: f32,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(super) struct PanelValueScale {
-    precision: Option<PanelValuePrecision>,
-    base_ticker: Option<TickerInfo>,
-}
-
-impl PanelValueScale {
-    fn round_to_i64_saturating(value: f32) -> i64 {
-        if value.is_nan() {
-            return 0;
-        }
-        if value.is_infinite() {
-            return if value.is_sign_negative() {
-                i64::MIN
-            } else {
-                i64::MAX
-            };
-        }
-
-        let rounded = value.round();
-        if rounded > i64::MAX as f32 {
-            i64::MAX
-        } else if rounded < i64::MIN as f32 {
-            i64::MIN
-        } else {
-            rounded as i64
-        }
-    }
-
-    fn fallback_value_to_unit_f32(value: f32) -> YUnit {
-        if !value.is_finite() {
-            return YUnit(0);
-        }
-
-        YUnit(Self::round_to_i64_saturating(value / Y_UNIT_STEP_FALLBACK))
-    }
-
-    fn fallback_value_to_unit(value: f64) -> YUnit {
-        if !value.is_finite() {
-            return YUnit(0);
-        }
-
-        let rounded = (value / f64::from(Y_UNIT_STEP_FALLBACK)).round();
-        let unit = if rounded > i64::MAX as f64 {
-            i64::MAX
-        } else if rounded < i64::MIN as f64 {
-            i64::MIN
-        } else {
-            rounded as i64
-        };
-        YUnit(unit)
-    }
-
-    pub(super) fn new(
-        precision: Option<PanelValuePrecision>,
-        base_ticker: Option<TickerInfo>,
-    ) -> Self {
-        Self {
-            precision,
-            base_ticker,
-        }
-    }
-
-    pub(super) fn quantization_step_f32(self) -> Option<f32> {
-        self.precision
-            .and_then(|precision| precision.quantization_step_f32(self.base_ticker))
-    }
-
-    pub(super) fn quantization_step(self) -> Option<f64> {
-        self.precision
-            .and_then(|precision| precision.quantization_step(self.base_ticker))
-    }
-
-    pub(super) fn value_to_unit_f32(self, value: f32) -> YUnit {
-        self.precision
-            .map(|precision| {
-                precision.value_to_unit_f32(value, self.base_ticker, Y_UNIT_STEP_FALLBACK)
-            })
-            .unwrap_or_else(|| Self::fallback_value_to_unit_f32(value))
-    }
-
-    pub(super) fn value_to_unit(self, value: f64) -> YUnit {
-        self.precision
-            .map(|precision| {
-                precision.value_to_unit(value, self.base_ticker, f64::from(Y_UNIT_STEP_FALLBACK))
-            })
-            .unwrap_or_else(|| Self::fallback_value_to_unit(value))
-    }
-
-    pub(super) fn unit_to_value_f32(self, unit: YUnit) -> f32 {
-        self.precision
-            .map(|precision| {
-                precision.unit_to_value_f32(unit, self.base_ticker, Y_UNIT_STEP_FALLBACK)
-            })
-            .unwrap_or_else(|| (unit.0 as f32) * Y_UNIT_STEP_FALLBACK)
-    }
-
-    pub(super) fn unit_to_value(self, unit: YUnit) -> f64 {
-        self.precision
-            .map(|precision| {
-                precision.unit_to_value(unit, self.base_ticker, f64::from(Y_UNIT_STEP_FALLBACK))
-            })
-            .unwrap_or_else(|| (unit.0 as f64) * f64::from(Y_UNIT_STEP_FALLBACK))
-    }
-
-    pub(super) fn price_to_unit(self, value: Price) -> YUnit {
-        self.precision
-            .and_then(|precision| precision.price_to_unit(value, self.base_ticker))
-            .unwrap_or_else(|| self.value_to_unit_f32(value.to_f32_lossy()))
-    }
-
-    pub(super) fn values(self, range: YUnitRange) -> (f64, f64) {
-        (
-            self.unit_to_value(range.min()),
-            self.unit_to_value(range.max()),
-        )
-    }
-
-    pub(super) fn values_f32(self, range: YUnitRange) -> (f32, f32) {
-        (
-            self.unit_to_value_f32(range.min()),
-            self.unit_to_value_f32(range.max()),
-        )
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -295,11 +59,11 @@ impl PanelDomainState {
         self.active
     }
 
-    pub(super) fn autoscale(self) -> YUnitRange {
+    fn autoscale(self) -> YUnitRange {
         self.autoscale
     }
 
-    pub(super) fn set_active(&mut self, range: YUnitRange) {
+    fn set_active(&mut self, range: YUnitRange) {
         self.active = range;
     }
 }
@@ -462,10 +226,10 @@ pub(super) enum CursorTarget {
 }
 
 impl CursorTarget {
-    pub(super) fn readouts_visible(self) -> bool {
+    fn readouts_visible(self) -> bool {
         match self {
             Self::StudyObject(hit) => hit.readouts_visible,
-            _ => matches!(self, Self::Plot(_) | Self::ActivePan),
+            _ => matches!(self, Self::Plot(_) | Self::Drawing(_) | Self::ActivePan),
         }
     }
 
@@ -561,29 +325,6 @@ impl SceneInteraction {
     }
 }
 
-#[derive(Debug, Clone)]
-pub(super) struct BarUnitWindow {
-    pub(super) values: Vec<i64>,
-    pub(super) start_index: usize,
-}
-
-impl BarUnitWindow {
-    pub(super) fn global_index(&self, local_index: usize) -> Option<usize> {
-        self.start_index.checked_add(local_index)
-    }
-
-    pub(super) fn global_range(&self, local_range: Range<usize>) -> Range<usize> {
-        self.start_index.saturating_add(local_range.start)
-            ..self.start_index.saturating_add(local_range.end)
-    }
-
-    pub(super) fn unit_at_global_index(&self, index: usize) -> Option<i64> {
-        index
-            .checked_sub(self.start_index)
-            .and_then(|local_index| self.values.get(local_index).copied())
-    }
-}
-
 #[derive(Debug)]
 pub(super) struct SceneBase {
     pub(super) layout: PanelLayoutTree,
@@ -630,9 +371,10 @@ pub(super) struct SceneCache {
 }
 
 #[derive(Debug)]
-struct SceneCacheEntry {
+pub(super) struct SceneCacheEntry {
     version: u64,
-    base: SceneBase,
+    pub(super) base: SceneBase,
+    pub(super) y_axis_labels: super::axes::AxisInputs,
 }
 
 impl SceneCacheEntry {
@@ -642,28 +384,32 @@ impl SceneCacheEntry {
 }
 
 impl SceneCache {
-    pub(super) fn get(&self, version: u64, layout: &PanelLayoutTree) -> Option<&SceneBase> {
+    pub(super) fn get(&self, version: u64, layout: &PanelLayoutTree) -> Option<&SceneCacheEntry> {
         let entry = self.entry.as_ref()?;
-        entry.matches(version, layout).then_some(&entry.base)
+        entry.matches(version, layout).then_some(entry)
     }
 
     pub(super) fn get_or_build(
         &mut self,
         version: u64,
         layout: PanelLayoutTree,
-        build: impl FnOnce(PanelLayoutTree) -> Option<SceneBase>,
-    ) -> Option<&SceneBase> {
+        build: impl FnOnce(PanelLayoutTree) -> Option<(SceneBase, super::axes::AxisInputs)>,
+    ) -> Option<&SceneCacheEntry> {
         let cache_hit = self
             .entry
             .as_ref()
             .is_some_and(|entry| entry.matches(version, &layout));
 
         if !cache_hit {
-            let base = build(layout)?;
-            self.entry = Some(SceneCacheEntry { version, base });
+            let (base, y_axis_labels) = build(layout)?;
+            self.entry = Some(SceneCacheEntry {
+                version,
+                base,
+                y_axis_labels,
+            });
         }
 
-        self.entry.as_ref().map(|entry| &entry.base)
+        self.entry.as_ref()
     }
 }
 
@@ -679,7 +425,7 @@ impl Scene {
         self.primary.value_scale.value_to_unit_f32(value)
     }
 
-    pub(super) fn primary_unit_to_value(&self, y_unit: YUnit) -> f32 {
+    fn primary_unit_to_value(&self, y_unit: YUnit) -> f32 {
         self.primary.value_scale.unit_to_value_f32(y_unit)
     }
 
@@ -807,7 +553,7 @@ impl Scene {
         )
     }
 
-    pub(super) fn primary_autoscale_display_values(&self) -> (f32, f32) {
+    fn primary_autoscale_display_values(&self) -> (f32, f32) {
         if let Some((min_display, max_display)) = self.primary.display_domain_override {
             return (min_display, max_display);
         }
@@ -947,7 +693,7 @@ impl Scene {
         }
     }
 
-    pub(super) fn primary_percent_display_step(&self) -> Option<f32> {
+    fn primary_percent_display_step(&self) -> Option<f32> {
         if !self.primary.mode.uses_percent_base() {
             return None;
         }
@@ -1136,5 +882,290 @@ fn format_value(value: f32, step: f32) -> String {
         format!("{value:.3}")
     } else {
         format!("{value:.4}")
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ChartCoordinates<'a> {
+    pub(super) series: &'a [KlineSeries],
+    pub(super) composition: &'a ChartComposition,
+    pub(super) basis: Basis,
+    pub(super) timezone: UserTimezone,
+}
+
+impl<'a> ChartCoordinates<'a> {
+    pub(super) fn bar_index_at_or_before_unit(
+        &self,
+        scene: &Scene,
+        series_index: usize,
+        target_unit: i64,
+    ) -> Option<usize> {
+        let series = self.series.get(series_index)?;
+        series.bar_index_at_or_before_unit(scene.x.axis, target_unit)
+    }
+
+    pub(super) fn panel_index_for_id(&self, panel_id: PanelId) -> Option<usize> {
+        self.composition
+            .panels
+            .iter()
+            .position(|panel| panel.id == panel_id)
+    }
+
+    pub(super) fn panel_id(&self, panel_index: usize) -> Option<PanelId> {
+        self.composition
+            .panels
+            .get(panel_index)
+            .map(|panel| panel.id)
+    }
+
+    pub(super) fn panel_value_precision(&self, panel_index: usize) -> Option<PanelValuePrecision> {
+        self.composition
+            .panels
+            .get(panel_index)
+            .and_then(|panel| panel.value_precision)
+    }
+
+    fn panel_value_label_policy(&self, panel_index: usize) -> PanelValueLabelPolicy {
+        self.composition
+            .panels
+            .get(panel_index)
+            .map(|panel| panel.value_label_policy)
+            .unwrap_or_default()
+    }
+
+    pub(super) fn base_ticker_info(&self) -> Option<exchange::TickerInfo> {
+        self.series.first().map(|series| series.ticker_info)
+    }
+
+    pub(super) fn panel_value_scale(&self, panel_index: usize) -> PanelValueScale {
+        PanelValueScale::new(
+            self.panel_value_precision(panel_index),
+            self.base_ticker_info(),
+        )
+    }
+
+    fn format_panel_value_compact(
+        &self,
+        panel_index: usize,
+        value_precision: Option<PanelValuePrecision>,
+        value: f64,
+        fallback_step: f64,
+    ) -> String {
+        let max_decimals = self.panel_value_label_policy(panel_index).max_decimals;
+
+        if let Some(precision) = value_precision {
+            return precision.format_compact(
+                value,
+                fallback_step,
+                max_decimals,
+                self.base_ticker_info(),
+            );
+        }
+
+        let scale = self.panel_value_scale(panel_index);
+        let quantized = scale.unit_to_value(scale.value_to_unit(value));
+        let fallback = fallback_step.abs().max(1e-6);
+        let decimals = PanelValuePrecision::decimals_for_step(fallback);
+        let decimals = max_decimals
+            .map(|max| decimals.min(max as usize))
+            .unwrap_or(decimals);
+        format!("{quantized:.decimals$}")
+    }
+
+    pub(super) fn format_panel_axis_value(
+        &self,
+        panel_index: usize,
+        value_precision: Option<PanelValuePrecision>,
+        value: f64,
+        fallback_step: f64,
+    ) -> String {
+        let scale = self.panel_value_scale(panel_index);
+        self.panel_value_label_policy(panel_index)
+            .format_axis_value(
+                || scale.unit_to_value(scale.value_to_unit(value)),
+                || {
+                    self.format_panel_value_compact(
+                        panel_index,
+                        value_precision,
+                        value,
+                        fallback_step,
+                    )
+                },
+            )
+    }
+
+    pub(super) fn tick_time_for_unit(&self, x_axis: XAxis, unit: i64) -> Option<UnixMs> {
+        let from_latest = usize::try_from(x_axis.tick_from_unit(unit)?.as_u64()).ok()?;
+        let series = self.series.first()?;
+        let index = series
+            .point_count()
+            .checked_sub(from_latest.checked_add(1)?)?;
+        series.time_at_index(index)
+    }
+
+    pub(super) fn format_x_label(&self, x_axis: XAxis, unit: i64, step_units: i64) -> String {
+        match x_axis {
+            XAxis::Time { .. } => x_axis.time_from_unit(unit).map_or_else(
+                || unit.to_string(),
+                |ts| {
+                    let ts_ms = ts.as_u64();
+                    let step_ms = x_axis.step_ms(step_units);
+
+                    self.timezone
+                        .format_with_kind(
+                            ts_ms as i64,
+                            data::config::timezone::TimeLabelKind::AxisStepMs { step_ms },
+                        )
+                        .unwrap_or_else(|| ts_ms.to_string())
+                },
+            ),
+            XAxis::Tick { .. } => self.tick_time_for_unit(x_axis, unit).map_or_else(
+                || unit.to_string(),
+                |time| {
+                    self.timezone
+                        .format_with_kind(
+                            time.as_u64() as i64,
+                            data::config::timezone::TimeLabelKind::Axis {
+                                timeframe: Timeframe::MS100,
+                            },
+                        )
+                        .unwrap_or_else(|| time.as_u64().to_string())
+                },
+            ),
+        }
+    }
+}
+
+impl ChromeScene {
+    pub(super) fn resolve_click(
+        &self,
+        target: Option<CursorTarget>,
+        studies: Option<&StudiesLegend>,
+    ) -> ChromeClick {
+        let event = match target {
+            Some(CursorTarget::Legend(target)) => {
+                let event = match target {
+                    LegendTarget::Ticker {
+                        row,
+                        icon: Some(icon),
+                    } => self
+                        .ticker_legend
+                        .as_ref()
+                        .and_then(|legend| legend.rows.get(row))
+                        .map(|row| icon.into_event(row.ticker)),
+                    LegendTarget::Footprint { icon: Some(icon) } => Some(icon.into_event()),
+                    LegendTarget::StudyCategory { icon: Some(icon) } => {
+                        studies.map(|_| match icon {
+                            StudiesLegendIconKind::ExpandCollapse => {
+                                KlineWidgetEvent::StudiesExpansionToggled
+                            }
+                            StudiesLegendIconKind::Visibility => {
+                                KlineWidgetEvent::StudiesVisibilityToggled
+                            }
+                            StudiesLegendIconKind::Close => KlineWidgetEvent::StudiesRemove,
+                        })
+                    }
+                    LegendTarget::Study {
+                        row,
+                        icon: Some(icon),
+                    } => studies
+                        .and_then(|legend| legend.rows.get(row))
+                        .map(|row| match icon {
+                            LegendRowAction::Visibility => {
+                                KlineWidgetEvent::StudyVisibilityToggled(row.id)
+                            }
+                            LegendRowAction::Settings => KlineWidgetEvent::StudySettings(row.id),
+                            LegendRowAction::Close => KlineWidgetEvent::StudyRemove(row.id),
+                        }),
+                    LegendTarget::Indicator {
+                        row,
+                        icon: Some(icon),
+                    } => self
+                        .indicator_legend
+                        .as_ref()
+                        .and_then(|legend| legend.rows.get(row))
+                        .map(|row| match icon {
+                            LegendRowAction::Visibility => {
+                                KlineWidgetEvent::IndicatorVisibilityToggled(row.value_id)
+                            }
+                            LegendRowAction::Settings => {
+                                KlineWidgetEvent::IndicatorSettings(row.value_id)
+                            }
+                            LegendRowAction::Close => {
+                                KlineWidgetEvent::IndicatorRemove(row.value_id)
+                            }
+                        }),
+                    _ => None,
+                };
+                return event.map_or(ChromeClick::Blocked, ChromeClick::Event);
+            }
+            Some(CursorTarget::CornerControl(kind)) => kind.into_event(),
+            Some(CursorTarget::PanelControl { panel_index, kind }) => {
+                KlineWidgetEvent::PanelInteraction(kind.into_interaction_kind(panel_index))
+            }
+            _ => return ChromeClick::Outside,
+        };
+        ChromeClick::Event(event)
+    }
+}
+
+impl Scene {
+    pub(super) fn for_each_bar(
+        &self,
+        series: &[KlineSeries],
+        f: impl FnMut(usize, usize, &KlineSeries, i64, data::chart::kline::series::KlineSeriesPoint<'_>),
+    ) {
+        data::chart::kline::series::KlineWindows {
+            series,
+            windows: &self.bar_units,
+            axis: self.x.axis,
+        }
+        .for_each_point(self.x.min_unit, self.x.max_unit, f);
+    }
+}
+
+impl<'a> ChartCoordinates<'a> {
+    pub(super) fn format_panel_header_value(
+        &self,
+        panel_index: usize,
+        value_precision: Option<PanelValuePrecision>,
+        value: f64,
+    ) -> String {
+        let scale = self.panel_value_scale(panel_index);
+        self.panel_value_label_policy(panel_index)
+            .format_header_value(
+                || scale.unit_to_value(scale.value_to_unit(value)),
+                || self.format_panel_value_compact(panel_index, value_precision, value, 0.01),
+            )
+    }
+
+    pub(super) fn resolved_panel_title(
+        &self,
+        panel_index: usize,
+        panel_kind: KlinePanelKind,
+    ) -> Option<&'a str> {
+        self.composition
+            .panels
+            .get(panel_index)
+            .and_then(|panel| panel.title.as_deref())
+            .filter(|title| !title.is_empty())
+            .or_else(|| Self::default_title_for_panel(panel_kind))
+    }
+
+    fn default_title_for_panel(kind: KlinePanelKind) -> Option<&'static str> {
+        match kind {
+            KlinePanelKind::PrimaryChart => None,
+            KlinePanelKind::Indicator => Some("Indicator"),
+        }
+    }
+
+    pub(super) fn series_participates_in_primary_plot(&self, ticker: TickerInfo) -> bool {
+        self.series
+            .first()
+            .is_some_and(|series| series.ticker_info == ticker)
+            || self
+                .composition
+                .comparison_layer(ticker)
+                .is_some_and(|layer| layer.visible)
     }
 }

@@ -142,7 +142,7 @@ impl KlineTrades {
     }
 
     /// Max of some extracted qty across price levels within [`lowest`, `highest`].
-    pub fn max_qty_by<F>(&self, highest: Price, lowest: Price, f: F) -> Qty
+    fn max_qty_by<F>(&self, highest: Price, lowest: Price, f: F) -> Qty
     where
         F: Fn(&GroupedTrades) -> Qty,
     {

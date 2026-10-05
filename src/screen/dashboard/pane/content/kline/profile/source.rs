@@ -22,7 +22,7 @@ pub(super) struct ProfileKlineSource {
 }
 
 impl ProfileKlineSource {
-    pub fn insert_bars(&mut self, timeframe: Timeframe, bars: &[Kline]) -> Vec<UnixMs> {
+    pub(super) fn insert_bars(&mut self, timeframe: Timeframe, bars: &[Kline]) -> Vec<UnixMs> {
         if self.timeframe != Some(timeframe) {
             return Vec::new();
         }
@@ -52,7 +52,12 @@ impl ProfileKlineSource {
         changed
     }
 
-    pub fn insert_empty_range(&mut self, timeframe: Timeframe, from: UnixMs, to: UnixMs) -> bool {
+    pub(super) fn insert_empty_range(
+        &mut self,
+        timeframe: Timeframe,
+        from: UnixMs,
+        to: UnixMs,
+    ) -> bool {
         if self.timeframe != Some(timeframe) {
             return false;
         }
@@ -100,15 +105,15 @@ impl ProfileKlineSource {
         true
     }
 
-    pub fn bars_ref(&self, timeframe: Timeframe) -> Option<&BTreeMap<UnixMs, Kline>> {
+    pub(super) fn bars_ref(&self, timeframe: Timeframe) -> Option<&BTreeMap<UnixMs, Kline>> {
         (self.timeframe == Some(timeframe)).then_some(&self.bars)
     }
 
-    pub fn revision(&self) -> u64 {
+    pub(crate) fn revision(&self) -> u64 {
         self.revision
     }
 
-    pub fn fetch_ranges(
+    pub(super) fn fetch_ranges(
         &mut self,
         windows: &[(UnixMs, UnixMs)],
         now: UnixMs,
@@ -163,7 +168,7 @@ impl ProfileKlineSource {
             .collect()
     }
 
-    pub fn configure_retention(
+    pub(super) fn configure_retention(
         &mut self,
         windows: &[(UnixMs, UnixMs)],
         visible_span: u64,
@@ -229,20 +234,20 @@ impl ProfileKlineSource {
         true
     }
 
-    pub fn is_active(&self, timeframe: Timeframe, time: UnixMs) -> bool {
+    pub(crate) fn is_active(&self, timeframe: Timeframe, time: UnixMs) -> bool {
         self.timeframe == Some(timeframe)
             && self
                 .retained
                 .is_some_and(|retained| contains(retained, time))
     }
 
-    pub fn retained(&self, timeframe: Timeframe) -> Option<(UnixMs, UnixMs)> {
+    pub(crate) fn retained(&self, timeframe: Timeframe) -> Option<(UnixMs, UnixMs)> {
         (self.timeframe == Some(timeframe))
             .then_some(self.retained)
             .flatten()
     }
 
-    pub fn clear(&mut self) -> bool {
+    pub(crate) fn clear(&mut self) -> bool {
         let changed = !self.bars.is_empty()
             || !self.empty_ranges.is_empty()
             || self.retained.is_some()

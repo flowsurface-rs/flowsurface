@@ -480,9 +480,9 @@ impl Display for IndicatorAttachmentChoice {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct IndicatorSourceChoice {
-    pub(super) label: String,
-    pub(super) selection: IndicatorSourceSelection,
+struct IndicatorSourceChoice {
+    label: String,
+    selection: IndicatorSourceSelection,
 }
 
 impl Display for IndicatorSourceChoice {
@@ -499,20 +499,20 @@ pub enum IndicatorSourceSelection {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct IndicatorSourceSetting {
-    pub(super) input_id: String,
-    pub(super) label: String,
-    pub(super) selected: Option<IndicatorSourceChoice>,
-    pub(super) choices: Vec<IndicatorSourceChoice>,
+struct IndicatorSourceSetting {
+    input_id: String,
+    label: String,
+    selected: Option<IndicatorSourceChoice>,
+    choices: Vec<IndicatorSourceChoice>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub(crate) struct IndicatorCompositionSettings {
-    pub(super) source_settings: Vec<IndicatorSourceSetting>,
+struct IndicatorCompositionSettings {
+    source_settings: Vec<IndicatorSourceSetting>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct IndicatorSettingsState {
+struct IndicatorSettingsState {
     instance_id: data::chart::kline::IndicatorInstanceId,
     indicator: data::chart::kline::IndicatorId,
     tab: inspector::InspectorTab,
@@ -520,7 +520,7 @@ pub struct IndicatorSettingsState {
 }
 
 impl IndicatorSettingsState {
-    pub fn new(
+    fn new(
         instance_id: data::chart::kline::IndicatorInstanceId,
         indicator: data::chart::kline::IndicatorId,
     ) -> Self {
@@ -532,29 +532,29 @@ impl IndicatorSettingsState {
         }
     }
 
-    pub fn instance_id(&self) -> data::chart::kline::IndicatorInstanceId {
+    fn instance_id(&self) -> data::chart::kline::IndicatorInstanceId {
         self.instance_id
     }
 
-    pub fn indicator(&self) -> data::chart::kline::IndicatorId {
+    fn indicator(&self) -> data::chart::kline::IndicatorId {
         self.indicator.clone()
     }
 
-    pub fn tab(&self) -> inspector::InspectorTab {
+    fn tab(&self) -> inspector::InspectorTab {
         self.tab
     }
 
-    pub fn select_tab(&mut self, tab: inspector::InspectorTab) {
+    fn select_tab(&mut self, tab: inspector::InspectorTab) {
         self.tab = tab;
     }
 
-    pub fn input_draft(&self, setting_id: &str) -> Option<&str> {
+    fn input_draft(&self, setting_id: &str) -> Option<&str> {
         self.input_drafts
             .iter()
             .find_map(|(id, value)| (id == setting_id).then_some(value.as_str()))
     }
 
-    pub fn set_input_draft(&mut self, setting_id: impl Into<String>, value: String) {
+    fn set_input_draft(&mut self, setting_id: impl Into<String>, value: String) {
         let setting_id = setting_id.into();
         if let Some((_, draft)) = self
             .input_drafts
@@ -567,7 +567,7 @@ impl IndicatorSettingsState {
         }
     }
 
-    pub fn clear_input_drafts(&mut self) {
+    fn clear_input_drafts(&mut self) {
         self.input_drafts.clear();
     }
 }
@@ -599,7 +599,7 @@ impl StudySettingsState {
     }
 }
 
-pub fn kline_indicator_cfg_view<'a>(
+fn kline_indicator_cfg_view<'a>(
     modal: &'a IndicatorSettingsState,
     data_config: Option<IndicatorConfig>,
     composition: IndicatorCompositionSettings,

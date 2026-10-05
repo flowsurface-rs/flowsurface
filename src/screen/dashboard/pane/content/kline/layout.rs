@@ -49,9 +49,9 @@ pub(super) struct IndicatorDataRequirements {
 }
 
 pub(super) struct IndicatorRebuildPlan {
-    pub(super) dirty_ids: Vec<IndicatorInstanceId>,
+    dirty_ids: Vec<IndicatorInstanceId>,
     pub(super) replay_ids: Vec<IndicatorInstanceId>,
-    pub(super) dirty_epochs: Vec<(IndicatorInstanceId, u64)>,
+    dirty_epochs: Vec<(IndicatorInstanceId, u64)>,
 }
 
 struct IndicatorRebuildGroup {
@@ -61,7 +61,7 @@ struct IndicatorRebuildGroup {
 }
 
 impl IndicatorRebuildReason {
-    pub(super) fn allows_partial_recalculation(self) -> bool {
+    fn allows_partial_recalculation(self) -> bool {
         matches!(
             self,
             Self::InputFetch | Self::HistoricalDataChanged(_) | Self::IndicatorSettingsChanged
@@ -586,10 +586,7 @@ impl IndicatorState {
         }
     }
 
-    pub(super) fn toggle_indicator_visibility(
-        &mut self,
-        id: IndicatorInstanceId,
-    ) -> IndicatorChange {
+    fn toggle_indicator_visibility(&mut self, id: IndicatorInstanceId) -> IndicatorChange {
         if self.composition.toggle_indicator_visibility(id) {
             IndicatorChange::Visual
         } else {
@@ -775,7 +772,7 @@ impl IndicatorState {
         changed
     }
 
-    pub(super) fn mark_rebuild(&mut self, id: IndicatorInstanceId, reason: IndicatorRebuildReason) {
+    fn mark_rebuild(&mut self, id: IndicatorInstanceId, reason: IndicatorRebuildReason) {
         if !self.composition.selected_indicators().contains(&id) {
             return;
         }
@@ -805,7 +802,7 @@ impl IndicatorState {
         self.dirty_reasons.get(&id).copied()
     }
 
-    pub(super) fn rebuild_scope(&self, id: IndicatorInstanceId) -> IndicatorUpdateScope {
+    fn rebuild_scope(&self, id: IndicatorInstanceId) -> IndicatorUpdateScope {
         match self.rebuild_reason(id) {
             Some(IndicatorRebuildReason::HistoricalDataChanged(scope)) => scope,
             _ => IndicatorUpdateScope::Full,

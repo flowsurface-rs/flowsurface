@@ -534,7 +534,11 @@ impl Content {
                 content.set_footer(
                     row![
                         space::horizontal(),
-                        button("Sync all").on_press(Message::SyncKlineSettings(pane)),
+                        crate::tooltip(
+                            button("Sync all").on_press(Message::SyncKlineSettings(pane)),
+                            Some("Apply configuration to similar panes"),
+                            iced::widget::tooltip::Position::Left,
+                        ),
                     ]
                     .align_y(Alignment::Center),
                 );

@@ -1,3 +1,4 @@
+use super::viewport::{BarUnitWindow, TickIndex, XAxis};
 use crate::aggr::{
     ticks::{TickAccumulation, TickAggr},
     time::TimeSeries,
@@ -269,6 +270,107 @@ pub struct KlineSeries {
 }
 
 impl KlineSeries {
+    pub fn bar_unit_window(
+        &self,
+        x_axis: XAxis,
+        min_x_unit: i64,
+        max_x_unit: i64,
+    ) -> BarUnitWindow {
+        let (start_index, end_index) = match x_axis {
+            XAxis::Time { .. } => {
+                let Some((earliest, latest)) = x_axis
+                    .bucket_start(min_x_unit)
+                    .zip(x_axis.bucket_end(max_x_unit))
+                else {
+                    return BarUnitWindow::from_units(Vec::new(), 0);
+                };
+                let range = self.time_index_range(earliest, latest);
+                (range.start, range.end)
+            }
+            XAxis::Tick { .. } => {
+                let point_count = self.point_count();
+                let point_count_i64 = i64::try_from(point_count).unwrap_or(i64::MAX);
+                let start = min_x_unit
+                    .saturating_add(point_count_i64.saturating_sub(1))
+                    .max(0);
+                let end = max_x_unit
+                    .saturating_add(point_count_i64)
+                    .min(point_count_i64);
+                (
+                    usize::try_from(start)
+                        .unwrap_or(point_count)
+                        .min(point_count),
+                    usize::try_from(end).unwrap_or(point_count).min(point_count),
+                )
+            }
+        };
+
+        let values = (start_index..end_index)
+            .filter_map(|index| match x_axis {
+                XAxis::Time { .. } => self
+                    .time_at_index(index)
+                    .map(|time| x_axis.unit_from_time(time)),
+                XAxis::Tick { .. } => {
+                    let point_count = self.point_count();
+                    let from_latest = point_count.saturating_sub(1).saturating_sub(index) as u64;
+                    Some(x_axis.unit_from_tick(TickIndex::from_u64(from_latest)))
+                }
+            })
+            .collect();
+
+        BarUnitWindow::from_units(values, start_index)
+    }
+
+    pub fn bar_at_or_before_unit(&self, x_axis: XAxis, target_unit: i64) -> Option<&Kline> {
+        match x_axis {
+            XAxis::Time { .. } => {
+                let bucket_end = x_axis.bucket_end(target_unit)?;
+                self.bar_at_or_before_time(bucket_end)
+            }
+            XAxis::Tick { .. } => {
+                let point_count = self.point_count();
+                let from_latest = x_axis
+                    .tick_from_unit(target_unit)
+                    .map(|index| index.as_u64())
+                    .and_then(|index| usize::try_from(index).ok())
+                    .unwrap_or_default();
+                let index = point_count.checked_sub(from_latest.checked_add(1)?)?;
+                self.point_at(index).map(|point| point.kline)
+            }
+        }
+    }
+
+    pub fn bar_unit_at_index(&self, axis: XAxis, point_index: usize) -> Option<i64> {
+        if point_index >= self.point_count() {
+            return None;
+        }
+        match axis {
+            XAxis::Time { .. } => self
+                .time_at_index(point_index)
+                .map(|time| axis.unit_from_time(time)),
+            XAxis::Tick { .. } => Some(
+                axis.unit_from_tick(TickIndex::from_u64(
+                    self.point_count()
+                        .saturating_sub(1)
+                        .saturating_sub(point_index) as u64,
+                )),
+            ),
+        }
+    }
+
+    pub fn bar_index_at_or_before_unit(&self, axis: XAxis, target_unit: i64) -> Option<usize> {
+        match axis {
+            XAxis::Time { .. } => self.bar_index_at_or_before_time(axis.bucket_end(target_unit)?),
+            XAxis::Tick { .. } => {
+                let from_latest = axis
+                    .tick_from_unit(target_unit)
+                    .and_then(|index| usize::try_from(index.as_u64()).ok())
+                    .unwrap_or_default();
+                self.point_count().checked_sub(from_latest.checked_add(1)?)
+            }
+        }
+    }
+
     pub fn new_with_basis(
         ticker_info: TickerInfo,
         color: SeriesColor,
@@ -328,7 +430,7 @@ impl KlineSeries {
         }
     }
 
-    pub fn bar_at_or_before_time(&self, time: UnixMs) -> Option<&Kline> {
+    fn bar_at_or_before_time(&self, time: UnixMs) -> Option<&Kline> {
         let PlotData::TimeBased(series) = &self.data else {
             return None;
         };
@@ -339,7 +441,7 @@ impl KlineSeries {
             .map(|(_, point)| &point.kline)
     }
 
-    pub fn bar_index_at_or_before_time(&self, time: UnixMs) -> Option<usize> {
+    fn bar_index_at_or_before_time(&self, time: UnixMs) -> Option<usize> {
         matches!(&self.data, PlotData::TimeBased(_))
             .then(|| {
                 self.time_index
@@ -511,7 +613,7 @@ impl KlineSeries {
         })
     }
 
-    pub fn indicator_chart_frame(
+    fn indicator_chart_frame(
         &self,
         index: usize,
         time: UnixMs,
@@ -555,7 +657,7 @@ impl KlineSeries {
         }
     }
 
-    pub fn indicator_frame_basis(&self) -> TimeOrTick {
+    fn indicator_frame_basis(&self) -> TimeOrTick {
         match self.basis() {
             Basis::Time(_) => TimeOrTick::Time,
             Basis::Tick(_) => TimeOrTick::Tick,
@@ -1245,4 +1347,94 @@ fn merge_trade_time_range(range: &mut Option<(UnixMs, UnixMs)>, trades: &[Trade]
         Some((min, max)) => (min.min(batch_min), max.max(batch_max)),
         None => (batch_min, batch_max),
     });
+}
+
+pub struct KlineWindows<'a> {
+    pub series: &'a [KlineSeries],
+    pub windows: &'a [BarUnitWindow],
+    pub axis: XAxis,
+}
+
+impl KlineWindows<'_> {
+    pub fn for_each_point(
+        &self,
+        min_x_unit: i64,
+        max_x_unit: i64,
+        mut f: impl FnMut(usize, usize, &KlineSeries, i64, KlineSeriesPoint<'_>),
+    ) {
+        for (series_index, series) in self.series.iter().enumerate() {
+            let Some(units) = self.windows.get(series_index) else {
+                continue;
+            };
+            let range = units.index_range(min_x_unit, max_x_unit);
+            let (start, end) = (range.start, range.end);
+            let end = end.min(series.point_count().saturating_sub(units.start_index()));
+            if start >= end {
+                continue;
+            }
+
+            let time_range = match self.axis {
+                XAxis::Time { .. } => self
+                    .axis
+                    .bucket_start(units.values()[start])
+                    .zip(self.axis.bucket_end(units.values()[end - 1])),
+                XAxis::Tick { .. } => None,
+            };
+            let global_range = units.global_range(start..end);
+            series.for_each_point_in_range(global_range, time_range, |point| {
+                let Some(local_index) = point.index.checked_sub(units.start_index()) else {
+                    return;
+                };
+                if (start..end).contains(&local_index) {
+                    f(
+                        series_index,
+                        point.index,
+                        series,
+                        units.values()[local_index],
+                        point,
+                    );
+                }
+            });
+        }
+    }
+
+    pub fn unit_at_index(&self, series_index: usize, point_index: usize) -> Option<i64> {
+        let series = self.series.get(series_index)?;
+        if point_index >= series.point_count() {
+            return None;
+        }
+        self.windows
+            .get(series_index)
+            .and_then(|units| units.unit_at_global_index(point_index))
+            .or_else(|| series.bar_unit_at_index(self.axis, point_index))
+    }
+
+    pub fn for_each_output(
+        &self,
+        min: i64,
+        max: i64,
+        offset: i64,
+        mut f: impl FnMut(&KlineSeries, usize, i64),
+    ) {
+        let Some(series) = self.series.first() else {
+            return;
+        };
+        let Some(units) = self.windows.first() else {
+            return;
+        };
+        let end = series
+            .point_count()
+            .saturating_sub(units.start_index())
+            .min(units.values().len());
+        for local_index in units.output_range(self.axis, min, max, offset, end) {
+            let Some(index) = units.global_index(local_index) else {
+                continue;
+            };
+            f(
+                series,
+                index,
+                self.axis.output_unit(units.values()[local_index], offset),
+            );
+        }
+    }
 }
