@@ -170,7 +170,7 @@ impl RuntimeLimits {
 impl InstancePlan {
     pub(crate) fn from_compiled(
         compiled: &CompiledIndicator,
-        config: IndicatorConfig,
+        config: &IndicatorConfig,
     ) -> Result<Self, PlanningError> {
         let mut inputs = vec![Value::Na; compiled.program.locals];
         for (slot, name) in &compiled.program.inputs {
@@ -202,6 +202,10 @@ pub enum PlanningError {
     MissingInput(String),
     #[error("input {0} has a value with the wrong type")]
     InvalidInput(String),
+    #[error("history analysis work limit exceeded")]
+    HistoryAnalysisWorkLimitExceeded,
+    #[error("history analysis depth limit exceeded")]
+    HistoryAnalysisDepthLimitExceeded,
 }
 
 #[derive(Debug, Error, Clone, PartialEq)]
@@ -621,7 +625,8 @@ impl IndicatorInstance {
         config: IndicatorConfig,
         limits: RuntimeLimits,
     ) -> Result<Self, PlanningError> {
-        let plan = InstancePlan::from_compiled(&compiled, config)?;
+        let plan = InstancePlan::from_compiled(&compiled, &config)?;
+        compiled.validate_history_analysis(&config)?;
         let committed = CommittedState {
             index: None,
             states: Arc::new(vec![StateValue::Uninitialized; compiled.program.states]),

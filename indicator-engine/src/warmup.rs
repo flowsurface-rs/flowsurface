@@ -4,10 +4,15 @@
 //! expressions so hosts can plan fetches and gate availability per indicator
 //! instead of falling back to the retained-history cap.
 
+use crate::PlanningError;
 use crate::hir::{ExprId, ExpressionKind, HirProgram, LocalSlot, StatementId, StatementKind};
 use crate::intrinsic::{IntrinsicRegistry, WarmupSpec};
-use crate::types::{IndicatorConfig, IndicatorDescriptor, Value};
+use crate::runtime::charge_work;
+use crate::types::{IndicatorConfig, IndicatorDescriptor, InputValue, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
+
+const MAX_ANALYSIS_WORK: usize = 250_000;
+const MAX_ANALYSIS_DEPTH: usize = 64;
 
 pub(super) fn warmup_bars(
     program: &HirProgram,
@@ -15,37 +20,35 @@ pub(super) fn warmup_bars(
     descriptor: &IndicatorDescriptor,
     config: &IndicatorConfig,
     max_window_length: usize,
-) -> Option<usize> {
+) -> Result<usize, PlanningError> {
     let mut evaluator = Evaluator::new(program, registry, descriptor, config, max_window_length);
-    let warmup = program
-        .blocks
-        .get(program.entry_point.0)
-        .map(|block| evaluator.warmup_block(&block.statements))
-        .unwrap_or(0);
-    Some(warmup)
+    match program.blocks.get(program.entry_point.0) {
+        Some(block) => evaluator.warmup_block(&block.statements),
+        None => Ok(0),
+    }
 }
 
-/// Earliest timestamp the indicator must start evaluating from, driven by
-/// anchored intrinsics such as `ta.avwap`. Resolves anchor names from the
-/// configuration and returns the earliest UTC boundary across all sites.
+/// Resolve the earliest anchored boundary within the analysis budget.
 pub(super) fn anchor_start(
     program: &HirProgram,
     registry: &IntrinsicRegistry,
     descriptor: &IndicatorDescriptor,
     config: &IndicatorConfig,
     reference_time: i64,
-) -> Option<i64> {
+) -> Result<Option<i64>, PlanningError> {
     let mut evaluator = Evaluator::new(program, registry, descriptor, config, usize::MAX);
+    evaluator.budget.charge(program.expressions.len())?;
     let mut earliest: Option<i64> = None;
     for arguments in anchored_arguments(program, registry) {
+        evaluator.budget.charge(1)?;
         if let Some(anchor) = arguments.get(2).copied()
-            && let Some(Value::String(name)) = evaluator.static_value(anchor)
+            && let Some(Value::String(name)) = evaluator.static_value(anchor)?
             && let Some(start) = crate::intrinsic::anchored_start(reference_time, &name)
         {
             earliest = Some(earliest.map_or(start, |current| current.min(start)));
         }
     }
-    earliest
+    Ok(earliest)
 }
 
 pub(super) fn requires_anchored_history(
@@ -73,12 +76,34 @@ fn anchored_arguments<'a>(
         })
 }
 
+#[derive(Default)]
+struct AnalysisBudget {
+    work: usize,
+    depth: usize,
+}
+
+impl AnalysisBudget {
+    fn charge(&mut self, work: usize) -> Result<(), PlanningError> {
+        if charge_work(&mut self.work, MAX_ANALYSIS_WORK, work) {
+            Ok(())
+        } else {
+            Err(PlanningError::HistoryAnalysisWorkLimitExceeded)
+        }
+    }
+
+    fn copy_value(&mut self, value: &Value) -> Result<Value, PlanningError> {
+        self.charge(value.copy_work())?;
+        Ok(value.clone())
+    }
+}
+
 struct Evaluator<'a> {
     program: &'a HirProgram,
     registry: &'a IntrinsicRegistry,
     descriptor: &'a IndicatorDescriptor,
     config: &'a IndicatorConfig,
     max_window_length: usize,
+    budget: AnalysisBudget,
     visiting: HashSet<ExprId>,
     warmup_cache: HashMap<ExprId, usize>,
     static_value_cache: HashMap<ExprId, Option<Value>>,
@@ -100,6 +125,7 @@ impl<'a> Evaluator<'a> {
             descriptor,
             config,
             max_window_length,
+            budget: AnalysisBudget::default(),
             visiting: HashSet::new(),
             warmup_cache: HashMap::new(),
             static_value_cache: HashMap::new(),
@@ -108,17 +134,35 @@ impl<'a> Evaluator<'a> {
         }
     }
 
-    fn warmup_block(&mut self, statements: &[StatementId]) -> usize {
-        statements
-            .iter()
-            .map(|statement| self.warmup_statement(*statement))
-            .max()
-            .unwrap_or(0)
+    fn visit<T>(
+        &mut self,
+        analyze: impl FnOnce(&mut Self) -> Result<T, PlanningError>,
+    ) -> Result<T, PlanningError> {
+        self.budget.charge(1)?;
+        if self.budget.depth >= MAX_ANALYSIS_DEPTH {
+            return Err(PlanningError::HistoryAnalysisDepthLimitExceeded);
+        }
+        self.budget.depth += 1;
+        let result = analyze(self);
+        self.budget.depth -= 1;
+        result
     }
 
-    fn warmup_statement(&mut self, statement: StatementId) -> usize {
+    fn warmup_block(&mut self, statements: &[StatementId]) -> Result<usize, PlanningError> {
+        let mut warmup = 0;
+        for statement in statements {
+            warmup = warmup.max(self.warmup_statement(*statement)?);
+        }
+        Ok(warmup)
+    }
+
+    fn warmup_statement(&mut self, statement: StatementId) -> Result<usize, PlanningError> {
+        self.visit(|evaluator| evaluator.warmup_statement_inner(statement))
+    }
+
+    fn warmup_statement_inner(&mut self, statement: StatementId) -> Result<usize, PlanningError> {
         let Some(statement) = self.program.statements.get(statement.0) else {
-            return 0;
+            return Ok(0);
         };
         match &statement.kind {
             StatementKind::Binding { expression, .. }
@@ -182,11 +226,7 @@ impl<'a> Evaluator<'a> {
                 visible,
                 border_color,
                 fill_color,
-                border_color_slot: _,
-                fill_color_slot: _,
                 style_by,
-                true_color_slot: _,
-                false_color_slot: _,
                 extend_right,
                 ..
             } => self.warmup_all([
@@ -206,42 +246,55 @@ impl<'a> Evaluator<'a> {
                 condition,
                 then_branch,
                 else_branch,
-            } => self
-                .warmup(*condition)
-                .max(self.warmup_block(then_branch))
-                .max(self.warmup_block(else_branch)),
+            } => Ok(self
+                .warmup(*condition)?
+                .max(self.warmup_block(then_branch)?)
+                .max(self.warmup_block(else_branch)?)),
             StatementKind::While { condition, body } => {
-                self.warmup(*condition).max(self.warmup_block(body))
+                Ok(self.warmup(*condition)?.max(self.warmup_block(body)?))
             }
             StatementKind::ForRange {
                 start, end, body, ..
-            } => self
-                .warmup(*start)
-                .max(self.warmup(*end))
-                .max(self.warmup_block(body)),
+            } => Ok(self
+                .warmup(*start)?
+                .max(self.warmup(*end)?)
+                .max(self.warmup_block(body)?)),
             StatementKind::ForEach {
                 collection, body, ..
-            } => self.warmup(*collection).max(self.warmup_block(body)),
-            StatementKind::Break | StatementKind::Continue | StatementKind::Return(None) => 0,
+            } => Ok(self.warmup(*collection)?.max(self.warmup_block(body)?)),
+            StatementKind::Break | StatementKind::Continue | StatementKind::Return(None) => Ok(0),
         }
     }
 
-    fn warmup_all<const N: usize>(&mut self, expressions: [Option<ExprId>; N]) -> usize {
-        expressions
-            .into_iter()
-            .flatten()
-            .map(|expression| self.warmup(expression))
-            .max()
-            .unwrap_or(0)
+    fn warmup_all<const N: usize>(
+        &mut self,
+        expressions: [Option<ExprId>; N],
+    ) -> Result<usize, PlanningError> {
+        self.warmup_expressions(expressions.into_iter().flatten())
     }
 
-    fn warmup(&mut self, expr: ExprId) -> usize {
+    fn warmup_expressions(
+        &mut self,
+        expressions: impl IntoIterator<Item = ExprId>,
+    ) -> Result<usize, PlanningError> {
+        let mut warmup = 0;
+        for expression in expressions {
+            warmup = warmup.max(self.warmup(expression)?);
+        }
+        Ok(warmup)
+    }
+
+    fn warmup(&mut self, expr: ExprId) -> Result<usize, PlanningError> {
+        self.visit(|evaluator| evaluator.warmup_inner(expr))
+    }
+
+    fn warmup_inner(&mut self, expr: ExprId) -> Result<usize, PlanningError> {
         let root_context = self.parameter_warmups.is_empty() && self.parameter_values.is_empty();
         if root_context && let Some(warmup) = self.warmup_cache.get(&expr) {
-            return *warmup;
+            return Ok(*warmup);
         }
         let Some(expression) = self.program.expressions.get(expr.0) else {
-            return 0;
+            return Ok(0);
         };
         let warmup = match &expression.kind {
             ExpressionKind::Constant(_)
@@ -252,124 +305,98 @@ impl<'a> Evaluator<'a> {
             | ExpressionKind::LoadSeriesInput(_)
             | ExpressionKind::LoadState(_)
             | ExpressionKind::LoadFrame(_) => 0,
-            ExpressionKind::RecordField { source, .. } => self.warmup(*source),
+            ExpressionKind::RecordField { source, .. } => self.warmup(*source)?,
             ExpressionKind::LoadLocal(slot) => {
-                if let Some(warmup) = self.parameter_warmup(*slot) {
-                    return warmup;
+                if let Some(warmup) = self.parameter_warmup(*slot)? {
+                    return Ok(warmup);
                 }
                 let Some(Some(definition)) = self.program.local_definitions.get(slot.0) else {
-                    return 0;
+                    return Ok(0);
                 };
                 if !self.visiting.insert(expr) {
-                    return 0;
+                    return Ok(0);
                 }
-                let warmup = self.warmup(*definition);
+                let warmup = self.warmup(*definition)?;
                 self.visiting.remove(&expr);
                 warmup
             }
             ExpressionKind::History { source, offset } => {
                 let offset = match self
-                    .static_value(*offset)
+                    .static_value(*offset)?
                     .and_then(|value| value.as_float())
                 {
                     Some(value) if value >= 0.0 => value as usize,
                     _ => self.descriptor.max_bars_back,
                 };
-                offset.saturating_add(self.warmup(*source))
+                offset.saturating_add(self.warmup(*source)?)
             }
-            ExpressionKind::Tuple(expressions) | ExpressionKind::Array(expressions) => expressions
-                .iter()
-                .map(|id| self.warmup(*id))
-                .max()
-                .unwrap_or(0),
-            ExpressionKind::Record(fields) => fields
-                .iter()
-                .map(|(_, id)| self.warmup(*id))
-                .max()
-                .unwrap_or(0),
+            ExpressionKind::Tuple(expressions) | ExpressionKind::Array(expressions) => {
+                self.warmup_expressions(expressions.iter().copied())?
+            }
+            ExpressionKind::Record(fields) => {
+                self.warmup_expressions(fields.iter().map(|(_, id)| *id))?
+            }
             ExpressionKind::Switch {
                 operand,
                 branches,
                 fallback,
             } => {
-                let mut warmup = self.warmup(*operand);
+                let mut warmup = self.warmup(*operand)?;
                 for (condition, result) in branches {
                     warmup = warmup
-                        .max(self.warmup(*condition))
-                        .max(self.warmup(*result));
+                        .max(self.warmup(*condition)?)
+                        .max(self.warmup(*result)?);
                 }
                 if let Some(fallback) = fallback {
-                    warmup = warmup.max(self.warmup(*fallback));
+                    warmup = warmup.max(self.warmup(*fallback)?);
                 }
                 warmup
             }
             ExpressionKind::CollectionIndex { source, index } => {
-                self.warmup(*source).max(self.warmup(*index))
+                self.warmup(*source)?.max(self.warmup(*index)?)
             }
-            ExpressionKind::Unary { operand, .. } => self.warmup(*operand),
+            ExpressionKind::Unary { operand, .. } => self.warmup(*operand)?,
             ExpressionKind::Binary { left, right, .. } => {
-                self.warmup(*left).max(self.warmup(*right))
+                self.warmup(*left)?.max(self.warmup(*right)?)
             }
             ExpressionKind::Conditional {
                 condition,
                 when_true,
                 when_false,
             } => self
-                .warmup(*condition)
-                .max(self.warmup(*when_true))
-                .max(self.warmup(*when_false)),
+                .warmup(*condition)?
+                .max(self.warmup(*when_true)?)
+                .max(self.warmup(*when_false)?),
             ExpressionKind::Coalesce { source, fallback } => {
-                self.warmup(*source).max(self.warmup(*fallback))
+                self.warmup(*source)?.max(self.warmup(*fallback)?)
             }
             ExpressionKind::IntrinsicCall {
                 intrinsic,
                 arguments,
                 ..
             } => {
-                let Some(definition) = self.registry.get(*intrinsic) else {
-                    return arguments
-                        .iter()
-                        .map(|id| self.warmup(*id))
-                        .max()
-                        .unwrap_or(0);
-                };
-                let mut warmup = arguments
-                    .iter()
-                    .map(|id| self.warmup(*id))
-                    .max()
-                    .unwrap_or(0);
-                if let Some(spec) = &definition.signature.warmup {
+                let mut warmup = self.warmup_expressions(arguments.iter().copied())?;
+                if let Some(spec) = self
+                    .registry
+                    .get(*intrinsic)
+                    .and_then(|definition| definition.signature.warmup.as_ref())
+                {
                     let additional = match spec {
                         WarmupSpec::Window {
                             argument,
                             preceding,
-                        } => arguments
-                            .get(*argument)
-                            .and_then(|id| self.static_value(*id))
-                            .and_then(|value| value.as_float())
-                            .filter(|value| *value >= 1.0)
-                            .map(|value| value as usize)
-                            .unwrap_or(1)
+                        } => self
+                            .window_length(arguments, *argument)?
                             .min(self.max_window_length)
                             .saturating_add(*preceding),
                         WarmupSpec::Centered {
                             left_argument,
                             right_argument,
-                        } => {
-                            let mut leg = |argument: usize| {
-                                arguments
-                                    .get(argument)
-                                    .and_then(|id| self.static_value(*id))
-                                    .and_then(|value| value.as_float())
-                                    .filter(|value| *value >= 1.0)
-                                    .map(|value| value as usize)
-                                    .unwrap_or(1)
-                            };
-                            leg(*left_argument)
-                                .saturating_add(leg(*right_argument))
-                                .saturating_add(1)
-                                .min(self.max_window_length)
-                        }
+                        } => self
+                            .window_length(arguments, *left_argument)?
+                            .saturating_add(self.window_length(arguments, *right_argument)?)
+                            .saturating_add(1)
+                            .min(self.max_window_length),
                     };
                     warmup = warmup.saturating_add(additional);
                 }
@@ -380,12 +407,28 @@ impl<'a> Evaluator<'a> {
                 arguments,
                 argument_slots,
                 ..
-            } => self.warmup_function(*function, arguments, argument_slots),
+            } => self.warmup_function(*function, arguments, argument_slots)?,
         };
         if root_context {
             self.warmup_cache.insert(expr, warmup);
         }
-        warmup
+        Ok(warmup)
+    }
+
+    fn window_length(
+        &mut self,
+        arguments: &[ExprId],
+        argument: usize,
+    ) -> Result<usize, PlanningError> {
+        let value = match arguments.get(argument) {
+            Some(id) => self.static_value(*id)?,
+            None => None,
+        };
+        Ok(value
+            .and_then(|value| value.as_float())
+            .filter(|value| *value >= 1.0)
+            .map(|value| value as usize)
+            .unwrap_or(1))
     }
 
     fn warmup_function(
@@ -393,21 +436,22 @@ impl<'a> Evaluator<'a> {
         function_id: crate::hir::FunctionId,
         arguments: &[ExprId],
         argument_slots: &[usize],
-    ) -> usize {
+    ) -> Result<usize, PlanningError> {
         let argument_warmups = arguments
             .iter()
             .map(|argument| self.warmup(*argument))
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>()?;
         let argument_values = arguments
             .iter()
             .map(|argument| self.static_value(*argument))
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>()?;
         let Some(function) = self.program.functions.get(function_id.0) else {
-            return argument_warmups.into_iter().max().unwrap_or(0);
+            return Ok(argument_warmups.into_iter().max().unwrap_or(0));
         };
         let mut parameter_warmups = BTreeMap::new();
         let mut parameter_values = BTreeMap::new();
         for (argument_index, parameter_index) in argument_slots.iter().copied().enumerate() {
+            self.budget.charge(1)?;
             let Some(parameter) = function.parameters.get(parameter_index).copied() else {
                 continue;
             };
@@ -416,119 +460,163 @@ impl<'a> Evaluator<'a> {
                 argument_warmups.get(argument_index).copied().unwrap_or(0),
             );
             if let Some(Some(value)) = argument_values.get(argument_index) {
-                parameter_values.insert(parameter, value.clone());
+                parameter_values.insert(parameter, self.budget.copy_value(value)?);
             }
         }
         self.parameter_warmups.push(parameter_warmups);
         self.parameter_values.push(parameter_values);
-        for (parameter_index, default) in function.parameter_defaults.iter().enumerate() {
-            let Some(parameter) = function.parameters.get(parameter_index).copied() else {
-                continue;
-            };
-            if self
-                .parameter_warmups
-                .last()
-                .is_some_and(|values| values.contains_key(&parameter))
-            {
-                continue;
+        let result = (|| {
+            for (parameter_index, default) in function.parameter_defaults.iter().enumerate() {
+                self.budget.charge(1)?;
+                let Some(parameter) = function.parameters.get(parameter_index).copied() else {
+                    continue;
+                };
+                if self
+                    .parameter_warmups
+                    .last()
+                    .is_some_and(|values| values.contains_key(&parameter))
+                {
+                    continue;
+                }
+                let (warmup, value) = match default {
+                    Some(default) => (self.warmup(*default)?, self.static_value(*default)?),
+                    None => (0, None),
+                };
+                if let Some(values) = self.parameter_warmups.last_mut() {
+                    values.insert(parameter, warmup);
+                }
+                if let Some(value) = value
+                    && let Some(values) = self.parameter_values.last_mut()
+                {
+                    values.insert(parameter, value);
+                }
             }
-            let warmup = default.map_or(0, |default| self.warmup(default));
-            let value = default.and_then(|default| self.static_value(default));
-            if let Some(values) = self.parameter_warmups.last_mut() {
-                values.insert(parameter, warmup);
-            }
-            if let Some(value) = value
-                && let Some(values) = self.parameter_values.last_mut()
-            {
-                values.insert(parameter, value);
-            }
-        }
-        let warmup = self.warmup_block(&function.body);
+            self.warmup_block(&function.body)
+        })();
         self.parameter_warmups.pop();
         self.parameter_values.pop();
-        argument_warmups.into_iter().max().unwrap_or(0).max(warmup)
+        result.map(|warmup| argument_warmups.into_iter().max().unwrap_or(0).max(warmup))
     }
 
-    fn parameter_warmup(&self, slot: LocalSlot) -> Option<usize> {
-        self.parameter_warmups
+    fn parameter_warmup(&mut self, slot: LocalSlot) -> Result<Option<usize>, PlanningError> {
+        self.budget.charge(self.parameter_warmups.len())?;
+        Ok(self
+            .parameter_warmups
             .iter()
             .rev()
-            .find_map(|values| values.get(&slot).copied())
+            .find_map(|values| values.get(&slot).copied()))
     }
 
-    fn parameter_value(&self, slot: LocalSlot) -> Option<Value> {
+    fn parameter_value(&mut self, slot: LocalSlot) -> Result<Option<Value>, PlanningError> {
+        self.budget.charge(self.parameter_values.len())?;
         self.parameter_values
             .iter()
             .rev()
-            .find_map(|values| values.get(&slot).cloned())
+            .find_map(|values| values.get(&slot))
+            .map(|value| self.budget.copy_value(value))
+            .transpose()
     }
 
-    fn input_value(&self, slot: crate::hir::LocalSlot) -> Option<Value> {
-        let (_, name) = self
+    fn input_value(&mut self, slot: LocalSlot) -> Result<Option<Value>, PlanningError> {
+        self.budget.charge(self.program.inputs.len())?;
+        let Some((_, name)) = self
             .program
             .inputs
             .iter()
-            .find(|(slot_id, _)| *slot_id == slot)?;
-        let descriptor = self
+            .find(|(slot_id, _)| *slot_id == slot)
+        else {
+            return Ok(None);
+        };
+        self.budget.charge(self.descriptor.inputs.len())?;
+        let Some(descriptor) = self
             .descriptor
             .inputs
             .iter()
-            .find(|input| &input.id == name)?;
-        Some(self.config.value(descriptor).into_value())
+            .find(|input| &input.id == name)
+        else {
+            return Ok(None);
+        };
+        let value = self
+            .config
+            .values
+            .get(&descriptor.id)
+            .unwrap_or(&descriptor.default);
+        if let InputValue::String(text) = value {
+            self.budget.charge(text.len())?;
+        }
+        Ok(Some(value.clone().into_value()))
     }
 
-    fn static_value(&mut self, expr: ExprId) -> Option<Value> {
+    fn static_value(&mut self, expr: ExprId) -> Result<Option<Value>, PlanningError> {
+        self.visit(|evaluator| evaluator.static_value_inner(expr))
+    }
+
+    fn static_value_inner(&mut self, expr: ExprId) -> Result<Option<Value>, PlanningError> {
         let root_context = self.parameter_warmups.is_empty() && self.parameter_values.is_empty();
         if root_context && let Some(value) = self.static_value_cache.get(&expr) {
-            return value.clone();
+            return value
+                .as_ref()
+                .map(|value| self.budget.copy_value(value))
+                .transpose();
         }
-        let expression = self.program.expressions.get(expr.0)?;
+        let Some(expression) = self.program.expressions.get(expr.0) else {
+            return Ok(None);
+        };
         let value = match &expression.kind {
-            ExpressionKind::Constant(constant) => self.program.constants.get(constant.0).cloned(),
-            ExpressionKind::LoadInput(slot) => self.input_value(*slot),
+            ExpressionKind::Constant(constant) => self
+                .program
+                .constants
+                .get(constant.0)
+                .map(|value| self.budget.copy_value(value))
+                .transpose()?,
+            ExpressionKind::LoadInput(slot) => self.input_value(*slot)?,
             ExpressionKind::LoadLocal(slot) => {
-                if let Some(value) = self.parameter_value(*slot) {
-                    return Some(value);
+                if let Some(value) = self.parameter_value(*slot)? {
+                    return Ok(Some(value));
                 }
                 if let Some(Some(definition)) = self.program.local_definitions.get(slot.0) {
                     if !self.visiting.insert(expr) {
-                        return None;
+                        return Ok(None);
                     }
-                    let value = self.static_value(*definition);
+                    let value = self.static_value(*definition)?;
                     self.visiting.remove(&expr);
                     value
                 } else {
-                    self.input_value(*slot)
+                    self.input_value(*slot)?
                 }
             }
-            ExpressionKind::Unary { operator, operand } => {
-                let value = self.static_value(*operand)?;
-                value.unary(*operator)
-            }
+            ExpressionKind::Unary { operator, operand } => self
+                .static_value(*operand)?
+                .and_then(|value| value.unary(*operator)),
             ExpressionKind::Binary {
                 operator,
                 left,
                 right,
-            } => {
-                let left = self.static_value(*left)?;
-                let right = self.static_value(*right)?;
-                Some(left.binary(*operator, right))
-            }
+            } => match self.static_value(*left)? {
+                Some(left) => self
+                    .static_value(*right)?
+                    .map(|right| left.binary(*operator, right)),
+                None => None,
+            },
             ExpressionKind::Conditional {
                 condition,
                 when_true,
                 when_false,
             } => match self.static_value(*condition)? {
-                Value::Bool(true) => self.static_value(*when_true),
-                Value::Bool(false) => self.static_value(*when_false),
+                Some(Value::Bool(true)) => self.static_value(*when_true)?,
+                Some(Value::Bool(false)) => self.static_value(*when_false)?,
                 _ => None,
             },
             _ => None,
         };
         if root_context {
-            self.static_value_cache.insert(expr, value.clone());
+            let cached = value
+                .as_ref()
+                .map(|value| self.budget.copy_value(value))
+                .transpose()?;
+            self.static_value_cache.insert(expr, cached);
         }
-        value
+        Ok(value)
     }
 }
 

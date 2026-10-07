@@ -556,6 +556,13 @@ budget. Exceeding a work or resource limit fails evaluation.
 | Output items per frame | 1,000,000 | 4,096 |
 | String bytes | 1,048,576 | 65,536 |
 
+History analysis has separate fixed limits of 250,000 weighted work units and
+64 nested traversal entries per pass. Visits, cache reads, and value copies
+consume work. These limits apply to warmup and anchor resolution, independently
+of per-frame execution limits. Instantiation rejects exhaustion with a planning
+diagnostic; optional history queries return `None`. Hosts can call
+`CompiledIndicator::validate_history_analysis` before accepting a configuration.
+
 Collection nesting is limited to 256 levels. Retained-series history has the
 separate 50,000-bar ceiling; increasing it does not increase TA window limits.
 Successful CLI testing covers only default inputs on synthetic data, not every

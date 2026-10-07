@@ -174,6 +174,7 @@ pub(crate) fn compile_with_registry(
 impl CompiledIndicator {
     /// Static bars of history the plotted values need before they are
     /// meaningful, resolved from constants, inputs, and windowed intrinsics.
+    /// Returns `None` when history analysis exceeds its limits.
     pub fn warmup_bars(&self, config: &IndicatorConfig) -> Option<usize> {
         self.warmup_bars_with_limits(config, RuntimeLimits::default())
     }
@@ -191,11 +192,12 @@ impl CompiledIndicator {
             config,
             limits.max_window_length,
         )
+        .ok()
     }
 
     /// Earliest UTC boundary an anchored intrinsic needs data from, resolved
     /// from the configuration. Returns `None` when the indicator has no
-    /// anchored calculations such as `ta.avwap`.
+    /// anchored calculations such as `ta.avwap`, or when analysis exceeds its limits.
     pub fn anchor_start(&self, config: &IndicatorConfig, reference_time: i64) -> Option<i64> {
         warmup::anchor_start(
             &self.program,
@@ -204,6 +206,21 @@ impl CompiledIndicator {
             config,
             reference_time,
         )
+        .ok()
+        .flatten()
+    }
+
+    /// Reject configurations whose history analysis exceeds its work or depth limits.
+    pub fn validate_history_analysis(&self, config: &IndicatorConfig) -> Result<(), PlanningError> {
+        warmup::warmup_bars(
+            &self.program,
+            &self.registry,
+            &self.descriptor,
+            config,
+            RuntimeLimits::default().max_window_length,
+        )?;
+        warmup::anchor_start(&self.program, &self.registry, &self.descriptor, config, 0)?;
+        Ok(())
     }
 
     /// Whether the compiled program contains calculations requiring complete anchor history.
