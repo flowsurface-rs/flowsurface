@@ -402,9 +402,17 @@ impl IndicatorConfig {
     }
 
     pub fn is_valid_for(&self, indicator: &IndicatorId) -> bool {
-        catalog()
-            .get(indicator)
-            .is_some_and(|registration| registration.validate_config(self).is_ok())
+        catalog().get(indicator).is_some_and(|registration| {
+            registration
+                .validate_config(self)
+                .inspect_err(|error| {
+                    log::warn!(
+                        "Rejecting indicator {} configuration: {error}",
+                        indicator.id()
+                    );
+                })
+                .is_ok()
+        })
     }
 
     pub fn normalized_for(self, indicator: &IndicatorId) -> Self {

@@ -981,11 +981,16 @@ pub fn registration(
         )]);
     }
     let definition = definition_from_compiled(&compiled).map_err(|error| vec![error])?;
-    Ok(IndicatorRegistration::from_parts(
-        id,
-        definition,
-        Arc::new(compiled),
-    ))
+    let registration = IndicatorRegistration::from_parts(id, definition, Arc::new(compiled));
+    registration
+        .validate_config(&registration.default_config())
+        .map_err(|error| {
+            vec![format!(
+                "{origin_label} indicator source '{}': {error}",
+                registration.id.id()
+            )]
+        })?;
+    Ok(registration)
 }
 
 impl IndicatorRegistration {
@@ -1087,16 +1092,10 @@ impl IndicatorRegistration {
     }
 
     pub fn validate_config(&self, config: &IndicatorConfig) -> Result<(), IndicatorConfigError> {
-        for input in &self.compiled.descriptor.inputs {
-            if let Some(value) = config
-                .value()
-                .as_object()
-                .and_then(|object| object.get(&input.id))
-            {
-                validated_input_value(input, value)?;
-            }
-        }
-        Ok(())
+        let next_config = config_to_runtime(config, &self.compiled.descriptor)?;
+        self.compiled
+            .validate_history_analysis(&next_config)
+            .map_err(|error| IndicatorConfigError::Deserialize(error.to_string()))
     }
 
     pub fn unsupported_reason(
