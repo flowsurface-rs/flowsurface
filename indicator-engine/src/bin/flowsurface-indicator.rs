@@ -1,6 +1,7 @@
 use flowsurface_indicator_engine::{
     ChartFrame, CompileLimits, CompiledIndicator, Diagnostic, FrameOutput, IndicatorConfig,
-    IndicatorFrame, IndicatorId, InstrumentContext, Severity, TimeOrTick, TradeAggregate, compile,
+    IndicatorFrame, IndicatorId, InstrumentContext, RuntimeLimits, Severity, TimeOrTick,
+    TradeAggregate, compile,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -291,14 +292,15 @@ fn source_summary(count: usize) -> String {
 
 fn smoke_test(source: &CompiledSource) -> Result<(), String> {
     let config = IndicatorConfig::default();
+    let limits = RuntimeLimits::untrusted();
     let warmup = source
         .indicator
-        .warmup_bars(&config)
+        .warmup_bars_with_limits(&config, limits)
         .unwrap_or(source.indicator.descriptor.max_bars_back);
     let frame_count = warmup.saturating_add(2).max(32);
     let mut instance = source
         .indicator
-        .instantiate(config)
+        .instantiate_with_limits(config, limits)
         .map_err(|error| format!("could not instantiate indicator: {error}"))?;
 
     for index in 0..frame_count {

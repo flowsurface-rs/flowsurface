@@ -38,5 +38,6 @@ then explicit files. Invalid installed files are skipped with diagnostics;
 core errors and duplicate short names fail startup.
 
 For authoring, see the [language reference](../indicator-engine/LANGUAGE.md)
-and [CLI workflow](../indicator-engine/README.md#cli). Check and smoke-test a
-source before installing it.
+and [CLI workflow](../indicator-engine/README.md#cli). For missing capabilities,
+see [extension guidance](../indicator-engine/LANGUAGE.md#extending-the-scripting-boundary).
+Check and smoke-test a source before installing it.

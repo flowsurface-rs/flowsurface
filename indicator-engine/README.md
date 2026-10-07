@@ -25,8 +25,10 @@ filenames, and duplicate short names. Add `--namespace <prefix>` to enforce a
 collection's namespace; the engine accepts any valid namespace.
 
 `test` also runs default inputs against deterministic synthetic closed bars
-and an open-bar preview. It catches runtime failures but does not verify
-indicator formulas or chart integration.
+and an open-bar preview, using the application's runtime limits for warmup and
+execution. It catches runtime failures but does not verify indicator formulas,
+every input configuration, long-history performance, dependency integration, or
+rendered appearance. See [resource limits](LANGUAGE.md#resource-limits).
 
 The engine is [Apache-2.0 licensed](LICENSE). The application and bundled
 `core.*` sources are GPL-3.0-or-later; indicator source licenses are separate.

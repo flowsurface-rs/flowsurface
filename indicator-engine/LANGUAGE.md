@@ -4,6 +4,9 @@ A `.ind` file defines an indicator's inputs, calculations, and presentation.
 See [installation](../indicators/README.md) and the [CLI](README.md#cli) for
 file naming, collections, and validation.
 
+Examples beginning with `language(1)` are complete files. Other fenced examples
+and individual call signatures are partial snippets to use inside a file.
+
 ```text
 language(1)
 indicator("Moving average", id = "community.example", sourceable = true)
@@ -21,7 +24,8 @@ non-finite numeric results become `na`. Execution, heap, collection, and output
 budgets are enforced; collection nesting is limited to 256 levels. Runtime
 failures quarantine the indicator.
 
-- `=` binds a local; `state` or `var` creates persistent state; `:=` updates it.
+- `=` binds a local; `state` or `var` creates persistent state; `:=` updates
+  either an ordinary local or persistent state.
   Types remain compatible across updates: integers and floats can widen to
   float, and `na` is compatible with any type.
 - A state initializer retries until it returns a non-`na` value. An explicit
@@ -42,7 +46,8 @@ failures quarantine the indicator.
   calculation to an immutable top-level local before indexing it; mutable
   locals, function parameters, and direct function results cannot retain
   history. Offset zero needs no retention. Dynamic offsets require an explicit
-  `max_bars_back`.
+  `max_bars_back`. Literal offsets grow retention to at least `offset + 1`,
+  even when an explicitly declared bound is smaller, up to 50,000 retained bars.
 - Inputs and ordinary output/presentation declarations must be top-level.
   `region` and `region_remove` may occur in bounded control-flow blocks outside
   functions. At most one `display` and one `format` are allowed, before outputs.
@@ -55,7 +60,87 @@ top = zone.upper
 ```
 
 User-record fields have dynamic type `Any`; absent fields or non-record values
-return `na`. Built-in chart fields are checked at compile time.
+return `na` at runtime. Statically known wrong kinds are rejected at compilation.
+Built-in chart fields are checked at compile time.
+
+### Types and operators
+
+Values include signed 64-bit integers, floats, booleans, strings, colors, time
+inputs, tuples, arrays, records, and `na`. A **simple** value depends only on
+constants or inputs; a **series** value may change each bar. Host price fields,
+`bar_index`, and TA results are series. `instrument.min_tick` is simple metadata.
+TA window lengths need simple integers, so integer inputs work but bar-dependent
+lengths do not. Function parameters and returns are typed as numeric float
+series, even when a caller passes an integer; parameters cannot supply simple
+integer window lengths or history offsets.
+
+Operators, from highest to lowest precedence: unary `+`, `-`, `!`; `*`, `/`,
+`%`; `+`, `-`; `<`, `<=`, `>`, `>=`; `==`, `!=`; `&&`; `||`. Parentheses group
+expressions. `&&` and `||` short-circuit; `select` provides conditional values.
+Only boolean `true` takes an `if` branch or continues a `while`; `false` and `na`
+do not. Statements end at a newline or semicolon; braces group bodies.
+Calls and collection literals may span lines. `//` starts a line comment.
+
+### Control flow and collections
+
+This complete example uses per-bar locals, a numeric function with a default,
+conditional expressions, and both range and collection loops:
+
+```text
+language(1)
+indicator("Syntax example", id = "community.syntax-example")
+format(precision = "base_ticker_min_tick")
+method = input.string("Double", "Method", options = ["Double", "Identity"])
+
+fn multiply(value, factor = 2) {
+    return value * factor
+}
+
+chosen = switch method {
+    "Double" => multiply(chart.close),
+    "Identity" => chart.close,
+    default => na
+}
+values = array.new()
+for index = 0 to 2 {
+    if index == 1 {
+        continue
+    }
+    values := array.push(values, (index, chosen))
+}
+total = 0.0
+for entry in values {
+    (index, value) = entry
+    if na(value) {
+        break
+    } else {
+        total := total + value
+    }
+}
+counter = 0
+while counter < 2 {
+    counter := counter + 1
+}
+zone = { upper: chart.high, lower: chart.low }
+zone := record.set(zone, "middle", chart.hl2)
+plot(total / counter, id = "average")
+plot(zone.middle, id = "middle")
+```
+
+Range loops evaluate their bounds once, include both endpoints, and increment
+by one. A start greater than the end produces no iterations; descending ranges
+and custom steps are unavailable. Collection loops iterate an array or tuple's
+evaluated contents. Compilation does not prove loop termination: iterations
+and evaluated work are capped at runtime, including `while true`.
+`switch` branches are comma-separated; `default => value` supplies the fallback.
+
+Arrays use `[value, ...]`; tuples use `(first, second, ...)`. Both use zero-based
+element indexing, and negative or out-of-range indices return `na`. In contrast,
+indexing a numeric series means bars of history, not collection elements.
+Destructuring uses `(first, second) = collection`; `:=` updates existing locals.
+Records use `{ field: value }`, dot access, or `record.get(record, "field")`.
+`array.push` and `record.set` return updated collections rather than mutating
+the binding: retain the result with `values := array.push(values, value)`.
 
 ## Host data
 
@@ -64,7 +149,7 @@ presentation-only.
 
 | Fields | Meaning |
 | --- | --- |
-| `chart.time`, `bar_index` | Bar timestamp and zero-based index |
+| `chart.time`, `bar_index` | Bar timestamp in Unix milliseconds and zero-based index |
 | `chart.open`, `chart.high`, `chart.low`, `chart.close`, `chart.volume` | OHLCV |
 | `chart.hl2`, `chart.hlc3`, `chart.ohlc4`, `chart.hlcc4` | Derived price averages |
 | `chart.directional_volume_available`, `chart.buy_qty`, `chart.sell_qty` | Candle directional volume |
@@ -72,13 +157,25 @@ presentation-only.
 | `chart.trade.buy_count`, `chart.trade.sell_count`, `chart.trade.count` | Trade counts |
 | `open_interest` | Latest finite sample at or before the bar timestamp; `na` before the first sample |
 | `instrument.min_tick` | Minimum price increment; simple metadata, `na` if unavailable |
-| `barstate.isfirst`, `barstate.islast`, `barstate.isconfirmed`, `barstate.isrealtime` | Evaluation flags |
+
+| Evaluation flag | True when |
+| --- | --- |
+| `barstate.isfirst` | The frame's index is zero, including a preview at index zero |
+| `barstate.isconfirmed` | Evaluating a closed frame |
+| `barstate.islast` | Evaluating an open preview |
+| `barstate.isrealtime` | Evaluating an open preview |
+
+`islast` does not identify the last historical closed bar. Both `islast` and
+`isrealtime` are false on closed evaluations, including live bar commits.
 
 Candle directional volume does not substitute for missing trade aggregates.
 Raw trade arrays are unavailable. Plot offsets change presentation only.
 
 There is no arbitrary I/O, remote symbol/timeframe access, strategy or alert
-API, `varip`, correction replay, map type, or mutable drawing/table handle.
+API, `varip`, map type, or mutable drawing/table handle. Scripts cannot request
+correction replay, and an engine instance cannot revise a committed bar. The
+application may rebuild affected indicators and replay historical frames when
+data changes, including closed-bar trade corrections.
 
 ## Inputs and source composition
 
@@ -94,8 +191,12 @@ color = input.color()
 Defaults and labels occupy the first two arguments (or `defval` and `title`).
 Metadata is literal: `min`, `max`, `step`, `group`, `inline`, `tooltip`,
 `visible_when`, and `requires`. String `options` must be a literal string array.
-Configured values must match the type, bounds, and options. Color defaults to
-white; `int` and `time` settings preserve signed 64-bit values.
+Defaults and configured values must match the type; `int`, `float`, and `time`
+values must satisfy inclusive `min`/`max` bounds, and strings must match declared
+options. `step` is control metadata, not a runtime divisibility or alignment
+rule. Color defaults to white; `int` and `time` settings preserve signed 64-bit
+values. Time inputs use Unix milliseconds. Bounds metadata uses floating-point
+numbers, including for integer and time comparisons.
 
 `visible_when = "enabled"` references a boolean input. `requires` names
 `klines`, `directional_volume`, `trades`, or `open_interest`; inputs and styles
@@ -138,7 +239,7 @@ Arguments below are compile-time literals. Optional settings can be omitted.
 | --- | --- |
 | `sourceable` | `false`; permits visible numeric plots as dependency sources |
 | `optional_trades` | `false`; makes inferred directional-volume requirements optional, not `chart.trade.*` requirements |
-| `max_bars_back` | `5000`; retained-series history, positive and at most `50000` |
+| `max_bars_back` | `5000`; positive retained-history bound, automatically increased for literal offsets; at most `50000` |
 | `bases` | Unrestricted; non-empty list of `"time"` and/or `"tick"` |
 | `author`, `author_url` | Optional pair; URL must be absolute HTTP(S) |
 | `description`, `source` | Optional strings; source must be absolute HTTP(S) |
@@ -272,7 +373,8 @@ the positive slot; unavailable values are blank.
 
 Values are numeric, indices integer. Optional `visible` and `color` are runtime
 expressions; `text` is a literal. ID defaults from title or is generated, title
-to ID, `color_slot` to `main`, and `width` to `1`.
+to ID, `color_slot` to `main`, and `width` to `1`. The slot must be declared,
+including when using the default `main`.
 
 ```text
 region(key = bar_index, upper = chart.high, lower = chart.low,
@@ -299,6 +401,27 @@ region_remove(id = "zones", key = bar_index)
 
 Within a bar, the last update/removal wins. Open previews are transactional.
 Persistent regions exceeding the output limit evict the oldest entries.
+
+A complete drawing example:
+
+```text
+language(1)
+indicator("Bar geometry", id = "community.bar-geometry")
+display(view = "primary_overlay")
+style("main", title = "Geometry", role = "primary", shade = "base")
+plot(na, id = "anchor", display = "none", pane = "main", layer = true)
+segment(chart.low, chart.high, bar_index, bar_index,
+        id = "bar-span", color_slot = "main")
+region(key = 0, upper = chart.high, lower = chart.low,
+       left_index = bar_index, right_index = bar_index,
+       id = "current-bar", border_color_slot = "main",
+       fill_color_slot = "main", extend_right = true)
+```
+
+`primary_overlay` currently requires a numeric output layer. The hidden `na`
+plot supplies that layer for a drawing-only source without drawing a price line.
+This example emits a snapshot region; a persistent region instead uses
+`persistent = true` and `region_remove` to manage retained keys.
 
 ## TA behavior
 
@@ -327,11 +450,136 @@ window's result `na` until it leaves the window.
 - `ta.pivothigh(source, left, right)` / `ta.pivotlow`: confirm the center
   `right` bars later. Both legs are positive; `left + right + 1` must fit the
   window limit. Ties qualify; missing samples return `na`.
-- `ta.rsi(source, period)`: seeds with the mean of `period` valid adjacent price
+- `ta.rsi(source, length)`: seeds with the mean of `length` valid adjacent price
   changes, then uses Wilder smoothing. Missing prices break adjacency but keep
   accumulated averages. Flat gain/loss gives 50, zero loss 100, zero gain 0.
-- `ta.previous_when(condition, value)`: returns the value from the previous
+- `ta.previous_when(condition, source)`: returns the value from the previous
   true event, then stores the current value if the condition is true.
 
 For working formulas and presentation combinations, browse the
 [bundled sources](../indicators/core/) and [catalog](../indicators/catalog/sources/).
+
+## Built-in reference
+
+The signatures below use the actual named-argument names. Unless stated
+otherwise, arguments may be series. Numeric arguments accept integers or
+floats; numeric TA/math results are floats or `na`. Missing values are accepted
+at runtime, with behavior described below. All `ta.*` calls are stateful and
+follow the scheduling rules above.
+
+### TA
+
+| Signature | Result and behavior |
+| --- | --- |
+| `ta.sma(source, length)` | Mean of a full window; `na` before it fills or while it contains missing samples |
+| `ta.ema(source, length)` | First valid source seeds the result; then alpha is `2 / (length + 1)` |
+| `ta.rma(source, length)` | First valid source seeds the result; then alpha is `1 / length` |
+| `ta.rsi(source, length)` | Wilder RSI with the seeding and edge cases described above |
+| `ta.previous_when(condition, source)` | Previous true-event value, initially `na`; preserves the numeric source kind; `condition` is boolean |
+| `ta.vwma(source, volume, length)` | Full-window sum of price times volume divided by sum of volume; `na` for missing samples or zero total volume |
+| `ta.highest(source, length)` / `ta.lowest(source, length)` | Full-window extreme; `na` for an incomplete or missing window |
+| `ta.pivothigh(source, left, right)` / `ta.pivotlow(source, left, right)` | Confirmed centered pivot with positive legs, as described above |
+| `ta.cum(source)` | Running sum starting at zero; first valid source is the first result |
+| `ta.stdev(source, length)` | Full-window population standard deviation, dividing variance by `length` |
+| `ta.dev(source, length)` | Full-window mean absolute deviation from the mean |
+| `ta.highestbars(source, length)` / `ta.lowestbars(source, length)` | Nonnegative bars-back offset as a float; ties select the oldest extreme in the window |
+| `ta.tr(high, low, close)` | True range using previous valid close; first valid bar returns `high - low` |
+| `ta.avwap(source, volume, anchor)` | Anchored volume-weighted mean; `anchor` is a simple string: `Day`, `Week`, or `Month`, case-insensitive |
+
+`length`, `left`, and `right` require simple positive integers. Finite-window
+statistics, including `stdev`, `dev`, and extreme offsets, need the full window
+and return `na` if any sample is missing. EMA, RMA, and cumulative sums return
+`na` on a missing source and retain their accumulated state. True range returns
+`na` if any current OHLC argument is missing and retains its previous close.
+`previous_when` stores the current source, including `na`, on a true condition;
+false or missing conditions leave the stored value unchanged.
+
+AVWAP resets at UTC midnight for days, Monday midnight for weeks, or the first
+day of the month. Unknown anchors return `na`. Missing source/volume samples
+leave the totals unchanged and may still return the accumulated mean. It returns
+`na` until accumulated volume exceeds floating-point epsilon. Non-finite sums
+or recursive updates return `na` without replacing the last finite accumulated
+state; other non-finite numeric results also become `na`.
+
+### Math and missing values
+
+| Signature | Result and behavior |
+| --- | --- |
+| `math.abs(value)` | Numeric absolute value; `na` for missing input |
+| `math.min(left, right, ...)` / `math.max(left, right, ...)` | At least two numeric arguments; `na` if any argument is missing |
+| `na(value)` | Boolean missingness test for any kind |
+| `nz(source, replacement)` | Numeric source or replacement when missing; replacement is simple and required |
+| `coalesce(source, fallback)` | Source or lazily evaluated fallback when source is missing; compatible result kinds |
+| `select(condition, when_true, when_false)` | Lazily evaluates one result; false or missing condition chooses `when_false`; compatible result kinds |
+
+`nz` evaluates both arguments. `select`, `coalesce`, and `switch` evaluate only
+the selected result; `&&` and `||` may skip their right operand. Hoist stateful TA
+out of paths whose selection depends on the bar, so skipped evaluation cannot
+change TA state progression. Function defaults and state initializers also
+require hoisting, even when their expression looks constant.
+
+### Collections, strings, and colors
+
+| Signature | Result and behavior |
+| --- | --- |
+| `array.new(...)` | Array containing zero or more positional initial values of any kind |
+| `array.push(array, value)` | Updated array with one appended value |
+| `array.get(array, index)` | Element of dynamic kind `Any`; integer index; `na` outside the array |
+| `array.size(array)` | Integer element count |
+| `record.new()` | Empty record |
+| `record.set(record, key, value)` | Updated record; string key; adds or replaces a field |
+| `record.get(record, key)` | Field of dynamic kind `Any`; string key; `na` for absent fields or runtime non-record values |
+| `str.tostring(value)` | String for any kind; missing value becomes `"na"`; collections report their element/field count |
+| `color.rgb(red, green, blue, alpha)` | Color; integer components in 0–255; omitted or missing alpha defaults to 255 |
+
+Colors also have constants `color.red`, `color.green`, `color.blue`,
+`color.white`, and `color.black`. `color.rgb(...)` with positional literal
+components can supply input defaults; runtime color expressions can style
+outputs. Invalid runtime components fail rather than being clamped. Collection
+operations remain subject to heap, nesting, element-count, and weighted
+copy-work limits.
+
+## Resource limits
+
+The Rust library's default limits differ from the application's limits. CLI
+`test` uses the application's `RuntimeLimits::untrusted()` for both warmup
+planning and execution. Closed frames and open previews have the same per-frame
+budget. Exceeding a work or resource limit fails evaluation.
+
+| Limit | Library default | Application / CLI test |
+| --- | --- | --- |
+| Weighted work per frame | 1,000,000 | 250,000 |
+| Function call depth | 128 | 64 |
+| Heap bytes | 67,108,864 (64 MiB) | 16,777,216 (16 MiB) |
+| Collection elements | 100,000 | 25,000 |
+| TA window length | 5,000 | 5,000 |
+| Output items per frame | 1,000,000 | 4,096 |
+| String bytes | 1,048,576 | 65,536 |
+
+Collection nesting is limited to 256 levels. Retained-series history has the
+separate 50,000-bar ceiling; increasing it does not increase TA window limits.
+Successful CLI testing covers only default inputs on synthetic data, not every
+configuration or long-history workload. See the [CLI workflow](README.md#cli).
+
+## Extending the scripting boundary
+
+Try existing primitives and composition first; keep indicator algorithms in
+`.ind` sources. Do not extend the DSL merely to shorten a source. When a real
+requirement cannot be expressed cleanly, identify the smallest missing reusable
+capability and place it at the appropriate layer:
+
+| Layer | Owns |
+| --- | --- |
+| Language/runtime | General computation, state, control flow, collections, history |
+| TA library | Reusable calculations without new execution semantics |
+| Host data | Stable market-domain series, coverage, and instrument metadata |
+| Presentation | Reusable chart geometry and styling consuming outputs |
+
+A capability should make sense without naming its originating indicator and
+should plausibly support unrelated indicator families. Multiple existing callers
+are not required. Avoid indicator-specific host calculations, leaked cache or
+renderer internals, and speculative universal frameworks. Preserve bounded,
+deterministic work and memory, failure isolation, historical replay, and
+transactional open previews. Explain each extension's layer and reuse in its
+handoff; recursion, arbitrary I/O, and unrestricted host access remain outside
+the language's target.

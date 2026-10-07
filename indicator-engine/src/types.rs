@@ -619,7 +619,7 @@ impl InputDescriptor {
         }
 
         let Some(number) = (match value {
-            InputValue::Int(value) => Some(*value as f64),
+            InputValue::Int(value) | InputValue::Time(value) => Some(*value as f64),
             InputValue::Float(value) => Some(*value),
             _ => None,
         }) else {

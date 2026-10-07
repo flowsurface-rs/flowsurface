@@ -7,6 +7,8 @@ bundle this collection.
 See [installation](../README.md#install-and-run), the
 [language reference](../../indicator-engine/LANGUAGE.md), and
 [CLI workflow](../../indicator-engine/README.md#cli) for creating a source.
+Use the [extension guidance](../../indicator-engine/LANGUAGE.md#extending-the-scripting-boundary)
+when a source needs a capability the current language cannot express cleanly.
 
 Validate the collection from the repository root:
 

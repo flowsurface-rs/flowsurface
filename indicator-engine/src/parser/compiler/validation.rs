@@ -58,7 +58,7 @@ impl LoweringContext {
                 self.error(span, format!("input '{}' step must be positive", input.id));
             }
             let default = match &input.default {
-                InputValue::Int(value) => Some(*value as f64),
+                InputValue::Int(value) | InputValue::Time(value) => Some(*value as f64),
                 InputValue::Float(value) => Some(*value),
                 _ => None,
             };
