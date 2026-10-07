@@ -11,6 +11,7 @@ pub struct Dashboard {
     pub pane: Pane,
     #[serde(deserialize_with = "deserialize_popouts", default)]
     pub popout: Vec<(Pane, WindowSpec)>,
+    #[serde(default)]
     pub chart_settings: ChartSettings,
 }
 
