@@ -44,7 +44,7 @@ pub enum DataUpdate<'a> {
 pub(super) enum DataUpdateEffect {
     Unchanged,
     HistoricalChanged,
-    LiveChanged { committed_bar: bool },
+    LiveChanged,
 }
 
 impl DataUpdate<'_> {
@@ -105,16 +105,14 @@ impl DataUpdate<'_> {
                 if **ticker_info == data.base_ticker() {
                     remap_indicator_outputs(data, indicators, update.index_change);
                 }
-                if update.rebuild_indicators {
+                if let Some(scope) = update.rebuild_scope {
                     indicators.mark_for_candle_ticker(
                         data,
                         **ticker_info,
-                        if basis.is_time() {
-                            IndicatorRebuildReason::HistoricalDataChanged(
-                                IndicatorUpdateScope::Full,
-                            )
-                        } else {
+                        if !basis.is_time() && scope.is_full() {
                             IndicatorRebuildReason::BasisChanged
+                        } else {
+                            IndicatorRebuildReason::HistoricalDataChanged(scope)
                         },
                     );
                 }
@@ -125,21 +123,24 @@ impl DataUpdate<'_> {
                     update.committed_bar,
                     trade_data_enabled,
                 );
-                DataUpdateEffect::LiveChanged {
-                    committed_bar: update.committed_bar,
-                }
+                DataUpdateEffect::LiveChanged
             }
             (
                 DataUpdate::LiveTrades { ticker_info, .. },
                 KlineDataChange::LiveTrades { update },
             ) => {
-                if update.rebuild_indicators || update.closed_trade_correction {
-                    let reason = if !basis.is_time() && update.rebuild_indicators {
+                if update.rebuild_scope.is_some() || update.closed_trade_correction {
+                    let scope = update.rebuild_scope.unwrap_or(IndicatorUpdateScope::Full);
+                    let reason = if !basis.is_time() && scope.is_full() {
                         IndicatorRebuildReason::BasisChanged
                     } else {
-                        IndicatorRebuildReason::HistoricalDataChanged(IndicatorUpdateScope::Full)
+                        IndicatorRebuildReason::HistoricalDataChanged(scope)
                     };
-                    indicators.mark_for_trade_ticker(data, **ticker_info, reason);
+                    if basis.is_time() {
+                        indicators.mark_for_trade_ticker(data, **ticker_info, reason);
+                    } else {
+                        indicators.mark_for_candle_ticker(data, **ticker_info, reason);
+                    }
                 }
                 apply_live_state(
                     data,
@@ -148,23 +149,25 @@ impl DataUpdate<'_> {
                     update.committed_bar,
                     trade_data_enabled,
                 );
-                DataUpdateEffect::LiveChanged {
-                    committed_bar: update.committed_bar,
-                }
+                DataUpdateEffect::LiveChanged
             }
             (
                 DataUpdate::HistoricalTrades { ticker_info, .. },
                 KlineDataChange::HistoricalTrades,
             ) => {
-                indicators.mark_for_trade_ticker(
-                    data,
-                    *ticker_info,
-                    if basis.is_time() {
-                        IndicatorRebuildReason::InputFetch
-                    } else {
-                        IndicatorRebuildReason::BasisChanged
-                    },
-                );
+                if basis.is_time() {
+                    indicators.mark_for_trade_ticker(
+                        data,
+                        *ticker_info,
+                        IndicatorRebuildReason::InputFetch,
+                    );
+                } else {
+                    indicators.mark_for_candle_ticker(
+                        data,
+                        *ticker_info,
+                        IndicatorRebuildReason::BasisChanged,
+                    );
+                }
                 DataUpdateEffect::HistoricalChanged
             }
             (_, KlineDataChange::HistoricalInput { source, update }) => {

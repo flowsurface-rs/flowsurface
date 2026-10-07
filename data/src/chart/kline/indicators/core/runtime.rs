@@ -11,7 +11,7 @@ use crate::chart::kline::{
 use indicator_engine::{IndicatorFrame, SeriesInputValue};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::{BTreeMap, BTreeSet};
-use std::ops::Range;
+use std::ops::{ControlFlow, Range};
 
 struct IndicatorRuntimeEntry {
     id: IndicatorInstanceId,
@@ -179,6 +179,19 @@ impl IndicatorHost {
         ids.iter().all(|id| self.entry_indices.contains_key(id))
     }
 
+    pub fn can_append_from(&self, ids: &[IndicatorInstanceId], start: usize) -> bool {
+        ids.iter().all(|id| {
+            self.entry_indices.get(id).is_some_and(|index| {
+                let entry = &self.entries[*index];
+                entry.output_indices.is_none()
+                    && entry
+                        .runtime
+                        .committed_index()
+                        .map_or(start == 0, |index| index.checked_add(1) == Some(start))
+            })
+        })
+    }
+
     pub fn dependent_ids(&self, roots: &[IndicatorInstanceId]) -> Vec<IndicatorInstanceId> {
         let mut affected = roots.iter().copied().collect::<FxHashSet<_>>();
         let mut pending = roots.to_vec();
@@ -262,8 +275,20 @@ impl IndicatorHost {
         instances: &IndicatorInstanceStore,
         frames: &[IndicatorFrame],
     ) {
+        let _ =
+            self.recalculate_interruptible(active, instances, frames, || ControlFlow::Continue(()));
+    }
+
+    pub fn recalculate_interruptible(
+        &mut self,
+        active: &[IndicatorInstanceId],
+        instances: &IndicatorInstanceStore,
+        frames: &[IndicatorFrame],
+        mut control: impl FnMut() -> ControlFlow<()>,
+    ) -> ControlFlow<()> {
         let mut rebuilt = Self::default();
         for instance in active.iter().filter_map(|id| instances.get(*id)) {
+            control()?;
             match IndicatorRuntimeEntry::new(instance) {
                 Ok(Some(entry)) => rebuilt.entries.push(entry),
                 Ok(None) => {}
@@ -272,10 +297,38 @@ impl IndicatorHost {
         }
         rebuilt.rebuild_entry_indices();
         rebuilt.rebuild_graph(active, instances);
-        for frame in frames {
-            rebuilt.evaluate_closed(frame);
-        }
+        rebuilt.replay_closed_interruptible(frames, control)?;
         *self = rebuilt;
+        ControlFlow::Continue(())
+    }
+
+    pub fn replay_closed_interruptible(
+        &mut self,
+        frames: &[IndicatorFrame],
+        control: impl FnMut() -> ControlFlow<()>,
+    ) -> ControlFlow<()> {
+        self.replay_frames(frames, None, control)
+    }
+
+    fn replay_frames(
+        &mut self,
+        frames: &[IndicatorFrame],
+        selected: Option<&FxHashSet<IndicatorInstanceId>>,
+        mut control: impl FnMut() -> ControlFlow<()>,
+    ) -> ControlFlow<()> {
+        for chunk in frames.chunks(64) {
+            for frame in chunk {
+                control()?;
+                for id in self.execution_order.clone() {
+                    if selected.is_none_or(|selected| selected.contains(&id)) {
+                        control()?;
+                        self.evaluate_entry(id, frame, false);
+                    }
+                }
+            }
+            std::thread::yield_now();
+        }
+        ControlFlow::Continue(())
     }
 
     pub fn recalculate_selected(
@@ -335,9 +388,7 @@ impl IndicatorHost {
         }
         self.rebuild_entry_indices();
         self.rebuild_graph(&active, instances);
-        for frame in frames {
-            self.evaluate_nodes(&affected_set, frame, false);
-        }
+        let _ = self.replay_frames(frames, Some(&affected_set), || ControlFlow::Continue(()));
     }
 
     pub fn set_active(
@@ -831,5 +882,68 @@ mod tests {
         assert!(region_intersects_source_range(&extending(0), &visible));
         assert!(region_intersects_source_range(&extending(9), &visible));
         assert!(!region_intersects_source_range(&extending(10), &visible));
+    }
+
+    #[test]
+    fn interrupted_replay_preserves_the_previous_host() {
+        let id = IndicatorInstanceId::default_for(&IndicatorId::parse("core.volume").unwrap());
+        let mut host = IndicatorHost {
+            execution_order: vec![id],
+            ..IndicatorHost::default()
+        };
+        let frames = (0..130)
+            .map(|index| IndicatorFrame {
+                index,
+                time: index as i64,
+                basis: indicator_engine::TimeOrTick::Tick,
+                instrument: indicator_engine::InstrumentContext::default(),
+                chart: indicator_engine::ChartFrame {
+                    open: Some(1.0),
+                    high: Some(1.0),
+                    low: Some(1.0),
+                    close: Some(1.0),
+                    volume: Some(1.0),
+                    directional_volume_available: false,
+                    buy_qty: 0.0,
+                    sell_qty: 0.0,
+                    trade: None,
+                },
+                open_interest: None,
+                series_inputs: std::sync::Arc::from([]),
+            })
+            .collect::<Vec<_>>();
+        let mut checks = 0;
+        assert!(
+            host.replay_closed_interruptible(&frames, || {
+                checks += 1;
+                if checks == 5 {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                }
+            })
+            .is_break()
+        );
+        assert_eq!(checks, 5);
+        assert!(
+            host.recalculate_interruptible(
+                &[],
+                &IndicatorInstanceStore::default(),
+                &frames,
+                || ControlFlow::Break(())
+            )
+            .is_break()
+        );
+        assert_eq!(host.execution_order, vec![id]);
+        assert!(
+            host.recalculate_interruptible(
+                &[],
+                &IndicatorInstanceStore::default(),
+                &frames,
+                || ControlFlow::Continue(())
+            )
+            .is_continue()
+        );
+        assert!(host.execution_order.is_empty());
     }
 }

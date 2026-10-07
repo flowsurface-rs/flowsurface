@@ -99,7 +99,6 @@ pub struct KlineChart {
     settings_reconfigure_pending: bool,
     render_invalidation: RenderInvalidation,
     last_maintenance_at: Instant,
-    committed_frames_revision: u64,
 }
 
 impl KlineChart {
@@ -126,7 +125,6 @@ impl KlineChart {
             last_maintenance_at: Instant::now(),
             render_invalidation: RenderInvalidation::new(),
             settings_reconfigure_pending: false,
-            committed_frames_revision: 0,
         };
 
         let _ = chart.data.add_ticker(base_ticker, chart.basis);
@@ -600,17 +598,14 @@ impl KlineChart {
         if let Some(job_id) = self.indicators.pending_rebuild_job() {
             self.complete_indicator_rebuild(job_id);
         }
-        if self.indicators.pending_rebuild_job().is_some() || self.settings_reconfigure_pending {
+        if self.settings_reconfigure_pending {
             return None;
         }
 
         let trade_data_enabled = self.trade_data_enabled();
-        let worker = self.indicators.begin_full_rebuild(
-            &self.data,
-            &self.fetch,
-            trade_data_enabled,
-            self.committed_frames_revision,
-        )?;
+        let worker =
+            self.indicators
+                .begin_full_rebuild(&self.data, &self.fetch, trade_data_enabled)?;
         self.refresh_indicator_presentation();
         self.render_invalidation.invalidate();
         Some(iced::Task::perform(worker, |job_id| {
@@ -620,12 +615,10 @@ impl KlineChart {
 
     fn complete_indicator_rebuild(&mut self, job_id: u64) {
         let trade_data_enabled = self.trade_data_enabled();
-        if self.indicators.complete_full_rebuild(
-            &mut self.data,
-            job_id,
-            self.committed_frames_revision,
-            trade_data_enabled,
-        ) {
+        if self
+            .indicators
+            .complete_full_rebuild(&mut self.data, job_id, trade_data_enabled)
+        {
             self.render_invalidation.invalidate();
         }
         self.refresh_indicator_presentation();
@@ -1171,7 +1164,6 @@ impl KlineChart {
 
         self.data.reset_for_basis(self.basis, preserve_raw_trades);
         self.sync_tick_drawing_sequence();
-        self.committed_frames_revision = self.committed_frames_revision.wrapping_add(1);
         self.indicators
             .mark_rebuild_pending(IndicatorRebuildReason::BasisChanged);
         if basis_changed {
@@ -1306,10 +1298,7 @@ impl KlineChart {
             DataUpdateEffect::HistoricalChanged => {
                 self.render_invalidation.invalidate();
             }
-            DataUpdateEffect::LiveChanged { committed_bar } => {
-                if committed_bar {
-                    self.committed_frames_revision = self.committed_frames_revision.wrapping_add(1);
-                }
+            DataUpdateEffect::LiveChanged => {
                 self.render_invalidation.request_data_redraw();
                 self.redraw_data_if_due(Instant::now());
             }

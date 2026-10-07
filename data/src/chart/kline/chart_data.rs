@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 pub struct LiveIndicatorUpdate {
     pub committed_bar: bool,
-    pub rebuild_indicators: bool,
+    pub rebuild_scope: Option<IndicatorUpdateScope>,
     pub closed_trade_correction: bool,
     pub coverage_frames: Vec<IndicatorFrame>,
     pub index_change: KlineIndexChange,
@@ -300,6 +300,25 @@ impl KlineData {
             .set_active(active_indicators, indicators)
     }
 
+    pub fn can_recalculate_incrementally(
+        &self,
+        ids: &[IndicatorInstanceId],
+        scope: IndicatorUpdateScope,
+    ) -> bool {
+        let IndicatorUpdateScope::From(start) = scope else {
+            return false;
+        };
+        self.indicator_host.can_append_from(ids, start)
+            && self.base_series().is_none_or(|series| {
+                series
+                    .committed_points()
+                    .filter(|point| point.index >= start)
+                    .take(2)
+                    .count()
+                    <= 1
+            })
+    }
+
     pub fn recalculate_indicators(
         &mut self,
         indicators: &IndicatorInstanceStore,
@@ -540,8 +559,10 @@ impl KlineData {
         let Some(update) = self.series[idx].update_latest_kline(kline, basis) else {
             return KlineDataChange::Unchanged;
         };
-        let rebuild_indicators =
-            is_base && update.scope.is_full() && previous_time.is_some_and(|time| next_time < time);
+        let rebuild_scope = (is_base
+            && update.scope.is_full()
+            && previous_time.is_some_and(|time| next_time < time))
+        .then_some(IndicatorUpdateScope::Full);
         let coverage_frames = if starts_new_bar && is_base {
             let committed_frame = self.evaluate_closed_previous_frame(
                 previous_time,
@@ -556,7 +577,7 @@ impl KlineData {
         KlineDataChange::LiveKline {
             update: LiveIndicatorUpdate {
                 committed_bar: starts_new_bar && is_base,
-                rebuild_indicators,
+                rebuild_scope,
                 closed_trade_correction: false,
                 coverage_frames,
                 index_change: update.index_change,
@@ -604,7 +625,10 @@ impl KlineData {
         } else {
             previous_committed_len
         };
-        let newly_committed_frames = if committed_len > previous_committed_len {
+        let deferred_append = committed_len.saturating_sub(previous_committed_len) > 1;
+        let newly_committed_frames = if deferred_append {
+            self.committed_indicator_frames_from(previous_committed_len, trade_data_enabled)
+        } else if committed_len > previous_committed_len {
             let frames = self.evaluate_closed_append_from(
                 previous_committed_len,
                 indicator_ids,
@@ -621,7 +645,13 @@ impl KlineData {
         KlineDataChange::LiveTrades {
             update: LiveIndicatorUpdate {
                 committed_bar: committed_len > previous_committed_len,
-                rebuild_indicators: is_base && scope.is_full(),
+                rebuild_scope: if is_base && scope.is_full() {
+                    Some(IndicatorUpdateScope::Full)
+                } else if deferred_append {
+                    Some(IndicatorUpdateScope::From(previous_committed_len))
+                } else {
+                    None
+                },
                 closed_trade_correction: correction_start.is_some(),
                 coverage_frames,
                 index_change: KlineIndexChange::None,

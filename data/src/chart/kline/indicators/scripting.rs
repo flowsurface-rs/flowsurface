@@ -1182,6 +1182,12 @@ impl ScriptIndicatorRuntime {
 }
 
 impl ScriptIndicatorRuntime {
+    pub(super) fn committed_index(&self) -> Option<usize> {
+        self.instance
+            .as_ref()
+            .and_then(IndicatorInstance::committed_index)
+    }
+
     pub(super) fn evaluate_closed(&mut self, frame: &IndicatorFrame) {
         if self.diagnostic.is_some() {
             return;

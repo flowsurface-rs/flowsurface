@@ -1,7 +1,7 @@
 use super::UpdatePolicy;
 use super::fetch::FetchCoordinator;
 use super::presentation::{IndicatorPresentationCache, IndicatorPresentationResolver};
-use super::rebuild::RebuildCoordinator;
+use super::rebuild::{RebuildCoordinator, RebuildSnapshot};
 use crate::widget::chart::kline::IndicatorPresentationContext;
 use data::chart::Basis;
 use data::chart::kline::composition::{ChartComposition, MarkKind};
@@ -89,7 +89,7 @@ pub(super) struct IndicatorDataRequirements {
 pub(super) struct IndicatorRebuildPlan {
     dirty_ids: Vec<IndicatorInstanceId>,
     pub(super) replay_ids: Vec<IndicatorInstanceId>,
-    dirty_epochs: Vec<(IndicatorInstanceId, u64)>,
+    validated_epochs: Vec<(IndicatorInstanceId, u64)>,
 }
 
 struct IndicatorRebuildGroup {
@@ -124,7 +124,9 @@ impl IndicatorRebuildReason {
                 Self::IndicatorSettingsChanged
             }
             (Self::InputFetch, Self::HistoricalDataChanged(_))
-            | (Self::HistoricalDataChanged(_), Self::InputFetch) => Self::InputFetch,
+            | (Self::HistoricalDataChanged(_), Self::InputFetch) => {
+                Self::HistoricalDataChanged(IndicatorUpdateScope::Full)
+            }
             (Self::HistoricalDataChanged(first), Self::HistoricalDataChanged(second)) => {
                 Self::HistoricalDataChanged(first.merge(second))
             }
@@ -794,6 +796,18 @@ impl IndicatorState {
     }
 
     fn mark_rebuild(&mut self, id: IndicatorInstanceId, reason: IndicatorRebuildReason) {
+        if self.rebuild.in_flight_ids().contains(&id)
+            && matches!(
+                reason,
+                IndicatorRebuildReason::IndicatorSettingsChanged
+                    | IndicatorRebuildReason::BasisChanged
+                    | IndicatorRebuildReason::IndicatorStructureChanged
+                    | IndicatorRebuildReason::TradeDataModeChanged
+            )
+        {
+            self.rebuild.cancel();
+        }
+
         if !self.composition.selected_indicators().contains(&id) {
             return;
         }
@@ -811,12 +825,6 @@ impl IndicatorState {
     fn bump_dirty_epoch(&mut self, id: IndicatorInstanceId) {
         let epoch = self.dirty_epochs.entry(id).or_default();
         *epoch = epoch.wrapping_add(1);
-    }
-
-    fn dirty_epochs_match(&self, snapshot: &[(IndicatorInstanceId, u64)]) -> bool {
-        snapshot
-            .iter()
-            .all(|(id, epoch)| self.dirty_epochs.get(id).copied().unwrap_or_default() == *epoch)
     }
 
     pub(super) fn rebuild_reason(&self, id: IndicatorInstanceId) -> Option<IndicatorRebuildReason> {
@@ -930,38 +938,63 @@ impl IndicatorState {
         data: &KlineData,
         fetch: &FetchCoordinator,
         trade_data_enabled: bool,
-        committed_frames_revision: u64,
     ) -> Option<impl std::future::Future<Output = u64> + Send + 'static + use<>> {
-        if self.pending_rebuild_job().is_some() {
-            return None;
+        let active_ids = self.selected_indicators();
+        if let Some(snapshot) = self.rebuild.snapshot_mut() {
+            let epochs_changed = snapshot.plan.validated_epochs.iter().any(|(id, epoch)| {
+                self.dirty_epochs.get(id).copied().unwrap_or_default() != *epoch
+            });
+            let obsolete = !snapshot.matches_calculation(data, &self.instances, &active_ids)
+                || (epochs_changed
+                    && !snapshot
+                        .accepts_prefix(&data.committed_indicator_frames(trade_data_enabled)));
+            if obsolete {
+                self.rebuild.cancel();
+            } else if epochs_changed {
+                for (id, epoch) in &mut snapshot.plan.validated_epochs {
+                    *epoch = self.dirty_epochs.get(id).copied().unwrap_or_default();
+                }
+            }
         }
-        let plan = self.full_rebuild_plan(data, fetch)?;
-        self.rebuild.begin(
-            plan,
-            self.selected_indicators(),
-            data.committed_indicator_frames(trade_data_enabled),
-            self.instances.clone(),
-            committed_frames_revision,
-        )
+        if self.pending_rebuild_job().is_none() {
+            let plan = self.full_rebuild_plan(data, fetch)?;
+            self.rebuild.prepare(RebuildSnapshot {
+                plan,
+                active_ids,
+                frames: data.committed_indicator_frames(trade_data_enabled),
+                instances: std::sync::Arc::new(self.instances.clone()),
+                basis: data.base_series().map(|series| series.basis()),
+                base_ticker: data.base_ticker(),
+            });
+        }
+        self.rebuild.launch()
     }
 
     pub(super) fn complete_full_rebuild(
         &mut self,
         data: &mut KlineData,
         job_id: u64,
-        committed_frames_revision: u64,
         trade_data_enabled: bool,
     ) -> bool {
         let Some(completed) = self.rebuild.poll(job_id) else {
             return false;
         };
-        let snapshot = completed.snapshot;
-        if !(snapshot.committed_frames_revision == committed_frames_revision
-            && self.dirty_epochs_match(&snapshot.plan.dirty_epochs)
-            && snapshot.active_ids == self.selected_indicators())
-        {
+        if !completed.snapshot.matches_calculation(
+            data,
+            &self.instances,
+            &self.selected_indicators(),
+        ) {
             return false;
         }
+        let frames = data.committed_indicator_frames(trade_data_enabled);
+        if !completed.snapshot.accepts_prefix(&frames) {
+            return false;
+        }
+        if frames.len() > completed.snapshot.frames.len() {
+            self.rebuild.prepare_catchup(completed, frames);
+            return false;
+        }
+        let snapshot = completed.snapshot;
         self.accept_full_rebuild(
             data,
             completed.host,
@@ -1009,6 +1042,11 @@ impl IndicatorState {
                 } else {
                     IndicatorUpdateScope::Full
                 };
+                let scope = if data.can_recalculate_incrementally(&group, scope) {
+                    scope
+                } else {
+                    IndicatorUpdateScope::Full
+                };
                 Some(IndicatorRebuildGroup {
                     dirty_ids: group,
                     calculation_ids,
@@ -1043,14 +1081,14 @@ impl IndicatorState {
         }
 
         (!dirty_ids.is_empty()).then(|| {
-            let dirty_epochs = replay_ids
+            let validated_epochs = replay_ids
                 .iter()
                 .map(|id| (*id, self.dirty_epochs.get(id).copied().unwrap_or_default()))
                 .collect();
             IndicatorRebuildPlan {
                 dirty_ids,
                 replay_ids,
-                dirty_epochs,
+                validated_epochs,
             }
         })
     }
