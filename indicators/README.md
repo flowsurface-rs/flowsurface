@@ -7,12 +7,12 @@ loaded collections, even when namespaces differ.
 
 | Collection | Namespace | License | Delivery |
 | --- | --- | --- | --- |
-| `core/` | `core.*` | GPL-3.0-or-later | Bundled; synchronized into the data directory at startup |
+| `core/` | `core.*` | GPL-3.0-or-later | Bundled; compiled directly from embedded sources at startup |
 | [catalog/sources/](catalog/README.md) | `catalog.*` | Apache-2.0 | Optional; install manually |
 
 Flowsurface reserves `core.*` for managed sources; installed sources may use
-other valid namespaces. Managed core files are replaced at startup when they
-differ from the bundled collection. Edit repository sources for development.
+other valid namespaces. Core sources are compiled from the embedded collection.
+Use the directory override below to edit repository sources for development.
 
 ## Install and run
 

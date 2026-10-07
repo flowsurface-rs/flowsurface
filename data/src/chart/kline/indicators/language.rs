@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 /// Identifies how a source file entered the host catalog.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PackageOrigin {
-    /// A source managed and seeded by the application.
+    /// A source bundled with the application or overridden for development.
     Core,
     /// A source discovered in a user or development directory.
     Installed,
@@ -91,9 +91,26 @@ pub fn load_from_files(
 /// be activated. The application uses this form so one broken file does not
 /// disable unrelated indicators.
 pub fn load_from_files_report(paths: &[PathBuf], origin: PackageOrigin) -> IndicatorLoadReport {
+    load_compiled_report(
+        paths
+            .iter()
+            .map(|path| (path.clone(), indicator_engine::compile_file(path))),
+        origin,
+    )
+}
+
+pub(super) fn load_compiled_report(
+    sources: impl IntoIterator<
+        Item = (
+            PathBuf,
+            Result<indicator_engine::CompiledIndicator, Vec<indicator_engine::Diagnostic>>,
+        ),
+    >,
+    origin: PackageOrigin,
+) -> IndicatorLoadReport {
     let mut report = IndicatorLoadReport::default();
     let mut ids = BTreeMap::<String, PathBuf>::new();
-    for path in paths {
+    for (path, compiled) in sources {
         if path.extension().and_then(|extension| extension.to_str()) != Some("ind") {
             report.diagnostics.push(format!(
                 "{}: indicator source files must use the .ind extension",
@@ -101,7 +118,7 @@ pub fn load_from_files_report(paths: &[PathBuf], origin: PackageOrigin) -> Indic
             ));
             continue;
         }
-        let compiled = match indicator_engine::compile_file(path) {
+        let compiled = match compiled {
             Ok(compiled) => compiled,
             Err(diagnostics) => {
                 report.diagnostics.extend(
@@ -115,7 +132,7 @@ pub fn load_from_files_report(paths: &[PathBuf], origin: PackageOrigin) -> Indic
         let id = compiled.descriptor.id.as_str().to_owned();
         let short_name = compiled.descriptor.id.short_name().to_owned();
         let expected_file_name = compiled.descriptor.id.source_file_name();
-        if let Err(diagnostic) = validate_source_filename(path, &id, &expected_file_name) {
+        if let Err(diagnostic) = validate_source_filename(&path, &id, &expected_file_name) {
             report.diagnostics.push(diagnostic);
             continue;
         }
@@ -194,17 +211,7 @@ fn collect_source_file(path: PathBuf, files: &mut Vec<PathBuf>) {
 
 #[cfg(test)]
 pub(crate) fn repository_registrations() -> Vec<super::registry::IndicatorRegistration> {
-    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../indicators");
-    let mut files = Vec::new();
-    let (mut discovered, diagnostics) = indicator_files_in_directory(root.join("core"))
-        .expect("repository indicator directory should be readable");
-    assert!(
-        diagnostics.is_empty(),
-        "repository indicator files should have no discovery diagnostics: {:?}",
-        diagnostics
-    );
-    files.append(&mut discovered);
-    let report = load_from_files_report(&files, PackageOrigin::Core);
+    let report = super::bundled::load_core_sources();
     assert!(
         report.diagnostics.is_empty(),
         "repository indicator sources should load without diagnostics: {:?}",

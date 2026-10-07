@@ -11,7 +11,8 @@ use std::path::PathBuf;
 /// belong to the user or a development workflow.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndicatorCatalogPaths {
-    pub core_directory: PathBuf,
+    /// Overrides embedded core sources when set.
+    pub core_directory: Option<PathBuf>,
     pub installed_directory: PathBuf,
     pub additional_files: Vec<PathBuf>,
 }
@@ -20,7 +21,7 @@ impl IndicatorCatalogPaths {
     pub fn from_data_directory() -> Self {
         let indicators = data_path(Some("indicators"));
         Self {
-            core_directory: indicators.join("core"),
+            core_directory: None,
             installed_directory: indicators.join("installed"),
             additional_files: Vec::new(),
         }
@@ -30,7 +31,7 @@ impl IndicatorCatalogPaths {
     pub fn from_indicator_root(root: impl Into<PathBuf>) -> Self {
         let indicators = root.into();
         Self {
-            core_directory: indicators.join("core"),
+            core_directory: Some(indicators.join("core")),
             installed_directory: indicators.join("catalog").join("sources"),
             additional_files: Vec::new(),
         }
@@ -40,16 +41,11 @@ impl IndicatorCatalogPaths {
 pub fn initialize_indicator_catalog() -> Result<(), String> {
     let additional_files =
         indicator_paths_from_args().map_err(|error| format!("Invalid indicator path: {error}"))?;
-    let (mut paths, seed_core) = match std::env::var_os("FLOWSURFACE_INDICATORS_PATH") {
-        Some(root) => (IndicatorCatalogPaths::from_indicator_root(root), false),
-        None => (IndicatorCatalogPaths::from_data_directory(), true),
+    let mut paths = match std::env::var_os("FLOWSURFACE_INDICATORS_PATH") {
+        Some(root) => IndicatorCatalogPaths::from_indicator_root(root),
+        None => IndicatorCatalogPaths::from_data_directory(),
     };
     paths.additional_files.extend(additional_files);
-
-    if seed_core {
-        super::bundled::seed_core_sources(&paths.core_directory)
-            .map_err(|error| format!("Failed to synchronize core indicators: {error}"))?;
-    }
 
     initialize_indicator_catalog_with_paths(&paths)
         .map_err(|error| format!("Failed to load indicators: {error}"))?;
@@ -118,21 +114,24 @@ struct IndicatorCatalogSources {
 }
 
 fn load_catalog_sources(paths: &IndicatorCatalogPaths) -> Result<IndicatorCatalogSources, String> {
-    let (core_files, mut core_discovery_diagnostics) =
-        language::indicator_files_in_directory(&paths.core_directory)?;
-    let core_report = language::load_from_files_report(&core_files, language::PackageOrigin::Core);
-    core_discovery_diagnostics.extend(core_report.diagnostics);
-    if !core_discovery_diagnostics.is_empty() {
+    let core_report = match &paths.core_directory {
+        Some(directory) => {
+            let (files, diagnostics) = language::indicator_files_in_directory(directory)?;
+            let mut report =
+                language::load_from_files_report(&files, language::PackageOrigin::Core);
+            report.diagnostics.extend(diagnostics);
+            report
+        }
+        None => super::bundled::load_core_sources(),
+    };
+    if !core_report.diagnostics.is_empty() {
         return Err(format!(
             "core indicator source validation failed:\n{}",
-            core_discovery_diagnostics.join("\n")
+            core_report.diagnostics.join("\n")
         ));
     }
     if core_report.registrations.is_empty() {
-        return Err(format!(
-            "core indicator directory {} contains no valid sources",
-            paths.core_directory.display()
-        ));
+        return Err("core indicator collection contains no valid sources".to_owned());
     }
 
     let mut diagnostics = Vec::new();
