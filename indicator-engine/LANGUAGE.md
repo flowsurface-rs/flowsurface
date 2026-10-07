@@ -18,7 +18,8 @@ plot(average, id = "average", title = "Average")
 The host evaluates loaded closed bars in order, committing state after each
 bar. The open bar is a preview from the last committed state. Missing data and
 non-finite numeric results become `na`. Execution, heap, collection, and output
-budgets are enforced; runtime failures quarantine the indicator.
+budgets are enforced; collection nesting is limited to 256 levels. Runtime
+failures quarantine the indicator.
 
 - `=` binds a local; `state` or `var` creates persistent state; `:=` updates it.
   Types remain compatible across updates: integers and floats can widen to
@@ -28,6 +29,10 @@ budgets are enforced; runtime failures quarantine the indicator.
 - `if`, `switch`, bounded `for`/`while`, numeric non-recursive functions,
   tuples, arrays, records, destructuring, and named arguments are supported.
   Function parameters, defaults, and returns must be numeric or `na`.
+- Integer `+`, `-`, `*`, and `%` use checked 64-bit arithmetic; `/` returns a
+  float. Mixed arithmetic promotes to float. Integer overflow and division or
+  remainder by zero return `na`. Integer comparisons remain exact, including
+  comparisons with floats. Integer/time input defaults require integer literals.
 - Arithmetic requires numbers; ordering accepts numbers or times; logical
   operators require booleans. Equality involving `na` returns `na`: use
   `na(value)` to test missingness. An `na` condition does not match a switch
@@ -192,6 +197,11 @@ without visual layers; readouts default to hidden.
 | `data_kind` | Inferred; `scalar`, `histogram`, `ohlc`, `range` |
 | `mark`, `axis` | Inferred; axis is `primary` or `secondary` |
 
+Dynamic values are checked when emitted: numeric channels accept numbers or
+`na`, boolean channels accept booleans or `na`, and scene fields require their
+declared kinds. Wrong kinds fail with an output ID and field diagnostic; the
+host quarantines the indicator.
+
 `layer = false` keeps a private channel for presentation wiring; it cannot be a
 dependency source. Numeric plot layers must share one pane. Primary overlays
 require `main`.
@@ -295,6 +305,22 @@ Persistent regions exceeding the output limit evict the oldest entries.
 Window lengths are positive simple integers, including inputs. The default
 runtime maximum is 5,000, separate from retained-history `max_bars_back`.
 Oversized windows and collections fail rather than being silently clamped.
+The execution cap charges weighted work for evaluated expressions, scans, and
+copies, including collection elements and string bytes. Preview work uses the
+same per-frame budget as closed evaluation.
+
+Stateful TA must execute once per bar. Constants and immutable-input switches
+may choose a fixed calculation path. Calls in loops or bar-dependent branches,
+short-circuited expressions, fallbacks, function defaults, and state initializers
+must be hoisted into ordinary per-bar bindings first. This applies through user
+functions and to guarded drawing/history expressions. For example:
+
+```text
+average = ta.sma(chart.close, 20)
+state seed = average
+plot(select(chart.close > 0, average, na))
+```
+
 Finite rolling windows consume one sample per bar; a missing sample makes the
 window's result `na` until it leaves the window.
 

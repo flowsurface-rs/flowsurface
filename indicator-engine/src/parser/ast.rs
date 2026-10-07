@@ -6,7 +6,7 @@ use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum AstExpression {
-    Number(f64, Span),
+    Number(String, Span),
     String(String, Span),
     Boolean(bool, Span),
     Na(Span),
@@ -352,15 +352,48 @@ pub(super) fn named_color(name: &str) -> Option<u32> {
     }
 }
 
+pub(super) enum NumericLiteralError {
+    Malformed,
+    OutOfRange,
+}
+
+impl NumericLiteralError {
+    pub(super) fn message(self) -> &'static str {
+        match self {
+            Self::Malformed => "invalid number",
+            Self::OutOfRange => "numeric literal is outside its supported range",
+        }
+    }
+}
+
+pub(super) fn numeric_literal(text: &str) -> Result<Value, NumericLiteralError> {
+    if !text.contains('.') {
+        return text
+            .parse::<i64>()
+            .map(Value::Int)
+            .map_err(|_| NumericLiteralError::OutOfRange);
+    }
+    let value = text
+        .parse::<f64>()
+        .map_err(|_| NumericLiteralError::Malformed)?;
+    if value.is_finite() {
+        Ok(Value::Float(value))
+    } else {
+        Err(NumericLiteralError::OutOfRange)
+    }
+}
+
+pub(super) fn negative_integer_literal(text: &str) -> Option<i64> {
+    let magnitude = text.parse::<u64>().ok()?;
+    i64::try_from(magnitude)
+        .ok()
+        .and_then(i64::checked_neg)
+        .or_else(|| (magnitude == i64::MIN.unsigned_abs()).then_some(i64::MIN))
+}
+
 pub(super) fn constant_value(expression: &AstExpression) -> Option<Value> {
     match expression {
-        AstExpression::Number(value, _) => {
-            if value.fract() == 0.0 {
-                Some(Value::Int(*value as i64))
-            } else {
-                Some(Value::Float(*value))
-            }
-        }
+        AstExpression::Number(text, _) => numeric_literal(text).ok(),
         AstExpression::String(value, _) => Some(Value::String(value.clone())),
         AstExpression::Boolean(value, _) => Some(Value::Bool(*value)),
         AstExpression::Na(_) => Some(Value::Na),
@@ -398,13 +431,15 @@ pub(super) fn constant_value(expression: &AstExpression) -> Option<Value> {
             operator,
             expression,
             ..
-        } => match (operator, constant_value(expression)?) {
-            (UnaryOperator::Plus, value @ (Value::Int(_) | Value::Float(_))) => Some(value),
-            (UnaryOperator::Minus, Value::Int(value)) => Some(Value::Int(-value)),
-            (UnaryOperator::Minus, Value::Float(value)) => Some(Value::Float(-value)),
-            (UnaryOperator::Not, Value::Bool(value)) => Some(Value::Bool(!value)),
-            _ => None,
-        },
+        } => {
+            if *operator == UnaryOperator::Minus
+                && let AstExpression::Number(text, _) = expression.as_ref()
+                && let Some(value) = negative_integer_literal(text)
+            {
+                return Some(Value::Int(value));
+            }
+            constant_value(expression)?.unary(*operator)
+        }
         _ => None,
     }
 }

@@ -4,10 +4,7 @@
 //! expressions so hosts can plan fetches and gate availability per indicator
 //! instead of falling back to the retained-history cap.
 
-use crate::hir::{
-    BinaryOperator, ExprId, ExpressionKind, HirProgram, LocalSlot, StatementId, StatementKind,
-    UnaryOperator,
-};
+use crate::hir::{ExprId, ExpressionKind, HirProgram, LocalSlot, StatementId, StatementKind};
 use crate::intrinsic::{IntrinsicRegistry, WarmupSpec};
 use crate::types::{IndicatorConfig, IndicatorDescriptor, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -506,16 +503,7 @@ impl<'a> Evaluator<'a> {
             }
             ExpressionKind::Unary { operator, operand } => {
                 let value = self.static_value(*operand)?;
-                match operator {
-                    UnaryOperator::Plus => Some(value.normalize_nonfinite()),
-                    UnaryOperator::Minus => value
-                        .as_float()
-                        .map(|value| Value::Float(-value).normalize_nonfinite()),
-                    UnaryOperator::Not => match value {
-                        Value::Bool(value) => Some(Value::Bool(!value)),
-                        _ => None,
-                    },
-                }
+                value.unary(*operator)
             }
             ExpressionKind::Binary {
                 operator,
@@ -524,7 +512,7 @@ impl<'a> Evaluator<'a> {
             } => {
                 let left = self.static_value(*left)?;
                 let right = self.static_value(*right)?;
-                static_binary(*operator, left, right)
+                Some(left.binary(*operator, right))
             }
             ExpressionKind::Conditional {
                 condition,
@@ -542,58 +530,6 @@ impl<'a> Evaluator<'a> {
         }
         value
     }
-}
-
-fn static_binary(operator: BinaryOperator, left: Value, right: Value) -> Option<Value> {
-    use BinaryOperator::*;
-    match operator {
-        And => boolean_pair(left, right, |left, right| left && right),
-        Or => boolean_pair(left, right, |left, right| left || right),
-        Equal | NotEqual => {
-            let equal = match left.equals(&right) {
-                Some(equal) => equal,
-                None => return Some(Value::Na),
-            };
-            Some(Value::Bool(if matches!(operator, Equal) {
-                equal
-            } else {
-                !equal
-            }))
-        }
-        Less | LessEqual | Greater | GreaterEqual => {
-            let (Some(left), Some(right)) = (left.as_float(), right.as_float()) else {
-                return None;
-            };
-            Some(Value::Bool(match operator {
-                Less => left < right,
-                LessEqual => left <= right,
-                Greater => left > right,
-                GreaterEqual => left >= right,
-                _ => unreachable!(),
-            }))
-        }
-        Add | Subtract | Multiply | Divide | Remainder => {
-            let (Some(left), Some(right)) = (left.as_float(), right.as_float()) else {
-                return None;
-            };
-            let value = match operator {
-                Add => left + right,
-                Subtract => left - right,
-                Multiply => left * right,
-                Divide if right != 0.0 => left / right,
-                Remainder if right != 0.0 => left % right,
-                _ => return None,
-            };
-            Some(Value::Float(value).normalize_nonfinite())
-        }
-    }
-}
-
-fn boolean_pair(left: Value, right: Value, operation: fn(bool, bool) -> bool) -> Option<Value> {
-    let (Value::Bool(left), Value::Bool(right)) = (left, right) else {
-        return None;
-    };
-    Some(Value::Bool(operation(left, right)))
 }
 
 #[cfg(test)]

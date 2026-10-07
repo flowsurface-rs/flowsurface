@@ -9,11 +9,13 @@ use crate::hir::{
 };
 use crate::intrinsic::{IntrinsicError, IntrinsicEvalContext, IntrinsicState, WarmupSpec};
 use crate::scene::Color;
-use crate::types::{ArrayValue, IndicatorConfig, InputType, InputValue, Value};
+use crate::types::{ArrayValue, IndicatorConfig, InputType, InputValue, Value, ValueType};
 use std::collections::{BTreeMap, VecDeque};
 use std::mem::size_of;
 use std::sync::Arc;
 use thiserror::Error;
+
+const MAX_COLLECTION_NESTING: usize = 256;
 
 #[derive(Debug, Clone, PartialEq)]
 struct IndexedHistory {
@@ -126,6 +128,7 @@ pub struct InstancePlan {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RuntimeLimits {
+    /// Weighted work units per frame, including scans and copies.
     pub max_evaluated_nodes: usize,
     pub max_call_depth: usize,
     pub max_heap_bytes: usize,
@@ -209,6 +212,13 @@ pub enum RuntimeError {
     UnknownIntrinsic(crate::hir::IntrinsicId),
     #[error("invalid value for {operation}")]
     InvalidValue { operation: &'static str },
+    #[error("output {output} field {field} expects {expected}, got {actual}")]
+    InvalidOutput {
+        output: String,
+        field: &'static str,
+        expected: &'static str,
+        actual: &'static str,
+    },
     #[error("intrinsic error: {0}")]
     Intrinsic(#[from] IntrinsicError),
     #[error("execution limit exceeded")]
@@ -231,8 +241,8 @@ impl SeriesHistory {
         }
     }
 
-    fn get(&self, slot: usize, index: usize) -> Option<Value> {
-        self.values.get(slot)?.get(index).cloned()
+    fn get(&self, slot: usize, index: usize) -> Option<&Value> {
+        self.values.get(slot)?.get(index)
     }
 
     fn set(&mut self, slot: usize, index: usize, value: Value) {
@@ -244,6 +254,7 @@ impl SeriesHistory {
 
 #[derive(Debug, Clone, PartialEq)]
 struct CommittedState {
+    index: Option<usize>,
     states: Arc<Vec<StateValue>>,
     function_states: Arc<BTreeMap<crate::hir::CallSiteId, StateValue>>,
     history: SeriesHistory,
@@ -579,7 +590,7 @@ pub struct IndicatorInstance {
     locals: Vec<Value>,
     current_bar_index: usize,
     current_frame: Option<IndicatorFrame>,
-    executed_nodes: usize,
+    executed_work: usize,
     previewing: bool,
     limits: RuntimeLimits,
     break_requested: bool,
@@ -612,6 +623,7 @@ impl IndicatorInstance {
     ) -> Result<Self, PlanningError> {
         let plan = InstancePlan::from_compiled(&compiled, config)?;
         let committed = CommittedState {
+            index: None,
             states: Arc::new(vec![StateValue::Uninitialized; compiled.program.states]),
             function_states: Arc::new(BTreeMap::new()),
             history: SeriesHistory::new(
@@ -625,7 +637,7 @@ impl IndicatorInstance {
             locals: vec![Value::Na; compiled.program.locals],
             current_bar_index: 0,
             current_frame: None,
-            executed_nodes: 0,
+            executed_work: 0,
             previewing: false,
             limits,
             break_requested: false,
@@ -651,6 +663,16 @@ impl IndicatorInstance {
         if let Some(error) = &self.quarantined {
             return Err(error.clone());
         }
+        if !previewing
+            && self
+                .committed
+                .index
+                .is_some_and(|index| frame.index <= index)
+        {
+            return Err(RuntimeError::InvalidValue {
+                operation: "closed frame order",
+            });
+        }
 
         let index = frame.index;
         let time = frame.time;
@@ -658,7 +680,7 @@ impl IndicatorInstance {
         self.previewing = previewing;
         self.current_frame = Some(frame.clone());
         self.locals.fill(Value::Na);
-        self.executed_nodes = 0;
+        self.executed_work = 0;
         self.break_requested = false;
         self.continue_requested = false;
         self.return_requested = false;
@@ -666,10 +688,11 @@ impl IndicatorInstance {
         self.working
             .reset_from_committed(&self.committed, self.compiled.program.series);
         self.resource_check_dirty = false;
-        self.seed_frame_series(&frame);
 
         let mut output = OutputBuffer::new(self.limits.max_output_items);
         let result = (|| {
+            self.charge_by(self.compiled.program.expressions.len())?;
+            self.seed_frame_series(&frame);
             self.enforce_resource_limits(false)?;
             let entry_point = self
                 .compiled
@@ -686,7 +709,7 @@ impl IndicatorInstance {
             self.enforce_resource_limits(false)?;
             self.resource_check_dirty = false;
             if !previewing {
-                self.commit(index);
+                self.commit(index)?;
                 self.enforce_resource_limits(true)?;
             }
             Ok(output.finish(index, time))
@@ -713,6 +736,10 @@ impl IndicatorInstance {
     /// Preview the current open frame from the previous closed state.
     pub fn preview_open(&mut self, frame: IndicatorFrame) -> Result<FrameOutput, RuntimeError> {
         self.evaluate_frame(frame, true)
+    }
+
+    pub fn committed_index(&self) -> Option<usize> {
+        self.committed.index
     }
 
     /// Discard all committed values and bind a new input configuration.
@@ -749,22 +776,7 @@ impl IndicatorInstance {
     }
 
     fn series_input_value(&self, slot: SourceInputSlot, frame: &IndicatorFrame) -> Value {
-        let Some((_, input_id)) = self
-            .compiled
-            .program
-            .source_inputs
-            .iter()
-            .find(|(candidate, _)| *candidate == slot)
-        else {
-            return Value::Na;
-        };
-        let Some(descriptor) = self
-            .compiled
-            .descriptor
-            .series_inputs
-            .iter()
-            .find(|descriptor| descriptor.id == *input_id)
-        else {
+        let Some(descriptor) = self.compiled.descriptor.series_inputs.get(slot.0) else {
             return Value::Na;
         };
         match frame.series_input(slot.0) {
@@ -776,7 +788,16 @@ impl IndicatorInstance {
         }
     }
 
-    fn complete_outputs(&self, output: &mut OutputBuffer) -> Result<(), RuntimeError> {
+    fn complete_outputs(&mut self, output: &mut OutputBuffer) -> Result<(), RuntimeError> {
+        self.charge_by(
+            self.compiled.program.statements.len().saturating_add(
+                self.compiled
+                    .program
+                    .plots
+                    .len()
+                    .saturating_mul(output.plots.len()),
+            ),
+        )?;
         for plot in &self.compiled.program.plots {
             if !output.plots.iter().any(|output| output.id == plot.id) {
                 output.push_plot(PlotOutput {
@@ -853,12 +874,65 @@ impl IndicatorInstance {
         Ok(())
     }
 
+    fn output_value(
+        &mut self,
+        expression: ExprId,
+        output: &str,
+        field: &'static str,
+        expected: ValueType,
+    ) -> Result<Value, RuntimeError> {
+        let value = self.evaluate_expression(expression)?;
+        let valid = value.is_na()
+            || matches!(
+                (expected, &value),
+                (ValueType::Float, Value::Int(_) | Value::Float(_))
+                    | (ValueType::Int, Value::Int(_))
+                    | (ValueType::Bool, Value::Bool(_))
+                    | (ValueType::Color, Value::Color(_))
+                    | (
+                        ValueType::Any,
+                        Value::Int(_) | Value::Float(_) | Value::Bool(_)
+                    )
+            );
+        if valid {
+            return Ok(value);
+        }
+        let expected = match expected {
+            ValueType::Float => "number",
+            ValueType::Int => "integer",
+            ValueType::Bool => "boolean",
+            ValueType::Color => "color",
+            _ => "number or boolean",
+        };
+        Err(RuntimeError::InvalidOutput {
+            output: output.to_owned(),
+            field,
+            expected,
+            actual: value.kind(),
+        })
+    }
+
+    fn output_visibility(
+        &mut self,
+        expression: Option<ExprId>,
+        output: &str,
+        field: &'static str,
+        default: bool,
+    ) -> Result<bool, RuntimeError> {
+        expression
+            .map(|expression| self.output_value(expression, output, field, ValueType::Bool))
+            .transpose()
+            .map(|value| value.map_or(default, |value| value.is_truthy()))
+    }
+
     fn evaluate_color(
         &mut self,
         expression: Option<ExprId>,
+        output: &str,
+        field: &'static str,
     ) -> Result<Option<Color>, RuntimeError> {
         expression
-            .map(|expression| self.evaluate_expression(expression))
+            .map(|expression| self.output_value(expression, output, field, ValueType::Color))
             .transpose()
             .map(|value| match value {
                 Some(Value::Color(color)) => Some(Color(color)),
@@ -897,14 +971,16 @@ impl IndicatorInstance {
                 expression,
             } => {
                 let value = self.evaluate_expression(expression)?;
-                let values = match value {
-                    Value::Tuple(values) => values,
-                    Value::Array(values) => values.as_slice().to_vec(),
-                    _ => Vec::new(),
+                let values = match &value {
+                    Value::Tuple(values) => values.as_slice(),
+                    Value::Array(values) => values.as_slice(),
+                    _ => &[],
                 };
                 for (index, target) in targets.into_iter().enumerate() {
+                    let value = values.get(index);
+                    self.charge_by(1usize.saturating_add(value.map_or(0, Value::copy_work)))?;
                     if let Some(local) = self.locals.get_mut(target.0) {
-                        *local = values.get(index).cloned().unwrap_or(Value::Na);
+                        *local = value.cloned().unwrap_or(Value::Na);
                     }
                 }
             }
@@ -914,35 +990,31 @@ impl IndicatorInstance {
                 if !self.state_initialized(target) {
                     let value = self.evaluate_expression(initial)?;
                     if !value.is_na() {
-                        self.set_state_value(target, value);
+                        self.set_state_value(target, value)?;
                     }
                 }
             }
             StatementKind::StateUpdate { target, expression } => {
                 let value = self.evaluate_expression(expression)?;
-                self.set_state_value(target, value);
+                self.set_state_value(target, value)?;
             }
             StatementKind::Plot {
                 plot,
                 expression,
                 color,
             } => {
-                let value = self.evaluate_expression(expression)?;
-                let Some(plot_id) = self
-                    .compiled
-                    .program
-                    .plots
-                    .get(plot.0)
-                    .map(|descriptor| descriptor.id.clone())
-                else {
+                let Some(descriptor) = self.compiled.program.plots.get(plot.0) else {
                     return Ok(());
                 };
-                let color = self.evaluate_color(color)?;
-                output.push_plot(PlotOutput {
-                    id: plot_id,
-                    value,
-                    color,
-                })?;
+                let id = descriptor.id.clone();
+                let expected = if descriptor.value_type == crate::scene::PlotValueType::Boolean {
+                    ValueType::Bool
+                } else {
+                    ValueType::Float
+                };
+                let value = self.output_value(expression, &id, "value", expected)?;
+                let color = self.evaluate_color(color, &id, "color")?;
+                output.push_plot(PlotOutput { id, value, color })?;
             }
             StatementKind::Marker {
                 id,
@@ -951,11 +1023,8 @@ impl IndicatorInstance {
                 color,
                 text,
             } => {
-                let value = self.evaluate_expression(expression)?;
-                let visible = visible
-                    .map(|expression| self.evaluate_expression(expression))
-                    .transpose()?
-                    .is_none_or(|value| value.is_truthy());
+                let value = self.output_value(expression, &id, "value", ValueType::Any)?;
+                let visible = self.output_visibility(visible, &id, "visible", true)?;
                 let value = if !visible {
                     None
                 } else if matches!(value, Value::Bool(true)) {
@@ -968,9 +1037,9 @@ impl IndicatorInstance {
                     value.as_float()
                 };
                 output.push_marker(MarkerOutput {
-                    id,
+                    id: id.clone(),
                     value,
-                    color: self.evaluate_color(color)?,
+                    color: self.evaluate_color(color, &id, "color")?,
                     text,
                 })?;
             }
@@ -984,40 +1053,39 @@ impl IndicatorInstance {
                 color,
                 text,
             } => {
-                let visible = visible
-                    .map(|expression| self.evaluate_expression(expression))
-                    .transpose()?
-                    .is_none_or(|value| value.is_truthy());
+                let visible = self.output_visibility(visible, &id, "visible", true)?;
                 if !visible {
                     return Ok(());
                 }
                 let Some(start_index) = self
-                    .evaluate_expression(start_index)?
+                    .output_value(start_index, &id, "start_index", ValueType::Int)?
                     .as_int()
                     .and_then(|value| usize::try_from(value).ok())
                 else {
                     return Ok(());
                 };
                 let Some(end_index) = self
-                    .evaluate_expression(end_index)?
+                    .output_value(end_index, &id, "end_index", ValueType::Int)?
                     .as_int()
                     .and_then(|value| usize::try_from(value).ok())
                 else {
                     return Ok(());
                 };
                 let (Some(start_value), Some(end_value)) = (
-                    self.evaluate_expression(start_value)?.as_float(),
-                    self.evaluate_expression(end_value)?.as_float(),
+                    self.output_value(start_value, &id, "start_value", ValueType::Float)?
+                        .as_float(),
+                    self.output_value(end_value, &id, "end_value", ValueType::Float)?
+                        .as_float(),
                 ) else {
                     return Ok(());
                 };
                 output.push_segment(SegmentOutput {
-                    id,
+                    id: id.clone(),
                     start_index,
                     start_value: start_value.is_finite().then_some(start_value),
                     end_index,
                     end_value: end_value.is_finite().then_some(end_value),
-                    color: self.evaluate_color(color)?,
+                    color: self.evaluate_color(color, &id, "color")?,
                     text,
                 })?;
             }
@@ -1040,38 +1108,40 @@ impl IndicatorInstance {
                 persistent,
                 width,
             } => {
-                let visible = visible
-                    .map(|expression| self.evaluate_expression(expression))
-                    .transpose()?
-                    .is_none_or(|value| value.is_truthy());
+                let visible = self.output_visibility(visible, &id, "visible", true)?;
                 if !visible {
                     return Ok(());
                 }
-                let Some(key) = self.evaluate_expression(key)?.as_int() else {
+                let Some(key) = self.output_value(key, &id, "key", ValueType::Int)?.as_int() else {
                     return Ok(());
                 };
                 let Some(left_index) = self
-                    .evaluate_expression(left_index)?
+                    .output_value(left_index, &id, "left_index", ValueType::Int)?
                     .as_int()
                     .and_then(|value| usize::try_from(value).ok())
                 else {
                     return Ok(());
                 };
                 let Some(right_index) = self
-                    .evaluate_expression(right_index)?
+                    .output_value(right_index, &id, "right_index", ValueType::Int)?
                     .as_int()
                     .and_then(|value| usize::try_from(value).ok())
                 else {
                     return Ok(());
                 };
                 let (Some(upper), Some(lower)) = (
-                    self.evaluate_expression(upper)?.as_float(),
-                    self.evaluate_expression(lower)?.as_float(),
+                    self.output_value(upper, &id, "upper", ValueType::Float)?
+                        .as_float(),
+                    self.output_value(lower, &id, "lower", ValueType::Float)?
+                        .as_float(),
                 ) else {
                     return Ok(());
                 };
                 let (border_color_slot, fill_color_slot) = if let Some(style_by) = style_by {
-                    let selected = if self.evaluate_expression(style_by)?.is_truthy() {
+                    let selected = if self
+                        .output_value(style_by, &id, "style_by", ValueType::Bool)?
+                        .is_truthy()
+                    {
                         true_color_slot
                     } else {
                         false_color_slot
@@ -1081,32 +1151,37 @@ impl IndicatorInstance {
                     (border_color_slot, fill_color_slot)
                 };
                 let region = RegionOutput {
-                    id,
+                    id: id.clone(),
                     key,
                     left_index,
                     right_index,
                     upper,
                     lower,
-                    border_color: self.evaluate_color(border_color)?,
-                    fill_color: self.evaluate_color(fill_color)?,
+                    border_color: self.evaluate_color(border_color, &id, "border_color")?,
+                    fill_color: self.evaluate_color(fill_color, &id, "fill_color")?,
                     border_color_slot,
                     fill_color_slot,
-                    extend_right: extend_right
-                        .map(|expression| self.evaluate_expression(expression))
-                        .transpose()?
-                        .is_some_and(|value| value.is_truthy()),
+                    extend_right: self.output_visibility(
+                        extend_right,
+                        &id,
+                        "extend_right",
+                        false,
+                    )?,
                     width,
                 };
                 if persistent {
+                    self.charge_by(output.region_updates.len())?;
                     output.push_region_update(RegionUpdate::Upsert(region))?;
                 } else {
+                    self.charge_by(output.regions.len())?;
                     output.push_region(region)?;
                 }
             }
             StatementKind::RegionRemove { id, key } => {
-                let Some(key) = self.evaluate_expression(key)?.as_int() else {
+                let Some(key) = self.output_value(key, &id, "key", ValueType::Int)?.as_int() else {
                     return Ok(());
                 };
+                self.charge_by(output.region_updates.len())?;
                 output.push_region_update(RegionUpdate::Remove { id, key })?;
             }
             StatementKind::HorizontalLevel {
@@ -1115,9 +1190,11 @@ impl IndicatorInstance {
                 color,
             } => {
                 output.push_level(crate::frame::HorizontalLevelOutput {
-                    id,
-                    value: self.evaluate_expression(expression)?.as_float(),
-                    color: self.evaluate_color(color)?,
+                    id: id.clone(),
+                    value: self
+                        .output_value(expression, &id, "value", ValueType::Float)?
+                        .as_float(),
+                    color: self.evaluate_color(color, &id, "color")?,
                 })?;
             }
             StatementKind::OhlcPlot {
@@ -1128,16 +1205,30 @@ impl IndicatorInstance {
                 close,
                 color,
             } => {
-                let Some(descriptor) = self.compiled.program.plots.get(plot.0) else {
+                let Some(id) = self
+                    .compiled
+                    .program
+                    .plots
+                    .get(plot.0)
+                    .map(|plot| plot.id.clone())
+                else {
                     return Ok(());
                 };
                 output.push_ohlc(OhlcOutput {
-                    id: descriptor.id.clone(),
-                    open: self.evaluate_expression(open)?.as_float(),
-                    high: self.evaluate_expression(high)?.as_float(),
-                    low: self.evaluate_expression(low)?.as_float(),
-                    close: self.evaluate_expression(close)?.as_float(),
-                    color: self.evaluate_color(color)?,
+                    id: id.clone(),
+                    open: self
+                        .output_value(open, &id, "open", ValueType::Float)?
+                        .as_float(),
+                    high: self
+                        .output_value(high, &id, "high", ValueType::Float)?
+                        .as_float(),
+                    low: self
+                        .output_value(low, &id, "low", ValueType::Float)?
+                        .as_float(),
+                    close: self
+                        .output_value(close, &id, "close", ValueType::Float)?
+                        .as_float(),
+                    color: self.evaluate_color(color, &id, "color")?,
                 })?;
             }
             StatementKind::RangePlot {
@@ -1146,14 +1237,24 @@ impl IndicatorInstance {
                 lower,
                 color,
             } => {
-                let Some(descriptor) = self.compiled.program.plots.get(plot.0) else {
+                let Some(id) = self
+                    .compiled
+                    .program
+                    .plots
+                    .get(plot.0)
+                    .map(|plot| plot.id.clone())
+                else {
                     return Ok(());
                 };
                 output.push_range(RangeOutput {
-                    id: descriptor.id.clone(),
-                    upper: self.evaluate_expression(upper)?.as_float(),
-                    lower: self.evaluate_expression(lower)?.as_float(),
-                    color: self.evaluate_color(color)?,
+                    id: id.clone(),
+                    upper: self
+                        .output_value(upper, &id, "upper", ValueType::Float)?
+                        .as_float(),
+                    lower: self
+                        .output_value(lower, &id, "lower", ValueType::Float)?
+                        .as_float(),
+                    color: self.evaluate_color(color, &id, "color")?,
                 })?;
             }
             StatementKind::Expression(expression) => {
@@ -1261,11 +1362,12 @@ impl IndicatorInstance {
                 };
                 let values = array
                     .iter()
-                    .flat_map(|values| values.as_slice().iter().cloned())
-                    .chain(tuple);
+                    .flat_map(|values| values.as_slice().iter())
+                    .chain(tuple.iter());
                 for value in values {
+                    self.charge_by(1usize.saturating_add(value.copy_work()))?;
                     if let Some(local) = self.locals.get_mut(target.0) {
-                        *local = value;
+                        *local = value.clone();
                     }
                     for statement in &body {
                         self.execute_statement(*statement, output)?;
@@ -1333,8 +1435,20 @@ impl IndicatorInstance {
         {
             return Ok(false);
         }
-        self.charge()?;
+        self.charge_by(2)?;
         let value = self.evaluate_expression(arguments[1])?;
+        if value.nesting_depth() >= MAX_COLLECTION_NESTING {
+            return Err(RuntimeError::ResourceLimitExceeded("collection nesting"));
+        }
+        let copy_work = match &self.locals[target.0] {
+            Value::Array(values) if Arc::strong_count(values) > 1 => {
+                values.as_slice().iter().fold(values.len(), |work, value| {
+                    work.saturating_add(value.copy_work())
+                })
+            }
+            _ => 0,
+        };
+        self.charge_by(copy_work)?;
         let Some(Value::Array(values)) = self.locals.get_mut(target.0) else {
             return Ok(false);
         };
@@ -1362,6 +1476,15 @@ impl IndicatorInstance {
             .get(expression_id.0)
             .ok_or(RuntimeError::UnknownExpression(expression_id))?
             .clone();
+        let copy_work = match &expression.kind {
+            ExpressionKind::Constant(id) => self.compiled.program.constants.get(id.0),
+            ExpressionKind::LoadLocal(slot) => self.locals.get(slot.0),
+            ExpressionKind::LoadInput(slot) => self.plan.inputs.get(slot.0),
+            ExpressionKind::LoadState(slot) => self.state_value(*slot),
+            _ => None,
+        }
+        .map_or(0, Value::copy_work);
+        self.charge_by(copy_work)?;
         let value = match expression.kind {
             ExpressionKind::Constant(constant) => self
                 .compiled
@@ -1380,7 +1503,7 @@ impl IndicatorInstance {
                 .current_frame
                 .as_ref()
                 .map_or(Value::Na, |frame| self.series_input_value(slot, frame)),
-            ExpressionKind::LoadState(slot) => self.state_value(slot).unwrap_or(Value::Na),
+            ExpressionKind::LoadState(slot) => self.state_value(slot).cloned().unwrap_or(Value::Na),
             ExpressionKind::LoadBarIndex => Value::Int(self.current_bar_index as i64),
             ExpressionKind::LoadBarState(field) => Value::Bool(match field {
                 BarStateField::IsFirst => self.current_bar_index == 0,
@@ -1417,6 +1540,12 @@ impl IndicatorInstance {
                 let mut selected = None;
                 for (condition, result) in branches {
                     let condition = self.evaluate_expression(condition)?;
+                    self.charge_by(
+                        operand
+                            .comparison_work()
+                            .saturating_add(condition.comparison_work())
+                            .saturating_mul(2),
+                    )?;
                     if operand.equals(&condition).is_some_and(|equal| equal) {
                         selected = Some(self.evaluate_expression(result)?);
                         break;
@@ -1444,7 +1573,10 @@ impl IndicatorInstance {
             ExpressionKind::RecordField { source, field } => {
                 let source = self.evaluate_expression(source)?;
                 match source {
-                    Value::Record(values) => values.get(&field).cloned().unwrap_or(Value::Na),
+                    Value::Record(values) => {
+                        self.charge_by(values.get(&field).map_or(0, Value::copy_work))?;
+                        values.get(&field).cloned().unwrap_or(Value::Na)
+                    }
                     _ => Value::Na,
                 }
             }
@@ -1460,9 +1592,13 @@ impl IndicatorInstance {
                         Value::Na
                     } else {
                         let target = self.current_bar_index - offset;
-                        self.compiled.program.expressions[source.0]
-                            .series_slot
+                        let slot = self.compiled.program.expressions[source.0].series_slot;
+                        let work = slot
                             .and_then(|slot| self.committed.history.get(slot.0, target))
+                            .map_or(0, Value::copy_work);
+                        self.charge_by(work)?;
+                        slot.and_then(|slot| self.committed.history.get(slot.0, target))
+                            .cloned()
                             .unwrap_or(Value::Na)
                     }
                 }
@@ -1472,9 +1608,11 @@ impl IndicatorInstance {
                 let index = self.evaluate_expression(index)?.as_int();
                 match (source, index.and_then(|index| usize::try_from(index).ok())) {
                     (Value::Tuple(values), Some(index)) => {
+                        self.charge_by(values.get(index).map_or(0, Value::copy_work))?;
                         values.get(index).cloned().unwrap_or(Value::Na)
                     }
                     (Value::Array(values), Some(index)) => {
+                        self.charge_by(values.get(index).map_or(0, Value::copy_work))?;
                         values.get(index).cloned().unwrap_or(Value::Na)
                     }
                     _ => Value::Na,
@@ -1482,7 +1620,9 @@ impl IndicatorInstance {
             }
             ExpressionKind::Unary { operator, operand } => {
                 let operand = self.evaluate_expression(operand)?;
-                unary(operator, operand)?
+                operand.unary(operator).ok_or(RuntimeError::InvalidValue {
+                    operation: "unary expression",
+                })?
             }
             ExpressionKind::Binary {
                 operator,
@@ -1499,7 +1639,14 @@ impl IndicatorInstance {
                     left
                 } else {
                     let right = self.evaluate_expression(right)?;
-                    binary(operator, left, right)?
+                    if matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual) {
+                        self.charge_by(
+                            left.comparison_work()
+                                .saturating_add(right.comparison_work())
+                                .saturating_mul(2),
+                        )?;
+                    }
+                    left.binary(operator, right)
                 }
             }
             ExpressionKind::Conditional {
@@ -1526,6 +1673,40 @@ impl IndicatorInstance {
                 call_site,
                 arguments,
             } => {
+                if self
+                    .compiled
+                    .registry
+                    .get(intrinsic)
+                    .is_some_and(|definition| definition.name == "record.get")
+                    && arguments.len() == 2
+                    && let ExpressionKind::LoadLocal(slot) =
+                        self.compiled.program.expressions[arguments[0].0].kind
+                {
+                    self.charge()?;
+                    let key = self.evaluate_expression(arguments[1])?;
+                    let Value::String(key) = key else {
+                        return Err(RuntimeError::Intrinsic(IntrinsicError::InvalidArguments(
+                            "record.get expects a string key",
+                        )));
+                    };
+                    let value = match self.locals.get(slot.0) {
+                        Some(Value::Record(values)) => values.get(&key),
+                        _ => None,
+                    };
+                    let work = value.map_or(0, Value::copy_work);
+                    self.charge_by(work)?;
+                    let value = match self.locals.get(slot.0) {
+                        Some(Value::Record(values)) => {
+                            values.get(&key).cloned().unwrap_or(Value::Na)
+                        }
+                        _ => Value::Na,
+                    };
+                    self.enforce_value_limits(&value)?;
+                    if let Some(slot) = expression.series_slot {
+                        self.working.current_series[slot.0] = Some(value.clone());
+                    }
+                    return Ok(value);
+                }
                 let values = arguments
                     .iter()
                     .map(|argument| self.evaluate_expression(*argument))
@@ -1559,6 +1740,14 @@ impl IndicatorInstance {
                     self.resource_check_dirty = true;
                 }
                 let state_call_site = self.state_call_site(call_site);
+                if Arc::strong_count(&self.working.intrinsics) > 1 {
+                    let work = self
+                        .working
+                        .intrinsics
+                        .values()
+                        .fold(0usize, |work, state| work.saturating_add(state.copy_work()));
+                    self.charge_by(work)?;
+                }
                 let (result, state_heap_exceeded) = {
                     let mut context = IntrinsicEvalContext {
                         bar_index: self.current_bar_index,
@@ -1568,8 +1757,13 @@ impl IndicatorInstance {
                         fixed_window,
                         max_collection_elements: self.limits.max_collection_elements,
                         states: Arc::make_mut(&mut self.working.intrinsics),
+                        executed_work: &mut self.executed_work,
+                        max_work: self.limits.max_evaluated_nodes,
                     };
                     let result = evaluator(&mut context, state_call_site, &values);
+                    context
+                        .charge(context.states.len())
+                        .map_err(|_| RuntimeError::ExecutionLimitExceeded)?;
                     let state_heap_exceeded = context
                         .states
                         .values()
@@ -1583,6 +1777,9 @@ impl IndicatorInstance {
                 }
                 match result {
                     Ok(value) => value,
+                    Err(crate::intrinsic::IntrinsicError::ExecutionLimitExceeded) => {
+                        return Err(RuntimeError::ExecutionLimitExceeded);
+                    }
                     Err(crate::intrinsic::IntrinsicError::LimitExceeded(resource)) => {
                         return Err(RuntimeError::ResourceLimitExceeded(resource));
                     }
@@ -1612,6 +1809,9 @@ impl IndicatorInstance {
                     .iter()
                     .map(|argument| self.evaluate_expression(*argument))
                     .collect::<Result<Vec<_>, _>>()?;
+                self.charge_by(self.locals.iter().fold(self.locals.len(), |work, value| {
+                    work.saturating_add(value.copy_work())
+                }))?;
                 let saved_locals = self.locals.clone();
                 let saved_return_requested = self.return_requested;
                 let saved_return_value = self.return_value.take();
@@ -1679,7 +1879,7 @@ impl IndicatorInstance {
         Ok(value)
     }
 
-    fn state_value(&self, slot: StateSlot) -> Option<Value> {
+    fn state_value(&self, slot: StateSlot) -> Option<&Value> {
         let call_site = self
             .compiled
             .program
@@ -1692,12 +1892,9 @@ impl IndicatorInstance {
                 .working
                 .function_states
                 .get(&self.state_call_site(call_site))
-                .and_then(|value| value.value().cloned());
+                .and_then(StateValue::value);
         }
-        self.working
-            .states
-            .get(slot.0)
-            .and_then(|value| value.value().cloned())
+        self.working.states.get(slot.0).and_then(StateValue::value)
     }
 
     fn state_initialized(&self, slot: StateSlot) -> bool {
@@ -1721,7 +1918,7 @@ impl IndicatorInstance {
             .is_some_and(StateValue::is_initialized)
     }
 
-    fn set_state_value(&mut self, slot: StateSlot, value: Value) {
+    fn set_state_value(&mut self, slot: StateSlot, value: Value) -> Result<(), RuntimeError> {
         let call_site = self
             .compiled
             .program
@@ -1732,13 +1929,36 @@ impl IndicatorInstance {
         self.resource_check_dirty = true;
         if self.state_owner(slot).is_some() && !self.call_site_stack.is_empty() {
             let state_call_site = self.state_call_site(call_site);
+            if Arc::strong_count(&self.working.function_states) > 1 {
+                let work = self
+                    .working
+                    .function_states
+                    .values()
+                    .filter_map(StateValue::value)
+                    .fold(self.working.function_states.len(), |work, value| {
+                        work.saturating_add(value.copy_work())
+                    });
+                self.charge_by(work)?;
+            }
             Arc::make_mut(&mut self.working.function_states)
                 .insert(state_call_site, StateValue::Value(value));
-            return;
+            return Ok(());
+        }
+        if Arc::strong_count(&self.working.states) > 1 {
+            let work = self
+                .working
+                .states
+                .iter()
+                .filter_map(StateValue::value)
+                .fold(self.working.states.len(), |work, value| {
+                    work.saturating_add(value.copy_work())
+                });
+            self.charge_by(work)?;
         }
         if let Some(state) = Arc::make_mut(&mut self.working.states).get_mut(slot.0) {
             *state = StateValue::Value(value);
         }
+        Ok(())
     }
 
     fn state_owner(&self, slot: StateSlot) -> Option<crate::hir::FunctionId> {
@@ -1768,25 +1988,58 @@ impl IndicatorInstance {
     }
 
     fn charge_by(&mut self, work: usize) -> Result<(), RuntimeError> {
-        self.executed_nodes = self
-            .executed_nodes
-            .checked_add(work)
-            .ok_or(RuntimeError::ExecutionLimitExceeded)?;
-        if self.executed_nodes > self.limits.max_evaluated_nodes {
-            Err(RuntimeError::ExecutionLimitExceeded)
-        } else {
+        if charge_work(
+            &mut self.executed_work,
+            self.limits.max_evaluated_nodes,
+            work,
+        ) {
             Ok(())
+        } else {
+            Err(RuntimeError::ExecutionLimitExceeded)
         }
     }
 
-    fn enforce_resource_limits(&self, include_history: bool) -> Result<(), RuntimeError> {
+    fn enforce_resource_limits(&mut self, include_history: bool) -> Result<(), RuntimeError> {
+        let work = self
+            .plan
+            .inputs
+            .iter()
+            .chain(self.locals.iter())
+            .chain(self.committed.states.iter().filter_map(StateValue::value))
+            .chain(self.working.states.iter().filter_map(StateValue::value))
+            .chain(
+                self.committed
+                    .function_states
+                    .values()
+                    .filter_map(StateValue::value),
+            )
+            .chain(
+                self.working
+                    .function_states
+                    .values()
+                    .filter_map(StateValue::value),
+            )
+            .chain(self.working.current_series.iter().flatten())
+            .fold(
+                self.committed
+                    .intrinsics
+                    .len()
+                    .saturating_add(self.working.intrinsics.len()),
+                |work, value| work.saturating_add(value.scan_work().saturating_mul(2)),
+            );
+        self.charge_by(work.saturating_add(if include_history {
+            self.committed.history.values.len().saturating_mul(2)
+        } else {
+            0
+        }))?;
         match self.resource_limit_exceeded(include_history) {
             Some(resource) => Err(RuntimeError::ResourceLimitExceeded(resource)),
             None => Ok(()),
         }
     }
 
-    fn enforce_output_limits(&self, output: &OutputBuffer) -> Result<(), RuntimeError> {
+    fn enforce_output_limits(&mut self, output: &OutputBuffer) -> Result<(), RuntimeError> {
+        self.charge_by(output.items.saturating_mul(2))?;
         if output.has_string_over(self.limits.max_string_bytes) {
             return Err(RuntimeError::ResourceLimitExceeded("string bytes"));
         }
@@ -1798,6 +2051,10 @@ impl IndicatorInstance {
     }
 
     fn enforce_value_limits(&mut self, value: &Value) -> Result<(), RuntimeError> {
+        if value.nesting_depth() > MAX_COLLECTION_NESTING {
+            return Err(RuntimeError::ResourceLimitExceeded("collection nesting"));
+        }
+        self.charge_by(value.scan_work().saturating_mul(2))?;
         if value.has_string_over(self.limits.max_string_bytes) {
             return Err(RuntimeError::ResourceLimitExceeded("string bytes"));
         }
@@ -1994,7 +2251,18 @@ impl IndicatorInstance {
         }
     }
 
-    fn commit(&mut self, bar_index: usize) {
+    fn commit(&mut self, bar_index: usize) -> Result<(), RuntimeError> {
+        let work = self
+            .working
+            .current_series
+            .iter()
+            .zip(&self.compiled.program.retained_series)
+            .filter_map(|(value, retained)| retained.then_some(value.as_ref()).flatten())
+            .fold(self.working.current_series.len(), |work, value| {
+                work.saturating_add(value.copy_work())
+                    .saturating_add(value.scan_work())
+            });
+        self.charge_by(work)?;
         for (slot, value) in self.working.current_series.iter().enumerate() {
             if !self
                 .compiled
@@ -2011,6 +2279,7 @@ impl IndicatorInstance {
                 .set(slot, bar_index, value.clone().unwrap_or(Value::Na));
         }
         self.committed.states = Arc::clone(&self.working.states);
+        self.committed.index = Some(bar_index);
         self.committed.function_states = Arc::clone(&self.working.function_states);
         self.committed.intrinsics = Arc::clone(&self.working.intrinsics);
         self.working.clear_current_series();
@@ -2018,92 +2287,16 @@ impl IndicatorInstance {
         for values in &mut self.committed.history.values {
             values.evict_before(first_retained);
         }
+        Ok(())
     }
 }
 
-fn unary(operator: crate::hir::UnaryOperator, value: Value) -> Result<Value, RuntimeError> {
-    match operator {
-        crate::hir::UnaryOperator::Plus => match value {
-            Value::Int(_) | Value::Na => Ok(value),
-            Value::Float(value) => Ok(Value::Float(value).normalize_nonfinite()),
-            _ => Err(RuntimeError::InvalidValue {
-                operation: "unary plus",
-            }),
-        },
-        crate::hir::UnaryOperator::Minus => match value {
-            Value::Int(value) => Ok(value.checked_neg().map(Value::Int).unwrap_or(Value::Na)),
-            Value::Float(value) => Ok(Value::Float(-value).normalize_nonfinite()),
-            Value::Na => Ok(Value::Na),
-            _ => Err(RuntimeError::InvalidValue {
-                operation: "unary minus",
-            }),
-        },
-        crate::hir::UnaryOperator::Not => match value {
-            Value::Bool(value) => Ok(Value::Bool(!value)),
-            Value::Na => Ok(Value::Na),
-            _ => Err(RuntimeError::InvalidValue {
-                operation: "logical not",
-            }),
-        },
+pub(crate) fn charge_work(used: &mut usize, limit: usize, work: usize) -> bool {
+    match used.checked_add(work) {
+        Some(next) if next <= limit => {
+            *used = next;
+            true
+        }
+        _ => false,
     }
-}
-
-fn binary(operator: BinaryOperator, left: Value, right: Value) -> Result<Value, RuntimeError> {
-    use BinaryOperator::*;
-    match operator {
-        And | Or => {
-            let (Value::Bool(left), Value::Bool(right)) = (left, right) else {
-                return Ok(Value::Na);
-            };
-            Ok(Value::Bool(if matches!(operator, And) {
-                left && right
-            } else {
-                left || right
-            }))
-        }
-        Equal | NotEqual => {
-            let equal = match left.equals(&right) {
-                Some(equal) => equal,
-                None => return Ok(Value::Na),
-            };
-            Ok(Value::Bool(if matches!(operator, Equal) {
-                equal
-            } else {
-                !equal
-            }))
-        }
-        Less | LessEqual | Greater | GreaterEqual => {
-            let (Some(left), Some(right)) = (left.as_float(), right.as_float()) else {
-                return Ok(Value::Na);
-            };
-            Ok(Value::Bool(match operator {
-                Less => left < right,
-                LessEqual => left <= right,
-                Greater => left > right,
-                GreaterEqual => left >= right,
-                _ => unreachable!(),
-            }))
-        }
-        Add | Subtract | Multiply | Divide | Remainder => numeric_binary(operator, left, right),
-    }
-}
-
-fn numeric_binary(
-    operator: BinaryOperator,
-    left: Value,
-    right: Value,
-) -> Result<Value, RuntimeError> {
-    let (Some(left), Some(right)) = (left.as_float(), right.as_float()) else {
-        return Ok(Value::Na);
-    };
-    let value = match operator {
-        BinaryOperator::Add => left + right,
-        BinaryOperator::Subtract => left - right,
-        BinaryOperator::Multiply => left * right,
-        BinaryOperator::Divide if right != 0.0 => left / right,
-        BinaryOperator::Remainder if right != 0.0 => left % right,
-        BinaryOperator::Divide | BinaryOperator::Remainder => return Ok(Value::Na),
-        _ => unreachable!(),
-    };
-    Ok(Value::Float(value).normalize_nonfinite())
 }

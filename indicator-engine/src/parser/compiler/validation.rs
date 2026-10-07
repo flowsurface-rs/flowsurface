@@ -970,3 +970,317 @@ impl LoweringContext {
             && !is_mutable_local
     }
 }
+
+impl LoweringContext {
+    pub(super) fn validate_ta_scheduling(&mut self) {
+        loop {
+            let mut changed = false;
+            for (index, callees) in self.function.call_edges.iter().enumerate() {
+                if callees
+                    .iter()
+                    .any(|callee| self.function.stateful_functions.contains(callee))
+                {
+                    changed |= self.function.stateful_functions.insert(FunctionId(index));
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        let functions = self.ir.program.functions.clone();
+        for function in functions {
+            for default in function.parameter_defaults.into_iter().flatten() {
+                self.validate_ta_expression(default, true);
+            }
+            self.validate_ta_block(&function.body, false);
+        }
+        let statements = self.ir.program.blocks[0].statements.clone();
+        self.validate_ta_block(&statements, false);
+    }
+
+    fn validate_ta_expression(&mut self, id: ExprId, restricted: bool) {
+        let expression = self.ir.program.expressions[id.0].kind.clone();
+        let fixed = |id: ExprId| self.ir.program.expressions[id.0].is_fixed;
+        match expression {
+            ExpressionKind::IntrinsicCall {
+                intrinsic,
+                call_site,
+                arguments,
+            } => {
+                if restricted
+                    && self
+                        .registry
+                        .get(intrinsic)
+                        .is_some_and(|definition| definition.effects.stateful)
+                {
+                    self.invalid_ta_call(call_site);
+                }
+                for argument in arguments {
+                    self.validate_ta_expression(argument, restricted);
+                }
+            }
+            ExpressionKind::FunctionCall {
+                function,
+                call_site,
+                arguments,
+                ..
+            } => {
+                if restricted && self.function.stateful_functions.contains(&function) {
+                    self.invalid_ta_call(call_site);
+                }
+                for argument in arguments {
+                    self.validate_ta_expression(argument, restricted);
+                }
+            }
+            ExpressionKind::Conditional {
+                condition,
+                when_true,
+                when_false,
+            } => {
+                let branch_restricted = restricted || !fixed(condition);
+                self.validate_ta_expression(condition, restricted);
+                self.validate_ta_expression(when_true, branch_restricted);
+                self.validate_ta_expression(when_false, branch_restricted);
+            }
+            ExpressionKind::Coalesce { source, fallback } => {
+                let fallback_restricted = restricted || !fixed(source);
+                self.validate_ta_expression(source, restricted);
+                self.validate_ta_expression(fallback, fallback_restricted);
+            }
+            ExpressionKind::Binary {
+                operator,
+                left,
+                right,
+            } => {
+                let right_restricted = restricted
+                    || (matches!(operator, BinaryOperator::And | BinaryOperator::Or)
+                        && !fixed(left));
+                self.validate_ta_expression(left, restricted);
+                self.validate_ta_expression(right, right_restricted);
+            }
+            ExpressionKind::Switch {
+                operand,
+                branches,
+                fallback,
+            } => {
+                let branch_restricted = restricted
+                    || !fixed(operand)
+                    || branches.iter().any(|(condition, _)| !fixed(*condition));
+                self.validate_ta_expression(operand, restricted);
+                for (condition, value) in branches {
+                    self.validate_ta_expression(condition, branch_restricted);
+                    self.validate_ta_expression(value, branch_restricted);
+                }
+                if let Some(fallback) = fallback {
+                    self.validate_ta_expression(fallback, branch_restricted);
+                }
+            }
+            ExpressionKind::History { source, offset } => {
+                let zero = matches!(self.ir.program.expressions[offset.0].kind,
+                    ExpressionKind::Constant(constant) if self.ir.program.constants[constant.0] == Value::Int(0));
+                self.validate_ta_expression(source, restricted || !zero);
+                self.validate_ta_expression(offset, restricted);
+            }
+            ExpressionKind::Tuple(values) | ExpressionKind::Array(values) => {
+                for value in values {
+                    self.validate_ta_expression(value, restricted);
+                }
+            }
+            ExpressionKind::Record(fields) => {
+                for (_, value) in fields {
+                    self.validate_ta_expression(value, restricted);
+                }
+            }
+            ExpressionKind::CollectionIndex { source, index } => {
+                self.validate_ta_expression(source, restricted);
+                self.validate_ta_expression(index, restricted);
+            }
+            ExpressionKind::RecordField { source, .. } => {
+                self.validate_ta_expression(source, restricted)
+            }
+            ExpressionKind::Unary { operand, .. } => {
+                self.validate_ta_expression(operand, restricted)
+            }
+            _ => {}
+        }
+    }
+
+    fn invalid_ta_call(&mut self, call_site: CallSiteId) {
+        let span = self
+            .ir
+            .call_spans
+            .get(&call_site)
+            .copied()
+            .unwrap_or(Span::new(0, 0));
+        self.error(span, "stateful TA must execute once per bar; compute it in an ordinary per-bar binding before using it here");
+    }
+
+    fn validate_ta_block(&mut self, statements: &[StatementId], mut restricted: bool) -> bool {
+        let mut returns = false;
+        for id in statements {
+            match self.ir.program.statements[id.0].kind.clone() {
+                StatementKind::If {
+                    condition,
+                    then_branch,
+                    else_branch,
+                } => {
+                    let variable = !self.ir.program.expressions[condition.0].is_fixed;
+                    self.validate_ta_expression(condition, restricted);
+                    let then_returns = self.validate_ta_block(&then_branch, restricted || variable);
+                    let else_returns = self.validate_ta_block(&else_branch, restricted || variable);
+                    returns |= then_returns || else_returns;
+                    restricted |= variable && (then_returns || else_returns);
+                }
+                StatementKind::While { condition, body } => {
+                    self.validate_ta_expression(condition, true);
+                    let body_returns = self.validate_ta_block(&body, true);
+                    returns |= body_returns;
+                    restricted |= body_returns;
+                }
+                StatementKind::ForRange {
+                    start, end, body, ..
+                } => {
+                    self.validate_ta_expression(start, true);
+                    self.validate_ta_expression(end, true);
+                    let body_returns = self.validate_ta_block(&body, true);
+                    returns |= body_returns;
+                    restricted |= body_returns;
+                }
+                StatementKind::ForEach {
+                    collection, body, ..
+                } => {
+                    self.validate_ta_expression(collection, true);
+                    let body_returns = self.validate_ta_block(&body, true);
+                    returns |= body_returns;
+                    restricted |= body_returns;
+                }
+                StatementKind::StateDeclaration { initial, .. } => {
+                    self.validate_ta_expression(initial, true)
+                }
+                StatementKind::Binding { expression, .. }
+                | StatementKind::LocalUpdate { expression, .. }
+                | StatementKind::StateUpdate { expression, .. }
+                | StatementKind::Destructure { expression, .. }
+                | StatementKind::Expression(expression) => {
+                    self.validate_ta_expression(expression, restricted)
+                }
+                StatementKind::Return(value) => {
+                    if let Some(value) = value {
+                        self.validate_ta_expression(value, restricted);
+                    }
+                    returns = true;
+                    restricted = true;
+                }
+                StatementKind::Plot {
+                    expression, color, ..
+                }
+                | StatementKind::HorizontalLevel {
+                    expression, color, ..
+                } => {
+                    self.validate_ta_expression(expression, restricted);
+                    if let Some(color) = color {
+                        self.validate_ta_expression(color, restricted);
+                    }
+                }
+                StatementKind::Marker {
+                    expression,
+                    visible,
+                    color,
+                    ..
+                } => {
+                    for value in [Some(expression), visible, color].into_iter().flatten() {
+                        self.validate_ta_expression(value, restricted);
+                    }
+                }
+                StatementKind::Segment {
+                    start_value,
+                    end_value,
+                    start_index,
+                    end_index,
+                    visible,
+                    color,
+                    ..
+                } => {
+                    if let Some(visible) = visible {
+                        self.validate_ta_expression(visible, restricted);
+                    }
+                    for value in [
+                        Some(start_value),
+                        Some(end_value),
+                        Some(start_index),
+                        Some(end_index),
+                        color,
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
+                        self.validate_ta_expression(value, true);
+                    }
+                }
+                StatementKind::Region {
+                    key,
+                    upper,
+                    lower,
+                    left_index,
+                    right_index,
+                    visible,
+                    border_color,
+                    fill_color,
+                    style_by,
+                    extend_right,
+                    ..
+                } => {
+                    if let Some(visible) = visible {
+                        self.validate_ta_expression(visible, restricted);
+                    }
+                    for value in [
+                        Some(key),
+                        Some(upper),
+                        Some(lower),
+                        Some(left_index),
+                        Some(right_index),
+                        border_color,
+                        fill_color,
+                        style_by,
+                        extend_right,
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
+                        self.validate_ta_expression(value, true);
+                    }
+                }
+                StatementKind::RegionRemove { key, .. } => {
+                    self.validate_ta_expression(key, restricted)
+                }
+                StatementKind::OhlcPlot {
+                    open,
+                    high,
+                    low,
+                    close,
+                    color,
+                    ..
+                } => {
+                    for value in [Some(open), Some(high), Some(low), Some(close), color]
+                        .into_iter()
+                        .flatten()
+                    {
+                        self.validate_ta_expression(value, restricted);
+                    }
+                }
+                StatementKind::RangePlot {
+                    upper,
+                    lower,
+                    color,
+                    ..
+                } => {
+                    for value in [Some(upper), Some(lower), color].into_iter().flatten() {
+                        self.validate_ta_expression(value, restricted);
+                    }
+                }
+                _ => {}
+            }
+        }
+        returns
+    }
+}

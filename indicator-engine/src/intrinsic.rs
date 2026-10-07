@@ -66,6 +66,22 @@ pub enum IntrinsicState {
 }
 
 impl IntrinsicState {
+    pub(crate) fn copy_work(&self) -> usize {
+        match self {
+            Self::Sma { values }
+            | Self::Window { values, .. }
+            | Self::Pivot { values, .. }
+            | Self::Stdev { values }
+            | Self::Dev { values } => values.len().saturating_add(1),
+            Self::Vwma { values } => values.len().saturating_add(1),
+            Self::ExtremeBars { values, .. } => values.len().saturating_add(1),
+            Self::PreviousWhen { value } => {
+                1usize.saturating_add(value.as_ref().map_or(0, Value::copy_work))
+            }
+            _ => 1,
+        }
+    }
+
     pub(crate) fn heap_bytes(&self) -> usize {
         let state_bytes = size_of::<Self>();
         match self {
@@ -175,6 +191,7 @@ pub enum IntrinsicError {
     InvalidArguments(&'static str),
     InvalidState(&'static str),
     LimitExceeded(&'static str),
+    ExecutionLimitExceeded,
 }
 
 impl Display for IntrinsicError {
@@ -186,6 +203,7 @@ impl Display for IntrinsicError {
             Self::LimitExceeded(resource) => {
                 write!(formatter, "{resource} exceeds the runtime limit")
             }
+            Self::ExecutionLimitExceeded => formatter.write_str("execution work limit exceeded"),
         }
     }
 }
@@ -200,6 +218,26 @@ pub struct IntrinsicEvalContext<'a> {
     pub fixed_window: bool,
     pub max_collection_elements: usize,
     pub states: &'a mut BTreeMap<CallSiteId, IntrinsicState>,
+    pub executed_work: &'a mut usize,
+    pub max_work: usize,
+}
+
+impl IntrinsicEvalContext<'_> {
+    pub(crate) fn charge(&mut self, work: usize) -> Result<(), IntrinsicError> {
+        charge_intrinsic_work(self.executed_work, self.max_work, work)
+    }
+}
+
+fn charge_intrinsic_work(
+    used: &mut usize,
+    limit: usize,
+    work: usize,
+) -> Result<(), IntrinsicError> {
+    if crate::runtime::charge_work(used, limit, work) {
+        Ok(())
+    } else {
+        Err(IntrinsicError::ExecutionLimitExceeded)
+    }
 }
 
 pub type IntrinsicEvaluator = for<'a> fn(
@@ -781,10 +819,14 @@ fn fold_min_max(args: &[Value], operation: fn(f64, f64) -> f64) -> Result<Value,
 }
 
 fn eval_nz(
-    _context: &mut IntrinsicEvalContext<'_>,
+    context: &mut IntrinsicEvalContext<'_>,
     _site: CallSiteId,
     args: &[Value],
 ) -> Result<Value, IntrinsicError> {
+    context.charge(
+        args.iter()
+            .fold(0usize, |work, value| work.saturating_add(value.copy_work())),
+    )?;
     let source = args
         .first()
         .ok_or(IntrinsicError::InvalidArguments("nz expects a source"))?;
@@ -834,10 +876,14 @@ fn eval_select(
 }
 
 fn eval_tostring(
-    _context: &mut IntrinsicEvalContext<'_>,
+    context: &mut IntrinsicEvalContext<'_>,
     _site: CallSiteId,
     args: &[Value],
 ) -> Result<Value, IntrinsicError> {
+    context.charge(
+        args.iter()
+            .fold(0usize, |work, value| work.saturating_add(value.copy_work())),
+    )?;
     let value = args.first().cloned().unwrap_or(Value::Na);
     let text = match value {
         Value::Int(value) => value.to_string(),
@@ -883,6 +929,9 @@ fn eval_array_new(
     _site: CallSiteId,
     args: &[Value],
 ) -> Result<Value, IntrinsicError> {
+    context.charge(args.iter().fold(args.len(), |work, value| {
+        work.saturating_add(value.copy_work())
+    }))?;
     let array = ArrayValue::new(args.to_vec());
     let (elements, heap_bytes) = array.resource_usage();
     check_collection_limits(context, elements, heap_bytes)?;
@@ -902,13 +951,16 @@ fn eval_array_push(
     let value = args.get(1).cloned().unwrap_or(Value::Na);
     let (projected, projected_heap) = values.projected_push_usage(&value);
     check_collection_limits(context, projected, projected_heap)?;
+    context.charge(values.as_slice().iter().fold(values.len(), |work, value| {
+        work.saturating_add(value.copy_work())
+    }))?;
     let mut values = Arc::clone(values);
     Arc::make_mut(&mut values).push(value);
     Ok(Value::Array(values))
 }
 
 fn eval_array_get(
-    _context: &mut IntrinsicEvalContext<'_>,
+    context: &mut IntrinsicEvalContext<'_>,
     _site: CallSiteId,
     args: &[Value],
 ) -> Result<Value, IntrinsicError> {
@@ -924,6 +976,7 @@ fn eval_array_get(
     else {
         return Ok(Value::Na);
     };
+    context.charge(values.get(index).map_or(0, Value::copy_work))?;
     Ok(values.get(index).cloned().unwrap_or(Value::Na))
 }
 
@@ -986,13 +1039,17 @@ fn eval_record_set(
         .saturating_add(key.capacity())
         .saturating_add(value.resource_usage().1);
     check_collection_limits(context, projected, projected_heap)?;
+    context.charge(values.iter().fold(values.len(), |work, (key, value)| {
+        work.saturating_add(key.len())
+            .saturating_add(value.copy_work())
+    }))?;
     let mut values = values.clone();
     values.insert(key.clone(), value);
     Ok(Value::Record(values))
 }
 
 fn eval_record_get(
-    _context: &mut IntrinsicEvalContext<'_>,
+    context: &mut IntrinsicEvalContext<'_>,
     _site: CallSiteId,
     args: &[Value],
 ) -> Result<Value, IntrinsicError> {
@@ -1004,6 +1061,7 @@ fn eval_record_get(
             "record.get expects a string key",
         ));
     };
+    context.charge(values.get(key).map_or(0, Value::copy_work))?;
     Ok(values.get(key).cloned().unwrap_or(Value::Na))
 }
 
@@ -1059,6 +1117,11 @@ fn eval_sma(
         ));
     };
     push_window(values, source, length);
+    charge_intrinsic_work(
+        context.executed_work,
+        context.max_work,
+        values.len().saturating_mul(3),
+    )?;
     if values.len() < length || values.iter().any(|value| value.is_none()) {
         Ok(Value::Na)
     } else {
@@ -1273,6 +1336,11 @@ fn eval_vwma(
         ));
     };
     push_window(values, source.zip(volume), length);
+    charge_intrinsic_work(
+        context.executed_work,
+        context.max_work,
+        values.len().saturating_mul(3),
+    )?;
     if values.len() < length || values.iter().any(|value| value.is_none()) {
         return Ok(Value::Na);
     }
@@ -1367,6 +1435,11 @@ fn eval_pivot(
     if values.len() < length {
         return Ok(Value::Na);
     }
+    charge_intrinsic_work(
+        context.executed_work,
+        context.max_work,
+        length.saturating_mul(3),
+    )?;
     let candidate_index = values.len() - 1 - right;
     let Some(candidate) = values[candidate_index] else {
         return Ok(Value::Na);
@@ -1444,6 +1517,11 @@ fn eval_window(
         ));
     }
     push_window(values, source, length);
+    charge_intrinsic_work(
+        context.executed_work,
+        context.max_work,
+        values.len().saturating_mul(3),
+    )?;
     if values.len() < length || values.iter().any(|value| value.is_none()) {
         Ok(Value::Na)
     } else {
@@ -1538,6 +1616,11 @@ fn eval_stdev(
         ));
     };
     push_window(values, args.first().and_then(Value::as_float), length);
+    charge_intrinsic_work(
+        context.executed_work,
+        context.max_work,
+        values.len().saturating_mul(3),
+    )?;
     if values.len() < length || values.iter().any(|value| value.is_none()) {
         return Ok(Value::Na);
     }
@@ -1572,6 +1655,11 @@ fn eval_dev(
         ));
     };
     push_window(values, args.first().and_then(Value::as_float), length);
+    charge_intrinsic_work(
+        context.executed_work,
+        context.max_work,
+        values.len().saturating_mul(3),
+    )?;
     if values.len() < length || values.iter().any(|value| value.is_none()) {
         return Ok(Value::Na);
     }
@@ -1635,6 +1723,11 @@ fn eval_extreme_bars(
         source.map(|source| (source, context.bar_index)),
         length,
     );
+    charge_intrinsic_work(
+        context.executed_work,
+        context.max_work,
+        values.len().saturating_mul(3),
+    )?;
     if values.len() < length || values.iter().any(|value| value.is_none()) {
         return Ok(Value::Na);
     }

@@ -95,6 +95,7 @@ pub(super) fn compile(ast: AstProgram, path: &Path, registry: IntrinsicRegistry)
     ctx.ir.program.series = ctx.ir.next_series;
     ctx.ir.program.retained_series = ctx.retained_series();
     ctx.resolve_fixed_expressions();
+    ctx.validate_ta_scheduling();
     ctx.ir.program.call_sites = ctx.ir.next_call_site;
     ctx.ir.program.local_definitions = ctx.scope.local_definitions.clone();
 

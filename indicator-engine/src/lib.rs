@@ -2679,7 +2679,8 @@ mod tests {
             language(1)
             indicator("State seed", id = "community.state-seed")
             format(precision = "base_ticker_min_tick")
-            state average = ta.sma(chart.close, 2)
+            seed = ta.sma(chart.close, 2)
+            state average = seed
             plot(average, id = "average")
         "#;
         let compiled = compile(source, "state-seed.ind").expect("source should compile");
@@ -3094,5 +3095,215 @@ mod tests {
         instance
             .evaluate_closed(frame(0, 1, 10.0))
             .expect("TA state should not consume collection elements");
+    }
+
+    #[test]
+    fn numeric_contracts_preserve_integers_and_match_warmup() {
+        let source = r#"language(1)
+indicator("Numbers", id = "test.numbers")
+format(precision = "fixed_step:0.1")
+length = 2 + 2
+plot(9007199254740992 + 1, id = "integer")
+plot(1 / 2, id = "division")
+plot(9223372036854775807 + 1, id = "overflow")
+plot(9007199254740992 < 9007199254740993, id = "order")
+plot(9007199254740993 != 9007199254740992.0, id = "mixed")
+plot(ta.pivothigh(chart.high, length, 2), id = "pivot")"#;
+        let compiled = compile(source, "numbers.ind").unwrap();
+        assert_eq!(compiled.warmup_bars(&IndicatorConfig::default()), Some(7));
+        assert_eq!(compiled.program.plots[1].value_type, PlotValueType::Number);
+        let mut instance = compiled.instantiate(IndicatorConfig::default()).unwrap();
+        for index in 0..7 {
+            let output = instance
+                .evaluate_closed(frame(index, index as i64, 10.0))
+                .unwrap();
+            assert_eq!(
+                plot_value(&output, "integer"),
+                &Value::Int(9007199254740993)
+            );
+            assert_eq!(plot_value(&output, "division"), &Value::Float(0.5));
+            assert_eq!(plot_value(&output, "overflow"), &Value::Na);
+            assert_eq!(plot_value(&output, "order"), &Value::Bool(true));
+            assert_eq!(plot_value(&output, "mixed"), &Value::Bool(true));
+            if index == 6 {
+                assert_eq!(plot_value(&output, "pivot"), &Value::Float(10.0));
+            }
+        }
+        assert!(matches!(
+            instance.evaluate_closed(frame(6, 6, 99.0)),
+            Err(RuntimeError::InvalidValue {
+                operation: "closed frame order"
+            })
+        ));
+        assert_eq!(instance.committed_index(), Some(6));
+        instance.preview_open(frame(7, 7, 20.0)).unwrap();
+        instance.evaluate_closed(frame(7, 7, 20.0)).unwrap();
+        for (integer, float, order) in [
+            (i64::MAX, 9223372036854775808.0, std::cmp::Ordering::Less),
+            (i64::MIN, -9223372036854775808.0, std::cmp::Ordering::Equal),
+            (-1, -1.5, std::cmp::Ordering::Greater),
+            (1, 1.5, std::cmp::Ordering::Less),
+        ] {
+            assert_eq!(
+                Value::Int(integer).numeric_compare(&Value::Float(float)),
+                Some(order)
+            );
+            assert_eq!(
+                Value::Float(float).numeric_compare(&Value::Int(integer)),
+                Some(order.reverse())
+            );
+        }
+        for (left, operator, right, expected) in [
+            (i64::MIN, hir::BinaryOperator::Subtract, 1, Value::Na),
+            (i64::MAX, hir::BinaryOperator::Multiply, 2, Value::Na),
+            (i64::MIN, hir::BinaryOperator::Remainder, -1, Value::Na),
+            (9, hir::BinaryOperator::Remainder, 4, Value::Int(1)),
+            (9, hir::BinaryOperator::Divide, 0, Value::Na),
+            (9, hir::BinaryOperator::Remainder, 0, Value::Na),
+        ] {
+            assert_eq!(
+                Value::Int(left).binary(operator, Value::Int(right)),
+                expected
+            );
+        }
+        for kind in ["int", "time"] {
+            let source = format!(
+                "language(1)\nindicator(\"Invalid\", id = \"test.invalid\")\nvalue = input.{kind}(2.9)\nplot(chart.close)"
+            );
+            assert!(
+                compile(&source, "invalid.ind")
+                    .unwrap_err()
+                    .iter()
+                    .any(|error| error.message.contains("default has the wrong type"))
+            );
+        }
+    }
+
+    #[test]
+    fn dynamic_output_boundaries_reject_wrong_kinds() {
+        for body in [
+            "plot(array.get(array.new(array.new(1, 2)), 0))",
+            "plotrange(array.get(array.new(false), 0), chart.low)",
+            "plotcandle(chart.open, chart.high, chart.low, array.get(array.new(\"wrong\"), 0))",
+            "display(view = \"primary_overlay\")\nplot(na)\nregion(key = array.get(array.new(1.5), 0), upper = chart.high, lower = chart.low, left_index = 0, right_index = 0)",
+            "display(view = \"primary_overlay\")\nplot(na)\nregion(key = 1, upper = chart.high, lower = chart.low, left_index = 0, right_index = 0, visible = array.get(array.new(1), 0))",
+            "plot(chart.close, color = array.get(array.new(1), 0))",
+        ] {
+            let source = format!(
+                "language(1)\nindicator(\"Boundary\", id = \"test.boundary\")\nformat(precision = \"fixed_step:1\")\n{body}"
+            );
+            let compiled = compile(&source, "boundary.ind").unwrap();
+            let error = compiled
+                .instantiate(IndicatorConfig::default())
+                .unwrap()
+                .evaluate_closed(frame(0, 0, 10.0))
+                .unwrap_err();
+            assert!(
+                matches!(error, RuntimeError::InvalidOutput { .. }),
+                "{body}: {error}"
+            );
+        }
+        let compiled = compile("language(1)\nindicator(\"Valid\", id = \"test.valid\")\nformat(precision = \"fixed_step:1\")\nplot(array.get(array.new(1, na), 0), id = \"number\")\nplot(na, id = \"missing\")", "valid.ind").unwrap();
+        let output = compiled
+            .instantiate(IndicatorConfig::default())
+            .unwrap()
+            .evaluate_closed(frame(0, 0, 10.0))
+            .unwrap();
+        assert_eq!(plot_value(&output, "number"), &Value::Int(1));
+        assert_eq!(plot_value(&output, "missing"), &Value::Na);
+    }
+
+    #[test]
+    fn stateful_ta_requires_per_bar_execution_paths() {
+        for body in [
+            "plot(select(chart.close > 0, ta.sma(chart.close, 2), na))",
+            "value = na\nfor index = 0 to 1 { value := ta.sma(chart.close, 2) }\nplot(value)",
+            "plot(coalesce(chart.close, ta.ema(chart.close, 2)))",
+            "plot(chart.close > 0 && ta.ema(chart.close, 2) > 0)",
+            "state seed = ta.sma(chart.close, 2)\nplot(seed)",
+            "fn average(value) { return ta.ema(value, 2) }\nplot(select(chart.close > 0, average(chart.close), na))",
+            "fn inner(value) { return ta.ema(value, 2) }\nfn average(value) { return inner(value) }\nplot(select(chart.close > 0, average(chart.close), na))",
+            "fn average(value) { if value > 0 { return 0 } return ta.ema(value, 2) }\nplot(average(chart.close))",
+            "fn average(value = ta.ema(chart.close, 2)) { return value }\nplot(average())",
+            "plot(ta.sma(chart.close, 2)[1])",
+            "display(view = \"primary_overlay\")\nplot(na)\nregion(key = 1, upper = ta.sma(chart.high, 2), lower = chart.low, left_index = 0, right_index = 0, visible = chart.close > 0)",
+        ] {
+            let source = format!(
+                "language(1)\nindicator(\"Schedule\", id = \"test.schedule\")\nformat(precision = \"fixed_step:1\")\n{body}"
+            );
+            let errors = compile(&source, "schedule.ind").unwrap_err();
+            assert!(
+                errors.iter().any(|error| error
+                    .message
+                    .contains("stateful TA must execute once per bar")
+                    && error.span.end > error.span.start),
+                "{body}: {errors:?}"
+            );
+        }
+        let source = "language(1)\nindicator(\"Fixed\", id = \"test.fixed\")\nformat(precision = \"fixed_step:1\")\nenabled = input.bool(true)\naverage = select(enabled, ta.sma(chart.close, 2), ta.ema(chart.close, 2))\nstate seed = average\nplot(select(chart.close > 0, average, na))";
+        let compiled = compile(source, "fixed.ind").unwrap();
+        let mut instance = compiled.instantiate(IndicatorConfig::default()).unwrap();
+        instance.evaluate_closed(frame(0, 0, 10.0)).unwrap();
+        instance.evaluate_closed(frame(1, 1, -100.0)).unwrap();
+        let output = instance.evaluate_closed(frame(2, 2, 20.0)).unwrap();
+        assert_eq!(plot_value(&output, "plot_0"), &Value::Float(-40.0));
+    }
+
+    #[test]
+    fn work_budget_charges_scans_and_collection_copies() {
+        let mut work = usize::MAX;
+        assert!(!runtime::charge_work(&mut work, usize::MAX, 1));
+        let compiled = compile("language(1)\nindicator(\"Work\", id = \"test.work\")\nformat(precision = \"fixed_step:1\")\nplot(ta.sma(chart.close, 100))", "work.ind").unwrap();
+        let limits = RuntimeLimits {
+            max_evaluated_nodes: 250,
+            ..RuntimeLimits::untrusted()
+        };
+        let mut instance = compiled
+            .instantiate_with_limits(IndicatorConfig::default(), limits)
+            .unwrap();
+        assert!((0..100).any(|index| matches!(
+            instance.evaluate_closed(frame(index, index as i64, 10.0)),
+            Err(RuntimeError::ExecutionLimitExceeded)
+        )));
+        let destructure = format!(
+            "values = array.new(\"{}\", 0)\nfor index = 0 to 11 {{ (first, second) = values }}\nplot(chart.close)",
+            "x".repeat(1024)
+        );
+        for (body, expected) in [
+            (
+                "values = array.new()\nfor index = 0 to 127 { values := array.push(values, index) }\nplot(array.size(values))",
+                true,
+            ),
+            (
+                "values = array.new()\nfor index = 0 to 127 { previous = values\n values := array.push(values, index) }\nplot(array.size(values))",
+                false,
+            ),
+            (destructure.as_str(), false),
+        ] {
+            let source = format!(
+                "language(1)\nindicator(\"Copy\", id = \"test.copy\")\nformat(precision = \"fixed_step:1\")\n{body}"
+            );
+            let compiled = compile(&source, "copy.ind").unwrap();
+            let limits = RuntimeLimits {
+                max_evaluated_nodes: 4000,
+                ..RuntimeLimits::untrusted()
+            };
+            let result = compiled
+                .instantiate_with_limits(IndicatorConfig::default(), limits)
+                .unwrap()
+                .evaluate_closed(frame(0, 0, 10.0));
+            assert_eq!(result.is_ok(), expected, "{body}: {result:?}");
+            if !expected {
+                assert!(matches!(result, Err(RuntimeError::ExecutionLimitExceeded)));
+            }
+        }
+        let compiled = compile("language(1)\nindicator(\"Depth\", id = \"test.depth\")\nformat(precision = \"fixed_step:1\")\nvalues = array.new()\nfor index = 0 to 256 { values := array.new(values) }\nplot(array.size(values))", "depth.ind").unwrap();
+        assert!(matches!(
+            compiled
+                .instantiate(IndicatorConfig::default())
+                .unwrap()
+                .evaluate_closed(frame(0, 0, 10.0)),
+            Err(RuntimeError::ResourceLimitExceeded("collection nesting"))
+        ));
     }
 }

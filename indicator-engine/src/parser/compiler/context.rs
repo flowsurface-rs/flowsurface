@@ -20,6 +20,7 @@ pub(super) struct IrBuilder {
     pub(super) next_call_site: usize,
     pub(super) state_call_sites: Vec<CallSiteId>,
     pub(super) state_functions: Vec<Option<FunctionId>>,
+    pub(super) call_spans: BTreeMap<CallSiteId, Span>,
 }
 
 pub(super) struct ScopeState {
@@ -39,6 +40,7 @@ pub(super) struct FunctionState {
     pub(super) current: Option<FunctionId>,
     pub(super) active: Vec<FunctionId>,
     pub(super) call_edges: Vec<Vec<FunctionId>>,
+    pub(super) stateful_functions: BTreeSet<FunctionId>,
 }
 
 pub(super) struct DeclarationState {
@@ -94,6 +96,7 @@ impl LoweringContext {
                 next_call_site: 0,
                 state_call_sites: Vec::new(),
                 state_functions: Vec::new(),
+                call_spans: BTreeMap::new(),
             },
             scope: ScopeState {
                 values: BTreeMap::new(),
@@ -111,6 +114,7 @@ impl LoweringContext {
                 current: None,
                 active: Vec::new(),
                 call_edges: Vec::new(),
+                stateful_functions: BTreeSet::new(),
             },
             declarations: DeclarationState {
                 descriptor: None,

@@ -1,4 +1,6 @@
-use super::super::ast::{AstCall, AstExpression, constant_value, named_color};
+use super::super::ast::{
+    AstCall, AstExpression, constant_value, named_color, negative_integer_literal, numeric_literal,
+};
 use super::context::{
     LoweringContext, is_boolean_type, is_numeric_type, is_orderable_type, merge_value_types,
 };
@@ -11,15 +13,18 @@ use std::collections::BTreeSet;
 impl LoweringContext {
     pub(super) fn compile_expression(&mut self, expression: &AstExpression) -> ExprId {
         match expression {
-            AstExpression::Number(value, _) => {
-                let value = if value.fract() == 0.0 {
-                    Value::Int(*value as i64)
-                } else {
-                    Value::Float(*value)
+            AstExpression::Number(text, span) => {
+                let value = match numeric_literal(text) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        self.error(*span, error.message());
+                        return self.push_constant(Value::Na, Type::simple(ValueType::Any));
+                    }
                 };
-                let ty = match value {
-                    Value::Int(_) => Type::simple(ValueType::Int),
-                    _ => Type::simple(ValueType::Float),
+                let ty = if matches!(value, Value::Int(_)) {
+                    Type::simple(ValueType::Int)
+                } else {
+                    Type::simple(ValueType::Float)
                 };
                 self.push_constant(value, ty)
             }
@@ -37,6 +42,12 @@ impl LoweringContext {
                 expression,
                 span,
             } => {
+                if *operator == UnaryOperator::Minus
+                    && let AstExpression::Number(text, _) = expression.as_ref()
+                    && let Some(value) = negative_integer_literal(text)
+                {
+                    return self.push_constant(Value::Int(value), Type::simple(ValueType::Int));
+                }
                 let operand = self.compile_expression(expression);
                 let operand_type = self.ir.program.expressions[operand.0].ty;
                 let result = match operator {
@@ -99,7 +110,8 @@ impl LoweringContext {
                         ValueType::Bool
                     }
                     _ if is_numeric_type(left_type.value) && is_numeric_type(right_type.value) => {
-                        if left_type.value == ValueType::Float
+                        if *operator == BinaryOperator::Divide
+                            || left_type.value == ValueType::Float
                             || right_type.value == ValueType::Float
                             || left_type.value == ValueType::Any
                             || right_type.value == ValueType::Any
@@ -413,6 +425,7 @@ impl LoweringContext {
                         );
                         let call_site = CallSiteId(self.ir.next_call_site);
                         self.ir.next_call_site += 1;
+                        self.ir.call_spans.insert(call_site, span);
                         source = self.push_expression(
                             ExpressionKind::IntrinsicCall {
                                 intrinsic,
@@ -745,6 +758,7 @@ impl LoweringContext {
                 .collect();
             let call_site = CallSiteId(self.ir.next_call_site);
             self.ir.next_call_site += 1;
+            self.ir.call_spans.insert(call_site, call.span);
             let result = self
                 .ir
                 .program
@@ -766,6 +780,11 @@ impl LoweringContext {
             self.error(call.span, format!("unknown intrinsic {name}"));
             return self.push_constant(Value::Na, Type::series(ValueType::Any));
         };
+        if definition.effects.stateful
+            && let Some(function) = self.function.current
+        {
+            self.function.stateful_functions.insert(function);
+        }
         let signature = definition.signature.clone();
         if !signature.variadic && call.arguments.len() != signature.arguments.len() {
             self.error(
@@ -883,6 +902,7 @@ impl LoweringContext {
         }
         let call_site = CallSiteId(self.ir.next_call_site);
         self.ir.next_call_site += 1;
+        self.ir.call_spans.insert(call_site, call.span);
         let result = if name == "ta.previous_when" && arguments.len() >= 2 {
             let source_type = self.ir.program.expressions[arguments[1].0].ty.value;
             if !matches!(

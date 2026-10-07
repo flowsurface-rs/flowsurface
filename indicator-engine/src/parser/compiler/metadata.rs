@@ -254,8 +254,6 @@ impl LoweringContext {
             (ValueType::String, Some(Value::String(value))) => InputValue::String(value),
             (ValueType::Color, Some(Value::Color(value))) => InputValue::Color(value),
             (ValueType::Time, Some(Value::Int(value))) => InputValue::Time(value),
-            (ValueType::Time, Some(Value::Float(value))) => InputValue::Time(value as i64),
-            (ValueType::Int, Some(Value::Float(value))) => InputValue::Int(value as i64),
             (ValueType::Float, Some(Value::Int(value))) => InputValue::Float(value as f64),
             (ValueType::Bool, None) => InputValue::Bool(false),
             (ValueType::String, None) => InputValue::String(String::new()),

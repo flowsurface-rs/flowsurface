@@ -1,4 +1,6 @@
+use crate::hir::{BinaryOperator, UnaryOperator};
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt::{Display, Formatter};
 use std::mem::size_of;
@@ -23,10 +25,17 @@ pub struct ArrayValue {
     collection_elements: usize,
     heap_bytes: usize,
     max_string_capacity: usize,
+    nesting_depth: usize,
 }
 
 impl ArrayValue {
     pub fn new(values: Vec<Value>) -> Self {
+        let nesting_depth = values
+            .iter()
+            .map(Value::nesting_depth)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
         let (nested_elements, nested_bytes, max_string_capacity) = values.iter().fold(
             (0usize, 0usize, 0usize),
             |(elements, bytes, max_string_capacity), value| {
@@ -42,6 +51,7 @@ impl ArrayValue {
             collection_elements: values.len().saturating_add(nested_elements),
             heap_bytes: Self::container_heap_bytes(values.capacity()).saturating_add(nested_bytes),
             max_string_capacity,
+            nesting_depth,
             values,
         }
     }
@@ -63,6 +73,9 @@ impl ArrayValue {
     }
 
     pub(crate) fn push(&mut self, value: Value) {
+        self.nesting_depth = self
+            .nesting_depth
+            .max(value.nesting_depth().saturating_add(1));
         let (value_elements, value_bytes) = value.resource_usage();
         let value_max_string_capacity = value.max_string_capacity();
         let previous_capacity = self.values.capacity();
@@ -113,6 +126,7 @@ impl Clone for ArrayValue {
             collection_elements: self.collection_elements,
             heap_bytes: Self::container_heap_bytes(values.capacity()).saturating_add(nested_bytes),
             max_string_capacity: self.max_string_capacity,
+            nesting_depth: self.nesting_depth,
             values,
         }
     }
@@ -125,6 +139,164 @@ impl PartialEq for ArrayValue {
 }
 
 impl Value {
+    pub(crate) fn nesting_depth(&self) -> usize {
+        match self {
+            Self::Array(values) => values.nesting_depth,
+            Self::Tuple(values) => values
+                .iter()
+                .map(Self::nesting_depth)
+                .max()
+                .unwrap_or(0)
+                .saturating_add(1),
+            Self::Record(values) => values
+                .values()
+                .map(Self::nesting_depth)
+                .max()
+                .unwrap_or(0)
+                .saturating_add(1),
+            _ => 0,
+        }
+    }
+
+    pub(crate) fn comparison_work(&self) -> usize {
+        match self {
+            Self::String(value) => value.len(),
+            Self::Tuple(values) => values.iter().fold(values.len(), |work, value| {
+                work.saturating_add(value.comparison_work())
+            }),
+            Self::Array(values) => values.as_slice().iter().fold(values.len(), |work, value| {
+                work.saturating_add(value.comparison_work())
+            }),
+            Self::Record(values) => values.iter().fold(values.len(), |work, (key, value)| {
+                work.saturating_add(key.len())
+                    .saturating_add(value.comparison_work())
+            }),
+            _ => 0,
+        }
+    }
+    pub(crate) fn copy_work(&self) -> usize {
+        match self {
+            Self::String(value) => value.len(),
+            Self::Tuple(values) => values.iter().fold(values.len(), |work, value| {
+                work.saturating_add(value.copy_work())
+            }),
+            Self::Record(values) => values.iter().fold(values.len(), |work, (key, value)| {
+                work.saturating_add(key.len())
+                    .saturating_add(value.copy_work())
+            }),
+            _ => 0,
+        }
+    }
+
+    pub(crate) fn scan_work(&self) -> usize {
+        match self {
+            Self::Tuple(values) => values.iter().fold(1, |work: usize, value| {
+                work.saturating_add(value.scan_work())
+            }),
+            Self::Record(values) => values.values().fold(1, |work: usize, value| {
+                work.saturating_add(value.scan_work())
+            }),
+            _ => 1,
+        }
+    }
+    pub(crate) fn kind(&self) -> &'static str {
+        match self {
+            Self::Int(_) => "integer",
+            Self::Float(_) => "number",
+            Self::Bool(_) => "boolean",
+            Self::String(_) => "string",
+            Self::Color(_) => "color",
+            Self::Tuple(_) => "tuple",
+            Self::Array(_) => "array",
+            Self::Record(_) => "record",
+            Self::Na => "na",
+        }
+    }
+
+    pub(crate) fn unary(self, operator: UnaryOperator) -> Option<Self> {
+        Some(match (operator, self) {
+            (_, Self::Na) => Self::Na,
+            (UnaryOperator::Plus, value @ (Self::Int(_) | Self::Float(_))) => {
+                value.normalize_nonfinite()
+            }
+            (UnaryOperator::Minus, Self::Int(value)) => {
+                value.checked_neg().map_or(Self::Na, Self::Int)
+            }
+            (UnaryOperator::Minus, Self::Float(value)) => Self::Float(-value).normalize_nonfinite(),
+            (UnaryOperator::Not, Self::Bool(value)) => Self::Bool(!value),
+            _ => return None,
+        })
+    }
+
+    pub(crate) fn numeric_compare(&self, other: &Self) -> Option<Ordering> {
+        match (self, other) {
+            (Self::Int(left), Self::Int(right)) => Some(left.cmp(right)),
+            (Self::Float(left), Self::Float(right)) if left.is_finite() && right.is_finite() => {
+                left.partial_cmp(right)
+            }
+            (Self::Int(integer), Self::Float(float)) => compare_integer_float(*integer, *float),
+            (Self::Float(float), Self::Int(integer)) => {
+                compare_integer_float(*integer, *float).map(Ordering::reverse)
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn binary(self, operator: BinaryOperator, other: Self) -> Self {
+        use BinaryOperator::*;
+        match operator {
+            And | Or => match (self, other) {
+                (Self::Bool(left), Self::Bool(right)) => Self::Bool(if operator == And {
+                    left && right
+                } else {
+                    left || right
+                }),
+                _ => Self::Na,
+            },
+            Equal | NotEqual => self.equals(&other).map_or(Self::Na, |equal| {
+                Self::Bool(if operator == Equal { equal } else { !equal })
+            }),
+            Less | LessEqual | Greater | GreaterEqual => {
+                self.numeric_compare(&other).map_or(Self::Na, |order| {
+                    Self::Bool(match operator {
+                        Less => order.is_lt(),
+                        LessEqual => order.is_le(),
+                        Greater => order.is_gt(),
+                        GreaterEqual => order.is_ge(),
+                        _ => unreachable!(),
+                    })
+                })
+            }
+            Add | Subtract | Multiply | Divide | Remainder => {
+                if let (Self::Int(left), Self::Int(right)) = (&self, &other)
+                    && operator != Divide
+                {
+                    return match operator {
+                        Add => left.checked_add(*right),
+                        Subtract => left.checked_sub(*right),
+                        Multiply => left.checked_mul(*right),
+                        Remainder => left.checked_rem(*right),
+                        _ => unreachable!(),
+                    }
+                    .map_or(Self::Na, Self::Int);
+                }
+                let (Some(left), Some(right)) = (self.as_float(), other.as_float()) else {
+                    return Self::Na;
+                };
+                let value = match operator {
+                    Add => left + right,
+                    Subtract => left - right,
+                    Multiply => left * right,
+                    Divide if right != 0.0 => left / right,
+                    Remainder if right != 0.0 => left % right,
+                    Divide | Remainder => return Self::Na,
+                    _ => unreachable!(),
+                };
+                Self::Float(value).normalize_nonfinite()
+            }
+        }
+    }
+
     pub(crate) fn resource_usage(&self) -> (usize, usize) {
         match self {
             Self::String(value) => (0, size_of::<String>().saturating_add(value.capacity())),
@@ -192,10 +364,8 @@ impl Value {
             return None;
         }
         Some(match (self, other) {
-            (Self::Int(left), Self::Int(right)) => left == right,
-            (Self::Float(left), Self::Float(right)) => left == right,
-            (Self::Int(left), Self::Float(right)) | (Self::Float(right), Self::Int(left)) => {
-                (*left as f64) == *right
+            (Self::Int(_) | Self::Float(_), Self::Int(_) | Self::Float(_)) => {
+                return self.numeric_compare(other).map(Ordering::is_eq);
             }
             (Self::Bool(left), Self::Bool(right)) => left == right,
             (Self::String(left), Self::String(right)) => left == right,
@@ -221,6 +391,24 @@ impl Value {
             }),
             _ => 0,
         }
+    }
+}
+
+fn compare_integer_float(integer: i64, float: f64) -> Option<Ordering> {
+    if !float.is_finite() {
+        return None;
+    }
+    if float < i64::MIN as f64 {
+        return Some(Ordering::Greater);
+    }
+    if float >= -(i64::MIN as f64) {
+        return Some(Ordering::Less);
+    }
+    let order = integer.cmp(&(float as i64));
+    if order.is_eq() {
+        0.0f64.partial_cmp(&float.fract())
+    } else {
+        Some(order)
     }
 }
 

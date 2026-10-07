@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum TokenKind {
     Identifier(String),
-    Number(f64),
+    Number(String),
     String(String),
     Plus,
     Minus,
@@ -230,22 +230,9 @@ impl Lexer {
             self.index += 1;
         }
         let text: String = self.source[start..self.index].iter().collect();
-        match text.parse::<f64>() {
-            Ok(value) => Token {
-                kind: TokenKind::Number(value),
-                span: Span::new(start, self.index),
-            },
-            Err(_) => {
-                self.diagnostics.push(Diagnostic::error(
-                    self.path.clone(),
-                    Span::new(start, self.index),
-                    "invalid number",
-                ));
-                Token {
-                    kind: TokenKind::Number(0.0),
-                    span: Span::new(start, self.index),
-                }
-            }
+        Token {
+            kind: TokenKind::Number(text),
+            span: Span::new(start, self.index),
         }
     }
 
