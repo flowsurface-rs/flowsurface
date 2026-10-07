@@ -446,6 +446,15 @@ impl PlotRenderer<'_> {
         }
 
         if layer == CanvasLayer::PriceBars {
+            self.study_objects.paint(
+                LayerPaintPhase::AfterIndicators,
+                context,
+                layers,
+                frame,
+                palette,
+                generated_accents,
+                pixels,
+            );
             return;
         }
 
@@ -533,15 +542,5 @@ impl PlotRenderer<'_> {
                 }
             });
         }
-
-        self.study_objects.paint(
-            LayerPaintPhase::AfterIndicators,
-            context,
-            layers,
-            frame,
-            palette,
-            generated_accents,
-            pixels,
-        );
     }
 }
