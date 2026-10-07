@@ -4,8 +4,6 @@ use exchange::unit::Qty;
 use exchange::unit::price::{Price, PriceStep};
 use exchange::{Kline, Trade, Volume};
 
-use rustc_hash::FxHashSet;
-
 #[derive(Debug, Clone)]
 pub struct TickAccumulation {
     pub tick_count: usize,
@@ -104,38 +102,31 @@ impl TickAggr {
     }
 
     pub fn insert_trades(&mut self, buffer: &[Trade]) -> Option<usize> {
-        let mut updated_indices = FxHashSet::default();
+        if buffer.is_empty() {
+            return None;
+        }
+        let first_updated = match self.datapoints.last() {
+            Some(last) if !last.is_full(self.interval) => self.datapoints.len() - 1,
+            _ => self.datapoints.len(),
+        };
 
         for trade in buffer {
-            if self.datapoints.is_empty() {
+            if let Some(last) = self
+                .datapoints
+                .last_mut()
+                .filter(|last| !last.is_full(self.interval))
+            {
+                last.update_with_trade(trade, self.tick_size);
+            } else {
                 self.datapoints
                     .push(TickAccumulation::new(trade, self.tick_size));
-                updated_indices.insert(0);
-            } else {
-                let last_idx = self.datapoints.len() - 1;
-
-                if self.datapoints[last_idx].is_full(self.interval) {
-                    self.datapoints
-                        .push(TickAccumulation::new(trade, self.tick_size));
-                    updated_indices.insert(self.datapoints.len() - 1);
-                } else {
-                    self.datapoints[last_idx].update_with_trade(trade, self.tick_size);
-                    updated_indices.insert(last_idx);
-                }
             }
         }
-
-        let first_updated = updated_indices.iter().copied().min();
-
-        for idx in updated_indices {
-            if idx < self.datapoints.len() {
-                self.datapoints[idx].calculate_poc();
-            }
+        for point in &mut self.datapoints[first_updated..] {
+            point.calculate_poc();
         }
-
         self.update_poc_status();
-
-        first_updated
+        Some(first_updated)
     }
 
     pub fn update_poc_status(&mut self) {
