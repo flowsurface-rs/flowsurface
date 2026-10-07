@@ -1,603 +1,311 @@
 # Indicator language
 
-An indicator is one installable `.ind` source file. The file name must be the
-final segment of its DSL ID, for example `rsi.ind` for
-`catalog.rsi`; the `id` declaration remains authoritative. Names are
-case-sensitive, and the application rejects duplicate final segments across
-the complete startup catalog.
-
-## Namespaces
-
-Indicator IDs use one of three ownership namespaces:
-
-- `core.<indicator>` is reserved for the GPL-licensed sources bundled and
-  maintained by Flowsurface.
-- `catalog.<indicator>` identifies the Apache-2.0 public catalog curated by
-  Flowsurface contributors.
-
-The engine accepts all valid IDs. Collection policy is checked by the host and,
-when desired, by the CLI:
-
-```text
-cargo run -p flowsurface-indicator-engine --bin flowsurface-indicator -- check indicators/core --namespace core
-cargo run -p flowsurface-indicator-engine --bin flowsurface-indicator -- test indicators/catalog/sources --namespace catalog
-```
-
-The future `indicator-engine` repository will contain the library and
-`flowsurface-indicator` CLI. The future `flowsurface-indicators` repository will
-contain only the curated `catalog.*` sources and their documentation. Source
-licensing is independent of the Apache-2.0 engine license.
+A `.ind` file defines an indicator's inputs, calculations, and presentation.
+See [installation](../indicators/README.md) and the [CLI](README.md#cli) for
+file naming, collections, and validation.
 
 ```text
 language(1)
-indicator("Relative strength", id = "catalog.rsi",
-          author = "Example author", author_url = "https://example.com",
-          description = "A momentum oscillator", source = "https://example.com/source",
-          sourceable = true, max_bars_back = 5000)
-format(precision = "fixed_step:0.01")
-period = input.int(14, "Period", min = 2, max = 200)
-gain = select(chart.close > chart.close[1], chart.close - chart.close[1], 0)
-average = ta.rma(gain, period)
-plot(average, id = "value", title = "Average")
+indicator("Moving average", id = "community.example", sourceable = true)
+format(precision = "base_ticker_min_tick")
+period = input.int(20, "Period", min = 1, max = 200)
+average = ta.sma(chart.close, period)
+plot(average, id = "average", title = "Average")
 ```
 
-Inputs and ordinary output declarations must be top-level. `region` is the
-exception: it may be emitted from top-level bounded control-flow blocks. `=`
-creates a local binding;
-`state` or `var` creates persistent state and `:=` updates it. A binding keeps
-its inferred concrete type across updates; integer/float updates widen to
-float, and `na` is compatible with any type. Incompatible concrete updates
-are compile errors. Conditionals,
-bounded `for`/`while` loops, non-recursive functions, tuples, arrays, records,
-destructuring, switch expressions, history indexing, and named arguments are
-supported.
+## Execution and syntax
 
-## Chart basis restrictions
+The host evaluates loaded closed bars in order, committing state after each
+bar. The open bar is a preview from the last committed state. Missing data and
+non-finite numeric results become `na`. Execution, heap, collection, and output
+budgets are enforced; runtime failures quarantine the indicator.
 
-`indicator(..., bases = ["time"])` restricts an indicator to time charts;
-`bases = ["tick"]` restricts it to tick charts. Omit `bases` for no restriction,
-or include both values. The list must be non-empty and contain only these
-string literals; duplicates are normalized. Restrictions are enforced by the
-host, separately from inferred data requirements. Calculations using
-`ta.avwap` require complete anchor history and are unavailable on tick charts
-while those charts contain live data only.
+- `=` binds a local; `state` or `var` creates persistent state; `:=` updates it.
+  Types remain compatible across updates: integers and floats can widen to
+  float, and `na` is compatible with any type.
+- A state initializer retries until it returns a non-`na` value. An explicit
+  `:= na` update stays authoritative.
+- `if`, `switch`, bounded `for`/`while`, numeric non-recursive functions,
+  tuples, arrays, records, destructuring, and named arguments are supported.
+  Function parameters, defaults, and returns must be numeric or `na`.
+- Arithmetic requires numbers; ordering accepts numbers or times; logical
+  operators require booleans. Equality involving `na` returns `na`: use
+  `na(value)` to test missingness. An `na` condition does not match a switch
+  branch. Result branches in `select`, `coalesce`, and `switch` must have
+  compatible types.
+- `series[n]` reads `n` bars back from an immutable retained series. Bind a
+  calculation to an immutable top-level local before indexing it; mutable
+  locals, function parameters, and direct function results cannot retain
+  history. Offset zero needs no retention. Dynamic offsets require an explicit
+  `max_bars_back`.
+- Inputs and ordinary output/presentation declarations must be top-level.
+  `region` and `region_remove` may occur in bounded control-flow blocks outside
+  functions. At most one `display` and one `format` are allowed, before outputs.
 
-## Inputs
-
-Inputs are top-level bindings. The first two arguments are the default value
-and its label; metadata is optional:
+Records support dot access and `record.get`:
 
 ```text
-length = input.int(14, "Length", min = 1, max = 200, step = 1,
-                   group = "period", inline = "length", tooltip = "Bars")
-multiplier = input.float(2.0, "Multiplier", min = 0.1, max = 10.0, step = 0.1)
+zone = { upper: chart.high, lower: chart.low }
+top = zone.upper
+```
+
+User-record fields have dynamic type `Any`; absent fields or non-record values
+return `na`. Built-in chart fields are checked at compile time.
+
+## Host data
+
+Every indicator reads the base ticker's chart frame. Comparison tickers are
+presentation-only.
+
+| Fields | Meaning |
+| --- | --- |
+| `chart.time`, `bar_index` | Bar timestamp and zero-based index |
+| `chart.open`, `chart.high`, `chart.low`, `chart.close`, `chart.volume` | OHLCV |
+| `chart.hl2`, `chart.hlc3`, `chart.ohlc4`, `chart.hlcc4` | Derived price averages |
+| `chart.directional_volume_available`, `chart.buy_qty`, `chart.sell_qty` | Candle directional volume |
+| `chart.trade.available`, `chart.trade.buy_qty`, `chart.trade.sell_qty` | Trade coverage and quantities |
+| `chart.trade.buy_count`, `chart.trade.sell_count`, `chart.trade.count` | Trade counts |
+| `open_interest` | Latest finite sample at or before the bar timestamp; `na` before the first sample |
+| `instrument.min_tick` | Minimum price increment; simple metadata, `na` if unavailable |
+| `barstate.isfirst`, `barstate.islast`, `barstate.isconfirmed`, `barstate.isrealtime` | Evaluation flags |
+
+Candle directional volume does not substitute for missing trade aggregates.
+Raw trade arrays are unavailable. Plot offsets change presentation only.
+
+There is no arbitrary I/O, remote symbol/timeframe access, strategy or alert
+API, `varip`, correction replay, map type, or mutable drawing/table handle.
+
+## Inputs and source composition
+
+```text
+length = input.int(14, "Length", min = 1, max = 200, step = 1)
+multiplier = input.float(2.0, "Multiplier", min = 0.1, max = 10.0)
 enabled = input.bool(true, "Enabled")
-advanced_length = input.int(20, "Advanced length", min = 1, max = 200,
-                            visible_when = "enabled")
-directional_only = input.bool(false, "Directional-only feature",
-                              requires = "directional_volume")
 method = input.string("Sma", "Method", options = ["Sma", "Ema"])
 anchor = input.time(0, "Anchor")
 color = input.color()
 ```
 
-Supported input types are `int`, `float`, `bool`, `string`, `time`, and
-`color` (a color input uses the engine's default color when no literal default
-is supplied).
-`options` accepts only a literal array of strings. Defaults, ranges, steps,
-labels, and option values, when supplied, must be compile-time literals.
-The host accepts a configured value only when it matches the declared type,
-numeric bounds, and string options. Scripted `int` and `time` inputs retain
-signed 64-bit values through the host settings bridge. `visible_when` hides an
-input unless the named input is true; it must reference an existing boolean
-input. `requires` hides an input when the named host input has no known
-coverage; use `klines`, `directional_volume`, `trades`, or `open_interest`.
-Empty coverage is treated as pending, and hidden values remain in the
-persisted configuration.
+Defaults and labels occupy the first two arguments (or `defval` and `title`).
+Metadata is literal: `min`, `max`, `step`, `group`, `inline`, `tooltip`,
+`visible_when`, and `requires`. String `options` must be a literal string array.
+Configured values must match the type, bounds, and options. Color defaults to
+white; `int` and `time` settings preserve signed 64-bit values.
 
-User functions are numeric in language version 1: parameters and return
-expressions must be numeric or `na`. Integer arguments can be used where a
-float is expected, and parameters may have numeric or `na` defaults.
+`visible_when = "enabled"` references a boolean input. `requires` names
+`klines`, `directional_volume`, `trades`, or `open_interest`; inputs and styles
+with that requirement hide when coverage is unavailable. Empty coverage is
+pending. Hidden settings remain persisted.
 
-`na` is a missing value, not an ordinary value. `==` and `!=` return `na` when
-either operand is `na`; a `switch` branch whose condition is `na` does not
-match. A `state` initializer is retried until it produces a non-`na` value,
-while an explicit `:= na` update remains authoritative. Logical operators
-require boolean operands, ordering operators accept numeric or time operands,
-and arithmetic remains numeric-only. `select`, `coalesce`, and `switch` result
-branches use the same compatibility rules. Non-finite numeric results are
-exposed as `na`.
-
-History indexing such as `source[1]` requires an immutable retained series.
-Direct chart series and immutable series locals are retained automatically;
-`source[0]` does not need history storage. Mutable locals, function parameters,
-and function-call results cannot be indexed historically and are compile-time
-errors. Use an immutable top-level series binding when a value needs history.
-
-Record literals use named fields and can be read with either `record.get` or
-dot access:
+A source input can consume chart data or another indicator's numeric output:
 
 ```text
-zone = { upper: chart.high, lower: chart.low, bullish: chart.close >= chart.open }
-top = zone.upper
+language(1)
+indicator("Smoothed source", id = "community.smoothed")
+display(attachment = "overlay")
+format(precision = "base_ticker_min_tick")
+source = input.source(chart.close, "Source")
+plot(ta.sma(source, 20), id = "average")
 ```
 
-Dot access on a user record, or on an `Any` value obtained from an array or
-`for ... in` loop, is dynamic and has type `Any`. A missing field or a value
-that is not a record evaluates to `na`. The built-in `chart.*` and
-`chart.trade.*` fields remain a strict, compile-time-checked API.
+`input.source` defaults must name an OHLC/derived-price field, `chart.volume`,
+or `open_interest`. `allow_indicator` defaults to `true`; such inputs require
+view `plot`, attachment `overlay` or `panel`, and a visible numeric plot layer.
+Use `allow_indicator = false` for a base-only input in any view.
 
-## Declaration reference
+Bindings consume same-index visible numeric plots of active indicators with
+`sourceable = true`, within the same Kline pane and base series/timeframe.
+Invalid or unavailable indicator bindings yield `na`, without falling back.
+Unbound inputs use their declared default or a host-selected base price source
+(Open, High, Low, Close, HL2, HLC3, OHLC4, HLCC4). Source inputs support history
+and numeric TA functions. Multiple inputs work; one-click attachment requires
+exactly one indicator-enabled input.
 
-Named arguments are compile-time constants unless noted as series expressions.
-The minimal forms below are the recommended starting point. Presentation
-metadata is split into `display` and `format`, and both declarations must be
-top-level and appear before the first output declaration. For numeric plot
-views, `format(precision = ...)` is required because it controls the panel
-axis, domain quantization, and crosshair values. Table views and primary
-overlays do not use panel value precision.
+## Metadata
+
+Arguments below are compile-time literals. Optional settings can be omitted.
 
 ### `indicator`
 
+`indicator("Title", id = "namespace.name")`
+
+| Option | Default / rule |
+| --- | --- |
+| `sourceable` | `false`; permits visible numeric plots as dependency sources |
+| `optional_trades` | `false`; makes inferred directional-volume requirements optional, not `chart.trade.*` requirements |
+| `max_bars_back` | `5000`; retained-series history, positive and at most `50000` |
+| `bases` | Unrestricted; non-empty list of `"time"` and/or `"tick"` |
+| `author`, `author_url` | Optional pair; URL must be absolute HTTP(S) |
+| `description`, `source` | Optional strings; source must be absolute HTTP(S) |
+
+Data requirements are inferred separately from `bases`. `ta.avwap` requires
+complete anchor history and is unavailable on the host's live-only tick charts.
+
+### `display` and `format`
+
+`display(view = "plot", attachment = "panel")`
+
+Views: `plot` (default), `primary_overlay`, `table`. Attachment `overlay` shares
+the source panel's scale; `panel` keeps standalone placement and scale.
+`panel_title` and `layer_name` default to the indicator title. Attachment affects
+placement, not dependency evaluation.
+
+`format(precision = "fixed_step:0.01")`
+
+Numeric plot views require panel precision; table and primary-overlay views do
+not. Panel precision controls axes, quantization, and crosshair values.
+
+| Option | Values (default first where applicable) |
+| --- | --- |
+| `precision` | `base_ticker_min_tick`, `base_ticker_min_qty`, `fixed_step:<positive number>` |
+| `axis_labels` | `compact`, `commas`, `abbreviated` |
+| `header_labels` | `commas`, `compact`, `abbreviated` |
+| `scale` | `fit_visible`, `absolute`, `fit_visible_include_zero`, `logarithmic`, `percent_from_base` |
+| `max_decimals` | Optional integer, 0–18 |
+
+## Outputs and presentation
+
+`source`, `upper`, `lower`, and `style_by` strings in presentation declarations
+reference output IDs, not local variables or tickers. Explicit color slots
+reference declared styles; true/false slots must be supplied together.
+
+### Plots
+
+`plot(value, id = "value", title = "Value")`
+
+Only the value is required. ID defaults to its source identifier or a generated
+ID; title defaults to `Plot`. Numeric plots with visible readouts receive an
+automatic color slot when none is specified. Boolean plots are output channels
+without visual layers; readouts default to hidden.
+
+| Option | Default / values |
+| --- | --- |
+| `pane` | `indicator` (`main` in primary overlays); also `named:<number>` |
+| `scale` | `price`; also `independent` |
+| `style` | `line`; also `step`, `histogram`, `area` |
+| `display` | `value` (`none` for booleans) |
+| `precision` | Optional: `instrument`, `decimals:<0–18>`, `step:<positive number>` |
+| `width`, `offset` | `1`, `0`; width is positive and at most 64, offset is a signed 32-bit integer |
+| `color_slot`, `color` | Static style slot or runtime color |
+| `style_by` | Boolean output ID; requires `true_color_slot` and `false_color_slot` |
+| `layer_title`, `overlay`, `layer` | Plot title, `true`, `true` |
+| `data_kind` | Inferred; `scalar`, `histogram`, `ohlc`, `range` |
+| `mark`, `axis` | Inferred; axis is `primary` or `secondary` |
+
+`layer = false` keeps a private channel for presentation wiring; it cannot be a
+dependency source. Numeric plot layers must share one pane. Primary overlays
+require `main`.
+
+Structured outputs use constructors, not generic plot styles:
+
 ```text
-indicator("Title", id = "namespace.name",
-          author = "Name", author_url = "https://example.com",
-          description = "Description", source = "https://example.com/source",
-          sourceable = true, optional_trades = false, max_bars_back = 5000)
+plotcandle(chart.open, chart.high, chart.low, chart.close, id = "candles")
+plotohlc(chart.open, chart.high, chart.low, chart.close, id = "ohlc")
+plotrange(chart.high, chart.low, id = "range")
+broken_cloud(chart.high, chart.low, id = "broken")
 ```
 
-`id` is the stable `namespace.name` identity. `sourceable` and
-`optional_trades` default to `false` and `false`, respectively, and
-`max_bars_back` defaults to `5000`. `author` and `author_url` are optional but
-must be provided together. `description` and `source` are optional; `source`
-must be an absolute `http` or `https` URL. `sourceable` is an indicator-level policy:
-when it is `false`, the indicator's visible numeric plots still render
-normally, but none of them can be used as another indicator's dependency
-input. `optional_trades` and `max_bars_back` remain indicator-level policies.
+### Styles and alternate marks
 
-### `display`
+`style("bull", title = "Bullish", role = "success", shade = "base")`
 
-```text
-display(view = "plot", attachment = "panel",
-        panel_title = "Title", layer_name = "Title")
-```
+Title defaults to the ID, role to `neutral`, shade to `base`. Roles: `neutral`,
+`secondary`, `primary`, `success`, `danger`, `warning`. Shades: `faint`, `soft`,
+`base`, `strong`, `vivid`. Optional `requires` uses the coverage rules above.
 
-There can be at most one top-level `display` declaration. It must appear before
-the first output declaration. `view` defaults to `plot`; use `primary_overlay`
-for primary-chart placement and `table` for table panels. An `attachment` of
-`overlay` or `panel` is required when an indicator has an indicator-enabled
-source input. `overlay` lets attached output layers share the source panel's
-scale; `panel` keeps the indicator's normal standalone placement and scale.
-Panel and layer titles default to the indicator title. Valid views are `plot`,
-`table`, and `primary_overlay`; valid attachments are `overlay` and `panel`.
+`mark(title = "Line", source = "value", kind = "line", color_slot = "main")`
 
-### `format`
+All four arguments are required. Marks offer alternate rendering of an output.
+Kinds: `line`, `step`, `area`, `point`, `cross`, `segment`, `horizontal_level`,
+`regular_bar`, `histogram`, `histogram_signed_overlay`, `candle`; compatibility
+depends on output type. Optional settings:
 
-```text
-format(precision = "fixed_step:1",
-       axis_labels = "compact", header_labels = "commas",
-       scale = "fit_visible", max_decimals = 2)
-```
+- `true_color_slot` / `false_color_slot`: conditional colors.
+- `highlight_by` / `highlight_color_slot`: boolean output and outline style for
+  regular or histogram bar marks.
+- `requires` / `fallback`: required coverage and another declared mark kind.
+  Fallback must differ from the current kind, identify exactly one mark, and
+  have no coverage requirement.
 
-There can be at most one top-level `format` declaration. It must appear before
-the first output declaration. `precision` is required for numeric plot
-panels. Axis labels default to `compact`, headers to `commas`, and scale to
-`fit_visible`. Valid precision values are `base_ticker_min_tick`,
-`base_ticker_min_qty`, and `fixed_step:<positive number>`. Label modes are
-`compact`, `commas`, and `abbreviated`; scale values are `absolute`,
-`fit_visible`, `fit_visible_include_zero`, `logarithmic`, and
-`percent_from_base`. `max_decimals` is an integer from 0 to 18.
+### Fills, readouts, and tables
 
-### `plot`
+`fill(upper = "upper", lower = "lower", color_slot = "band")`
+
+All three arguments are required. `geometry` is `panel_band` (default) or
+`series_band`; `opacity` defaults to `0.2`; `upper_offset` and `lower_offset`
+default to `0`. Optional `style_by` references a boolean output and requires
+paired true/false color slots.
+
+`readout(title = "Signal", source = "signal", color_slot = "main")`
+
+All three arguments are required. Optional `mark` restricts it to that rendering.
+
+A minimal table:
 
 ```text
-plot(value, id = "value", title = "Value", pane = "indicator",
-     scale = "price", style = "line", display = "value",
-     precision = "decimals:2", width = 1.5, offset = 0,
-     color_slot = "value", style_by = "rising",
-     true_color_slot = "bull", false_color_slot = "bear",
-     layer_title = "Value", overlay = true, data_kind = "scalar",
-     mark = "line", axis = "secondary", layer = true)
-```
-
-Only the value expression is required. The output ID defaults to the source
-identifier (or a generated ID), and the title defaults to `Plot`. Pane defaults
-to `main` for an indicator with `display(view = "primary_overlay")` and
-`indicator` otherwise. Scale is `price`,
-style is `line`, display is `value` (`none` for boolean outputs), width is `1`,
-offset is `0`, overlay and layer are `true`, and data kind, mark, and axis are
-inferred from the value type, style, pane, and scale. A numeric plot without a
-color slot gets a deterministic slot named after its output ID.
-
-Generic `plot` styles are `line`, `step`, `histogram`, and `area`. Panes are
-`main`, `indicator`, or `named:<number>`;
-scales are `price` or `independent`; display is `value` or `none`; and precision
-is `instrument`, `decimals:<n>`, or `step:<number>`. Boolean plots
-are output-only unless a presentation declaration references them.
-
-`layer = false` keeps a plot as a private output channel for marks, fills,
-readouts, or table columns. It is not a visible numeric plot and cannot be
-selected as an indicator dependency source.
-
-Structured outputs use dedicated constructors instead of `plot` styles:
-
-```text
-plotcandle(open, high, low, close, id = "candles")
-plotohlc(open, high, low, close, id = "ohlc")
-plotrange(upper, lower, id = "range")
-broken_cloud(upper, lower, id = "broken")
-```
-
-`plotcandle` and `plotohlc` produce OHLC output; `plotrange` and
-`broken_cloud` produce range output. Using `candles`, `bars`, `cloud`, or
-`broken_cloud` as a generic `plot` style is invalid.
-
-Rolling pivot intrinsics return the confirmed center value, or `na`:
-
-```text
-high_pivot = ta.pivothigh(chart.high, left, right)
-low_pivot = ta.pivotlow(chart.low, left, right)
-```
-
-The center bar is confirmed `right` bars later. The inclusive window contains
-`left + right + 1` samples; equal highs and lows are accepted, and missing
-samples produce `na`. Both legs must be positive integers and the complete
-window must fit the runtime window limit. Legs may be simple runtime inputs,
-so the selected window is checked on every evaluation. A preview evaluates
-from the last committed intrinsic state and never commits its pivot history.
-
-Stateful RSI and previous-event helpers are available for common indicator
-patterns:
-
-```text
-rsi = ta.rsi(chart.close, period)
-previous_pivot = ta.previous_when(pivot_confirmed, pivot_value)
-previous_pivot_bar = ta.previous_when(pivot_confirmed, pivot_bar)
-```
-
-`ta.rsi` seeds its average gain and average loss with an arithmetic mean of
-the first `period` valid adjacent price changes, then applies Wilder's
-recursive smoothing. With uninterrupted input, the first value appears after
-`period + 1` contiguous valid prices. A missing source returns `na` and breaks
-the next price adjacency while retaining the accumulated seed or smoothing
-averages. When both averages are exactly zero RSI is `50`; when only average
-loss is zero it is `100`, and when only average gain is zero it is `0`.
-
-### `style`
-
-```text
-style("bull", title = "Bullish", role = "success", shade = "base",
-      requires = "directional_volume")
-```
-
-The ID is required. Title defaults to the ID, role to `neutral`, and shade to
-`base`. Roles are `neutral`, `secondary`, `primary`, `success`, `danger`, and
-`warning`. Shades are `faint`, `soft`, `base`, `strong`, and `vivid`.
-`requires` is optional and hides the style from host style controls when the
-named host input has no known coverage. Empty coverage is treated as pending.
-
-### `mark`
-
-````text
-mark(title = "Histogram", source = "value", kind = "histogram",
-     color_slot = "base", true_color_slot = "bull",
-     false_color_slot = "bear", requires = "directional_volume",
-     fallback = "histogram")
-
-Bar marks can optionally draw a non-destructive outline when a boolean output
-is true:
-
-```text
-mark(title = "Overlay bars", source = "value", kind = "histogram",
-     color_slot = "base", highlight_by = "warning_signal",
-     highlight_color_slot = "warning")
-````
-
-`highlight_by` must reference a boolean output and is supported by regular and
-histogram bar marks. The outline is drawn without replacing the bar's normal
-fill or conditional colors.
-
-````
-
-`title`, `source`, `kind`, and `color_slot` are required. A mark is a selectable
-alternate rendering of an output. Conditional slots are optional, but must be
-provided as a true/false pair. `requires` is optional and declares an input that
-must be available for this rendering. Use `klines`, `directional_volume`,
-`trades`, or `open_interest`. The requirement applies to the selected mark,
-not to the indicator as a whole. `fallback` is optional and names another mark
-kind declared by the same indicator. When the required input has no coverage,
-the runtime uses that fallback mark. The fallback target must not require its
-own input. Use the mark values listed for `indicator`.
-
-### `fill`
-
-```text
-fill(upper = "upper", lower = "lower", color_slot = "band",
-     geometry = "series_band", opacity = 0.2, style_by = "rising",
-     true_color_slot = "bull", false_color_slot = "bear",
-     upper_offset = 0, lower_offset = 0)
-````
-
-`upper`, `lower`, and `color_slot` are required. Geometry defaults to
-`panel_band` and can be `panel_band` or `series_band`; opacity defaults to `0.2`.
-Offsets default to zero. Conditional color slots must be a pair.
-
-### `readout`
-
-```text
-readout(title = "Signal", source = "signal", color_slot = "signal",
-        mark = "line")
-```
-
-Title, source, and color slot are required. `mark` is optional and limits the
-readout to a selected rendering.
-
-### `column`
-
-```text
-indicator("Status", id = "catalog.status")
+language(1)
+indicator("Status", id = "community.status")
 display(view = "table")
-column(title = "Trend", source = "trend", format = "boolean",
-       color_slot = "main")
-column(title = "Delta", source = "delta", color_mode = "signed",
-       positive_color_slot = "positive", negative_color_slot = "negative")
-```
-
-Title and source are required. Format defaults to `quantity`; use `quantity`,
-`integer`, `percent`, or `boolean`. `color_mode` defaults to `static`. Static
-columns use `color_slot`, which defaults to `main`. Signed columns use both
-`positive_color_slot` and `negative_color_slot`; they cannot also provide
-`color_slot`, and they require a numeric output. Zero uses the positive slot.
-Unavailable values remain blank. Color slots must refer to declared styles.
-
-### `segment`
-
-```text
-segment(start_value, end_value, start_index, end_index,
-        id = "projection", title = "Projection", color_slot = "projection",
-        width = 1.5, visible = show_projection, text = "Projection")
-```
-
-The four positional expressions are required. ID defaults from title or a
-generated value, title defaults to the ID, color slot to `main`, and width to
-`1`. Visibility, color, and text are runtime expressions or labels; the scene
-metadata remains static.
-
-### `region`
-
-```text
-region(key = zone_key, upper = top, lower = bottom,
-       left_index = left, right_index = bar_index,
-       border_color = border, fill_color = fill,
-       extend_right = true, visible = active, persistent = false,
-       id = "order_blocks", width = 1.0)
-```
-
-Static style slots can be used instead of runtime colors:
-
-```text
-style("bullish", title = "Bullish", role = "success")
-region(..., border_color_slot = "bullish", fill_color_slot = "bullish")
-```
-
-One boolean expression can select both emitted edge slots:
-
-```text
-region(..., style_by = zone_bullish,
-       true_color_slot = "bullish", false_color_slot = "bearish")
-```
-
-`style_by` is evaluated per bar; `na` selects the false slot. The true and
-false slots are static, must be supplied as a pair, must name declared styles,
-and are registered for theme configuration. Conditional slots cannot be mixed
-with `border_color`, `fill_color`, `border_color_slot`, or `fill_color_slot`.
-
-Color slots refer to declared semantic styles and use the indicator accent
-controls. Runtime colors remain available when a region needs per-bar color
-values. A region cannot provide both a runtime color and a style slot for the
-same edge.
-
-`region` emits non-interactive price-zone scene data. `id` and `width` are
-compile-time constants; `key` is a stable runtime integer used with `id` to
-update a zone. The geometry and visibility expressions may be emitted from
-bounded top-level `if` and `for` blocks, but not from user functions. Regions
-are price overlays only and do not create plot channels, drawing objects,
-handles, labels, or hit-testing.
-
-By default, each closed-bar evaluation emits a complete active-set snapshot. A
-repeated `id` and `key` updates that region and the last emission wins; keys
-omitted by the next snapshot disappear. `extend_right` reaches the primary
-plot clip. With the literal `persistent = true`, the call emits an incremental
-upsert instead; omission on later bars does not remove the region. Persistent
-regions remain until a `region_remove` call or indicator rebuild.
-
-```text
-region_remove(id = "flat_open_zones", key = zone_key)
-```
-
-`region_remove` emits an incremental deletion for the `(id, key)` pair. Both
-persistent updates and removals use last-write-wins ordering within a bar.
-Open-bar previews apply persistent updates transactionally and never mutate
-the committed region store. Persistent regions are retained oldest-first up to
-the runtime output limit; older entries are evicted deterministically.
-
-## Common patterns
-
-Ordinary plot:
-
-```text
-indicator("Momentum", id = "catalog.momentum", max_bars_back = 500)
-format(precision = "base_ticker_min_tick")
-value = chart.close - chart.close[10]
-plot(value, id = "value", title = "Momentum")
-```
-
-Overlay:
-
-```text
-indicator("Moving average", id = "catalog.ma")
-display(view = "primary_overlay")
-average = ta.sma(chart.close, 20)
-plot(average, id = "average", title = "Average")
-```
-
-Table:
-
-```text
-indicator("Status", id = "catalog.status")
-display(view = "table")
-trend = chart.close > chart.close[1]
-plot(trend, id = "trend", title = "Trend", display = "none", overlay = false, layer = false)
+plot(chart.close > chart.open, id = "trend")
 column(title = "Trend", source = "trend", format = "boolean")
 ```
 
-Histogram:
+`column` requires title and source. Formats: `quantity` (default), `integer`,
+`percent`, `boolean`. Static coloring uses `color_slot`, defaulting to an
+automatic `main` style. `color_mode = "signed"` requires numeric output and
+`positive_color_slot` / `negative_color_slot`, with no `color_slot`. Zero uses
+the positive slot; unavailable values are blank.
+
+### Segments and regions
+
+`segment(start_value, end_value, start_index, end_index, id = "projection")`
+
+Values are numeric, indices integer. Optional `visible` and `color` are runtime
+expressions; `text` is a literal. ID defaults from title or is generated, title
+to ID, `color_slot` to `main`, and `width` to `1`.
 
 ```text
-indicator("Flow", id = "catalog.flow")
-format(precision = "base_ticker_min_tick")
-flow = chart.close - chart.open
-plot(flow, id = "flow", title = "Flow", style = "histogram")
+region(key = bar_index, upper = chart.high, lower = chart.low,
+       left_index = bar_index, right_index = bar_index,
+       id = "zones", extend_right = true)
 ```
 
-Fill and conditional colors:
+Regions are non-interactive price overlays. Geometry, integer key, `visible`,
+and `extend_right` are runtime expressions; ID, positive `width` (default `1`,
+maximum `64`), and `persistent` (default `false`) are literal metadata.
+Color each edge with runtime `border_color` / `fill_color` or declared
+`border_color_slot` / `fill_color_slot`, never both for the same edge.
+Alternatively, a boolean `style_by` expression with paired true/false slots
+colors both edges (`na` selects false); this cannot mix with other region colors.
+
+Default emissions form a complete active-set snapshot: omitted `(id, key)`
+pairs disappear on the next closed bar. `extend_right` reaches the plot clip.
+With `persistent = true`, emissions upsert regions until explicitly removed or
+rebuilt; omitted keys remain:
 
 ```text
-indicator("Band", id = "catalog.band")
-format(precision = "base_ticker_min_tick")
-upper = ta.sma(chart.close, 20) + 2 * ta.stdev(chart.close, 20)
-lower = ta.sma(chart.close, 20) - 2 * ta.stdev(chart.close, 20)
-rising = upper > upper[1]
-style("band", role = "primary", shade = "faint")
-style("bull", role = "success")
-style("bear", role = "danger")
-plot(upper, id = "upper", title = "Upper", color_slot = "band",
-     style_by = "rising", true_color_slot = "bull", false_color_slot = "bear")
-plot(lower, id = "lower", title = "Lower", color_slot = "band")
-fill(upper = "upper", lower = "lower", color_slot = "band")
+region_remove(id = "zones", key = bar_index)
 ```
 
-## Runtime contract
+Within a bar, the last update/removal wins. Open previews are transactional.
+Persistent regions exceeding the output limit evict the oldest entries.
 
-The host supplies one frame for each base-ticker chart bar. Every indicator
-reads that one chart frame; comparison tickers remain a chart presentation
-feature and are not visible to the DSL. Kline history and live subscriptions
-may be requested for comparison tickers, but trade history and live trade
-subscriptions are requested only for the base ticker. A frame includes
-`chart.time`,
-`chart.open`, `chart.high`, `chart.low`, `chart.close`, `chart.volume`,
-`chart.hl2`, `chart.hlc3`, `chart.ohlc4`, `chart.hlcc4`,
-`chart.directional_volume_available`, `chart.buy_qty`, `chart.sell_qty`,
-`chart.trade.*`, and `open_interest`. Missing aligned data is `na`.
-The stable base-instrument minimum price increment is available as
-`instrument.min_tick`. It is simple instrument metadata, not a chart series,
-and is `na` when unavailable.
-Open interest is aligned as-of: each bar receives the latest finite sample at
-or before its timestamp, and bars before the first sample receive `na`. Plot
-offsets are presentation metadata and do not change input alignment.
-Closed evaluation commits state; open evaluation is a preview from the previous
-closed state. There is no correction, rewind, checkpoint, intrabar-persistent
-state, or repainting mode.
+## TA behavior
 
-Execution also runs under host resource limits. Stateful TA windows are capped
-at a default length of 5,000, and array/record growth is bounded by the host's
-collection and heap budgets. Values are checked as collection-producing
-expressions run, and oversized windows or collections fail the indicator and
-are quarantined; they are never silently clamped. These limits are separate
-from `max_bars_back`, which bounds retained series history.
+Window lengths are positive simple integers, including inputs. The default
+runtime maximum is 5,000, separate from retained-history `max_bars_back`.
+Oversized windows and collections fail rather than being silently clamped.
+Finite rolling windows consume one sample per bar; a missing sample makes the
+window's result `na` until it leaves the window.
 
-Finite rolling calculations consume one source sample per chart bar. If any
-sample in a rolling window is `na`, the result is `na`; missing bars do not
-disappear from the window.
+- `ta.pivothigh(source, left, right)` / `ta.pivotlow`: confirm the center
+  `right` bars later. Both legs are positive; `left + right + 1` must fit the
+  window limit. Ties qualify; missing samples return `na`.
+- `ta.rsi(source, period)`: seeds with the mean of `period` valid adjacent price
+  changes, then uses Wilder smoothing. Missing prices break adjacency but keep
+  accumulated averages. Flat gain/loss gives 50, zero loss 100, zero gain 0.
+- `ta.previous_when(condition, value)`: returns the value from the previous
+  true event, then stores the current value if the condition is true.
 
-Trade-derived values have an explicit namespace:
-
-```text
-chart.trade.available
-chart.trade.buy_qty
-chart.trade.sell_qty
-chart.trade.buy_count
-chart.trade.sell_count
-chart.trade.count
-```
-
-`chart.trade.*` is the base-ticker chart series and is the input for indicators
-such as Bar Analysis. `chart.buy_qty` and `chart.sell_qty` are base-ticker
-directional volume; `chart.directional_volume_available` reports its
-availability. Candle directional volume is not a fallback for `chart.trade.*`.
-Trade aggregates may currently come from per-bar trades or footprint trade
-groups; raw trade-event arrays are not exposed to the language.
-
-The `source` argument in `mark`, `readout`, and `column` declarations names an
-indicator output channel. It is presentation wiring and does not select a
-ticker. The DSL has no `sources`, `source("SOURCE_ID")`, or `flow.*` inputs.
-
-`input.source` declares a numeric series input and its chart-series default:
-
-```text
-source = input.source(chart.close, "Source")
-base_only = input.source(chart.close, "Base only", allow_indicator = false)
-```
-
-`allow_indicator` defaults to `true`. An indicator-enabled source input is the
-consumer side of composition; it requires `view = "plot"`, an `attachment` of
-`overlay` or `panel`, and at least one visible numeric plot layer. A base-only
-input with `allow_indicator = false` accepts the declared default and host
-base-series selections, but rejects indicator bindings and may be used by
-table or primary-overlay indicators. The engine and host support multiple
-source inputs; the minimal one-click attachment UI offers only indicators with
-exactly one indicator-enabled input.
-
-The standard price sources are also available as chart expressions for
-declared defaults: `chart.hl2`, `chart.hlc3`, `chart.ohlc4`, and
-`chart.hlcc4`. For example, CCI can preserve its typical-price default with:
-
-```text
-source = input.source(chart.hlc3, "Source")
-```
-
-The chart expression is the host-neutral fallback. A valid host binding
-replaces it with the same-index visible numeric plot output of another active,
-sourceable indicator; an unavailable or invalid binding evaluates as `na` and
-never falls back to the declared chart source.
-When no indicator binding exists, the host may select a standard base-chart
-source (`Open`, `High`, `Low`, `Close`, `HL2`, `HLC3`, `OHLC4`, or `HLCC4`)
-for the slot; the declared chart expression remains the default. Source inputs
-support history indexing and all numeric TA functions. Numeric
-plot layers in one indicator must share one resolved pane target. `pane` only
-controls placement; it is not a dependency selector. Cross-indicator source
-bindings are restricted to the same Kline pane and base series/timeframe. The
-indicator's `attachment` declaration controls only source-owned placement; it
-does not change dependency evaluation or the source binding itself.
-
-The language rejects remote requests, multi-timeframe contexts, strategies,
-alerts, `varip`, maps, mutable drawing objects, renderer-owned table handles,
-raw trade arrays, liquidations, depth, and remote symbols.
-
-## Validation and startup
-
-The application loads `indicators/core/` first, then flat files in the installed
-directory, then explicit files supplied with repeated `--indicator-path`. For
-repository development, set `FLOWSURFACE_INDICATORS_PATH` to a root containing
-`core/` and `catalog/sources/` to load those collections directly instead of the data
-directory. It does this once at startup; changing a source requires an
-application restart.
-Invalid installed files are diagnosed and skipped, while core errors are fatal.
-After valid files are compiled, a duplicate short name in core, installed, or
-explicit development sources is a startup-fatal error. The application does
-not choose one source by precedence when their short names collide.
-
-Use the standalone CLI workflow while developing:
-
-    cargo run -p flowsurface-indicator-engine --bin flowsurface-indicator -- new indicators/catalog/sources --id catalog.example --title "Example"
-    cargo run -p flowsurface-indicator-engine --bin flowsurface-indicator -- check indicators/catalog/sources/example.ind --namespace catalog
-    cargo run -p flowsurface-indicator-engine --bin flowsurface-indicator -- test indicators/catalog/sources/example.ind --namespace catalog
-
-`check` also accepts a flat source directory. `test` runs the source with
-deterministic synthetic market frames after checking it, which catches runtime
-and resource-limit failures without requiring exchange data. There are no JSON
-fixtures or presentation sidecars. Copy the resulting `.ind` file into the
-installed collection root or pass its path with `--indicator-path`, then
-restart the application. Existing full-ID filenames such as
-`catalog.example.ind` must be renamed manually; they are diagnosed and
-skipped.
+For working formulas and presentation combinations, browse the
+[bundled sources](../indicators/core/) and [catalog](../indicators/catalog/sources/).
