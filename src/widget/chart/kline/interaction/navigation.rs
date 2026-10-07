@@ -9,6 +9,7 @@ use crate::widget::chart::kline::{
     scene::{CursorTarget, Scene, viewport::PanelViewportView},
 };
 use data::chart::kline::HorizontalWorld;
+use data::chart::kline::viewport::PanelYValueRange;
 use iced::{Point, Vector, keyboard, mouse};
 use iced_core::mouse::click;
 
@@ -78,7 +79,16 @@ impl NavigationView<'_> {
                 self.horizontal_zoom_effects(world)
             }
             LayoutHitZone::YAxis(panel_index) => {
-                self.y_zoom(scene, panel_index, position.y, scroll_y)
+                let Some(viewport) = self.viewports.panel_y_zoom_range(scene, panel_index) else {
+                    return LayerEffects::default();
+                };
+                self.y_zoom(
+                    scene,
+                    panel_index,
+                    position.y,
+                    viewport,
+                    scroll_y.clamp(-6.0, 6.0),
+                )
             }
             _ => LayerEffects::default(),
         }
@@ -122,6 +132,7 @@ impl NavigationView<'_> {
         let action = match zone {
             LayoutHitZone::Splitter(index) => DragAction::Split(index),
             LayoutHitZone::YAxis(panel_index) => {
+                let initial_viewport = self.viewports.panel_y_zoom_range(scene?, panel_index)?;
                 let coordinates = self.viewports.coordinates;
                 let primary_panel_id = coordinates.composition.primary_panel_id();
                 let is_primary_axis = coordinates.panel_id(panel_index) == primary_panel_id;
@@ -140,6 +151,7 @@ impl NavigationView<'_> {
                 DragAction::YAxisScale {
                     panel_index,
                     anchor_y,
+                    initial_viewport,
                 }
             }
             LayoutHitZone::PanelXAxis(_) | LayoutHitZone::BottomXAxis => DragAction::XAxisScale {
@@ -199,12 +211,12 @@ impl NavigationView<'_> {
             DragAction::YAxisScale {
                 panel_index,
                 anchor_y,
+                initial_viewport,
             } => {
-                let scale_delta = -delta.y * Y_AXIS_DRAG_SCALE_DELTA_PER_PX;
-                if scale_delta.abs() > f32::EPSILON
-                    && let Some(scene) = scene
-                {
-                    self.y_zoom(scene, panel_index, anchor_y, scale_delta)
+                let scale_delta =
+                    (motion.origin.y - motion.current.y).round() * Y_AXIS_DRAG_SCALE_DELTA_PER_PX;
+                if let Some(scene) = scene {
+                    self.y_zoom(scene, panel_index, anchor_y, initial_viewport, scale_delta)
                 } else {
                     LayerEffects::default()
                 }
@@ -254,15 +266,19 @@ impl NavigationView<'_> {
         scene: &Scene,
         panel_index: usize,
         anchor_y: f32,
+        viewport: PanelYValueRange,
         delta: f32,
     ) -> LayerEffects<KlineWidgetEvent> {
         let Some(panel_id) = self.viewports.coordinates.panel_id(panel_index) else {
             return LayerEffects::default();
         };
-        let Some(range) =
-            self.viewports
-                .panel_viewport_after_y_zoom(scene, panel_index, anchor_y, delta)
-        else {
+        let Some(range) = self.viewports.panel_viewport_after_y_zoom(
+            scene,
+            panel_index,
+            anchor_y,
+            viewport,
+            delta,
+        ) else {
             return LayerEffects::default();
         };
         let mut effects = LayerEffects::captured(RenderRequest::All);

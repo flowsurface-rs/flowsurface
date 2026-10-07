@@ -7,6 +7,7 @@ use super::scene::{CursorTarget, Scene};
 use super::studies::StudyObjectKey;
 use data::chart::kline::HorizontalWorld;
 use data::chart::kline::drawing::{DrawingMeasure, DrawingSnapshot};
+use data::chart::kline::viewport::PanelYValueRange;
 use iced::advanced::Shell;
 use iced::advanced::mouse::Interaction;
 use iced::event::Status;
@@ -119,6 +120,7 @@ pub(super) enum DragAction {
     YAxisScale {
         panel_index: usize,
         anchor_y: f32,
+        initial_viewport: PanelYValueRange,
     },
     XAxisScale {
         initial_world: HorizontalWorld,

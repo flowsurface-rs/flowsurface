@@ -205,13 +205,11 @@ pub struct HorizontalWorld {
 
 impl HorizontalWorld {
     pub fn visible_window(self, data_bounds: (i64, i64), plot_width: f32) -> (i64, i64, f32) {
-        let (data_min_x, data_max_x) = data_bounds;
+        let (_, data_max_x) = data_bounds;
 
         let span = self.spacing();
         let visible_units = (plot_width.max(1.0) / span).max(1.0);
-        let right_cap = data_max_x as f32 + visible_units;
-        let right_floor = data_min_x as f32;
-        let right = (data_max_x as f32 + self.offset()).clamp(right_floor, right_cap);
+        let right = data_max_x as f32 + self.offset();
         let left = right - visible_units + 1.0;
         let left_unit = left.floor() as i64;
         let right_unit = right.ceil() as i64;

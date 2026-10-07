@@ -238,23 +238,40 @@ impl PanelViewportView<'_> {
         changes
     }
 
-    pub(crate) fn panel_viewport_after_y_zoom(
+    pub(crate) fn panel_y_zoom_range(
         &self,
         scene: &Scene,
         panel_index: usize,
-        cursor_y: f32,
-        scroll_delta: f32,
-    ) -> Option<YUnitRange> {
-        if scroll_delta.abs() <= f32::EPSILON {
-            return None;
-        }
-
+    ) -> Option<PanelYValueRange> {
         if panel_index == scene.primary.panel_index
             && !scene.primary.mode.allows_primary_manual_zoom()
         {
             return None;
         }
+        let (min, max) = match scene.layout.panel(panel_index)?.kind {
+            KlinePanelKind::PrimaryChart => {
+                let (min, max) = scene.primary_domain_display_values();
+                (f64::from(min), f64::from(max))
+            }
+            KlinePanelKind::Indicator => {
+                let indicator = scene
+                    .indicator_panels
+                    .iter()
+                    .find(|indicator| indicator.panel_index == panel_index)?;
+                (indicator.min_value(), indicator.max_value())
+            }
+        };
+        PanelYValueRange::normalized(min, max)
+    }
 
+    pub(crate) fn panel_viewport_after_y_zoom(
+        &self,
+        scene: &Scene,
+        panel_index: usize,
+        cursor_y: f32,
+        viewport: PanelYValueRange,
+        scroll_delta: f32,
+    ) -> Option<YUnitRange> {
         let panel = scene.layout.panel(panel_index)?;
         let panel_h = panel.plot.height.max(1.0);
         let y_in_panel =
@@ -265,44 +282,22 @@ impl PanelViewportView<'_> {
             (1.0 - (y_in_panel / panel_h)).clamp(0.0, 1.0)
         };
 
-        let zoom_amount = scroll_delta.abs().clamp(0.0, 6.0);
-        let zoom_scale = (zoom_amount / ZOOM_SENSITIVITY).exp();
+        let zoom_scale = (f64::from(scroll_delta.abs()) / f64::from(ZOOM_SENSITIVITY))
+            .min(f64::MAX.ln())
+            .exp();
         let zoom_in = scroll_delta > 0.0;
+        let viewport = viewport.zoom_around_ratio(f64::from(anchor_ratio), zoom_scale, zoom_in)?;
 
         match panel.kind {
             KlinePanelKind::PrimaryChart => {
-                let (min_display, max_display) = scene.primary_domain_display_values();
-                let display_viewport =
-                    PanelYValueRange::normalized(f64::from(min_display), f64::from(max_display))?;
-                let new_display_viewport = display_viewport.zoom_around_ratio(
-                    f64::from(anchor_ratio),
-                    f64::from(zoom_scale),
-                    zoom_in,
-                )?;
-
                 let display_viewport = PanelYValueRange::normalized(
-                    f64::from(
-                        scene.primary_display_to_value(new_display_viewport.min_value() as f32),
-                    ),
-                    f64::from(
-                        scene.primary_display_to_value(new_display_viewport.max_value() as f32),
-                    ),
+                    f64::from(scene.primary_display_to_value(viewport.min_value() as f32)),
+                    f64::from(scene.primary_display_to_value(viewport.max_value() as f32)),
                 )?;
                 let range = self.value_range_to_unit_range(panel_index, display_viewport)?;
                 self.resolve_panel_viewport(scene, panel_index, range)
             }
             KlinePanelKind::Indicator => {
-                let indicator = scene
-                    .indicator_panels
-                    .iter()
-                    .find(|indicator| indicator.panel_index == panel_index)?;
-                let viewport =
-                    PanelYValueRange::normalized(indicator.min_value(), indicator.max_value())?;
-                let viewport = viewport.zoom_around_ratio(
-                    f64::from(anchor_ratio),
-                    f64::from(zoom_scale),
-                    zoom_in,
-                )?;
                 let range = self.value_range_to_unit_range(panel_index, viewport)?;
                 self.resolve_panel_viewport(scene, panel_index, range)
             }

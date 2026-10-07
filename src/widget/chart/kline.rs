@@ -1481,11 +1481,9 @@ impl<'a> KlineWidget<'a> {
             horizontal_world.visible_window(data_bounds, x_axis_plot_width);
         let (autoscale_min_x_unit, autoscale_max_x_unit, _) =
             horizontal_world.visible_window(data_bounds, autoscale_plot_width);
-        let (source_min_x_unit, source_max_x_unit) = x_axis.source_window(
-            autoscale_min_x_unit,
-            autoscale_max_x_unit,
-            &self.indicator_instances.source_offsets(),
-        );
+        let source_offsets = self.indicator_instances.source_offsets();
+        let (source_min_x_unit, source_max_x_unit) =
+            x_axis.source_window(autoscale_min_x_unit, autoscale_max_x_unit, &source_offsets);
         let bar_units: Arc<[BarUnitWindow]> =
             Arc::from(self.build_bar_units(x_axis, source_min_x_unit, source_max_x_unit));
         let x_world = horizontal_world.axis_at_right_unit(right_x_unit);
@@ -1503,8 +1501,6 @@ impl<'a> KlineWidget<'a> {
             include_footprint_range: self.trade_data_enabled && self.footprint.visible,
         };
         let primary_value_precision = self.panel_value_precision(primary_panel);
-        let (min_primary_unit, max_primary_unit) =
-            domains.primary_domain(primary_value_precision, primary_mark, primary_plot.height)?;
         let primary_value_scale = self.panel_value_scale(primary_panel);
 
         let indicator_panels: Vec<IndicatorPanelScene> = panel_layout
@@ -1553,11 +1549,36 @@ impl<'a> KlineWidget<'a> {
             })
             .collect();
 
-        let PrimaryPercentScaleState {
-            primary_scale_anchor,
-            series_percent_anchors,
-            primary_domain_display_override,
-        } = domains.percent_scale_state(primary_mark, primary_scale_mode)?;
+        let resolve_primary_scale = |domains: &scene::domain::WindowDomains<'_>| {
+            domains
+                .primary_domain(primary_value_precision, primary_mark, primary_plot.height)
+                .zip(domains.percent_scale_state(primary_mark, primary_scale_mode))
+        };
+        let (
+            (min_primary_unit, max_primary_unit),
+            PrimaryPercentScaleState {
+                primary_scale_anchor,
+                series_percent_anchors,
+                primary_domain_display_override,
+            },
+        ) = resolve_primary_scale(&domains).or_else(|| {
+            let fallback_min = data_max_x
+                .saturating_sub(autoscale_max_x_unit.saturating_sub(autoscale_min_x_unit));
+            let (source_min, source_max) =
+                x_axis.source_window(fallback_min, data_max_x, &source_offsets);
+            let fallback_bar_units = self.build_bar_units(x_axis, source_min, source_max);
+            let fallback_domains = scene::domain::WindowDomains {
+                windows: data::chart::kline::series::KlineWindows {
+                    series: self.series,
+                    windows: &fallback_bar_units,
+                    axis: x_axis,
+                },
+                min_x_unit: fallback_min,
+                max_x_unit: data_max_x,
+                ..domains
+            };
+            resolve_primary_scale(&fallback_domains)
+        })?;
 
         let panel_controls =
             chrome::build_panel_control_hits(self.coordinates(), &panel_layout, primary_panel);
