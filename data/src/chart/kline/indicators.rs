@@ -178,32 +178,6 @@ pub use registry::{
     panel_recipe, requires_trade_data, table_columns, unsupported_reason,
 };
 
-/// Shared chart-facing types for indicator source integrations.
-pub mod prelude {
-    pub use super::super::composition::{
-        AxisBinding, BarMode, DataSourceId, HistogramMode, LayerDataKind, MarkKind, PanelScaleMode,
-        PanelValueLabelMode, PanelValueLabelPolicy, PanelValuePrecision,
-    };
-    pub use super::{
-        AvailabilityContext, IndicatorAttachmentMode, IndicatorAuthor, IndicatorAvailability,
-        IndicatorColorSpec, IndicatorDefinition, IndicatorDefinitionError, IndicatorFillGeometry,
-        IndicatorFillSpec, IndicatorHistoryRequirement, IndicatorInputRequirement,
-        IndicatorInputSource, IndicatorMarkSpec, IndicatorOutputLayerSpec, IndicatorOutputRef,
-        IndicatorOverlayChannelSpec, IndicatorOverlaySource, IndicatorPanelRecipe,
-        IndicatorReadoutScope, IndicatorReadoutSpec, IndicatorSegmentSpec, IndicatorSetting,
-        IndicatorSettingChoice, IndicatorSettingControl, IndicatorSettingValue,
-        IndicatorSettingsContext, IndicatorSourceInput, IndicatorUnsupportedReason,
-        OpenInterestSeries, OutputChannelSpec, OutputValue, OutputValueType, TableColumnColor,
-        TableColumnFormat, TableColumnSpec, TableColumnValue,
-    };
-    pub use crate::chart::Basis;
-    pub use crate::chart::kline::IndicatorUpdateScope;
-    pub use crate::config::theme::{ThemeColor, ThemeColorRole, ThemeColorShade};
-    pub use crate::serde;
-    pub use exchange::adapter::MarketKind;
-    pub use exchange::{Kline, TickerInfo, Trade, UnixMs};
-}
-
 /// Shared Open Interest capability used by both indicator availability and
 /// the connector fetch planner.
 pub fn supports_open_interest(ticker_info: TickerInfo, timeframe: Timeframe) -> bool {
