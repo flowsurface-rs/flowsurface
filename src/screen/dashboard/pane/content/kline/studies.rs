@@ -193,11 +193,17 @@ impl StudyState {
                             .floor_to(source_timeframe)
                             .min(latest);
                         if start < end {
-                            batches.push(FetchBatch {
-                                stage: FetchStage::PrimaryPlot,
-                                range: data::chart::kline::FetchRange::Kline(start, end),
-                                tickers: vec![base_ticker],
-                            });
+                            let missing = data.base_series().map_or_else(
+                                || vec![(start, end)],
+                                |series| series.missing_kline_ranges(start, end),
+                            );
+                            for (from, to) in missing {
+                                batches.push(FetchBatch {
+                                    stage: FetchStage::PrimaryPlot,
+                                    range: FetchRange::Kline(from, to.saturating_sub(1)),
+                                    tickers: vec![base_ticker],
+                                });
+                            }
                         }
                     }
                 }

@@ -855,6 +855,30 @@ impl KlineSeries {
         })
     }
 
+    /// Missing candle intervals within an aligned, half-open time range.
+    pub fn missing_kline_ranges(&self, start: UnixMs, end: UnixMs) -> Vec<(UnixMs, UnixMs)> {
+        let Basis::Time(timeframe) = self.basis() else {
+            return Vec::new();
+        };
+        if start >= end {
+            return Vec::new();
+        }
+
+        let indices = self.time_index_range(start, end.saturating_sub(1));
+        let mut ranges = Vec::new();
+        let mut cursor = start;
+        for &time in &self.time_index[indices] {
+            if cursor < time {
+                ranges.push((cursor, time));
+            }
+            cursor = time.offset_by_timeframe(timeframe, 1).min(end);
+        }
+        if cursor < end {
+            ranges.push((cursor, end));
+        }
+        ranges
+    }
+
     pub fn missing_kline_range(
         &self,
         earliest: UnixMs,
