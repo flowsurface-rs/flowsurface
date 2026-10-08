@@ -1891,7 +1891,7 @@ impl<'a> KlineWidget<'a> {
                 continue;
             };
             let segment_spec = self.indicator_segment_spec(value_id, &segment.id);
-            let (line_width, stroke_style, color) = if let Some(spec) = segment_spec {
+            let (line_width, stroke_style, fallback_color) = if let Some(spec) = segment_spec {
                 (
                     pixels
                         .quantized_stroke_width(self.indicator_line_width_for_style_slot(
@@ -1912,19 +1912,18 @@ impl<'a> KlineWidget<'a> {
                 (
                     pixels.quantized_stroke_width(1.4).0,
                     LineStrokeStyle::Solid,
-                    segment
-                        .color
-                        .map(Self::resolve_indicator_color)
-                        .unwrap_or_else(|| {
-                            self.indicator_color(
-                                Some(value_id),
-                                self.indicator_default_style_slot(value_id),
-                                palette,
-                                generated_accents,
-                            )
-                        }),
+                    self.indicator_color(
+                        Some(value_id),
+                        self.indicator_default_style_slot(value_id),
+                        palette,
+                        generated_accents,
+                    ),
                 )
             };
+            let color = segment
+                .color
+                .map(Self::resolve_indicator_color)
+                .unwrap_or(fallback_color);
             let start = Point::new(scene.map_x_plot(start_unit), start_y);
             let end = Point::new(scene.map_x_plot(end_unit), end_y);
             frame.stroke(
