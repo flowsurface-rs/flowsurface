@@ -126,45 +126,7 @@ impl TickAggr {
         for point in &mut self.datapoints[first_updated..] {
             point.calculate_poc();
         }
-        self.update_poc_status();
         Some(first_updated)
-    }
-
-    pub fn update_poc_status(&mut self) {
-        let updates = self
-            .datapoints
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, dp)| dp.poc_price().map(|price| (idx, price)))
-            .collect::<Vec<_>>();
-
-        let total_points = self.datapoints.len();
-
-        for (current_idx, poc_price) in updates {
-            let mut npoc = NPoc::default();
-
-            for next_idx in (current_idx + 1)..total_points {
-                let next_dp = &self.datapoints[next_idx];
-
-                let next_dp_low = next_dp.kline.low.round_to_step(self.tick_size);
-                let next_dp_high = next_dp.kline.high.round_to_step(self.tick_size);
-
-                if next_dp_low <= poc_price && next_dp_high >= poc_price {
-                    // on render we reverse the order of the points
-                    // as it is easier to just take the idx=0 as latest candle for coords
-                    let reversed_idx = (total_points - 1) - next_idx;
-                    npoc.filled(reversed_idx as u64);
-                    break;
-                } else {
-                    npoc.unfilled();
-                }
-            }
-
-            if current_idx < total_points {
-                let data_point = &mut self.datapoints[current_idx];
-                data_point.set_poc_status(npoc);
-            }
-        }
     }
 
     pub fn max_qty_idx_range(

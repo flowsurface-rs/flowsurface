@@ -5,7 +5,7 @@ use super::scene::Scene;
 use super::{CHAR_W, TEXT_SIZE};
 use crate::style;
 use data::chart::kline::footprint::{ClusterKind, KlineTrades};
-use data::chart::kline::poc::NPoc;
+use data::chart::kline::poc::{NPoc, PocFillAt};
 use data::chart::kline::series::KlineSeries;
 use data::chart::kline::viewport::{TickIndex, XAxis};
 use data::chart::kline::{
@@ -1320,9 +1320,11 @@ impl FootprintRenderer<'_> {
                 let (end_x, color) = match line.poc.status {
                     NPoc::Naked if config.show_npoc => (naked_line_end, npoc_color),
                     NPoc::Filled { at } if config.show_poc => {
-                        let x = match scene.x.axis {
-                            XAxis::Time { .. } => x_for_time(UnixMs::new(at)),
-                            XAxis::Tick { .. } => x_for_tick_from_latest(UnixMs::new(at)),
+                        let x = match at {
+                            PocFillAt::Time(time) => x_for_time(time),
+                            PocFillAt::TickBar(index) => {
+                                x_for_tick_start(UnixMs::new(index as u64))
+                            }
                         };
                         (x.unwrap_or(naked_line_end), poc_color)
                     }

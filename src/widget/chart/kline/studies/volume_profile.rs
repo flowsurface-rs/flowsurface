@@ -7,7 +7,7 @@ use crate::widget::chart::kline::scene::Scene;
 use crate::widget::resolve_theme_color;
 use data::chart::Basis;
 use data::chart::kline::footprint::ClusterKind;
-use data::chart::kline::poc::NPoc;
+use data::chart::kline::poc::{NPoc, PocFillAt};
 use data::chart::kline::{
     KlineStudy, ProfileDistribution, StudyDataSource, VolumeProfileColorConfig,
     VolumeProfileColorSlot, VolumeProfileSchedule,
@@ -322,11 +322,13 @@ impl<'a> VolumeProfileObject<'a> {
                 )
                 .scale_alpha((0.7 * opacity_scale).min(1.0)),
             ),
-            NPoc::Filled { at } if colors.show_poc => (
+            NPoc::Filled {
+                at: PocFillAt::Time(at),
+            } if colors.show_poc => (
                 scene
                     .x
                     .axis
-                    .unit_from_time_f32(UnixMs::new(at))
+                    .unit_from_time_f32(at)
                     .map(|unit| scene.map_x_plot_f32(unit))
                     .unwrap_or(naked_line_end),
                 resolve_theme_color(

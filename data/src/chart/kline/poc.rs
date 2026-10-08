@@ -26,18 +26,14 @@ pub enum NPoc {
     None,
     Naked,
     Filled {
-        at: u64,
+        at: PocFillAt,
     },
 }
 
-impl NPoc {
-    pub fn filled(&mut self, at: u64) {
-        *self = NPoc::Filled { at };
-    }
-
-    pub fn unfilled(&mut self) {
-        *self = NPoc::Naked;
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PocFillAt {
+    Time(UnixMs),
+    TickBar(usize),
 }
 
 const NAKED_POC_LINE_END: UnixMs = UnixMs::new(u64::MAX);
@@ -49,8 +45,39 @@ pub(crate) trait PocProfile {
 }
 
 #[derive(Default)]
+pub(crate) struct NakedPocIndex<K> {
+    by_price: BTreeMap<Price, BTreeSet<K>>,
+}
+
+impl<K: Ord> NakedPocIndex<K> {
+    pub(crate) fn clear(&mut self) {
+        self.by_price.clear();
+    }
+
+    pub(crate) fn insert(&mut self, price: Price, key: K) {
+        self.by_price.entry(price).or_default().insert(key);
+    }
+
+    pub(crate) fn take_touched(&mut self, low: Price, high: Price) -> Vec<K> {
+        if low > high {
+            return Vec::new();
+        }
+        let prices = self
+            .by_price
+            .range(low..=high)
+            .map(|(&price, _)| price)
+            .collect::<Vec<_>>();
+        prices
+            .into_iter()
+            .filter_map(|price| self.by_price.remove(&price))
+            .flatten()
+            .collect()
+    }
+}
+
+#[derive(Default)]
 pub(crate) struct PocLineTracker {
-    naked_pocs: BTreeMap<Price, BTreeSet<UnixMs>>,
+    naked_pocs: NakedPocIndex<UnixMs>,
     poc_lines_by_end: BTreeMap<UnixMs, BTreeSet<UnixMs>>,
 }
 
@@ -78,17 +105,8 @@ impl PocLineTracker {
 
         self.activate_previous_profile(profiles, start, low, high);
 
-        let touched_prices = self
-            .naked_pocs
-            .range(low..=high)
-            .map(|(&price, _)| price)
-            .collect::<Vec<_>>();
-        for price in touched_prices {
-            if let Some(touched_starts) = self.naked_pocs.remove(&price) {
-                for touched_start in touched_starts {
-                    self.mark_poc_filled(profiles, touched_start, start);
-                }
-            }
+        for touched_start in self.naked_pocs.take_touched(low, high) {
+            self.mark_poc_filled(profiles, touched_start, start);
         }
 
         if profiles.keys().next_back().copied() == Some(start) {
@@ -138,7 +156,7 @@ impl PocLineTracker {
         if let Some(profile) = profiles.get_mut(&start) {
             profile.set_poc_status(NPoc::Naked);
         }
-        self.naked_pocs.entry(poc_price).or_default().insert(start);
+        self.naked_pocs.insert(poc_price, start);
         self.poc_lines_by_end
             .entry(NAKED_POC_LINE_END)
             .or_default()
@@ -153,7 +171,9 @@ impl PocLineTracker {
     ) {
         self.remove_poc_line(start, NAKED_POC_LINE_END);
         if let Some(profile) = profiles.get_mut(&start) {
-            profile.set_poc_status(NPoc::Filled { at: at.as_u64() });
+            profile.set_poc_status(NPoc::Filled {
+                at: PocFillAt::Time(at),
+            });
         }
         self.poc_lines_by_end.entry(at).or_default().insert(start);
     }
