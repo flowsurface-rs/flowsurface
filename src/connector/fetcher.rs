@@ -477,7 +477,7 @@ pub fn request_fetch(
     let handles = sources.exchange.clone();
 
     match fetch {
-        FetchRange::Kline(from, to) => {
+        FetchRange::Kline(from, to) | FetchRange::ProfileKline { from, to, .. } => {
             let kline_stream = if let Some(s) = stream {
                 Some((s, pane_id))
             } else {
@@ -490,35 +490,27 @@ pub fn request_fetch(
                 })
             };
 
-            if let Some((stream, pane_uid)) = kline_stream {
-                return kline_fetch_task(
-                    handles,
-                    pane_uid,
-                    stream,
-                    Some(req_id),
-                    Some((from, to)),
-                    on_fetch_handle,
-                );
-            }
-        }
-        FetchRange::ProfileKline {
-            timeframe,
-            from,
-            to,
-        } => {
-            let kline_stream = if let Some(s) = stream {
-                Some((s, pane_id))
-            } else {
-                ready_streams.iter().find_map(|stream| {
-                    if let StreamKind::Kline { .. } = stream {
-                        Some((*stream, pane_id))
-                    } else {
-                        None
+            if let Some((
+                StreamKind::Kline {
+                    ticker_info,
+                    timeframe,
+                },
+                pane_uid,
+            )) = kline_stream
+            {
+                let now = UnixMs::now();
+                let (timeframe, from, to) = match fetch {
+                    FetchRange::ProfileKline { timeframe, .. } => {
+                        (timeframe, from, to.min(now.floor_to(timeframe)))
                     }
-                })
-            };
-
-            if let Some((StreamKind::Kline { ticker_info, .. }, pane_uid)) = kline_stream {
+                    _ => (
+                        timeframe,
+                        from.floor_to(timeframe),
+                        to.min(now)
+                            .floor_to(timeframe)
+                            .offset_by_timeframe(timeframe, 1),
+                    ),
+                };
                 let (task, handle) = Task::sip(
                     fetch_klines_paged(handles, ticker_info, timeframe, from, to),
                     move |batch| FetchUpdate::Data {
@@ -801,58 +793,6 @@ pub fn open_interest_fetch_task(
     task
 }
 
-pub fn kline_fetch_task(
-    handles: AdapterHandles,
-    pane_id: Uuid,
-    stream: StreamKind,
-    req_id: Option<Uuid>,
-    range: Option<(UnixMs, UnixMs)>,
-    on_fetch_handle: &mut impl FnMut(Uuid, Handle),
-) -> Task<FetchUpdate> {
-    let fetch_task = match stream {
-        StreamKind::Kline {
-            ticker_info,
-            timeframe,
-        } => {
-            let fetch = async move { handles.fetch_klines(ticker_info, timeframe, range).await };
-
-            Task::perform(
-                iced::futures::TryFutureExt::map_err(fetch, |err| {
-                    log::error!("Kline fetch failed: {err}");
-                    err.ui_message()
-                }),
-                move |result| match result {
-                    Ok(klines) => {
-                        let data = FetchedData::Klines {
-                            has_data: !klines.is_empty(),
-                            data: klines,
-                            req_id,
-                            is_batches_done: true,
-                        };
-                        FetchUpdate::Data {
-                            pane_id,
-                            data,
-                            stream,
-                        }
-                    }
-                    Err(err) => FetchUpdate::Error {
-                        pane_id,
-                        error: err,
-                        req_id,
-                    },
-                },
-            )
-        }
-        _ => Task::none(),
-    };
-
-    let (task, handle) = fetch_task.abortable();
-    if let Some(req_id) = req_id {
-        on_fetch_handle(req_id, handle.abort_on_drop());
-    }
-    task
-}
-
 fn fetch_klines_paged(
     handles: AdapterHandles,
     ticker_info: TickerInfo,
@@ -861,15 +801,14 @@ fn fetch_klines_paged(
     to_time: UnixMs,
 ) -> impl Straw<bool, Vec<Kline>, AdapterError> {
     sipper(async move |mut progress| {
-        let end = to_time.min(UnixMs::now().floor_to(timeframe));
         let mut cursor = from_time;
         let mut had_data = false;
 
-        while cursor < end {
+        while cursor < to_time {
             let page = handles
-                .fetch_klines_page(ticker_info, timeframe, cursor, end)
+                .fetch_klines_page(ticker_info, timeframe, cursor, to_time)
                 .await?;
-            let next_cursor = advance_kline_page(cursor, end, &page)?;
+            let next_cursor = advance_kline_page(cursor, to_time, &page)?;
             if !page.data.is_empty() {
                 had_data = true;
                 progress.send(page.data).await;

@@ -6,6 +6,7 @@ use data::chart::kline::{
     FetchRange, KlineStudy, TpoAnchor, TpoBoundaryEdits, TpoProfile, TpoProfileStatus,
 };
 use data::chart::kline::{KlineData, StudyDataSource, VolumeProfileSchedule};
+use exchange::adapter::Exchange;
 use exchange::unit::price::PriceStep;
 use exchange::{Kline, TickerInfo, Timeframe, Trade, UnixMs};
 use std::collections::BTreeMap;
@@ -13,8 +14,8 @@ use std::collections::BTreeMap;
 use self::source::ProfileKlineSource;
 use self::tpo::{TpoBarScope, TpoState};
 
-fn profile_source_timeframe(chart_timeframe: Timeframe) -> Timeframe {
-    if chart_timeframe <= Timeframe::H2 {
+fn profile_source_timeframe(chart_timeframe: Timeframe, exchange: Exchange) -> Timeframe {
+    let preferred = if chart_timeframe <= Timeframe::H2 {
         Timeframe::M1
     } else if chart_timeframe <= Timeframe::H4 {
         Timeframe::M3
@@ -22,7 +23,11 @@ fn profile_source_timeframe(chart_timeframe: Timeframe) -> Timeframe {
         Timeframe::M5
     } else {
         Timeframe::M15
-    }
+    };
+    Timeframe::KLINE
+        .into_iter()
+        .find(|timeframe| *timeframe >= preferred && exchange.supports_kline_timeframe(*timeframe))
+        .expect("all exchanges support a coarser profile source timeframe")
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -54,7 +59,9 @@ impl ProfilePlan {
 
         ProfilePlan {
             kline_source_timeframe: has_kline_source.then(|| match basis {
-                Basis::Time(timeframe) => profile_source_timeframe(timeframe),
+                Basis::Time(timeframe) => {
+                    profile_source_timeframe(timeframe, data.base_ticker().exchange())
+                }
                 Basis::Tick(_) => Timeframe::M1,
             }),
             kline_volume_profiles,

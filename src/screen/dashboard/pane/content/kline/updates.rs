@@ -193,18 +193,30 @@ impl DataUpdate<'_> {
                 req_id,
                 ticker_info,
                 klines,
+                is_batches_done,
+                has_data,
                 ..
             } => {
                 if req_id.is_some_and(|req_id| !fetch.accepts_data(req_id)) {
                     return KlineDataChange::Unchanged;
                 }
+                if !data
+                    .series()
+                    .iter()
+                    .any(|series| series.ticker_info == *ticker_info)
+                {
+                    if let Some(req_id) = req_id {
+                        fetch.mark_failed_for(*ticker_info, *req_id);
+                    }
+                    return KlineDataChange::Unchanged;
+                }
 
                 let change = data.insert_historical_klines(*ticker_info, klines, basis);
-                if let Some(req_id) = req_id {
-                    if matches!(&change, KlineDataChange::HistoricalKlines { .. }) {
+                if *is_batches_done && let Some(req_id) = req_id {
+                    if *has_data {
                         fetch.mark_completed(*ticker_info, *req_id);
                     } else {
-                        fetch.mark_failed_for(*ticker_info, *req_id);
+                        fetch.mark_no_data(*ticker_info, *req_id);
                     }
                 }
                 change

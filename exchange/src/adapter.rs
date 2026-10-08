@@ -558,9 +558,10 @@ pub struct KlinePage {
 }
 
 impl KlinePage {
-    pub(crate) fn new(mut data: Vec<Kline>, from: UnixMs, to: UnixMs, next_from: UnixMs) -> Self {
-        data.retain(|kline| kline.time >= from && kline.time < to);
+    pub(crate) fn new(mut data: Vec<Kline>, from: UnixMs, next_from: UnixMs) -> Self {
+        data.retain(|kline| kline.time >= from && kline.time < next_from);
         data.sort_unstable_by_key(|kline| kline.time);
+        data.dedup_by_key(|kline| kline.time);
         Self { data, next_from }
     }
 }

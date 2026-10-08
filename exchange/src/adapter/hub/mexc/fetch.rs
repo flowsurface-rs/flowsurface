@@ -16,7 +16,8 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
 
-const MAX_SPOT_KLINE_BARS: u64 = 1_000;
+// Spot responses are capped at 500 even with a larger requested limit.
+const MAX_SPOT_KLINE_BARS: u64 = 500;
 const MAX_PERP_KLINE_BARS: u64 = 2_000;
 
 #[allow(dead_code)]
@@ -444,7 +445,7 @@ async fn fetch_klines_with_limit(
                 .map(|kline| {
                     let volume = qty_norm.normalize_qty(kline.vol, kline.close);
                     Ok(Kline::new(
-                        kline.close_ts,
+                        kline.open_ts,
                         kline.open,
                         kline.high,
                         kline.low,
@@ -458,6 +459,13 @@ async fn fetch_klines_with_limit(
         MarketKind::LinearPerps | MarketKind::InversePerps => {
             let parsed_response: FuturesApiResponse = sonic_rs::from_str(&response_text)
                 .map_err(|e| AdapterError::ParseError(e.to_string()))?;
+
+            if !parsed_response.success || parsed_response.code != 0 {
+                return Err(AdapterError::ParseError(format!(
+                    "MEXC kline request failed: code {}",
+                    parsed_response.code
+                )));
+            }
 
             let data = &parsed_response.data;
             let times = data["time"]
@@ -539,7 +547,13 @@ pub(super) async fn fetch_klines_page(
     };
     let page_to = kline_page_end(from, to, timeframe, max_bars)?;
     let limit = (ticker_info.market_type() == MarketKind::Spot).then_some(max_bars);
-    let data =
-        fetch_klines_with_limit(hub, ticker_info, timeframe, Some((from, page_to)), limit).await?;
-    Ok(KlinePage::new(data, from, to, page_to))
+    let data = fetch_klines_with_limit(
+        hub,
+        ticker_info,
+        timeframe,
+        Some((from, page_to.saturating_sub(1))),
+        limit,
+    )
+    .await?;
+    Ok(KlinePage::new(data, from, page_to))
 }

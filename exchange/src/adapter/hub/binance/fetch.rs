@@ -368,12 +368,12 @@ pub(super) async fn fetch_klines(
         let start = start.as_u64();
         let end = end.as_u64();
         let interval_ms = timeframe.to_milliseconds();
-        let num_intervals = ((end - start) / interval_ms).min(MAX_KLINE_BARS);
+        let num_intervals = ((end - start) / interval_ms + 1).min(MAX_KLINE_BARS);
 
         if num_intervals < 3 {
-            let new_start = start - (interval_ms * 5);
-            let new_end = end + (interval_ms * 5);
-            let num_intervals = ((new_end - new_start) / interval_ms).min(MAX_KLINE_BARS);
+            let new_start = start.saturating_sub(interval_ms * 5);
+            let new_end = end.saturating_add(interval_ms * 5);
+            let num_intervals = ((new_end - new_start) / interval_ms + 1).min(MAX_KLINE_BARS);
 
             url.push_str(&format!(
                 "&startTime={new_start}&endTime={new_end}&limit={num_intervals}"
@@ -464,8 +464,14 @@ pub(super) async fn fetch_klines_page(
     to: UnixMs,
 ) -> Result<KlinePage, AdapterError> {
     let page_to = kline_page_end(from, to, timeframe, MAX_KLINE_BARS)?;
-    let data = fetch_klines(hub, ticker_info, timeframe, Some((from, page_to))).await?;
-    Ok(KlinePage::new(data, from, to, page_to))
+    let data = fetch_klines(
+        hub,
+        ticker_info,
+        timeframe,
+        Some((from, page_to.saturating_sub(1))),
+    )
+    .await?;
+    Ok(KlinePage::new(data, from, page_to))
 }
 
 pub(super) async fn fetch_historical_oi(

@@ -280,7 +280,8 @@ pub(super) async fn fetch_klines(
         bar,
         match range {
             Some((start, end)) => {
-                ((end.as_u64() - start.as_u64()) / timeframe.to_milliseconds())
+                (end.as_u64() - start.as_u64())
+                    .div_ceil(timeframe.to_milliseconds())
                     .clamp(1, MAX_KLINE_BARS)
             }
             None => MAX_KLINE_BARS,
@@ -290,12 +291,19 @@ pub(super) async fn fetch_klines(
     if let Some((start, end)) = range {
         url.push_str(&format!(
             "&before={}&after={}",
-            start.as_u64(),
+            start.as_u64().saturating_sub(1),
             end.as_u64()
         ));
     }
 
     let doc: Value = hub.http_json_with_limiter(&url, 1, None, None).await?;
+
+    if doc["code"].as_str() != Some("0") {
+        return Err(AdapterError::ParseError(format!(
+            "OKX kline request failed: {} ({})",
+            doc["msg"], doc["code"]
+        )));
+    }
 
     let list = doc["data"]
         .as_array()
@@ -354,7 +362,7 @@ pub(super) async fn fetch_klines_page(
 ) -> Result<KlinePage, AdapterError> {
     let page_to = kline_page_end(from, to, timeframe, MAX_KLINE_BARS)?;
     let data = fetch_klines(hub, ticker_info, timeframe, Some((from, page_to))).await?;
-    Ok(KlinePage::new(data, from, to, page_to))
+    Ok(KlinePage::new(data, from, page_to))
 }
 
 pub(super) async fn fetch_historical_oi(
