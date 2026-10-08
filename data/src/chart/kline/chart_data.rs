@@ -456,8 +456,9 @@ impl KlineData {
             .min()?;
         let base_series = self.base_series()?;
         let latest_closed_time = base_series
-            .committed_points()
-            .last()
+            .points()
+            .rev()
+            .nth(1)
             .map(|point| point.kline.time)?;
         if earliest_trade_bar > latest_closed_time {
             return None;
