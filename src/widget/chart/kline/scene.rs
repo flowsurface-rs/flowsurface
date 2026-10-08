@@ -384,9 +384,9 @@ impl SceneCacheEntry {
 }
 
 impl SceneCache {
-    pub(super) fn get(&self, version: u64, layout: &PanelLayoutTree) -> Option<&SceneCacheEntry> {
+    pub(super) fn get(&self, version: u64) -> Option<&SceneCacheEntry> {
         let entry = self.entry.as_ref()?;
-        entry.matches(version, layout).then_some(entry)
+        (entry.version == version).then_some(entry)
     }
 
     pub(super) fn get_or_build(
@@ -401,8 +401,7 @@ impl SceneCache {
             .is_some_and(|entry| entry.matches(version, &layout));
 
         if !cache_hit {
-            let (base, y_axis_labels) = build(layout)?;
-            self.entry = Some(SceneCacheEntry {
+            self.entry = build(layout).map(|(base, y_axis_labels)| SceneCacheEntry {
                 version,
                 base,
                 y_axis_labels,

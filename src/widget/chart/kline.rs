@@ -613,7 +613,7 @@ impl<'a> KlineWidget<'a> {
                     scene,
                     state
                         .scene_cache
-                        .get(self.version, &scene.layout)
+                        .get(self.version)
                         .map(|entry| &entry.y_axis_labels),
                     palette,
                 ),
@@ -1385,24 +1385,16 @@ impl<'a> KlineWidget<'a> {
         });
     }
 
-    fn compute_scene_uncached(
-        &self,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        activity: SceneActivity,
-        layers: &StudyStates,
-    ) -> Option<Scene> {
-        let panel_layout = PanelLayoutTree::from_layout(layout, &self.composition.panels)?;
-        let base = self.compute_scene_base(panel_layout)?;
-        self.build_scene_from_base(&base, layout.bounds(), cursor, activity, layers)
-    }
-
     fn ensure_scene_base<'s>(
         &self,
         state: &'s mut State,
         layout: Layout<'_>,
     ) -> Option<&'s SceneCacheEntry> {
-        let panel_layout = PanelLayoutTree::from_layout(layout, &self.composition.panels)?;
+        let Some(panel_layout) = PanelLayoutTree::from_layout(layout, &self.composition.panels)
+        else {
+            state.scene_cache = SceneCache::default();
+            return None;
+        };
 
         state
             .scene_cache
@@ -1427,23 +1419,19 @@ impl<'a> KlineWidget<'a> {
         cursor: mouse::Cursor,
     ) -> Option<Scene> {
         let root_bounds = layout.bounds();
-        let panel_layout = PanelLayoutTree::from_layout(layout, &self.composition.panels)?;
+        let entry = state.scene_cache.get(self.version)?;
         let activity = state
             .interaction
             .drag_action()
             .map_or(SceneActivity::Idle, DragAction::scene_activity);
 
-        let mut scene = if let Some(entry) = state.scene_cache.get(self.version, &panel_layout) {
-            self.build_scene_from_base(
-                &entry.base,
-                root_bounds,
-                cursor,
-                activity,
-                &state.study_objects,
-            )
-        } else {
-            self.compute_scene_uncached(layout, cursor, activity, &state.study_objects)
-        }?;
+        let mut scene = self.build_scene_from_base(
+            &entry.base,
+            root_bounds,
+            cursor,
+            activity,
+            &state.study_objects,
+        )?;
 
         scene.interaction.target = state.interaction.resolve_cursor_target(
             scene.interaction.target,
@@ -1968,7 +1956,6 @@ where
         }
 
         let state = tree.state.downcast_mut::<State>();
-        self.ensure_scene_base(state, layout);
 
         match event {
             Event::Keyboard(keyboard::Event::KeyPressed {
@@ -2036,18 +2023,19 @@ where
             }
             Event::Mouse(mouse_event) => {
                 let bounds = layout.bounds();
-                let left_release = matches!(
+                if matches!(
                     mouse_event,
                     mouse::Event::ButtonReleased(mouse::Button::Left)
-                );
-                let Some(layout_tree) =
-                    PanelLayoutTree::from_layout(layout, &self.composition.panels)
-                else {
-                    return;
-                };
-
-                if left_release && cursor.position_in(bounds).is_none() {
-                    self.finish_interaction_release(state, layout, cursor, true, shell);
+                ) {
+                    if state.interaction.motion().is_some() {
+                        self.finish_interaction_release(
+                            state,
+                            layout,
+                            cursor,
+                            cursor.position_in(bounds).is_none(),
+                            shell,
+                        );
+                    }
                     return;
                 }
 
@@ -2069,6 +2057,42 @@ where
                     return;
                 };
 
+                let pointer_delta = match mouse_event {
+                    mouse::Event::CursorMoved { .. } => {
+                        state.scheduler.request(RenderRequest::Interaction);
+                        match state.interaction.pointer_moved(cursor_pos) {
+                            PointerMove::Pending => {
+                                shell.capture_event();
+                                return;
+                            }
+                            PointerMove::Moving { delta } => delta,
+                            PointerMove::Idle => Vector::new(0.0, 0.0),
+                        }
+                    }
+                    mouse::Event::ButtonPressed(mouse::Button::Right)
+                        if self.drawing_snapshot.drawing_draft.is_some() =>
+                    {
+                        shell.publish(M::from(KlineWidgetEvent::from(
+                            KlineWidgetDrawingEvent::DraftCanceled,
+                        )));
+                        self.cancel_pointer(state, layout, cursor, shell);
+                        state.scheduler.request(RenderRequest::All);
+                        shell.capture_event();
+                        return;
+                    }
+                    mouse::Event::WheelScrolled { .. }
+                    | mouse::Event::ButtonPressed(mouse::Button::Left) => Vector::new(0.0, 0.0),
+                    _ => return,
+                };
+
+                let Some(layout_tree) = state
+                    .scene_cache
+                    .get(self.version)
+                    .map(|entry| entry.base.layout.clone())
+                    .or_else(|| PanelLayoutTree::from_layout(layout, &self.composition.panels))
+                else {
+                    return;
+                };
                 let zone = layout_tree.hit_test(cursor_pos);
                 let scene = self.cached_scene(state, layout, cursor);
                 let cursor_target = scene.as_ref().map(|scene| scene.interaction.target);
@@ -2136,9 +2160,9 @@ where
                             let panel_id = measure_panel.or_else(|| self.panel_id(panel_index));
 
                             if let Some(panel_id) = panel_id
-                                && let Some(scene) = self.cached_scene(state, layout, cursor)
+                                && let Some(scene) = scene.as_ref()
                                 && let Some(anchor) = self
-                                    .drawing_view(&scene)
+                                    .drawing_view(scene)
                                     .drawing_anchor_from_scene_point(panel_id, cursor_pos)
                             {
                                 shell.publish(M::from(KlineWidgetEvent::from(
@@ -2211,28 +2235,19 @@ where
                         } else if !self.drawing_snapshot.allows_panning() {
                             let magnetic =
                                 self.drawing_magnet_enabled(state.interaction.modifiers());
-                            let anchor =
-                                if let Some(panel_id) = self.drawing_snapshot.draft_panel_id() {
-                                    self.cached_scene(state, layout, cursor).and_then(|scene| {
-                                        self.drawing_view(&scene)
-                                            .drawing_draft_anchor_from_scene_point(
-                                                panel_id, cursor_pos, magnetic,
-                                            )
-                                    })
-                                } else if let LayoutHitZone::PanelPlot(panel_index) = zone {
-                                    let panel_id = self.panel_id(panel_index);
-
-                                    panel_id.and_then(|panel_id| {
-                                        self.cached_scene(state, layout, cursor).and_then(|scene| {
-                                            self.drawing_view(&scene)
-                                                .drawing_draft_anchor_from_scene_point(
-                                                    panel_id, cursor_pos, magnetic,
-                                                )
-                                        })
-                                    })
+                            let panel_id = self.drawing_snapshot.draft_panel_id().or_else(|| {
+                                if let LayoutHitZone::PanelPlot(panel_index) = zone {
+                                    self.panel_id(panel_index)
                                 } else {
                                     None
-                                };
+                                }
+                            });
+                            let anchor = panel_id.and_then(|panel_id| {
+                                self.drawing_view(scene.as_ref()?)
+                                    .drawing_draft_anchor_from_scene_point(
+                                        panel_id, cursor_pos, magnetic,
+                                    )
+                            });
 
                             if let Some(anchor) = anchor {
                                 state
@@ -2259,36 +2274,12 @@ where
                             );
                         }
                     }
-                    mouse::Event::ButtonPressed(mouse::Button::Right)
-                        if self.drawing_snapshot.drawing_draft.is_some() =>
-                    {
-                        shell.publish(M::from(KlineWidgetEvent::from(
-                            KlineWidgetDrawingEvent::DraftCanceled,
-                        )));
-                        self.cancel_pointer(state, layout, cursor, shell);
-                        state.scheduler.request(RenderRequest::All);
-                        shell.capture_event();
-                    }
-                    mouse::Event::ButtonReleased(mouse::Button::Left) => {
-                        self.finish_interaction_release(state, layout, cursor, false, shell);
-                    }
                     mouse::Event::CursorMoved { .. } => {
-                        state.scheduler.request(RenderRequest::Interaction);
-                        let pointer_move = state.interaction.pointer_moved(cursor_pos);
-                        if matches!(pointer_move, PointerMove::Pending) {
-                            shell.capture_event();
-                            return;
-                        }
-                        let pointer_delta = match pointer_move {
-                            PointerMove::Moving { delta } => delta,
-                            PointerMove::Idle | PointerMove::Pending => Vector::new(0.0, 0.0),
-                        };
-
                         if let Some(DrawingMeasure::Pending(measure_state)) =
                             self.drawing_snapshot.measure
-                            && let Some(scene) = self.cached_scene(state, layout, cursor)
+                            && let Some(scene) = scene.as_ref()
                             && let Some(anchor) = self
-                                .drawing_view(&scene)
+                                .drawing_view(scene)
                                 .drawing_anchor_from_scene_point(measure_state.panel_id, cursor_pos)
                         {
                             shell.publish(M::from(KlineWidgetEvent::from(
@@ -2298,12 +2289,12 @@ where
 
                         let drag_action = state.interaction.drag_action();
                         if let Some(DragAction::Layer { key, .. }) = drag_action {
-                            if let Some(scene) = self.cached_scene(state, layout, cursor)
+                            if let Some(scene) = scene.as_ref()
                                 && let Some(effects) = self.study_objects.pointer(
                                     key,
                                     LayerPointerInput::Moved,
                                     self.layer_context(
-                                        &scene,
+                                        scene,
                                         Some(cursor_pos),
                                         state.interaction.modifiers(),
                                     ),
@@ -2315,11 +2306,11 @@ where
                                 });
                             }
                         } else if let Some(DragAction::Drawing { .. }) = drag_action {
-                            if let Some(scene) = self.cached_scene(state, layout, cursor) {
+                            if let Some(scene) = scene.as_ref() {
                                 self.apply_drawing_pointer(
                                     DrawingPointerInput::Moved,
                                     self.layer_context(
-                                        &scene,
+                                        scene,
                                         Some(cursor_pos),
                                         state.interaction.modifiers(),
                                     ),
@@ -2355,9 +2346,9 @@ where
                                         | CursorTarget::Legend(_)
                                 )
                             )
-                            && let Some(scene) = self.cached_scene(state, layout, cursor)
+                            && let Some(scene) = scene.as_ref()
                             && let Some(anchor) = self
-                                .drawing_view(&scene)
+                                .drawing_view(scene)
                                 .drawing_draft_anchor_from_scene_point(
                                     draft_panel_id,
                                     cursor_pos,
@@ -2386,9 +2377,13 @@ where
                 }
             }
             Event::Window(window::Event::RedrawRequested(now)) => {
-                let layout_tree = PanelLayoutTree::from_layout(layout, &self.composition.panels);
+                let layout_tree = state
+                    .scene_cache
+                    .get(self.version)
+                    .map(|entry| entry.base.layout.clone())
+                    .or_else(|| PanelLayoutTree::from_layout(layout, &self.composition.panels));
                 if let Some(panel_layout) = layout_tree.as_ref()
-                    && (state.scene_cache.get(self.version, panel_layout).is_some()
+                    && (state.scene_cache.get(self.version).is_some()
                         || state.scheduler.presentation().is_some())
                 {
                     let request = state.scheduler.admit(
@@ -2602,6 +2597,10 @@ where
             .and_then(DragAction::cursor_appearance)
         {
             return appearance;
+        }
+
+        if state.interaction.motion().is_none() && !cursor.is_over(layout.bounds()) {
+            return advanced::mouse::Interaction::default();
         }
 
         let scene = self.cached_scene(state, layout, cursor);
