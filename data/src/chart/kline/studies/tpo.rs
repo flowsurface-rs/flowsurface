@@ -770,11 +770,12 @@ pub fn build_tpo_profile_with_source_timeframe(
     now: UnixMs,
 ) -> Result<TpoProfile, TpoCalculationError> {
     validate_settings(settings)?;
-    let profile_bars: Vec<Kline> = bars
+    let mut profile_bars: Vec<Kline> = bars
         .iter()
         .copied()
         .filter(|bar| bar.time >= start && bar.time < end)
         .collect();
+    profile_bars.sort_unstable_by_key(|bar| bar.time);
 
     let session_high = profile_bars.iter().map(|bar| bar.high).max();
     let session_low = profile_bars.iter().map(|bar| bar.low).min();
@@ -812,12 +813,10 @@ pub fn build_tpo_profile_with_source_timeframe(
         }
     }
     let mut row_periods = vec![Vec::<u16>::new(); row_count];
-    for (period_index, (period_start, period_end)) in periods.iter().enumerate() {
+    let mut bars = profile_bars.iter().peekable();
+    for (period_index, (_, period_end)) in periods.iter().enumerate() {
         let mut touched = BTreeSet::new();
-        for bar in profile_bars
-            .iter()
-            .filter(|bar| bar.time >= *period_start && bar.time < *period_end)
-        {
+        while let Some(bar) = bars.next_if(|bar| bar.time < *period_end) {
             let low = bar.low.floor_to_step(settings.price_step);
             let high = bar.high.floor_to_step(settings.price_step);
             let Some(low_index) =

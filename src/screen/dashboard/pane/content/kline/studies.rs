@@ -280,6 +280,7 @@ impl StudyState {
         basis: Basis,
         data: &KlineData,
         trade_data_enabled: bool,
+        chart_revision: u64,
     ) -> KlineWidget<'a> {
         let plan = self.profile_plan(basis, data);
         let active_studies = self.active();
@@ -288,16 +289,22 @@ impl StudyState {
             .filter(|study| study.visible())
             .and_then(|study| study.tpo_colors());
         let profile_bars = match plan.kline_source_timeframe {
-            Some(timeframe) if matches!(basis, Basis::Time(chart) if chart == timeframe) => self
-                .profiles
-                .profile_source_range(timeframe)
-                .map_or(ProfileBarSource::Empty, |retained| {
-                    ProfileBarSource::Chart { retained }
-                }),
-            Some(timeframe) => self
-                .profiles
-                .profile_source_map(timeframe)
-                .map_or(ProfileBarSource::Empty, ProfileBarSource::External),
+            Some(timeframe) if matches!(basis, Basis::Time(chart) if chart == timeframe) => {
+                self.profiles.profile_source_range(timeframe).map_or(
+                    ProfileBarSource::Empty,
+                    |retained| ProfileBarSource::Chart {
+                        retained,
+                        revision: chart_revision,
+                    },
+                )
+            }
+            Some(timeframe) => self.profiles.profile_source_map(timeframe).map_or(
+                ProfileBarSource::Empty,
+                |bars| ProfileBarSource::External {
+                    bars,
+                    revision: self.profiles.source_revision(),
+                },
+            ),
             None => ProfileBarSource::Empty,
         };
         let chart = if let Some(study) = tpo_study {

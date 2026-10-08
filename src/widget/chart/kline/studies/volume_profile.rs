@@ -5,6 +5,7 @@ use crate::widget::chart::kline::footprint::{self, PixelRows};
 use crate::widget::chart::kline::painting::PixelGeometry;
 use crate::widget::chart::kline::scene::Scene;
 use crate::widget::resolve_theme_color;
+use data::chart::Basis;
 use data::chart::kline::footprint::ClusterKind;
 use data::chart::kline::poc::NPoc;
 use data::chart::kline::{
@@ -12,24 +13,31 @@ use data::chart::kline::{
     VolumeProfileColorSlot, VolumeProfileSchedule,
 };
 use data::config::theme::ACCENT_COUNT;
-use exchange::unit::Qty;
-use exchange::{Kline, UnixMs};
+use exchange::unit::{PriceStep, Qty};
+use exchange::{Kline, TickerInfo, UnixMs};
 use iced::theme::palette::Extended;
 use iced::{Point, Size};
 use std::collections::BTreeMap;
+use std::{cell::RefCell, sync::Arc};
 
 pub(crate) enum ProfileBarSource<'a> {
     Empty,
-    External(&'a BTreeMap<UnixMs, Kline>),
-    Chart { retained: (UnixMs, UnixMs) },
+    External {
+        bars: &'a BTreeMap<UnixMs, Kline>,
+        revision: u64,
+    },
+    Chart {
+        retained: (UnixMs, UnixMs),
+        revision: u64,
+    },
 }
 
 impl ProfileBarSource<'_> {
     fn collect(&self, series: &[data::chart::kline::series::KlineSeries]) -> Vec<Kline> {
         match self {
             Self::Empty => Vec::new(),
-            Self::External(bars) => bars.values().copied().collect(),
-            Self::Chart { retained } => series
+            Self::External { bars, .. } => bars.values().copied().collect(),
+            Self::Chart { retained, .. } => series
                 .first()
                 .into_iter()
                 .flat_map(data::chart::kline::series::KlineSeries::points)
@@ -37,6 +45,95 @@ impl ProfileBarSource<'_> {
                 .map(|point| *point.kline)
                 .collect(),
         }
+    }
+
+    fn collect_visible(
+        &self,
+        series: &data::chart::kline::series::KlineSeries,
+        earliest: UnixMs,
+        latest: UnixMs,
+    ) -> Vec<Kline> {
+        if earliest >= latest {
+            return Vec::new();
+        }
+        match self {
+            Self::Empty => Vec::new(),
+            Self::External { bars, .. } => {
+                bars.range(earliest..latest).map(|(_, bar)| *bar).collect()
+            }
+            Self::Chart { retained, .. } => {
+                let start = earliest.max(retained.0);
+                let end = latest.min(retained.1);
+                if start >= end {
+                    return Vec::new();
+                }
+                let last = end.saturating_sub(1);
+                let indices = series.time_index_range(start, last);
+                let mut bars = Vec::with_capacity(indices.len());
+                series.for_each_point_in_range(indices, Some((start, last)), |point| {
+                    bars.push(*point.kline);
+                });
+                bars
+            }
+        }
+    }
+
+    fn key(&self) -> ProfileSourceKey {
+        match self {
+            Self::Empty => ProfileSourceKey::Empty,
+            Self::External { revision, .. } => ProfileSourceKey::External(*revision),
+            Self::Chart { retained, revision } => ProfileSourceKey::Chart {
+                retained: *retained,
+                revision: *revision,
+            },
+        }
+    }
+}
+
+#[derive(PartialEq, Eq)]
+enum ProfileSourceKey {
+    Empty,
+    External(u64),
+    Chart {
+        retained: (UnixMs, UnixMs),
+        revision: u64,
+    },
+}
+
+#[derive(PartialEq)]
+struct VisibleProfileKey {
+    source: ProfileSourceKey,
+    ticker: TickerInfo,
+    basis: Basis,
+    earliest: UnixMs,
+    latest: UnixMs,
+    tick_size: PriceStep,
+}
+
+struct VisibleProfile {
+    key: VisibleProfileKey,
+    distribution: Option<Arc<ProfileDistribution>>,
+}
+
+#[derive(Default)]
+pub(crate) struct VolumeProfileState {
+    visible: RefCell<Option<VisibleProfile>>,
+}
+
+impl VolumeProfileState {
+    fn resolve(
+        &self,
+        key: VisibleProfileKey,
+        calculate: impl FnOnce() -> Option<ProfileDistribution>,
+    ) -> Option<Arc<ProfileDistribution>> {
+        let mut cached = self.visible.borrow_mut();
+        if cached.as_ref().is_none_or(|profile| profile.key != key) {
+            *cached = Some(VisibleProfile {
+                key,
+                distribution: calculate().map(Arc::new),
+            });
+        }
+        cached.as_ref()?.distribution.clone()
     }
 }
 
@@ -57,13 +154,14 @@ impl<'a> VolumeProfileObject<'a> {
         &self,
         phase: LayerPaintPhase,
         context: LayerContext<'_>,
+        state: &VolumeProfileState,
         frame: &mut PaintInputs,
         palette: &Extended,
         accents: &[iced::Color; ACCENT_COUNT],
         pixels: PixelGeometry,
     ) {
         if phase == LayerPaintPhase::BeforeIndicators {
-            self.fill_volume_profile_overlay(frame, context, palette, accents, pixels);
+            self.fill_volume_profile_overlay(frame, context, state, palette, accents, pixels);
         }
     }
 
@@ -269,6 +367,7 @@ impl<'a> VolumeProfileObject<'a> {
         &self,
         frame: &mut PaintInputs,
         context: LayerContext<'_>,
+        state: &VolumeProfileState,
         palette: &Extended,
         generated_accents: &[iced::Color; ACCENT_COUNT],
         pixels: PixelGeometry,
@@ -286,7 +385,6 @@ impl<'a> VolumeProfileObject<'a> {
         };
 
         let tick_size = base_series.tick_size();
-        let profile_bars = self.profile_bars.collect(context.coordinates.series);
         let visible_profile = self.studies.iter().find_map(|study| {
             if !study.visible() {
                 return None;
@@ -301,15 +399,25 @@ impl<'a> VolumeProfileObject<'a> {
             let opacity_ratio = study.volume_profile_opacity_ratio()?;
             let opacity_scale = study.volume_profile_opacity_scale()?;
             let profile = match study.source() {
-                StudyDataSource::Kline => data::chart::kline::kline_volume_profile(
-                    &profile_bars,
-                    earliest,
-                    latest,
-                    tick_size,
+                StudyDataSource::Kline => state.resolve(
+                    VisibleProfileKey {
+                        source: self.profile_bars.key(),
+                        ticker: base_series.ticker_info,
+                        basis: context.coordinates.basis,
+                        earliest,
+                        latest,
+                        tick_size,
+                    },
+                    || {
+                        let bars = self
+                            .profile_bars
+                            .collect_visible(base_series, earliest, latest);
+                        data::chart::kline::kline_volume_profile(&bars, earliest, latest, tick_size)
+                    },
                 ),
-                StudyDataSource::Trades => {
-                    base_series.trade_price_distribution(earliest, latest, tick_size)
-                }
+                StudyDataSource::Trades => base_series
+                    .trade_price_distribution(earliest, latest, tick_size)
+                    .map(Arc::new),
             };
             profile.map(|profile| (profile, colors, width_ratio, opacity_ratio, opacity_scale))
         });
@@ -336,6 +444,7 @@ impl<'a> VolumeProfileObject<'a> {
                     tick_size,
                 ))
             });
+        let mut recurring_bars = None;
         let profiles = recurring_intervals
             .flat_map(
                 |(
@@ -349,8 +458,11 @@ impl<'a> VolumeProfileObject<'a> {
                 )| {
                     let profiles = match source {
                         StudyDataSource::Kline => {
+                            let profile_bars = recurring_bars.get_or_insert_with(|| {
+                                self.profile_bars.collect(context.coordinates.series)
+                            });
                             data::chart::kline::recurring_kline_volume_profiles(
-                                &profile_bars,
+                                profile_bars,
                                 interval,
                                 earliest,
                                 latest,

@@ -470,7 +470,13 @@ impl KlineChart {
                 .with_trade_data_enabled(trade_data_enabled);
                 let chart = self
                     .studies
-                    .configure_widget(chart, self.basis, &self.data, trade_data_enabled)
+                    .configure_widget(
+                        chart,
+                        self.basis,
+                        &self.data,
+                        trade_data_enabled,
+                        self.render_invalidation.revision(),
+                    )
                     .with_legend_visibility(self.options.legend_visibility);
 
                 let chart: iced::Element<'_, Message> = chart

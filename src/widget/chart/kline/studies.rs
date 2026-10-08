@@ -66,6 +66,7 @@ pub(crate) enum StudyObject<'a> {
 
 pub(super) enum StudyObjectState {
     Tpo(tpo::TpoState),
+    VolumeProfiles(volume_profile::VolumeProfileState),
 }
 
 impl StudyObject<'_> {
@@ -80,12 +81,19 @@ impl StudyObject<'_> {
     fn new_state(&self) -> Option<StudyObjectState> {
         match self {
             Self::Tpo(_) => Some(StudyObjectState::Tpo(tpo::TpoState::default())),
-            Self::VolumeProfiles(_) | Self::BigTrades(_) => None,
+            Self::VolumeProfiles(_) => Some(StudyObjectState::VolumeProfiles(
+                volume_profile::VolumeProfileState::default(),
+            )),
+            Self::BigTrades(_) => None,
         }
     }
 
     pub(super) fn matches_state(&self, state: &StudyObjectState) -> bool {
-        matches!((self, state), (Self::Tpo(_), StudyObjectState::Tpo(_)))
+        matches!(
+            (self, state),
+            (Self::Tpo(_), StudyObjectState::Tpo(_))
+                | (Self::VolumeProfiles(_), StudyObjectState::VolumeProfiles(_))
+        )
     }
 
     fn hit_test(
@@ -132,7 +140,9 @@ impl StudyObject<'_> {
                 }
             }
             Self::VolumeProfiles(object) => {
-                object.paint(phase, context, frame, palette, accents, pixels);
+                if let Some(StudyObjectState::VolumeProfiles(state)) = state {
+                    object.paint(phase, context, state, frame, palette, accents, pixels);
+                }
             }
             Self::BigTrades(object) => {
                 object.paint(phase, context, frame, palette, accents, pixels);
