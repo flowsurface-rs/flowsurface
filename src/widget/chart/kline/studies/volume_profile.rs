@@ -9,12 +9,12 @@ use data::chart::Basis;
 use data::chart::kline::footprint::ClusterKind;
 use data::chart::kline::poc::{NPoc, PocFillAt};
 use data::chart::kline::{
-    KlineStudy, ProfileDistribution, StudyDataSource, VolumeProfileColorConfig,
-    VolumeProfileColorSlot, VolumeProfileSchedule,
+    AnchoredProfileDistribution, KlineStudy, ProfileDistribution, RecurringKlineProfileIndex,
+    StudyDataSource, VolumeProfileColorConfig, VolumeProfileColorSlot, VolumeProfileSchedule,
 };
 use data::config::theme::ACCENT_COUNT;
 use exchange::unit::{PriceStep, Qty};
-use exchange::{Kline, TickerInfo, UnixMs};
+use exchange::{Kline, TickerInfo, Timeframe, UnixMs};
 use iced::theme::palette::Extended;
 use iced::{Point, Size};
 use std::collections::BTreeMap;
@@ -90,7 +90,7 @@ impl ProfileBarSource<'_> {
     }
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum ProfileSourceKey {
     Empty,
     External(u64),
@@ -115,9 +115,32 @@ struct VisibleProfile {
     distribution: Option<Arc<ProfileDistribution>>,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+struct RecurringProfileKey {
+    source: ProfileSourceKey,
+    ticker: TickerInfo,
+    basis: Basis,
+    tick_size: PriceStep,
+}
+
+impl RecurringProfileKey {
+    fn same_identity(self, other: Self) -> bool {
+        self.ticker == other.ticker
+            && self.basis == other.basis
+            && self.tick_size == other.tick_size
+            && std::mem::discriminant(&self.source) == std::mem::discriminant(&other.source)
+    }
+}
+
+struct RecurringProfile {
+    key: RecurringProfileKey,
+    index: RecurringKlineProfileIndex,
+}
+
 #[derive(Default)]
 pub(crate) struct VolumeProfileState {
     visible: RefCell<Option<VisibleProfile>>,
+    recurring: RefCell<BTreeMap<Timeframe, RecurringProfile>>,
 }
 
 impl VolumeProfileState {
@@ -134,6 +157,45 @@ impl VolumeProfileState {
             });
         }
         cached.as_ref()?.distribution.clone()
+    }
+
+    fn reconcile_recurring(&self, studies: &[KlineStudy]) {
+        self.recurring.borrow_mut().retain(|interval, _| {
+            studies.iter().any(|study| {
+                study.source() == StudyDataSource::Kline
+                    && study.recurring_profile_interval() == Some(*interval)
+            })
+        });
+    }
+
+    fn resolve_recurring(
+        &self,
+        key: RecurringProfileKey,
+        interval: Timeframe,
+        earliest: UnixMs,
+        latest: UnixMs,
+        synchronize: impl FnOnce(&mut RecurringKlineProfileIndex),
+    ) -> Vec<AnchoredProfileDistribution> {
+        let mut cached = self.recurring.borrow_mut();
+        if cached
+            .get(&interval)
+            .is_none_or(|profile| profile.key != key)
+        {
+            let profile = cached.entry(interval).or_insert_with(|| RecurringProfile {
+                key,
+                index: RecurringKlineProfileIndex::new(interval, key.tick_size),
+            });
+            if !profile.key.same_identity(key) {
+                profile.index = RecurringKlineProfileIndex::new(interval, key.tick_size);
+            }
+            synchronize(&mut profile.index);
+            profile.key = key;
+        }
+        cached
+            .get(&interval)
+            .expect("recurring profile cache was synchronized")
+            .index
+            .visible_profiles(earliest, latest)
     }
 }
 
@@ -374,6 +436,7 @@ impl<'a> VolumeProfileObject<'a> {
         generated_accents: &[iced::Color; ACCENT_COUNT],
         pixels: PixelGeometry,
     ) {
+        state.reconcile_recurring(self.studies);
         let scene = context.scene;
         let Some(base_series) = context.coordinates.series.first() else {
             return;
@@ -459,18 +522,23 @@ impl<'a> VolumeProfileObject<'a> {
                     tick_size,
                 )| {
                     let profiles = match source {
-                        StudyDataSource::Kline => {
-                            let profile_bars = recurring_bars.get_or_insert_with(|| {
-                                self.profile_bars.collect(context.coordinates.series)
-                            });
-                            data::chart::kline::recurring_kline_volume_profiles(
-                                profile_bars,
-                                interval,
-                                earliest,
-                                latest,
+                        StudyDataSource::Kline => state.resolve_recurring(
+                            RecurringProfileKey {
+                                source: self.profile_bars.key(),
+                                ticker: base_series.ticker_info,
+                                basis: context.coordinates.basis,
                                 tick_size,
-                            )
-                        }
+                            },
+                            interval,
+                            earliest,
+                            latest,
+                            |index| {
+                                let profile_bars = recurring_bars.get_or_insert_with(|| {
+                                    self.profile_bars.collect(context.coordinates.series)
+                                });
+                                index.update(profile_bars);
+                            },
+                        ),
                         StudyDataSource::Trades => base_series.recurring_trade_price_distributions(
                             interval, tick_size, earliest, latest,
                         ),

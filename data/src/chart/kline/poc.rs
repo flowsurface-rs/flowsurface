@@ -109,7 +109,10 @@ impl PocLineTracker {
             self.mark_poc_filled(profiles, touched_start, start);
         }
 
-        if profiles.keys().next_back().copied() == Some(start) {
+        if !profiles
+            .range((std::ops::Bound::Excluded(start), std::ops::Bound::Unbounded))
+            .any(|(_, profile)| profile.poc().is_some())
+        {
             return;
         }
 
@@ -129,11 +132,11 @@ impl PocLineTracker {
         low: Price,
         high: Price,
     ) {
-        let Some(previous_start) = profiles.range(..start).next_back().map(|(&start, _)| start)
+        let Some((previous_start, previous_poc)) = profiles
+            .range(..start)
+            .rev()
+            .find_map(|(&start, profile)| profile.poc().map(|poc| (start, poc)))
         else {
-            return;
-        };
-        let Some(previous_poc) = profiles.get(&previous_start).and_then(PocProfile::poc) else {
             return;
         };
         if previous_poc.status != NPoc::None {

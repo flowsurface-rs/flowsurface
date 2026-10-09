@@ -8,7 +8,7 @@ use exchange::{
     unit::qty::Qty,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Display, Formatter};
 
 pub const DEFAULT_RECURRING_VOLUME_PROFILE_INTERVAL: Timeframe = Timeframe::M15;
@@ -470,69 +470,118 @@ pub fn recurring_kline_volume_profiles(
         return Vec::new();
     }
 
-    let mut ranges = BTreeMap::<UnixMs, (Price, Price)>::new();
-    for &bar in bars {
-        let range = ranges
-            .entry(bar.time.floor_to(interval))
-            .or_insert((bar.low, bar.high));
-        range.0 = range.0.min(bar.low);
-        range.1 = range.1.max(bar.high);
-    }
-
-    let mut accumulators = ranges
-        .into_iter()
-        .filter_map(|(start, (low, high))| {
-            tick_size
-                .coarsened_to_fit(low, high, MAX_PROFILE_PRICE_ROWS)
-                .map(|step| (start, ProfileAccumulator::new(step)))
-        })
-        .collect::<BTreeMap<_, _>>();
-
-    for &bar in bars {
-        if let Some(accumulator) = accumulators.get_mut(&bar.time.floor_to(interval)) {
-            accumulator.add_kline(&bar);
-        }
-    }
-
-    let profiles = accumulators
-        .into_iter()
-        .filter_map(|(start, accumulator)| {
-            accumulator
-                .finish()
-                .map(|distribution| (start, distribution))
-        })
-        .collect();
-
-    RecurringKlineProfileIndex::new(interval, profiles).visible_profiles(earliest, latest)
+    let mut index = RecurringKlineProfileIndex::new(interval, tick_size);
+    index.update(bars);
+    index.visible_profiles(earliest, latest)
 }
 
-struct RecurringKlineProfileIndex {
+struct KlineProfileSession {
+    bars: Vec<Kline>,
+    distribution: Option<ProfileDistribution>,
+}
+
+impl PocProfile for KlineProfileSession {
+    fn price_range(&self) -> Option<(Price, Price)> {
+        self.distribution.as_ref()?.price_range()
+    }
+
+    fn poc(&self) -> Option<PointOfControl> {
+        self.distribution.as_ref()?.poc
+    }
+
+    fn set_poc_status(&mut self, status: NPoc) {
+        if let Some(distribution) = &mut self.distribution {
+            distribution.set_poc_status(status);
+        }
+    }
+}
+
+/// Retained candle sessions and their calculated volume distributions and POC lines.
+pub struct RecurringKlineProfileIndex {
     interval: Timeframe,
-    profiles: BTreeMap<UnixMs, ProfileDistribution>,
+    tick_size: PriceStep,
+    profiles: BTreeMap<UnixMs, KlineProfileSession>,
     poc_lines: PocLineTracker,
 }
 
 impl RecurringKlineProfileIndex {
-    fn new(interval: Timeframe, profiles: BTreeMap<UnixMs, ProfileDistribution>) -> Self {
-        let mut index = Self {
+    pub fn new(interval: Timeframe, tick_size: PriceStep) -> Self {
+        Self {
             interval,
-            profiles,
+            tick_size,
+            profiles: BTreeMap::new(),
             poc_lines: PocLineTracker::default(),
-        };
-        index.rebuild_poc_statuses();
-        index
+        }
     }
 
-    fn rebuild_poc_statuses(&mut self) {
-        self.poc_lines.rebuild(&mut self.profiles);
+    /// Reconciles a complete retained candle snapshot, recalculating changed sessions only.
+    pub fn update(&mut self, bars: &[Kline]) -> bool {
+        let previous_latest = self
+            .profiles
+            .iter()
+            .rev()
+            .find_map(|(&start, profile)| profile.price_range().map(|range| (start, range)));
+        let mut sessions = BTreeMap::<UnixMs, Vec<Kline>>::new();
+        for &bar in bars {
+            sessions
+                .entry(bar.time.floor_to(self.interval))
+                .or_default()
+                .push(bar);
+        }
+        let previous_count = self.profiles.len();
+        self.profiles
+            .retain(|start, _| sessions.contains_key(start));
+        let removed = self.profiles.len() != previous_count;
+        let mut changed = BTreeSet::new();
+        for (start, mut bars) in sessions {
+            bars.sort_unstable_by_key(|bar| bar.time);
+            if self
+                .profiles
+                .get(&start)
+                .is_some_and(|profile| profile.bars == bars)
+            {
+                continue;
+            }
+
+            let distribution = kline_volume_profile(
+                &bars,
+                start,
+                start.offset_by_timeframe(self.interval, 1),
+                self.tick_size,
+            );
+            self.profiles
+                .insert(start, KlineProfileSession { bars, distribution });
+            changed.insert(start);
+        }
+        if changed.is_empty() && !removed {
+            return false;
+        }
+
+        let append_only = !removed
+            && previous_latest.is_none_or(|(latest, (low, high))| {
+                changed.iter().all(|start| *start >= latest)
+                    && self
+                        .profiles
+                        .get(&latest)
+                        .and_then(PocProfile::price_range)
+                        .is_some_and(|(next_low, next_high)| next_low <= low && next_high >= high)
+            });
+        if append_only {
+            for start in changed {
+                self.poc_lines.process_profile(&mut self.profiles, start);
+            }
+        } else {
+            self.poc_lines.rebuild(&mut self.profiles);
+        }
+        true
     }
 
-    fn visible_profiles(
+    pub fn visible_profiles(
         &self,
         earliest: UnixMs,
         latest: UnixMs,
     ) -> Vec<AnchoredProfileDistribution> {
-        if earliest > latest {
+        if earliest >= latest {
             return Vec::new();
         }
 
@@ -545,7 +594,7 @@ impl RecurringKlineProfileIndex {
             .filter_map(|start| {
                 self.profiles
                     .get(&start)
-                    .cloned()
+                    .and_then(|profile| profile.distribution.clone())
                     .map(|distribution| AnchoredProfileDistribution {
                         start,
                         end: start.offset_by_timeframe(self.interval, 1),

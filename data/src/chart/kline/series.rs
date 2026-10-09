@@ -126,18 +126,6 @@ impl RecurringProfileCache {
         start
     }
 
-    fn add_footprint(&mut self, time: UnixMs, footprint: &KlineTrades) {
-        let start = time.floor_to(self.interval);
-        let profile = self
-            .profiles
-            .entry(start)
-            .or_insert_with(|| ProfileAccumulator::new(self.tick_size));
-        for (&price, group) in &footprint.trades {
-            let price = price.floor_to_step(self.tick_size);
-            profile.add_volume(price, group.buy_qty, group.sell_qty);
-        }
-    }
-
     fn insert_trades(&mut self, trades: &[Trade]) {
         let mut affected_starts = BTreeSet::new();
         for trade in trades {
@@ -265,7 +253,6 @@ pub struct KlineSeries {
     trade_sequence_id: uuid::Uuid,
     open_interest: Option<OpenInterestSeries>,
     trade_time_range: Option<(UnixMs, UnixMs)>,
-    time_trade_timeframe: Option<Timeframe>,
     recurring_profile_caches: BTreeMap<(Timeframe, PriceStep), RecurringProfileCache>,
     big_trades_cache: Option<BigTradesCache>,
 }
@@ -390,7 +377,6 @@ impl KlineSeries {
             trade_sequence_id: uuid::Uuid::new_v4(),
             open_interest: None,
             trade_time_range: None,
-            time_trade_timeframe: None,
             recurring_profile_caches: BTreeMap::new(),
             big_trades_cache: None,
         }
@@ -599,10 +585,6 @@ impl KlineSeries {
         self.time_index.clear();
         self.clear_profile_caches();
         self.trade_time_range = calculate_trade_time_range(&self.raw_trades);
-        self.time_trade_timeframe = match basis {
-            Basis::Time(timeframe) => Some(timeframe),
-            Basis::Tick(_) => None,
-        };
         self.open_interest = None;
         self.rebuild_footprint_pocs();
     }
@@ -999,7 +981,7 @@ impl KlineSeries {
     pub fn insert_time_trades(
         &mut self,
         trades: &[Trade],
-        timeframe: Timeframe,
+        _timeframe: Timeframe,
     ) -> IndicatorUpdateScope {
         if !matches!(self.data, PlotData::TimeBased(_)) {
             return IndicatorUpdateScope::From(self.point_count());
@@ -1010,13 +992,6 @@ impl KlineSeries {
         merge_trade_time_range(&mut self.trade_time_range, trades);
         self.append_raw_trades(trades);
         self.fold_big_trades_cache();
-        if self
-            .time_trade_timeframe
-            .is_some_and(|current| current != timeframe)
-        {
-            self.clear_profile_caches();
-        }
-        self.time_trade_timeframe = Some(timeframe);
         let PlotData::TimeBased(series) = &mut self.data else {
             unreachable!("time basis checked above");
         };
@@ -1197,27 +1172,9 @@ impl KlineSeries {
         interval: Timeframe,
         tick_size: PriceStep,
     ) -> RecurringProfileCache {
-        let interval_ms = interval.to_milliseconds();
-        let can_use_footprints = self.time_trade_timeframe.is_some_and(|timeframe| {
-            timeframe.to_milliseconds() <= interval_ms
-                && interval_ms.is_multiple_of(timeframe.to_milliseconds())
-        });
         let mut cache = RecurringProfileCache::new(interval, tick_size);
-
-        let mut used_footprints = false;
-        if can_use_footprints && let PlotData::TimeBased(series) = &self.data {
-            used_footprints = series
-                .datapoints
-                .values()
-                .any(|point| !point.footprint.trades.is_empty());
-            for (&time, point) in &series.datapoints {
-                cache.add_footprint(time, &point.footprint);
-            }
-        }
-        if !used_footprints {
-            for trade in &self.raw_trades {
-                cache.add_trade(trade);
-            }
+        for trade in &self.raw_trades {
+            cache.add_trade(trade);
         }
 
         cache.rebuild_poc_statuses();

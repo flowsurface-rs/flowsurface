@@ -45,8 +45,8 @@ pub use studies::tpo::{
     build_tpo_profile_with_source_timeframe, build_tpo_profiles_with_source_timeframe,
 };
 pub use studies::volume_profile::{
-    AnchoredProfileDistribution, ProfileDistribution, ProfileLevel, kline_volume_profile,
-    recurring_kline_volume_profiles,
+    AnchoredProfileDistribution, ProfileDistribution, ProfileLevel, RecurringKlineProfileIndex,
+    kline_volume_profile, recurring_kline_volume_profiles,
 };
 pub use studies::{
     BigTradesConfig, DEFAULT_BIG_TRADES_THRESHOLD, DEFAULT_RECURRING_VOLUME_PROFILE_INTERVAL,
