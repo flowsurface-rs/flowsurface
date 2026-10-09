@@ -291,10 +291,13 @@ fn indicator_group_views(
 
     grouped
         .into_iter()
-        .filter_map(|(group, indicators)| {
+        .filter_map(|(group, mut indicators)| {
             if indicators.is_empty() {
                 return None;
             }
+
+            indicators
+                .sort_by_cached_key(|available| available.indicator.to_string().to_lowercase());
 
             let rows = indicators
                 .into_iter()
@@ -342,10 +345,12 @@ fn study_group_views(studies: Vec<AvailableStudy>) -> Vec<Element<'static, Kline
 
     grouped
         .into_iter()
-        .filter_map(|(source, studies)| {
+        .filter_map(|(source, mut studies)| {
             if studies.is_empty() {
                 return None;
             }
+
+            studies.sort_by_cached_key(|available| available.study.to_string().to_lowercase());
 
             let rows = studies
                 .into_iter()
