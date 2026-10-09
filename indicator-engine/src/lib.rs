@@ -980,7 +980,7 @@ mod tests {
     #[test]
     fn flat_open_zones_emit_only_creation_and_completion_updates() {
         let compiled = compile(
-            include_str!("../../indicators/catalog/sources/flat-open-zones.ind"),
+            include_str!("../tests/fixtures/flat-open-zones.ind"),
             "flat-open-zones.ind",
         )
         .expect("flat open source should compile");
@@ -1050,7 +1050,7 @@ mod tests {
     #[ignore = "slow 10k-bar history stress test; run explicitly"]
     fn flat_open_zones_handle_dense_10k_history_under_untrusted_limits() {
         let compiled = compile(
-            include_str!("../../indicators/catalog/sources/flat-open-zones.ind"),
+            include_str!("../tests/fixtures/flat-open-zones.ind"),
             "flat-open-zones.ind",
         )
         .expect("flat open source should compile");
@@ -1074,7 +1074,7 @@ mod tests {
     #[ignore = "slow 10k-bar history stress test; run explicitly"]
     fn volume_pivot_zones_handle_dense_10k_history_under_untrusted_limits() {
         let compiled = compile(
-            include_str!("../../indicators/catalog/sources/volume-pivot-zones.ind"),
+            include_str!("../tests/fixtures/volume-pivot-zones.ind"),
             "volume-pivot-zones.ind",
         )
         .expect("volume pivot source should compile");
@@ -1098,7 +1098,7 @@ mod tests {
     #[test]
     fn flat_open_zones_remove_oldest_active_zones_at_the_configured_cap() {
         let compiled = compile(
-            include_str!("../../indicators/catalog/sources/flat-open-zones.ind"),
+            include_str!("../tests/fixtures/flat-open-zones.ind"),
             "flat-open-zones.ind",
         )
         .expect("flat open source should compile");
@@ -1130,7 +1130,7 @@ mod tests {
     #[test]
     fn flat_open_zones_apply_one_cap_across_bullish_and_bearish_zones() {
         let compiled = compile(
-            include_str!("../../indicators/catalog/sources/flat-open-zones.ind"),
+            include_str!("../tests/fixtures/flat-open-zones.ind"),
             "flat-open-zones.ind",
         )
         .expect("flat open source should compile");
@@ -1173,7 +1173,7 @@ mod tests {
     #[test]
     fn volume_pivot_zones_remove_oldest_active_zones_at_the_configured_cap() {
         let compiled = compile(
-            include_str!("../../indicators/catalog/sources/volume-pivot-zones.ind"),
+            include_str!("../tests/fixtures/volume-pivot-zones.ind"),
             "volume-pivot-zones.ind",
         )
         .expect("volume pivot source should compile");
@@ -1748,72 +1748,27 @@ mod tests {
     }
 
     #[test]
-    fn catalog_source_slots_preserve_declared_defaults() {
-        let migrated = [
-            (
-                "../indicators/core/rsi.ind",
-                "core.rsi",
-                Some(FrameField::ChartClose),
-            ),
-            (
-                "../indicators/core/moving-averages.ind",
-                "core.moving-averages",
-                Some(FrameField::ChartClose),
-            ),
-            (
-                "../indicators/core/bollinger-bands.ind",
-                "core.bollinger-bands",
-                Some(FrameField::ChartClose),
-            ),
-            (
-                "../indicators/catalog/sources/cci.ind",
-                "catalog.cci",
-                Some(FrameField::ChartHlc3),
-            ),
-            (
-                "../indicators/catalog/sources/macd.ind",
-                "catalog.macd",
-                Some(FrameField::ChartClose),
-            ),
-            ("../indicators/catalog/sources/mfi.ind", "catalog.mfi", None),
-            (
-                "../indicators/catalog/sources/momentum.ind",
-                "catalog.momentum",
-                Some(FrameField::ChartClose),
-            ),
-            (
-                "../indicators/catalog/sources/obv.ind",
-                "catalog.obv",
-                Some(FrameField::ChartClose),
-            ),
-            (
-                "../indicators/catalog/sources/roc.ind",
-                "catalog.roc",
-                Some(FrameField::ChartClose),
-            ),
-            (
-                "../indicators/catalog/sources/stoch-rsi.ind",
-                "catalog.stoch-rsi",
-                Some(FrameField::ChartClose),
-            ),
-            (
-                "../indicators/catalog/sources/trix.ind",
-                "catalog.trix",
-                Some(FrameField::ChartClose),
-            ),
-        ];
-
-        for (relative_path, expected_id, default_field) in migrated {
-            let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative_path);
-            let compiled = compile_file(&path).expect("migrated source should compile");
-            assert_eq!(compiled.descriptor.id.as_str(), expected_id);
-            match default_field {
+    fn source_slots_preserve_declared_defaults() {
+        for (field, expected) in [
+            (Some("chart.close"), Some(FrameField::ChartClose)),
+            (Some("chart.hlc3"), Some(FrameField::ChartHlc3)),
+            (None, None),
+        ] {
+            let expression = match field {
+                Some(field) => format!("source = input.source({field}, \"Source\")\nplot(source)"),
+                None => "plot(chart.close)".to_owned(),
+            };
+            let source = format!(
+                "language(1)\nindicator(\"Source defaults\", id = \"test.defaults\")\ndisplay(attachment = \"panel\")\nformat(precision = \"base_ticker_min_tick\")\n{expression}"
+            );
+            let compiled = compile(&source, "defaults.ind").expect("source should compile");
+            match expected {
                 Some(default_field) => {
                     assert_eq!(compiled.descriptor.series_inputs.len(), 1);
-                    let source = &compiled.descriptor.series_inputs[0];
-                    assert_eq!(source.id, "source");
-                    assert_eq!(source.label, "Source");
-                    assert_eq!(source.default_field, default_field);
+                    let input = &compiled.descriptor.series_inputs[0];
+                    assert_eq!(input.id, "source");
+                    assert_eq!(input.label, "Source");
+                    assert_eq!(input.default_field, default_field);
                 }
                 None => assert!(compiled.descriptor.series_inputs.is_empty()),
             }
