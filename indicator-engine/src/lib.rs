@@ -36,6 +36,64 @@ pub use types::{
     Value, ValueType,
 };
 
+/// Discover sorted `.ind` files recursively, retaining diagnostics for unreadable entries.
+/// Symlink entries are skipped; failure to read the root directory is fatal.
+pub fn source_files_in_directory(
+    path: impl AsRef<std::path::Path>,
+) -> Result<(Vec<std::path::PathBuf>, Vec<String>), String> {
+    let root = path.as_ref();
+    let mut directories = vec![root.to_owned()];
+    let mut files = Vec::new();
+    let mut diagnostics = Vec::new();
+    while let Some(directory) = directories.pop() {
+        let entries = match std::fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) => {
+                let diagnostic =
+                    format!("{}: could not read directory: {error}", directory.display());
+                if directory == root {
+                    return Err(diagnostic);
+                }
+                diagnostics.push(diagnostic);
+                continue;
+            }
+        };
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    diagnostics.push(format!(
+                        "{}: could not read directory entry: {error}",
+                        directory.display()
+                    ));
+                    continue;
+                }
+            };
+            let path = entry.path();
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(error) => {
+                    diagnostics.push(format!(
+                        "{}: could not inspect entry: {error}",
+                        path.display()
+                    ));
+                    continue;
+                }
+            };
+            if file_type.is_dir() {
+                directories.push(path);
+            } else if file_type.is_file()
+                && path.extension().and_then(|extension| extension.to_str()) == Some("ind")
+            {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    diagnostics.sort();
+    Ok((files, diagnostics))
+}
+
 pub type Program = HirProgram;
 
 /// Bounds applied by the public source compiler.

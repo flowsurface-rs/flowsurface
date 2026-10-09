@@ -174,7 +174,6 @@ fn load_sources(paths: &[PathBuf], namespace: Option<&str>) -> SourceReport {
         diagnostics: Vec::new(),
     };
     let mut ids = BTreeMap::<String, PathBuf>::new();
-    let mut short_names = BTreeMap::<String, PathBuf>::new();
     let limits = CompileLimits::default();
 
     for path in paths {
@@ -219,7 +218,6 @@ fn load_sources(paths: &[PathBuf], namespace: Option<&str>) -> SourceReport {
         };
 
         let id = indicator.descriptor.id.as_str().to_owned();
-        let short_name = indicator.descriptor.id.short_name().to_owned();
         let mut invalid = false;
         if let Some(namespace) = namespace {
             let has_namespace = id
@@ -249,17 +247,6 @@ fn load_sources(paths: &[PathBuf], namespace: Option<&str>) -> SourceReport {
             invalid = true;
         } else {
             ids.insert(id, path.clone());
-        }
-        if let Some(previous) = short_names.get(&short_name) {
-            report.diagnostics.push(format!(
-                "{}:1:1: error: duplicate indicator short name '{}' (already defined in {})",
-                path.display(),
-                short_name,
-                previous.display()
-            ));
-            invalid = true;
-        } else {
-            short_names.insert(short_name, path.clone());
         }
         if invalid {
             continue;
@@ -488,23 +475,10 @@ fn source_paths(path: &Path) -> Result<Vec<PathBuf>, String> {
         return Ok(vec![path.to_owned()]);
     }
 
-    let mut paths = fs::read_dir(path)
-        .map_err(|error| format!("{}: could not read directory: {error}", path.display()))?
-        .map(|entry| {
-            entry
-                .map_err(|error| {
-                    format!(
-                        "{}: could not read directory entry: {error}",
-                        path.display()
-                    )
-                })
-                .map(|entry| entry.path())
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    paths.retain(|entry| {
-        entry.is_file() && entry.extension().and_then(|extension| extension.to_str()) == Some("ind")
-    });
-    paths.sort();
+    let (paths, diagnostics) = flowsurface_indicator_engine::source_files_in_directory(path)?;
+    if !diagnostics.is_empty() {
+        return Err(diagnostics.join("\n"));
+    }
     if paths.is_empty() {
         return Err(format!(
             "{}: directory contains no .ind sources",
@@ -681,8 +655,8 @@ mod tests {
         let short_second = root.join("short-two");
         fs::create_dir_all(&short_first).expect("first short-name directory should exist");
         fs::create_dir_all(&short_second).expect("second short-name directory should exist");
-        let short_first_path = short_first.join("shared.ind");
-        let short_second_path = short_second.join("shared.ind");
+        let short_first_path = short_first.join("one.ind");
+        let short_second_path = short_second.join("one.ind");
         fs::write(
             &short_first_path,
             "language(1)\nindicator(\"One\", id = \"test.one\")\nformat(precision = \"base_ticker_min_tick\")\nplot(chart.close, id = \"value\")\n",
@@ -693,13 +667,18 @@ mod tests {
             "language(1)\nindicator(\"Two\", id = \"other.one\")\nformat(precision = \"base_ticker_min_tick\")\nplot(chart.close, id = \"value\")\n",
         )
         .expect("second short-name source should be written");
+        let paths = source_paths(&root).expect("nested sources should be discovered");
+        assert!(paths.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(paths.contains(&short_first_path));
+        assert!(paths.contains(&short_second_path));
         let report = load_sources(&[short_first_path, short_second_path], None);
-        assert!(
-            report
-                .diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.contains("duplicate indicator short name"))
-        );
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        assert_eq!(report.sources.len(), 2);
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&root, root.join("cycle")).unwrap();
+            assert_eq!(source_paths(&root).unwrap(), paths);
+        }
 
         let _ = fs::remove_dir_all(root);
     }
