@@ -12,6 +12,14 @@ use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 use std::sync::OnceLock;
 
+static CATALOG: OnceLock<IndicatorCatalog> = OnceLock::new();
+static EMPTY_CATALOG: std::sync::LazyLock<IndicatorCatalog> =
+    std::sync::LazyLock::new(|| IndicatorCatalog::from_registrations(Vec::new()));
+
+pub fn catalog() -> &'static IndicatorCatalog {
+    CATALOG.get().unwrap_or(&EMPTY_CATALOG)
+}
+
 /// Stable identity independent of how a source is distributed.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct IndicatorId(indicator_engine::IndicatorId);
@@ -466,21 +474,6 @@ impl IndicatorRegistration {
     }
 }
 
-// Indicators are discovered once while the application starts. Keeping one
-// immutable process-wide catalog makes source edits deterministic: a restart
-// is the explicit boundary at which new source is activated.
-static CATALOG: OnceLock<IndicatorCatalog> = OnceLock::new();
-// Library callers can inspect an ID before the host has completed startup
-// (for example while restoring persisted state). Keep that read harmless
-// without initializing the real OnceLock; doing so must not turn a later
-// startup installation into a spurious second initialization.
-static EMPTY_CATALOG: std::sync::LazyLock<IndicatorCatalog> =
-    std::sync::LazyLock::new(|| IndicatorCatalog::from_registrations(Vec::new()));
-
-pub fn catalog() -> &'static IndicatorCatalog {
-    CATALOG.get().unwrap_or(&EMPTY_CATALOG)
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CatalogInstallError {
     AlreadyInitialized,
@@ -501,8 +494,7 @@ impl Display for CatalogInstallError {
 impl std::error::Error for CatalogInstallError {}
 
 /// Install a catalog while retaining source-loader diagnostics alongside
-/// validation diagnostics. A malformed installed source is intentionally not
-/// fatal: valid registrations are installed and the rejected source remains
+/// validation diagnostics. Valid registrations are installed and the rejected source remains
 /// visible through `IndicatorCatalog::diagnostics`.
 pub(crate) fn install_catalog_with_bundled_diagnostics(
     bundled_registrations: Vec<IndicatorRegistration>,
@@ -721,16 +713,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn package_ids_are_stable_and_catalog_order_is_deterministic() {
-        assert!(IndicatorId::parse("core.volume").is_ok());
-        let catalog_ids: Vec<_> = all_indicators()
-            .into_iter()
-            .map(|id| id.id().to_owned())
-            .collect();
-        assert!(catalog_ids.windows(2).all(|window| window[0] < window[1]));
-    }
-
-    #[test]
     fn ids_validate_publisher_namespaces() {
         for id in ["community.ema-cross", "core.custom", "catalog.rsi"] {
             let parsed = IndicatorId::parse(id).expect("valid publisher ID");
@@ -795,6 +777,13 @@ mod tests {
         );
         let catalog = IndicatorCatalog::from_registrations_with_diagnostics(merged, diagnostics);
 
+        assert_eq!(
+            catalog
+                .registrations()
+                .map(|registration| registration.id.id())
+                .collect::<Vec<_>>(),
+            vec!["core.rsi", "core.volume"]
+        );
         assert_eq!(
             catalog
                 .get(&IndicatorId::parse("core.volume").unwrap())

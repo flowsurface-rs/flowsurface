@@ -1468,43 +1468,6 @@ mark(title = "Bars", source = "value", kind = "histogram", color_slot = "bars")
     }
 
     #[test]
-    fn input_tooltips_are_exposed_to_host_settings() {
-        let compiled = indicator_engine::compile(
-            r#"
-                language(1)
-                indicator("Tooltips", id = "catalog.tooltips")
-                format(precision = "base_ticker_min_tick")
-                plain = input.int(1, "Plain", min = 1, max = 10)
-                described = input.int(2, "Described", min = 1, max = 10,
-                                     tooltip = "Explains the setting")
-                plot(chart.close, id = "value")
-            "#,
-            "tooltips.ind",
-        )
-        .expect("tooltip source should compile");
-        let registration = registration(compiled, PackageOrigin::Installed)
-            .expect("tooltip source should register");
-        let settings = registration
-            .settings(registration.default_config(), settings_context())
-            .expect("tooltip settings should be available");
-
-        assert_eq!(
-            settings
-                .iter()
-                .find(|setting| setting.id == "described")
-                .and_then(|setting| setting.tooltip.as_deref()),
-            Some("Explains the setting")
-        );
-        assert_eq!(
-            settings
-                .iter()
-                .find(|setting| setting.id == "plain")
-                .and_then(|setting| setting.tooltip.as_deref()),
-            None
-        );
-    }
-
-    #[test]
     fn indicator_metadata_is_exposed_to_host_definition() {
         let compiled = indicator_engine::compile(
             r#"
@@ -1548,7 +1511,8 @@ mark(title = "Bars", source = "value", kind = "histogram", color_slot = "bars")
                 format(precision = "base_ticker_min_tick")
                 show = input.bool(false, "Show", group = "divergence")
                 length = input.int(5, "Length", min = 1, max = 100,
-                                   group = "divergence", visible_when = "show")
+                                   group = "divergence", visible_when = "show",
+                                   tooltip = "Explains the setting")
                 mode = input.bool(true, "Mode", group = "divergence",
                                   visible_when = "show")
                 plot(chart.close, id = "value")
@@ -1569,6 +1533,7 @@ mark(title = "Bars", source = "value", kind = "histogram", color_slot = "bars")
                 .collect::<Vec<_>>(),
             vec!["show"]
         );
+        assert_eq!(hidden[0].tooltip, None);
 
         let enabled = registration
             .with_setting(
@@ -1584,6 +1549,13 @@ mark(title = "Bars", source = "value", kind = "histogram", color_slot = "bars")
             .settings(customized.clone(), settings_context())
             .expect("enabled settings should be available");
         assert_eq!(shown.len(), 3);
+        assert_eq!(
+            shown
+                .iter()
+                .find(|setting| setting.id == "length")
+                .and_then(|setting| setting.tooltip.as_deref()),
+            Some("Explains the setting")
+        );
         assert!(
             shown
                 .iter()
