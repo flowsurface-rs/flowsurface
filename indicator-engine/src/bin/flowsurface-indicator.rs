@@ -628,6 +628,20 @@ mod tests {
             .expect_err("invalid sources should fail");
         assert!(error.contains("1 diagnostic"));
 
+        let type_path = root.join("type-error.ind");
+        fs::write(
+            &type_path,
+            "language(1)\nindicator(\"Type error\", id = \"test.type-error\")\nformat(precision = \"base_ticker_min_tick\")\nvalue = chart.close + true\nplot(value, id = \"value\")\n",
+        )
+        .expect("type-error source should be written");
+        let report = load_sources(&[type_path], None);
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.contains("invalid binary operands"))
+        );
+
         let empty = root.join("empty");
         fs::create_dir_all(&empty).expect("empty directory should exist");
         let error = command_check(&[empty.to_string_lossy().into_owned()], "check")
@@ -679,42 +693,6 @@ mod tests {
             std::os::unix::fs::symlink(&root, root.join("cycle")).unwrap();
             assert_eq!(source_paths(&root).unwrap(), paths);
         }
-
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn check_formats_compile_diagnostics() {
-        let root = std::env::temp_dir().join(format!(
-            "flowsurface-indicator-cli-diagnostics-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).expect("temporary directory should exist");
-        let path = root.join("broken.ind");
-        fs::write(
-            &path,
-            "language(1)\nindicator(\"Broken\", id = \"test.broken\")\nplot(\n",
-        )
-        .expect("broken source should be written");
-
-        let error = command_check(&[path.to_string_lossy().into_owned()], "check")
-            .expect_err("broken source should fail");
-        assert!(error.contains("diagnostic"));
-
-        let type_path = root.join("type-error.ind");
-        fs::write(
-            &type_path,
-            "language(1)\nindicator(\"Type error\", id = \"test.type-error\")\nformat(precision = \"base_ticker_min_tick\")\nvalue = chart.close + true\nplot(value, id = \"value\")\n",
-        )
-        .expect("type-error source should be written");
-        let report = load_sources(&[type_path], None);
-        assert!(
-            report
-                .diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.contains("invalid binary operands"))
-        );
 
         let _ = fs::remove_dir_all(root);
     }

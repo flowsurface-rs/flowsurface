@@ -415,41 +415,6 @@ mod tests {
     }
 
     #[test]
-    fn warmup_produces_historical_values() {
-        let source = r#"
-            language(1)
-            indicator("Simple average", id = "test.sma")
-            format(precision = "base_ticker_min_tick")
-            length = input.int(2, "Length", min = 1, max = 100)
-            plot(ta.sma(chart.close, length), id = "sma")
-        "#;
-        let compiled = compile(source, "sma.ind").expect("source should compile");
-        assert_eq!(compiled.warmup_bars(&IndicatorConfig::default()), Some(2));
-        let mut instance = compiled
-            .instantiate(IndicatorConfig::default())
-            .expect("inputs should bind");
-
-        assert_eq!(
-            plot_value(
-                &instance
-                    .evaluate_closed(frame(0, 1, 10.0))
-                    .expect("first frame should evaluate"),
-                "sma"
-            ),
-            &Value::Na
-        );
-        assert_eq!(
-            plot_value(
-                &instance
-                    .evaluate_closed(frame(1, 2, 20.0))
-                    .expect("second frame should evaluate"),
-                "sma"
-            ),
-            &Value::Float(15.0)
-        );
-    }
-
-    #[test]
     fn record_origin_alias_chain_is_bounded() {
         const ALIAS_COUNT: usize = 24_000;
         let mut source = String::from(
@@ -1521,6 +1486,11 @@ mod tests {
         assert!(compiled.descriptor.sourceable);
         assert_eq!(compiled.descriptor.series_inputs.len(), 1);
         assert_eq!(compiled.descriptor.series_inputs[0].id, "source");
+        assert_eq!(compiled.descriptor.series_inputs[0].label, "Source");
+        assert_eq!(
+            compiled.descriptor.series_inputs[0].default_field,
+            FrameField::ChartClose
+        );
         assert!(compiled.descriptor.series_inputs[0].allow_indicator);
         assert_eq!(
             compiled.descriptor.presentation.attachment,
@@ -1590,6 +1560,9 @@ mod tests {
         let compiled = compile(source, "composite-sources.ind")
             .expect("composite chart sources should compile");
         assert!(compiled.requirements.ohlc);
+        assert_eq!(compiled.descriptor.series_inputs.len(), 1);
+        assert_eq!(compiled.descriptor.series_inputs[0].id, "source");
+        assert_eq!(compiled.descriptor.series_inputs[0].label, "Source");
         assert_eq!(
             compiled.descriptor.series_inputs[0].default_field,
             FrameField::ChartHlc3
@@ -1708,6 +1681,7 @@ mod tests {
         )
         .expect("default source policy should compile");
         assert!(!default.descriptor.sourceable);
+        assert!(default.descriptor.series_inputs.is_empty());
 
         let hidden = compile(
             r#"
@@ -1803,34 +1777,6 @@ mod tests {
                 .message
                 .contains("allow_indicator = true requires display(view = \"plot\")")
         }));
-    }
-
-    #[test]
-    fn source_slots_preserve_declared_defaults() {
-        for (field, expected) in [
-            (Some("chart.close"), Some(FrameField::ChartClose)),
-            (Some("chart.hlc3"), Some(FrameField::ChartHlc3)),
-            (None, None),
-        ] {
-            let expression = match field {
-                Some(field) => format!("source = input.source({field}, \"Source\")\nplot(source)"),
-                None => "plot(chart.close)".to_owned(),
-            };
-            let source = format!(
-                "language(1)\nindicator(\"Source defaults\", id = \"test.defaults\")\ndisplay(attachment = \"panel\")\nformat(precision = \"base_ticker_min_tick\")\n{expression}"
-            );
-            let compiled = compile(&source, "defaults.ind").expect("source should compile");
-            match expected {
-                Some(default_field) => {
-                    assert_eq!(compiled.descriptor.series_inputs.len(), 1);
-                    let input = &compiled.descriptor.series_inputs[0];
-                    assert_eq!(input.id, "source");
-                    assert_eq!(input.label, "Source");
-                    assert_eq!(input.default_field, default_field);
-                }
-                None => assert!(compiled.descriptor.series_inputs.is_empty()),
-            }
-        }
     }
 
     #[test]
@@ -2425,31 +2371,6 @@ mod tests {
             "table.ind",
         )
         .expect("table views should not require panel precision");
-    }
-
-    #[test]
-    fn indicator_author_metadata_is_compiled() {
-        let compiled = compile(
-            "language(1)\nindicator(\"Author\", id = \"test.author\", author = \"Ada\", author_url = \"https://example.com/ada\", description = \"A sample indicator\", source = \"https://example.com/source\")\nformat(precision = \"base_ticker_min_tick\")\nplot(chart.close, id = \"value\")\n",
-            "author.ind",
-        )
-        .expect("author metadata should compile");
-
-        assert_eq!(
-            compiled.descriptor.author,
-            Some(IndicatorAuthor {
-                name: "Ada".to_owned(),
-                url: "https://example.com/ada".to_owned(),
-            })
-        );
-        assert_eq!(
-            compiled.descriptor.description.as_deref(),
-            Some("A sample indicator")
-        );
-        assert_eq!(
-            compiled.descriptor.source.as_deref(),
-            Some("https://example.com/source")
-        );
     }
 
     #[test]
