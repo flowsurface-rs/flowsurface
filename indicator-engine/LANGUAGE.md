@@ -4,6 +4,18 @@ A `.ind` file defines an indicator's inputs, calculations, and presentation.
 See [installation](../indicators/README.md) and the [CLI](README.md#cli) for
 file naming, collections, and validation.
 
+## Contents
+
+- [Execution and syntax](#execution-and-syntax): [types and operators](#types-and-operators), [control flow and collections](#control-flow-and-collections)
+- [Chart data](#chart-data)
+- [Inputs and source composition](#inputs-and-source-composition)
+- [Metadata](#metadata): [indicator](#indicator), [display and format](#display-and-format)
+- [Outputs and presentation](#outputs-and-presentation): [plots](#plots), [styles and marks](#styles-and-alternate-marks), [fills, readouts, and tables](#fills-readouts-and-tables), [segments and regions](#segments-and-regions)
+- [TA behavior](#ta-behavior)
+- [Built-in reference](#built-in-reference): [TA](#ta), [math and missing values](#math-and-missing-values), [collections, strings, and colors](#collections-strings-and-colors)
+- [Resource limits](#resource-limits)
+- [Missing functionality](#missing-functionality)
+
 Examples beginning with `language(1)` are complete files. Other fenced examples
 and individual call signatures are partial snippets to use inside a file.
 
@@ -18,11 +30,9 @@ plot(average, id = "average", title = "Average")
 
 ## Execution and syntax
 
-The host evaluates loaded closed bars in order, committing state after each
-bar. The open bar is a preview from the last committed state. Missing data and
-non-finite numeric results become `na`. Execution, heap, collection, and output
-budgets are enforced; collection nesting is limited to 256 levels. Runtime
-failures quarantine the indicator.
+Closed bars evaluate in order and commit state. The open bar previews from the
+last committed state. Missing data and non-finite numeric results become `na`.
+Runtime failures disable the indicator; see [resource limits](#resource-limits).
 
 - `=` binds a local; `state` or `var` creates persistent state; `:=` updates
   either an ordinary local or persistent state.
@@ -142,7 +152,7 @@ Records use `{ field: value }`, dot access, or `record.get(record, "field")`.
 `array.push` and `record.set` return updated collections rather than mutating
 the binding: retain the result with `values := array.push(values, value)`.
 
-## Host data
+## Chart data
 
 Every indicator reads the base ticker's chart frame. Comparison tickers are
 presentation-only.
@@ -171,11 +181,9 @@ presentation-only.
 Candle directional volume does not substitute for missing trade aggregates.
 Raw trade arrays are unavailable. Plot offsets change presentation only.
 
-There is no arbitrary I/O, remote symbol/timeframe access, strategy or alert
-API, `varip`, map type, or mutable drawing/table handle. Scripts cannot request
-correction replay, and an engine instance cannot revise a committed bar. The
-application may rebuild affected indicators and replay historical frames when
-data changes, including closed-bar trade corrections.
+Scripts cannot access files, networks, other symbols/timeframes, strategies,
+or alerts. `varip`, maps, and mutable drawing/table handles are unsupported.
+Flowsurface replays affected indicators when historical data changes.
 
 ## Inputs and source composition
 
@@ -234,6 +242,8 @@ Arguments below are compile-time literals. Optional settings can be omitted.
 ### `indicator`
 
 `indicator("Title", id = "namespace.name")`
+
+Use a unique `namespace.name` ID and a matching `name.ind` filename.
 
 | Option | Default / rule |
 | --- | --- |
@@ -457,7 +467,7 @@ window's result `na` until it leaves the window.
   true event, then stores the current value if the condition is true.
 
 For working formulas and presentation combinations, browse the
-[bundled sources](../indicators/core/) and [catalog](../indicators/catalog/sources/).
+[bundled sources](../data/indicators/sources/) and [catalog](../indicators/sources/).
 
 ## Built-in reference
 
@@ -541,52 +551,28 @@ copy-work limits.
 
 ## Resource limits
 
-The Rust library's default limits differ from the application's limits. CLI
-`test` uses the application's `RuntimeLimits::untrusted()` for both warmup
-planning and execution. Closed frames and open previews have the same per-frame
-budget. Exceeding a work or resource limit fails evaluation.
+Flowsurface and CLI `test` use these limits. Closed bars and open previews have
+the same per-bar budget. Exceeding a limit fails evaluation.
 
-| Limit | Library default | Application / CLI test |
-| --- | --- | --- |
-| Weighted work per frame | 1,000,000 | 250,000 |
-| Function call depth | 128 | 64 |
-| Heap bytes | 67,108,864 (64 MiB) | 16,777,216 (16 MiB) |
-| Collection elements | 100,000 | 25,000 |
-| TA window length | 5,000 | 5,000 |
-| Output items per frame | 1,000,000 | 4,096 |
-| String bytes | 1,048,576 | 65,536 |
+| Limit | Maximum |
+| --- | --- |
+| Weighted work per bar | 250,000 |
+| Function call depth | 64 |
+| Heap | 16 MiB |
+| Collection elements | 25,000 |
+| TA window length | 5,000 |
+| Output items per bar | 4,096 |
+| String bytes | 65,536 |
 
-History analysis has separate fixed limits of 250,000 weighted work units and
-64 nested traversal entries per pass. Visits, cache reads, and value copies
-consume work. These limits apply to warmup and anchor resolution, independently
-of per-frame execution limits. Instantiation rejects exhaustion with a planning
-diagnostic; optional history queries return `None`. Hosts can call
-`CompiledIndicator::validate_history_analysis` before accepting a configuration.
+Warmup and anchor planning have a separate budget of 250,000 weighted work
+units and 64 nested traversals per pass. Exceeding it can prevent the indicator
+from starting.
 
 Collection nesting is limited to 256 levels. Retained-series history has the
 separate 50,000-bar ceiling; increasing it does not increase TA window limits.
-Successful CLI testing covers only default inputs on synthetic data, not every
-configuration or long-history workload. See the [CLI workflow](README.md#cli).
 
-## Extending the scripting boundary
+## Missing functionality
 
-Try existing primitives and composition first; keep indicator algorithms in
-`.ind` sources. Do not extend the DSL merely to shorten a source. When a real
-requirement cannot be expressed cleanly, identify the smallest missing reusable
-capability and place it at the appropriate layer:
-
-| Layer | Owns |
-| --- | --- |
-| Language/runtime | General computation, state, control flow, collections, history |
-| TA library | Reusable calculations without new execution semantics |
-| Host data | Stable market-domain series, coverage, and instrument metadata |
-| Presentation | Reusable chart geometry and styling consuming outputs |
-
-A capability should make sense without naming its originating indicator and
-should plausibly support unrelated indicator families. Multiple existing callers
-are not required. Avoid indicator-specific host calculations, leaked cache or
-renderer internals, and speculative universal frameworks. Preserve bounded,
-deterministic work and memory, failure isolation, historical replay, and
-transactional open previews. Explain each extension's layer and reuse in its
-handoff; recursion, arbitrary I/O, and unrestricted host access remain outside
-the language's target.
+Open an issue with a minimal `.ind` example and the expected result. Keep
+indicator algorithms in `.ind` sources; propose reusable language, TA, chart
+data, or presentation capabilities when existing features cannot express them.
