@@ -2022,6 +2022,16 @@ where
                 )));
             }
             Event::Mouse(mouse_event) => {
+                if matches!(mouse_event, mouse::Event::WheelScrolled { .. })
+                    && matches!(
+                        state.interaction.drag_action(),
+                        Some(DragAction::XAxisScale { .. } | DragAction::YAxisScale { .. })
+                    )
+                {
+                    shell.capture_event();
+                    return;
+                }
+
                 let bounds = layout.bounds();
                 if matches!(
                     mouse_event,
