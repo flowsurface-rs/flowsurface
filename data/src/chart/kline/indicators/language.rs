@@ -1,14 +1,13 @@
 use super::registry::IndicatorRegistration;
 use super::scripting::registration;
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Identifies how a source file entered the host catalog.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PackageOrigin {
     /// A source bundled with the application or overridden for development.
-    Core,
+    Bundled,
     /// A source discovered in a user or development directory.
     Installed,
 }
@@ -26,52 +25,13 @@ pub struct IndicatorLoadReport {
 pub struct LoadedIndicatorSource {
     pub path: PathBuf,
     pub id: String,
-    pub short_name: String,
 }
 
-/// Return the immediate `.ind` files in a collection directory.
+/// Return sorted indicator source files, including collection subdirectories.
 pub fn indicator_files_in_directory(
     path: impl AsRef<Path>,
 ) -> Result<(Vec<PathBuf>, Vec<String>), String> {
-    let root = path.as_ref();
-    let metadata = fs::metadata(root).map_err(|error| {
-        format!(
-            "{}: could not inspect indicator directory: {error}",
-            root.display()
-        )
-    })?;
-    if !metadata.is_dir() {
-        return Err(format!("{} is not an indicator directory", root.display()));
-    }
-
-    let mut entries = fs::read_dir(root)
-        .map_err(|error| {
-            format!(
-                "{}: could not read indicator directory: {error}",
-                root.display()
-            )
-        })?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| {
-            format!(
-                "{}: could not read indicator directory: {error}",
-                root.display()
-            )
-        })?;
-    entries.sort_by_key(|entry| entry.path());
-
-    let mut files = Vec::new();
-    let diagnostics = Vec::new();
-    for entry in entries {
-        let path = entry.path();
-        let file_type = entry
-            .file_type()
-            .map_err(|error| format!("{}: could not inspect entry: {error}", path.display()))?;
-        if file_type.is_file() {
-            collect_source_file(path, &mut files);
-        }
-    }
-    Ok((files, diagnostics))
+    indicator_engine::source_files_in_directory(path)
 }
 
 /// Load explicit source files and retain per-file diagnostics.
@@ -130,7 +90,6 @@ pub(super) fn load_compiled_report(
             }
         };
         let id = compiled.descriptor.id.as_str().to_owned();
-        let short_name = compiled.descriptor.id.short_name().to_owned();
         let expected_file_name = compiled.descriptor.id.source_file_name();
         if let Err(diagnostic) = validate_source_filename(&path, &id, &expected_file_name) {
             report.diagnostics.push(diagnostic);
@@ -141,7 +100,6 @@ pub(super) fn load_compiled_report(
                 report.loaded_sources.push(LoadedIndicatorSource {
                     path: path.clone(),
                     id: id.clone(),
-                    short_name,
                 });
                 if let Some(previous) = ids.get(&id) {
                     report.diagnostics.push(format!(
@@ -179,39 +137,9 @@ fn validate_source_filename(path: &Path, id: &str, expected_file_name: &str) -> 
     ))
 }
 
-/// Return deterministic diagnostics for duplicate short names in one catalog.
-pub fn duplicate_short_name_diagnostics(sources: &[LoadedIndicatorSource]) -> Vec<String> {
-    let mut grouped = BTreeMap::<&str, Vec<&LoadedIndicatorSource>>::new();
-    for source in sources {
-        grouped
-            .entry(source.short_name.as_str())
-            .or_default()
-            .push(source);
-    }
-
-    grouped
-        .into_iter()
-        .filter_map(|(short_name, entries)| {
-            (entries.len() > 1).then(|| {
-                let mut diagnostic = format!("duplicate indicator short name '{short_name}':");
-                for source in entries {
-                    diagnostic.push_str(&format!("\n  {} ({})", source.path.display(), source.id));
-                }
-                diagnostic
-            })
-        })
-        .collect()
-}
-
-fn collect_source_file(path: PathBuf, files: &mut Vec<PathBuf>) {
-    if path.extension().and_then(|extension| extension.to_str()) == Some("ind") {
-        files.push(path);
-    }
-}
-
 #[cfg(test)]
 pub(crate) fn repository_registrations() -> Vec<super::registry::IndicatorRegistration> {
-    let report = super::bundled::load_core_sources();
+    let report = super::bundled::load_bundled_sources();
     assert!(
         report.diagnostics.is_empty(),
         "repository indicator sources should load without diagnostics: {:?}",

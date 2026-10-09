@@ -12,39 +12,23 @@ use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 use std::sync::OnceLock;
 
-/// Stable identity for a core package or external filesystem source.
+/// Stable identity independent of how a source is distributed.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum IndicatorId {
-    Package(String),
-    External(String),
-}
+pub struct IndicatorId(indicator_engine::IndicatorId);
 
 impl IndicatorId {
     pub fn new(id: impl Into<String>) -> Result<Self, IndicatorIdError> {
-        Self::parse(&id.into())
-    }
-
-    pub fn external(id: impl Into<String>) -> Result<Self, IndicatorIdError> {
-        let id = id.into();
-        validate_indicator_id(&id)?;
-        if id.starts_with("core.") {
-            return Err(IndicatorIdError::ReservedNamespace);
-        }
-        Ok(Self::External(id))
+        indicator_engine::IndicatorId::new(id)
+            .map(Self)
+            .map_err(IndicatorIdError)
     }
 
     pub fn parse(id: &str) -> Result<Self, IndicatorIdError> {
-        validate_indicator_id(id)?;
-        if id.starts_with("core.") {
-            return Ok(Self::Package(id.to_owned()));
-        }
-        Ok(Self::External(id.to_owned()))
+        Self::new(id)
     }
 
     pub fn id(&self) -> &str {
-        match self {
-            Self::Package(id) | Self::External(id) => id,
-        }
+        self.0.as_str()
     }
 
     pub fn as_str(&self) -> &str {
@@ -314,22 +298,11 @@ impl<'de> Deserialize<'de> for IndicatorId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum IndicatorIdError {
-    Empty,
-    InvalidCharacter,
-    InvalidSegment,
-    ReservedNamespace,
-}
+pub struct IndicatorIdError(String);
 
 impl Display for IndicatorIdError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
-        let message = match self {
-            Self::Empty => "indicator ID cannot be empty",
-            Self::InvalidCharacter => "indicator ID contains an invalid character",
-            Self::InvalidSegment => "indicator ID contains an invalid segment",
-            Self::ReservedNamespace => "the core namespace is reserved",
-        };
-        formatter.write_str(message)
+        formatter.write_str(&self.0)
     }
 }
 
@@ -341,30 +314,6 @@ impl std::str::FromStr for IndicatorId {
     fn from_str(id: &str) -> Result<Self, Self::Err> {
         Self::parse(id)
     }
-}
-
-fn validate_indicator_id(id: &str) -> Result<(), IndicatorIdError> {
-    if id.is_empty() {
-        return Err(IndicatorIdError::Empty);
-    }
-    if !id.is_ascii() {
-        return Err(IndicatorIdError::InvalidCharacter);
-    }
-    if !id.contains('.') {
-        return Err(IndicatorIdError::InvalidSegment);
-    }
-    for segment in id.split('.') {
-        if segment.is_empty()
-            || segment.starts_with('-')
-            || segment.ends_with('-')
-            || segment.bytes().any(|character| {
-                !(character.is_ascii_lowercase() || character.is_ascii_digit() || character == b'-')
-            })
-        {
-            return Err(IndicatorIdError::InvalidSegment);
-        }
-    }
-    Ok(())
 }
 
 /// Serialized configuration owned by an indicator instance.
@@ -484,6 +433,7 @@ impl std::error::Error for IndicatorConfigError {}
 pub struct IndicatorRegistration {
     /// Stable source ID used in persistence and catalog lookup.
     pub id: IndicatorId,
+    pub origin: super::language::PackageOrigin,
     /// Renderer and feed metadata shared by every instance of the indicator.
     pub definition: IndicatorDefinition,
     pub(super) compiled: Arc<CompiledIndicator>,
@@ -494,6 +444,7 @@ impl std::fmt::Debug for IndicatorRegistration {
         formatter
             .debug_struct("IndicatorRegistration")
             .field("id", &self.id)
+            .field("origin", &self.origin)
             .field("definition", &self.definition)
             .finish_non_exhaustive()
     }
@@ -502,11 +453,13 @@ impl std::fmt::Debug for IndicatorRegistration {
 impl IndicatorRegistration {
     pub(super) fn from_parts(
         id: IndicatorId,
+        origin: super::language::PackageOrigin,
         definition: IndicatorDefinition,
         compiled: Arc<CompiledIndicator>,
     ) -> Self {
         Self {
             id,
+            origin,
             definition,
             compiled,
         }
@@ -551,13 +504,13 @@ impl std::error::Error for CatalogInstallError {}
 /// validation diagnostics. A malformed installed source is intentionally not
 /// fatal: valid registrations are installed and the rejected source remains
 /// visible through `IndicatorCatalog::diagnostics`.
-pub(crate) fn install_catalog_with_core_diagnostics(
-    core_registrations: Vec<IndicatorRegistration>,
+pub(crate) fn install_catalog_with_bundled_diagnostics(
+    bundled_registrations: Vec<IndicatorRegistration>,
     installed_registrations: Vec<IndicatorRegistration>,
     loader_diagnostics: Vec<String>,
 ) -> Result<&'static IndicatorCatalog, CatalogInstallError> {
-    let (registrations, loader_diagnostics) = merge_core_and_installed(
-        core_registrations,
+    let (registrations, loader_diagnostics) = merge_bundled_and_installed(
+        bundled_registrations,
         installed_registrations,
         loader_diagnostics,
     );
@@ -573,23 +526,23 @@ pub(crate) fn install_catalog_with_core_diagnostics(
     Ok(CATALOG.get().expect("catalog was installed"))
 }
 
-fn merge_core_and_installed(
-    core_registrations: Vec<IndicatorRegistration>,
+fn merge_bundled_and_installed(
+    bundled_registrations: Vec<IndicatorRegistration>,
     installed_registrations: Vec<IndicatorRegistration>,
     mut diagnostics: Vec<String>,
 ) -> (Vec<IndicatorRegistration>, Vec<String>) {
-    let mut registrations = core_registrations;
-    let core_ids = registrations
+    let mut registrations = bundled_registrations;
+    let bundled_ids = registrations
         .iter()
         .map(|registration| registration.id.clone())
         .collect::<FxHashSet<_>>();
-    let mut seen_ids = core_ids.clone();
+    let mut seen_ids = bundled_ids.clone();
 
     for registration in installed_registrations {
         let id = registration.id.clone();
         if !seen_ids.insert(id.clone()) {
-            let reason = if core_ids.contains(&id) {
-                "it is provided by the core catalog"
+            let reason = if bundled_ids.contains(&id) {
+                "it is provided by the bundled catalog"
             } else {
                 "an earlier installed source already provides it"
             };
@@ -634,15 +587,6 @@ impl IndicatorCatalog {
             if let Err(error) = IndicatorId::parse(registration.id.id()) {
                 diagnostics.push(format!(
                     "{}: invalid indicator ID: {error}",
-                    registration.id.id()
-                ));
-                continue;
-            }
-            if matches!(registration.id, IndicatorId::External(_))
-                && registration.id.id().starts_with("core.")
-            {
-                diagnostics.push(format!(
-                    "{}: externally tagged registrations may not use the core namespace",
                     registration.id.id()
                 ));
                 continue;
@@ -787,35 +731,30 @@ mod tests {
     }
 
     #[test]
-    fn ids_validate_external_and_reserved_namespaces() {
-        assert!(IndicatorId::external("community.ema-cross").is_ok());
-        assert!(IndicatorId::external("ema-cross").is_err());
-        assert!(IndicatorId::external("Community.EMA").is_err());
-        assert!(IndicatorId::external("core.custom").is_err());
-        assert!(IndicatorId::parse("catalog.rsi").is_ok());
-        assert_eq!(
-            IndicatorId::parse("core.future"),
-            Ok(IndicatorId::Package("core.future".to_owned()))
-        );
+    fn ids_validate_publisher_namespaces() {
+        for id in ["community.ema-cross", "core.custom", "catalog.rsi"] {
+            let parsed = IndicatorId::parse(id).expect("valid publisher ID");
+            let serialized = serde_json::to_string(&parsed).unwrap();
+            assert_eq!(
+                serde_json::from_str::<IndicatorId>(&serialized).unwrap(),
+                parsed
+            );
+        }
+        for id in ["ema-cross", "Community.EMA"] {
+            assert!(IndicatorId::parse(id).is_err());
+            assert!(serde_json::from_str::<IndicatorId>(&format!("{id:?}")).is_err());
+        }
     }
 
     #[test]
-    fn invalid_and_duplicate_registrations_are_excluded() {
+    fn duplicate_registrations_are_excluded() {
         let scripted = super::super::language::repository_registrations()
             .into_iter()
             .find(|registration| registration.id.id() == "core.rsi")
             .expect("repository RSI registration");
-        let mut invalid = scripted.clone();
-        invalid.id = IndicatorId::External("core.future".to_owned());
-        let registrations = vec![invalid, scripted.clone(), scripted];
+        let registrations = vec![scripted.clone(), scripted];
         let catalog = IndicatorCatalog::from_registrations(registrations);
         assert_eq!(catalog.registrations().len(), 1);
-        assert!(
-            catalog
-                .diagnostics()
-                .iter()
-                .any(|diagnostic| diagnostic.contains("namespace"))
-        );
         assert!(
             catalog
                 .diagnostics()
@@ -825,7 +764,7 @@ mod tests {
     }
 
     #[test]
-    fn core_wins_and_installed_sources_keep_first_registration() {
+    fn bundled_wins_and_installed_sources_keep_first_registration() {
         let registrations = super::super::language::repository_registrations();
         let core = registrations
             .iter()
@@ -837,17 +776,19 @@ mod tests {
             .find(|registration| registration.id.id() == "core.rsi")
             .expect("repository RSI registration");
         let mut first_installed = rsi.clone();
+        first_installed.origin = super::super::language::PackageOrigin::Installed;
         first_installed.definition = IndicatorDefinition {
             display_name: "First installed registration".to_owned(),
             ..first_installed.definition
         };
         let mut later_installed = rsi.clone();
+        later_installed.origin = super::super::language::PackageOrigin::Installed;
         later_installed.definition = IndicatorDefinition {
             display_name: "Later installed registration".to_owned(),
             ..later_installed.definition
         };
 
-        let (merged, diagnostics) = merge_core_and_installed(
+        let (merged, diagnostics) = merge_bundled_and_installed(
             vec![core.clone()],
             vec![core, first_installed, later_installed],
             Vec::new(),
@@ -874,7 +815,7 @@ mod tests {
             catalog
                 .diagnostics()
                 .iter()
-                .any(|diagnostic| diagnostic.contains("provided by the core catalog"))
+                .any(|diagnostic| diagnostic.contains("provided by the bundled catalog"))
         );
         assert!(
             catalog

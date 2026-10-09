@@ -170,7 +170,7 @@ impl IndicatorInputCoverage {
 pub use loader::{
     IndicatorCatalogPaths, initialize_indicator_catalog, initialize_indicator_catalog_with_paths,
 };
-pub(crate) use registry::install_catalog_with_core_diagnostics;
+pub(crate) use registry::install_catalog_with_bundled_diagnostics;
 pub use registry::{
     CatalogInstallError, IndicatorCatalog, IndicatorConfig, IndicatorConfigError, IndicatorId,
     IndicatorIdError, IndicatorRegistration, all_indicators, availability, catalog,

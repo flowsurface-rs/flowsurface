@@ -960,7 +960,7 @@ pub fn registration(
 ) -> Result<IndicatorRegistration, Vec<String>> {
     let descriptor = compiled.descriptor.clone();
     let origin_label = match origin {
-        PackageOrigin::Core => "core",
+        PackageOrigin::Bundled => "bundled",
         PackageOrigin::Installed => "installed",
     };
     let id = IndicatorId::parse(descriptor.id.as_str()).map_err(|error| {
@@ -968,20 +968,9 @@ pub fn registration(
             "{origin_label} indicator source has invalid ID: {error}"
         )]
     })?;
-    if matches!(origin, PackageOrigin::Core) && !id.as_str().starts_with("core.") {
-        return Err(vec![format!(
-            "{origin_label} indicator source '{}' must use the core namespace",
-            id.as_str()
-        )]);
-    }
-    if matches!(origin, PackageOrigin::Installed) && id.as_str().starts_with("core.") {
-        return Err(vec![format!(
-            "{origin_label} indicator source '{}' may not use the reserved core namespace",
-            id.as_str()
-        )]);
-    }
     let definition = definition_from_compiled(&compiled).map_err(|error| vec![error])?;
-    let registration = IndicatorRegistration::from_parts(id, definition, Arc::new(compiled));
+    let registration =
+        IndicatorRegistration::from_parts(id, origin, definition, Arc::new(compiled));
     registration
         .validate_config(&registration.default_config())
         .map_err(|error| {
@@ -1428,13 +1417,24 @@ mod tests {
         );
         for (source, origin, tick_reason) in [
             (
-                include_str!("../../../../../indicators/catalog/sources/trade-count.ind"),
+                r#"language(1)
+indicator("Trade Count", id = "catalog.trade-count", sourceable = true, max_bars_back = 1, bases = ["time"])
+display(layer_name = "Trades")
+format(precision = "fixed_step:1", axis_labels = "abbreviated", header_labels = "commas", scale = "fit_visible_include_zero", max_decimals = 0)
+value = chart.trade.count
+plot(value, id = "value", title = "Trade count", precision = "decimals:0", style = "histogram", color_slot = "main", layer_title = "Trades", overlay = false)
+
+style("main", title = "Line")
+style("bars", title = "Bars", role = "secondary")
+mark(title = "Line", source = "value", kind = "line", color_slot = "main")
+mark(title = "Bars", source = "value", kind = "histogram", color_slot = "bars")
+"#,
                 PackageOrigin::Installed,
                 Some(IndicatorUnsupportedReason::BasisNotSupported),
             ),
             (
-                include_str!("../../../../../indicators/core/anchored-vwap.ind"),
-                PackageOrigin::Core,
+                include_str!("../../../../indicators/sources/anchored-vwap.ind"),
+                PackageOrigin::Bundled,
                 Some(IndicatorUnsupportedReason::IncompleteHistory),
             ),
             (

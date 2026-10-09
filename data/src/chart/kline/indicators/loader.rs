@@ -1,38 +1,26 @@
 use super::{IndicatorRegistration, language};
 use crate::data_path;
 use log::warn;
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
 /// Filesystem sources used to build the process-wide indicator catalog.
 ///
-/// Core sources are managed by the data crate, while installed paths
+/// Bundled sources are managed by the data crate, while installed paths
 /// belong to the user or a development workflow.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndicatorCatalogPaths {
-    /// Overrides embedded core sources when set.
-    pub core_directory: Option<PathBuf>,
+    /// Overrides embedded bundled sources when set.
+    pub bundled_directory: Option<PathBuf>,
     pub installed_directory: PathBuf,
     pub additional_files: Vec<PathBuf>,
 }
 
 impl IndicatorCatalogPaths {
-    pub fn from_data_directory() -> Self {
-        let indicators = data_path(Some("indicators"));
+    fn from_data_directory() -> Self {
         Self {
-            core_directory: None,
-            installed_directory: indicators.join("installed"),
-            additional_files: Vec::new(),
-        }
-    }
-
-    /// Use a repository-style source tree with `core/` and `catalog/sources/` collections.
-    pub fn from_indicator_root(root: impl Into<PathBuf>) -> Self {
-        let indicators = root.into();
-        Self {
-            core_directory: Some(indicators.join("core")),
-            installed_directory: indicators.join("catalog").join("sources"),
+            bundled_directory: None,
+            installed_directory: data_path(Some("indicators")),
             additional_files: Vec::new(),
         }
     }
@@ -41,30 +29,33 @@ impl IndicatorCatalogPaths {
 pub fn initialize_indicator_catalog() -> Result<(), String> {
     let additional_files =
         indicator_paths_from_args().map_err(|error| format!("Invalid indicator path: {error}"))?;
-    let mut paths = match std::env::var_os("FLOWSURFACE_INDICATORS_PATH") {
-        Some(root) => IndicatorCatalogPaths::from_indicator_root(root),
-        None => IndicatorCatalogPaths::from_data_directory(),
-    };
+    let mut paths = IndicatorCatalogPaths::from_data_directory();
+    if let Some(directory) = std::env::var_os("FLOWSURFACE_INDICATORS_PATH") {
+        paths.installed_directory = directory.into();
+    }
     paths.additional_files.extend(additional_files);
 
     initialize_indicator_catalog_with_paths(&paths)
-        .map_err(|error| format!("Failed to load indicators: {error}"))?;
-
-    super::bundled::validate_core_catalog()
-        .map_err(|error| format!("Failed to load core indicators: {error}"))
+        .map_err(|error| format!("Failed to load indicators: {error}"))
 }
 
 pub fn initialize_indicator_catalog_with_paths(
     paths: &IndicatorCatalogPaths,
 ) -> Result<(), String> {
     let sources = load_catalog_sources(paths)?;
-    super::install_catalog_with_core_diagnostics(
-        sources.core,
+    let bundled_ids = sources
+        .bundled
+        .iter()
+        .map(|registration| registration.id.clone())
+        .collect::<Vec<_>>();
+    super::install_catalog_with_bundled_diagnostics(
+        sources.bundled,
         sources.installed,
         sources.diagnostics,
     )
-    .map(|_| ())
-    .map_err(|error| error.to_string())
+    .map_err(|error| error.to_string())?;
+    super::bundled::validate_bundled_catalog(&bundled_ids)
+        .map_err(|error| format!("Failed to load bundled indicators: {error}"))
 }
 
 fn indicator_paths_from_args() -> Result<Vec<PathBuf>, String> {
@@ -108,30 +99,30 @@ fn validate_indicator_path(path: PathBuf) -> Result<PathBuf, String> {
 
 #[derive(Debug)]
 struct IndicatorCatalogSources {
-    core: Vec<IndicatorRegistration>,
+    bundled: Vec<IndicatorRegistration>,
     installed: Vec<IndicatorRegistration>,
     diagnostics: Vec<String>,
 }
 
 fn load_catalog_sources(paths: &IndicatorCatalogPaths) -> Result<IndicatorCatalogSources, String> {
-    let core_report = match &paths.core_directory {
+    let bundled_report = match &paths.bundled_directory {
         Some(directory) => {
             let (files, diagnostics) = language::indicator_files_in_directory(directory)?;
             let mut report =
-                language::load_from_files_report(&files, language::PackageOrigin::Core);
+                language::load_from_files_report(&files, language::PackageOrigin::Bundled);
             report.diagnostics.extend(diagnostics);
             report
         }
-        None => super::bundled::load_core_sources(),
+        None => super::bundled::load_bundled_sources(),
     };
-    if !core_report.diagnostics.is_empty() {
+    if !bundled_report.diagnostics.is_empty() {
         return Err(format!(
-            "core indicator source validation failed:\n{}",
-            core_report.diagnostics.join("\n")
+            "bundled indicator source validation failed:\n{}",
+            bundled_report.diagnostics.join("\n")
         ));
     }
-    if core_report.registrations.is_empty() {
-        return Err("core indicator collection contains no valid sources".to_owned());
+    if bundled_report.registrations.is_empty() {
+        return Err("bundled indicator collection contains no valid sources".to_owned());
     }
 
     let mut diagnostics = Vec::new();
@@ -154,45 +145,87 @@ fn load_catalog_sources(paths: &IndicatorCatalogPaths) -> Result<IndicatorCatalo
         }
     };
     installed_files.extend(paths.additional_files.iter().cloned());
-    let mut installed_report =
+    let installed_report =
         language::load_from_files_report(&installed_files, language::PackageOrigin::Installed);
     for diagnostic in &installed_report.diagnostics {
         warn!("Ignoring invalid installed indicator source: {diagnostic}");
     }
     diagnostics.extend(installed_report.diagnostics);
 
-    let mut short_names = core_report
-        .loaded_sources
-        .iter()
-        .map(|source| (source.short_name.as_str(), source))
-        .collect::<BTreeMap<_, _>>();
-    let mut installed_sources = BTreeMap::new();
-    for source in &installed_report.loaded_sources {
-        installed_sources
-            .entry(source.id.as_str())
-            .or_insert(source);
-    }
-    installed_report.registrations.retain(|registration| {
-        let source = installed_sources[registration.id.id()];
-        if let Some(previous) = short_names.get(source.short_name.as_str()) {
-            diagnostics.push(format!(
-                "{}: installed indicator '{}' ignored: duplicate indicator short name '{}' already provided by '{}' in {}",
-                source.path.display(),
-                source.id,
-                source.short_name,
-                previous.id,
-                previous.path.display()
-            ));
-            false
-        } else {
-            short_names.insert(source.short_name.as_str(), source);
-            true
-        }
-    });
-
     Ok(IndicatorCatalogSources {
-        core: core_report.registrations,
+        bundled: bundled_report.registrations,
         installed: installed_report.registrations,
         diagnostics,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{catalog, language::PackageOrigin};
+    use super::*;
+
+    fn source(id: &str) -> String {
+        format!(
+            "language(1)\nindicator(\"Example\", id = {id:?})\nformat(precision = \"base_ticker_min_tick\")\nplot(chart.close)"
+        )
+    }
+
+    #[test]
+    fn origins_and_full_ids_control_collection_loading() {
+        let root =
+            std::env::temp_dir().join(format!("flowsurface-host-loading-{}", std::process::id()));
+        let bundled = root.join("bundled");
+        let installed = root.join("installed");
+        std::fs::create_dir_all(&bundled).unwrap();
+        std::fs::create_dir_all(installed.join("alice")).unwrap();
+        std::fs::create_dir_all(installed.join("bob")).unwrap();
+        std::fs::write(bundled.join("rsi.ind"), source("catalog.rsi")).unwrap();
+        std::fs::write(installed.join("alice/rsi.ind"), source("core.rsi")).unwrap();
+        std::fs::write(installed.join("bob/rsi.ind"), source("bob.rsi")).unwrap();
+        std::fs::write(installed.join("broken.ind"), "language(1)\nindicator(").unwrap();
+        let paths = IndicatorCatalogPaths {
+            bundled_directory: Some(bundled.clone()),
+            installed_directory: installed,
+            additional_files: Vec::new(),
+        };
+        let sources = load_catalog_sources(&paths).unwrap();
+        assert_eq!(sources.bundled.len(), 1);
+        assert_eq!(sources.installed.len(), 2);
+        assert_eq!(sources.bundled[0].origin, PackageOrigin::Bundled);
+        assert!(
+            sources
+                .installed
+                .iter()
+                .all(|registration| registration.origin == PackageOrigin::Installed)
+        );
+        assert!(!sources.diagnostics.is_empty());
+        std::fs::write(bundled.join("broken.ind"), "language(1)\nindicator(").unwrap();
+        assert!(
+            load_catalog_sources(&paths)
+                .unwrap_err()
+                .contains("bundled indicator source validation failed")
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn embedded_bundle_initializes_without_a_source_directory() {
+        let root =
+            std::env::temp_dir().join(format!("flowsurface-host-embedded-{}", std::process::id()));
+        let paths = IndicatorCatalogPaths {
+            bundled_directory: None,
+            installed_directory: root.clone(),
+            additional_files: Vec::new(),
+        };
+        initialize_indicator_catalog_with_paths(&paths).unwrap();
+        let report = super::super::bundled::load_bundled_sources();
+        assert!(!report.registrations.is_empty());
+        assert_eq!(catalog().registrations().len(), report.registrations.len());
+        assert!(
+            catalog()
+                .registrations()
+                .all(|registration| registration.origin == PackageOrigin::Bundled)
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
