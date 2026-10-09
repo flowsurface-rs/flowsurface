@@ -55,11 +55,14 @@ jobs:
             - name: Validate repository indicator sources
               run: cargo test -p flowsurface-data --lib --locked
 
-            - name: Smoke-test core indicator sources
-              run: cargo run --locked -p flowsurface-indicator-engine --bin flowsurface-indicator -- test indicators/core --namespace core
+            - name: Smoke-test bundled indicator sources
+              run: cargo run --locked -p flowsurface-indicator-engine --bin flowsurface-indicator -- test data/indicators/sources --namespace core
 
             - name: Smoke-test catalog indicator sources
-              run: cargo run --locked -p flowsurface-indicator-engine --bin flowsurface-indicator -- test indicators/catalog/sources --namespace catalog
+              run: cargo run --locked -p flowsurface-indicator-engine --bin flowsurface-indicator -- test indicators/sources --namespace catalog
+
+            - name: Verify workspace packages
+              run: cargo package --workspace --locked --target-dir "$(mktemp -d)"
 
             - name: Run cargo clippy
               run: cargo clippy --workspace --all-targets --all-features -- -D warnings
