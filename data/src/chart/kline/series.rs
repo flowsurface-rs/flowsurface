@@ -489,6 +489,7 @@ pub struct KlineSeries {
     line_width: u8,
     stroke_style: LineStrokeStyle,
     raw_trades: Vec<Trade>,
+    raw_trade_runs: Vec<Range<usize>>,
     trade_sequence_id: uuid::Uuid,
     open_interest: Option<OpenInterestSeries>,
     trade_time_range: Option<(UnixMs, UnixMs)>,
@@ -614,6 +615,7 @@ impl KlineSeries {
             line_width: MIN_LINE_WIDTH,
             stroke_style: LineStrokeStyle::Solid,
             raw_trades: Vec::new(),
+            raw_trade_runs: Vec::new(),
             trade_sequence_id: uuid::Uuid::new_v4(),
             open_interest: None,
             trade_time_range: None,
@@ -820,6 +822,7 @@ impl KlineSeries {
         self.data = empty_plot_data_with_trades(basis, self.tick_size(), &raw_trades);
         if !preserve_raw_trades {
             self.raw_trades.clear();
+            self.raw_trade_runs.clear();
             self.trade_sequence_id = uuid::Uuid::new_v4();
             self.reset_big_trades_cache();
         }
@@ -1061,12 +1064,7 @@ impl KlineSeries {
 
         self.insert_time_index_entries(&report.inserted_timestamps);
 
-        if let PlotData::TimeBased(series) = &mut self.data {
-            series.backfill_new_buckets(&self.raw_trades, &report.inserted_timestamps);
-            if let Some(cache) = &mut self.visible_profile_cache {
-                cache.insert_buckets(series, &report.inserted_timestamps);
-            }
-        }
+        self.backfill_new_buckets(&report.inserted_timestamps);
 
         let scope = match report.ordered_change {
             crate::aggr::time::OrderedChange::Tail { from } => {
@@ -1165,11 +1163,8 @@ impl KlineSeries {
             self.insert_time_index_entries(std::slice::from_ref(&kline.time));
         }
 
-        if inserted_new_bucket && let PlotData::TimeBased(series) = &mut self.data {
-            series.backfill_new_buckets(&self.raw_trades, std::slice::from_ref(&kline.time));
-            if let Some(cache) = &mut self.visible_profile_cache {
-                cache.insert_buckets(series, std::slice::from_ref(&kline.time));
-            }
+        if inserted_new_bucket {
+            self.backfill_new_buckets(std::slice::from_ref(&kline.time));
         }
 
         match previous_kline {
@@ -1431,7 +1426,40 @@ impl KlineSeries {
     }
 
     fn append_raw_trades(&mut self, trades: &[Trade]) {
+        let start = self.raw_trades.len();
         self.raw_trades.extend_from_slice(trades);
+        if matches!(self.data, PlotData::TickBased(_)) {
+            return;
+        }
+        for index in start..self.raw_trades.len() {
+            if let Some(run) = self.raw_trade_runs.last_mut()
+                && self.raw_trades[index].time >= self.raw_trades[index - 1].time
+            {
+                run.end = index + 1;
+            } else {
+                self.raw_trade_runs.push(index..index + 1);
+            }
+        }
+    }
+
+    fn backfill_new_buckets(&mut self, newborn: &[UnixMs]) {
+        let Some((&earliest, &latest)) = newborn.iter().min().zip(newborn.iter().max()) else {
+            return;
+        };
+        let PlotData::TimeBased(series) = &mut self.data else {
+            return;
+        };
+        let interval = series.interval;
+        let trades = self.raw_trade_runs.iter().flat_map(|run| {
+            let trades = &self.raw_trades[run.clone()];
+            let start = trades.partition_point(|trade| trade.time.floor_to(interval) < earliest);
+            let end = trades.partition_point(|trade| trade.time.floor_to(interval) <= latest);
+            trades[start..end].iter()
+        });
+        series.backfill_new_buckets(trades, newborn);
+        if let Some(cache) = &mut self.visible_profile_cache {
+            cache.insert_buckets(series, newborn);
+        }
     }
 
     /// Rebuilds the big-trade cache for `threshold`, or drops it when no study needs it.

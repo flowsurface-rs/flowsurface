@@ -506,9 +506,9 @@ pub fn request_fetch(
                     _ => (
                         timeframe,
                         from.floor_to(timeframe),
-                        to.min(now)
-                            .floor_to(timeframe)
-                            .offset_by_timeframe(timeframe, 1),
+                        to.floor_to(timeframe)
+                            .offset_by_timeframe(timeframe, 1)
+                            .min(now.floor_to(timeframe)),
                     ),
                 };
                 let (task, handle) = Task::sip(

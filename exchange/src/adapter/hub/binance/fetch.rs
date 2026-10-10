@@ -682,12 +682,12 @@ async fn get_hist_trades_with_client(
 
         trades.extend(csv_reader.records().filter_map(|record| {
             record.ok().and_then(|record| {
-                let time = record[5].parse::<u64>().ok()?;
-                let is_sell = record[6].parse::<bool>().ok()?;
-                let price_f64 = record[1].parse::<f64>().ok()?;
+                let time = record.get(5)?.parse::<u64>().ok()?;
+                let is_sell = record.get(6)?.parse::<bool>().ok()?;
+                let price_f64 = record.get(1)?.parse::<f64>().ok()?;
 
                 let price = Price::from_f64(price_f64).round_to_min_tick(ticker_info.min_ticksize);
-                let qty = qty_norm.normalize_qty(record[2].parse::<f64>().ok()?, price_f64);
+                let qty = qty_norm.normalize_qty(record.get(2)?.parse::<f64>().ok()?, price_f64);
 
                 Some(Trade {
                     time: time.into(),

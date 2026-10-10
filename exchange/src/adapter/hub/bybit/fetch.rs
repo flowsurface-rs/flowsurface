@@ -244,6 +244,12 @@ pub(super) async fn fetch_klines(
         .list
         .iter()
         .map(|kline| {
+            if kline.len() < 6 {
+                return Err(AdapterError::ParseError(
+                    "Bybit kline row has fewer than six fields".to_string(),
+                ));
+            }
+
             let time = parse_kline_field::<u64>(kline[0].as_str())?;
 
             let open = parse_kline_field::<f64>(kline[1].as_str())?;

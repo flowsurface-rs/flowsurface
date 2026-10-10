@@ -490,6 +490,15 @@ async fn fetch_klines_with_limit(
                 .as_array()
                 .ok_or_else(|| AdapterError::ParseError("Vol array not found".to_string()))?;
 
+            if [opens, highs, lows, closes, amounts, volumes]
+                .iter()
+                .any(|values| values.len() != times.len())
+            {
+                return Err(AdapterError::ParseError(
+                    "MEXC kline arrays have mismatched lengths".to_string(),
+                ));
+            }
+
             (0..times.len())
                 .map(|i| {
                     let timestamp = times[i].as_u64().ok_or_else(|| {

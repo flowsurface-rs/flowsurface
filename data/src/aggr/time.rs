@@ -219,8 +219,12 @@ impl TimeSeries<KlineDataPoint> {
         earliest_updated
     }
 
-    pub fn backfill_new_buckets(&mut self, trades: &[Trade], newborn: &[UnixMs]) {
-        if trades.is_empty() || newborn.is_empty() {
+    pub fn backfill_new_buckets<'a>(
+        &mut self,
+        trades: impl IntoIterator<Item = &'a Trade>,
+        newborn: &[UnixMs],
+    ) {
+        if newborn.is_empty() {
             return;
         }
 
