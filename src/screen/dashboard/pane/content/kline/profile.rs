@@ -2,14 +2,17 @@ mod source;
 mod tpo;
 
 use data::chart::Basis;
+use data::chart::kline::series::KlineSeries;
 use data::chart::kline::{
     FetchRange, KlineStudy, TpoAnchor, TpoBoundaryEdits, TpoProfile, TpoProfileStatus,
 };
-use data::chart::kline::{KlineData, StudyDataSource, VolumeProfileSchedule};
+use data::chart::kline::{
+    KlineData, RecurringKlineProfileIndex, StudyDataSource, VolumeProfileSchedule,
+};
 use exchange::adapter::Exchange;
 use exchange::unit::price::PriceStep;
 use exchange::{Kline, TickerInfo, Timeframe, Trade, UnixMs};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use self::source::ProfileKlineSource;
 use self::tpo::{TpoBarScope, TpoState};
@@ -143,9 +146,87 @@ pub enum TpoEditCommand {
 pub(super) struct ProfileState {
     source: ProfileKlineSource,
     tpo: TpoState,
+    recurring_source: Option<RecurringProfileSource>,
+    recurring: BTreeMap<Timeframe, RecurringKlineProfileIndex>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct RecurringProfileSource {
+    ticker: TickerInfo,
+    basis: Basis,
+    timeframe: Timeframe,
+    price_step: PriceStep,
 }
 
 impl ProfileState {
+    pub(super) fn configure_recurring_profiles(
+        &mut self,
+        plan: &ProfilePlan,
+        basis: Basis,
+        data: &KlineData,
+    ) {
+        let intervals = plan
+            .kline_volume_profiles
+            .iter()
+            .filter_map(|schedule| match schedule {
+                VolumeProfileSchedule::Recurring { interval } => Some(*interval),
+                VolumeProfileSchedule::VisibleRange => None,
+            })
+            .collect::<BTreeSet<_>>();
+        let source = plan
+            .kline_source_timeframe
+            .map(|timeframe| RecurringProfileSource {
+                ticker: data.base_ticker(),
+                basis,
+                timeframe,
+                price_step: data.tick_size(),
+            });
+        if intervals.is_empty() || source != self.recurring_source {
+            self.clear_recurring_profiles();
+        }
+        self.recurring_source = source.filter(|_| !intervals.is_empty());
+        self.recurring
+            .retain(|interval, _| intervals.contains(interval));
+        let Some(source) = self.recurring_source else {
+            return;
+        };
+        let missing = intervals
+            .into_iter()
+            .filter(|interval| !self.recurring.contains_key(interval))
+            .collect::<Vec<_>>();
+        if missing.is_empty() {
+            return;
+        }
+        let bars = if let Some((start, end)) = self.source.retained(source.timeframe) {
+            if basis == Basis::Time(source.timeframe) {
+                data.base_series()
+                    .map(|series| series.klines_in_range(start, end))
+                    .unwrap_or_default()
+            } else {
+                self.source
+                    .bars_ref(source.timeframe)
+                    .map(|bars| bars.values().copied().collect())
+                    .unwrap_or_default()
+            }
+        } else {
+            Vec::new()
+        };
+        for interval in missing {
+            let mut index = RecurringKlineProfileIndex::new(interval, source.price_step);
+            index.upsert_bars(&bars);
+            self.recurring.insert(interval, index);
+        }
+    }
+
+    pub(super) fn recurring_profiles(&self) -> &BTreeMap<Timeframe, RecurringKlineProfileIndex> {
+        &self.recurring
+    }
+
+    pub(super) fn clear_recurring_profiles(&mut self) {
+        self.recurring.clear();
+        self.recurring_source = None;
+    }
+
     pub(super) fn kline_fetch_windows(
         &self,
         plan: &ProfilePlan,
@@ -173,6 +254,17 @@ impl ProfileState {
 
     pub(super) fn insert_profile_kline_bars(&mut self, timeframe: Timeframe, bars: &[Kline]) {
         let changed = self.source.insert_bars(timeframe, bars);
+        if !self.recurring.is_empty()
+            && let Some(source) = self.source.bars_ref(timeframe)
+        {
+            let bars = changed
+                .iter()
+                .filter_map(|time| source.get(time).copied())
+                .collect::<Vec<_>>();
+            for index in self.recurring.values_mut() {
+                index.upsert_bars(&bars);
+            }
+        }
         self.tpo.mark_kline_bars_dirty(timeframe, &changed);
     }
 
@@ -191,6 +283,16 @@ impl ProfileState {
             .map(|bar| bar.time)
             .filter(|time| self.source.is_active(timeframe, *time))
             .collect::<Vec<_>>();
+        if !self.recurring.is_empty() {
+            let bars = bars
+                .iter()
+                .filter(|bar| self.source.is_active(timeframe, bar.time))
+                .copied()
+                .collect::<Vec<_>>();
+            for index in self.recurring.values_mut() {
+                index.upsert_bars(&bars);
+            }
+        }
         self.tpo.mark_kline_bars_dirty(timeframe, &changed);
     }
 
@@ -220,6 +322,7 @@ impl ProfileState {
         now: UnixMs,
         timeframe: Timeframe,
         invalidate_tpo: bool,
+        chart_source: Option<&KlineSeries>,
     ) -> bool {
         let fallback_start = now.floor_to(Timeframe::D1);
         let windows = if windows.is_empty() {
@@ -230,9 +333,30 @@ impl ProfileState {
         } else {
             windows.to_vec()
         };
+        let previous = self.source.retained(timeframe);
         let changed = self
             .source
             .configure_retention(&windows, visible_span, timeframe);
+        if changed && let Some((start, end)) = self.source.retained(timeframe) {
+            for index in self.recurring.values_mut() {
+                index.retain_range(start, end);
+            }
+            if !self.recurring.is_empty()
+                && let Some(series) = chart_source
+            {
+                let bars = match previous {
+                    Some((previous_start, previous_end)) => {
+                        let mut bars = series.klines_in_range(start, end.min(previous_start));
+                        bars.extend(series.klines_in_range(start.max(previous_end), end));
+                        bars
+                    }
+                    None => series.klines_in_range(start, end),
+                };
+                for index in self.recurring.values_mut() {
+                    index.upsert_bars(&bars);
+                }
+            }
+        }
         if changed && invalidate_tpo {
             self.tpo.invalidate();
         }
@@ -252,6 +376,7 @@ impl ProfileState {
 
     pub(super) fn clear_kline_source(&mut self) {
         self.source.clear();
+        self.clear_recurring_profiles();
     }
 
     pub(super) fn rebuild_tpo_from_klines(
@@ -279,13 +404,7 @@ impl ProfileState {
                     return Vec::new();
                 }
                 if let Some(series) = chart_source {
-                    let latest = end.saturating_sub(1);
-                    let indices = series.time_index_range(start, latest);
-                    let mut bars = Vec::with_capacity(indices.len());
-                    series.for_each_point_in_range(indices, Some((start, latest)), |point| {
-                        bars.push(*point.kline);
-                    });
-                    bars
+                    series.klines_in_range(start, end)
                 } else {
                     source
                         .bars_ref(source_timeframe)

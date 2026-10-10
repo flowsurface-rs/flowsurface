@@ -86,6 +86,8 @@ impl StudyState {
             fetch.clear_pending_profile_requests();
             self.profiles.clear_kline_source();
         }
+        self.profiles
+            .configure_recurring_profiles(&plan, basis, data);
         data.configure_recurring_profile_intervals(&plan.recurring_trade_profiles);
         let big_trades_threshold = self.active_big_trades_threshold();
         data.configure_big_trades_threshold(big_trades_threshold);
@@ -157,6 +159,8 @@ impl StudyState {
     ) -> Vec<(FetchRange, Vec<TickerInfo>)> {
         let profile_plan = self.profile_plan(basis, data);
         let base_ticker = data.base_ticker();
+        self.profiles
+            .configure_recurring_profiles(&profile_plan, basis, data);
         if let Some(source_timeframe) = profile_plan.kline_source_timeframe {
             let windows = self
                 .profiles
@@ -174,6 +178,8 @@ impl StudyState {
                 profile_plan
                     .tpo_study
                     .is_some_and(|study| study.source() == StudyDataSource::Kline),
+                data.base_series()
+                    .filter(|_| basis == Basis::Time(source_timeframe)),
             );
 
             if source_changed {
@@ -330,6 +336,7 @@ impl StudyState {
             chart.with_study_object(StudyObject::VolumeProfiles(VolumeProfileObject::new(
                 active_studies,
                 profile_bars,
+                self.profiles.recurring_profiles(),
             )))
         } else {
             chart
@@ -512,6 +519,7 @@ impl StudyState {
     pub(super) fn set_basis(&mut self, basis: Basis) {
         self.normalize_for_basis(basis);
         self.profiles.invalidate_tpo();
+        self.profiles.clear_recurring_profiles();
     }
 
     pub(super) fn runtime_revision(&self) -> u64 {

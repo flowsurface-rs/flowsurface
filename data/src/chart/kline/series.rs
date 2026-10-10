@@ -650,6 +650,19 @@ impl KlineSeries {
             ..self.time_index.partition_point(|time| *time <= latest)
     }
 
+    pub fn klines_in_range(&self, start: UnixMs, end: UnixMs) -> Vec<Kline> {
+        if start >= end {
+            return Vec::new();
+        }
+        let latest = end.saturating_sub(1);
+        let indices = self.time_index_range(start, latest);
+        let mut bars = Vec::with_capacity(indices.len());
+        self.for_each_point_in_range(indices, Some((start, latest)), |point| {
+            bars.push(*point.kline);
+        });
+        bars
+    }
+
     pub fn points(&self) -> KlineSeriesPoints<'_> {
         match &self.data {
             PlotData::TimeBased(series) => {

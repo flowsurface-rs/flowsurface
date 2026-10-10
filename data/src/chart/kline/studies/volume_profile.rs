@@ -475,8 +475,9 @@ pub fn recurring_kline_volume_profiles(
     index.visible_profiles(earliest, latest)
 }
 
+#[derive(Default)]
 struct KlineProfileSession {
-    bars: Vec<Kline>,
+    bars: BTreeMap<UnixMs, Kline>,
     distribution: Option<ProfileDistribution>,
 }
 
@@ -514,44 +515,98 @@ impl RecurringKlineProfileIndex {
         }
     }
 
-    /// Reconciles a complete retained candle snapshot, recalculating changed sessions only.
+    /// Replaces a complete retained candle snapshot outside the live update path.
     pub fn update(&mut self, bars: &[Kline]) -> bool {
-        let previous_latest = self
-            .profiles
+        let bars = bars
             .iter()
-            .rev()
-            .find_map(|(&start, profile)| profile.price_range().map(|range| (start, range)));
-        let mut sessions = BTreeMap::<UnixMs, Vec<Kline>>::new();
-        for &bar in bars {
-            sessions
-                .entry(bar.time.floor_to(self.interval))
-                .or_default()
-                .push(bar);
+            .map(|bar| (bar.time, *bar))
+            .collect::<BTreeMap<_, _>>();
+        if self
+            .profiles
+            .values()
+            .map(|profile| profile.bars.len())
+            .sum::<usize>()
+            == bars.len()
+            && bars.values().all(|bar| {
+                self.profiles
+                    .get(&bar.time.floor_to(self.interval))
+                    .and_then(|profile| profile.bars.get(&bar.time))
+                    == Some(bar)
+            })
+        {
+            return false;
         }
-        let previous_count = self.profiles.len();
-        self.profiles
-            .retain(|start, _| sessions.contains_key(start));
-        let removed = self.profiles.len() != previous_count;
+        self.profiles.clear();
+        self.poc_lines = PocLineTracker::default();
+        self.upsert_bars(&bars.into_values().collect::<Vec<_>>());
+        true
+    }
+
+    pub fn upsert_bars(&mut self, bars: &[Kline]) -> bool {
+        if bars.is_empty() {
+            return false;
+        }
+        let previous_latest = self.latest_profile_range();
         let mut changed = BTreeSet::new();
-        for (start, mut bars) in sessions {
-            bars.sort_unstable_by_key(|bar| bar.time);
-            if self
-                .profiles
-                .get(&start)
-                .is_some_and(|profile| profile.bars == bars)
-            {
+        for &bar in bars {
+            let start = bar.time.floor_to(self.interval);
+            let profile = self.profiles.entry(start).or_default();
+            if profile.bars.get(&bar.time) == Some(&bar) {
                 continue;
             }
+            profile.bars.insert(bar.time, bar);
+            changed.insert(start);
+        }
+        self.recalculate_profiles(changed, previous_latest, false)
+    }
 
-            let distribution = kline_volume_profile(
+    pub fn retain_range(&mut self, start: UnixMs, end: UnixMs) -> bool {
+        let previous_latest = self.latest_profile_range();
+        let mut changed = BTreeSet::new();
+        let previous_count = self.profiles.len();
+        self.profiles.retain(|profile_start, profile| {
+            let previous_len = profile.bars.len();
+            profile.bars.retain(|time, _| *time >= start && *time < end);
+            if profile.bars.is_empty() {
+                return false;
+            }
+            if profile.bars.len() != previous_len {
+                changed.insert(*profile_start);
+            }
+            true
+        });
+        self.recalculate_profiles(
+            changed,
+            previous_latest,
+            self.profiles.len() != previous_count,
+        )
+    }
+
+    fn latest_profile_range(&self) -> Option<(UnixMs, (Price, Price))> {
+        self.profiles
+            .iter()
+            .rev()
+            .find_map(|(&start, profile)| profile.price_range().map(|range| (start, range)))
+    }
+
+    fn recalculate_profiles(
+        &mut self,
+        changed: BTreeSet<UnixMs>,
+        previous_latest: Option<(UnixMs, (Price, Price))>,
+        removed: bool,
+    ) -> bool {
+        for &start in &changed {
+            let profile = self
+                .profiles
+                .get_mut(&start)
+                .expect("changed profile exists");
+            let bars = profile.bars.values().copied().collect::<Vec<_>>();
+            profile.distribution = kline_volume_profile(
                 &bars,
                 start,
                 start.offset_by_timeframe(self.interval, 1),
                 self.tick_size,
             );
-            self.profiles
-                .insert(start, KlineProfileSession { bars, distribution });
-            changed.insert(start);
         }
         if changed.is_empty() && !removed {
             return false;
