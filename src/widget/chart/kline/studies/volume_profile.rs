@@ -480,9 +480,9 @@ impl<'a> VolumeProfileObject<'a> {
                         data::chart::kline::kline_volume_profile(&bars, earliest, latest, tick_size)
                     },
                 ),
-                StudyDataSource::Trades => base_series
-                    .trade_price_distribution(earliest, latest, tick_size)
-                    .map(Arc::new),
+                StudyDataSource::Trades => {
+                    base_series.trade_price_distribution(earliest, latest, tick_size)
+                }
             };
             profile.map(|profile| (profile, colors, width_ratio, opacity_ratio, opacity_scale))
         });

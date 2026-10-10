@@ -244,13 +244,10 @@ impl TimeSeries<KlineDataPoint> {
         }
     }
 
-    pub fn change_tick_size(&mut self, tick_size: PriceStep, raw_trades: &[Trade]) {
+    pub fn change_tick_size(&mut self, tick_size: PriceStep) {
         self.tick_size = tick_size;
-
-        self.clear_trades();
-
-        if !raw_trades.is_empty() {
-            let _ = self.insert_trades_existing_buckets(raw_trades);
+        for point in self.datapoints.values_mut() {
+            point.footprint.regroup(tick_size);
         }
     }
 

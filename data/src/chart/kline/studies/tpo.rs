@@ -3,6 +3,7 @@ use crate::config::theme::{ThemeAccent, ThemeColor, ThemeColorRole, ThemeColorSh
 use chrono::{Datelike, Months, NaiveDate};
 use exchange::unit::price::{Price, PriceStep};
 use exchange::{Kline, Timeframe, Trade, UnixMs};
+use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -466,7 +467,8 @@ pub enum TpoCalculationError {
 }
 
 pub struct TradeTpoCache {
-    settings: TpoProfileSettings,
+    anchor: TpoAnchor,
+    letter_period: Timeframe,
     edits: TpoBoundaryEdits,
     trade_count: usize,
     profiles: BTreeMap<UnixMs, TradeTpoProfileCache>,
@@ -485,9 +487,7 @@ struct TradeTpoProfileCache {
 struct TradeTpoPeriodCache {
     start: UnixMs,
     end: UnixMs,
-    high: Option<Price>,
-    low: Option<Price>,
-    rows: BTreeSet<Price>,
+    rows: FxHashSet<Price>,
 }
 
 impl TradeTpoCache {
@@ -498,7 +498,8 @@ impl TradeTpoCache {
     ) -> Result<Self, TpoCalculationError> {
         validate_settings(settings)?;
         let mut cache = Self {
-            settings,
+            anchor: settings.anchor,
+            letter_period: settings.letter_period,
             edits,
             trade_count: 0,
             profiles: BTreeMap::new(),
@@ -525,13 +526,13 @@ impl TradeTpoCache {
             self.extend_windows(first, last.saturating_add(1));
         }
         for trade in new_trades {
-            let start = self
-                .profile_start_for(trade.time)
-                .expect("trade cache ranges cover all source trades");
             self.profiles
-                .get_mut(&start)
-                .expect("trade cache range exists")
-                .add_trade(trade, self.settings);
+                .range_mut(..=trade.time)
+                .next_back()
+                .filter(|(_, profile)| trade.time < profile.end)
+                .expect("trade cache ranges cover all source trades")
+                .1
+                .add_trade(trade, self.letter_period);
         }
         self.trade_count = trades.len();
         true
@@ -540,34 +541,37 @@ impl TradeTpoCache {
     pub fn build_profile(
         &self,
         start: UnixMs,
+        settings: TpoProfileSettings,
         now: UnixMs,
         status: TpoProfileStatus,
     ) -> Option<Result<TpoProfile, TpoCalculationError>> {
-        self.profiles
-            .get(&start)
-            .map(|profile| profile.build(self.settings, now, status))
+        self.profiles.get(&start).map(|profile| {
+            validate_settings(settings)?;
+            profile.build(settings, now, status)
+        })
     }
 
     pub fn build_profiles(
         &self,
+        settings: TpoProfileSettings,
         now: UnixMs,
         status: impl Fn(UnixMs, UnixMs) -> TpoProfileStatus,
     ) -> Result<Vec<TpoProfile>, TpoCalculationError> {
+        validate_settings(settings)?;
         self.profiles
             .values()
-            .map(|profile| profile.build(self.settings, now, status(profile.start, profile.end)))
+            .map(|profile| profile.build(settings, now, status(profile.start, profile.end)))
             .collect()
     }
 
-    fn profile_start_for(&self, time: UnixMs) -> Option<UnixMs> {
-        self.profiles
-            .range(..=time)
-            .next_back()
-            .and_then(|(&start, profile)| (time < profile.end).then_some(start))
+    pub fn matches_source(&self, settings: TpoProfileSettings, edits: &TpoBoundaryEdits) -> bool {
+        self.anchor == settings.anchor
+            && self.letter_period == settings.letter_period
+            && &self.edits == edits
     }
 
     fn extend_windows(&mut self, start: UnixMs, end: UnixMs) {
-        let anchor = self.settings.anchor;
+        let anchor = self.anchor;
 
         let start = anchor.floor(start);
         let end = anchor.offset(anchor.floor(end.saturating_sub(1)), 1);
@@ -587,11 +591,11 @@ impl TradeTpoCache {
 
         for (start, end) in self
             .edits
-            .profile_ranges_overlapping(start, end, self.settings.anchor)
+            .profile_ranges_overlapping(start, end, self.anchor)
         {
-            self.profiles.entry(start).or_insert_with(|| {
-                TradeTpoProfileCache::new(start, end, self.settings.letter_period)
-            });
+            self.profiles
+                .entry(start)
+                .or_insert_with(|| TradeTpoProfileCache::new(start, end, self.letter_period));
         }
     }
 }
@@ -605,9 +609,7 @@ impl TradeTpoProfileCache {
             periods.push(TradeTpoPeriodCache {
                 start: period_start,
                 end: period_end,
-                high: None,
-                low: None,
-                rows: BTreeSet::new(),
+                rows: FxHashSet::default(),
             });
             let next = period_start.offset_by_timeframe(letter_period, 1);
             if next <= period_start {
@@ -626,7 +628,7 @@ impl TradeTpoProfileCache {
         }
     }
 
-    fn add_trade(&mut self, trade: &Trade, settings: TpoProfileSettings) {
+    fn add_trade(&mut self, trade: &Trade, letter_period: Timeframe) {
         if trade.time < self.start || trade.time >= self.end {
             return;
         }
@@ -651,21 +653,13 @@ impl TradeTpoProfileCache {
         }
         let period_index = usize::try_from(
             trade.time.as_u64().saturating_sub(self.start.as_u64())
-                / settings.letter_period.to_milliseconds().max(1),
+                / letter_period.to_milliseconds().max(1),
         )
         .unwrap_or(usize::MAX);
         let Some(period) = self.periods.get_mut(period_index) else {
             return;
         };
-        period.high = Some(
-            period
-                .high
-                .map_or(trade.price, |high| high.max(trade.price)),
-        );
-        period.low = Some(period.low.map_or(trade.price, |low| low.min(trade.price)));
-        period
-            .rows
-            .insert(trade.price.floor_to_step(settings.price_step));
+        period.rows.insert(trade.price);
     }
 
     fn build(
@@ -674,6 +668,7 @@ impl TradeTpoProfileCache {
         now: UnixMs,
         status: TpoProfileStatus,
     ) -> Result<TpoProfile, TpoCalculationError> {
+        let requested_step = settings.price_step;
         let Some(session_low_price) = self.session_low else {
             return Ok(empty_profile_with_status(self.start, self.end, status));
         };
@@ -697,7 +692,10 @@ impl TradeTpoProfileCache {
         for (period_index, cached) in self.periods.iter().enumerate() {
             let period_index = u16::try_from(period_index).unwrap_or(u16::MAX);
             for price in &cached.rows {
-                let price = price.floor_to_step(settings.price_step);
+                // Preserve requested-grid flooring when the row limit coarsens the output grid.
+                let price = price
+                    .floor_to_step(requested_step)
+                    .floor_to_step(settings.price_step);
                 let Some(row_index) =
                     Price::steps_between_inclusive(session_low, price, settings.price_step)
                         .and_then(|count| count.checked_sub(1))

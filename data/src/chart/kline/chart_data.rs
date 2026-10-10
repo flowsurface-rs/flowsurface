@@ -8,7 +8,7 @@ use super::{
     ThemeAccent,
 };
 use crate::chart::Basis;
-use exchange::{Kline, TickMultiplier, TickerInfo, Timeframe, Trade, unit::PriceStep};
+use exchange::{Kline, TickMultiplier, TickerInfo, Timeframe, Trade, UnixMs, unit::PriceStep};
 use indicator_engine::IndicatorFrame;
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
@@ -148,6 +148,13 @@ impl KlineData {
     pub fn configure_recurring_profile_intervals(&mut self, intervals: &[(Timeframe, PriceStep)]) {
         if let Some(base_series) = self.base_series_mut() {
             base_series.configure_recurring_profile_intervals(intervals);
+        }
+    }
+
+    pub fn prepare_trade_price_distribution(&mut self, earliest: UnixMs, latest: UnixMs) {
+        let tick_size = self.tick_size();
+        if let Some(series) = self.base_series_mut() {
+            series.prepare_trade_price_distribution(earliest, latest, tick_size);
         }
     }
 

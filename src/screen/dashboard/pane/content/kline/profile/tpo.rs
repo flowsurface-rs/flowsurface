@@ -168,7 +168,13 @@ impl TpoState {
             settings,
             edits: self.edits.clone(),
         };
-        if self.prepare_rebuild(&key, now) || self.trade_cache_sequence_id != trade_sequence_id {
+        self.prepare_rebuild(&key, now);
+        if self.trade_cache_sequence_id != trade_sequence_id
+            || self
+                .trade_cache
+                .as_ref()
+                .is_some_and(|cache| !cache.matches_source(settings, &self.edits))
+        {
             self.trade_cache = None;
         }
         self.trade_cache_sequence_id = trade_sequence_id;
@@ -195,13 +201,13 @@ impl TpoState {
         let result = match rebuild_state {
             TpoRebuildState::Clean => unreachable!(),
             TpoRebuildState::Full => cache
-                .build_profiles(now, &coverage)
+                .build_profiles(settings, now, &coverage)
                 .map(TpoBuildResult::All),
             TpoRebuildState::Profiles(dirty) => {
-                match self.rebuild_dirty_trade_profiles(cache, &dirty, now, &coverage) {
+                match self.rebuild_dirty_trade_profiles(cache, &dirty, settings, now, &coverage) {
                     Some(result) => result,
                     None => cache
-                        .build_profiles(now, &coverage)
+                        .build_profiles(settings, now, &coverage)
                         .map(TpoBuildResult::All),
                 }
             }
@@ -317,6 +323,7 @@ impl TpoState {
         &self,
         cache: &TradeTpoCache,
         dirty: &BTreeSet<UnixMs>,
+        settings: TpoProfileSettings,
         now: UnixMs,
         coverage: &impl Fn(UnixMs, UnixMs) -> TpoProfileStatus,
     ) -> Option<Result<TpoBuildResult, TpoCalculationError>> {
@@ -327,7 +334,7 @@ impl TpoState {
                 .binary_search_by_key(start, |profile| profile.start)
                 .ok()?;
             let end = self.profiles[index].end;
-            let profile = match cache.build_profile(*start, now, coverage(*start, end))? {
+            let profile = match cache.build_profile(*start, settings, now, coverage(*start, end))? {
                 Ok(profile) => profile,
                 Err(error) => return Some(Err(error)),
             };

@@ -92,13 +92,10 @@ impl TickAggr {
         tick_aggr
     }
 
-    pub fn change_tick_size(&mut self, tick_size: PriceStep, raw_trades: &[Trade]) {
+    pub fn change_tick_size(&mut self, tick_size: PriceStep) {
         self.tick_size = tick_size;
-
-        self.datapoints.clear();
-
-        if !raw_trades.is_empty() {
-            self.insert_trades(raw_trades);
+        for point in &mut self.datapoints {
+            point.footprint.regroup(tick_size);
         }
     }
 

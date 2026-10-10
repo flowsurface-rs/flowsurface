@@ -50,6 +50,15 @@ impl GroupedTrades {
         self.last_time = self.last_time.max(trade.time);
     }
 
+    pub fn merge(&mut self, other: &Self) {
+        self.buy_qty += other.buy_qty;
+        self.sell_qty += other.sell_qty;
+        self.buy_count += other.buy_count;
+        self.sell_count += other.sell_count;
+        self.first_time = self.first_time.min(other.first_time);
+        self.last_time = self.last_time.max(other.last_time);
+    }
+
     pub fn total_qty(&self) -> Qty {
         self.buy_qty + self.sell_qty
     }
@@ -70,6 +79,7 @@ impl GroupedTrades {
 #[derive(Debug, Clone, Default)]
 pub struct KlineTrades {
     pub trades: FxHashMap<Price, GroupedTrades>,
+    exact_trades: FxHashMap<Price, GroupedTrades>,
     pub poc: Option<PointOfControl>,
 }
 
@@ -89,6 +99,7 @@ impl KlineTrades {
     pub fn new() -> Self {
         Self {
             trades: FxHashMap::default(),
+            exact_trades: FxHashMap::default(),
             poc: None,
         }
     }
@@ -133,12 +144,29 @@ impl KlineTrades {
     /// Ties (exactly half a step) round up to the higher multiple.
     /// Intended for footprint/OHLC trade aggregation
     pub fn add_trade_to_nearest_bin(&mut self, trade: &Trade, step: PriceStep) {
+        self.exact_trades
+            .entry(trade.price)
+            .and_modify(|group| group.add_trade(trade))
+            .or_insert_with(|| GroupedTrades::new(trade));
         let price = trade.price.round_to_step(step);
 
         self.trades
             .entry(price)
             .and_modify(|group| group.add_trade(trade))
             .or_insert_with(|| GroupedTrades::new(trade));
+    }
+
+    /// Rebins retained exact-price trades without replaying individual trades.
+    pub fn regroup(&mut self, step: PriceStep) {
+        self.trades.clear();
+        self.poc = None;
+        for (&price, group) in &self.exact_trades {
+            self.trades
+                .entry(price.round_to_step(step))
+                .and_modify(|current| current.merge(group))
+                .or_insert_with(|| group.clone());
+        }
+        self.calculate_poc();
     }
 
     /// Max of some extracted qty across price levels within [`lowest`, `highest`].
@@ -172,6 +200,8 @@ impl KlineTrades {
             .unwrap_or_default()
     }
 
+    /// Selects the highest-volume row and resets its fill status.
+    /// For equal positive volumes, chooses the highest price.
     pub fn calculate_poc(&mut self) {
         if self.trades.is_empty() {
             return;
@@ -182,7 +212,9 @@ impl KlineTrades {
 
         for (price, group) in &self.trades {
             let total_volume = group.total_qty();
-            if total_volume > max_volume {
+            if total_volume > max_volume
+                || (total_volume == max_volume && !total_volume.is_zero() && *price > poc_price)
+            {
                 max_volume = total_volume;
                 poc_price = *price;
             }
@@ -207,6 +239,7 @@ impl KlineTrades {
 
     pub fn clear(&mut self) {
         self.trades.clear();
+        self.exact_trades.clear();
         self.poc = None;
     }
 }

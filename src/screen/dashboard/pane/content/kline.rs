@@ -44,6 +44,7 @@ use data::chart::kline::composition::{
 };
 use data::chart::kline::footprint::{ClusterKind, ClusterScaling};
 use data::chart::kline::series::KlineSeries;
+use data::chart::kline::viewport::XAxis;
 use data::chart::kline::{
     self as persisted, CandlestickConfig, ChartSettings, DEFAULT_HORIZONTAL_SPACING_PX, FetchBatch,
     FetchPlanInput, FetchStage, FootprintImbalanceConfig, FootprintPocConfig, HorizontalWorld,
@@ -432,6 +433,7 @@ impl KlineChart {
                 self.reconcile_settings_target();
             }
         }
+        self.prepare_visible_trade_profile();
         None
     }
 
@@ -593,10 +595,12 @@ impl KlineChart {
             self.recalculate_indicators();
             self.preview_clean_indicators();
             self.redraw_data_if_due(ts);
+            self.prepare_visible_trade_profile();
             return action;
         }
 
         self.render_invalidation.invalidate();
+        self.prepare_visible_trade_profile();
         None
     }
 
@@ -1051,7 +1055,46 @@ impl KlineChart {
     }
 
     pub(super) fn redraw_data_if_due(&mut self, now: Instant) {
+        let revision = self.render_invalidation.revision();
         self.render_invalidation.flush_data_redraw_if_due(now);
+        if self.render_invalidation.revision() != revision {
+            self.prepare_visible_trade_profile();
+        }
+    }
+
+    fn prepare_visible_trade_profile(&mut self) {
+        if !self.studies.active().iter().any(|study| {
+            study.visible()
+                && study.source() == data::chart::kline::StudyDataSource::Trades
+                && study.volume_profile_schedule()
+                    == Some(data::chart::kline::VolumeProfileSchedule::VisibleRange)
+        }) {
+            return;
+        }
+        let (Basis::Time(timeframe), Some(width)) = (self.basis, self.viewport.plot_width) else {
+            return;
+        };
+        let Some(anchor) = self
+            .data
+            .series()
+            .iter()
+            .filter_map(|series| series.latest_point().map(|point| point.kline.time))
+            .max()
+        else {
+            return;
+        };
+        let axis = XAxis::Time { timeframe, anchor };
+        let (_, right_extension) =
+            axis.output_domain_expansion(self.indicators.instances.max_positive_output_offset());
+        let (left, right, _) = self
+            .viewport
+            .horizontal_world
+            .visible_window((0, right_extension), width);
+        if let (Some(earliest), Some(latest)) =
+            (axis.time_from_unit(left), axis.time_from_unit(right))
+        {
+            self.data.prepare_trade_price_distribution(earliest, latest);
+        }
     }
 
     fn request_fetch_action(&mut self, allow_trade: bool) -> Option<Vec<FetchSpec>> {
@@ -1313,6 +1356,9 @@ impl KlineChart {
             .apply_data_update(&update, &effect, self.data.base_ticker());
         if !matches!(effect, DataUpdateEffect::Unchanged) {
             self.refresh_indicator_presentation();
+            if !self.render_invalidation.data_redraw_pending {
+                self.prepare_visible_trade_profile();
+            }
         }
     }
 
@@ -1370,6 +1416,7 @@ impl KlineChart {
     pub(crate) fn apply_command(&mut self, command: ChartCommand) -> Option<ChartAction> {
         let action = self.apply_command_inner(command);
         self.reconcile_settings_target();
+        self.prepare_visible_trade_profile();
         action
     }
 

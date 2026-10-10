@@ -11,7 +11,7 @@ use crate::chart::kline::poc::{NPoc, NakedPocIndex, PocFillAt, PocLineTracker, P
 pub use crate::chart::kline::studies::big_trades::BigTradeEntry;
 use crate::chart::kline::studies::big_trades::BigTradesCache;
 use crate::chart::kline::studies::volume_profile::{
-    AnchoredProfileDistribution, ProfileAccumulator, ProfileDistribution,
+    AnchoredProfileDistribution, ProfileAccumulator, ProfileDistribution, ProfileLevel,
 };
 use crate::chart::kline::{LineStrokeStyle, MAX_LINE_WIDTH, MIN_LINE_WIDTH};
 use crate::chart::{Basis, PlotData};
@@ -21,9 +21,11 @@ use exchange::{
     unit::{Price, PriceStep, qty::Qty},
 };
 use indicator_engine::{ChartFrame, IndicatorFrame, InstrumentContext, TimeOrTick, TradeAggregate};
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
+use std::sync::Arc;
 
 const NAKED_POC_LINE_END: UnixMs = UnixMs::new(u64::MAX);
 
@@ -96,12 +98,66 @@ pub struct FootprintPocLine {
 
 struct RecurringProfileCache {
     interval: Timeframe,
+    exact_profiles: BTreeMap<UnixMs, FxHashMap<Price, (Qty, Qty)>>,
+    projections: BTreeMap<PriceStep, RecurringProfileProjection>,
+}
+
+impl RecurringProfileCache {
+    fn new(interval: Timeframe) -> Self {
+        Self {
+            interval,
+            exact_profiles: BTreeMap::new(),
+            projections: BTreeMap::new(),
+        }
+    }
+
+    fn insert_trades(&mut self, trades: &[Trade]) {
+        for trade in trades {
+            let row = self
+                .exact_profiles
+                .entry(trade.time.floor_to(self.interval))
+                .or_default()
+                .entry(trade.price)
+                .or_default();
+            if trade.is_sell {
+                row.1 += trade.qty;
+            } else {
+                row.0 += trade.qty;
+            }
+        }
+        for projection in self.projections.values_mut() {
+            projection.insert_trades(trades);
+        }
+    }
+
+    fn configure_steps(&mut self, steps: &BTreeSet<PriceStep>) {
+        self.projections.retain(|step, _| steps.contains(step));
+        for &step in steps {
+            if self.projections.contains_key(&step) {
+                continue;
+            }
+            let mut projection = RecurringProfileProjection::new(self.interval, step);
+            for (&start, rows) in &self.exact_profiles {
+                let mut profile = ProfileAccumulator::new(step);
+                for (&price, &(buy, sell)) in rows {
+                    profile.add_volume(price.round_to_step(step), buy, sell);
+                }
+                projection.profiles.insert(start, profile);
+            }
+            projection.rebuild_poc_statuses();
+            self.projections.insert(step, projection);
+        }
+    }
+}
+
+struct RecurringProfileProjection {
+    interval: Timeframe,
     tick_size: PriceStep,
     profiles: BTreeMap<UnixMs, ProfileAccumulator>,
     poc_lines: PocLineTracker,
 }
 
-impl RecurringProfileCache {
+impl RecurringProfileProjection {
     fn new(interval: Timeframe, tick_size: PriceStep) -> Self {
         Self {
             interval,
@@ -174,6 +230,189 @@ impl RecurringProfileCache {
                     })
             })
             .collect()
+    }
+}
+
+#[derive(Default)]
+struct VisibleTradeProfileRow {
+    buy_qty: Qty,
+    sell_qty: Qty,
+    footprint_rows: usize,
+}
+
+struct VisibleTradeProfileCache {
+    earliest: UnixMs,
+    latest: UnixMs,
+    price_step: PriceStep,
+    rows: BTreeMap<Price, VisibleTradeProfileRow>,
+    snapshot: Option<Arc<ProfileDistribution>>,
+}
+
+impl VisibleTradeProfileCache {
+    fn new(earliest: UnixMs, latest: UnixMs, price_step: PriceStep) -> Self {
+        Self {
+            earliest,
+            latest,
+            price_step,
+            rows: BTreeMap::new(),
+            snapshot: None,
+        }
+    }
+
+    fn adjust_volume(&mut self, price: Price, buy: Qty, sell: Qty, footprint_rows: isize) {
+        if buy.is_zero() && sell.is_zero() && footprint_rows == 0 {
+            return;
+        }
+        let row = self.rows.entry(price).or_default();
+        row.buy_qty += buy;
+        row.sell_qty += sell;
+        // Count footprint entries so zero-volume rows retain full-rebuild semantics.
+        row.footprint_rows = row
+            .footprint_rows
+            .checked_add_signed(footprint_rows)
+            .expect("visible profile footprint count underflowed");
+        if row.footprint_rows == 0 {
+            assert!(row.buy_qty.is_zero() && row.sell_qty.is_zero());
+            self.rows.remove(&price);
+        }
+        self.snapshot = None;
+    }
+
+    fn apply_footprint(&mut self, footprint: &KlineTrades, direction: isize) {
+        for (&price, group) in &footprint.trades {
+            let (buy, sell) = if direction > 0 {
+                (group.buy_qty, group.sell_qty)
+            } else {
+                (Qty::ZERO - group.buy_qty, Qty::ZERO - group.sell_qty)
+            };
+            self.adjust_volume(price.floor_to_step(self.price_step), buy, sell, direction);
+        }
+    }
+
+    fn apply_range(
+        &mut self,
+        series: &TimeSeries<KlineDataPoint>,
+        earliest: UnixMs,
+        latest: UnixMs,
+        direction: isize,
+    ) {
+        if earliest <= latest {
+            for (_, point) in series.datapoints.range(earliest..=latest) {
+                self.apply_footprint(&point.footprint, direction);
+            }
+        }
+    }
+
+    fn move_range(
+        &mut self,
+        series: &TimeSeries<KlineDataPoint>,
+        earliest: UnixMs,
+        latest: UnixMs,
+    ) {
+        if earliest > self.earliest {
+            self.apply_range(
+                series,
+                self.earliest,
+                self.latest.min(earliest.saturating_sub(1)),
+                -1,
+            );
+        }
+        if latest < self.latest {
+            self.apply_range(
+                series,
+                self.earliest.max(latest.saturating_add(1)),
+                self.latest,
+                -1,
+            );
+        }
+        if earliest < self.earliest {
+            self.apply_range(
+                series,
+                earliest,
+                latest.min(self.earliest.saturating_sub(1)),
+                1,
+            );
+        }
+        if latest > self.latest {
+            self.apply_range(
+                series,
+                earliest.max(self.latest.saturating_add(1)),
+                latest,
+                1,
+            );
+        }
+        self.earliest = earliest;
+        self.latest = latest;
+    }
+
+    fn insert_trades(&mut self, series: &TimeSeries<KlineDataPoint>, trades: &[Trade]) {
+        let mut new_rows = BTreeSet::new();
+        for run in trades.chunk_by(|left, right| {
+            left.time.floor_to(series.interval) == right.time.floor_to(series.interval)
+        }) {
+            let time = run[0].time.floor_to(series.interval);
+            if time < self.earliest || time > self.latest {
+                continue;
+            }
+            let Some(point) = series.datapoints.get(&time) else {
+                continue;
+            };
+            for trade in run {
+                let price = trade.price.round_to_step(series.tick_size);
+                let new_row =
+                    !point.footprint.trades.contains_key(&price) && new_rows.insert((time, price));
+                let (buy, sell) = if trade.is_sell {
+                    (Qty::ZERO, trade.qty)
+                } else {
+                    (trade.qty, Qty::ZERO)
+                };
+                self.adjust_volume(
+                    price.floor_to_step(self.price_step),
+                    buy,
+                    sell,
+                    isize::from(new_row),
+                );
+            }
+        }
+    }
+
+    fn insert_buckets(&mut self, series: &TimeSeries<KlineDataPoint>, times: &[UnixMs]) {
+        for time in times {
+            if *time >= self.earliest && *time <= self.latest {
+                self.apply_footprint(&series.datapoints[time].footprint, 1);
+            }
+        }
+    }
+
+    fn distribution(&mut self) -> Option<Arc<ProfileDistribution>> {
+        if self.rows.is_empty() {
+            return None;
+        }
+        if self.snapshot.is_none() {
+            let mut distribution = ProfileDistribution {
+                levels: Vec::with_capacity(self.rows.len()),
+                price_step: self.price_step,
+                ..ProfileDistribution::default()
+            };
+            for (&price, row) in &self.rows {
+                let volume = row.buy_qty + row.sell_qty;
+                distribution.max_qty = distribution.max_qty.max(volume);
+                if distribution.poc.is_none_or(|poc| volume > poc.volume) {
+                    distribution.poc = Some(PointOfControl {
+                        price,
+                        volume,
+                        status: NPoc::None,
+                    });
+                }
+                distribution.levels.push(ProfileLevel {
+                    price,
+                    positive_qty: row.buy_qty,
+                    negative_qty: row.sell_qty,
+                });
+            }
+            self.snapshot = Some(Arc::new(distribution));
+        }
+        self.snapshot.clone()
     }
 }
 
@@ -253,7 +492,8 @@ pub struct KlineSeries {
     trade_sequence_id: uuid::Uuid,
     open_interest: Option<OpenInterestSeries>,
     trade_time_range: Option<(UnixMs, UnixMs)>,
-    recurring_profile_caches: BTreeMap<(Timeframe, PriceStep), RecurringProfileCache>,
+    recurring_profile_caches: BTreeMap<Timeframe, RecurringProfileCache>,
+    visible_profile_cache: Option<VisibleTradeProfileCache>,
     big_trades_cache: Option<BigTradesCache>,
 }
 
@@ -378,6 +618,7 @@ impl KlineSeries {
             open_interest: None,
             trade_time_range: None,
             recurring_profile_caches: BTreeMap::new(),
+            visible_profile_cache: None,
             big_trades_cache: None,
         }
     }
@@ -822,6 +1063,9 @@ impl KlineSeries {
 
         if let PlotData::TimeBased(series) = &mut self.data {
             series.backfill_new_buckets(&self.raw_trades, &report.inserted_timestamps);
+            if let Some(cache) = &mut self.visible_profile_cache {
+                cache.insert_buckets(series, &report.inserted_timestamps);
+            }
         }
 
         let scope = match report.ordered_change {
@@ -923,6 +1167,9 @@ impl KlineSeries {
 
         if inserted_new_bucket && let PlotData::TimeBased(series) = &mut self.data {
             series.backfill_new_buckets(&self.raw_trades, std::slice::from_ref(&kline.time));
+            if let Some(cache) = &mut self.visible_profile_cache {
+                cache.insert_buckets(series, std::slice::from_ref(&kline.time));
+            }
         }
 
         match previous_kline {
@@ -995,6 +1242,9 @@ impl KlineSeries {
         let PlotData::TimeBased(series) = &mut self.data else {
             unreachable!("time basis checked above");
         };
+        if let Some(cache) = &mut self.visible_profile_cache {
+            cache.insert_trades(series, trades);
+        }
         let first_time = series.insert_trades_existing_buckets(trades);
         if first_time
             .is_some_and(|time| self.time_index.last().is_some_and(|latest| time < *latest))
@@ -1013,28 +1263,30 @@ impl KlineSeries {
         if self.tick_size() == tick_size {
             return;
         }
-        let raw_trades = self.raw_trades.clone();
         match &mut self.data {
-            PlotData::TimeBased(series) => series.change_tick_size(tick_size, &raw_trades),
-            PlotData::TickBased(series) => series.change_tick_size(tick_size, &raw_trades),
+            PlotData::TimeBased(series) => series.change_tick_size(tick_size),
+            PlotData::TickBased(series) => series.change_tick_size(tick_size),
         }
         self.rebuild_footprint_pocs();
-        self.clear_profile_caches();
+        self.visible_profile_cache = None;
     }
 
     pub fn configure_recurring_profile_intervals(&mut self, intervals: &[(Timeframe, PriceStep)]) {
-        let desired_intervals = intervals.iter().copied().collect::<BTreeSet<_>>();
+        let mut desired = BTreeMap::<Timeframe, BTreeSet<PriceStep>>::new();
+        for &(interval, step) in intervals {
+            desired.entry(interval).or_default().insert(step);
+        }
         self.recurring_profile_caches
-            .retain(|interval, _| desired_intervals.contains(interval));
-
-        let intervals_to_build = desired_intervals
-            .into_iter()
-            .filter(|interval| !self.recurring_profile_caches.contains_key(interval))
-            .collect::<Vec<_>>();
-        for (interval, tick_size) in intervals_to_build {
-            let cache = self.build_recurring_profile_cache(interval, tick_size);
+            .retain(|interval, _| desired.contains_key(interval));
+        for (interval, steps) in desired {
+            if !self.recurring_profile_caches.contains_key(&interval) {
+                let cache = self.build_recurring_profile_cache(interval);
+                self.recurring_profile_caches.insert(interval, cache);
+            }
             self.recurring_profile_caches
-                .insert((interval, tick_size), cache);
+                .get_mut(&interval)
+                .expect("recurring source initialized")
+                .configure_steps(&steps);
         }
     }
 
@@ -1138,6 +1390,7 @@ impl KlineSeries {
 
     fn clear_profile_caches(&mut self) {
         self.recurring_profile_caches.clear();
+        self.visible_profile_cache = None;
     }
 
     fn insert_time_index_entries(&mut self, timestamps: &[UnixMs]) {
@@ -1167,17 +1420,9 @@ impl KlineSeries {
         }
     }
 
-    fn build_recurring_profile_cache(
-        &self,
-        interval: Timeframe,
-        tick_size: PriceStep,
-    ) -> RecurringProfileCache {
-        let mut cache = RecurringProfileCache::new(interval, tick_size);
-        for trade in &self.raw_trades {
-            cache.add_trade(trade);
-        }
-
-        cache.rebuild_poc_statuses();
+    fn build_recurring_profile_cache(&self, interval: Timeframe) -> RecurringProfileCache {
+        let mut cache = RecurringProfileCache::new(interval);
+        cache.insert_trades(&self.raw_trades);
         cache
     }
 
@@ -1267,7 +1512,53 @@ impl KlineSeries {
         }
     }
 
+    pub fn prepare_trade_price_distribution(
+        &mut self,
+        earliest: UnixMs,
+        latest: UnixMs,
+        tick_size: PriceStep,
+    ) {
+        if earliest > latest {
+            self.visible_profile_cache = None;
+            return;
+        }
+        if let PlotData::TimeBased(series) = &self.data {
+            let cached = &mut self.visible_profile_cache;
+            if cached
+                .as_ref()
+                .is_none_or(|cache| cache.price_step != tick_size)
+            {
+                let mut cache = VisibleTradeProfileCache::new(earliest, latest, tick_size);
+                cache.apply_range(series, earliest, latest, 1);
+                *cached = Some(cache);
+            }
+            let cache = cached.as_mut().expect("visible profile cache initialized");
+            cache.move_range(series, earliest, latest);
+            cache.distribution();
+        }
+    }
+
     pub fn trade_price_distribution(
+        &self,
+        earliest: UnixMs,
+        latest: UnixMs,
+        tick_size: PriceStep,
+    ) -> Option<Arc<ProfileDistribution>> {
+        if earliest > latest {
+            return None;
+        }
+        if let Some(cache) = &self.visible_profile_cache
+            && (cache.earliest, cache.latest, cache.price_step) == (earliest, latest, tick_size)
+            && (cache.snapshot.is_some() || cache.rows.is_empty())
+        {
+            return cache.snapshot.clone();
+        }
+
+        self.calculate_trade_price_distribution(earliest, latest, tick_size)
+            .map(Arc::new)
+    }
+
+    fn calculate_trade_price_distribution(
         &self,
         earliest: UnixMs,
         latest: UnixMs,
@@ -1305,8 +1596,9 @@ impl KlineSeries {
         latest: UnixMs,
     ) -> Vec<AnchoredProfileDistribution> {
         self.recurring_profile_caches
-            .get(&(interval, tick_size))
-            .map(|cache| cache.visible_profiles(earliest, latest))
+            .get(&interval)
+            .and_then(|cache| cache.projections.get(&tick_size))
+            .map(|projection| projection.visible_profiles(earliest, latest))
             .unwrap_or_default()
     }
 
