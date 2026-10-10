@@ -1869,9 +1869,20 @@ impl<'a> KlineWidget<'a> {
         palette: &Extended,
         generated_accents: &[iced::Color; ACCENT_COUNT],
     ) {
+        let Some(series) = self.series.first() else {
+            return;
+        };
+        let start = self
+            .bar_index_at_or_before_unit(scene, 0, scene.x.min_unit)
+            .unwrap_or(0);
+        let end = self
+            .bar_index_at_or_before_unit(scene, 0, scene.x.max_unit)
+            .map_or(0, |index| index.saturating_add(1))
+            .saturating_add(1)
+            .min(series.point_count());
         let source_index_to_unit =
             |source_index: usize| self.bar_unit_at_series_index(scene, 0, source_index);
-        for segment in self.indicator_segments(value_id) {
+        for segment in self.indicator_segments(value_id, start..end, scene) {
             let Some(start_value) = segment.start_value.filter(|value| value.is_finite()) else {
                 continue;
             };

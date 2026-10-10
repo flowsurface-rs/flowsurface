@@ -360,11 +360,22 @@ impl<'a> KlineWidget<'a> {
     pub(super) fn indicator_segments(
         &self,
         value_id: PanelValueId,
+        source_range: Range<usize>,
+        scene: &Scene,
     ) -> Vec<indicator_engine::SegmentOutput> {
         if self.indicator_is_unavailable(Some(value_id)) {
             return Vec::new();
         }
-        self.indicator_host.segment_outputs_for(value_id)
+        self.indicator_host
+            .segment_outputs_for(value_id, source_range, |start, end| {
+                let Some(start) = self.bar_unit_at_series_index(scene, 0, start) else {
+                    return false;
+                };
+                let Some(end) = self.bar_unit_at_series_index(scene, 0, end) else {
+                    return false;
+                };
+                start.min(end) <= scene.x.max_unit && start.max(end) >= scene.x.min_unit
+            })
     }
 
     pub(super) fn indicator_levels(

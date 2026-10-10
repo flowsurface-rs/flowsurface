@@ -144,11 +144,8 @@ impl IndicatorOutputStore {
             .collect()
     }
 
-    fn segment_values(&self) -> Vec<SegmentOutput> {
-        self.segments
-            .values()
-            .flat_map(|values| values.values().cloned())
-            .collect()
+    fn segment_values(&self) -> impl Iterator<Item = &SegmentOutput> {
+        self.segments.values().flat_map(|values| values.values())
     }
 
     fn level_values(&self) -> Vec<HorizontalLevelOutput> {
@@ -1258,7 +1255,7 @@ impl ScriptIndicatorRuntime {
         self.outputs.marker_values_at(index)
     }
 
-    pub(super) fn segment_outputs(&self) -> Vec<SegmentOutput> {
+    pub(super) fn segment_outputs(&self) -> impl Iterator<Item = &SegmentOutput> {
         self.outputs.segment_values()
     }
 

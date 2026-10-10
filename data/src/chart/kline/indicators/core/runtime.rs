@@ -853,18 +853,48 @@ impl IndicatorHost {
     pub fn segment_outputs_for(
         &self,
         id: IndicatorInstanceId,
+        source_range: Range<usize>,
+        mut intersects_viewport: impl FnMut(usize, usize) -> bool,
     ) -> Vec<indicator_engine::SegmentOutput> {
+        if source_range.is_empty() {
+            return Vec::new();
+        }
         self.entry_indices
             .get(&id)
             .and_then(|entry_index| self.entries.get(*entry_index))
             .map(|entry| {
+                let inverse = match &entry.output_indices {
+                    Some(OutputIndexMap::Explicit(indices)) => Some(
+                        indices
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(current, previous)| {
+                                previous.map(|previous| (previous, current))
+                            })
+                            .collect::<FxHashMap<_, _>>(),
+                    ),
+                    _ => None,
+                };
+                let current_index = |index| match &inverse {
+                    Some(indices) => indices.get(&index).copied(),
+                    None => entry.current_index(index),
+                };
+                // shortcut: scan borrowed segments; add an interval index if selection becomes costly.
                 entry
                     .runtime
                     .segment_outputs()
-                    .into_iter()
-                    .filter_map(|mut segment| {
-                        segment.start_index = entry.current_index(segment.start_index)?;
-                        segment.end_index = entry.current_index(segment.end_index)?;
+                    .filter_map(|segment| {
+                        let start = current_index(segment.start_index)?;
+                        let end = current_index(segment.end_index)?;
+                        if start.min(end) >= source_range.end
+                            || start.max(end) < source_range.start
+                            || !intersects_viewport(start, end)
+                        {
+                            return None;
+                        }
+                        let mut segment = segment.clone();
+                        segment.start_index = start;
+                        segment.end_index = end;
                         Some(segment)
                     })
                     .collect()
