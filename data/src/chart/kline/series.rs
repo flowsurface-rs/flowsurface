@@ -670,10 +670,10 @@ impl KlineSeries {
 
         match &self.data {
             PlotData::TimeBased(series) => {
-                let Some(first_time) = series.datapoints.keys().nth(start).copied() else {
+                let Some(first_time) = self.time_index.get(start).copied() else {
                     return Qty::ZERO;
                 };
-                let Some(last_time) = series.datapoints.keys().nth(end - 1).copied() else {
+                let Some(last_time) = self.time_index.get(end - 1).copied() else {
                     return Qty::ZERO;
                 };
                 series.max_qty_ts_range(cluster_kind, first_time, last_time, highest, lowest)
