@@ -1855,14 +1855,6 @@ impl KlineChart {
             snapshot.study_configs.clone(),
         ));
         self.studies.normalize_for_basis(self.basis);
-        let required_trade_data = self.indicators.selected_indicators().iter().any(|id| {
-            self.indicators.indicator(*id).is_some_and(|instance| {
-                instance.kind.is_registered() && self.indicator_requires_trade_data(&instance.kind)
-            })
-        });
-        if !self.options.trade_data_requested && !required_trade_data {
-            self.options.footprint = self.options.footprint.with_visible(false);
-        }
         self.reconcile_indicator_layout(true);
         self.reconcile_data_requirements(previous_requirements);
     }

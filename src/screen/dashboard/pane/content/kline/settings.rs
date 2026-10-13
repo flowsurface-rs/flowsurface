@@ -299,15 +299,13 @@ impl ChartOptions {
         enabled: bool,
         basis: data::chart::Basis,
     ) -> bool {
-        if self.trade_data_requested == enabled {
-            return false;
-        }
-
+        let mut changed = self.trade_data_requested != enabled;
         self.trade_data_requested = enabled;
         if !matches!(basis, data::chart::Basis::Tick(_)) {
+            changed |= self.footprint.visible != enabled;
             self.footprint = self.footprint.with_visible(enabled);
         }
-        true
+        changed
     }
 }
 
