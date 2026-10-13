@@ -326,40 +326,15 @@ impl KlineData {
             })
     }
 
-    pub fn recalculate_indicators(
+    pub fn append_indicator_frames(
         &mut self,
-        indicators: &IndicatorInstanceStore,
         indicator_ids: &[IndicatorInstanceId],
-        scope: IndicatorUpdateScope,
+        start: usize,
         trade_data_enabled: bool,
     ) -> Arc<[IndicatorFrame]> {
-        let scope = if scope.is_full() || !self.indicator_host.has_entries(indicator_ids) {
-            IndicatorUpdateScope::Full
-        } else {
-            scope
-        };
-        let full_rebuild = scope.is_full();
-        let frames = match scope {
-            IndicatorUpdateScope::Full => {
-                let frames = self.committed_indicator_frames(trade_data_enabled);
-                self.indicator_host
-                    .recalculate_selected(indicator_ids, indicators, &frames);
-                frames
-            }
-            IndicatorUpdateScope::From(start) => self
-                .evaluate_closed_append_from(start, indicator_ids, trade_data_enabled)
-                .into(),
-        };
-        if let Some(frame) = self.latest_indicator_frame(trade_data_enabled) {
-            let preview_ids = if full_rebuild {
-                self.indicator_host.dependent_ids(indicator_ids)
-            } else {
-                indicator_ids.to_vec()
-            };
-            self.indicator_host
-                .preview_open_selected(&preview_ids, &frame);
-        }
-        frames
+        let frames = self.evaluate_closed_append_from(start, indicator_ids, trade_data_enabled);
+        self.preview_indicator_open_for(indicator_ids, trade_data_enabled);
+        frames.into()
     }
 
     pub fn committed_indicator_frames(&self, trade_data_enabled: bool) -> Arc<[IndicatorFrame]> {
@@ -623,7 +598,7 @@ impl KlineData {
         };
         let scope = match basis {
             Basis::Tick(_) => self.series[index].insert_tick_trades(trades),
-            Basis::Time(timeframe) => self.series[index].insert_time_trades(trades, timeframe),
+            Basis::Time(_) => self.series[index].insert_time_trades(trades),
         };
         let committed_len = if matches!(basis, Basis::Tick(_)) && is_base {
             self.base_series()
@@ -673,7 +648,7 @@ impl KlineData {
         is_batches_done: bool,
         basis: Basis,
     ) -> KlineDataChange {
-        let Basis::Time(timeframe) = basis else {
+        let Basis::Time(_) = basis else {
             return KlineDataChange::Unchanged;
         };
 
@@ -683,7 +658,7 @@ impl KlineData {
                 .get(&ticker_info)
                 .copied()
                 .and_then(|index| self.series.get_mut(index))
-                .map(|series| series.insert_time_trades(trades, timeframe));
+                .map(|series| series.insert_time_trades(trades));
         }
         if trades.is_empty() && !is_batches_done {
             KlineDataChange::Unchanged

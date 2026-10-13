@@ -1,7 +1,7 @@
-use super::UpdatePolicy;
 use super::fetch::FetchCoordinator;
 use super::presentation::{IndicatorPresentationCache, IndicatorPresentationResolver};
 use super::rebuild::{RebuildCoordinator, RebuildSnapshot};
+use super::{DataRequirements, UpdatePolicy};
 use crate::widget::chart::kline::IndicatorPresentationContext;
 use data::chart::Basis;
 use data::chart::kline::composition::{ChartComposition, MarkKind};
@@ -76,14 +76,6 @@ impl IndicatorChange {
             }
         }
     }
-}
-
-#[derive(Default)]
-pub(super) struct IndicatorDataRequirements {
-    pub(super) klines: bool,
-    pub(super) directional_volume: bool,
-    pub(super) trades: bool,
-    pub(super) open_interest: bool,
 }
 
 pub(super) struct IndicatorRebuildPlan {
@@ -354,8 +346,8 @@ impl IndicatorState {
         &self,
         basis: Basis,
         base_ticker: TickerInfo,
-    ) -> IndicatorDataRequirements {
-        let mut requirements = IndicatorDataRequirements::default();
+    ) -> DataRequirements {
+        let mut requirements = DataRequirements::default();
         for id in self.selected_indicators() {
             let Some(instance) = self.indicator(id) else {
                 continue;
@@ -435,27 +427,6 @@ impl IndicatorState {
                 input_id,
                 source,
             }) => {
-                if !self.selected_indicators().contains(&id)
-                    || !self.selected_indicators().contains(&source.instance_id)
-                    || self.indicator(id).is_none_or(|instance| {
-                        !instance
-                            .kind
-                            .definition()
-                            .source_inputs
-                            .iter()
-                            .any(|input| input.id == input_id && input.allow_indicator)
-                    })
-                    || self.indicator(source.instance_id).is_none_or(|instance| {
-                        instance
-                            .kind
-                            .definition()
-                            .sourceable_numeric_output(&source.channel_id)
-                            .is_none()
-                    })
-                {
-                    return IndicatorChange::Unchanged;
-                }
-
                 let mut candidate_instances = self.instances.clone();
                 if !candidate_instances.update_source_binding(
                     id,
@@ -1125,17 +1096,11 @@ impl IndicatorState {
         let mut incremental_frames = Vec::new();
         let mut changed = false;
 
-        for group in self
-            .ready_rebuild_groups(data, fetch)
-            .into_iter()
-            .filter(|group| !group.scope.is_full())
-        {
-            let frames = data.recalculate_indicators(
-                &self.instances,
-                &group.dirty_ids,
-                group.scope,
-                trade_data_enabled,
-            );
+        for group in self.ready_rebuild_groups(data, fetch).into_iter() {
+            let IndicatorUpdateScope::From(start) = group.scope else {
+                continue;
+            };
+            let frames = data.append_indicator_frames(&group.dirty_ids, start, trade_data_enabled);
             incremental_frames.extend(frames.iter().cloned());
             self.dirty_reasons
                 .retain(|id, _| !group.dirty_ids.contains(id));

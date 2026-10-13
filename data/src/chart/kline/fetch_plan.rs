@@ -1,6 +1,6 @@
 use super::indicators::{AvailabilityContext, IndicatorAvailability, availability};
 use super::series::KlineSeries;
-use super::{IndicatorInstanceId, IndicatorInstanceStore};
+use super::{IndicatorHistoryRequirement, IndicatorInstanceId, IndicatorInstanceStore};
 use crate::chart::Basis;
 use exchange::adapter::Exchange;
 use exchange::{TickerInfo, Timeframe, UnixMs};
@@ -56,8 +56,7 @@ pub struct FetchPlanInput<'a> {
     pub trade_data_required: bool,
     pub trade_fetch_enabled: bool,
     pub visible_points: u64,
-    pub required_history_start: Option<UnixMs>,
-    pub required_history_bars: u64,
+    pub history_requirement: IndicatorHistoryRequirement,
     pub now: UnixMs,
 }
 
@@ -70,11 +69,10 @@ impl FetchPlanInput<'_> {
         let dt = timeframe.to_milliseconds().max(1);
         let visible_points = self.visible_points.max(2);
 
-        let indicator_warmup_bars = self
-            .indicator_instances
-            .dependency_warmup_bars(self.active_indicators);
+        let indicator_warmup_bars = self.history_requirement.warmup_bars();
 
-        let required_history_bars = indicator_warmup_bars.max(self.required_history_bars);
+        let required_history_bars =
+            indicator_warmup_bars.max(self.history_requirement.history_bars());
         let base_fetch_bars = DEFAULT_FETCH_BARS.max(visible_points + required_history_bars);
         let comparison_fetch_bars = DEFAULT_FETCH_BARS.max(visible_points);
         let base_span = base_fetch_bars.saturating_mul(dt);
@@ -128,7 +126,8 @@ impl FetchPlanInput<'_> {
                 window_min
             };
             let warmup_start = self
-                .required_history_start
+                .history_requirement
+                .history_start()
                 .map(|start| start.min(indicator_warmup_start))
                 .unwrap_or(indicator_warmup_start);
 
@@ -182,7 +181,7 @@ impl FetchPlanInput<'_> {
                 let check_latest = window_max.saturating_add(dt).min(series_latest);
 
                 if let Some((missing_earliest, missing_latest)) =
-                    base_series.missing_kline_range(check_earliest, check_latest, timeframe)
+                    base_series.missing_kline_range(check_earliest, check_latest)
                 {
                     let stage = if missing_earliest < window_max.saturating_add(dt)
                         && missing_latest > window_min

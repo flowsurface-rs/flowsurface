@@ -814,13 +814,6 @@ impl KlineSeries {
         }
     }
 
-    pub fn set_basis(&mut self, basis: Basis) {
-        if self.basis() != basis {
-            let preserve_raw_trades = self.basis().is_time() == basis.is_time();
-            self.set_aggregation_basis(basis, preserve_raw_trades);
-        }
-    }
-
     pub fn trade_sequence_id(&self) -> uuid::Uuid {
         self.trade_sequence_id
     }
@@ -1125,7 +1118,6 @@ impl KlineSeries {
         &self,
         earliest: UnixMs,
         latest: UnixMs,
-        _timeframe: Timeframe,
     ) -> Option<(UnixMs, UnixMs)> {
         match &self.data {
             PlotData::TimeBased(series) => series.missing_kline_range(earliest, latest),
@@ -1207,11 +1199,6 @@ impl KlineSeries {
         (visual_index < self.point_count()).then_some(visual_index)
     }
 
-    pub fn reset_for_basis(&mut self, preserve_raw_trades: bool) {
-        let basis = self.basis();
-        self.set_aggregation_basis(basis, preserve_raw_trades);
-    }
-
     pub fn insert_tick_trades(&mut self, trades: &[Trade]) -> IndicatorUpdateScope {
         if !matches!(self.data, PlotData::TickBased(_)) {
             return IndicatorUpdateScope::From(self.point_count());
@@ -1233,11 +1220,7 @@ impl KlineSeries {
         IndicatorUpdateScope::From(first_updated)
     }
 
-    pub fn insert_time_trades(
-        &mut self,
-        trades: &[Trade],
-        _timeframe: Timeframe,
-    ) -> IndicatorUpdateScope {
+    pub fn insert_time_trades(&mut self, trades: &[Trade]) -> IndicatorUpdateScope {
         if !matches!(self.data, PlotData::TimeBased(_)) {
             return IndicatorUpdateScope::From(self.point_count());
         }

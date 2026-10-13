@@ -886,7 +886,7 @@ impl KlineChart {
         &self,
         active_indicators: &[IndicatorInstanceId],
         visible_points: u64,
-    ) -> (Option<UnixMs>, u64) {
+    ) -> persisted::IndicatorHistoryRequirement {
         let reference_time = match self.basis {
             Basis::Time(timeframe) => visible_window(
                 self.data.series(),
@@ -898,10 +898,8 @@ impl KlineChart {
             .unwrap_or_else(UnixMs::now),
             Basis::Tick(_) => UnixMs::now(),
         };
-        let requirement =
-            self.indicators
-                .history_requirement(active_indicators, self.basis, reference_time);
-        (requirement.history_start(), requirement.history_bars())
+        self.indicators
+            .history_requirement(active_indicators, self.basis, reference_time)
     }
 
     fn recalculate_indicators(&mut self) -> bool {
@@ -1103,7 +1101,7 @@ impl KlineChart {
         let active_indicators = self.selected_indicators();
         let data_requirements = self.data_requirements();
 
-        let (required_history_start, required_history_bars) =
+        let history_requirement =
             self.indicator_history_requirement(&active_indicators, visible_points);
         let base_ticker = self.data.base_ticker();
 
@@ -1115,11 +1113,10 @@ impl KlineChart {
             active_indicators: &active_indicators,
             indicator_instances: &self.indicators.instances,
             open_interest_required: data_requirements.open_interest,
-            trade_data_required: self.data_requirements().trades,
+            trade_data_required: data_requirements.trades,
             trade_fetch_enabled: crate::connector::fetcher::is_trade_fetch_enabled(),
             visible_points,
-            required_history_start,
-            required_history_bars,
+            history_requirement,
             now: UnixMs::now(),
         };
 
@@ -1841,23 +1838,14 @@ impl KlineChart {
     }
 
     fn data_requirements(&self) -> DataRequirements {
-        let mut requirements = DataRequirements {
-            klines: !self.data.selected_tickers().is_empty(),
-            trades: self.options.trade_data_requested || matches!(self.basis, Basis::Tick(_)),
-            ..DataRequirements::default()
-        };
-
-        let indicator_requirements = self
+        let mut requirements = self
             .indicators
             .data_requirements(self.basis, self.data.base_ticker());
-        requirements.klines |= indicator_requirements.klines;
-        requirements.directional_volume |= indicator_requirements.directional_volume;
-        requirements.trades |= indicator_requirements.trades;
-        requirements.open_interest |= indicator_requirements.open_interest;
-
-        if self.options.footprint.visible || self.studies.requires_trade_data() {
-            requirements.trades = true;
-        }
+        requirements.klines |= !self.data.selected_tickers().is_empty();
+        requirements.trades |= self.options.trade_data_requested
+            || matches!(self.basis, Basis::Tick(_))
+            || self.options.footprint.visible
+            || self.studies.requires_trade_data();
         requirements
     }
 

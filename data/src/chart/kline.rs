@@ -961,28 +961,6 @@ impl IndicatorInstanceStore {
             .fold(Default::default(), IndicatorHistoryRequirement::merge)
     }
 
-    pub fn dependency_warmup_bars(&self, active: &[IndicatorInstanceId]) -> u64 {
-        let active_set = active
-            .iter()
-            .copied()
-            .filter(|id| self.get(*id).is_some())
-            .collect::<BTreeSet<_>>();
-        let mut memo = BTreeMap::new();
-        active
-            .iter()
-            .filter_map(|id| {
-                dependency_warmup_for_instance(
-                    *id,
-                    self,
-                    &active_set,
-                    &mut memo,
-                    &mut BTreeSet::new(),
-                )
-            })
-            .max()
-            .unwrap_or(0)
-    }
-
     fn rebuild_warmup_cache(&mut self) {
         self.warmup_bars_by_id = self
             .instances
@@ -1118,43 +1096,6 @@ impl IndicatorInstanceStore {
     }
 }
 
-fn dependency_warmup_for_instance(
-    id: IndicatorInstanceId,
-    store: &IndicatorInstanceStore,
-    active: &BTreeSet<IndicatorInstanceId>,
-    memo: &mut BTreeMap<IndicatorInstanceId, u64>,
-    visiting: &mut BTreeSet<IndicatorInstanceId>,
-) -> Option<u64> {
-    if let Some(warmup) = memo.get(&id) {
-        return Some(*warmup);
-    }
-    if !visiting.insert(id) {
-        return Some(0);
-    }
-    let instance = store.get(id)?;
-    let own = store.warmup_bars(id).unwrap_or_default();
-    let dependency = instance
-        .source_bindings
-        .keys()
-        .filter_map(|source_id| {
-            store
-                .dependency_target(instance, source_id, active)
-                .ok()
-                .flatten()
-                .and_then(|target| {
-                    dependency_warmup_for_instance(target.id, store, active, memo, visiting)
-                })
-        })
-        .max()
-        .unwrap_or(0);
-    visiting.remove(&id);
-    let warmup = own
-        .saturating_add(dependency)
-        .min(MAX_INDICATOR_HISTORY_BARS);
-    memo.insert(id, warmup);
-    Some(warmup)
-}
-
 fn history_requirement_for_instance(
     id: IndicatorInstanceId,
     store: &IndicatorInstanceStore,
@@ -1171,11 +1112,12 @@ fn history_requirement_for_instance(
         return Some(IndicatorHistoryRequirement::default());
     }
     let instance = store.get(id)?;
+    let own_warmup = store.warmup_bars(id);
     let own = instance.kind.history_requirement_with_warmup(
         instance.config.clone(),
         basis,
         reference_time,
-        store.warmup_bars(id),
+        own_warmup,
     );
     let dependency = instance
         .source_bindings
@@ -1208,6 +1150,10 @@ fn history_requirement_for_instance(
         history_start,
         own.history_bars()
             .saturating_add(dependency.history_bars())
+            .min(MAX_INDICATOR_HISTORY_BARS),
+        own_warmup
+            .unwrap_or_default()
+            .saturating_add(dependency.warmup_bars())
             .min(MAX_INDICATOR_HISTORY_BARS),
     );
     memo.insert(id, requirement);

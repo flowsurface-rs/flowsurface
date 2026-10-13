@@ -1068,7 +1068,7 @@ impl IndicatorRegistration {
             }
             _ => warmup,
         };
-        IndicatorHistoryRequirement::new(start.map(|start| UnixMs::new(start as u64)), bars)
+        IndicatorHistoryRequirement::new(start.map(|start| UnixMs::new(start as u64)), bars, warmup)
     }
 
     pub fn warmup_bars(&self, config: &IndicatorConfig) -> Option<u64> {

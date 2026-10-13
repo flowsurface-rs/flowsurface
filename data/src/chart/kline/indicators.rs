@@ -762,13 +762,15 @@ fn default_availability(_context: AvailabilityContext) -> IndicatorAvailability 
 pub struct IndicatorHistoryRequirement {
     history_start: Option<UnixMs>,
     history_bars: u64,
+    warmup_bars: u64,
 }
 
 impl IndicatorHistoryRequirement {
-    pub fn new(history_start: Option<UnixMs>, history_bars: u64) -> Self {
+    pub fn new(history_start: Option<UnixMs>, history_bars: u64, warmup_bars: u64) -> Self {
         Self {
             history_start,
             history_bars,
+            warmup_bars,
         }
     }
 
@@ -780,6 +782,10 @@ impl IndicatorHistoryRequirement {
         self.history_bars
     }
 
+    pub fn warmup_bars(self) -> u64 {
+        self.warmup_bars
+    }
+
     pub(crate) fn merge(self, other: Self) -> Self {
         Self {
             history_start: match (self.history_start, other.history_start) {
@@ -788,6 +794,7 @@ impl IndicatorHistoryRequirement {
                 (None, None) => None,
             },
             history_bars: self.history_bars.max(other.history_bars),
+            warmup_bars: self.warmup_bars.max(other.warmup_bars),
         }
     }
 }

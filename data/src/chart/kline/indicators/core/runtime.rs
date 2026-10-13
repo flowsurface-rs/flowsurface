@@ -137,10 +137,6 @@ impl IndicatorHost {
         self.runtime_diagnostics.insert(instance.id, error);
     }
 
-    fn clear_runtime_diagnostic(&mut self, id: IndicatorInstanceId) {
-        self.runtime_diagnostics.remove(&id);
-    }
-
     pub fn remap_outputs(&mut self, previous_indices: &[Option<usize>]) {
         for entry in &mut self.entries {
             entry.output_indices = Some(OutputIndexMap::Explicit(
@@ -269,16 +265,6 @@ impl IndicatorHost {
         self.rebuild_graph(active, instances);
     }
 
-    pub fn recalculate(
-        &mut self,
-        active: &[IndicatorInstanceId],
-        instances: &IndicatorInstanceStore,
-        frames: &[IndicatorFrame],
-    ) {
-        let _ =
-            self.recalculate_interruptible(active, instances, frames, || ControlFlow::Continue(()));
-    }
-
     pub fn recalculate_interruptible(
         &mut self,
         active: &[IndicatorInstanceId],
@@ -305,90 +291,19 @@ impl IndicatorHost {
     pub fn replay_closed_interruptible(
         &mut self,
         frames: &[IndicatorFrame],
-        control: impl FnMut() -> ControlFlow<()>,
-    ) -> ControlFlow<()> {
-        self.replay_frames(frames, None, control)
-    }
-
-    fn replay_frames(
-        &mut self,
-        frames: &[IndicatorFrame],
-        selected: Option<&FxHashSet<IndicatorInstanceId>>,
         mut control: impl FnMut() -> ControlFlow<()>,
     ) -> ControlFlow<()> {
         for chunk in frames.chunks(64) {
             for frame in chunk {
                 control()?;
                 for id in self.execution_order.clone() {
-                    if selected.is_none_or(|selected| selected.contains(&id)) {
-                        control()?;
-                        self.evaluate_entry(id, frame, false);
-                    }
+                    control()?;
+                    self.evaluate_entry(id, frame, false);
                 }
             }
             std::thread::yield_now();
         }
         ControlFlow::Continue(())
-    }
-
-    pub fn recalculate_selected(
-        &mut self,
-        dirty: &[IndicatorInstanceId],
-        instances: &IndicatorInstanceStore,
-        frames: &[IndicatorFrame],
-    ) {
-        let affected = self.dependent_ids(dirty);
-        let affected_set = affected.iter().copied().collect::<FxHashSet<_>>();
-        let mut active = self.execution_order.clone();
-        for id in dirty {
-            if !active.contains(id) {
-                active.push(*id);
-            }
-        }
-
-        if active.iter().all(|id| affected_set.contains(id)) {
-            self.recalculate(&active, instances, frames);
-            return;
-        }
-
-        let mut replacements = FxHashMap::default();
-        for id in &affected {
-            let Some(instance) = instances.get(*id) else {
-                replacements.insert(*id, None);
-                continue;
-            };
-            match IndicatorRuntimeEntry::new(instance) {
-                Ok(Some(entry)) => {
-                    self.clear_runtime_diagnostic(*id);
-                    replacements.insert(*id, Some(entry));
-                }
-                Ok(None) => {
-                    self.clear_runtime_diagnostic(*id);
-                    replacements.insert(*id, None);
-                }
-                Err(error) => {
-                    self.record_runtime_diagnostic(instance, error);
-                    replacements.insert(*id, None);
-                }
-            }
-        }
-
-        let entries = std::mem::take(&mut self.entries);
-        self.entries = entries
-            .into_iter()
-            .filter_map(|entry| match replacements.remove(&entry.id) {
-                Some(replacement) => replacement,
-                None => Some(entry),
-            })
-            .collect();
-        for id in affected {
-            if let Some(Some(entry)) = replacements.remove(&id) {
-                self.entries.push(entry);
-            }
-        }
-        self.rebuild_entry_indices();
-        self.rebuild_graph(&active, instances);
-        let _ = self.replay_frames(frames, Some(&affected_set), || ControlFlow::Continue(()));
     }
 
     pub fn set_active(
@@ -713,7 +628,7 @@ impl IndicatorHost {
                     Some(indices) => indices.get(&index).copied(),
                     None => entry.current_index(index),
                 };
-                // shortcut: scan borrowed segments; add an interval index if selection becomes costly.
+
                 entry
                     .runtime
                     .segment_outputs()
