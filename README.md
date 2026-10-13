@@ -27,11 +27,9 @@ An open-source native desktop charting application for crypto markets. Supports 
     - **DOM (Depth of Market) / Ladder:** Displays current L2 orderbook alongside recent trade volumes on grouped price levels.
     - **Comparison:** Line graph for comparing multiple data sources, normalized by kline `close` prices on a percentage scale
 - Real-time sound effects driven by trade streams
-- Multi window/monitor support
-- Pane linking for quickly switching tickers across multiple panes
-- Persistent layouts and customizable themes with editable color palettes
-
-#
+- [\*](#platform-notes)Multi window/monitor support on macOS and Linux.
+- Pane linking for quickly switching tickers across multiple panes.
+- Persistent layouts and customizable themes with editable color palettes.
 
 #### Historical Trades on Footprint Charts:
 
@@ -125,6 +123,15 @@ cd flowsurface
 cargo build --release
 cargo run --release
 ```
+
+### Platform Notes
+
+<details open>
+<summary><strong>Windows</strong></summary>
+
+> ⚠️ Multi-window support is disabled on Windows due to a [redraw issue](https://github.com/rust-windowing/winit/issues/3648) affecting iced’s current winit backend.
+
+</details>
 
 ## Community
 

@@ -5,6 +5,9 @@ use iced::{Point, Size, Subscription, Task, window};
 
 pub use iced::window::{Id, Position, Settings, close, open};
 
+// Windows popout rendering can freeze, enable when upstream rendering is fixed.
+pub const MULTI_WINDOW_SUPPORTED: bool = !cfg!(target_os = "windows");
+
 #[derive(Debug, Clone, Copy)]
 pub struct Window {
     pub id: Id,

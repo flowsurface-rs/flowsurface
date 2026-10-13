@@ -1594,22 +1594,24 @@ impl State {
             ));
         }
 
-        if is_popout {
-            buttons = buttons.push(button_with_tooltip(
-                icon_text(Icon::Popout, 12),
-                Message::Merge,
-                Some("Merge"),
-                tooltip_pos,
-                control_btn_style(is_popout),
-            ));
-        } else if total_panes > 1 {
-            buttons = buttons.push(button_with_tooltip(
-                icon_text(Icon::Popout, 12),
-                Message::Popout,
-                Some("Pop out"),
-                tooltip_pos,
-                control_btn_style(is_popout),
-            ));
+        if window::MULTI_WINDOW_SUPPORTED {
+            if is_popout {
+                buttons = buttons.push(button_with_tooltip(
+                    icon_text(Icon::Popout, 12),
+                    Message::Merge,
+                    Some("Merge"),
+                    tooltip_pos,
+                    control_btn_style(is_popout),
+                ));
+            } else if total_panes > 1 {
+                buttons = buttons.push(button_with_tooltip(
+                    icon_text(Icon::Popout, 12),
+                    Message::Popout,
+                    Some("Pop out"),
+                    tooltip_pos,
+                    control_btn_style(is_popout),
+                ));
+            }
         }
 
         if total_panes > 1 {
