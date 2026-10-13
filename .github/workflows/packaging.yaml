@@ -1,0 +1,127 @@
+name: Packaging
+on:
+    pull_request:
+        paths:
+            - 'scripts/packaging/**'
+            - 'scripts/package-linux.sh'
+            - 'src/window.rs'
+            - 'scripts/build-macos.sh'
+            - 'scripts/build-windows.sh'
+            - 'scripts/package-macos.sh'
+            - 'scripts/package-windows.ps1'
+            - 'assets/app-icon/**'
+            - 'build.rs'
+            - 'Cargo.toml'
+            - 'Cargo.lock'
+            - '.github/workflows/packaging.yaml'
+            - '.github/workflows/release.yaml'
+    workflow_dispatch:
+permissions:
+    contents: read
+jobs:
+    package:
+        strategy:
+            matrix:
+                os: [macos-latest, windows-latest, ubuntu-24.04, ubuntu-24.04-arm]
+        runs-on: ${{ matrix.os }}
+        steps:
+            - uses: actions/checkout@v7
+            - name: Read repository toolchain
+              id: toolchain
+              shell: bash
+              run: |
+                  channel=$(sed -nE 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"([^"]+)"[[:space:]]*$/\1/p' rust-toolchain.toml)
+                  test -n "$channel"
+                  echo "channel=$channel" >> "$GITHUB_OUTPUT"
+            - uses: dtolnay/rust-toolchain@v1
+              with:
+                  toolchain: ${{ steps.toolchain.outputs.channel }}
+            - name: Package and check Linux
+              if: runner.os == 'Linux'
+              shell: bash
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y pkg-config libudev-dev libxkbcommon-dev libasound2-dev desktop-file-utils
+                  if [ "$(uname -m)" = aarch64 ]; then arch=aarch64; else arch=x86_64; fi
+                  bash scripts/package-linux.sh package "$arch"
+                  desktop-file-validate "target/packaging/linux-$arch/share/applications/com.flowsurface.flowsurface.desktop"
+            - name: Package macOS
+              if: runner.os == 'macOS'
+              run: |
+                  bash scripts/build-macos.sh universal
+                  bash scripts/package-macos.sh
+                  lipo target/packaging/flowsurface -verify_arch arm64 x86_64
+                  hdiutil verify target/packaging/flowsurface-universal-macos.dmg
+                  hdiutil attach target/packaging/flowsurface-universal-macos.dmg -nobrowse -mountpoint "$RUNNER_TEMP/flowsurface-dmg"
+                  codesign --verify --strict "$RUNNER_TEMP/flowsurface-dmg/Flowsurface.app"
+                  test -L "$RUNNER_TEMP/flowsurface-dmg/Applications"
+                  hdiutil detach "$RUNNER_TEMP/flowsurface-dmg"
+            - name: Build Windows
+              if: runner.os == 'Windows'
+              shell: bash
+              run: bash scripts/build-windows.sh x86_64
+            - name: Check MSIX installation, upgrade and uninstall with a test certificate
+              if: runner.os == 'Windows'
+              shell: powershell
+              run: |
+                  $publisher = 'CN=Flowsurface Packaging Test'
+                  $cert = New-SelfSignedCertificate -Type Custom -Subject $publisher -KeyUsage DigitalSignature -FriendlyName 'CI MSIX test' -CertStoreLocation Cert:\CurrentUser\My -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.3', '2.5.29.19={text}')
+                  $cer = "$env:RUNNER_TEMP/msix-test.cer"
+                  Export-Certificate -Cert $cert -FilePath $cer | Out-Null
+                  $trusted = Import-Certificate -FilePath $cer -CertStoreLocation Cert:\LocalMachine\TrustedPeople
+                  $sdk = Get-ChildItem "${env:ProgramFiles(x86)}/Windows Kits/10/bin/*/x64/signtool.exe" | Sort-Object { [version]$_.Directory.Parent.Name } -Descending | Select-Object -First 1
+                  if (!$sdk) { throw "SignTool not found" }
+                  try {
+                      & $sdk.FullName sign /fd SHA256 /sha1 $cert.Thumbprint target/packaging/win-unsigned/flowsurface.exe
+                      if ($LASTEXITCODE -ne 0) { throw "Test EXE signing failed" }
+                      ./scripts/package-windows.ps1 -Executable target/packaging/win-unsigned/flowsurface.exe -Publisher $publisher -Version 0.0.0 -Output target/packaging/flowsurface-older.msix
+                      ./scripts/package-windows.ps1 -Executable target/packaging/win-unsigned/flowsurface.exe -Publisher $publisher
+                      $msix = (Resolve-Path target/packaging/flowsurface-x86_64-windows.msix).Path
+                      $older = (Resolve-Path target/packaging/flowsurface-older.msix).Path
+                      foreach ($package in @($older, $msix)) {
+                          & $sdk.FullName sign /fd SHA256 /sha1 $cert.Thumbprint $package
+                          if ($LASTEXITCODE -ne 0) { throw "Test signing failed" }
+                          & $sdk.FullName verify /pa /v $package
+                          if ($LASTEXITCODE -ne 0) { throw "Test signature verification failed" }
+                      }
+                      Add-AppxPackage -Path $older
+                      $installed = Get-AppxPackage -Name Flowsurface.Flowsurface
+                      if (!$installed) { throw "Older package not installed" }
+                      $packageData = "$env:LOCALAPPDATA/Packages/$($installed.PackageFamilyName)/LocalState/packaging-check.txt"
+                      New-Item -ItemType Directory -Force (Split-Path $packageData) | Out-Null
+                      Set-Content $packageData 'preserve package data'
+                      $data = "$env:APPDATA/flowsurface/packaging-check.txt"
+                      New-Item -ItemType Directory -Force (Split-Path $data) | Out-Null
+                      Set-Content $data 'preserve user data'
+                      Add-AppxPackage -Path $msix
+                      $installed = Get-AppxPackage -Name Flowsurface.Flowsurface
+                      if (!$installed) { throw "Package not installed" }
+                      $exe = Join-Path $installed.InstallLocation flowsurface.exe
+                      if ((Get-AuthenticodeSignature $exe).Status -ne 'Valid') { throw "Installed EXE signature invalid" }
+                      if ((Get-Item $exe).VersionInfo.ProductName -ne 'flowsurface') { throw "Executable resources missing" }
+                      if (!(Get-StartApps | Where-Object AppID -eq "$($installed.PackageFamilyName)!Flowsurface")) { throw "Start menu entry missing" }
+                      if ((Get-Content $data) -ne 'preserve user data') { throw "Upgrade changed user data" }
+                      if ((Get-Content $packageData) -ne 'preserve package data') { throw "Upgrade changed package-managed data" }
+                      $rejected = $false
+                      try { Add-AppxPackage -Path $older } catch {
+                          if ($_.Exception.ToString() -notmatch '80073D06') { throw }
+                          $rejected = $true
+                      }
+                      if (!$rejected) { throw "Downgrade was not rejected" }
+                      Remove-AppxPackage -Package $installed.PackageFullName
+                      if (Get-AppxPackage -Name Flowsurface.Flowsurface) { throw "Package remains after uninstall" }
+                      if (Test-Path $packageData) { throw "Package-managed data remains after uninstall" }
+                      if ((Get-Content $data) -ne 'preserve user data') { throw "Uninstall changed user data" }
+                  } finally {
+                      Get-AppxPackage -Name Flowsurface.Flowsurface | Remove-AppxPackage
+                      Remove-Item "Cert:/CurrentUser/My/$($cert.Thumbprint)" -Force
+                      Remove-Item "Cert:/LocalMachine/TrustedPeople/$($trusted.Thumbprint)" -Force
+                  }
+            - uses: actions/upload-artifact@v7
+              with:
+                  path: |
+                      target/packaging/*linux.tar.gz
+                      target/packaging/*.dmg
+                      target/packaging/flowsurface-x86_64-windows.msix
+                  archive: false
+                  if-no-files-found: error

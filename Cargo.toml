@@ -10,7 +10,7 @@ repository.workspace = true
 homepage.workspace = true
 
 [workspace.package]
-version = "0.8.9"
+version = "0.8.10"
 edition = "2024"
 repository = "https://github.com/flowsurface-rs/flowsurface"
 homepage = "https://flowsurface.com"
@@ -33,8 +33,8 @@ enum-map = "2.7.3"
 url = "2.5.8"
 rand = "0.10.1"
 uuid = { version = "1.23.1", features = ["v4"] }
-data = { version = "0.8.9", path = "data", package = "flowsurface-data" }
-exchange = { version = "0.8.9", path = "exchange", package = "flowsurface-exchange" }
+data = { version = "0.8.10", path = "data", package = "flowsurface-data" }
+exchange = { version = "0.8.10", path = "exchange", package = "flowsurface-exchange" }
 arrow-ipc = { version = "59.1", default-features = false }
 arrow-array = { version = "59.1", default-features = false }
 arrow-schema = { version = "59.1", default-features = false }
@@ -79,3 +79,11 @@ data.workspace = true
 
 [features]
 debug = ["iced/hot"]
+
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = "3.0.2"
+
+[profile.packaging]
+inherits = "release"
+lto = "fat"
+codegen-units = 1

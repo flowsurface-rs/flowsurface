@@ -1,37 +1,21 @@
 #!/bin/bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
 EXE_NAME="flowsurface.exe"
 ARCH=${1:-x86_64} # x86_64 | aarch64
-VERSION=$(grep '^version = ' Cargo.toml | cut -d'"' -f2)
+case "$ARCH" in
+  x86_64|aarch64) ;;
+  *) echo "Unsupported Windows architecture: $ARCH" >&2; exit 1 ;;
+esac
 
-# update package version on Cargo.toml
-cargo install cargo-edit
-cargo set-version $VERSION
-
-rustup override set stable-msvc
-
-# set target triple and zip name
-if [ "$ARCH" = "aarch64" ]; then
-  TARGET_TRIPLE="aarch64-pc-windows-msvc"
-  ZIP_NAME="flowsurface-aarch64-windows.zip"
-else
-  TARGET_TRIPLE="x86_64-pc-windows-msvc"
-  ZIP_NAME="flowsurface-x86_64-windows.zip"
-fi
+TARGET_TRIPLE="$ARCH-pc-windows-msvc"
 
 # build binary
 rustup target add $TARGET_TRIPLE
-cargo build --release --target=$TARGET_TRIPLE
+RUSTFLAGS="${RUSTFLAGS:-} -C target-feature=+crt-static" cargo build --profile packaging --locked --target="$TARGET_TRIPLE"
 
 # create staging directory
-mkdir -p target/release/win-portable
+mkdir -p target/packaging/win-unsigned
 
-# copy executable and assets (fix paths)
-cp "target/$TARGET_TRIPLE/release/$EXE_NAME" target/release/win-portable/
-if [ -d "assets" ]; then
-    cp -r assets target/release/win-portable/
-fi
-
-# create zip archive
-cd target/release
-powershell -Command "Compress-Archive -Path win-portable\* -DestinationPath $ZIP_NAME -Force"
-echo "Created $ZIP_NAME"
+# Fonts and sounds are embedded in the executable.
+cp "target/$TARGET_TRIPLE/packaging/$EXE_NAME" target/packaging/win-unsigned/

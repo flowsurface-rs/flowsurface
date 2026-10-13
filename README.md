@@ -76,13 +76,17 @@ in Settings → Network. Three modes are available:
 
 ### Method 1: Prebuilt Binaries
 
-Standalone executables are available for Windows, macOS, and Linux on the [Releases page](https://github.com/flowsurface-rs/flowsurface/releases).
+Downloads are available on the [Releases page](https://github.com/flowsurface-rs/flowsurface/releases).
+
+- **macOS**: Open the universal DMG and drag Flowsurface into Applications. Supports Apple Silicon and Intel Macs running macOS 11 or newer.
+- **Windows**: Run the x64 MSIX to install for your current user, then launch Flowsurface from the Start menu. No administrator approval is required.
+- **Linux**: Extract the archive and run `./install.sh` without sudo, then launch Flowsurface from the application menu. Run `./install.sh` from a newer archive to upgrade, or `./uninstall.sh` to remove the app. Settings and credentials are preserved. For portable use, run `./bin/flowsurface` directly.
 
 <details><summary><strong>Having trouble running the file? (Permission/Security warnings)</strong></summary>
  
-Since these binaries are currently unsigned they might get flagged.
+Windows executables and MSIX installers are code-signed; macOS apps have no Apple Developer ID signature or notarization. Security warnings may still appear.
 
-- **Windows**: If you see a "Windows protected your PC" pop-up, click **More info** -> **Run anyway**.
+- **Windows**: If App Installer cannot verify the publisher or signing certificate, [report the installation error](https://github.com/flowsurface-rs/flowsurface/issues).
 - **macOS**: If you see "Developer cannot be verified", control-click (right-click) the app and select **Open**, or go to _System Settings > Privacy & Security_ to allow it.</details>
 
 ### Method 2: Build from Source
