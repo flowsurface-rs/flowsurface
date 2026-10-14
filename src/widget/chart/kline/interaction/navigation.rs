@@ -1,6 +1,4 @@
-use super::{
-    DragAction, HorizontalWheelZoomMode, LayerEffects, PointerMotion, PressAction, UserInteraction,
-};
+use super::{DragAction, HorizontalWheelZoomMode, LayerEffects, PointerMotion, UserInteraction};
 use crate::widget::chart::kline::{
     KlineWidgetEvent, PANEL_SPLITTER_HEIGHT, PanelInteraction, chrome,
     composition::PanelScaleMode,
@@ -126,7 +124,7 @@ impl NavigationView<'_> {
         layout: &PanelLayoutTree,
         scene: Option<&Scene>,
         position: Point,
-        interaction: &mut UserInteraction<PressAction, DragAction>,
+        interaction: &mut UserInteraction,
     ) -> Option<LayerEffects<KlineWidgetEvent>> {
         let mut effects = LayerEffects::captured(RenderRequest::None);
         let action = match zone {

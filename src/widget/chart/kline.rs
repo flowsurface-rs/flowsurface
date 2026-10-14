@@ -59,7 +59,7 @@ pub(crate) use presentation::{
     IndicatorPresentationContext, ResolvedIndicatorLayer, ResolvedIndicatorPresentation,
     ResolvedIndicatorStyleSlot, resolve_indicator_presentation_status,
 };
-use scene::{ChartCoordinates, CursorTarget, Scene, SceneCache, TickIndex, XAxis};
+use scene::{ChartCoordinates, CursorTarget, Scene, SceneCache, XAxis};
 use studies::{
     LayerPaintPhase, LayerPointerInput, StudyObject, StudyObjectEvent, StudyObjectKey, StudyStates,
 };
@@ -142,7 +142,7 @@ struct State {
     study_controls: Option<chrome::PreparedChrome>,
     legends: Option<chrome::PreparedChrome>,
     scene_cache: SceneCache,
-    interaction: UserInteraction<PressAction, DragAction>,
+    interaction: UserInteraction,
     study_objects: StudyStates,
     drawing: WidgetDrawingState,
     y_axis_gutter_width: f32,
@@ -1089,66 +1089,11 @@ impl<'a> KlineWidget<'a> {
         self.coordinates().panel_value_scale(panel_index)
     }
 
-    fn resolve_x_axis(&self) -> Option<XAxis> {
-        match self.basis {
-            data::chart::Basis::Time(timeframe) => {
-                let anchor = self
-                    .series
-                    .iter()
-                    .filter_map(|series| series.latest_point())
-                    .map(|point| point.kline.time)
-                    .max()?;
-
-                Some(XAxis::Time { timeframe, anchor })
-            }
-            data::chart::Basis::Tick(_) => {
-                if self.max_points_available() == 0 {
-                    None
-                } else {
-                    Some(XAxis::Tick {
-                        anchor: TickIndex::ZERO,
-                    })
-                }
-            }
-        }
-    }
-
-    fn max_points_available(&self) -> usize {
-        self.series
-            .iter()
-            .map(KlineSeries::point_count)
-            .max()
-            .unwrap_or_default()
-    }
-
     fn build_bar_units(&self, axis: XAxis, min: i64, max: i64) -> Vec<BarUnitWindow> {
         self.series
             .iter()
             .map(|series| series.bar_unit_window(axis, min, max))
             .collect()
-    }
-
-    fn data_x_bounds(&self, x_axis: XAxis) -> Option<(i64, i64)> {
-        match x_axis {
-            XAxis::Time { .. } => self
-                .series
-                .iter()
-                .filter_map(|series| {
-                    let first = series.first_point()?.kline.time;
-                    let last = series.latest_point()?.kline.time;
-                    Some((x_axis.unit_from_time(first), x_axis.unit_from_time(last)))
-                })
-                .reduce(|(min_unit, max_unit), (first, last)| {
-                    (min_unit.min(first), max_unit.max(last))
-                }),
-            XAxis::Tick { .. } => {
-                let point_count = self.max_points_available();
-                let last = x_axis.unit_from_tick(TickIndex::ZERO);
-                let first = x_axis
-                    .unit_from_tick(TickIndex::from_u64(point_count.saturating_sub(1) as u64));
-                Some((first, last))
-            }
-        }
     }
 
     fn apply_cursor_interaction(
@@ -1457,18 +1402,22 @@ impl<'a> KlineWidget<'a> {
         let horizontal_world = self.horizontal_world;
         let autoscale_plot_width = (x_axis_plot_width + self.autoscale_plot_width_offset).max(1.0);
 
-        let x_axis = self.resolve_x_axis()?;
-        let (data_min_x, data_max_x) = self.data_x_bounds(x_axis)?;
-        let (domain_min_extension, domain_max_extension) =
-            x_axis.output_domain_expansion(self.indicator_instances.max_positive_output_offset());
-        let data_bounds = (
-            data_min_x.saturating_add(domain_min_extension),
-            data_max_x.saturating_add(domain_max_extension),
+        let x_axis = XAxis::for_series(self.basis, self.series)?;
+        let data_bounds = x_axis.data_bounds(self.series)?;
+        let data_max_x = data_bounds.1;
+        let output_offset = self.indicator_instances.max_positive_output_offset();
+        let (min_x_unit, max_x_unit, right_x_unit) = x_axis.visible_window(
+            data_bounds,
+            output_offset,
+            horizontal_world,
+            x_axis_plot_width,
         );
-        let (min_x_unit, max_x_unit, right_x_unit) =
-            horizontal_world.visible_window(data_bounds, x_axis_plot_width);
-        let (autoscale_min_x_unit, autoscale_max_x_unit, _) =
-            horizontal_world.visible_window(data_bounds, autoscale_plot_width);
+        let (autoscale_min_x_unit, autoscale_max_x_unit, _) = x_axis.visible_window(
+            data_bounds,
+            output_offset,
+            horizontal_world,
+            autoscale_plot_width,
+        );
         let source_offsets = self.indicator_instances.source_offsets();
         let (source_min_x_unit, source_max_x_unit) =
             x_axis.source_window(autoscale_min_x_unit, autoscale_max_x_unit, &source_offsets);

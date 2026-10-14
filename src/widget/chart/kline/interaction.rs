@@ -276,14 +276,17 @@ impl<E> LayerEffects<E> {
 const DRAG_THRESHOLD_PX: f32 = 5.0;
 
 #[derive(Debug, Clone, Copy)]
-enum PressIntent<C, D> {
-    Click(C),
-    Drag(D),
-    ClickOrDrag { click: C, drag: D },
+enum PressIntent {
+    Click(PressAction),
+    Drag(DragAction),
+    ClickOrDrag {
+        click: PressAction,
+        drag: DragAction,
+    },
 }
 
-impl<C, D: Copy> PressIntent<C, D> {
-    fn drag_action(&self) -> Option<D> {
+impl PressIntent {
+    fn drag_action(&self) -> Option<DragAction> {
         match self {
             Self::Drag(action) | Self::ClickOrDrag { drag: action, .. } => Some(*action),
             Self::Click(_) => None,
@@ -320,23 +323,23 @@ impl PointerMotion {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct PressGesture<C, D> {
+struct PressGesture {
     motion: PointerMotion,
-    intent: PressIntent<C, D>,
+    intent: PressIntent,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct DragGesture<C, D> {
+struct DragGesture {
     motion: PointerMotion,
-    action: D,
-    press_action: Option<C>,
+    action: DragAction,
+    press_action: Option<PressAction>,
 }
 
 #[derive(Debug, Clone, Copy)]
-enum PointerGesture<C, D> {
+enum PointerGesture {
     Idle,
-    Pressed(PressGesture<C, D>),
-    Dragging(DragGesture<C, D>),
+    Pressed(PressGesture),
+    Dragging(DragGesture),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -353,27 +356,27 @@ pub(super) enum ClickOutcome {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(super) enum ReleasedGesture<C, D> {
+pub(super) enum ReleasedGesture {
     Idle,
     Pressed {
-        action: C,
+        action: PressAction,
         click: ClickOutcome,
     },
     Drag {
-        action: D,
+        action: DragAction,
         origin: Point,
         position: Option<Point>,
-        press_action: Option<C>,
+        press_action: Option<PressAction>,
     },
 }
 
-pub(super) struct UserInteraction<C, D> {
-    pointer: PointerGesture<C, D>,
+pub(super) struct UserInteraction {
+    pointer: PointerGesture,
     previous_click: Option<iced_core::mouse::Click>,
     modifiers: keyboard::Modifiers,
 }
 
-impl<C, D> Default for UserInteraction<C, D> {
+impl Default for UserInteraction {
     fn default() -> Self {
         Self {
             pointer: PointerGesture::Idle,
@@ -383,12 +386,12 @@ impl<C, D> Default for UserInteraction<C, D> {
     }
 }
 
-impl<C: Copy, D: Copy> UserInteraction<C, D> {
+impl UserInteraction {
     pub(super) fn begin_press(
         &mut self,
         position: Point,
         global_position: Option<Point>,
-        action: C,
+        action: PressAction,
     ) -> Option<iced_core::mouse::click::Kind> {
         self.begin_click(position, action);
 
@@ -404,19 +407,24 @@ impl<C: Copy, D: Copy> UserInteraction<C, D> {
         kind
     }
 
-    pub(super) fn begin_click(&mut self, position: Point, action: C) {
+    pub(super) fn begin_click(&mut self, position: Point, action: PressAction) {
         self.press(position, PressIntent::Click(action));
     }
 
-    pub(super) fn begin_drag_candidate(&mut self, position: Point, action: D) {
+    pub(super) fn begin_drag_candidate(&mut self, position: Point, action: DragAction) {
         self.press(position, PressIntent::Drag(action));
     }
 
-    pub(super) fn begin_click_or_drag(&mut self, position: Point, click: C, drag: D) {
+    pub(super) fn begin_click_or_drag(
+        &mut self,
+        position: Point,
+        click: PressAction,
+        drag: DragAction,
+    ) {
         self.press(position, PressIntent::ClickOrDrag { click, drag });
     }
 
-    fn press(&mut self, position: Point, intent: PressIntent<C, D>) {
+    fn press(&mut self, position: Point, intent: PressIntent) {
         self.pointer = PointerGesture::Pressed(PressGesture {
             motion: PointerMotion::new(position),
             intent,
@@ -456,7 +464,7 @@ impl<C: Copy, D: Copy> UserInteraction<C, D> {
         PointerMove::Moving { delta }
     }
 
-    pub(super) fn release(&mut self, position: Option<Point>) -> ReleasedGesture<C, D> {
+    pub(super) fn release(&mut self, position: Option<Point>) -> ReleasedGesture {
         match std::mem::replace(&mut self.pointer, PointerGesture::Idle) {
             PointerGesture::Idle => ReleasedGesture::Idle,
             PointerGesture::Pressed(press) => match press.intent {
@@ -486,7 +494,7 @@ impl<C: Copy, D: Copy> UserInteraction<C, D> {
         }
     }
 
-    pub(super) fn cancel_pointer(&mut self) -> Option<C> {
+    pub(super) fn cancel_pointer(&mut self) -> Option<PressAction> {
         match std::mem::replace(&mut self.pointer, PointerGesture::Idle) {
             PointerGesture::Idle => None,
             PointerGesture::Pressed(press) => match press.intent {
@@ -499,7 +507,7 @@ impl<C: Copy, D: Copy> UserInteraction<C, D> {
         }
     }
 
-    pub(super) fn press_action(&self) -> Option<C> {
+    pub(super) fn press_action(&self) -> Option<PressAction> {
         match self.pointer {
             PointerGesture::Pressed(press) => match press.intent {
                 PressIntent::Click(action) | PressIntent::ClickOrDrag { click: action, .. } => {
@@ -520,7 +528,7 @@ impl<C: Copy, D: Copy> UserInteraction<C, D> {
         self.modifiers = modifiers;
     }
 
-    pub(super) fn drag_action(&self) -> Option<D> {
+    pub(super) fn drag_action(&self) -> Option<DragAction> {
         match self.pointer {
             PointerGesture::Pressed(press) => press.intent.drag_action(),
             PointerGesture::Dragging(drag) => Some(drag.action),
@@ -543,7 +551,7 @@ pub(super) enum GestureSource {
     Study(StudyObjectKey),
 }
 
-impl UserInteraction<PressAction, DragAction> {
+impl UserInteraction {
     pub(super) fn resolve_cursor_target(
         &self,
         target: CursorTarget,

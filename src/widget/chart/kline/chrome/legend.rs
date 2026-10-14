@@ -35,6 +35,36 @@ pub(crate) struct LegendView<'a> {
     pub(crate) legend_visibility: LegendVisibility,
 }
 
+struct PreparedIndicatorReadouts {
+    panel_index: usize,
+    value_id: PanelValueId,
+    text: Vec<canvas::Text>,
+    end_x: f32,
+}
+
+impl PreparedIndicatorReadouts {
+    fn push_text(&mut self, content: String, position: Point, color: iced::Color) -> f32 {
+        let end_x = position.x + content.chars().count() as f32 * CHAR_W;
+        self.text.push(canvas::Text {
+            content,
+            position,
+            color,
+            size: TEXT_SIZE.into(),
+            align_x: iced::Alignment::Start.into(),
+            align_y: iced::Alignment::Center.into(),
+            font: style::AZERET_MONO,
+            ..Default::default()
+        });
+        end_x
+    }
+
+    fn paint(&mut self, frame: &mut PreparedChrome) {
+        for text in self.text.drain(..) {
+            frame.fill_text(text);
+        }
+    }
+}
+
 impl<'a> LegendView<'a> {
     pub(crate) fn indicator_unavailable_message(
         &self,
@@ -294,18 +324,9 @@ impl<'a> LegendView<'a> {
             .to_string()
     }
 
-    fn primary_overlay_value_text(
-        &self,
-        scene: &Scene,
-        value_id: PanelValueId,
-        channel_id: &str,
-    ) -> Option<String> {
-        if self.indicators.indicator_is_unavailable(Some(value_id)) {
-            return None;
-        }
-
+    fn readout_bar_index(&self, scene: &Scene) -> Option<usize> {
         let series = self.coordinates.series.first()?;
-        let bar_index = scene
+        scene
             .interaction
             .readouts_visible()
             .then(|| {
@@ -318,15 +339,22 @@ impl<'a> LegendView<'a> {
             .or_else(|| {
                 self.legend_visibility
                     .legend_values_always_visible()
-                    .then(|| {
-                        self.coordinates
-                            .series
-                            .first()?
-                            .point_count()
-                            .checked_sub(1)
-                    })
+                    .then(|| series.point_count().checked_sub(1))
                     .flatten()
-            })?;
+            })
+    }
+
+    fn primary_overlay_value_text(
+        &self,
+        scene: &Scene,
+        value_id: PanelValueId,
+        channel_id: &str,
+        bar_index: usize,
+    ) -> Option<String> {
+        if self.indicators.indicator_is_unavailable(Some(value_id)) {
+            return None;
+        }
+        let series = self.coordinates.series.first()?;
         let value = self.indicators.indicator_source_value_for_scene_at(
             scene, 0, series, value_id, bar_index, channel_id,
         )?;
@@ -356,131 +384,117 @@ impl<'a> LegendView<'a> {
         }
     }
 
-    fn primary_overlay_channel_start_x(
-        &self,
-        row_x: f32,
-        primary_panel: usize,
-        value_id: PanelValueId,
-    ) -> f32 {
-        let title = self.indicator_title(primary_panel, true, value_id);
-        self.indicator_label_x(row_x, value_id)
-            + title.chars().count() as f32 * CHAR_W
-            + PANEL_TITLE_TO_CONTROLS_GAP
-    }
-
-    fn primary_overlay_text_end_x(
+    fn prepare_indicator_readouts(
         &self,
         scene: &Scene,
-        row_rect: Rectangle,
-        value_id: PanelValueId,
-        show_values: bool,
-    ) -> f32 {
-        let title = self.indicator_title(scene.primary.panel_index, true, value_id);
-        let title_x = self.indicator_label_x(row_rect.x, value_id);
-        let title_end_x = title_x + title.chars().count() as f32 * CHAR_W;
-        if !show_values {
-            return title_end_x;
+        bar_index: Option<usize>,
+        palette: &Extended,
+        generated_accents: &[iced::Color; ACCENT_COUNT],
+    ) -> Vec<PreparedIndicatorReadouts> {
+        let values_visible = scene.interaction.readouts_visible()
+            || self.legend_visibility.legend_values_always_visible();
+        let hovered_indicator_id = scene.interaction.target.indicator_row().and_then(|index| {
+            scene
+                .chrome
+                .indicator_legend
+                .as_ref()?
+                .rows
+                .get(index)
+                .map(|row| row.value_id)
+        });
+        let mut prepared = Vec::new();
+        for (panel_index, panel) in scene.layout.panels.iter().enumerate() {
+            if panel.kind != KlinePanelKind::Indicator {
+                continue;
+            }
+            for (indicator_index, value_id) in self
+                .indicators
+                .panel_indicator_value_ids(panel_index)
+                .into_iter()
+                .enumerate()
+            {
+                prepared.push(self.prepare_panel_readouts(
+                    scene,
+                    panel_index,
+                    indicator_index,
+                    value_id,
+                    values_visible && Some(value_id) != hovered_indicator_id,
+                    bar_index,
+                    palette,
+                    generated_accents,
+                ));
+            }
         }
+        if let Some(legend) = scene.chrome.indicator_legend.as_ref() {
+            for (index, row) in legend.rows.iter().enumerate() {
+                if row.primary_overlay {
+                    prepared.push(self.prepare_overlay_readouts(
+                        scene,
+                        row,
+                        values_visible && !scene.interaction.target.indicator_row_is_hovered(index),
+                        bar_index,
+                        palette,
+                        generated_accents,
+                    ));
+                }
+            }
+        }
+        prepared
+    }
 
-        let mut x =
-            self.primary_overlay_channel_start_x(row_rect.x, scene.primary.panel_index, value_id);
-        let mut text_end_x = title_end_x;
-
+    fn prepare_overlay_readouts(
+        &self,
+        scene: &Scene,
+        row: &IndicatorLegendRowHit,
+        show_values: bool,
+        bar_index: Option<usize>,
+        palette: &Extended,
+        generated_accents: &[iced::Color; ACCENT_COUNT],
+    ) -> PreparedIndicatorReadouts {
+        let panel_index = scene.primary.panel_index;
+        let row_x = scene.layout.regions.plot.x + row.controls.row_rect.x;
+        let title = self.indicator_title(panel_index, true, row.value_id);
+        let title_end_x =
+            self.indicator_label_x(row_x, row.value_id) + title.chars().count() as f32 * CHAR_W;
+        let mut prepared = PreparedIndicatorReadouts {
+            panel_index,
+            value_id: row.value_id,
+            text: Vec::new(),
+            end_x: title_end_x,
+        };
+        if !show_values {
+            return prepared;
+        }
+        let mut x = title_end_x + PANEL_TITLE_TO_CONTROLS_GAP;
+        let y = scene.layout.regions.plot.y + row.y_center;
+        let row_alpha = if row.visible {
+            1.0
+        } else {
+            HIDDEN_LEGEND_ALPHA
+        };
         for channel in self
             .indicators
-            .overlay_channels_for_panel_value(Some(value_id))
-            .into_iter()
+            .overlay_channels_for_panel_value(Some(row.value_id))
         {
-            let label_width = channel.label.chars().count() as f32 * CHAR_W;
-            text_end_x = x + label_width;
-            x = text_end_x + 2.0;
-
-            let Some(value_text) = self.primary_overlay_value_text(scene, value_id, channel.source)
-            else {
+            let color = self
+                .indicators
+                .overlay_channel_color(Some(row.value_id), &channel, palette, generated_accents)
+                .scale_alpha(row_alpha);
+            prepared.end_x = prepared.push_text(channel.label.to_owned(), Point::new(x, y), color);
+            x = prepared.end_x + 2.0;
+            let Some(value_text) = bar_index.and_then(|bar_index| {
+                self.primary_overlay_value_text(scene, row.value_id, channel.source, bar_index)
+            }) else {
                 continue;
             };
-
-            text_end_x = x + value_text.chars().count() as f32 * CHAR_W;
-            x = text_end_x + 6.0;
+            prepared.end_x = prepared.push_text(value_text, Point::new(x, y), color);
+            x = prepared.end_x + 6.0;
         }
-
-        text_end_x
+        prepared
     }
 
-    fn indicator_panel_text_end_x(
-        &self,
-        scene: &Scene,
-        row_rect: Rectangle,
-        value_id: PanelValueId,
-        include_values: bool,
-    ) -> f32 {
-        let Some(panel_index) = self.indicator_panel_index(scene, value_id) else {
-            return row_rect.x + TOOLTIP_ROW_LEFT_PAD;
-        };
-        let Some(panel) = scene.layout.panels.get(panel_index) else {
-            return row_rect.x + TOOLTIP_ROW_LEFT_PAD;
-        };
-
-        let label = self.indicator_title(panel_index, false, value_id);
-        let label_end_x =
-            self.indicator_label_x(row_rect.x, value_id) + label.chars().count() as f32 * CHAR_W;
-
-        if !self
-            .indicators
-            .panel_indicator_visible(panel_index, value_id)
-        {
-            return label_end_x;
-        }
-
-        if matches!(
-            self.coordinates
-                .composition
-                .panels
-                .get(panel_index)
-                .map(|panel| panel.presentation),
-            Some(composition::PanelPresentation::Table)
-        ) {
-            return label_end_x;
-        }
-
-        if !include_values
-            || (!scene.interaction.readouts_visible()
-                && !self.legend_visibility.legend_values_always_visible())
-        {
-            return label_end_x;
-        }
-
-        let Some(series) = self.coordinates.series.first() else {
-            return label_end_x;
-        };
-        let Some(bar_index) = scene
-            .interaction
-            .readouts_visible()
-            .then(|| {
-                scene.interaction.cursor.and_then(|cursor| {
-                    self.coordinates
-                        .bar_index_at_or_before_unit(scene, 0, cursor.x_unit)
-                })
-            })
-            .flatten()
-            .or_else(|| {
-                self.legend_visibility
-                    .legend_values_always_visible()
-                    .then(|| series.point_count().checked_sub(1))
-                    .flatten()
-            })
-        else {
-            return label_end_x;
-        };
-
-        let title_width = label.chars().count() as f32 * CHAR_W;
-        let title_gap = if title_width > 0.0 {
-            PANEL_TITLE_TO_CONTROLS_GAP
-        } else {
-            0.0
-        };
-        let mut value_x = self.indicator_label_x(row_rect.x, value_id) + title_width + title_gap;
-        let mut text_end_x = label_end_x;
+    fn panel_readout_max_x(&self, scene: &Scene, panel_index: usize) -> f32 {
+        let panel = &scene.layout.panels[panel_index];
         let mut max_x =
             scene.layout.regions.plot.x + panel.plot.x + panel.plot.width - PANEL_TITLE_LEFT_PAD;
         if scene.interaction.controls_visible_for_panel == Some(panel_index)
@@ -494,7 +508,61 @@ impl<'a> LegendView<'a> {
         {
             max_x = max_x.min(scene.layout.regions.plot.x + left_control_x - 4.0);
         }
+        max_x
+    }
 
+    fn prepare_panel_readouts(
+        &self,
+        scene: &Scene,
+        panel_index: usize,
+        indicator_index: usize,
+        value_id: PanelValueId,
+        include_values: bool,
+        bar_index: Option<usize>,
+        palette: &Extended,
+        generated_accents: &[iced::Color; ACCENT_COUNT],
+    ) -> PreparedIndicatorReadouts {
+        let panel = &scene.layout.panels[panel_index];
+        let label = self.indicator_title(panel_index, false, value_id);
+        let title_width = label.chars().count() as f32 * CHAR_W;
+        let label_end_x = self
+            .indicator_label_x(scene.layout.regions.plot.x + panel.plot.x, value_id)
+            + title_width;
+        let mut prepared = PreparedIndicatorReadouts {
+            panel_index,
+            value_id,
+            text: Vec::new(),
+            end_x: label_end_x,
+        };
+        if !include_values
+            || !self
+                .indicators
+                .panel_indicator_visible(panel_index, value_id)
+            || matches!(
+                self.coordinates
+                    .composition
+                    .panels
+                    .get(panel_index)
+                    .map(|panel| panel.presentation),
+                Some(composition::PanelPresentation::Table)
+            )
+        {
+            return prepared;
+        }
+        let (Some(series), Some(bar_index)) = (self.coordinates.series.first(), bar_index) else {
+            return prepared;
+        };
+        let title_gap = if title_width > 0.0 {
+            PANEL_TITLE_TO_CONTROLS_GAP
+        } else {
+            0.0
+        };
+        let mut x = label_end_x + title_gap;
+        let y = scene.layout.regions.plot.y
+            + panel.plot.y
+            + PANEL_TITLE_TOP_PAD
+            + (indicator_index as f32 + 0.5) * TICKER_LEGEND_ROW_H;
+        let max_x = self.panel_readout_max_x(scene, panel_index);
         for readout in self.indicators.indicator_header_values_for_indicator(
             scene,
             panel_index,
@@ -503,25 +571,31 @@ impl<'a> LegendView<'a> {
             series,
             bar_index,
         ) {
-            if value_x >= max_x {
+            if x >= max_x {
                 break;
             }
-
-            value_x += readout.label.chars().count() as f32 * CHAR_W + 2.0;
-            if value_x >= max_x {
-                break;
-            }
-
             let value_text = self.coordinates.format_panel_header_value(
                 panel_index,
                 self.coordinates.panel_value_precision(panel_index),
                 readout.value,
             );
-            text_end_x = value_x + value_text.chars().count() as f32 * CHAR_W;
-            value_x = text_end_x + 6.0;
+            let color = self.indicators.indicator_value_color(
+                Some(readout.value_id),
+                readout.color_slot,
+                readout.color_role,
+                palette,
+                generated_accents,
+            );
+            x = prepared.push_text(readout.label.to_owned(), Point::new(x, y), color) + 2.0;
+            if x >= max_x {
+                break;
+            }
+            prepared.end_x = prepared
+                .push_text(value_text, Point::new(x, y), color)
+                .max(label_end_x);
+            x = prepared.end_x + 6.0;
         }
-
-        text_end_x.max(label_end_x)
+        prepared
     }
 
     fn indicator_panel_index(&self, scene: &Scene, value_id: PanelValueId) -> Option<usize> {
@@ -586,46 +660,6 @@ impl<'a> LegendView<'a> {
             font: style::AZERET_MONO,
             ..Default::default()
         });
-    }
-
-    fn indicator_legend_content_end_x(
-        &self,
-        scene: &Scene,
-        row: &IndicatorLegendRowHit,
-        row_rect: Rectangle,
-        show_buttons: bool,
-    ) -> f32 {
-        if show_buttons {
-            let plot_x = scene.layout.regions.plot.x;
-            return [
-                row.controls.visibility,
-                row.controls.settings,
-                row.controls.close,
-            ]
-            .iter()
-            .filter(|rect| rect.width > 0.0)
-            .map(|rect| plot_x + rect.x + rect.width)
-            .max_by(f32::total_cmp)
-            .unwrap_or(row_rect.x);
-        }
-
-        let values_visible = scene.interaction.readouts_visible()
-            || self.legend_visibility.legend_values_always_visible();
-        if row.primary_overlay {
-            self.primary_overlay_text_end_x(
-                scene,
-                row_rect,
-                row.value_id,
-                values_visible && !show_buttons,
-            )
-        } else {
-            self.indicator_panel_text_end_x(
-                scene,
-                row_rect,
-                row.value_id,
-                values_visible && !show_buttons,
-            )
-        }
     }
 
     pub(crate) fn build_indicator_legend_layout(
@@ -719,6 +753,8 @@ impl<'a> LegendView<'a> {
         palette: &Extended,
         generated_accents: &[iced::Color; ACCENT_COUNT],
         show_primary_panel_values: bool,
+        bar_index: Option<usize>,
+        readouts: &mut [PreparedIndicatorReadouts],
     ) {
         let persistent_values_visible = self.legend_visibility.legend_values_always_visible();
         if !scene.interaction.readouts_visible() && !persistent_values_visible {
@@ -729,24 +765,9 @@ impl<'a> LegendView<'a> {
             return;
         };
 
-        let Some(base_bar_index) = scene
-            .interaction
-            .readouts_visible()
-            .then(|| {
-                scene.interaction.cursor.and_then(|cursor| {
-                    self.coordinates
-                        .bar_index_at_or_before_unit(scene, 0, cursor.x_unit)
-                })
-            })
-            .flatten()
-            .or_else(|| {
-                persistent_values_visible
-                    .then(|| base_series.point_count().checked_sub(1))
-                    .flatten()
-            })
-        else {
+        if bar_index.is_none() {
             return;
-        };
+        }
 
         let Some(base_bar) = scene
             .interaction
@@ -787,21 +808,8 @@ impl<'a> LegendView<'a> {
                 + panel.plot.y
                 + PANEL_TITLE_TOP_PAD
                 + TICKER_LEGEND_ROW_H * 0.5;
-            let panel_precision = self.coordinates.panel_value_precision(panel_index);
 
-            let mut max_x = scene.layout.regions.plot.x + panel.plot.x + panel.plot.width
-                - PANEL_TITLE_LEFT_PAD;
-            if scene.interaction.controls_visible_for_panel == Some(panel_index)
-                && let Some(left_control_x) = scene
-                    .chrome
-                    .panel_controls
-                    .iter()
-                    .filter(|control| control.panel_index == panel_index)
-                    .map(|control| control.rect.x)
-                    .reduce(f32::min)
-            {
-                max_x = max_x.min(scene.layout.regions.plot.x + left_control_x - 4.0);
-            }
+            let max_x = self.panel_readout_max_x(scene, panel_index);
 
             if x >= max_x {
                 continue;
@@ -880,119 +888,12 @@ impl<'a> LegendView<'a> {
                         ..Default::default()
                     });
                 }
-            } else if self
-                .indicators
-                .indicator_panel_value_id(panel_index)
-                .is_some()
-            {
-                if matches!(
-                    self.coordinates
-                        .composition
-                        .panels
-                        .get(panel_index)
-                        .map(|panel| panel.presentation),
-                    Some(composition::PanelPresentation::Table)
-                ) {
-                    continue;
-                }
-
-                let hovered_indicator_id =
-                    scene.interaction.target.indicator_row().and_then(|index| {
-                        scene
-                            .chrome
-                            .indicator_legend
-                            .as_ref()
-                            .and_then(|legend| legend.rows.get(index))
-                            .map(|row| row.value_id)
-                    });
-
-                for (indicator_index, value_id) in self
-                    .indicators
-                    .panel_indicator_value_ids(panel_index)
-                    .into_iter()
-                    .enumerate()
+            } else {
+                for readout in readouts
+                    .iter_mut()
+                    .filter(|readout| readout.panel_index == panel_index)
                 {
-                    if Some(value_id) == hovered_indicator_id
-                        || !self
-                            .indicators
-                            .panel_indicator_visible(panel_index, value_id)
-                    {
-                        continue;
-                    }
-
-                    let label = self.indicator_title(panel_index, false, value_id);
-                    let title_width = label.chars().count() as f32 * CHAR_W;
-                    let title_gap = if title_width > 0.0 {
-                        PANEL_TITLE_TO_CONTROLS_GAP
-                    } else {
-                        0.0
-                    };
-                    let mut value_x = scene.layout.regions.plot.x
-                        + self.indicator_label_x(panel.plot.x, value_id)
-                        + title_width
-                        + title_gap;
-                    let value_y = scene.layout.regions.plot.y
-                        + panel.plot.y
-                        + PANEL_TITLE_TOP_PAD
-                        + (indicator_index as f32 + 0.5) * TICKER_LEGEND_ROW_H;
-
-                    for readout in self.indicators.indicator_header_values_for_indicator(
-                        scene,
-                        panel_index,
-                        value_id,
-                        0,
-                        base_series,
-                        base_bar_index,
-                    ) {
-                        if value_x >= max_x {
-                            break;
-                        }
-
-                        let value_text = self.coordinates.format_panel_header_value(
-                            panel_index,
-                            panel_precision,
-                            readout.value,
-                        );
-                        let label_color = self.indicators.indicator_value_color(
-                            Some(readout.value_id),
-                            readout.color_slot,
-                            readout.color_role,
-                            palette,
-                            generated_accents,
-                        );
-                        let label_width = readout.label.chars().count() as f32 * CHAR_W;
-                        let value_width = value_text.chars().count() as f32 * CHAR_W;
-
-                        frame.fill_text(canvas::Text {
-                            content: readout.label.to_owned(),
-                            position: Point::new(value_x, value_y),
-                            color: label_color,
-                            size: TEXT_SIZE.into(),
-                            align_x: iced::Alignment::Start.into(),
-                            align_y: iced::Alignment::Center.into(),
-                            font: style::AZERET_MONO,
-                            ..Default::default()
-                        });
-
-                        value_x += label_width + 2.0;
-
-                        if value_x >= max_x {
-                            break;
-                        }
-
-                        frame.fill_text(canvas::Text {
-                            content: value_text,
-                            position: Point::new(value_x, value_y),
-                            color: label_color,
-                            size: TEXT_SIZE.into(),
-                            align_x: iced::Alignment::Start.into(),
-                            align_y: iced::Alignment::Center.into(),
-                            font: style::AZERET_MONO,
-                            ..Default::default()
-                        });
-
-                        value_x += value_width + 6.0;
-                    }
+                    readout.paint(frame);
                 }
             }
         }
@@ -1510,7 +1411,7 @@ impl<'a> LegendView<'a> {
         frame: &mut PreparedChrome,
         scene: &Scene,
         palette: &Extended,
-        generated_accents: &[iced::Color; ACCENT_COUNT],
+        readouts: &mut [PreparedIndicatorReadouts],
     ) {
         let Some(legend) = scene.chrome.indicator_legend.as_ref() else {
             return;
@@ -1527,11 +1428,30 @@ impl<'a> LegendView<'a> {
         for (index, row) in legend.rows.iter().enumerate() {
             let row_rect = to_root(row.controls.row_rect);
             let show_buttons = scene.interaction.target.indicator_row_is_hovered(index);
-            let show_values = !show_buttons
-                && (scene.interaction.readouts_visible()
-                    || self.legend_visibility.legend_values_always_visible());
-            let content_end_x =
-                self.indicator_legend_content_end_x(scene, row, row_rect, show_buttons);
+            let panel_index = if row.primary_overlay {
+                Some(scene.primary.panel_index)
+            } else {
+                self.indicator_panel_index(scene, row.value_id)
+            };
+            let prepared = readouts.iter_mut().find(|readout| {
+                Some(readout.panel_index) == panel_index && readout.value_id == row.value_id
+            });
+            let content_end_x = if show_buttons {
+                [
+                    row.controls.visibility,
+                    row.controls.settings,
+                    row.controls.close,
+                ]
+                .iter()
+                .filter(|rect| rect.width > 0.0)
+                .map(|rect| scene.layout.regions.plot.x + rect.x + rect.width)
+                .max_by(f32::total_cmp)
+                .unwrap_or(row_rect.x)
+            } else {
+                prepared
+                    .as_ref()
+                    .map_or(row_rect.x + TOOLTIP_ROW_LEFT_PAD, |readout| readout.end_x)
+            };
             let background = legend_row_background(row_rect, content_end_x);
 
             frame.fill_rectangle(
@@ -1590,60 +1510,8 @@ impl<'a> LegendView<'a> {
                     ..Default::default()
                 });
 
-                if show_values {
-                    let mut x = self.primary_overlay_channel_start_x(
-                        row_rect.x,
-                        scene.primary.panel_index,
-                        row.value_id,
-                    );
-
-                    for channel in self
-                        .indicators
-                        .overlay_channels_for_panel_value(Some(row.value_id))
-                        .into_iter()
-                    {
-                        let label_width = channel.label.chars().count() as f32 * CHAR_W;
-                        let color = self
-                            .indicators
-                            .overlay_channel_color(
-                                Some(row.value_id),
-                                &channel,
-                                palette,
-                                generated_accents,
-                            )
-                            .scale_alpha(row_alpha);
-
-                        frame.fill_text(canvas::Text {
-                            content: channel.label.to_owned(),
-                            position: Point::new(x, label_y),
-                            color,
-                            size: TEXT_SIZE.into(),
-                            align_x: iced::Alignment::Start.into(),
-                            align_y: iced::Alignment::Center.into(),
-                            font: style::AZERET_MONO,
-                            ..Default::default()
-                        });
-                        x += label_width + 2.0;
-
-                        let Some(value_text) =
-                            self.primary_overlay_value_text(scene, row.value_id, channel.source)
-                        else {
-                            continue;
-                        };
-                        let value_width = value_text.chars().count() as f32 * CHAR_W;
-
-                        frame.fill_text(canvas::Text {
-                            content: value_text,
-                            position: Point::new(x, label_y),
-                            color,
-                            size: TEXT_SIZE.into(),
-                            align_x: iced::Alignment::Start.into(),
-                            align_y: iced::Alignment::Center.into(),
-                            font: style::AZERET_MONO,
-                            ..Default::default()
-                        });
-                        x += value_width + 6.0;
-                    }
+                if let Some(prepared) = prepared {
+                    prepared.paint(frame);
                 }
             } else {
                 self.fill_indicator_panel_title(frame, scene, row, row_rect, palette);
@@ -1674,16 +1542,21 @@ impl<'a> LegendView<'a> {
         palette: &Extended,
         generated_accents: &[iced::Color; ACCENT_COUNT],
     ) {
+        let bar_index = self.readout_bar_index(scene);
+        let mut readouts =
+            self.prepare_indicator_readouts(scene, bar_index, palette, generated_accents);
         self.fill_primary_ticker_legend(inputs, scene, palette, generated_accents);
         self.fill_footprint_legend(inputs, scene, palette);
         self.fill_study_legend(inputs, scene, palette);
-        self.fill_indicator_legend(inputs, scene, palette, generated_accents);
+        self.fill_indicator_legend(inputs, scene, palette, &mut readouts);
         self.fill_panel_header_values(
             inputs,
             scene,
             palette,
             generated_accents,
             scene.chrome.ticker_legend.is_none(),
+            bar_index,
+            &mut readouts,
         );
     }
 }

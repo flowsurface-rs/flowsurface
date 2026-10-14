@@ -257,18 +257,12 @@ impl KlineChart {
                     KlineWidgetEvent::PanelInteraction(interaction) => match interaction {
                         PanelInteraction::YViewportChanged { panel_id, range } => {
                             let composition = &self.indicators.composition;
-                            if !viewport::allows_panel_range(composition, panel_id) {
-                                return None;
-                            }
                             if self.viewport.set_panel_range(composition, panel_id, range) {
                                 self.render_invalidation.invalidate();
                             }
                         }
                         PanelInteraction::YViewportReset { panel_id } => {
                             let composition = &self.indicators.composition;
-                            if !viewport::allows_panel_range(composition, panel_id) {
-                                return None;
-                            }
                             if self.viewport.reset_panel_range(composition, panel_id) {
                                 self.render_invalidation.invalidate();
                             }
@@ -1061,25 +1055,21 @@ impl KlineChart {
         }) {
             return;
         }
-        let (Basis::Time(timeframe), Some(width)) = (self.basis, self.viewport.plot_width) else {
+        let (Basis::Time(_), Some(width)) = (self.basis, self.viewport.plot_width) else {
             return;
         };
-        let Some(anchor) = self
-            .data
-            .series()
-            .iter()
-            .filter_map(|series| series.latest_point().map(|point| point.kline.time))
-            .max()
-        else {
+        let Some(axis) = XAxis::for_series(self.basis, self.data.series()) else {
             return;
         };
-        let axis = XAxis::Time { timeframe, anchor };
-        let (_, right_extension) =
-            axis.output_domain_expansion(self.indicators.instances.max_positive_output_offset());
-        let (left, right, _) = self
-            .viewport
-            .horizontal_world
-            .visible_window((0, right_extension), width);
+        let Some(data_bounds) = axis.data_bounds(self.data.series()) else {
+            return;
+        };
+        let (left, right, _) = axis.visible_window(
+            data_bounds,
+            self.indicators.instances.max_positive_output_offset(),
+            self.viewport.horizontal_world,
+            width,
+        );
         if let (Some(earliest), Some(latest)) =
             (axis.time_from_unit(left), axis.time_from_unit(right))
         {

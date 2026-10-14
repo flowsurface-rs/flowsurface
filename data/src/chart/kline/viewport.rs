@@ -1,4 +1,6 @@
 use super::composition::PanelValuePrecision;
+use super::series::KlineSeries;
+use crate::chart::Basis;
 use exchange::{TickerInfo, Timeframe, UnixMs, unit::Price};
 
 use serde::{Deserialize, Serialize};
@@ -335,6 +337,62 @@ pub enum XAxis {
 }
 
 impl XAxis {
+    pub fn for_series(basis: Basis, series: &[KlineSeries]) -> Option<Self> {
+        match basis {
+            Basis::Time(timeframe) => {
+                let anchor = series
+                    .iter()
+                    .filter_map(KlineSeries::latest_point)
+                    .map(|point| point.kline.time)
+                    .max()?;
+                Some(Self::Time { timeframe, anchor })
+            }
+            Basis::Tick(_) => series
+                .iter()
+                .any(|series| series.point_count() > 0)
+                .then_some(Self::Tick {
+                    anchor: TickIndex::ZERO,
+                }),
+        }
+    }
+
+    pub fn data_bounds(self, series: &[KlineSeries]) -> Option<(i64, i64)> {
+        match self {
+            Self::Time { .. } => series
+                .iter()
+                .filter_map(|series| {
+                    let first = series.first_point()?.kline.time;
+                    let last = series.latest_point()?.kline.time;
+                    Some((self.unit_from_time(first), self.unit_from_time(last)))
+                })
+                .reduce(|(min, max), (first, last)| (min.min(first), max.max(last))),
+            Self::Tick { .. } => {
+                let point_count = series.iter().map(KlineSeries::point_count).max()?;
+                let last = self.unit_from_tick(TickIndex::ZERO);
+                let first =
+                    self.unit_from_tick(TickIndex::from_u64(point_count.saturating_sub(1) as u64));
+                Some((first, last))
+            }
+        }
+    }
+
+    pub fn visible_window(
+        self,
+        data_bounds: (i64, i64),
+        output_offset: i64,
+        world: HorizontalWorld,
+        plot_width: f32,
+    ) -> (i64, i64, f32) {
+        let (min_extension, max_extension) = self.output_domain_expansion(output_offset);
+        world.visible_window(
+            (
+                data_bounds.0.saturating_add(min_extension),
+                data_bounds.1.saturating_add(max_extension),
+            ),
+            plot_width,
+        )
+    }
+
     pub fn output_domain_expansion(self, offset: i64) -> (i64, i64) {
         match self {
             Self::Time { .. } => (0, offset),

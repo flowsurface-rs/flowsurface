@@ -1595,58 +1595,37 @@ impl<'a> IndicatorView<'a> {
         palette: &Extended,
         generated_accents: &[iced::Color; ACCENT_COUNT],
     ) -> iced::Color {
-        let style_slot = if let Some(style_by) = self
+        let state = self
             .indicator_output_spec(output)
             .and_then(|spec| spec.style_by.as_deref())
-        {
-            let state = self
-                .indicator_raw_output_value_for_series_at_channel(
+            .and_then(|style_by| {
+                self.indicator_raw_output_value_for_series_at_channel(
                     series,
                     output.instance_id,
                     style_by,
                     source_index,
                 )
-                .and_then(OutputValue::as_boolean);
-            mark.map_or_else(
-                || {
-                    self.style_slot_for_output(
-                        output.instance_id,
-                        output.channel_id.as_str(),
-                        state,
-                        fallback_slot,
-                    )
-                },
-                |mark| {
-                    self.style_slot_for_mark(
-                        output.instance_id,
-                        output.channel_id.as_str(),
-                        mark,
-                        state,
-                        fallback_slot,
-                    )
-                },
-            )
-        } else {
-            mark.map_or_else(
-                || {
-                    self.style_slot_for_output(
-                        output.instance_id,
-                        output.channel_id.as_str(),
-                        None,
-                        fallback_slot,
-                    )
-                },
-                |mark| {
-                    self.style_slot_for_mark(
-                        output.instance_id,
-                        output.channel_id.as_str(),
-                        mark,
-                        None,
-                        fallback_slot,
-                    )
-                },
-            )
-        };
+            })
+            .and_then(OutputValue::as_boolean);
+        let style_slot = mark.map_or_else(
+            || {
+                self.style_slot_for_output(
+                    output.instance_id,
+                    output.channel_id.as_str(),
+                    state,
+                    fallback_slot,
+                )
+            },
+            |mark| {
+                self.style_slot_for_mark(
+                    output.instance_id,
+                    output.channel_id.as_str(),
+                    mark,
+                    state,
+                    fallback_slot,
+                )
+            },
+        );
         self.indicator_value_color(
             Some(output.instance_id),
             style_slot,

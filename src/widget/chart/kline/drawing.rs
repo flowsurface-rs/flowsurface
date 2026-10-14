@@ -1084,74 +1084,12 @@ impl DrawingView<'_> {
             .iter()
             .filter(|drawing| drawing.visible)
             .filter(|drawing| {
-                self.drawing_selection_corners(&drawing.object)
+                self.drawing_handle_points(&drawing.object)
                     .iter()
-                    .any(|corner| contains_inclusive(rect, *corner))
+                    .any(|(_, corner)| contains_inclusive(rect, *corner))
             })
             .map(|drawing| drawing.id)
             .collect()
-    }
-
-    fn drawing_selection_corners(&self, object: &DrawingObject) -> Vec<Point> {
-        match object {
-            DrawingObject::Trendline { start, end } => {
-                let mut corners = Vec::with_capacity(2);
-                if let Some(point) = self.anchor_to_overlay_point(*start) {
-                    corners.push(point);
-                }
-                if let Some(point) = self.anchor_to_overlay_point(*end) {
-                    corners.push(point);
-                }
-                corners
-            }
-            DrawingObject::Box {
-                start,
-                end,
-                extend_right,
-            } => {
-                if start.panel_id != end.panel_id {
-                    return Vec::new();
-                }
-                let Some(start_point) = self.anchor_to_overlay_point(*start) else {
-                    return Vec::new();
-                };
-                let Some(end_point) = self.anchor_to_overlay_point(*end) else {
-                    return Vec::new();
-                };
-                let left = start_point.x.min(end_point.x);
-                let right = start_point.x.max(end_point.x);
-                let top = start_point.y.min(end_point.y);
-                let bottom = start_point.y.max(end_point.y);
-                if *extend_right {
-                    vec![Point::new(left, top), Point::new(left, bottom)]
-                } else {
-                    vec![
-                        Point::new(left, top),
-                        Point::new(right, top),
-                        Point::new(right, bottom),
-                        Point::new(left, bottom),
-                    ]
-                }
-            }
-            DrawingObject::HorizontalLine {
-                panel_id,
-                y_unit,
-                x,
-                ray,
-            } => {
-                if !*ray {
-                    return Vec::new();
-                }
-                self.anchor_to_overlay_point(DrawingAnchor {
-                    panel_id: *panel_id,
-                    x: *x,
-                    y_unit: *y_unit,
-                })
-                .into_iter()
-                .collect()
-            }
-            DrawingObject::VerticalLine { .. } => Vec::new(),
-        }
     }
 
     fn format_y_label(&self, panel_id: PanelId, y_unit: YUnit) -> Option<String> {
