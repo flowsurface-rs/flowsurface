@@ -1382,66 +1382,61 @@ fn footprint_poc_section(
     trade_data_enabled: bool,
     theme_accents: ThemeAccents,
 ) -> Element<'static, Message> {
-    let controls = FootprintPocColorConfig::color_specs().iter().map(|spec| {
-        let slot = spec.slot;
-        let checked = match slot {
-            FootprintPocColorSlot::Poc => config.show_poc,
-            FootprintPocColorSlot::Npoc => config.show_npoc,
-        };
-        let toggle = match slot {
-            FootprintPocColorSlot::Poc => checkbox(checked)
-                .label(spec.label)
-                .spacing(8)
-                .text_size(crate::style::text_size::SECTION)
-                .on_toggle_maybe(trade_data_enabled.then_some(move |show| {
-                    Message::FootprintPocConfigChanged(config.with_show_poc(show))
-                })),
-            FootprintPocColorSlot::Npoc => checkbox(checked)
-                .label(spec.label)
-                .spacing(8)
-                .text_size(crate::style::text_size::SECTION)
-                .on_toggle_maybe(trade_data_enabled.then_some(move |show| {
-                    Message::FootprintPocConfigChanged(config.with_show_npoc(show))
-                })),
-        }
-        .width(Length::Fill);
-        let toggle = tooltip(
-            toggle,
-            (!trade_data_enabled).then_some("Enable trade data in pane settings to use."),
-            TooltipPosition::Right,
-        );
+    let visibility = tooltip(
+        study::poc_line_controls(
+            config.show_poc,
+            config.show_npoc,
+            trade_data_enabled,
+            move |all, show| {
+                Message::FootprintPocConfigChanged(config.with_show_poc(all).with_show_npoc(show))
+            },
+        ),
+        (!trade_data_enabled).then_some("Enable trade data in pane settings to use."),
+        TooltipPosition::Right,
+    );
+    let mut sections =
+        column![inspector::modal_container(visibility)].spacing(inspector::MODAL_SECTION_SPACING);
+    if !config.show_poc && !config.show_npoc {
+        return sections.into();
+    }
+    let controls = FootprintPocColorConfig::color_specs()
+        .iter()
+        .filter_map(|spec| {
+            let slot = spec.slot;
+            if slot == FootprintPocColorSlot::Poc && !config.show_poc {
+                return None;
+            }
+            let selected = config.colors.color_for(slot);
+            let color_choices = theme_color_control(selected, theme_accents, move |accent| {
+                Message::FootprintPocConfigChanged(config.with_colors(config.colors.with_color(
+                    slot,
+                    ThemeColor::with_accent(selected.role, accent, selected.shade),
+                )))
+            });
+            let shade_picklist =
+                pick_list(ThemeColorShade::ALL, Some(selected.shade), move |shade| {
+                    Message::FootprintPocConfigChanged(config.with_colors(
+                        config.colors.with_color(
+                            slot,
+                            ThemeColor::with_accent(selected.role, selected.accent, shade),
+                        ),
+                    ))
+                })
+                .width(Length::Fill);
 
-        if !checked {
-            return inspector::modal_container(toggle);
-        }
+            let setting = column![color_choices, shade_picklist]
+                .width(Length::Fill)
+                .spacing(4);
 
-        let selected = config.colors.color_for(slot);
-        let color_choices = theme_color_control(selected, theme_accents, move |accent| {
-            Message::FootprintPocConfigChanged(config.with_colors(config.colors.with_color(
-                slot,
-                ThemeColor::with_accent(selected.role, accent, selected.shade),
-            )))
+            Some(
+                InspectorSection::titled(spec.label, setting)
+                    .with_modal_container()
+                    .into_element(),
+            )
         });
-        let shade_picklist = pick_list(ThemeColorShade::ALL, Some(selected.shade), move |shade| {
-            Message::FootprintPocConfigChanged(config.with_colors(config.colors.with_color(
-                slot,
-                ThemeColor::with_accent(selected.role, selected.accent, shade),
-            )))
-        })
-        .width(Length::Fill);
 
-        let setting = column![color_choices, shade_picklist]
-            .width(Length::Fill)
-            .spacing(4);
-
-        InspectorSection::new(toggle, setting)
-            .with_modal_container()
-            .into_element()
-    });
-
-    column(controls)
-        .spacing(inspector::MODAL_SECTION_SPACING)
-        .into()
+    sections = sections.extend(controls);
+    sections.into()
 }
 
 fn footprint_imbalance_section(

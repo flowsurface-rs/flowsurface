@@ -58,6 +58,25 @@ impl<K: Ord> NakedPocIndex<K> {
         self.by_price.entry(price).or_default().insert(key);
     }
 
+    pub(crate) fn remove(&mut self, price: Price, key: &K) {
+        if let Some(keys) = self.by_price.get_mut(&price) {
+            keys.remove(key);
+            if keys.is_empty() {
+                self.by_price.remove(&price);
+            }
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.by_price.is_empty()
+    }
+
+    pub(crate) fn extend(&mut self, other: Self) {
+        for (price, keys) in other.by_price {
+            self.by_price.entry(price).or_default().extend(keys);
+        }
+    }
+
     pub(crate) fn take_touched(&mut self, low: Price, high: Price) -> Vec<K> {
         if low > high {
             return Vec::new();

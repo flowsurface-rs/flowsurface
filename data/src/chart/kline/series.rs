@@ -1075,7 +1075,7 @@ impl KlineSeries {
         let scope = match report.ordered_change {
             crate::aggr::time::OrderedChange::Tail { from } => {
                 let start = self.time_index(from).unwrap_or(0);
-                self.update_footprint_pocs_from(start);
+                self.update_footprint_pocs(start..self.point_count());
                 IndicatorUpdateScope::From(start.saturating_sub(1))
             }
             crate::aggr::time::OrderedChange::Rebuild => {
@@ -1183,10 +1183,10 @@ impl KlineSeries {
                 if low > previous_low || high < previous_high {
                     self.rebuild_footprint_pocs();
                 } else if (low, high) != (previous_low, previous_high) {
-                    self.update_footprint_pocs_from(previous_len.saturating_sub(1));
+                    self.update_footprint_pocs(previous_len.saturating_sub(1)..self.point_count());
                 }
             }
-            _ => self.update_footprint_pocs_from(previous_len),
+            _ => self.update_footprint_pocs(previous_len..self.point_count()),
         }
 
         Some(KlineUpdate {
@@ -1216,7 +1216,7 @@ impl KlineSeries {
         let first_updated = tick_aggr
             .insert_trades(trades)
             .unwrap_or(self.point_count());
-        self.update_footprint_pocs_from(first_updated);
+        self.update_footprint_pocs(first_updated..self.point_count());
         IndicatorUpdateScope::From(first_updated)
     }
 
@@ -1236,16 +1236,14 @@ impl KlineSeries {
         if let Some(cache) = &mut self.visible_profile_cache {
             cache.insert_trades(series, trades);
         }
-        let first_time = series.insert_trades_existing_buckets(trades);
-        if first_time
-            .is_some_and(|time| self.time_index.last().is_some_and(|latest| time < *latest))
-        {
-            self.rebuild_footprint_pocs();
+        let report = series.insert_trades_existing_buckets_report(trades);
+        if let Some(report) = &report {
+            self.update_changed_footprint_pocs(&report.previous_poc_prices);
         }
         self.update_recurring_profile_caches(trades);
         IndicatorUpdateScope::From(
-            first_time
-                .map(|time| self.first_bar_at_or_after(time))
+            report
+                .map(|report| self.first_bar_at_or_after(report.earliest_updated))
                 .unwrap_or_else(|| self.point_count()),
         )
     }
@@ -1333,16 +1331,36 @@ impl KlineSeries {
         self.naked_pocs.insert(price, index);
     }
 
-    fn update_footprint_pocs_from(&mut self, start: usize) {
+    fn update_changed_footprint_pocs(&mut self, previous_prices: &BTreeMap<UnixMs, Option<Price>>) {
+        let Some((&first, _)) = previous_prices.first_key_value() else {
+            return;
+        };
+        let start = self.time_index(first).expect("changed POC candle exists");
+        let mut end = start;
+        // Keep unrelated POCs out of the historical scan, including those born later.
+        let mut unaffected = std::mem::take(&mut self.naked_pocs);
+        for (&time, &previous_price) in previous_prices {
+            let index = self.time_index(time).expect("changed POC candle exists");
+            end = index + 1;
+            if let Some(price) = previous_price {
+                unaffected.remove(price, &index);
+            }
+        }
+        self.update_footprint_pocs(start..end);
+        unaffected.extend(std::mem::take(&mut self.naked_pocs));
+        self.naked_pocs = unaffected;
+    }
+
+    fn update_footprint_pocs(&mut self, activation_range: Range<usize>) {
         let count = self.point_count();
-        if start >= count {
+        if activation_range.start >= count {
             return;
         }
         let step = self.tick_size();
-        if let Some(previous) = start.checked_sub(1) {
+        if let Some(previous) = activation_range.start.checked_sub(1) {
             self.register_footprint_poc(previous);
         }
-        for index in start..count {
+        for index in activation_range.start..count {
             let bar = *self.point_at(index).expect("POC candle exists").kline;
             let at = match self.basis() {
                 Basis::Time(_) => PocFillAt::Time(bar.time),
@@ -1356,8 +1374,11 @@ impl KlineSeries {
                     .set_poc_status(NPoc::Filled { at });
             }
             // Only a subsequent candle can touch this candle's POC.
-            if index + 1 < count {
+            if index < activation_range.end && index + 1 < count {
                 self.register_footprint_poc(index);
+            }
+            if index + 1 >= activation_range.end && self.naked_pocs.is_empty() {
+                break;
             }
         }
     }
@@ -1376,7 +1397,7 @@ impl KlineSeries {
                 }
             }
         }
-        self.update_footprint_pocs_from(0);
+        self.update_footprint_pocs(0..self.point_count());
     }
 
     fn clear_profile_caches(&mut self) {

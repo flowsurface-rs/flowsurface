@@ -296,7 +296,7 @@ impl<'a> VolumeProfileObject<'a> {
             return;
         };
         let (line_end, line_color) = match poc.status {
-            NPoc::Naked if colors.show_npoc => (
+            NPoc::Naked if colors.show_poc || colors.show_npoc => (
                 naked_line_end,
                 resolve_theme_color(
                     colors.color_for(VolumeProfileColorSlot::NakedPoc),

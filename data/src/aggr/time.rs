@@ -34,6 +34,11 @@ pub(crate) struct KlineInsertReport {
     pub ordered_change: OrderedChange,
 }
 
+pub(crate) struct TradeInsertReport {
+    pub earliest_updated: UnixMs,
+    pub previous_poc_prices: BTreeMap<UnixMs, Option<Price>>,
+}
+
 impl<D: DataPoint> TimeSeries<D> {
     pub fn timerange(&self) -> (UnixMs, UnixMs) {
         let earliest = self
@@ -192,7 +197,10 @@ impl TimeSeries<KlineDataPoint> {
         first_missing.zip(last_missing)
     }
 
-    pub fn insert_trades_existing_buckets(&mut self, buffer: &[Trade]) -> Option<UnixMs> {
+    pub(crate) fn insert_trades_existing_buckets_report(
+        &mut self,
+        buffer: &[Trade],
+    ) -> Option<TradeInsertReport> {
         if buffer.is_empty() {
             return None;
         }
@@ -210,13 +218,26 @@ impl TimeSeries<KlineDataPoint> {
             }
         }
 
-        let earliest_updated = updated_times.iter().copied().min();
+        let earliest_updated = updated_times.iter().copied().min()?;
+        let mut previous_poc_prices = BTreeMap::new();
         for time in updated_times {
             if let Some(data_point) = self.datapoints.get_mut(&time) {
+                let previous = data_point.footprint.poc;
                 data_point.calculate_poc();
+                let previous_price = previous.map(|poc| poc.price);
+                if previous_price == data_point.poc_price() {
+                    if let Some(previous) = previous {
+                        data_point.set_poc_status(previous.status);
+                    }
+                } else {
+                    previous_poc_prices.insert(time, previous_price);
+                }
             }
         }
-        earliest_updated
+        Some(TradeInsertReport {
+            earliest_updated,
+            previous_poc_prices,
+        })
     }
 
     pub fn backfill_new_buckets<'a>(

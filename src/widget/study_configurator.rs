@@ -127,19 +127,18 @@ fn volume_profile_color_section<'a>(
 ) -> Element<'a, Message<KlineStudy>> {
     let controls = VolumeProfileColorConfig::color_specs_for_source(source, schedule)
         .iter()
-        .map(|spec| {
+        .filter_map(|spec| {
             let slot = spec.slot;
             let enabled = match slot {
-                data::chart::kline::VolumeProfileColorSlot::NakedPoc => colors.show_npoc,
+                data::chart::kline::VolumeProfileColorSlot::NakedPoc => {
+                    colors.show_poc || colors.show_npoc
+                }
                 data::chart::kline::VolumeProfileColorSlot::FilledPoc => colors.show_poc,
                 _ => true,
             };
 
             if !enabled {
-                return element_for_layout(
-                    volume_profile_visibility_toggle(colors, spec.label, slot, on_change),
-                    layout,
-                );
+                return None;
             }
 
             let selected = colors.color_for(slot);
@@ -175,51 +174,54 @@ fn volume_profile_color_section<'a>(
                 .spacing(4)
                 .width(Length::Fill);
 
-            let title = match slot {
-                data::chart::kline::VolumeProfileColorSlot::NakedPoc
-                | data::chart::kline::VolumeProfileColorSlot::FilledPoc => {
-                    volume_profile_visibility_toggle(colors, spec.label, slot, on_change)
-                }
-                data::chart::kline::VolumeProfileColorSlot::Buy
-                | data::chart::kline::VolumeProfileColorSlot::Sell => {
-                    crate::widget::text::body(spec.label).into()
-                }
-            };
-
-            study_setting_with_title(title, setting, layout)
+            Some(study_setting(spec.label, setting, layout))
         });
 
     let spacing = match layout {
         StudyConfigLayout::Card => 16.0,
         StudyConfigLayout::Inspector(_) => inspector::MODAL_SECTION_SPACING,
     };
-    column(controls).spacing(spacing).into()
+    let mut sections = column![].spacing(spacing);
+    if matches!(schedule, VolumeProfileSchedule::Recurring { .. }) {
+        sections = sections.push(element_for_layout(
+            poc_line_controls(colors.show_poc, colors.show_npoc, true, move |all, show| {
+                on_change(colors.with_show_poc(all).with_show_npoc(show))
+            }),
+            layout,
+        ));
+    }
+    sections.extend(controls).into()
 }
 
-fn volume_profile_visibility_toggle<'a>(
-    colors: VolumeProfileColorConfig,
-    label: &'static str,
-    slot: data::chart::kline::VolumeProfileColorSlot,
-    on_change: impl Fn(VolumeProfileColorConfig) -> Message<KlineStudy> + Copy + 'a,
-) -> Element<'a, Message<KlineStudy>> {
-    match slot {
-        data::chart::kline::VolumeProfileColorSlot::NakedPoc => checkbox(colors.show_npoc)
-            .label(label)
-            .spacing(8)
-            .text_size(crate::style::text_size::SECTION)
-            .on_toggle(move |show| on_change(colors.with_show_npoc(show)))
-            .width(Length::Fill)
-            .into(),
-        data::chart::kline::VolumeProfileColorSlot::FilledPoc => checkbox(colors.show_poc)
-            .label(label)
-            .spacing(8)
-            .text_size(crate::style::text_size::SECTION)
-            .on_toggle(move |show| on_change(colors.with_show_poc(show)))
-            .width(Length::Fill)
-            .into(),
-        data::chart::kline::VolumeProfileColorSlot::Buy
-        | data::chart::kline::VolumeProfileColorSlot::Sell => unreachable!(),
+pub(crate) fn poc_line_controls<'a, M: Clone + 'a>(
+    show_poc: bool,
+    show_npoc: bool,
+    enabled: bool,
+    on_change: impl Fn(bool, bool) -> M + Copy + 'a,
+) -> Element<'a, M> {
+    let shown = show_poc || show_npoc;
+    let toggle = checkbox(shown)
+        .label("Show POC lines")
+        .spacing(8)
+        .text_size(crate::style::text_size::SECTION)
+        .on_toggle_maybe(enabled.then_some(move |show| on_change(show, show)))
+        .width(Length::Fill);
+    let mut controls = column![toggle].spacing(8);
+    if shown && enabled {
+        controls = controls.push(
+            container(
+                column![
+                    radio("All", true, Some(show_poc), move |all| on_change(all, true)),
+                    radio("Untouched only", false, Some(show_poc), move |all| {
+                        on_change(all, true)
+                    }),
+                ]
+                .spacing(8),
+            )
+            .padding(iced::Padding::default().left(24)),
+        );
     }
+    controls.into()
 }
 
 fn volume_profile_width_section<'a>(

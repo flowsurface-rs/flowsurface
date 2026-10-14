@@ -1318,7 +1318,9 @@ impl FootprintRenderer<'_> {
                     continue;
                 };
                 let (end_x, color) = match line.poc.status {
-                    NPoc::Naked if config.show_npoc => (naked_line_end, npoc_color),
+                    NPoc::Naked if config.show_poc || config.show_npoc => {
+                        (naked_line_end, npoc_color)
+                    }
                     NPoc::Filled { at } if config.show_poc => {
                         let x = match at {
                             PocFillAt::Time(time) => x_for_time(time),
