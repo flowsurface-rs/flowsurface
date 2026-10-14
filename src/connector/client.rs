@@ -422,11 +422,7 @@ fn parse_arrow_trades(
         }
     }
 
-    // Fast path: if no nulls were encountered, last_ts is simply the
-    // timestamp of the last valid trade.
-    if last_ts.is_none() {
-        last_ts = trades.last().map(|t| t.time);
-    }
+    last_ts = last_ts.max(trades.last().map(|trade| trade.time));
 
     if skipped_total > 0 {
         log::warn!(
