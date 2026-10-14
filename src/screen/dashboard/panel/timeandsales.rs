@@ -517,7 +517,7 @@ impl canvas::Program<Message> for TimeAndSalesView<'_> {
                     self.timezone
                         .format_with_kind(
                             entry.time.as_u64() as i64,
-                            TimeLabelKind::Custom("%M:%S.%3f"),
+                            TimeLabelKind::Custom("%H:%M:%S.%3f"),
                         )
                         .unwrap_or_default(),
                     Point {
