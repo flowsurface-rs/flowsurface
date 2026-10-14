@@ -105,12 +105,6 @@ impl GridRing {
         self.mark_full_dirty();
     }
 
-    /// Current y-binning in steps.
-    #[inline]
-    pub fn steps_per_y_bin(&self) -> i64 {
-        self.steps_per_y_bin.max(1)
-    }
-
     /// Rebuild the entire ring grid from `HistoricalDepth` for the time window
     /// [oldest_time, latest_time] (bucketed by `aggr_time_ms`) using the current view binning.
     ///

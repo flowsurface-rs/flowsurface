@@ -9,7 +9,7 @@ use iced::Element;
 use iced::advanced::{self, Widget};
 
 pub fn decorate<'a, Message, Theme, Renderer>(
-    element: impl Into<Element<'a, Message, Theme, Renderer>>,
+    element: impl iced::widget::Widget<Message, Theme, Renderer> + 'a,
 ) -> Decorate<'a, Message, Theme, Renderer> {
     Decorate::new(element)
 }
@@ -38,9 +38,9 @@ pub struct Decorate<
 }
 
 impl<'a, Message, Theme, Renderer> Decorate<'a, Message, Theme, Renderer> {
-    pub fn new(inner: impl Into<Element<'a, Message, Theme, Renderer>>) -> Self {
+    pub fn new(inner: impl iced::widget::Widget<Message, Theme, Renderer> + 'a) -> Self {
         Self {
-            inner: inner.into(),
+            inner: inner.boxed(),
             update: (),
             layout: (),
             draw: (),
@@ -67,37 +67,6 @@ impl<'a, Message, Theme, Renderer, Layout, Update, Draw, MouseInteraction, Opera
         State,
     >
 {
-    pub fn layout<T, U>(
-        self,
-        layout: T,
-    ) -> Decorate<
-        'a,
-        Message,
-        Theme,
-        Renderer,
-        T,
-        Update,
-        Draw,
-        MouseInteraction,
-        Operate,
-        Overlay,
-        U,
-    >
-    where
-        T: self::Layout<'a, Message, Theme, Renderer, U>,
-    {
-        Decorate {
-            inner: self.inner,
-            update: self.update,
-            draw: self.draw,
-            mouse_interaction: self.mouse_interaction,
-            operate: self.operate,
-            overlay: self.overlay,
-            layout,
-            state: PhantomData,
-        }
-    }
-
     pub fn update<T, U>(
         self,
         update: T,
@@ -159,63 +128,6 @@ impl<'a, Message, Theme, Renderer, Layout, Update, Draw, MouseInteraction, Opera
             state: PhantomData,
         }
     }
-
-    pub fn mouse_interaction<T, U>(
-        self,
-        mouse_interaction: T,
-    ) -> Decorate<'a, Message, Theme, Renderer, Layout, Update, Draw, T, Operate, Overlay, U>
-    where
-        T: self::MouseInteraction<'a, Message, Theme, Renderer, U>,
-    {
-        Decorate {
-            inner: self.inner,
-            layout: self.layout,
-            update: self.update,
-            draw: self.draw,
-            operate: self.operate,
-            overlay: self.overlay,
-            mouse_interaction,
-            state: PhantomData,
-        }
-    }
-
-    pub fn operate<T, U>(
-        self,
-        operate: T,
-    ) -> Decorate<'a, Message, Theme, Renderer, Layout, Update, Draw, MouseInteraction, T, Overlay, U>
-    where
-        T: self::Operate<'a, Message, Theme, Renderer, U>,
-    {
-        Decorate {
-            inner: self.inner,
-            layout: self.layout,
-            update: self.update,
-            draw: self.draw,
-            mouse_interaction: self.mouse_interaction,
-            overlay: self.overlay,
-            operate,
-            state: PhantomData,
-        }
-    }
-
-    pub fn overlay<T, U>(
-        self,
-        overlay: T,
-    ) -> Decorate<'a, Message, Theme, Renderer, Layout, Update, Draw, MouseInteraction, Operate, T, U>
-    where
-        T: self::Overlay<'a, Message, Theme, Renderer, U>,
-    {
-        Decorate {
-            inner: self.inner,
-            layout: self.layout,
-            update: self.update,
-            draw: self.draw,
-            mouse_interaction: self.mouse_interaction,
-            operate: self.operate,
-            overlay,
-            state: PhantomData,
-        }
-    }
 }
 
 pub trait Layout<'a, Message, Theme, Renderer, State> {
@@ -241,7 +153,7 @@ where
         renderer: &Renderer,
         limits: &iced::advanced::layout::Limits,
     ) {
-        inner.as_widget_mut().layout(tree, renderer, limits)
+        inner.layout(tree, renderer, limits)
     }
 }
 
@@ -298,9 +210,7 @@ where
         shell: &mut advanced::Shell<'_, Message>,
         viewport: &iced::Rectangle,
     ) {
-        inner
-            .as_widget_mut()
-            .update(tree, event, layout, cursor, renderer, shell, viewport);
+        inner.update(tree, event, layout, cursor, renderer, shell, viewport);
     }
 }
 
@@ -367,9 +277,7 @@ where
         cursor: iced::advanced::mouse::Cursor,
         viewport: &iced::Rectangle,
     ) {
-        inner
-            .as_widget()
-            .draw(tree, renderer, theme, style, layout, cursor, viewport);
+        inner.draw(tree, renderer, theme, style, layout, cursor, viewport);
     }
 }
 
@@ -433,9 +341,7 @@ where
         viewport: &iced::Rectangle,
         renderer: &Renderer,
     ) -> advanced::mouse::Interaction {
-        inner
-            .as_widget()
-            .mouse_interaction(tree, layout, cursor, viewport, renderer)
+        inner.mouse_interaction(tree, layout, cursor, viewport, renderer)
     }
 }
 
@@ -494,9 +400,7 @@ where
         renderer: &Renderer,
         operation: &mut dyn advanced::widget::Operation<()>,
     ) {
-        inner
-            .as_widget_mut()
-            .operate(tree, layout, viewport, renderer, operation);
+        inner.operate(tree, layout, viewport, renderer, operation);
     }
 }
 
@@ -555,9 +459,7 @@ where
         translation: iced::Vector,
         window: iced::Size,
     ) -> Vec<advanced::overlay::Element<'b, Message, Theme, Renderer>> {
-        inner
-            .as_widget_mut()
-            .overlay(tree, layout, renderer, viewport, translation, window)
+        inner.overlay(tree, layout, renderer, viewport, translation, window)
     }
 }
 
@@ -625,7 +527,7 @@ where
     State: Default + 'static,
 {
     fn size(&self) -> iced::Size<iced::Length> {
-        self.inner.as_widget().size()
+        self.inner.size()
     }
 
     fn tag(&self) -> advanced::widget::tree::Tag {
@@ -769,49 +671,20 @@ where
     }
 }
 
-impl<'a, Message, Theme, Renderer, Layout, Update, Draw, MouseInteraction, Operate, Overlay, State>
-    From<
-        Decorate<
-            'a,
-            Message,
-            Theme,
-            Renderer,
-            Layout,
-            Update,
-            Draw,
-            MouseInteraction,
-            Operate,
-            Overlay,
-            State,
-        >,
-    > for Element<'a, Message, Theme, Renderer>
-where
-    Message: 'a,
-    Theme: 'a,
-    Renderer: advanced::Renderer + 'a,
-    Layout: self::Layout<'a, Message, Theme, Renderer, State> + 'a,
-    Update: self::Update<'a, Message, Theme, Renderer, State> + 'a,
-    Draw: self::Draw<'a, Message, Theme, Renderer, State> + 'a,
-    MouseInteraction: self::MouseInteraction<'a, Message, Theme, Renderer, State> + 'a,
-    Operate: self::Operate<'a, Message, Theme, Renderer, State> + 'a,
-    Overlay: self::Overlay<'a, Message, Theme, Renderer, State> + 'a,
-    State: Default + 'static,
+impl<Message, Theme, Renderer, Layout, Update, Draw, MouseInteraction, Operate, Overlay, State>
+    iced::advanced::widget::Meta
+    for Decorate<
+        '_,
+        Message,
+        Theme,
+        Renderer,
+        Layout,
+        Update,
+        Draw,
+        MouseInteraction,
+        Operate,
+        Overlay,
+        State,
+    >
 {
-    fn from(
-        wrap: Decorate<
-            'a,
-            Message,
-            Theme,
-            Renderer,
-            Layout,
-            Update,
-            Draw,
-            MouseInteraction,
-            Operate,
-            Overlay,
-            State,
-        >,
-    ) -> Self {
-        Element::new(wrap)
-    }
 }

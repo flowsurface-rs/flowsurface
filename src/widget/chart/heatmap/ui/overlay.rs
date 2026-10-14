@@ -7,7 +7,6 @@ use crate::widget::chart::heatmap::view;
 
 use data::util::abbr_large_numbers;
 use exchange::unit::Qty;
-use exchange::unit::{Price, PriceStep};
 
 use iced::widget::canvas::Path;
 use iced::{Alignment, Point, Rectangle, Renderer, Theme, mouse, widget::canvas};
@@ -36,9 +35,7 @@ const PAUSED_CTRL_BG_PAD_X: f32 = 6.0;
 pub enum Interaction {
     #[default]
     Hovering,
-    Panning {
-        last_position: iced::Point,
-    },
+    Panning,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -141,8 +138,6 @@ pub struct OverlayCanvas<'a> {
 
     pub scene: &'a Scene,
     pub depth_grid: &'a GridRing,
-    pub base_price: Option<Price>,
-    pub step: PriceStep,
     pub scroll_ref_bucket: i64,
     pub qty_scale: f32,
 
@@ -175,9 +170,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                         return Some(canvas::Action::publish(Message::PauseBtnClicked));
                     }
 
-                    *interaction = Interaction::Panning {
-                        last_position: cursor_in_abs,
-                    };
+                    *interaction = Interaction::Panning;
                 }
                 None
             }
@@ -375,7 +368,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
             let x = (snap_px_x.round() + 0.5).clamp(0.0, bounds.width);
             let y = (snap_px_y.round() + 0.5).clamp(0.0, bounds.height);
 
-            if let Interaction::Panning { .. } = interaction {
+            if let Interaction::Panning = interaction {
                 self.draw_full_crosshair(frame, theme, bounds, x, y);
                 return;
             }
@@ -494,7 +487,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                 return mouse::Interaction::Pointer;
             }
 
-            if let Interaction::Panning { .. } = interaction {
+            if let Interaction::Panning = interaction {
                 mouse::Interaction::Grabbing
             } else {
                 mouse::Interaction::Crosshair

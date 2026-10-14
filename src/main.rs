@@ -16,6 +16,7 @@ mod window;
 use connector::client::DataSources;
 use data::config::theme::default_theme;
 use data::{layout::WindowSpec, sidebar};
+use iced::widget::Widget as _;
 use layout::{LayoutId, configuration};
 use modal::{
     LayoutManager, ThemeEditor,
@@ -708,7 +709,7 @@ impl Flowsurface {
         Task::none()
     }
 
-    fn view(&self, id: window::Id) -> Element<'_, Message> {
+    fn view(&self, id: window::Id) -> impl iced::widget::Widget<Message> + '_ {
         let dashboard = self.active_dashboard();
         let sidebar_pos = self.sidebar.position();
 
@@ -760,9 +761,9 @@ impl Flowsurface {
             ];
 
             if let Some(menu) = self.sidebar.active_menu() {
-                self.view_with_modal(base.into(), dashboard, menu)
+                self.view_with_modal(base.boxed(), dashboard, menu)
             } else {
-                base.into()
+                base.boxed()
             }
         } else {
             container(
@@ -774,7 +775,7 @@ impl Flowsurface {
                     }),
             )
             .padding(padding::top(style::TITLE_PADDING_TOP))
-            .into()
+            .boxed()
         };
 
         toast::Manager::new(
@@ -786,7 +787,6 @@ impl Flowsurface {
             },
             Message::RemoveNotification,
         )
-        .into()
     }
 
     fn theme(&self, _window: window::Id) -> iced_core::Theme {
@@ -1108,7 +1108,7 @@ impl Flowsurface {
                             .padding(8),
                             TooltipPosition::Top,
                         )
-                        .into();
+                        .boxed();
 
                         if let (Some(commit_label), Some(commit_url)) =
                             (commit_label, version::build_commit_url())
@@ -1122,7 +1122,7 @@ impl Flowsurface {
                             column![github_button, commit_button]
                                 .spacing(2)
                                 .align_x(Alignment::End)
-                                .into()
+                                .boxed()
                         } else {
                             github_button
                         }
@@ -1188,8 +1188,9 @@ impl Flowsurface {
                         dialog_content,
                         Message::ToggleDialogModal(None),
                     )
+                    .boxed()
                 } else {
-                    base_content
+                    base_content.boxed()
                 }
             }
             sidebar::Menu::Layout => {
@@ -1315,6 +1316,7 @@ impl Flowsurface {
                     Alignment::Start,
                     align_x,
                 )
+                .boxed()
             }
             sidebar::Menu::Audio => {
                 let (align_x, padding) = match sidebar_pos {
@@ -1334,6 +1336,7 @@ impl Flowsurface {
                     Alignment::Start,
                     align_x,
                 )
+                .boxed()
             }
             sidebar::Menu::ThemeEditor => {
                 let (align_x, padding) = match sidebar_pos {
@@ -1351,6 +1354,7 @@ impl Flowsurface {
                     Alignment::End,
                     align_x,
                 )
+                .boxed()
             }
             sidebar::Menu::Network => {
                 let (align_x, padding) = match sidebar_pos {
@@ -1378,8 +1382,9 @@ impl Flowsurface {
                         dialog_content,
                         Message::ToggleDialogModal(None),
                     )
+                    .boxed()
                 } else {
-                    base_content
+                    base_content.boxed()
                 }
             }
         }

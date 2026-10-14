@@ -3,6 +3,7 @@ pub mod panel;
 pub mod sidebar;
 pub mod tickers_table;
 
+use iced::widget::Widget as _;
 pub use sidebar::Sidebar;
 
 use super::DashboardError;
@@ -624,7 +625,7 @@ impl Dashboard {
         main_window: &'a Window,
         tickers_table: &'a TickersTable,
         timezone: UserTimezone,
-    ) -> Element<'a, Message> {
+    ) -> impl iced::widget::Widget<Message> + 'a {
         let pane_grid: Element<_> = PaneGrid::new(&self.panes, |id, pane, maximized| {
             let is_focused = self.focus == Some((main_window.id, id));
             pane.view(
@@ -644,7 +645,7 @@ impl Dashboard {
         .on_resize(8, pane::Message::PaneResized)
         .spacing(6)
         .style(style::pane_grid)
-        .into();
+        .boxed();
 
         pane_grid.map(move |message| Message::Pane(main_window.id, message))
     }
@@ -677,10 +678,11 @@ impl Dashboard {
             .height(Length::Fill)
             .padding(8);
 
-            Element::new(content).map(move |message| Message::Pane(window, message))
-        } else {
-            Element::new(center("No pane found for window"))
+            content
                 .map(move |message| Message::Pane(window, message))
+                .boxed()
+        } else {
+            center("No pane found for window").boxed()
         }
     }
 

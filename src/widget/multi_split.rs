@@ -1,3 +1,4 @@
+use iced::widget::Widget as _;
 use iced::{
     Element, Event, Length, Point, Rectangle, Renderer, Size, Theme, Vector,
     advanced::{
@@ -58,7 +59,11 @@ where
             elements.push(panel);
 
             if i < splits.len() {
-                elements.push(rule::horizontal(DRAG_SIZE).style(style::split_ruler).into());
+                elements.push(
+                    rule::horizontal(DRAG_SIZE)
+                        .style(style::split_ruler)
+                        .boxed(),
+                );
             }
         }
 
@@ -113,11 +118,7 @@ impl<Message> Widget<Message, Theme, Renderer> for MultiSplit<'_, Message> {
                     Size::new(max_limits.width, height.max(0.0)),
                 );
 
-                self.panels[i].as_widget_mut().layout(
-                    &mut tree.children[i],
-                    renderer,
-                    &panel_limits,
-                );
+                self.panels[i].layout(&mut tree.children[i], renderer, &panel_limits);
                 tree.children[i].translation = Vector::new(0.0, current_y);
 
                 if !is_last {
@@ -129,11 +130,7 @@ impl<Message> Widget<Message, Theme, Renderer> for MultiSplit<'_, Message> {
                     Size::new(max_limits.width, DRAG_SIZE),
                 );
 
-                self.panels[i].as_widget_mut().layout(
-                    &mut tree.children[i],
-                    renderer,
-                    &ruler_limits,
-                );
+                self.panels[i].layout(&mut tree.children[i], renderer, &ruler_limits);
                 tree.children[i].translation = Vector::new(0.0, current_y);
                 current_y += DRAG_SIZE;
             }
@@ -156,9 +153,7 @@ impl<Message> Widget<Message, Theme, Renderer> for MultiSplit<'_, Message> {
             .iter_mut()
             .zip(layout.iter_mut(&mut tree.children))
             .for_each(|(child, (layout, tree))| {
-                child
-                    .as_widget_mut()
-                    .update(tree, event, layout, cursor, renderer, shell, viewport);
+                child.update(tree, event, layout, cursor, renderer, shell, viewport);
             });
 
         if shell.is_event_captured() {
@@ -261,9 +256,7 @@ impl<Message> Widget<Message, Theme, Renderer> for MultiSplit<'_, Message> {
             .zip(layout.iter(&tree.children))
             .filter(|(_, (layout, _))| layout.bounds().intersects(viewport))
             .for_each(|(child, (layout, tree))| {
-                child
-                    .as_widget()
-                    .draw(tree, renderer, theme, style, layout, cursor, viewport);
+                child.draw(tree, renderer, theme, style, layout, cursor, viewport);
             });
     }
 
@@ -284,9 +277,7 @@ impl<Message> Widget<Message, Theme, Renderer> for MultiSplit<'_, Message> {
                 .iter()
                 .zip(layout.iter(&tree.children))
                 .map(|(child, (layout, tree))| {
-                    child
-                        .as_widget()
-                        .mouse_interaction(tree, layout, cursor, viewport, renderer)
+                    child.mouse_interaction(tree, layout, cursor, viewport, renderer)
                 })
                 .max()
                 .unwrap_or_default()
@@ -325,11 +316,4 @@ impl<Message> Widget<Message, Theme, Renderer> for MultiSplit<'_, Message> {
     }
 }
 
-impl<'a, Message> From<MultiSplit<'a, Message>> for Element<'a, Message>
-where
-    Message: 'a,
-{
-    fn from(widget: MultiSplit<'a, Message>) -> Self {
-        Self::new(widget)
-    }
-}
+impl<Message> iced::advanced::widget::Meta for MultiSplit<'_, Message> {}

@@ -6,6 +6,7 @@ use crate::{
     widget::button_with_tooltip,
 };
 use data::sidebar;
+use iced::widget::Widget as _;
 
 use iced::{
     Alignment, Element, Subscription, Task,
@@ -95,7 +96,7 @@ impl Sidebar {
         (Task::none(), None)
     }
 
-    pub fn view(&self, audio_volume: Option<f32>) -> Element<'_, Message> {
+    pub fn view(&self, audio_volume: Option<f32>) -> impl iced::widget::Widget<Message> + '_ {
         let state = &self.state;
 
         let tooltip_position = if state.position == sidebar::Position::Left {
@@ -123,7 +124,6 @@ impl Sidebar {
             sidebar::Position::Right => row![tickers_table, nav_buttons],
         }
         .spacing(if is_table_open { 8 } else { 4 })
-        .into()
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
@@ -135,7 +135,7 @@ impl Sidebar {
         is_table_open: bool,
         audio_volume: Option<f32>,
         tooltip_position: TooltipPosition,
-    ) -> iced::widget::Column<'_, Message> {
+    ) -> iced::widget::Column<Element<'_, Message>> {
         let settings_modal_button = {
             let is_active = self.is_menu_active(sidebar::Menu::Settings)
                 || self.is_menu_active(sidebar::Menu::ThemeEditor)

@@ -225,7 +225,7 @@ impl Pipeline {
                 module: &rect_shader,
                 entry_point: Some("vs_main"),
                 buffers: &[
-                    wgpu::VertexBufferLayout {
+                    Some(wgpu::VertexBufferLayout {
                         array_stride: std::mem::size_of::<[f32; 2]>() as u64,
                         step_mode: wgpu::VertexStepMode::Vertex,
                         attributes: &[wgpu::VertexAttribute {
@@ -233,8 +233,8 @@ impl Pipeline {
                             shader_location: 0,
                             format: wgpu::VertexFormat::Float32x2,
                         }],
-                    },
-                    wgpu::VertexBufferLayout {
+                    }),
+                    Some(wgpu::VertexBufferLayout {
                         array_stride: std::mem::size_of::<RectInstance>() as u64,
                         step_mode: wgpu::VertexStepMode::Instance,
                         attributes: &[
@@ -287,7 +287,7 @@ impl Pipeline {
                                 format: wgpu::VertexFormat::Float32,
                             },
                         ],
-                    },
+                    }),
                 ],
                 compilation_options: PipelineCompilationOptions::default(),
             },
@@ -316,7 +316,7 @@ impl Pipeline {
                 module: &circle_shader,
                 entry_point: Some("vs_main"),
                 buffers: &[
-                    wgpu::VertexBufferLayout {
+                    Some(wgpu::VertexBufferLayout {
                         array_stride: std::mem::size_of::<[f32; 2]>() as u64,
                         step_mode: wgpu::VertexStepMode::Vertex,
                         attributes: &[wgpu::VertexAttribute {
@@ -324,8 +324,8 @@ impl Pipeline {
                             shader_location: 0,
                             format: wgpu::VertexFormat::Float32x2,
                         }],
-                    },
-                    wgpu::VertexBufferLayout {
+                    }),
+                    Some(wgpu::VertexBufferLayout {
                         array_stride: std::mem::size_of::<CircleInstance>() as u64,
                         step_mode: wgpu::VertexStepMode::Instance,
                         attributes: &[
@@ -360,7 +360,7 @@ impl Pipeline {
                                 format: wgpu::VertexFormat::Float32x4,
                             },
                         ],
-                    },
+                    }),
                 ],
                 compilation_options: PipelineCompilationOptions::default(),
             },
@@ -424,7 +424,7 @@ impl Pipeline {
             vertex: wgpu::VertexState {
                 module: &heatmap_shader,
                 entry_point: Some("vs_main"),
-                buffers: &[wgpu::VertexBufferLayout {
+                buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<[f32; 2]>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &[wgpu::VertexAttribute {
@@ -432,7 +432,7 @@ impl Pipeline {
                         shader_location: 0,
                         format: wgpu::VertexFormat::Float32x2,
                     }],
-                }],
+                })],
                 compilation_options: PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {

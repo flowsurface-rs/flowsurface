@@ -5,22 +5,22 @@ pub mod pane;
 pub mod theme_editor;
 
 use iced::widget::{center, container, mouse_area, opaque, stack};
-use iced::{Alignment, Color, Element, Length, padding};
+use iced::{Alignment, Color, Length, padding};
 pub use layout_manager::LayoutManager;
 pub use pane::indicators;
 pub use pane::stream::{self, ModifierKind};
 pub use theme_editor::ThemeEditor;
 
 pub fn main_dialog_modal<'a, Message>(
-    base: impl Into<Element<'a, Message>>,
-    content: impl Into<Element<'a, Message>>,
+    base: impl iced::widget::Widget<Message> + 'a,
+    content: impl iced::widget::Widget<Message> + 'a,
     on_blur: Message,
-) -> Element<'a, Message>
+) -> impl iced::widget::Widget<Message> + 'a
 where
     Message: Clone + 'a,
 {
     stack![
-        base.into(),
+        base,
         opaque(
             mouse_area(center(opaque(content)).style(|_theme| {
                 container::Style {
@@ -37,22 +37,21 @@ where
             .on_press(on_blur)
         )
     ]
-    .into()
 }
 
 pub fn dashboard_modal<'a, Message>(
-    base: impl Into<Element<'a, Message>>,
-    content: impl Into<Element<'a, Message>>,
+    base: impl iced::widget::Widget<Message> + 'a,
+    content: impl iced::widget::Widget<Message> + 'a,
     on_blur: Message,
     padding: padding::Padding,
     align_y: Alignment,
     align_x: Alignment,
-) -> Element<'a, Message>
+) -> impl iced::widget::Widget<Message> + 'a
 where
     Message: Clone + 'a,
 {
     stack![
-        base.into(),
+        base,
         mouse_area(
             container(opaque(content))
                 .width(Length::Fill)
@@ -63,5 +62,4 @@ where
         )
         .on_press(on_blur)
     ]
-    .into()
 }

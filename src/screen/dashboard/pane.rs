@@ -41,8 +41,9 @@ use exchange::{
     adapter::{MarketKind, StreamKind, StreamTicksize},
     unit::PriceStep,
 };
+use iced::widget::Widget as _;
 use iced::{
-    Alignment, Element, Length, Renderer, Theme, padding,
+    Alignment, Element, Length, Theme, padding,
     widget::{button, center, column, container, pane_grid, pick_list, row, text, tooltip},
 };
 use std::time::Instant;
@@ -517,9 +518,14 @@ impl State {
         main_window: &'a Window,
         timezone: UserTimezone,
         tickers_table: &'a TickersTable,
-    ) -> pane_grid::Content<'a, Message, Theme, Renderer> {
+    ) -> pane_grid::Content<
+        'a,
+        Message,
+        impl iced::widget::Widget<Message> + 'a,
+        impl iced::widget::Widget<Message> + 'a,
+    > {
         let mut top_left_buttons = if Content::Starter == self.content {
-            row![]
+            row::<Element<'a, Message>>([])
         } else {
             row![link_group_button(id, self.link_group, |id| {
                 Message::PaneEvent(id, Event::ShowModal(Modal::LinkGroup))
@@ -568,7 +574,7 @@ impl State {
                 })
                 .height(widget::PANE_CONTROL_BTN_HEIGHT);
 
-            top_left_buttons = top_left_buttons.push(tickers_list_btn);
+            top_left_buttons = top_left_buttons.push(tickers_list_btn.boxed());
         } else if !matches!(self.content, Content::Starter) && !self.has_stream() {
             let content = row![
                 text("Choose a ticker")
@@ -592,7 +598,7 @@ impl State {
                 })
                 .height(widget::PANE_CONTROL_BTN_HEIGHT);
 
-            top_left_buttons = top_left_buttons.push(tickers_list_btn);
+            top_left_buttons = top_left_buttons.push(tickers_list_btn.boxed());
         }
 
         let modifier: Option<modal::stream::Modifier> = self.modal.clone().and_then(|m| {
@@ -607,7 +613,7 @@ impl State {
             Some(
                 container(self.view_controls(id, panes, maximized, window != main_window.id))
                     .style(style::chart_modal)
-                    .into(),
+                    .boxed(),
             )
         } else {
             None
@@ -617,12 +623,12 @@ impl State {
             match &self.streams {
                 ResolvedStream::Waiting { streams, .. } if !streams.is_empty() => {
                     center(text("Waiting for metadata…").size(crate::style::text_size::TITLE))
-                        .into()
+                        .boxed()
                 }
                 ResolvedStream::Ready(streams) if !streams.is_empty() => center(
                     text("Waiting for pane initialization...").size(crate::style::text_size::TITLE),
                 )
-                .into(),
+                .boxed(),
                 ResolvedStream::Blocked {
                     streams, reason, ..
                 } => {
@@ -648,7 +654,7 @@ impl State {
                         .spacing(8)
                         .align_x(Alignment::Center),
                     )
-                    .into()
+                    .boxed()
                 }
                 _ => {
                     let content = column![
@@ -658,7 +664,7 @@ impl State {
                     .spacing(8)
                     .align_x(Alignment::Center);
 
-                    center(content).into()
+                    center(content).boxed()
                 }
             }
         };
@@ -685,14 +691,14 @@ impl State {
                     Alignment::End,
                     move |msg| Message::PaneEvent(id, Event::DeleteNotification(msg)),
                 )
-                .into();
+                .boxed();
 
                 self.compose_stack_view(
                     base,
                     id,
                     None,
                     compact_controls,
-                    || column![].into(),
+                    || iced::advanced::widget::Void.boxed(),
                     None,
                     tickers_table,
                 )
@@ -705,7 +711,7 @@ impl State {
                     let modifiers =
                         row![basis_modifier(id, selected_basis, modifier, kind),].spacing(4);
 
-                    top_left_buttons = top_left_buttons.push(modifiers);
+                    top_left_buttons = top_left_buttons.push(modifiers.boxed());
 
                     let base = c.view(timezone).map(move |message| {
                         Message::PaneEvent(id, Event::ComparisonChartInteraction(message))
@@ -714,7 +720,7 @@ impl State {
                     let settings_modal = || comparison_cfg_view(id, c);
 
                     self.compose_stack_view(
-                        base,
+                        base.boxed(),
                         id,
                         None,
                         compact_controls,
@@ -729,7 +735,7 @@ impl State {
                         id,
                         None,
                         compact_controls,
-                        || column![].into(),
+                        || iced::advanced::widget::Void.boxed(),
                         None,
                         tickers_table,
                     )
@@ -745,7 +751,7 @@ impl State {
                         || modal::pane::settings::timesales_cfg_view(panel.config, id);
 
                     self.compose_stack_view(
-                        base,
+                        base.boxed(),
                         id,
                         None,
                         compact_controls,
@@ -760,7 +766,7 @@ impl State {
                         id,
                         None,
                         compact_controls,
-                        || column![].into(),
+                        || iced::advanced::widget::Void.boxed(),
                         None,
                         tickers_table,
                     )
@@ -795,7 +801,7 @@ impl State {
                         exchange,
                     );
 
-                    top_left_buttons = top_left_buttons.push(modifiers);
+                    top_left_buttons = top_left_buttons.push(modifiers.boxed());
 
                     let base = panel::view(panel, timezone).map(move |message| {
                         Message::PaneEvent(id, Event::PanelInteraction(message))
@@ -805,7 +811,7 @@ impl State {
                         || modal::pane::settings::ladder_cfg_view(panel.config, id);
 
                     self.compose_stack_view(
-                        base,
+                        base.boxed(),
                         id,
                         None,
                         compact_controls,
@@ -820,7 +826,7 @@ impl State {
                         id,
                         None,
                         compact_controls,
-                        || column![].into(),
+                        || iced::advanced::widget::Void.boxed(),
                         None,
                         tickers_table,
                     )
@@ -862,7 +868,7 @@ impl State {
                     ]
                     .spacing(4);
 
-                    top_left_buttons = top_left_buttons.push(modifiers);
+                    top_left_buttons = top_left_buttons.push(modifiers.boxed());
 
                     let base = chart::view(chart, indicators, timezone).map(move |message| {
                         Message::PaneEvent(id, Event::ChartInteraction(message))
@@ -889,9 +895,9 @@ impl State {
                     };
 
                     self.compose_stack_view(
-                        base,
+                        base.boxed(),
                         id,
-                        indicator_modal,
+                        indicator_modal.map(iced::Widget::boxed),
                         compact_controls,
                         settings_modal,
                         None,
@@ -904,7 +910,7 @@ impl State {
                         id,
                         None,
                         compact_controls,
-                        || column![].into(),
+                        || iced::advanced::widget::Void.boxed(),
                         None,
                         tickers_table,
                     )
@@ -951,7 +957,7 @@ impl State {
                             ]
                             .spacing(4);
 
-                            top_left_buttons = top_left_buttons.push(modifiers);
+                            top_left_buttons = top_left_buttons.push(modifiers.boxed());
                         }
                         data::chart::KlineChartKind::Candles => {
                             let selected_basis = chart.basis();
@@ -961,7 +967,7 @@ impl State {
                                 row![basis_modifier(id, selected_basis, modifier, kind),]
                                     .spacing(4);
 
-                            top_left_buttons = top_left_buttons.push(modifiers);
+                            top_left_buttons = top_left_buttons.push(modifiers.boxed());
                         }
                     }
 
@@ -990,9 +996,9 @@ impl State {
                     };
 
                     self.compose_stack_view(
-                        base,
+                        base.boxed(),
                         id,
-                        indicator_modal,
+                        indicator_modal.map(iced::Widget::boxed),
                         compact_controls,
                         settings_modal,
                         None,
@@ -1011,7 +1017,7 @@ impl State {
                         id,
                         None,
                         compact_controls,
-                        || column![].into(),
+                        || iced::advanced::widget::Void.boxed(),
                         None,
                         tickers_table,
                     )
@@ -1079,12 +1085,12 @@ impl State {
                     ]
                     .spacing(4);
 
-                    top_left_buttons = top_left_buttons.push(modifiers);
+                    top_left_buttons = top_left_buttons.push(modifiers.boxed());
 
                     self.compose_stack_view(
-                        base,
+                        base.boxed(),
                         id,
-                        indicator_modal,
+                        indicator_modal.map(iced::Widget::boxed),
                         compact_controls,
                         settings_modal,
                         None,
@@ -1097,7 +1103,7 @@ impl State {
                         id,
                         None,
                         compact_controls,
-                        || column![].into(),
+                        || iced::advanced::widget::Void.boxed(),
                         None,
                         tickers_table,
                     )
@@ -1107,17 +1113,17 @@ impl State {
 
         match &self.status {
             Status::Loading(InfoKind::FetchingKlines) => {
-                top_left_buttons = top_left_buttons.push(text("Fetching Klines..."));
+                top_left_buttons = top_left_buttons.push(text("Fetching Klines...").boxed());
             }
             Status::Loading(InfoKind::FetchingTrades(count)) => {
-                top_left_buttons =
-                    top_left_buttons.push(text(format!("Fetching Trades... {count} fetched")));
+                top_left_buttons = top_left_buttons
+                    .push(text(format!("Fetching Trades... {count} fetched")).boxed());
             }
             Status::Loading(InfoKind::FetchingOI) => {
-                top_left_buttons = top_left_buttons.push(text("Fetching Open Interest..."));
+                top_left_buttons = top_left_buttons.push(text("Fetching Open Interest...").boxed());
             }
             Status::Stale(msg) => {
-                top_left_buttons = top_left_buttons.push(text(msg));
+                top_left_buttons = top_left_buttons.push(text(msg).boxed());
             }
             Status::Ready => {}
         }
@@ -1549,7 +1555,7 @@ impl State {
         total_panes: usize,
         is_maximized: bool,
         is_popout: bool,
-    ) -> Element<'_, Message> {
+    ) -> impl iced::widget::Widget<Message> + '_ {
         let modal_btn_style = |modal: Modal| {
             let is_active = self.modal == Some(modal);
             move |theme: &Theme, status: button::Status| {
@@ -1643,12 +1649,11 @@ impl State {
             .padding(padding::right(4).left(4))
             .align_y(Alignment::Center)
             .height(Length::Fixed(32.0))
-            .into()
     }
 
-    fn compose_stack_view<'a, F>(
+    fn compose_stack_view<'a, F, W>(
         &'a self,
-        base: Element<'a, Message>,
+        base: impl iced::widget::Widget<Message> + 'a,
         pane: pane_grid::Pane,
         indicator_modal: Option<Element<'a, Message>>,
         compact_controls: Option<Element<'a, Message>>,
@@ -1657,13 +1662,14 @@ impl State {
         tickers_table: &'a TickersTable,
     ) -> Element<'a, Message>
     where
-        F: FnOnce() -> Element<'a, Message>,
+        F: FnOnce() -> W,
+        W: iced::widget::Widget<Message> + 'a,
     {
         let base =
             widget::toast::Manager::new(base, &self.notifications, Alignment::End, move |msg| {
                 Message::PaneEvent(pane, Event::DeleteNotification(msg))
             })
-            .into();
+            .boxed();
 
         let on_blur = Message::PaneEvent(pane, Event::HideModal);
 
@@ -1678,6 +1684,7 @@ impl State {
                     padding::right(12).left(4),
                     Alignment::Start,
                 )
+                .boxed()
             }
             Some(Modal::StreamModifier(modifier)) => stack_modal(
                 base,
@@ -1687,7 +1694,8 @@ impl State {
                 Message::PaneEvent(pane, Event::HideModal),
                 padding::right(12).left(48),
                 Alignment::Start,
-            ),
+            )
+            .boxed(),
             Some(Modal::MiniTickersList(panel)) => {
                 let mini_list = panel
                     .view(tickers_table, selected_tickers, self.stream_pair())
@@ -1699,7 +1707,7 @@ impl State {
                     .width(260)
                     .padding(16)
                     .style(style::chart_modal)
-                    .into();
+                    .boxed();
 
                 stack_modal(
                     base,
@@ -1708,6 +1716,7 @@ impl State {
                     padding::left(12),
                     Alignment::Start,
                 )
+                .boxed()
             }
             Some(Modal::Settings) => stack_modal(
                 base,
@@ -1715,25 +1724,28 @@ impl State {
                 on_blur,
                 padding::right(12).left(12),
                 Alignment::End,
-            ),
+            )
+            .boxed(),
             Some(Modal::Indicators) => stack_modal(
                 base,
-                indicator_modal.unwrap_or_else(|| column![].into()),
+                indicator_modal.unwrap_or_else(|| iced::advanced::widget::Void.boxed()),
                 on_blur,
                 padding::right(12).left(12),
                 Alignment::End,
-            ),
+            )
+            .boxed(),
             Some(Modal::Controls) => stack_modal(
                 base,
                 if let Some(controls) = compact_controls {
                     controls
                 } else {
-                    column![].into()
+                    iced::advanced::widget::Void.boxed()
                 },
                 on_blur,
                 padding::left(12),
                 Alignment::End,
-            ),
+            )
+            .boxed(),
             None => base,
         }
     }
@@ -2385,7 +2397,7 @@ impl PartialEq for Content {
 fn link_group_modal<'a>(
     pane: pane_grid::Pane,
     selected_group: Option<LinkGroup>,
-) -> Element<'a, Message> {
+) -> impl iced::widget::Widget<Message> + 'a {
     let mut grid = column![].spacing(4);
     let rows = LinkGroup::ALL.chunks(3);
 
@@ -2408,7 +2420,7 @@ fn link_group_modal<'a>(
                 button(btn_content.align_x(iced::Alignment::Center))
                     .on_press(Message::SwitchLinkGroup(pane, Some(group)))
                     .style(move |theme, status| style::button::menu_body(theme, status, false))
-                    .into()
+                    .boxed()
             };
 
             button_row = button_row.push(btn);
@@ -2421,7 +2433,6 @@ fn link_group_modal<'a>(
         .width(240)
         .padding(16)
         .style(style::chart_modal)
-        .into()
 }
 
 fn ticksize_modifier<'a>(
@@ -2432,7 +2443,7 @@ fn ticksize_modifier<'a>(
     modifier: Option<modal::stream::Modifier>,
     kind: ModifierKind,
     exchange: Option<exchange::adapter::Exchange>,
-) -> Element<'a, Message> {
+) -> impl iced::widget::Widget<Message> + 'a {
     let modifier_modal =
         Modal::StreamModifier(modal::stream::Modifier::new(kind).with_ticksize_view(
             price_step,
@@ -2452,7 +2463,6 @@ fn ticksize_modifier<'a>(
         .style(move |theme, status| style::button::modifier(theme, status, !is_active))
         .on_press(Message::PaneEvent(id, Event::ShowModal(modifier_modal)))
         .height(widget::PANE_CONTROL_BTN_HEIGHT)
-        .into()
 }
 
 fn basis_modifier<'a>(
@@ -2460,7 +2470,7 @@ fn basis_modifier<'a>(
     selected_basis: Basis,
     modifier: Option<modal::stream::Modifier>,
     kind: ModifierKind,
-) -> Element<'a, Message> {
+) -> impl iced::widget::Widget<Message> + 'a {
     let modifier_modal = Modal::StreamModifier(
         modal::stream::Modifier::new(kind).with_view_mode(modal::stream::ViewMode::BasisSelection),
     );
@@ -2472,7 +2482,6 @@ fn basis_modifier<'a>(
         .style(move |theme, status| style::button::modifier(theme, status, !is_active))
         .on_press(Message::PaneEvent(id, Event::ShowModal(modifier_modal)))
         .height(widget::PANE_CONTROL_BTN_HEIGHT)
-        .into()
 }
 
 fn by_basis_default<T>(

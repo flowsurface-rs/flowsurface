@@ -4,6 +4,7 @@ use iced::advanced::renderer::{self, Renderer as _};
 use iced::advanced::widget::{self, Operation, Tree};
 use iced::advanced::{Shell, Widget, shell};
 use iced::time::{self, Duration, Instant};
+use iced::widget::Widget as _;
 use iced::widget::{button, column, container, row, space, text};
 use iced::{
     Alignment, Center, Element, Event, Fill, Length, Rectangle, Renderer, Size, Theme, Vector,
@@ -94,7 +95,7 @@ where
     Message: 'a + Clone,
 {
     pub fn new(
-        content: impl Into<Element<'a, Message>>,
+        content: impl iced::widget::Widget<Message> + 'a,
         toasts: &'a [Toast],
         alignment: Alignment,
         on_close: impl Fn(usize) -> Message + 'a,
@@ -134,23 +135,16 @@ where
                     .style(style::chart_modal)
                     .padding(4)
                     .width(200)
-                    .into()
+                    .boxed()
             })
             .collect();
 
         Self {
-            content: content.into(),
+            content: content.boxed(),
             alignment,
             toasts,
             timeout_secs: DEFAULT_TIMEOUT,
             on_close: Box::new(on_close),
-        }
-    }
-
-    pub fn timeout(self, seconds: u64) -> Self {
-        Self {
-            timeout_secs: seconds,
-            ..self
         }
     }
 }
@@ -163,13 +157,11 @@ struct State {
 
 impl<Message> Widget<Message, Theme, Renderer> for Manager<'_, Message> {
     fn size(&self) -> Size<Length> {
-        self.content.as_widget().size()
+        self.content.size()
     }
 
     fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) {
-        self.content
-            .as_widget_mut()
-            .layout(&mut tree.children[0], renderer, limits);
+        self.content.layout(&mut tree.children[0], renderer, limits);
         tree.children[0].translation = Vector::ZERO;
         tree.size = tree.children[0].size;
     }
@@ -218,7 +210,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Manager<'_, Message> {
         let child_layout = layout.iter(&tree.children).next().unwrap().0;
         operation.container(None, layout.bounds(), viewport);
 
-        self.content.as_widget_mut().operate(
+        self.content.operate(
             &mut tree.children[0],
             child_layout,
             viewport,
@@ -238,7 +230,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Manager<'_, Message> {
         viewport: &Rectangle,
     ) {
         let child_layout = layout.iter(&tree.children).next().unwrap().0;
-        self.content.as_widget_mut().update(
+        self.content.update(
             &mut tree.children[0],
             event,
             child_layout,
@@ -260,7 +252,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Manager<'_, Message> {
         viewport: &Rectangle,
     ) {
         let child_layout = layout.iter(&tree.children).next().unwrap().0;
-        self.content.as_widget().draw(
+        self.content.draw(
             &tree.children[0],
             renderer,
             theme,
@@ -280,13 +272,8 @@ impl<Message> Widget<Message, Theme, Renderer> for Manager<'_, Message> {
         renderer: &Renderer,
     ) -> mouse::Interaction {
         let child_layout = layout.iter(&tree.children).next().unwrap().0;
-        self.content.as_widget().mouse_interaction(
-            &tree.children[0],
-            child_layout,
-            cursor,
-            viewport,
-            renderer,
-        )
+        self.content
+            .mouse_interaction(&tree.children[0], child_layout, cursor, viewport, renderer)
     }
 
     fn overlay<'b>(
@@ -301,7 +288,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Manager<'_, Message> {
         let child_layout = layout.iter(&tree.children).next().unwrap().0;
         let state = tree.state.downcast_mut::<State>();
         let (content_state, toasts_state) = tree.children.split_at_mut(1);
-        let mut overlays = self.content.as_widget_mut().overlay(
+        let mut overlays = self.content.overlay(
             &mut content_state[0],
             child_layout,
             renderer,
@@ -392,7 +379,7 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for Overlay<'_, '_, Mes
             let mut local_messages = shell::Bus::new();
             let mut local_shell = shell.local(&mut local_messages);
 
-            child.as_widget_mut().update(
+            child.update(
                 state,
                 event,
                 child_layout,
@@ -427,7 +414,7 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for Overlay<'_, '_, Mes
                     continue;
                 }
 
-                child.as_widget().draw(
+                child.draw(
                     state,
                     renderer,
                     theme,
@@ -452,9 +439,7 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for Overlay<'_, '_, Mes
                 continue;
             }
 
-            child
-                .as_widget_mut()
-                .operate(state, child_layout, &viewport, renderer, operation);
+            child.operate(state, child_layout, &viewport, renderer, operation);
         }
     }
 
@@ -471,7 +456,6 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for Overlay<'_, '_, Mes
 
                 Some(
                     child
-                        .as_widget()
                         .mouse_interaction(state, child_layout, cursor, &self.viewport, renderer)
                         .max(if cursor.is_over(child_layout.bounds()) {
                             mouse::Interaction::Idle
@@ -485,14 +469,7 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for Overlay<'_, '_, Mes
     }
 }
 
-impl<'a, Message> From<Manager<'a, Message>> for Element<'a, Message>
-where
-    Message: 'a,
-{
-    fn from(manager: Manager<'a, Message>) -> Self {
-        Element::new(manager)
-    }
-}
+impl<Message> iced::advanced::widget::Meta for Manager<'_, Message> {}
 
 fn toast_body_visible(child: Rectangle, viewport: Rectangle) -> bool {
     match child.intersection(&viewport) {

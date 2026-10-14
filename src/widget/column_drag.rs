@@ -13,7 +13,7 @@
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::widget::{Operation, Tree, Widget, tree};
 use iced::advanced::{Shell, overlay, renderer};
-use iced::alignment::{self, Alignment};
+use iced::alignment::Alignment;
 use iced::event::Event;
 use iced::mouse;
 use iced::{Element, Length, Padding, Pixels, Point, Rectangle, Size, Theme, Vector};
@@ -79,7 +79,7 @@ pub struct Column<'a, Message, Theme = iced::Theme, Renderer = iced::Renderer> {
     on_drag: Option<Box<dyn Fn(DragEvent) -> Message + 'a>>,
 }
 
-impl<'a, Message, Theme, Renderer> Column<'a, Message, Theme, Renderer>
+impl<'a, Message: 'a, Theme: 'a, Renderer> Column<'a, Message, Theme, Renderer>
 where
     Renderer: renderer::Renderer,
 {
@@ -103,12 +103,6 @@ where
     }
 
     /// Creates a [`Column`] from an already allocated [`Vec`].
-    ///
-    /// Keep in mind that the [`Column`] will not inspect the [`Vec`], which means
-    /// it won't automatically adapt to the sizing strategy of its contents.
-    ///
-    /// If any of the children have a [`Length::Fill`] strategy, you will need to
-    /// call [`Column::width`] or [`Column::height`] accordingly.
     pub fn from_vec(children: Vec<Element<'a, Message, Theme, Renderer>>) -> Self {
         Self {
             spacing: 0.0,
@@ -132,54 +126,11 @@ where
         self
     }
 
-    /// Sets the [`Padding`] of the [`Column`].
-    pub fn padding<P: Into<Padding>>(mut self, padding: P) -> Self {
-        self.padding = padding.into();
-        self
-    }
-
-    /// Sets the width of the [`Column`].
-    pub fn width(mut self, width: impl Into<Length>) -> Self {
-        self.width = width.into();
-        self
-    }
-
-    /// Sets the height of the [`Column`].
-    pub fn height(mut self, height: impl Into<Length>) -> Self {
-        self.height = height.into();
-        self
-    }
-
-    /// Sets the horizontal alignment of the contents of the [`Column`] .
-    pub fn align_x(mut self, align: impl Into<alignment::Horizontal>) -> Self {
-        self.align = Alignment::from(align.into());
-        self
-    }
-
-    /// Sets whether the contents of the [`Column`] should be clipped on
-    /// overflow.
-    pub fn clip(mut self, clip: bool) -> Self {
-        self.clip = clip;
-        self
-    }
-
     /// Adds an element to the [`Column`].
-    pub fn push(mut self, child: impl Into<Element<'a, Message, Theme, Renderer>>) -> Self {
-        let child = child.into();
+    pub fn push(mut self, child: impl iced::widget::Widget<Message, Theme, Renderer> + 'a) -> Self {
+        let child = child.boxed();
         self.children.push(child);
         self
-    }
-
-    /// Adds an element to the [`Column`], if `Some`.
-    pub fn push_maybe(
-        self,
-        child: Option<impl Into<Element<'a, Message, Theme, Renderer>>>,
-    ) -> Self {
-        if let Some(child) = child {
-            self.push(child)
-        } else {
-            self
-        }
     }
 
     /// Extends the [`Column`] with the given children.
@@ -245,7 +196,7 @@ where
     }
 }
 
-impl<Message, Renderer> Default for Column<'_, Message, Theme, Renderer>
+impl<'a, Message: 'a, Renderer> Default for Column<'a, Message, Theme, Renderer>
 where
     Renderer: renderer::Renderer,
 {
@@ -254,7 +205,7 @@ where
     }
 }
 
-impl<'a, Message, Theme, Renderer: renderer::Renderer>
+impl<'a, Message: 'a, Theme: 'a, Renderer: renderer::Renderer>
     FromIterator<Element<'a, Message, Theme, Renderer>> for Column<'a, Message, Theme, Renderer>
 {
     fn from_iter<T: IntoIterator<Item = Element<'a, Message, Theme, Renderer>>>(iter: T) -> Self {
@@ -283,7 +234,7 @@ where
 
         if self.width.is_fit() || self.height.is_fit() {
             for child in &self.children {
-                let size = child.as_widget().size();
+                let size = child.size();
 
                 self.width = self.width.cross(size.width);
                 self.height = self.height.stack(size.height);
@@ -329,9 +280,7 @@ where
                 .iter_mut()
                 .zip(layout.iter_mut(&mut tree.children))
                 .for_each(|(child, (layout, state))| {
-                    child
-                        .as_widget_mut()
-                        .operate(state, layout, viewport, renderer, operation);
+                    child.operate(state, layout, viewport, renderer, operation);
                 });
         });
     }
@@ -444,9 +393,7 @@ where
             .iter_mut()
             .zip(layout.iter_mut(&mut tree.children))
             .for_each(|(child, (layout, tree))| {
-                child
-                    .as_widget_mut()
-                    .update(tree, event, layout, cursor, renderer, shell, viewport);
+                child.update(tree, event, layout, cursor, renderer, shell, viewport);
             });
     }
 
@@ -483,9 +430,7 @@ where
             .iter()
             .zip(layout.iter(&tree.children))
             .map(|(child, (layout, state))| {
-                child
-                    .as_widget()
-                    .mouse_interaction(state, layout, cursor, viewport, renderer)
+                child.mouse_interaction(state, layout, cursor, viewport, renderer)
             })
             .max()
             .unwrap_or_default()
@@ -535,7 +480,7 @@ where
                             },
                             |renderer| {
                                 renderer.with_layer(child_layout.bounds(), |renderer| {
-                                    child.as_widget().draw(
+                                    child.draw(
                                         state,
                                         renderer,
                                         theme,
@@ -557,7 +502,7 @@ where
 
                         let translation = Vector::new(0.0, offset as f32 * drag_height);
                         renderer.with_translation(translation, |renderer| {
-                            child.as_widget().draw(
+                            child.draw(
                                 state,
                                 renderer,
                                 theme,
@@ -585,9 +530,7 @@ where
                         .zip(layout.iter(&tree.children))
                         .filter(|(_, (layout, _))| layout.bounds().intersects(viewport))
                     {
-                        child
-                            .as_widget()
-                            .draw(state, renderer, theme, defaults, layout, cursor, viewport);
+                        child.draw(state, renderer, theme, defaults, layout, cursor, viewport);
                     }
                 }
             }
@@ -614,14 +557,7 @@ where
     }
 }
 
-impl<'a, Message, Theme, Renderer> From<Column<'a, Message, Theme, Renderer>>
-    for Element<'a, Message, Theme, Renderer>
-where
-    Message: 'a,
-    Theme: 'a,
-    Renderer: renderer::Renderer + 'a,
+impl<Message, Theme, Renderer> iced::advanced::widget::Meta
+    for Column<'_, Message, Theme, Renderer>
 {
-    fn from(column: Column<'a, Message, Theme, Renderer>) -> Self {
-        Self::new(column)
-    }
 }

@@ -15,21 +15,13 @@ const PAUSED_CTRL_BG_PAD_X: f32 = 6.0;
 const PAUSED_CTRL_BG_PAD_Y: f32 = 3.0;
 const PAUSED_CTRL_LABEL_WIDTH_FACTOR: f32 = 0.62;
 
-#[derive(Debug, Clone, Copy)]
-pub enum AxisZoomAnchor {
-    /// Keep a specific world coordinate (along the active axis) fixed at a given screen position.
-    World { world: f32, screen: f32 },
-    /// Zoom anchored to the captured cursor position (along the active axis).
-    Cursor { screen: f32 },
-}
-
 #[derive(Debug, Default, Clone, Copy)]
 pub enum AxisInteraction {
     #[default]
     None,
     Panning {
         last_position: iced::Point,
-        zoom_anchor: Option<AxisZoomAnchor>,
+        zoom_anchor_screen: Option<f32>,
     },
 }
 

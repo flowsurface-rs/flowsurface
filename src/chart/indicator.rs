@@ -11,6 +11,7 @@ use crate::chart::{
 use data::chart::Basis;
 use data::chart::ticks::Y_LABEL_DENSITY_INDICATOR;
 use data::util::{abbr_large_numbers, round_to_tick};
+use iced::widget::Widget as _;
 
 use iced::{
     Element, Event, Length, Rectangle, Renderer, Theme, mouse,
@@ -108,7 +109,7 @@ where
         rule::vertical(1).style(crate::style::split_ruler),
         container(labels),
     ]
-    .into()
+    .boxed()
 }
 
 pub struct IndicatorLabel<'a> {

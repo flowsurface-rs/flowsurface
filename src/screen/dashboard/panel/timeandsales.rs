@@ -8,7 +8,7 @@ use exchange::unit::Qty;
 use exchange::{SizeUnit, TickerInfo, Trade, UnixMs, unit::qty::volume_size_unit};
 
 use iced::widget::canvas::{self, Canvas, Text};
-use iced::{Alignment, Element, Event, Point, Rectangle, Renderer, Size, Theme, mouse};
+use iced::{Alignment, Event, Point, Rectangle, Renderer, Size, Theme, mouse};
 use std::collections::VecDeque;
 use std::time::Instant;
 
@@ -70,14 +70,13 @@ impl super::Panel for TimeAndSales {
         self.recent_trades.is_empty() && self.paused_trades_buffer.is_empty()
     }
 
-    fn view<'a>(&'a self, timezone: data::UserTimezone) -> Element<'a, Message> {
+    fn view<'a>(&'a self, timezone: data::UserTimezone) -> impl iced::widget::Widget<Message> + 'a {
         Canvas::new(TimeAndSalesView {
             timezone,
             panel: self,
         })
         .width(iced::Length::Fill)
         .height(iced::Length::Fill)
-        .into()
     }
 }
 

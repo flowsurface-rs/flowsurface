@@ -1,8 +1,5 @@
 use super::{AxisInteraction, Message};
-use crate::widget::chart::heatmap::{
-    scene::camera::Camera,
-    ui::{AXIS_TEXT_SIZE, AxisZoomAnchor},
-};
+use crate::widget::chart::heatmap::{scene::camera::Camera, ui::AXIS_TEXT_SIZE};
 use data::config::timezone::TimeLabelKind;
 
 use iced::{Rectangle, Renderer, Theme, widget::canvas};
@@ -67,28 +64,22 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
 
                 let use_world_anchor = self.is_x0_visible == Some(true);
 
-                let zoom_anchor = if use_world_anchor {
+                let zoom_anchor_screen = if use_world_anchor {
                     let vw = self.plot_bounds.map(|r| r.width).unwrap_or(bounds.width);
                     let x0_screen = self.camera.world_to_screen_x(0.0, vw);
 
-                    Some(AxisZoomAnchor::World {
-                        world: 0.0,
-                        screen: x0_screen,
-                    })
+                    Some(x0_screen)
                 } else {
                     // When the live edge (x=0) is not visible, anchor drag-zoom to
                     // the rightmost visible column (right edge of viewport) so
                     // zooming expands/contracts from the right edge.
                     let vw = self.plot_bounds.map(|r| r.width).unwrap_or(bounds.width);
-                    Some(AxisZoomAnchor::World {
-                        world: 0.0,
-                        screen: vw,
-                    })
+                    Some(vw)
                 };
 
                 state.interaction = AxisInteraction::Panning {
                     last_position: p,
-                    zoom_anchor,
+                    zoom_anchor_screen,
                 };
 
                 None
@@ -100,7 +91,7 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
             iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
                 if let AxisInteraction::Panning {
                     last_position,
-                    zoom_anchor,
+                    zoom_anchor_screen,
                 } = &mut state.interaction
                 {
                     let delta_px = *position - *last_position;
@@ -109,21 +100,14 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
                     let scroll_amount = -delta_px.x * DRAG_ZOOM_SENS;
                     let factor = (1.0 + scroll_amount).clamp(0.01, 100.0);
 
-                    match *zoom_anchor {
-                        Some(AxisZoomAnchor::World { screen, .. }) => {
+                    match *zoom_anchor_screen {
+                        Some(screen) => {
                             let vw = self.plot_bounds.map(|r| r.width).unwrap_or(bounds.width);
 
                             Some(canvas::Action::publish(Message::DragZoomAxisXKeepAnchor {
                                 factor,
                                 anchor_screen_x: screen,
                                 viewport_w: vw,
-                            }))
-                        }
-                        Some(AxisZoomAnchor::Cursor { screen }) => {
-                            Some(canvas::Action::publish(Message::ScrolledAxisX {
-                                factor,
-                                cursor_x: screen,
-                                viewport_w: bounds.width,
                             }))
                         }
                         None => None,

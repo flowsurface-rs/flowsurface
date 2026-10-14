@@ -4,6 +4,7 @@ use crate::style::{self, icon_text};
 use crate::widget::{labeled_slider, tooltip};
 use data::audio::StreamCfg;
 use exchange::adapter::{Exchange, StreamKind};
+use iced::widget::Widget as _;
 
 use exchange::Trade;
 use iced::widget::{button, column, container, row, text};
@@ -152,7 +153,10 @@ impl AudioStream {
         None
     }
 
-    pub fn view(&self, active_streams: Vec<exchange::TickerInfo>) -> Element<'_, Message> {
+    pub fn view(
+        &self,
+        active_streams: Vec<exchange::TickerInfo>,
+    ) -> impl iced::widget::Widget<Message> + '_ {
         let audio_output_error = self.init_error.as_ref().map(|err| {
             container(
                 column![
@@ -188,10 +192,10 @@ impl AudioStream {
         };
 
         let audio_contents = {
-            let mut available_streams = column![].spacing(4);
+            let mut available_streams = column::<Element<'_, Message>>([]).spacing(4);
 
             if active_streams.is_empty() {
-                available_streams = available_streams.push(text("No trade streams found"));
+                available_streams = available_streams.push(text("No trade streams found").boxed());
             } else {
                 // de-dup by (exchange, ticker)
                 let mut streams = active_streams;
@@ -210,7 +214,7 @@ impl AudioStream {
                     let exchange = ticker_info.exchange();
                     let ticker = ticker_info.ticker;
 
-                    let mut column = column![].padding(padding::left(4));
+                    let mut column = column::<Element<'_, Message>>([]).padding(padding::left(4));
 
                     let is_audio_enabled =
                         self.is_stream_audio_enabled(&StreamKind::Trades { ticker_info });
@@ -243,7 +247,7 @@ impl AudioStream {
                         ));
                     }
 
-                    column = column.push(stream_row);
+                    column = column.push(stream_row.boxed());
 
                     if is_expanded
                         && is_audio_enabled
@@ -266,7 +270,8 @@ impl AudioStream {
                                         threshold_slider
                                     ]
                                     .padding(8)
-                                    .spacing(4),
+                                    .spacing(4)
+                                    .boxed(),
                                 );
                             }
                             data::audio::Threshold::Qty(v) => {
@@ -276,14 +281,15 @@ impl AudioStream {
                                         v.to_f64()
                                     ))]
                                     .padding(8)
-                                    .spacing(4),
+                                    .spacing(4)
+                                    .boxed(),
                                 );
                             }
                         }
                     }
 
-                    available_streams =
-                        available_streams.push(container(column).style(style::modal_container));
+                    available_streams = available_streams
+                        .push(container(column).style(style::modal_container).boxed());
                 }
             }
 
@@ -302,7 +308,6 @@ impl AudioStream {
         .width(320)
         .padding(24)
         .style(style::dashboard_modal)
-        .into()
     }
 
     pub fn volume(&self) -> Option<f32> {

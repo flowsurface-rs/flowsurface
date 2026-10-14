@@ -3,6 +3,7 @@ use crate::{
     screen::ConfirmDialog,
     style::{self, Icon, icon_text, modal_container},
 };
+use iced::widget::Widget as _;
 use iced::{
     Alignment::{self, Center},
     Color,
@@ -24,7 +25,7 @@ pub const PANE_CONTROL_BTN_HEIGHT: f32 = 26.0;
 pub const DEFAULT_TOOLTIP_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
 pub fn tooltip<'a, Message: 'a>(
-    content: impl Into<Element<'a, Message>>,
+    content: impl iced::widget::Widget<Message> + 'a,
     tooltip: Option<&'a str>,
     position: Position,
 ) -> Element<'a, Message> {
@@ -32,7 +33,7 @@ pub fn tooltip<'a, Message: 'a>(
 }
 
 pub fn tooltip_with_delay<'a, Message: 'a>(
-    content: impl Into<Element<'a, Message>>,
+    content: impl iced::widget::Widget<Message> + 'a,
     tooltip: Option<&'a str>,
     position: Position,
     delay: std::time::Duration,
@@ -44,25 +45,24 @@ pub fn tooltip_with_delay<'a, Message: 'a>(
             position,
         )
         .delay(delay)
-        .into(),
-        None => content.into(),
+        .boxed(),
+        None => content.boxed(),
     }
 }
 
 pub fn scrollable_content<'a, Message: 'a>(
-    content: impl Into<Element<'a, Message>>,
-) -> Element<'a, Message> {
+    content: impl iced::widget::Widget<Message> + 'a,
+) -> impl iced::widget::Widget<Message> + 'a {
     scrollable::Scrollable::with_direction(
         content,
         scrollable::Direction::Vertical(scrollable::Scrollbar::new().width(4).scroller_width(4)),
     )
-    .into()
 }
 
 pub fn confirm_dialog_container<'a, Message: 'a + Clone>(
     confirm_dialog: ConfirmDialog<Message>,
     on_cancel: Message,
-) -> Element<'a, Message> {
+) -> impl iced::widget::Widget<Message> + 'a {
     let dialog = confirm_dialog.message;
     let on_confirm = *confirm_dialog.on_confirm;
     let on_confirm_msg = confirm_dialog.on_confirm_btn_text;
@@ -83,14 +83,13 @@ pub fn confirm_dialog_container<'a, Message: 'a + Clone>(
     )
     .padding(24)
     .style(style::dashboard_modal)
-    .into()
 }
 
 pub fn classic_slider_row<'a, Message>(
     label: iced::widget::Text<'a>,
-    slider: Element<'a, Message>,
+    slider: impl iced::widget::Widget<Message> + 'a,
     placeholder: Option<iced::widget::Text<'a>>,
-) -> Element<'a, Message>
+) -> impl iced::widget::Widget<Message> + 'a
 where
     Message: Clone + 'a,
 {
@@ -109,11 +108,10 @@ where
             .padding(8),
     )
     .style(style::modal_container)
-    .into()
 }
 
 pub fn button_with_tooltip<'a, M: Clone + 'a>(
-    content: impl Into<Element<'a, M>>,
+    content: impl iced::widget::Widget<M> + 'a,
     message: M,
     tooltip_text: Option<&'a str>,
     tooltip_pos: crate::TooltipPosition,
@@ -124,14 +122,14 @@ pub fn button_with_tooltip<'a, M: Clone + 'a>(
     if let Some(text) = tooltip_text {
         tooltip(btn, Some(text), tooltip_pos)
     } else {
-        btn.into()
+        btn.boxed()
     }
 }
 
 pub fn dragger_row<'a, Message>(
-    content: Element<'a, Message>,
+    content: impl iced::widget::Widget<Message> + 'a,
     is_enabled: bool,
-) -> Element<'a, Message>
+) -> impl iced::widget::Widget<Message> + 'a
 where
     Message: Clone + 'a,
 {
@@ -140,15 +138,14 @@ where
         row![icon, content,]
             .align_y(Alignment::Center)
             .spacing(2)
-            .into()
+            .boxed()
     } else {
-        content
+        content.boxed()
     };
 
     container(content)
         .padding(2)
         .style(style::dragger_row_container)
-        .into()
 }
 
 pub fn labeled_slider<'a, T, Message: Clone + 'static>(
@@ -158,7 +155,7 @@ pub fn labeled_slider<'a, T, Message: Clone + 'static>(
     on_change: impl Fn(T) -> Message + 'a,
     to_string: impl Fn(&T) -> String,
     step: Option<T>,
-) -> Element<'a, Message>
+) -> impl iced::widget::Widget<Message> + 'a
 where
     T: 'static
         + Copy
@@ -212,7 +209,6 @@ where
             .height(Fill)
             .align_y(Center),
     ]
-    .into()
 }
 
 pub fn numeric_input_box<'a, F, Message: Clone + 'static>(
@@ -222,7 +218,7 @@ pub fn numeric_input_box<'a, F, Message: Clone + 'static>(
     is_input_valid: bool,
     on_input_changed: F,
     on_submit_maybe: Option<Message>,
-) -> Element<'a, Message>
+) -> impl iced::widget::Widget<Message> + 'a
 where
     F: Fn(String) -> Message + 'static,
 {
@@ -236,14 +232,13 @@ where
         .padding(padding::right(20).left(20))
         .spacing(4)
         .align_y(iced::Alignment::Center)
-        .into()
 }
 
 pub fn link_group_button<'a, Message, F>(
     id: iced::widget::pane_grid::Pane,
     link_group: Option<data::layout::pane::LinkGroup>,
     on_press: F,
-) -> Element<'a, Message>
+) -> impl iced::widget::Widget<Message> + 'a
 where
     Message: Clone + 'static,
     F: Fn(iced::widget::pane_grid::Pane) -> Message + 'static,
@@ -265,7 +260,6 @@ where
     .on_press(on_press(id))
     .height(PANE_CONTROL_BTN_HEIGHT)
     .width(28)
-    .into()
 }
 
 #[macro_export]
@@ -292,8 +286,8 @@ macro_rules! split_column {
     ($first:expr, $($rest:expr),+ $(,)?) => {{
         let mut col = column![$first];
         $(
-            col = col.push(iced::widget::rule::horizontal(1.0).style($crate::style::split_ruler));
-            col = col.push($rest);
+            col = col.push(iced::Widget::boxed(iced::widget::rule::horizontal(1.0).style($crate::style::split_ruler)));
+            col = col.push(iced::Widget::boxed($rest));
         )+
         col
     }};

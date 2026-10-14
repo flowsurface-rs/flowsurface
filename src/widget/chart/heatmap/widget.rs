@@ -9,7 +9,7 @@ use iced::advanced::widget::tree::{self, Tree};
 use iced::advanced::{Layout, Shell, Widget, layout, renderer};
 use iced::widget::shader::Program;
 use iced::widget::{canvas, shader};
-use iced::{Element, Event, Length, Rectangle, Renderer, Size, Theme, Vector, mouse};
+use iced::{Event, Length, Rectangle, Renderer, Size, Theme, Vector, mouse};
 use iced_core::renderer::Quad;
 
 pub const DEFAULT_Y_AXIS_GUTTER: Length = Length::Fixed(66.0);
@@ -43,11 +43,6 @@ impl<'a> HeatmapShaderWidget<'a> {
 
     pub fn with_y_axis_gutter(mut self, width: impl Into<Length>) -> Self {
         self.y_axis_gutter = width.into();
-        self
-    }
-
-    pub fn with_x_axis_height(mut self, height: impl Into<Length>) -> Self {
-        self.x_axis_height = height.into();
         self
     }
 }
@@ -427,8 +422,4 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
     }
 }
 
-impl<'a> From<HeatmapShaderWidget<'a>> for Element<'a, Message, Theme, Renderer> {
-    fn from(widget: HeatmapShaderWidget<'a>) -> Self {
-        Element::new(widget)
-    }
-}
+impl iced::advanced::widget::Meta for HeatmapShaderWidget<'_> {}

@@ -1,6 +1,7 @@
 pub mod ladder;
 pub mod timeandsales;
 
+use iced::widget::Widget as _;
 use iced::{
     Element, padding,
     widget::{center, container, text},
@@ -25,17 +26,17 @@ pub trait Panel {
 
     fn is_empty(&self) -> bool;
 
-    fn view<'a>(&'a self, timezone: data::UserTimezone) -> Element<'a, Message>;
+    fn view<'a>(&'a self, timezone: data::UserTimezone) -> impl iced::widget::Widget<Message> + 'a;
 }
 
 pub fn view<T: Panel>(panel: &'_ T, timezone: data::UserTimezone) -> Element<'_, Message> {
     if panel.is_empty() {
-        return center(text("Waiting for data...").size(crate::style::text_size::TITLE)).into();
+        return center(text("Waiting for data...").size(crate::style::text_size::TITLE)).boxed();
     }
 
     container(panel.view(timezone))
         .padding(padding::left(1).right(1).bottom(1))
-        .into()
+        .boxed()
 }
 
 pub fn update<T: Panel>(panel: &mut T, message: Message) {

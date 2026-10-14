@@ -1,6 +1,7 @@
 use crate::connector::fetcher::{FetchRange, FetchSpec, RequestHandler};
 use crate::widget::chart::comparison::{DEFAULT_ZOOM_POINTS, LineComparison, LineComparisonEvent};
 use crate::widget::chart::{Series, Zoom, domain};
+use iced::widget::Widget as _;
 
 use data::chart::Basis;
 use data::chart::comparison::Config;
@@ -120,19 +121,18 @@ impl ComparisonChart {
             return iced::widget::center(
                 iced::widget::text("Waiting for data...").size(crate::style::text_size::TITLE),
             )
-            .into();
+            .boxed();
         }
 
-        let chart: iced::Element<_> = LineComparison::<Series>::new(&self.series, self.timeframe)
+        let chart = LineComparison::<Series>::new(&self.series, self.timeframe)
             .with_timezone(timezone)
             .with_zoom(self.zoom)
             .with_pan(self.pan)
-            .version(self.cache_rev)
-            .into();
+            .version(self.cache_rev);
 
         iced::widget::container(chart.map(Message::Chart))
             .padding(1)
-            .into()
+            .boxed()
     }
 
     pub fn insert_history(
@@ -567,8 +567,9 @@ pub mod series_editor {
     use crate::widget::chart::Series;
     use crate::widget::color_picker::color_picker;
     use exchange::TickerInfo;
+    use iced::Length;
+    use iced::widget::Widget as _;
     use iced::widget::{button, column, container, row, text};
-    use iced::{Element, Length};
     use palette::Hsva;
 
     const MAX_LABEL_CHARS: usize = 24;
@@ -634,7 +635,10 @@ pub mod series_editor {
             }
         }
 
-        pub fn view<'a>(&'a self, series: &'a Vec<Series>) -> Element<'a, Message> {
+        pub fn view<'a>(
+            &'a self,
+            series: &'a Vec<Series>,
+        ) -> impl iced::widget::Widget<Message> + 'a {
             let mut content = column![].spacing(6);
 
             for s in series {
@@ -668,7 +672,8 @@ pub mod series_editor {
                     let hsva_in = self
                         .editing_color
                         .unwrap_or_else(|| data::config::theme::to_hsva(applied));
-                    inner_col = inner_col.push(color_picker(hsva_in, Message::ColorChangedHsva));
+                    inner_col =
+                        inner_col.push(color_picker(hsva_in, Message::ColorChangedHsva).boxed());
 
                     let label_name = self
                         .editing_name
@@ -680,16 +685,19 @@ pub mod series_editor {
                             .on_input(Message::NameChanged)
                             .size(crate::style::text_size::SECTION)
                             .padding(4)
-                            .width(Length::Fill),
+                            .width(Length::Fill)
+                            .boxed(),
                     );
 
-                    col = col.push(inner_col.spacing(12).padding(4)).spacing(4);
+                    col = col
+                        .push(inner_col.spacing(12).padding(4).boxed())
+                        .spacing(4);
                 }
 
                 content = content.push(container(col).style(style::modal_container));
             }
 
-            content.into()
+            content
         }
 
         fn clamp(s: &str) -> String {

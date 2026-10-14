@@ -11,6 +11,7 @@ use crate::widget::tooltip;
 use data::chart::{Autoscale, Basis, PlotData, ViewConfig, indicator::Indicator};
 use exchange::TickerInfo;
 use exchange::unit::{Price, PriceStep};
+use iced::widget::Widget as _;
 use ticks::y::PriceInfoLabel;
 use ticks::{x::AxisLabelsX, y::AxisLabelsY};
 
@@ -499,7 +500,7 @@ pub fn view<'a, T: Chart>(
     timezone: data::UserTimezone,
 ) -> Element<'a, Message> {
     if chart.is_empty() {
-        return center(text("Waiting for data...").size(crate::style::text_size::TITLE)).into();
+        return center(text("Waiting for data...").size(crate::style::text_size::TITLE)).boxed();
     }
 
     let state = chart.state();
@@ -580,7 +581,7 @@ pub fn view<'a, T: Chart>(
             .width(y_labels_width)
             .height(Length::FillPortion(120))
         ]
-        .into();
+        .boxed();
 
         let indicators = chart.view_indicators(indicators);
 
@@ -594,7 +595,7 @@ pub fn view<'a, T: Chart>(
             MultiSplit::new(panels, &state.layout.splits, |index, position| {
                 Message::SplitDragged(index, position)
             })
-            .into()
+            .boxed()
         }
     };
 
@@ -613,7 +614,7 @@ pub fn view<'a, T: Chart>(
         ]
     ]
     .padding(padding::left(1).right(1).bottom(1))
-    .into()
+    .boxed()
 }
 
 pub trait PlotConstants {

@@ -4,6 +4,7 @@ mod ui;
 mod view;
 mod widget;
 
+use iced::widget::Widget as _;
 use instance::InstanceBuilder;
 use scene::{
     Scene,
@@ -311,7 +312,7 @@ impl HeatmapShader {
             return iced::widget::center(
                 iced::widget::text("Waiting for data...").size(crate::style::text_size::TITLE),
             )
-            .into();
+            .boxed();
         }
 
         let render_latest_time = self.anchor.render_latest_time();
@@ -362,8 +363,6 @@ impl HeatmapShader {
         let overlay = OverlayCanvas {
             scene: &self.scene,
             depth_grid: &self.depth_grid,
-            base_price: render_base_price,
-            step: self.step,
             scroll_ref_bucket,
             qty_scale: self.qty_scale,
             tooltip_cache: &self.canvas_caches.overlay,
@@ -378,7 +377,7 @@ impl HeatmapShader {
         let chart = HeatmapShaderWidget::new(&self.scene, x_axis, y_axis, overlay)
             .with_y_axis_gutter(self.y_axis_gutter);
 
-        iced::widget::container(chart).padding(1).into()
+        iced::widget::container(chart).padding(1).boxed()
     }
 
     pub fn update_theme(&mut self, theme: &iced_core::Theme) {

@@ -183,9 +183,4 @@ impl RectInstance {
             subpx_alpha,
         }
     }
-
-    #[inline]
-    pub fn y_center_for_bin(y_bin: i64, w: &ViewWindow) -> f32 {
-        -((y_bin as f32 + 0.5) * w.y_bin_h_world)
-    }
 }

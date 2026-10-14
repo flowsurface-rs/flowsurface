@@ -84,12 +84,6 @@ impl Camera {
         self.scale = scale.clamp(MIN_CAMERA_SCALE, MAX_CAMERA_SCALE);
     }
 
-    /// Clamp the stored scale in-place.
-    #[inline]
-    pub fn clamp_scale(&mut self) {
-        self.set_scale(self.scale);
-    }
-
     /// Internal: return clamped scale but don't mutate.
     fn clamped_scale(&self) -> f32 {
         self.scale.clamp(MIN_CAMERA_SCALE, MAX_CAMERA_SCALE)
@@ -158,32 +152,6 @@ impl Camera {
         let s = self.clamped_scale();
         let [_, cy] = self.center(viewport_w);
         (world_y - cy) * s + viewport_h * 0.5
-    }
-
-    pub fn zoom_at_cursor(
-        &mut self,
-        factor: f32,
-        cursor_x: f32,
-        cursor_y: f32,
-        viewport_w: f32,
-        viewport_h: f32,
-    ) {
-        let factor = factor.clamp(0.01, 100.0);
-
-        let [wx, wy] = self.screen_to_world(cursor_x, cursor_y, viewport_w, viewport_h);
-
-        let new_s = (self.scale * factor).clamp(MIN_CAMERA_SCALE, MAX_CAMERA_SCALE);
-
-        self.set_scale(new_s);
-
-        let view_x_px = cursor_x - viewport_w * 0.5;
-        let view_y_px = cursor_y - viewport_h * 0.5;
-
-        let pad_world = self.right_pad_world(viewport_w);
-        let right_edge = wx + (viewport_w * 0.5) / new_s - view_x_px / new_s;
-
-        self.offset[0] = right_edge - pad_world;
-        self.offset[1] = wy - view_y_px / new_s;
     }
 
     fn world_x_at_screen_x_padded_right(

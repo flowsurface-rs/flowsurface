@@ -15,8 +15,9 @@ use exchange::{
     Ticker, TickerInfo, TickerStats,
     adapter::{AdapterHandles, Exchange, MarketKind, Venue},
 };
+use iced::widget::Widget as _;
 use iced::{
-    Alignment, Element, Length, Renderer, Size, Subscription, Task, Theme,
+    Alignment, Element, Length, Size, Subscription, Task, Theme,
     alignment::{self, Horizontal, Vertical},
     padding,
     widget::{
@@ -518,7 +519,7 @@ impl TickersTable {
 
 impl TickersTable {
     /// Full table view with search, sorting, and filtering options.
-    pub fn view(&self, bounds: Size) -> Element<'_, Message> {
+    pub fn view(&self, bounds: Size) -> impl iced::widget::Widget<Message> + '_ {
         let (fav_rows, rest_rows) = self.filtered_rows(&self.search_query, None);
         let fav_n = fav_rows.len();
         let rest_n = rest_rows.len();
@@ -558,9 +559,9 @@ impl TickersTable {
             .width(Length::Fill);
 
         if self.show_sort_options {
-            content = content.push(sort_and_filter);
+            content = content.push(sort_and_filter.boxed());
         }
-        content = content.push(list);
+        content = content.push(list.boxed());
 
         scrollable::Scrollable::with_direction(
             content,
@@ -570,7 +571,6 @@ impl TickersTable {
         )
         .on_scroll(|scroll| Message::Scrolled(scroll.viewport))
         .style(style::scroll_bar)
-        .into()
     }
 
     fn virtual_list<'a>(
@@ -581,7 +581,7 @@ impl TickersTable {
         rest_rows: &[&'a TickerRowData],
         sep_block_height: f32,
         has_any_favorites: bool,
-    ) -> Element<'a, Message> {
+    ) -> impl iced::widget::Widget<Message> + 'a {
         let fav_n = fav_rows.len();
 
         let top_space = Space::new()
@@ -596,11 +596,10 @@ impl TickersTable {
         for idx in win.first..win.last {
             match vcfg.virtual_to_item(idx) {
                 VirtualItemIndex::Gap => {
-                    cards = cards.push(Self::favorites_block_separator(
-                        fav_n,
-                        sep_block_height,
-                        has_any_favorites,
-                    ));
+                    cards = cards.push(
+                        Self::favorites_block_separator(fav_n, sep_block_height, has_any_favorites)
+                            .boxed(),
+                    );
                 }
                 VirtualItemIndex::Row(data_idx) => {
                     let row_ref = if data_idx < fav_n {
@@ -620,11 +619,15 @@ impl TickersTable {
             }
         }
 
-        cards = cards.push(bottom_space);
-        cards.into()
+        cards = cards.push(bottom_space.boxed());
+        cards
     }
 
-    fn market_filter_btn<'a>(&'a self, label: &'a str, market: MarketKind) -> Button<'a, Message> {
+    fn market_filter_btn<'a>(
+        &'a self,
+        label: &'a str,
+        market: MarketKind,
+    ) -> Button<'a, Message, iced::widget::Text<'a>> {
         let selected = self.selected_markets.contains(&market);
 
         button(text(label).align_x(Alignment::Center))
@@ -632,7 +635,7 @@ impl TickersTable {
             .style(move |theme, status| style::button::transparent(theme, status, selected))
     }
 
-    fn exchange_filter_btn<'a>(&'a self, venue: Venue) -> Element<'a, Message> {
+    fn exchange_filter_btn<'a>(&'a self, venue: Venue) -> impl iced::widget::Widget<Message> + 'a {
         let unavailable = self.unavailable_exchanges.contains(&venue);
         let selected = self.selected_exchanges.contains(&venue);
         let stats_loading = self.stats_fetch_state.is_in_flight(venue);
@@ -647,23 +650,24 @@ impl TickersTable {
         .align_y(Vertical::Center);
 
         if metadata_loading {
-            content = content.push(text(self.metadata_fetch_state.loading_dots()));
+            content = content.push(text(self.metadata_fetch_state.loading_dots()).boxed());
         } else if stats_loading {
-            content = content.push(text(self.stats_fetch_state.loading_dots()));
+            content = content.push(text(self.stats_fetch_state.loading_dots()).boxed());
         } else if unavailable {
             let unavailable_mark = text("!").style(move |theme: &Theme| {
                 let palette = theme.palette();
                 iced::widget::text::Style {
                     color: Some(palette.danger.base.color),
+                    ..Default::default()
                 }
             });
-            content = content.push(unavailable_mark);
+            content = content.push(unavailable_mark.boxed());
         }
 
         if selected && !unavailable {
             content = content
-                .push(space::horizontal())
-                .push(container(icon_text(Icon::Checkmark, 12)));
+                .push(space::horizontal().boxed())
+                .push(container(icon_text(Icon::Checkmark, 12)).boxed());
         }
 
         let btn = button(content)
@@ -705,7 +709,7 @@ impl TickersTable {
             row![container(btn_with_tooltip).width(Length::Fill), controls]
                 .spacing(4)
                 .align_y(Vertical::Center)
-                .into()
+                .boxed()
         } else {
             btn_with_tooltip
         };
@@ -713,7 +717,6 @@ impl TickersTable {
         container(row_content)
             .padding(2)
             .style(style::dragger_row_container)
-            .into()
     }
 
     fn separator_height(&self, fav_n: usize) -> f32 {
@@ -733,7 +736,7 @@ impl TickersTable {
         fav_n: usize,
         sep_block_height: f32,
         has_any_favorites: bool,
-    ) -> Element<'a, Message> {
+    ) -> impl iced::widget::Widget<Message> + 'a {
         let col = if fav_n == 0 {
             let hint = if has_any_favorites {
                 "No favorited tickers match filters"
@@ -758,10 +761,13 @@ impl TickersTable {
             .width(Length::Fill)
             .height(Length::Fixed(sep_block_height))
             .padding(padding::top(if fav_n == 0 { 12 } else { 4 }))
-            .into()
     }
 
-    fn sort_and_filter_col(&self, fav_n: usize, rest_n: usize) -> Element<'_, Message> {
+    fn sort_and_filter_col(
+        &self,
+        fav_n: usize,
+        rest_n: usize,
+    ) -> impl iced::widget::Widget<Message> + '_ {
         let volume_sort_button = self.sort_btn("Volume", SortOptions::VolumeAsc);
         let volume_sort = volume_sort_button.style(move |theme, status| {
             style::button::transparent(
@@ -846,14 +852,13 @@ impl TickersTable {
         ]
         .align_x(Alignment::Center)
         .spacing(8)
-        .into()
     }
 
     fn sort_btn<'a>(
         &'a self,
         label: &'a str,
         sort_option: SortOptions,
-    ) -> Button<'a, Message, Theme, Renderer> {
+    ) -> Button<'a, Message, iced::widget::Row<Element<'a, Message>>> {
         let (asc_variant, desc_variant) = match sort_option {
             SortOptions::VolumeAsc => (SortOptions::VolumeAsc, SortOptions::VolumeDesc),
             SortOptions::ChangeAsc => (SortOptions::ChangeAsc, SortOptions::ChangeDesc),
@@ -887,7 +892,7 @@ impl TickersTable {
             }
     }
 
-    fn top_bar(&self) -> Element<'_, Message> {
+    fn top_bar(&self) -> impl iced::widget::Widget<Message> + '_ {
         row![
             text_input("Search for a ticker...", &self.search_query)
                 .style(|theme, status| style::validated_text_input(theme, status, true))
@@ -922,7 +927,6 @@ impl TickersTable {
         ]
         .align_y(Vertical::Center)
         .spacing(4)
-        .into()
     }
 
     fn filtered_rows<'a>(
@@ -999,20 +1003,20 @@ impl TickersTable {
             if ticker == selected_ticker && exchange == selected_exchange {
                 container(Self::expanded_ticker_card(ticker, display_data, is_fav))
                     .style(style::ticker_card)
-                    .into()
+                    .boxed()
             } else {
-                Self::ticker_card(ticker, display_data)
+                Self::ticker_card(ticker, display_data).boxed()
             }
         } else {
-            Self::ticker_card(ticker, display_data)
+            Self::ticker_card(ticker, display_data).boxed()
         }
     }
 
     fn ticker_card<'a>(
         ticker: &Ticker,
         display_data: &'a TickerDisplayData,
-    ) -> Element<'a, Message> {
-        let color_column = container(column![])
+    ) -> impl iced::widget::Widget<Message> + 'a {
+        let color_column = container(iced::advanced::widget::Void)
             .height(Length::Fill)
             .width(Length::Fixed(2.0))
             .style(move |theme| style::ticker_card_bar(theme, display_data.card_color_alpha));
@@ -1036,6 +1040,7 @@ impl TickersTable {
                                     Some(PriceChange::Decreased) => palette.danger.base.color,
                                     _ => palette.background.base.text,
                                 }),
+                                ..Default::default()
                             }
                         })
                     ]
@@ -1088,14 +1093,13 @@ impl TickersTable {
             .on_press(Message::ExpandTickerCard(Some(*ticker))),
         )
         .height(Length::Fixed(56.0))
-        .into()
     }
 
     fn expanded_ticker_card<'a>(
         ticker: &Ticker,
         display_data: &'a TickerDisplayData,
         is_fav: bool,
-    ) -> Element<'a, Message> {
+    ) -> impl iced::widget::Widget<Message> + 'a {
         let (ticker_str, market) = ticker.display_symbol_and_type();
         let exchange_icon = style::venue_icon(ticker.exchange.venue());
 
@@ -1174,7 +1178,6 @@ impl TickersTable {
         ]
         .padding(padding::top(8).right(16).left(16).bottom(16))
         .spacing(12)
-        .into()
     }
 }
 
@@ -1194,7 +1197,7 @@ impl TickersTable {
         on_scroll: FScroll,
         selected_tickers: Option<&'a [TickerInfo]>,
         base_ticker: Option<TickerInfo>,
-    ) -> Element<'a, M>
+    ) -> impl iced::widget::Widget<M> + 'a
     where
         M: 'a + Clone,
         FSelect: 'static + Copy + Fn(RowSelection) -> M,
@@ -1255,9 +1258,9 @@ impl TickersTable {
         if let Some(sel) = selected_section {
             content = content
                 .push(sel)
-                .push(rule::horizontal(1.0).style(style::split_ruler));
+                .push(rule::horizontal(1.0).style(style::split_ruler).boxed());
         }
-        content = content.push(list);
+        content = content.push(list.boxed());
 
         scrollable::Scrollable::with_direction(
             content,
@@ -1267,7 +1270,6 @@ impl TickersTable {
         )
         .on_scroll(move |scroll| on_scroll(scroll.viewport))
         .style(style::scroll_bar)
-        .into()
     }
 
     fn compact_virtual_list<'a, M, FSelect>(
@@ -1278,7 +1280,7 @@ impl TickersTable {
         rest_rows: &[&'a TickerRowData],
         on_select: FSelect,
         selection_enabled: bool,
-    ) -> Element<'a, M>
+    ) -> impl iced::widget::Widget<M> + 'a
     where
         M: 'a + Clone,
         FSelect: 'static + Copy + Fn(RowSelection) -> M,
@@ -1327,11 +1329,11 @@ impl TickersTable {
                 on_select,
             );
 
-            list = list.push(row_el);
+            list = list.push(row_el.boxed());
         }
-        list = list.push(bottom_space);
+        list = list.push(bottom_space.boxed());
 
-        list.into()
+        list
     }
 
     fn compact_top_bar<'a, M, FSearch>(
@@ -1339,7 +1341,7 @@ impl TickersTable {
         search_query: &'a str,
         search_box_id: &'a iced::widget::Id,
         on_search: FSearch,
-    ) -> Element<'a, M>
+    ) -> impl iced::widget::Widget<M> + 'a
     where
         M: 'a + Clone,
         FSearch: 'static + Copy + Fn(String) -> M,
@@ -1354,7 +1356,6 @@ impl TickersTable {
         ]
         .align_y(Alignment::Center)
         .spacing(4)
-        .into()
     }
 
     fn compact_selected_section<'a, M, FSelect>(
@@ -1408,7 +1409,7 @@ impl TickersTable {
             ));
         }
 
-        Some(col.into())
+        Some(col.boxed())
     }
 
     fn label_with_suffix(&self, ticker: Ticker) -> String {
@@ -1459,7 +1460,7 @@ impl TickersTable {
         right_label_and_action: Option<(&'static str, Option<RowSelection>)>,
         chip_label: Option<&'static str>,
         on_select: FSelect,
-    ) -> Element<'a, M>
+    ) -> impl iced::widget::Widget<M> + 'a
     where
         M: 'a + Clone,
         FSelect: 'static + Copy + Fn(RowSelection) -> M,
@@ -1497,14 +1498,14 @@ impl TickersTable {
                 btn_base
             };
 
-            btn.into()
+            btn.boxed()
         });
 
         let chip_el: Option<Element<'a, M>> = chip_label.map(|lbl| {
             container(text(lbl).size(crate::style::text_size::SMALL))
                 .padding([2, 6])
                 .style(style::dragger_row_container)
-                .into()
+                .boxed()
         });
 
         let mut row_content = row![left_btn].align_y(alignment::Vertical::Center);
@@ -1513,7 +1514,7 @@ impl TickersTable {
             row_content = row_content.push(chip);
         }
         if let Some(right) = right_el {
-            row_content = row_content.push(iced::widget::rule::vertical(1.0));
+            row_content = row_content.push(iced::widget::rule::vertical(1.0).boxed());
             row_content = row_content.push(right);
         }
 
@@ -1521,7 +1522,6 @@ impl TickersTable {
             .style(style::ticker_card)
             .height(Length::Fixed(COMPACT_ROW_HEIGHT))
             .width(Length::Fill)
-            .into()
     }
 }
 

@@ -14,7 +14,7 @@ struct VertexOutput {
     @builtin(position) pos: vec4<f32>,
     @location(0) color: vec4<f32>,
     @location(1) world_x: f32,
-    @location(2) fade_mode: u32,
+    @location(2) @interpolate(flat) fade_mode: u32,
     @location(3) subpx_alpha: f32,
 };
 

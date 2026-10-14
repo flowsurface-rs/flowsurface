@@ -7,7 +7,7 @@ use exchange::unit::{Price, PriceStep};
 use exchange::{TickerInfo, UnixMs, depth::Depth};
 
 use iced::widget::canvas::{self, Canvas, Path, Stroke, Text};
-use iced::{Alignment, Element, Event, Point, Rectangle, Renderer, Size, Theme, mouse};
+use iced::{Alignment, Event, Point, Rectangle, Renderer, Size, Theme, mouse};
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -53,11 +53,13 @@ impl super::Panel for Ladder {
         self.grouped_asks().is_empty() && self.grouped_bids().is_empty() && self.trades.is_empty()
     }
 
-    fn view<'a>(&'a self, _timezone: data::UserTimezone) -> Element<'a, Message> {
+    fn view<'a>(
+        &'a self,
+        _timezone: data::UserTimezone,
+    ) -> impl iced::widget::Widget<Message> + 'a {
         Canvas::new(self)
             .width(iced::Length::Fill)
             .height(iced::Length::Fill)
-            .into()
     }
 }
 

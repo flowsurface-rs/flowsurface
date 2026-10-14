@@ -1,6 +1,7 @@
 use crate::screen::dashboard::pane::{self, Message};
 use crate::style::{self, Icon, icon_text};
 use crate::widget::{column_drag, dragger_row};
+use iced::widget::Widget as _;
 
 use data::chart::indicator::{Indicator, UiIndicator};
 use iced::{
@@ -13,7 +14,7 @@ pub fn view<'a, I>(
     state: &'a pane::State,
     selected: &[I],
     market_type: Option<exchange::adapter::MarketKind>,
-) -> Element<'a, Message>
+) -> impl iced::widget::Widget<Message> + 'a
 where
     I: Indicator + Copy + Into<UiIndicator>,
 {
@@ -26,22 +27,22 @@ where
             market,
             content_allows_dragging,
         )
+        .boxed()
     } else {
-        column![].spacing(4).into()
+        column::<Element<'a, Message>>([]).spacing(4).boxed()
     };
 
     container(content_row)
         .width(200)
         .padding(16)
         .style(style::chart_modal)
-        .into()
 }
 
 fn build_indicator_row<'a, I>(
     pane: pane_grid::Pane,
     indicator: &I,
     is_selected: bool,
-) -> Element<'a, Message>
+) -> impl iced::widget::Widget<Message> + 'a
 where
     I: Indicator + Copy + Into<UiIndicator>,
 {
@@ -63,7 +64,6 @@ where
         ))
         .width(Length::Fill)
         .style(move |theme, status| style::button::modifier(theme, status, is_selected))
-        .into()
 }
 
 fn selected_list<'a, I>(
@@ -78,7 +78,7 @@ where
         .iter()
         .map(|indicator| {
             let base = build_indicator_row(pane, indicator, true);
-            dragger_row(base, reorderable)
+            dragger_row(base, reorderable).boxed()
         })
         .collect();
 
@@ -89,29 +89,27 @@ where
         for element in elements {
             draggable_column = draggable_column.push(element);
         }
-        draggable_column.into()
+        draggable_column.boxed()
     } else {
         iced::widget::Column::with_children(elements)
             .spacing(4)
-            .into()
+            .boxed()
     }
 }
 
-fn available_list<'a, I>(pane: pane_grid::Pane, available: &[I]) -> Element<'a, Message>
+fn available_list<'a, I>(
+    pane: pane_grid::Pane,
+    available: &[I],
+) -> impl iced::widget::Widget<Message> + 'a
 where
     I: Indicator + Copy + Into<UiIndicator>,
 {
-    let elements: Vec<Element<_>> = available
-        .iter()
-        .map(|indicator| {
-            let base = build_indicator_row(pane, indicator, false);
-            dragger_row(base, false)
-        })
-        .collect();
+    let elements = available.iter().map(|indicator| {
+        let base = build_indicator_row(pane, indicator, false);
+        dragger_row(base, false)
+    });
 
-    iced::widget::Column::with_children(elements)
-        .spacing(4)
-        .into()
+    iced::widget::Column::with_children(elements).spacing(4)
 }
 
 fn content_row<'a, I>(
@@ -120,7 +118,7 @@ fn content_row<'a, I>(
     selected: &[I],
     market: exchange::adapter::MarketKind,
     allows_drag: bool,
-) -> Element<'a, Message>
+) -> impl iced::widget::Widget<Message> + 'a
 where
     I: Indicator + Copy + Into<UiIndicator>,
 {
@@ -156,7 +154,7 @@ where
         col = col.push(sel);
     }
     if let Some(avail) = available_list {
-        col = col.push(avail);
+        col = col.push(avail.boxed());
     }
 
     column![
@@ -165,5 +163,4 @@ where
         col.spacing(4)
     ]
     .spacing(4)
-    .into()
 }

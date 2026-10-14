@@ -1,5 +1,4 @@
 use exchange::TickerInfo;
-use iced::Element;
 
 use crate::dashboard::tickers_table::TickersTable;
 
@@ -61,7 +60,7 @@ impl MiniPanel {
         table: &'a TickersTable,
         selected_tickers: Option<&'a [TickerInfo]>,
         base_ticker: Option<TickerInfo>,
-    ) -> Element<'a, Message> {
+    ) -> impl iced::widget::Widget<Message> + 'a {
         iced::widget::responsive(move |bounds| {
             table.view_compact_with(
                 bounds,
@@ -75,6 +74,5 @@ impl MiniPanel {
                 base_ticker,
             )
         })
-        .into()
     }
 }

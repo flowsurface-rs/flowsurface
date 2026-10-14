@@ -1,5 +1,5 @@
 use iced::{
-    Alignment, Element,
+    Alignment,
     widget::{button, column, container, pick_list, row, space, text_input::default},
 };
 use iced_core::theme::Custom;
@@ -141,7 +141,7 @@ impl ThemeEditor {
         }
     }
 
-    pub fn view(&self, theme: &iced_core::Theme) -> Element<'_, Message> {
+    pub fn view(&self, theme: &iced_core::Theme) -> impl iced::widget::Widget<Message> + '_ {
         let color = self.focused_color(theme);
         let hsva_in = self
             .editing
@@ -202,6 +202,5 @@ impl ThemeEditor {
             .width(380)
             .padding(24)
             .style(style::dashboard_modal)
-            .into()
     }
 }

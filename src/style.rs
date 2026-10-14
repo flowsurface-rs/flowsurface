@@ -97,6 +97,7 @@ pub fn secondary_text(theme: &Theme) -> iced::widget::text::Style {
 
     iced::widget::text::Style {
         color: Some(palette.secondary.weak.color),
+        ..Default::default()
     }
 }
 
@@ -106,6 +107,7 @@ pub fn title_text(theme: &Theme) -> iced::widget::text::Style {
 
     iced::widget::text::Style {
         color: Some(palette.background.weakest.color),
+        ..Default::default()
     }
 }
 

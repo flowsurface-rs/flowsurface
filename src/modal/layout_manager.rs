@@ -4,6 +4,7 @@ use crate::style::{Icon, icon_text};
 use crate::widget::column_drag::{self, DragEvent};
 use crate::widget::dragger_row;
 use crate::{style, tooltip};
+use iced::widget::Widget as _;
 
 use iced::widget::{
     button, center, column, container, row, scrollable, space, text, text_input,
@@ -199,8 +200,8 @@ impl LayoutManager {
         None
     }
 
-    pub fn view(&self) -> Element<'_, Message> {
-        let mut content = column![].spacing(8);
+    pub fn view(&self) -> impl iced::widget::Widget<Message> + '_ {
+        let mut content = column::<Element<'_, Message>>([]).spacing(8);
 
         let is_edit_mode = self.edit_mode != Editing::None;
 
@@ -211,29 +212,34 @@ impl LayoutManager {
             button(text("Edit")).on_press(Message::ToggleEditMode(Editing::Preview))
         };
 
-        content = content.push(row![
-            space::horizontal(),
-            if is_edit_mode {
-                row![edit_btn]
-            } else {
-                row![
-                    tooltip(
-                        button("i").style(style::button::info),
-                        Some("Layouts won't be saved if app exits abruptly"),
-                        TooltipPosition::Top,
-                    ),
-                    edit_btn,
-                ]
-                .spacing(4)
-            }
-        ]);
+        content = content.push(
+            row![
+                space::horizontal(),
+                if is_edit_mode {
+                    row![edit_btn]
+                } else {
+                    row![
+                        tooltip(
+                            button("i").style(style::button::info),
+                            Some("Layouts won't be saved if app exits abruptly"),
+                            TooltipPosition::Top,
+                        ),
+                        edit_btn,
+                    ]
+                    .spacing(4)
+                }
+            ]
+            .boxed(),
+        );
 
         let mut layout_widgets: Vec<Element<'_, Message>> = vec![];
 
         for layout in &self.layouts {
             let layout_id = &layout.id;
 
-            let mut layout_row = row![].height(iced::Length::Fixed(32.0)).padding(4);
+            let mut layout_row = row::<Element<'_, Message>>([])
+                .height(iced::Length::Fixed(32.0))
+                .padding(4);
 
             let is_active = self.active_layout_id == Some(layout_id.unique);
             match &self.edit_mode {
@@ -242,14 +248,17 @@ impl LayoutManager {
                         let (confirm_btn, cancel_btn) = create_confirm_delete_buttons(layout_id);
 
                         layout_row = layout_row
-                            .push(center(
-                                text(format!("Delete {}?", layout.id.name))
-                                    .size(crate::style::text_size::BODY),
-                            ))
-                            .push(confirm_btn)
-                            .push(cancel_btn);
+                            .push(
+                                center(
+                                    text(format!("Delete {}?", layout.id.name))
+                                        .size(crate::style::text_size::BODY),
+                                )
+                                .boxed(),
+                            )
+                            .push(confirm_btn.boxed())
+                            .push(cancel_btn.boxed());
                     } else {
-                        layout_row = layout_row.push(create_layout_button(layout_id, None));
+                        layout_row = layout_row.push(create_layout_button(layout_id, None).boxed());
                     }
                 }
                 Editing::Renaming(renaming_id, name) => {
@@ -261,41 +270,47 @@ impl LayoutManager {
                         let (_, cancel_btn) = create_confirm_delete_buttons(layout_id);
 
                         layout_row = layout_row
-                            .push(center(input_box).padding(padding::left(4)))
-                            .push(cancel_btn);
+                            .push(center(input_box).padding(padding::left(4)).boxed())
+                            .push(cancel_btn.boxed());
                     } else {
-                        layout_row = layout_row.push(create_layout_button(layout_id, None));
+                        layout_row = layout_row.push(create_layout_button(layout_id, None).boxed());
                     }
                 }
                 Editing::Preview => {
                     layout_row = layout_row
-                        .push(create_layout_button(layout_id, None))
+                        .push(create_layout_button(layout_id, None).boxed())
                         .push(create_clone_button(layout_id))
-                        .push(create_rename_button(layout_id));
+                        .push(create_rename_button(layout_id).boxed());
 
                     if !is_active {
-                        layout_row = layout_row.push(create_delete_button(layout_id));
+                        layout_row = layout_row.push(create_delete_button(layout_id).boxed());
                     }
                 }
                 Editing::None => {
-                    layout_row = layout_row.push(create_layout_button(
-                        layout_id,
-                        if is_active {
-                            None
-                        } else {
-                            Some(Message::SelectActive(layout_id.unique))
-                        },
-                    ));
+                    layout_row = layout_row.push(
+                        create_layout_button(
+                            layout_id,
+                            if is_active {
+                                None
+                            } else {
+                                Some(Message::SelectActive(layout_id.unique))
+                            },
+                        )
+                        .boxed(),
+                    );
                 }
             }
 
             if is_active && !is_edit_mode {
-                layout_row = layout_row
-                    .push(container(icon_text(Icon::Checkmark, 12)).padding(padding::right(16)));
+                layout_row = layout_row.push(
+                    container(icon_text(Icon::Checkmark, 12))
+                        .padding(padding::right(16))
+                        .boxed(),
+                );
             }
 
             let styled_container = container(layout_row.align_y(iced::Alignment::Center))
-                .style(move |theme| {
+                .style(move |theme: &iced::Theme| {
                     let palette = theme.palette();
                     let color = if is_active {
                         palette.background.weak.color
@@ -308,20 +323,20 @@ impl LayoutManager {
                         ..Default::default()
                     }
                 })
-                .into();
+                .boxed();
 
-            layout_widgets.push(dragger_row(styled_container, is_edit_mode));
+            layout_widgets.push(dragger_row(styled_container, is_edit_mode).boxed());
         }
 
         let layouts_list: Element<'_, Message> = if is_edit_mode {
             column_drag::Column::with_children(layout_widgets)
                 .on_drag(Message::Reorder)
                 .spacing(4)
-                .into()
+                .boxed()
         } else {
             iced::widget::Column::with_children(layout_widgets)
                 .spacing(4)
-                .into()
+                .boxed()
         };
 
         content = content.push(layouts_list);
@@ -331,7 +346,8 @@ impl LayoutManager {
                 button(text("Add layout"))
                     .style(move |t, s| style::button::transparent(t, s, true))
                     .width(iced::Length::Fill)
-                    .on_press(Message::AddLayout),
+                    .on_press(Message::AddLayout)
+                    .boxed(),
             );
         };
 
@@ -341,11 +357,10 @@ impl LayoutManager {
                 scrollable::Scrollbar::new().width(8).scroller_width(6),
             ),
         )
-        .into()
     }
 }
 
-fn create_delete_button<'a>(layout: &LayoutId) -> Element<'a, Message> {
+fn create_delete_button<'a>(layout: &LayoutId) -> impl iced::widget::Widget<Message> + 'a {
     create_icon_button(
         style::Icon::TrashBin,
         12,
@@ -354,10 +369,11 @@ fn create_delete_button<'a>(layout: &LayoutId) -> Element<'a, Message> {
             layout.unique,
         ))),
     )
-    .into()
 }
 
-fn create_rename_button<'a>(layout: &LayoutId) -> button::Button<'a, Message> {
+fn create_rename_button<'a>(
+    layout: &LayoutId,
+) -> button::Button<'a, Message, iced::widget::Text<'a>> {
     create_icon_button(
         style::Icon::Edit,
         12,
@@ -384,7 +400,10 @@ fn create_clone_button<'a>(layout: &LayoutId) -> Element<'a, Message> {
 
 fn create_confirm_delete_buttons<'a>(
     layout: &LayoutId,
-) -> (button::Button<'a, Message>, button::Button<'a, Message>) {
+) -> (
+    button::Button<'a, Message, iced::widget::Text<'a>>,
+    button::Button<'a, Message, iced::widget::Text<'a>>,
+) {
     let confirm = create_icon_button(
         style::Icon::Checkmark,
         12,
@@ -402,7 +421,10 @@ fn create_confirm_delete_buttons<'a>(
     (confirm, cancel)
 }
 
-fn create_layout_button<'a>(layout: &LayoutId, on_press: Option<Message>) -> Element<'a, Message> {
+fn create_layout_button<'a>(
+    layout: &LayoutId,
+    on_press: Option<Message>,
+) -> impl iced::widget::Widget<Message> + 'a {
     let mut layout_btn = button(text(layout.name.clone()).align_y(iced::Alignment::Center))
         .width(iced::Length::Fill)
         .style(style::button::layout_name);
@@ -411,7 +433,7 @@ fn create_layout_button<'a>(layout: &LayoutId, on_press: Option<Message>) -> Ele
         layout_btn = layout_btn.on_press(msg);
     }
 
-    layout_btn.into()
+    layout_btn
 }
 
 fn create_icon_button<'a>(
@@ -419,7 +441,7 @@ fn create_icon_button<'a>(
     size: u16,
     style_fn: impl Fn(&Theme, &button::Status) -> button::Style + 'static,
     on_press: Option<Message>,
-) -> button::Button<'a, Message> {
+) -> button::Button<'a, Message, iced::widget::Text<'a>> {
     let mut btn = button(icon_text(icon, size).align_y(iced::Alignment::Center))
         .style(move |theme, status| style_fn(theme, &status));
 

@@ -29,23 +29,6 @@ impl Default for Cell {
 }
 
 impl Cell {
-    pub fn new(width_world: f32, height_world: f32) -> Self {
-        let mut c = Self {
-            width_world: if width_world.is_finite() {
-                width_world
-            } else {
-                MIN_COL_W_WORLD
-            },
-            height_world: if height_world.is_finite() {
-                height_world
-            } else {
-                MIN_ROW_H_WORLD
-            },
-        };
-        c.clamp_world_only();
-        c
-    }
-
     pub fn width_world(&self) -> f32 {
         self.width_world
     }
@@ -61,13 +44,6 @@ impl Cell {
     pub fn set_width_world(&mut self, width_world: f32) {
         if width_world.is_finite() {
             self.width_world = width_world;
-        }
-        self.clamp_world_only();
-    }
-
-    pub fn set_height_world(&mut self, height_world: f32) {
-        if height_world.is_finite() {
-            self.height_world = height_world;
         }
         self.clamp_world_only();
     }

@@ -1,5 +1,5 @@
 use iced::{
-    Alignment, Element, Length, padding,
+    Alignment, Length, padding,
     widget::{container, mouse_area, opaque},
 };
 
@@ -19,17 +19,17 @@ pub enum Modal {
 }
 
 pub fn stack_modal<'a, Message>(
-    base: impl Into<Element<'a, Message>>,
-    content: impl Into<Element<'a, Message>>,
+    base: impl iced::widget::Widget<Message> + 'a,
+    content: impl iced::widget::Widget<Message> + 'a,
     on_blur: Message,
     padding: padding::Padding,
     alignment: Alignment,
-) -> Element<'a, Message>
+) -> impl iced::widget::Widget<Message> + 'a
 where
     Message: Clone + 'a,
 {
     iced::widget::stack![
-        base.into(),
+        base,
         mouse_area(
             container(opaque(content))
                 .width(Length::Fill)
@@ -39,5 +39,4 @@ where
         )
         .on_press(on_blur)
     ]
-    .into()
 }

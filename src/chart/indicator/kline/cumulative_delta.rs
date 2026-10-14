@@ -9,6 +9,7 @@ use crate::chart::{
         plot::{PlotTooltip, line::LinePlot},
     },
 };
+use iced::widget::Widget as _;
 
 use data::chart::{PlotData, kline::KlineDataPoint};
 use data::util::format_with_commas;
@@ -64,7 +65,7 @@ impl CumulativeDeltaIndicator {
         visible_range: RangeInclusive<u64>,
     ) -> iced::Element<'a, Message> {
         if let Some(message) = self.unavailable_message(main_chart, "CVD") {
-            return center(text(message)).into();
+            return center(text(message)).boxed();
         }
 
         let tooltip = |point: &CumulativeDeltaPoint, _next: Option<&CumulativeDeltaPoint>| {

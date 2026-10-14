@@ -8,6 +8,7 @@ use crate::{
     },
     style,
 };
+use iced::widget::Widget as _;
 
 use data::chart::{
     BasisSeries, PlotData,
@@ -61,7 +62,7 @@ impl BarAnalysisIndicator {
             rule::vertical(1).style(style::split_ruler),
             container(space::vertical()).width(main_chart.y_labels_width())
         ]
-        .into()
+        .boxed()
     }
 
     fn rebuild(&mut self, source: &PlotData<KlineDataPoint>) {

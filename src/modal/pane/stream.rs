@@ -2,6 +2,7 @@ use crate::{
     style::{self, icon_text},
     widget::numeric_input_box,
 };
+use iced::widget::Widget as _;
 
 use data::chart::Basis;
 use exchange::{
@@ -357,8 +358,10 @@ impl Modifier {
 
         match self.view_mode {
             ViewMode::BasisSelection => {
-                let mut basis_selection_column =
-                    column![].padding(4).spacing(8).align_x(Horizontal::Center);
+                let mut basis_selection_column = column::<Element<'_, Message>>([])
+                    .padding(4)
+                    .spacing(8)
+                    .align_x(Horizontal::Center);
 
                 let allows_tick_basis = match kind {
                     ModifierKind::Candlestick(_) | ModifierKind::Footprint(_, _) => true,
@@ -454,8 +457,8 @@ impl Modifier {
                     };
 
                     basis_selection_column = basis_selection_column
-                        .push(tabs_row)
-                        .push(rule::horizontal(1).style(style::split_ruler));
+                        .push(tabs_row.boxed())
+                        .push(rule::horizontal(1).style(style::split_ruler).boxed());
                 }
 
                 match self.tab {
@@ -475,7 +478,8 @@ impl Modifier {
                                 &create_button,
                                 items_per_row,
                             );
-                            basis_selection_column = basis_selection_column.push(timeframe_grid);
+                            basis_selection_column =
+                                basis_selection_column.push(timeframe_grid.boxed());
                         }
                     }
                     SelectedTab::TickCount {
@@ -510,8 +514,9 @@ impl Modifier {
                                     .map(|tc| Message::BasisSelected(Basis::Tick(tc))),
                             )
                         };
-                        basis_selection_column = basis_selection_column.push(custom_input);
-                        basis_selection_column = basis_selection_column.push(tick_count_grid);
+                        basis_selection_column = basis_selection_column.push(custom_input.boxed());
+                        basis_selection_column =
+                            basis_selection_column.push(tick_count_grid.boxed());
                     }
                 }
 
@@ -524,7 +529,7 @@ impl Modifier {
                 .width(240)
                 .padding(16)
                 .style(style::chart_modal)
-                .into()
+                .boxed()
             }
             ViewMode::TicksizeSelection {
                 raw_input_buf,
@@ -535,16 +540,22 @@ impl Modifier {
                     return container(text("Exchange information is not available"))
                         .padding(16)
                         .style(style::chart_modal)
-                        .into();
+                        .boxed();
                 };
 
                 if let Some(ticksize) = selected_ticksize {
-                    let mut ticksizes_column =
-                        column![].padding(4).spacing(8).align_x(Horizontal::Center);
+                    let mut ticksizes_column = column::<Element<'_, Message>>([])
+                        .padding(4)
+                        .spacing(8)
+                        .align_x(Horizontal::Center);
 
                     ticksizes_column = ticksizes_column
-                        .push(text("Tick size multiplier").size(crate::style::text_size::EMPHASIS))
-                        .push(rule::horizontal(1).style(style::split_ruler));
+                        .push(
+                            text("Tick size multiplier")
+                                .size(crate::style::text_size::EMPHASIS)
+                                .boxed(),
+                        )
+                        .push(rule::horizontal(1).style(style::split_ruler).boxed());
 
                     let allows_custom_tsizes = exchange.is_depth_client_aggr()
                         || matches!(kind, ModifierKind::Footprint(_, _));
@@ -579,9 +590,9 @@ impl Modifier {
                             )
                         };
 
-                        ticksizes_column = ticksizes_column.push(custom_input);
+                        ticksizes_column = ticksizes_column.push(custom_input.boxed());
                     }
-                    ticksizes_column = ticksizes_column.push(tick_multiplier_grid);
+                    ticksizes_column = ticksizes_column.push(tick_multiplier_grid.boxed());
 
                     if let Some(price_step) = self.price_step {
                         ticksizes_column = ticksizes_column.push(
@@ -591,11 +602,13 @@ impl Modifier {
                                     |theme: &iced::Theme| {
                                         iced::widget::text::Style {
                                             color: Some(theme.palette().background.strongest.color),
+                                            ..Default::default()
                                         }
                                     }
                                 ),
                             ]
-                            .padding(padding::top(8).right(4)),
+                            .padding(padding::top(8).right(4))
+                            .boxed(),
                         );
                     }
 
@@ -608,12 +621,12 @@ impl Modifier {
                     .width(240)
                     .padding(16)
                     .style(style::chart_modal)
-                    .into()
+                    .boxed()
                 } else {
                     container(text("No ticksize available for this chart type"))
                         .padding(16)
                         .style(style::chart_modal)
-                        .into()
+                        .boxed()
                 }
             }
         }
@@ -647,9 +660,9 @@ fn modifiers_grid<'a, T, FMsg>(
         iced::widget::text::Text<'a>,
         Option<Message>,
         bool,
-    ) -> iced::widget::Button<'a, Message>,
+    ) -> iced::widget::Button<'a, Message, iced::widget::Text<'a>>,
     items_per_row: usize,
-) -> iced::widget::Column<'a, Message>
+) -> impl iced::widget::Widget<Message> + 'a
 where
     T: Copy + PartialEq + ToString,
     FMsg: Fn(T) -> Message,

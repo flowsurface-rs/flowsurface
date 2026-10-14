@@ -4,6 +4,7 @@ use crate::screen::dashboard::panel::timeandsales;
 use crate::split_column;
 use crate::widget::{classic_slider_row, labeled_slider};
 use crate::{style, tooltip, widget::scrollable_content};
+use iced::widget::Widget as _;
 
 use data::chart::heatmap::HeatmapStudy;
 use data::chart::kline::FootprintStudy;
@@ -27,16 +28,15 @@ use iced::{
 };
 use std::time::Duration;
 
-fn cfg_view_container<'a, T>(max_width: u32, content: T) -> Element<'a, Message>
+fn cfg_view_container<'a, T>(max_width: u32, content: T) -> impl iced::widget::Widget<Message> + 'a
 where
-    T: Into<Element<'a, Message>>,
+    T: iced::widget::Widget<Message> + 'a,
 {
     container(scrollable_content(content))
         .width(Length::Shrink)
         .padding(28)
         .width(max_width)
         .style(style::chart_modal)
-        .into()
 }
 
 pub fn heatmap_cfg_view<'a>(
@@ -102,7 +102,7 @@ pub fn heatmap_cfg_view<'a>(
                 )
             })
             .step(10)
-            .into(),
+            .boxed(),
             Some(text(format!("{}%", radius_scale)).size(crate::style::text_size::EMPHASIS)),
         )
     });
@@ -182,7 +182,7 @@ pub fn heatmap_cfg_view<'a>(
                 )
             })
             .step(0.05)
-            .into(),
+            .boxed(),
             Some(
                 text(format!("{:.0}%", threshold_pct * 100.0))
                     .size(crate::style::text_size::EMPHASIS),
@@ -193,7 +193,7 @@ pub fn heatmap_cfg_view<'a>(
             container(column![coalescer_kinds, threshold_slider].spacing(8))
                 .style(style::modal_container)
                 .padding(8)
-                .into(),
+                .boxed(),
         )
     } else {
         None
@@ -254,7 +254,7 @@ pub fn heatmap_cfg_view<'a>(
         ]
         .spacing(8);
         if let Some(slider) = circle_scaling_slider {
-            col = col.push(slider);
+            col = col.push(slider.boxed());
         }
         col
     };
@@ -278,7 +278,7 @@ pub fn heatmap_cfg_view<'a>(
         ; spacing = 12, align_x = Alignment::Start
     ];
 
-    cfg_view_container(360, content)
+    cfg_view_container(360, content).boxed()
 }
 
 pub fn heatmap_shader_cfg_view<'a>(
@@ -344,7 +344,7 @@ pub fn heatmap_shader_cfg_view<'a>(
                 )
             })
             .step(10)
-            .into(),
+            .boxed(),
             Some(text(format!("{}%", radius_scale)).size(crate::style::text_size::EMPHASIS)),
         )
     });
@@ -375,7 +375,7 @@ pub fn heatmap_shader_cfg_view<'a>(
         ]
         .spacing(8);
         if let Some(slider) = circle_scaling_slider {
-            col = col.push(slider);
+            col = col.push(slider.boxed());
         }
         col
     };
@@ -398,7 +398,7 @@ pub fn heatmap_shader_cfg_view<'a>(
         ; spacing = 12, align_x = Alignment::Start
     ];
 
-    cfg_view_container(360, content)
+    cfg_view_container(360, content).boxed()
 }
 
 pub fn timesales_cfg_view<'a>(
@@ -449,7 +449,7 @@ pub fn timesales_cfg_view<'a>(
 
         classic_slider_row(
             text("Keep trades for"),
-            slider_ui.into(),
+            slider_ui.boxed(),
             Some(
                 text(format!("≈ {} min", retention_minutes.round() as u64))
                     .size(crate::style::text_size::EMPHASIS),
@@ -549,7 +549,7 @@ pub fn timesales_cfg_view<'a>(
                 metric_picklist,
             ]
             .spacing(8)
-            .into()
+            .boxed()
         });
 
         let mut inner = column![enable_checkbox]
@@ -564,7 +564,7 @@ pub fn timesales_cfg_view<'a>(
         container(inner)
             .style(style::modal_container)
             .padding(8)
-            .into()
+            .boxed()
     };
 
     let content = split_column![
@@ -575,7 +575,7 @@ pub fn timesales_cfg_view<'a>(
         ; spacing = 12, align_x = Alignment::Start
     ];
 
-    cfg_view_container(320, content)
+    cfg_view_container(320, content).boxed()
 }
 
 pub fn comparison_cfg_view<'a>(
@@ -592,7 +592,7 @@ pub fn comparison_cfg_view<'a>(
         )
     })];
 
-    cfg_view_container(320, content)
+    cfg_view_container(320, content).boxed()
 }
 
 pub fn kline_cfg_view<'a>(
@@ -729,7 +729,8 @@ pub fn kline_cfg_view<'a>(
                     text("Cluster scaling").size(crate::style::text_size::SECTION),
                     scaling
                 ]
-                .spacing(8),
+                .spacing(8)
+                .boxed(),
             );
 
             content = content
@@ -738,18 +739,22 @@ pub fn kline_cfg_view<'a>(
                         text("Studies").size(crate::style::text_size::SECTION),
                         study_cfg
                     ]
-                    .spacing(8),
+                    .spacing(8)
+                    .boxed(),
                 )
-                .push(row![
-                    space::horizontal(),
-                    sync_all_button(pane, VisualConfig::Kline(cfg))
-                ]);
+                .push(
+                    row![
+                        space::horizontal(),
+                        sync_all_button(pane, VisualConfig::Kline(cfg))
+                    ]
+                    .boxed(),
+                );
 
             content
         }
     };
 
-    cfg_view_container(360, content)
+    cfg_view_container(360, content).boxed()
 }
 
 pub fn ladder_cfg_view<'a>(cfg: ladder::Config, pane: pane_grid::Pane) -> Element<'a, Message> {
@@ -818,7 +823,7 @@ pub fn ladder_cfg_view<'a>(cfg: ladder::Config, pane: pane_grid::Pane) -> Elemen
 
         classic_slider_row(
             text("Keep trades for"),
-            slider_ui.into(),
+            slider_ui.boxed(),
             Some(
                 text(format!("≈ {} min", retention_minutes.round() as u64))
                     .size(crate::style::text_size::EMPHASIS),
@@ -842,7 +847,7 @@ pub fn ladder_cfg_view<'a>(cfg: ladder::Config, pane: pane_grid::Pane) -> Elemen
         ; spacing = 12, align_x = Alignment::Start
     ];
 
-    cfg_view_container(320, content)
+    cfg_view_container(320, content).boxed()
 }
 
 fn sync_all_button<'a>(pane: pane_grid::Pane, config: VisualConfig) -> Element<'a, Message> {
@@ -860,6 +865,7 @@ pub mod study {
     };
     use data::chart::heatmap::{CLEANUP_THRESHOLD, HeatmapStudy, ProfileKind};
     use data::chart::kline::FootprintStudy;
+    use iced::widget::Widget as _;
     use iced::{
         Element, padding,
         widget::{button, checkbox, column, container, row, slider, space, text},
@@ -907,7 +913,7 @@ pub mod study {
                     column![text(format!("Lookback: {lookback} datapoints")), slider_ui]
                         .padding(8)
                         .spacing(4)
-                        .into()
+                        .boxed()
                 }
                 FootprintStudy::Imbalance {
                     threshold,
@@ -986,7 +992,7 @@ pub mod study {
 
                     split_column![qty_threshold, color_scaling, ignore_zeros_checkbox]
                         .padding(4)
-                        .into()
+                        .boxed()
                 }
             }
         }
@@ -1012,7 +1018,7 @@ pub mod study {
                     return iced::widget::center(text(
                         "Heatmap studies are not supported for tick-based charts",
                     ))
-                    .into();
+                    .boxed();
                 }
             };
 
@@ -1059,7 +1065,7 @@ pub mod study {
                         ]
                         .padding(8)
                         .spacing(4)
-                        .into()
+                        .boxed()
                     }
                     ProfileKind::VisibleRange => {
                         let switch_kind = button(text("Switch to fixed window")).on_press(
@@ -1071,7 +1077,7 @@ pub mod study {
                         column![row![space::horizontal(), switch_kind,],]
                             .padding(8)
                             .spacing(4)
-                            .into()
+                            .boxed()
                     }
                 },
             }
@@ -1153,7 +1159,7 @@ pub mod study {
                     content.push(self.create_study_row(available_study, active_studies, basis));
             }
 
-            content.into()
+            content.boxed()
         }
 
         fn create_study_row<'a>(
@@ -1197,7 +1203,8 @@ pub mod study {
                         .on_press(Message::CardToggled(study))
                         .style(move |theme, status| {
                             style::button::transparent(theme, status, is_expanded)
-                        }),
+                        })
+                        .boxed(),
                 );
             }
 
@@ -1207,7 +1214,7 @@ pub mod study {
                 column = column.push(config.view_config(basis, Message::StudyValueChanged));
             }
 
-            container(column).style(style::modal_container).into()
+            container(column).style(style::modal_container).boxed()
         }
     }
 }

@@ -12,9 +12,7 @@ use iced::advanced::widget::tree::{self, Tree};
 use iced::advanced::{self, Layout, Shell, Widget, layout, renderer};
 use iced::theme::palette::Palette;
 use iced::widget::canvas;
-use iced::{
-    Color, Element, Event, Length, Point, Rectangle, Renderer, Size, Theme, Vector, mouse, window,
-};
+use iced::{Color, Event, Length, Point, Rectangle, Renderer, Size, Theme, Vector, mouse, window};
 use iced_core::renderer::Quad;
 
 use chrono::TimeZone;
@@ -1651,15 +1649,7 @@ fn resolve_label_overlaps(end_labels: &mut [EndLabel], plot: Rectangle) {
     }
 }
 
-impl<'a, S, M> From<LineComparison<'a, S>> for Element<'a, M, Theme, Renderer>
-where
-    S: SeriesLike,
-    M: Clone + 'a + 'static + From<LineComparisonEvent>,
-{
-    fn from(chart: LineComparison<'a, S>) -> Self {
-        Element::new(chart)
-    }
-}
+impl<S> iced::advanced::widget::Meta for LineComparison<'_, S> {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HitZone {

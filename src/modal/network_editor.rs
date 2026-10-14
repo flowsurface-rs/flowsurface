@@ -4,6 +4,7 @@ use crate::{
     widget::tooltip,
 };
 use exchange::proxy::{Proxy, ProxyScheme};
+use iced::widget::Widget as _;
 
 use iced::{
     Element, Theme,
@@ -121,7 +122,10 @@ impl NetworkEditor {
         self.pending_apply.as_ref()
     }
 
-    pub fn view<'a>(&'a self, network: &'a data::Network) -> Element<'a, Message> {
+    pub fn view<'a>(
+        &'a self,
+        network: &'a data::Network,
+    ) -> impl iced::widget::Widget<Message> + 'a {
         let modal_header = row![
             button(style::icon_text(style::Icon::Return, 11)).on_press(Message::GoBack),
             iced::widget::space::horizontal(),
@@ -151,6 +155,7 @@ impl NetworkEditor {
                         let palette = theme.palette();
                         iced::widget::text::Style {
                             color: Some(palette.primary.base.color),
+                            ..Default::default()
                         }
                     }),
             )
@@ -158,7 +163,7 @@ impl NetworkEditor {
             .width(iced::Length::Fill)
             .align_x(iced::Alignment::Center)
             .style(style::modal_container);
-            content = content.push(banner);
+            content = content.push(banner.boxed());
         }
 
         let content = if let Some(err) = &self.error {
@@ -169,12 +174,14 @@ impl NetworkEditor {
                         let palette = theme.palette();
                         iced::widget::text::Style {
                             color: Some(palette.danger.base.color),
+                            ..Default::default()
                         }
                     });
             content.push(
                 container(error_line)
                     .align_x(iced::Alignment::Center)
-                    .width(iced::Length::Fill),
+                    .width(iced::Length::Fill)
+                    .boxed(),
             )
         } else {
             content
@@ -184,7 +191,6 @@ impl NetworkEditor {
             .width(320)
             .padding(24)
             .style(style::dashboard_modal)
-            .into()
     }
 }
 
@@ -288,7 +294,7 @@ impl ProxyForm {
         &'a self,
         effective_cfg: Option<&'a Proxy>,
         confirm: ConfirmState,
-    ) -> Element<'a, ProxyMsg> {
+    ) -> impl iced::widget::Widget<ProxyMsg> + 'a {
         let is_pending = self.is_pending(effective_cfg);
 
         let applied_proxy = {
@@ -328,7 +334,8 @@ impl ProxyForm {
                     ]
                     .spacing(4)
                     .align_y(iced::Alignment::Center)
-                    .width(iced::Length::Fill),
+                    .width(iced::Length::Fill)
+                    .boxed(),
                 );
             }
             lines
@@ -393,7 +400,9 @@ impl ProxyForm {
             let msg = "Restore proxy settings to default";
 
             match confirm {
-                ConfirmState::ProxyClear => confirm_row(msg, ProxyMsg::Clear, ProxyMsg::Cancel),
+                ConfirmState::ProxyClear => {
+                    confirm_row(msg, ProxyMsg::Clear, ProxyMsg::Cancel).boxed()
+                }
                 _ => apply_action_row(
                     is_pending,
                     is_pending,
@@ -401,7 +410,8 @@ impl ProxyForm {
                     ProxyMsg::RequestApply,
                     ProxyMsg::RequestClear,
                     msg,
-                ),
+                )
+                .boxed(),
             }
         };
 
@@ -424,7 +434,7 @@ impl ProxyForm {
         ]
         .spacing(12);
 
-        body.push(buttons).into()
+        body.push(buttons)
     }
 
     fn update(
@@ -601,7 +611,7 @@ impl FetchForm {
         effective_mode: &'a fetcher::TradeFetchMode,
         effective_url: Option<&'a str>,
         effective_auth: Option<&'a str>,
-    ) -> Element<'a, FetchMsg> {
+    ) -> impl iced::widget::Widget<FetchMsg> + 'a {
         let selected_tag = if self.draft_active {
             Some(self.draft_tag)
         } else {
@@ -693,7 +703,8 @@ impl FetchForm {
 
             fetch_section = fetch_section.push(
                 container(column![exchange_radio, server_radio].spacing(4))
-                    .padding(iced::padding::left(20)),
+                    .padding(iced::padding::left(20))
+                    .boxed(),
             );
         }
 
@@ -708,7 +719,7 @@ impl FetchForm {
 
             match confirm {
                 ConfirmState::FetchClear => {
-                    confirm_row(msg, FetchMsg::ConfirmClearAuth, FetchMsg::Cancel)
+                    confirm_row(msg, FetchMsg::ConfirmClearAuth, FetchMsg::Cancel).boxed()
                 }
                 _ => apply_action_row(
                     pending,
@@ -717,7 +728,8 @@ impl FetchForm {
                     FetchMsg::RequestApplyFetch,
                     FetchMsg::RequestClearAuth,
                     msg,
-                ),
+                )
+                .boxed(),
             }
         };
 
@@ -736,7 +748,6 @@ impl FetchForm {
             buttons,
         ]
         .spacing(8)
-        .into()
     }
 
     fn update(
@@ -826,7 +837,11 @@ impl FetchForm {
     }
 }
 
-fn confirm_row<'a, M: Clone + 'a>(label: &'a str, confirm_msg: M, cancel_msg: M) -> Element<'a, M> {
+fn confirm_row<'a, M: Clone + 'a>(
+    label: &'a str,
+    confirm_msg: M,
+    cancel_msg: M,
+) -> impl iced::widget::Widget<M> + 'a {
     row![
         iced::widget::space::horizontal(),
         container(
@@ -853,7 +868,6 @@ fn confirm_row<'a, M: Clone + 'a>(label: &'a str, confirm_msg: M, cancel_msg: M)
         .style(style::modal_container)
     ]
     .align_y(iced::Alignment::Center)
-    .into()
 }
 
 /// The common pattern shared by both proxy and fetch forms:
@@ -865,7 +879,7 @@ fn apply_action_row<'a, M: Clone + 'a + 'static>(
     apply_msg: M,
     clear_msg: M,
     clear_tooltip: &'a str,
-) -> Element<'a, M> {
+) -> impl iced::widget::Widget<M> + 'a {
     let mut row_buttons = row![
         iced::widget::space::horizontal(),
         pending_info::<M>(pending),
@@ -873,7 +887,7 @@ fn apply_action_row<'a, M: Clone + 'a + 'static>(
     .spacing(8);
 
     if draft_differs {
-        row_buttons = row_buttons.push(button("Apply").on_press(apply_msg).height(28));
+        row_buttons = row_buttons.push(button("Apply").on_press(apply_msg).height(28).boxed());
     }
 
     if has_config {
@@ -887,7 +901,7 @@ fn apply_action_row<'a, M: Clone + 'a + 'static>(
         ));
     }
 
-    row_buttons.into()
+    row_buttons
 }
 
 /// Pending-restart tooltip, if applicable.
@@ -908,7 +922,7 @@ fn create_icon_button<'a, M: Clone + 'a>(
     size: u16,
     style_fn: impl Fn(&Theme, &button::Status) -> button::Style + 'static,
     on_press: Option<M>,
-) -> button::Button<'a, M> {
+) -> button::Button<'a, M, iced::widget::Text<'a>> {
     let mut btn = button(icon_text(icon, size).align_y(iced::Alignment::Center))
         .style(move |theme, status| style_fn(theme, &status));
 

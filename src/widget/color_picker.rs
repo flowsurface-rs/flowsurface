@@ -12,7 +12,8 @@
 use iced::Length::{self, Fill, FillPortion};
 use iced::advanced::Layout;
 use iced::advanced::renderer::{Quad, Renderer as _};
-use iced::widget::{Container, Space, column, container, row};
+use iced::widget::Widget as _;
+use iced::widget::{Space, column, container, row};
 use iced::{Color, Element, Point, Rectangle, Renderer, Theme, advanced, border, mouse, touch};
 
 use super::decorate::decorate;
@@ -24,7 +25,7 @@ const SLIDER_HEIGHT: f32 = 15.0;
 pub fn color_picker<'a, Message: 'a>(
     hsva: Hsva,
     on_hsva: impl Fn(Hsva) -> Message + Clone + 'a,
-) -> Element<'a, Message> {
+) -> impl iced::widget::Widget<Message> + 'a {
     let color = data::config::theme::from_hsva(hsva);
 
     column![
@@ -50,13 +51,14 @@ pub fn color_picker<'a, Message: 'a>(
     ]
     .height(280)
     .spacing(4)
-    .into()
 }
 
-fn bordered<'a, Message: 'a>(element: impl Into<Element<'a, Message>>) -> Container<'a, Message> {
+fn bordered<'a, Message: 'a>(
+    element: impl iced::widget::Widget<Message> + 'a,
+) -> iced::widget::Container<'a, impl iced::widget::Widget<Message> + 'a> {
     container(element)
         .padding(1)
-        .style(|theme| container::Style {
+        .style(|theme: &Theme| container::Style {
             text_color: None,
             background: None,
             border: border::rounded(2)
@@ -67,30 +69,28 @@ fn bordered<'a, Message: 'a>(element: impl Into<Element<'a, Message>>) -> Contai
         })
 }
 
-fn preview<'a, Message: 'a>(color: Color) -> Element<'a, Message> {
-    decorate(Space::new().width(Fill).height(Fill))
-        .draw(
-            move |_state: &(),
-                  _inner: &Element<'a, Message>,
-                  _tree: &iced::advanced::widget::Tree,
-                  renderer: &mut Renderer,
-                  _theme: &Theme,
-                  _style: &iced::advanced::renderer::Style,
-                  layout: Layout,
-                  _cursor: iced::advanced::mouse::Cursor,
-                  _viewport: &iced::Rectangle| {
-                renderer.fill_quad(
-                    Quad {
-                        bounds: layout.bounds(),
-                        border: iced::Border::default(),
-                        shadow: iced::Shadow::default(),
-                        snap: true,
-                    },
-                    color,
-                );
-            },
-        )
-        .into()
+fn preview<'a, Message: 'a>(color: Color) -> impl iced::widget::Widget<Message> + 'a {
+    decorate(Space::new().width(Fill).height(Fill)).draw(
+        move |_state: &(),
+              _inner: &Element<'a, Message>,
+              _tree: &iced::advanced::widget::Tree,
+              renderer: &mut Renderer,
+              _theme: &Theme,
+              _style: &iced::advanced::renderer::Style,
+              layout: Layout,
+              _cursor: iced::advanced::mouse::Cursor,
+              _viewport: &iced::Rectangle| {
+            renderer.fill_quad(
+                Quad {
+                    bounds: layout.bounds(),
+                    border: iced::Border::default(),
+                    shadow: iced::Shadow::default(),
+                    snap: true,
+                },
+                color,
+            );
+        },
+    )
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -259,7 +259,7 @@ fn grid<'a, Message: 'a>(
     hsva: Hsva,
     on_hsva: impl Fn(Hsva) -> Message + Clone + 'a,
     handle_radius: f32,
-) -> Element<'a, Message> {
+) -> impl iced::widget::Widget<Message> + 'a {
     let x = Value::new(x, Direction::Horizontal);
     let y = Value::new(y, Direction::Vertical);
 
@@ -271,6 +271,7 @@ fn grid<'a, Message: 'a>(
         Fill,
         handle_radius,
     )
+    .boxed()
 }
 
 fn slider<'a, Message: 'a>(
@@ -288,6 +289,7 @@ fn slider<'a, Message: 'a>(
         height,
         handle_radius,
     )
+    .boxed()
 }
 
 fn picker_hsva<'a, Message: 'a>(
@@ -297,7 +299,7 @@ fn picker_hsva<'a, Message: 'a>(
     width: impl Into<Length>,
     height: impl Into<Length>,
     handle_radius: f32,
-) -> Element<'a, Message> {
+) -> impl iced::widget::Widget<Message> + 'a {
     decorate(Space::new().width(width).height(height))
         .update(
             move |state: &mut Option<Rectangle>,
@@ -423,5 +425,4 @@ fn picker_hsva<'a, Message: 'a>(
                 });
             },
         )
-        .into()
 }

@@ -100,7 +100,7 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
 
                 state.interaction = AxisInteraction::Panning {
                     last_position: p,
-                    zoom_anchor: None,
+                    zoom_anchor_screen: None,
                 };
                 None
             }

@@ -7,13 +7,14 @@ use crate::chart::{
     },
 };
 use crate::connector::fetcher::FetchRange;
+use iced::widget::Widget as _;
 
 use data::chart::{PlotData, kline::KlineDataPoint};
 use data::util::format_with_commas;
 use exchange::adapter::Exchange;
 use exchange::{Kline, Timeframe, Trade, UnixMs};
 
-use iced::widget::{center, row, text};
+use iced::widget::{center, text};
 use std::{collections::BTreeMap, ops::RangeInclusive};
 
 pub struct OpenInterestIndicator {
@@ -36,12 +37,12 @@ impl OpenInterestIndicator {
         visible_range: RangeInclusive<u64>,
     ) -> iced::Element<'a, Message> {
         if let Some(message) = self.unavailable_message(main_chart, "Open Interest") {
-            return center(text(message)).into();
+            return center(text(message)).boxed();
         }
 
         let (earliest, latest) = visible_range.clone().into_inner();
         if latest < earliest {
-            return row![].into();
+            return iced::advanced::widget::Void.boxed();
         }
 
         let tooltip = |value: &f64, next: Option<&f64>| {
