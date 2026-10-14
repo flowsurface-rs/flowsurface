@@ -1,15 +1,12 @@
 use super::YUnit;
 use super::indicators::{IndicatorAttachmentMode, IndicatorPanelRecipe, TableColumnValue};
 use super::{IndicatorId, IndicatorInstanceId, IndicatorInstanceStore, IndicatorOutputRef};
-use exchange::TickerInfo;
 use exchange::unit::{Power10, Price, PriceStep, Qty};
+use exchange::{Ticker, TickerInfo};
 use indicator_engine::PaneTarget;
 use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
-use std::collections::BTreeSet;
-
-const COMPARISON_SOURCE_ID: DataSourceId = DataSourceId::Synthetic("Comparison");
 
 pub const DEFAULT_MIN_PANEL_RATIO: f32 = 0.08;
 const DEFAULT_AUXILIARY_PANEL_RATIO: f32 = 0.15;
@@ -181,11 +178,10 @@ pub enum AxisBinding {
     Secondary,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DataSourceId {
     Primary,
-    Symbol(&'static str),
-    Synthetic(&'static str),
+    Comparison(Ticker),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -907,7 +903,7 @@ impl PanelSpec {
         self.layers
             .iter()
             .filter_map(LayerSpec::source_id)
-            .collect::<BTreeSet<DataSourceId>>()
+            .collect::<FxHashSet<DataSourceId>>()
             .len()
     }
 
@@ -981,14 +977,13 @@ pub struct ChartComposition {
 impl ChartComposition {
     pub fn comparison_layer(&self, ticker: TickerInfo) -> Option<&LayerSpec> {
         let panel = self.panel(self.primary_panel_id()?)?;
-        let name = ticker.ticker.symbol_and_exchange_string();
         panel.layers.iter().find(|layer| {
             matches!(
                 layer.source,
                 LayerSource::RawKline {
-                    source: DataSourceId::Synthetic("Comparison")
-                }
-            ) && layer.name == name
+                    source: DataSourceId::Comparison(source)
+                } if source == ticker.ticker
+            )
         })
     }
 
@@ -2318,20 +2313,16 @@ impl ChartComposition {
             .layers
             .iter()
             .filter_map(|layer| {
-                let is_comparison = matches!(
-                    layer.source,
-                    LayerSource::RawKline {
-                        source: DataSourceId::Synthetic("Comparison")
-                    }
-                );
-                if !is_comparison {
+                let LayerSource::RawKline {
+                    source: DataSourceId::Comparison(source),
+                } = layer.source
+                else {
                     return None;
-                }
-
+                };
                 let is_selected_comparison = base_ticker.is_some_and(|base| {
-                    selected_tickers.iter().any(|ticker| {
-                        *ticker != base && ticker.ticker.symbol_and_exchange_string() == layer.name
-                    })
+                    selected_tickers
+                        .iter()
+                        .any(|ticker| *ticker != base && ticker.ticker == source)
                 });
                 (!is_selected_comparison).then_some(layer.id)
             })
@@ -2353,8 +2344,11 @@ impl ChartComposition {
                 continue;
             }
             let name = ticker.ticker.symbol_and_exchange_string();
-            let _ =
-                self.add_comparison_source_to_panel(primary_panel_id, COMPARISON_SOURCE_ID, name);
+            let _ = self.add_comparison_source_to_panel(
+                primary_panel_id,
+                DataSourceId::Comparison(ticker.ticker),
+                name,
+            );
         }
     }
 

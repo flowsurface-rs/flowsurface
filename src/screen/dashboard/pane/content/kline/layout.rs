@@ -46,33 +46,20 @@ impl IndicatorChange {
         self,
         indicators: &mut IndicatorState,
         data: &KlineData,
-        dirty: &mut bool,
-        policy: &mut UpdatePolicy,
-    ) -> bool {
+    ) -> (Option<UpdatePolicy>, bool) {
         match self {
-            IndicatorChange::Unchanged => false,
-            IndicatorChange::Visual => {
-                *policy = UpdatePolicy::Redraw;
-                *dirty = true;
-                false
-            }
+            IndicatorChange::Unchanged => (None, false),
+            IndicatorChange::Visual => (Some(UpdatePolicy::Redraw), false),
             IndicatorChange::Reconfigure { id, request_fetch } => {
-                if *policy != UpdatePolicy::ImmediateReconfigure {
-                    *policy = UpdatePolicy::DeferredReconfigure;
-                }
                 indicators.mark_with_dependents(
                     data,
                     &[id],
                     IndicatorRebuildReason::IndicatorSettingsChanged,
                 );
-
-                *dirty = true;
-                request_fetch
+                (Some(UpdatePolicy::DeferredReconfigure), request_fetch)
             }
             IndicatorChange::Reconcile { request_fetch } => {
-                *policy = UpdatePolicy::ImmediateReconfigure;
-                *dirty = true;
-                request_fetch
+                (Some(UpdatePolicy::ImmediateReconfigure), request_fetch)
             }
         }
     }
@@ -360,10 +347,7 @@ impl IndicatorState {
             }
             for requirement in declared_input_requirements(&instance.kind) {
                 match requirement.source {
-                    IndicatorInputSource::Klines => requirements.klines = true,
-                    IndicatorInputSource::DirectionalVolume => {
-                        requirements.directional_volume = true;
-                    }
+                    IndicatorInputSource::Klines | IndicatorInputSource::DirectionalVolume => {}
                     IndicatorInputSource::Trades if requirement.is_required() => {
                         requirements.trades = true;
                     }

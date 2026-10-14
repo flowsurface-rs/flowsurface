@@ -22,7 +22,7 @@ use composition::{
     LayerSource as DomainLayerSource, LayerSpec, PanelSpec,
     PanelValuePrecision as DomainPanelValuePrecision,
 };
-pub use fetch_plan::{FetchBatch, FetchPlanInput, FetchRange, FetchStage, visible_window};
+pub use fetch_plan::{FetchBatch, FetchPlanInput, FetchRange, visible_window};
 pub use indicators::{
     BaseSeriesSource, CatalogInstallError, IndicatorAuthor, IndicatorCatalog, IndicatorColorSpec,
     IndicatorConfigError, IndicatorDefinition, IndicatorDefinitionError, IndicatorFillGeometry,
@@ -1230,50 +1230,28 @@ impl std::fmt::Display for LegendVisibility {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    pub primary_scale_inverted: bool,
-    pub trade_data_enabled: bool,
-    #[serde(default)]
-    pub legend_visibility: LegendVisibility,
-    pub candlestick: CandlestickConfig,
-    pub footprint: FootprintConfig,
-    pub panels: Vec<PanelConfig>,
-    pub splits: Vec<f32>,
+    pub settings: SettingsSnapshot,
     pub drawings: Vec<DrawingConfig>,
     pub active_drawing_tool: DrawingTool,
     pub floating_toolbar_position: FloatingToolbarPosition,
     pub drawing_sidebar_visible: bool,
-    pub studies: Vec<KlineStudy>,
-    pub study_configs: Vec<KlineStudy>,
-    #[serde(default)]
-    pub tpo_profile_edits: TpoBoundaryEdits,
-    pub indicator_instances: Vec<IndicatorInstance>,
     pub series: Vec<SeriesConfig>,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            primary_scale_inverted: false,
-            trade_data_enabled: false,
-            legend_visibility: LegendVisibility::default(),
-            candlestick: CandlestickConfig::default(),
-            footprint: FootprintConfig::default(),
-            panels: Vec::new(),
-            splits: Vec::new(),
+            settings: SettingsSnapshot::default(),
             drawings: Vec::new(),
             active_drawing_tool: DrawingTool::Cursor,
             floating_toolbar_position: FloatingToolbarPosition::default(),
             drawing_sidebar_visible: true,
-            studies: Vec::new(),
-            study_configs: Vec::new(),
-            tpo_profile_edits: TpoBoundaryEdits::default(),
-            indicator_instances: Vec::new(),
             series: Vec::new(),
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SettingsSnapshot {
     pub primary_scale_inverted: bool,
@@ -1284,7 +1262,7 @@ pub struct SettingsSnapshot {
     pub footprint: FootprintConfig,
     pub panels: Vec<PanelConfig>,
     pub splits: Vec<f32>,
-    pub studies: Vec<KlineStudy>,
+    pub active_studies: Vec<KlineStudyId>,
     pub study_configs: Vec<KlineStudy>,
     #[serde(default)]
     pub tpo_profile_edits: TpoBoundaryEdits,
@@ -1294,34 +1272,6 @@ pub struct SettingsSnapshot {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct ChartSettings {
     pub drawing: drawing::DrawingSettings,
-}
-
-impl Default for SettingsSnapshot {
-    fn default() -> Self {
-        Config::default().settings_snapshot()
-    }
-}
-
-impl Config {
-    pub fn settings_snapshot(&self) -> SettingsSnapshot {
-        SettingsSnapshot {
-            primary_scale_inverted: self.primary_scale_inverted,
-            trade_data_enabled: self.trade_data_enabled,
-            legend_visibility: self.legend_visibility,
-            candlestick: self.candlestick,
-            footprint: self.footprint,
-            panels: self.panels.clone(),
-            splits: self.splits.clone(),
-            studies: self.studies.clone(),
-            study_configs: self.study_configs.clone(),
-            tpo_profile_edits: self.tpo_profile_edits.clone(),
-            indicator_instances: self.indicator_instances.clone(),
-        }
-    }
-
-    pub fn indicator_instance_store(&self) -> IndicatorInstanceStore {
-        indicator_instance_store(&self.indicator_instances)
-    }
 }
 
 impl SettingsSnapshot {
@@ -1422,7 +1372,7 @@ pub type ValueLabelPolicy = composition::PanelValueLabelPolicy;
 pub enum LayerSource {
     #[default]
     Primary,
-    Comparison,
+    Comparison(exchange::Ticker),
     IndicatorOutput(indicators::IndicatorOutputRef),
 }
 
@@ -1526,8 +1476,8 @@ fn layer_spec_from_config(layer: &LayerConfig) -> LayerSpec {
 fn layer_source_from_domain(source: &DomainLayerSource) -> LayerSource {
     match source {
         DomainLayerSource::RawKline {
-            source: composition::DataSourceId::Synthetic("Comparison"),
-        } => LayerSource::Comparison,
+            source: composition::DataSourceId::Comparison(ticker),
+        } => LayerSource::Comparison(*ticker),
         DomainLayerSource::RawKline { .. } => LayerSource::Primary,
         DomainLayerSource::IndicatorOutput { output, .. } => {
             LayerSource::IndicatorOutput(output.clone())
@@ -1540,8 +1490,8 @@ fn layer_source_into_domain(source: LayerSource) -> DomainLayerSource {
         LayerSource::Primary => DomainLayerSource::RawKline {
             source: composition::DataSourceId::Primary,
         },
-        LayerSource::Comparison => DomainLayerSource::RawKline {
-            source: composition::DataSourceId::Synthetic("Comparison"),
+        LayerSource::Comparison(ticker) => DomainLayerSource::RawKline {
+            source: composition::DataSourceId::Comparison(ticker),
         },
         LayerSource::IndicatorOutput(output) => DomainLayerSource::IndicatorOutput {
             source: composition::DataSourceId::Primary,

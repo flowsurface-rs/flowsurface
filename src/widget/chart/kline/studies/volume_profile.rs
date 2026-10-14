@@ -115,14 +115,14 @@ impl VolumeProfileState {
 }
 
 pub(crate) struct VolumeProfileObject<'a> {
-    studies: &'a [KlineStudy],
+    studies: Vec<KlineStudy>,
     profile_bars: ProfileBarSource<'a>,
     recurring_profiles: &'a BTreeMap<Timeframe, RecurringKlineProfileIndex>,
 }
 
 impl<'a> VolumeProfileObject<'a> {
     pub(crate) fn new(
-        studies: &'a [KlineStudy],
+        studies: Vec<KlineStudy>,
         profile_bars: ProfileBarSource<'a>,
         recurring_profiles: &'a BTreeMap<Timeframe, RecurringKlineProfileIndex>,
     ) -> Self {

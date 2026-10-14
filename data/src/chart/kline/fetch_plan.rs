@@ -28,18 +28,8 @@ impl FetchRange {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-/// Classifies a fetch for diagnostics and planning; it does not impose order.
-pub enum FetchStage {
-    PrimaryPlot,
-    IndicatorHistory,
-    OpenInterestInputs,
-    Trades,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FetchBatch {
-    pub stage: FetchStage,
     pub range: FetchRange,
     pub tickers: Vec<TickerInfo>,
 }
@@ -97,7 +87,6 @@ impl FetchPlanInput<'_> {
             let end = initial_end;
             let start = end.saturating_sub(comparison_span);
             batches.push(FetchBatch {
-                stage: FetchStage::PrimaryPlot,
                 range: FetchRange::Kline(start, end),
                 tickers: vec![self.base_ticker],
             });
@@ -106,7 +95,6 @@ impl FetchPlanInput<'_> {
         if !empty_comparisons.is_empty() {
             let end = initial_end;
             batches.push(FetchBatch {
-                stage: FetchStage::PrimaryPlot,
                 range: FetchRange::Kline(end.saturating_sub(comparison_span), end),
                 tickers: empty_comparisons,
             });
@@ -133,35 +121,31 @@ impl FetchPlanInput<'_> {
 
             let mut base_boundary_fetch_pending = false;
             for series in self.series {
-                let (target_min, fetch_span, stage) = if series.ticker_info == self.base_ticker {
-                    if window_min
-                        < series
-                            .first_point()
-                            .map(|point| point.kline.time)
-                            .unwrap_or(window_min)
-                    {
-                        (window_min, comparison_span, FetchStage::PrimaryPlot)
+                let (target_min, fetch_span, fetching_base_history) =
+                    if series.ticker_info == self.base_ticker {
+                        if window_min
+                            < series
+                                .first_point()
+                                .map(|point| point.kline.time)
+                                .unwrap_or(window_min)
+                        {
+                            (window_min, comparison_span, false)
+                        } else {
+                            (warmup_start, base_span, true)
+                        }
                     } else {
-                        (warmup_start, base_span, FetchStage::IndicatorHistory)
-                    }
-                } else {
-                    (window_min, comparison_span, FetchStage::PrimaryPlot)
-                };
+                        (window_min, comparison_span, false)
+                    };
 
                 if let Some(series_min) = series.first_point().map(|point| point.kline.time)
                     && target_min < series_min
                 {
                     let end = series_min.floor_to(timeframe);
                     batches.push(FetchBatch {
-                        stage,
                         range: FetchRange::Kline(end.saturating_sub(fetch_span), end),
                         tickers: vec![series.ticker_info],
                     });
-                    if stage == FetchStage::IndicatorHistory
-                        && series.ticker_info == self.base_ticker
-                    {
-                        base_boundary_fetch_pending = true;
-                    }
+                    base_boundary_fetch_pending |= fetching_base_history;
                 }
             }
 
@@ -183,15 +167,7 @@ impl FetchPlanInput<'_> {
                 if let Some((missing_earliest, missing_latest)) =
                     base_series.missing_kline_range(check_earliest, check_latest)
                 {
-                    let stage = if missing_earliest < window_max.saturating_add(dt)
-                        && missing_latest > window_min
-                    {
-                        FetchStage::PrimaryPlot
-                    } else {
-                        FetchStage::IndicatorHistory
-                    };
                     batches.push(FetchBatch {
-                        stage,
                         range: FetchRange::Kline(
                             missing_earliest.saturating_sub(dt),
                             missing_latest.saturating_add(dt),
@@ -247,7 +223,6 @@ impl FetchPlanInput<'_> {
                     Some((oi_earliest, oi_latest)) => {
                         if visible_earliest < oi_earliest {
                             batches.push(FetchBatch {
-                                stage: FetchStage::OpenInterestInputs,
                                 range: FetchRange::open_interest(prefetch_earliest, oi_earliest),
                                 tickers: vec![self.base_ticker],
                             });
@@ -257,7 +232,6 @@ impl FetchPlanInput<'_> {
                             let start = oi_latest.max(prefetch_earliest);
                             if start < kline_latest {
                                 batches.push(FetchBatch {
-                                    stage: FetchStage::OpenInterestInputs,
                                     range: FetchRange::open_interest(start, kline_latest),
                                     tickers: vec![self.base_ticker],
                                 });
@@ -267,7 +241,6 @@ impl FetchPlanInput<'_> {
                     None => {
                         if prefetch_earliest < kline_latest {
                             batches.push(FetchBatch {
-                                stage: FetchStage::OpenInterestInputs,
                                 range: FetchRange::open_interest(prefetch_earliest, kline_latest),
                                 tickers: vec![self.base_ticker],
                             });

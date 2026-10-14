@@ -42,15 +42,19 @@ pub(super) struct ProfilePlan {
 }
 
 impl ProfilePlan {
-    pub(super) fn new(basis: Basis, active_studies: &[KlineStudy], data: &KlineData) -> Self {
+    pub(super) fn new(
+        basis: Basis,
+        active_studies: impl Iterator<Item = KlineStudy> + Clone,
+        data: &KlineData,
+    ) -> Self {
         let time_basis = basis.is_time();
 
         let mut tpo_study = None;
         let mut kline_volume_profiles = Vec::new();
         let mut has_kline_source = false;
-        for study in active_studies {
+        for study in active_studies.clone() {
             if time_basis && tpo_study.is_none() && study.is_tpo_profile() {
-                tpo_study = Some(*study);
+                tpo_study = Some(study);
             }
             if time_basis && study.source() == StudyDataSource::Kline {
                 has_kline_source = true;

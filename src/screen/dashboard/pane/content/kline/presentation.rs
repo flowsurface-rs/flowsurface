@@ -8,10 +8,9 @@ use data::chart::kline::composition::resolve_mark_for_data_kind;
 use data::chart::kline::composition::{MarkKind, PanelSpec};
 use data::chart::kline::indicators::{AvailabilityContext, IndicatorAvailability};
 use data::chart::kline::{
-    self as persisted, IndicatorId, IndicatorInputCoverage, IndicatorInputCoverageState,
-    IndicatorInputSource, IndicatorInstanceId, IndicatorUnsupportedReason, KlineData,
+    self as persisted, IndicatorId, IndicatorInputSource, IndicatorInstanceId,
+    IndicatorUnsupportedReason, KlineData,
 };
-use rustc_hash::FxHashSet;
 use std::sync::Arc;
 
 #[derive(PartialEq)]
@@ -76,7 +75,6 @@ impl<'a> IndicatorPresentationResolver<'a> {
 
     fn states(&self) -> Vec<IndicatorPresentationState> {
         let input_coverage = &self.indicators.input_coverage;
-        let unavailable = self.unavailable_indicator_panels(input_coverage);
         self.indicators
             .selected_indicators()
             .into_iter()
@@ -92,12 +90,17 @@ impl<'a> IndicatorPresentationResolver<'a> {
                     .and_then(|spec| spec.required_input);
                 let fallback_mark = selected_mark.and_then(|mark| kind.fallback_mark_for(mark));
                 let host_diagnostic = self.data.indicator_host().diagnostic_for(value_id);
-                let base_message = host_diagnostic.as_deref().or_else(|| {
-                    unavailable
-                        .iter()
-                        .find(|(entry_id, _)| *entry_id == value_id)
-                        .map(|(_, message)| message.as_str())
+                let unavailable_message = self.panel_unavailable_reason(value_id).map(|reason| {
+                    unavailable_indicator_message(
+                        kind.clone(),
+                        reason,
+                        self.basis,
+                        self.data.base_ticker(),
+                    )
                 });
+                let base_message = host_diagnostic
+                    .as_deref()
+                    .or(unavailable_message.as_deref());
 
                 let (effective_mark, status) =
                     if self.indicators.hides_rebuild_output(value_id) && base_message.is_none() {
@@ -285,105 +288,24 @@ impl<'a> IndicatorPresentationResolver<'a> {
         }
     }
 
-    fn unavailable_indicators(&self) -> Vec<(IndicatorInstanceId, IndicatorUnsupportedReason)> {
-        self.indicators
-            .selected_indicators()
-            .into_iter()
-            .filter_map(|id| {
-                let IndicatorAvailability::Unsupported(reason) = self.indicator_availability(id)
-                else {
-                    return None;
-                };
-
-                Some((id, reason))
-            })
-            .collect()
-    }
-
-    fn trade_data_unavailable_indicators(
+    fn panel_unavailable_reason(
         &self,
-    ) -> Vec<(IndicatorInstanceId, IndicatorUnsupportedReason)> {
-        if self.trade_data_enabled {
-            return Vec::new();
+        id: IndicatorInstanceId,
+    ) -> Option<IndicatorUnsupportedReason> {
+        if let IndicatorAvailability::Unsupported(reason) = self.indicator_availability(id) {
+            return Some(reason);
+        }
+        let instance = self.indicators.indicator(id)?;
+        if !self.trade_data_enabled
+            && data::chart::kline::indicators::requires_trade_data(&instance.kind)
+        {
+            return Some(IndicatorUnsupportedReason::MissingRequiredInput {
+                source: IndicatorInputSource::Trades,
+            });
         }
         self.indicators
-            .selected_indicators()
-            .into_iter()
-            .filter(|id| {
-                self.indicators.instances.get(*id).is_some_and(|instance| {
-                    instance.kind.is_registered()
-                        && data::chart::kline::indicators::requires_trade_data(&instance.kind)
-                })
-            })
-            .map(|id| {
-                (
-                    id,
-                    IndicatorUnsupportedReason::MissingRequiredInput {
-                        source: IndicatorInputSource::Trades,
-                    },
-                )
-            })
-            .collect()
-    }
-
-    fn required_input_coverage_unavailable_indicators(
-        &self,
-        input_coverage: &IndicatorInputCoverage,
-    ) -> Vec<(IndicatorInstanceId, IndicatorUnsupportedReason)> {
-        self.indicators
-            .selected_indicators()
-            .into_iter()
-            .filter_map(|id| {
-                let instance = self.indicators.instances.get(id)?;
-                if !instance.kind.is_registered() {
-                    return None;
-                }
-                let source =
-                    data::chart::kline::indicators::declared_input_requirements(&instance.kind)
-                        .into_iter()
-                        .find(|requirement| {
-                            requirement.is_required()
-                                && matches!(
-                                    input_coverage.state(requirement.source),
-                                    IndicatorInputCoverageState::Missing
-                                )
-                        })
-                        .map(|requirement| requirement.source)?;
-                let reason = IndicatorUnsupportedReason::MissingRequiredInput { source };
-                Some((id, reason))
-            })
-            .collect()
-    }
-
-    fn unavailable_indicator_panels(
-        &self,
-        input_coverage: &IndicatorInputCoverage,
-    ) -> Vec<(IndicatorInstanceId, String)> {
-        let trade_data_disabled = self.trade_data_unavailable_indicators();
-        let required_input_coverage_unavailable =
-            self.required_input_coverage_unavailable_indicators(input_coverage);
-
-        let mut seen = FxHashSet::default();
-        self.unavailable_indicators()
-            .into_iter()
-            .chain(trade_data_disabled)
-            .chain(required_input_coverage_unavailable)
-            .filter_map(|(id, reason)| {
-                if !seen.insert(id) {
-                    return None;
-                }
-                let kind = self.indicators.indicator(id)?.kind.clone();
-                Some((
-                    id,
-                    unavailable_indicator_message(
-                        kind,
-                        reason,
-                        self.basis,
-                        self.data.base_ticker(),
-                    ),
-                ))
-            })
-            .collect()
+            .missing_required_input(&instance.kind, self.basis, self.data.base_ticker())
+            .map(|source| IndicatorUnsupportedReason::MissingRequiredInput { source })
     }
 }
 

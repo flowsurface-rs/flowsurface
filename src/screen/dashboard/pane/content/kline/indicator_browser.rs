@@ -202,10 +202,7 @@ pub(crate) fn view<'a>(chart: &'a KlineChart, picker: &'a State) -> Element<'a, 
                     .studies
                     .availability(study, chart.basis, chart.trade_data_enabled());
 
-            let active = chart
-                .studies()
-                .iter()
-                .any(|active| active.is_same_type(study));
+            let active = chart.studies().any(|active| active.is_same_type(study));
 
             AvailableStudy {
                 study,

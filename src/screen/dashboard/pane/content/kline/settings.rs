@@ -301,11 +301,6 @@ impl ChartOptions {
     }
 }
 
-#[derive(Default)]
-pub(super) struct InspectorState {
-    settings: State,
-}
-
 pub(super) enum InspectorEffect {
     None,
     Command(ChartCommand),
@@ -315,40 +310,36 @@ pub(super) enum InspectorEffect {
 
 impl InspectorState {
     pub(super) fn has_contextual_target(&self) -> bool {
-        !matches!(self.settings.target, SettingsTarget::Main)
+        !matches!(self.target, SettingsTarget::Main)
     }
 
     pub(super) fn close_contextual_settings(&mut self) {
-        self.settings.set_target(SettingsTarget::Main);
-    }
-
-    pub(super) fn reconcile_missing_target(&mut self, context: &SettingsContext<'_>) {
-        self.settings.reconcile_missing_target(context);
+        self.set_target(SettingsTarget::Main);
     }
 
     pub(super) fn is_confirming_reset(&self) -> bool {
-        self.settings.reset_confirmation.is_some()
+        self.reset_confirmation.is_some()
     }
 
     pub(super) fn dismiss_reset_confirmation(&mut self) -> bool {
-        if self.settings.reset_confirmation.is_none() {
+        if self.reset_confirmation.is_none() {
             return false;
         }
 
-        self.settings.cancel_reset_confirmation();
+        self.cancel_reset_confirmation();
         true
     }
 
     pub(super) fn open_candlestick(&mut self) {
-        self.settings.set_target(SettingsTarget::Candlestick);
+        self.set_target(SettingsTarget::Candlestick);
     }
 
     pub(super) fn open_series(&mut self, ticker: TickerInfo) {
-        self.settings.set_target(SettingsTarget::Series(ticker));
+        self.set_target(SettingsTarget::Series(ticker));
     }
 
     pub(super) fn open_footprint(&mut self) {
-        self.settings.set_target(SettingsTarget::Footprint);
+        self.set_target(SettingsTarget::Footprint);
     }
 
     pub(super) fn open_indicator(
@@ -357,51 +348,14 @@ impl InspectorState {
         indicator: IndicatorId,
     ) {
         let mut modal: IndicatorSettingsState = IndicatorSettingsState::new(instance_id, indicator);
-        modal.select_tab(self.settings.target.selected_tab());
-        self.settings.set_target(SettingsTarget::Indicator(modal));
+        modal.select_tab(self.target.selected_tab());
+        self.set_target(SettingsTarget::Indicator(modal));
     }
 
     pub(super) fn open_study(&mut self, study_id: KlineStudyId) {
         let mut modal = StudySettingsState::new(study_id);
-        modal.select_tab(self.settings.target.selected_tab());
-        self.settings.set_target(SettingsTarget::Study(modal));
-    }
-
-    pub(super) fn settings(&self) -> &State {
-        &self.settings
-    }
-
-    pub(super) fn update(
-        &mut self,
-        message: Message,
-        context: &SettingsContext<'_>,
-    ) -> InspectorEffect {
-        if let Message::SeriesEditor(message) = message {
-            let ticker = match self.settings.target {
-                SettingsTarget::Candlestick => context.data.base_ticker(),
-                SettingsTarget::Series(ticker) => ticker,
-                _ => return InspectorEffect::None,
-            };
-            let Some(entry) = context.series_style_entry(ticker) else {
-                return InspectorEffect::None;
-            };
-            return InspectorEffect::Command(match entry.change(message) {
-                series_editor::Change::ColorChanged(ticker_info, color) => {
-                    ChartCommand::SetSeriesColor { ticker_info, color }
-                }
-                series_editor::Change::LineWidthChanged(ticker_info, width) => {
-                    ChartCommand::SetSeriesLineWidth { ticker_info, width }
-                }
-                series_editor::Change::StrokeStyleChanged(ticker_info, stroke_style) => {
-                    ChartCommand::SetSeriesStrokeStyle {
-                        ticker_info,
-                        stroke_style,
-                    }
-                }
-            });
-        }
-
-        self.settings.update(context, message)
+        modal.select_tab(self.target.selected_tab());
+        self.set_target(SettingsTarget::Study(modal));
     }
 }
 
@@ -1847,12 +1801,12 @@ impl ResetScope {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct State {
+pub(super) struct InspectorState {
     target: SettingsTarget,
     reset_confirmation: Option<ResetScope>,
 }
 
-impl Default for State {
+impl Default for InspectorState {
     fn default() -> Self {
         Self {
             target: SettingsTarget::Main,
@@ -1861,7 +1815,7 @@ impl Default for State {
     }
 }
 
-impl State {
+impl InspectorState {
     pub(super) fn contextual_title(&self, context: SettingsContext<'_>) -> Option<String> {
         self.target.contextual_title(context)
     }
@@ -1888,7 +1842,7 @@ impl State {
         self.cancel_reset_confirmation();
     }
 
-    fn reconcile_missing_target(&mut self, context: &SettingsContext<'_>) {
+    pub(super) fn reconcile_missing_target(&mut self, context: &SettingsContext<'_>) {
         let missing = match &self.target {
             SettingsTarget::Indicator(modal) => context
                 .indicators
@@ -1990,7 +1944,36 @@ impl State {
         ))
     }
 
-    fn update(&mut self, context: &SettingsContext<'_>, message: Message) -> InspectorEffect {
+    pub(super) fn update(
+        &mut self,
+        message: Message,
+        context: &SettingsContext<'_>,
+    ) -> InspectorEffect {
+        if let Message::SeriesEditor(message) = message {
+            let ticker = match self.target {
+                SettingsTarget::Candlestick => context.data.base_ticker(),
+                SettingsTarget::Series(ticker) => ticker,
+                _ => return InspectorEffect::None,
+            };
+            let Some(entry) = context.series_style_entry(ticker) else {
+                return InspectorEffect::None;
+            };
+            return InspectorEffect::Command(match entry.change(message) {
+                series_editor::Change::ColorChanged(ticker_info, color) => {
+                    ChartCommand::SetSeriesColor { ticker_info, color }
+                }
+                series_editor::Change::LineWidthChanged(ticker_info, width) => {
+                    ChartCommand::SetSeriesLineWidth { ticker_info, width }
+                }
+                series_editor::Change::StrokeStyleChanged(ticker_info, stroke_style) => {
+                    ChartCommand::SetSeriesStrokeStyle {
+                        ticker_info,
+                        stroke_style,
+                    }
+                }
+            });
+        }
+
         if !matches!(
             &message,
             Message::ResetRequested(_) | Message::ResetConfirmed | Message::ResetCancelled
@@ -2006,7 +1989,7 @@ impl State {
                 let Some(message) = self.confirmed_reset_message(context) else {
                     return InspectorEffect::None;
                 };
-                return self.update(context, message);
+                return self.update(message, context);
             }
             Message::ResetCancelled => self.cancel_reset_confirmation(),
             Message::Indicator {

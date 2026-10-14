@@ -712,12 +712,12 @@ impl KlineData {
 
     pub fn recurring_profile_cache_requirements(
         &self,
-        studies: &[KlineStudy],
+        studies: impl IntoIterator<Item = KlineStudy>,
         basis: Basis,
     ) -> Vec<(Timeframe, PriceStep)> {
         let tick_size = self.tick_size();
         let mut recurring_intervals = studies
-            .iter()
+            .into_iter()
             .filter(|study| study.source() == StudyDataSource::Trades)
             .filter_map(|study| {
                 study

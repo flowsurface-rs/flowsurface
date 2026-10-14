@@ -9,8 +9,7 @@ use crate::widget::chart::kline::{KlineWidget, StudiesLegend, StudyLegendRow};
 use crate::widget::study_configurator as study;
 use data::chart::Basis;
 use data::chart::kline::{
-    FetchBatch, FetchRange, FetchStage, KlineData, SettingsSnapshot, TpoBoundaryEdits,
-    TpoProfileStatus,
+    FetchBatch, FetchRange, KlineData, SettingsSnapshot, TpoBoundaryEdits, TpoProfileStatus,
 };
 use data::chart::kline::{KlineStudy, KlineStudyId, SourceConstraint, StudyDataSource};
 use exchange::adapter::StreamKind;
@@ -35,7 +34,7 @@ pub(super) enum StudyChange {
 
 #[derive(Clone)]
 pub(super) struct StudySnapshot {
-    pub(super) active: Vec<KlineStudy>,
+    pub(super) active: Vec<KlineStudyId>,
     pub(super) configs: Vec<KlineStudy>,
     pub(super) edits: TpoBoundaryEdits,
 }
@@ -50,7 +49,7 @@ pub(super) enum StudyAvailability {
 
 pub(super) struct StudyState {
     profiles: ProfileState,
-    active: Vec<KlineStudy>,
+    active: Vec<KlineStudyId>,
     configs: Vec<KlineStudy>,
     legend_expanded: bool,
 }
@@ -69,7 +68,6 @@ impl Default for StudyState {
 impl StudyState {
     fn active_big_trades_threshold(&self) -> Option<u64> {
         self.active()
-            .iter()
             .filter(|study| study.visible())
             .find_map(|study| study.big_trades())
             .map(|config| config.threshold)
@@ -205,7 +203,6 @@ impl StudyState {
                             );
                             for (from, to) in missing {
                                 batches.push(FetchBatch {
-                                    stage: FetchStage::PrimaryPlot,
                                     range: FetchRange::Kline(from, to.saturating_sub(1)),
                                     tickers: vec![base_ticker],
                                 });
@@ -296,7 +293,7 @@ impl StudyState {
     ) -> KlineWidget<'a> {
         let plan = self.profile_plan(basis, data);
         let active_studies = self.active();
-        let tpo_study = active_studies.iter().find(|study| study.is_tpo_profile());
+        let tpo_study = active_studies.clone().find(|study| study.is_tpo_profile());
         let tpo_colors = tpo_study
             .filter(|study| study.visible())
             .and_then(|study| study.tpo_colors());
@@ -330,11 +327,11 @@ impl StudyState {
             chart
         };
         let chart = if active_studies
-            .iter()
+            .clone()
             .any(|study| study.volume_profile_schedule().is_some())
         {
             chart.with_study_object(StudyObject::VolumeProfiles(VolumeProfileObject::new(
-                active_studies,
+                active_studies.clone().collect(),
                 profile_bars,
                 self.profiles.recurring_profiles(),
             )))
@@ -342,7 +339,7 @@ impl StudyState {
             chart
         };
         let chart = if let Some(config) = active_studies
-            .iter()
+            .clone()
             .filter(|study| study.visible())
             .find_map(|study| study.big_trades())
         {
@@ -357,7 +354,6 @@ impl StudyState {
         let study_legend = StudiesLegend {
             expanded: self.legend_expanded(),
             rows: active_studies
-                .iter()
                 .map(|study| StudyLegendRow {
                     id: study.id(),
                     label: study.to_string(),
@@ -459,8 +455,10 @@ impl StudyState {
         streams
     }
 
-    pub(super) fn active(&self) -> &[KlineStudy] {
-        &self.active
+    pub(super) fn active(&self) -> impl Iterator<Item = KlineStudy> + Clone + '_ {
+        self.active
+            .iter()
+            .filter_map(|id| self.configs.iter().find(|study| study.id() == *id).copied())
     }
 
     pub(super) fn snapshot(&self) -> StudySnapshot {
@@ -476,7 +474,7 @@ impl StudyState {
     }
 
     pub(super) fn study(&self, id: KlineStudyId) -> Option<KlineStudy> {
-        self.active.iter().copied().find(|study| study.id() == id)
+        self.active().find(|study| study.id() == id)
     }
 
     pub(super) fn availability(
@@ -491,8 +489,7 @@ impl StudyState {
 
         if let SourceConstraint::Exclusive(source) = study.source_constraint()
             && let Some(conflicting) =
-                self.active
-                    .iter()
+                self.active()
                     .find_map(|active| match active.source_constraint() {
                         SourceConstraint::Exclusive(other) if other != source => Some(other),
                         SourceConstraint::Exclusive(_) | SourceConstraint::Independent => None,
@@ -509,7 +506,7 @@ impl StudyState {
     }
 
     pub(super) fn restore_settings(&mut self, snapshot: &SettingsSnapshot, basis: Basis) {
-        self.active = snapshot.studies.clone();
+        self.active = snapshot.active_studies.clone();
         self.configs = snapshot.study_configs.clone();
         self.profiles
             .restore_edits(snapshot.tpo_profile_edits.clone());
@@ -527,13 +524,14 @@ impl StudyState {
     }
 
     pub(super) fn requires_trade_data(&self) -> bool {
-        self.active.iter().any(|study| study.requires_trade_data())
+        self.active().any(|study| study.requires_trade_data())
     }
 
     fn normalize_for_basis(&mut self, basis: Basis) {
-        self.active = Self::normalized_active(self.active.iter().copied(), basis);
+        let active = Self::normalized_active(self.active(), basis);
         self.configs = Self::normalized_for_basis(self.configs.iter().copied(), basis);
-        self.remember_configs(&self.active.clone());
+        self.remember_configs(&active);
+        self.active = active.iter().map(|study| study.id()).collect();
     }
 
     pub(super) fn apply(
@@ -545,7 +543,7 @@ impl StudyState {
         match command {
             StudyCommand::Set(studies) => self.apply_set(studies, basis),
             StudyCommand::Toggle(study) => {
-                let is_active = self.active.iter().any(|active| active.is_same_type(study));
+                let is_active = self.active.contains(&study.id());
                 let Some(studies) =
                     self.studies_with_active(study, !is_active, basis, trade_data_enabled)
                 else {
@@ -554,17 +552,17 @@ impl StudyState {
                 self.apply_set(studies, basis)
             }
             StudyCommand::ToggleVisibility(id) => {
-                let Some(index) = self.active.iter().position(|study| study.id() == id) else {
+                let Some(index) = self.active.iter().position(|active| *active == id) else {
                     return StudyChange::Unchanged;
                 };
-                let mut studies = self.active.clone();
+                let mut studies = self.active().collect::<Vec<_>>();
                 let study = studies[index];
                 studies[index] = study.with_visibility(!study.visible());
                 self.apply_set(studies, basis)
             }
             StudyCommand::ToggleAllVisibility => {
-                let should_show = !self.active.iter().all(|study| study.visible());
-                let mut studies = self.active.clone();
+                let should_show = !self.active().all(|study| study.visible());
+                let mut studies = self.active().collect::<Vec<_>>();
                 for study in &mut studies {
                     if study.visible() != should_show {
                         *study = study.with_visibility(should_show);
@@ -578,7 +576,7 @@ impl StudyState {
             }
             StudyCommand::Remove(id) => {
                 let original_len = self.active.len();
-                self.active.retain(|study| study.id() != id);
+                self.active.retain(|active| *active != id);
                 let changed = self.active.len() != original_len;
                 if changed {
                     StudyChange::Reconfigure
@@ -609,7 +607,7 @@ impl StudyState {
                 .studies_with_active(study, is_active, basis, trade_data_enabled)
                 .map(StudyCommand::Set),
             study::Message::StudyValueChanged(study) => {
-                let mut studies = self.active.clone();
+                let mut studies = self.active().collect::<Vec<_>>();
                 let active = studies
                     .iter_mut()
                     .find(|active| active.is_same_type(study))?;
@@ -621,21 +619,20 @@ impl StudyState {
 
     fn apply_set(&mut self, studies: Vec<KlineStudy>, basis: Basis) -> StudyChange {
         let normalized = Self::normalized_active(studies, basis);
-        self.remember_configs(&normalized);
-        if self.active == normalized {
-            return StudyChange::Unchanged;
-        }
-        let change = if self.active.len() != normalized.len()
+        let change = if self.active().eq(normalized.iter().copied()) {
+            StudyChange::Unchanged
+        } else if self.active.len() != normalized.len()
             || normalized
                 .iter()
-                .zip(&self.active)
-                .any(|(study, previous)| study.requires_reconfiguration(*previous))
+                .zip(self.active())
+                .any(|(study, previous)| study.requires_reconfiguration(previous))
         {
             StudyChange::Reconfigure
         } else {
             StudyChange::Visual
         };
-        self.active = normalized;
+        self.remember_configs(&normalized);
+        self.active = normalized.iter().map(|study| study.id()).collect();
         change
     }
 
@@ -652,7 +649,7 @@ impl StudyState {
             return None;
         }
 
-        let mut studies = self.active.clone();
+        let mut studies = self.active().collect::<Vec<_>>();
         if is_active {
             let configured = self
                 .configs

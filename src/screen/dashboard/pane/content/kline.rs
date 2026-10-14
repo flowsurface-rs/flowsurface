@@ -47,10 +47,10 @@ use data::chart::kline::series::KlineSeries;
 use data::chart::kline::viewport::XAxis;
 use data::chart::kline::{
     self as persisted, CandlestickConfig, ChartSettings, DEFAULT_HORIZONTAL_SPACING_PX, FetchBatch,
-    FetchPlanInput, FetchStage, FootprintImbalanceConfig, FootprintPocConfig, HorizontalWorld,
-    IndicatorId, IndicatorInputSource, IndicatorInstanceId, IndicatorInstanceStore,
-    IndicatorOutputRef, KlineData, KlineStudy, LegendVisibility, LineStrokeStyle, SeriesColor,
-    SettingsSnapshot, visible_window,
+    FetchPlanInput, FootprintImbalanceConfig, FootprintPocConfig, HorizontalWorld, IndicatorId,
+    IndicatorInputSource, IndicatorInstanceId, IndicatorInstanceStore, IndicatorOutputRef,
+    KlineData, KlineStudy, LegendVisibility, LineStrokeStyle, SeriesColor, SettingsSnapshot,
+    visible_window,
 };
 
 use exchange::adapter::StreamKind;
@@ -706,7 +706,7 @@ impl KlineChart {
         self.data.series()
     }
 
-    pub(crate) fn studies(&self) -> &[KlineStudy] {
+    pub(crate) fn studies(&self) -> impl Iterator<Item = KlineStudy> + Clone + '_ {
         self.studies.active()
     }
 
@@ -732,7 +732,6 @@ impl KlineChart {
     ) -> Option<iced::Element<'_, Message>> {
         let title = self
             .inspector
-            .settings()
             .contextual_title(self.settings_view_context())?;
 
         let back = iced::widget::button(style::icon_text(style::Icon::Return, 14))
@@ -755,14 +754,12 @@ impl KlineChart {
                 iced::widget::responsive(move |size| {
                     let Some((tab, body)) = self
                         .inspector
-                        .settings()
                         .contextual_content(self.settings_view_context(), theme_accents)
                     else {
                         return iced::widget::column![].into();
                     };
                     let footer = self
                         .inspector
-                        .settings()
                         .footer_view(self.settings_view_context(), tab);
                     let footer_height = footer.as_ref().map_or(0.0, |(height, _)| *height);
                     let mut content = iced::widget::column![InspectorBody::view(
@@ -1061,7 +1058,7 @@ impl KlineChart {
     }
 
     fn prepare_visible_trade_profile(&mut self) {
-        if !self.studies.active().iter().any(|study| {
+        if !self.studies.active().any(|study| {
             study.visible()
                 && study.source() == data::chart::kline::StudyDataSource::Trades
                 && study.volume_profile_schedule()
@@ -1124,7 +1121,6 @@ impl KlineChart {
 
         if allow_trade && let Some(range) = input.desired_trade_fetch_range(base_ticker) {
             batches.push(FetchBatch {
-                stage: FetchStage::Trades,
                 range,
                 tickers: vec![base_ticker],
             });
@@ -1181,7 +1177,7 @@ impl KlineChart {
             .retain(|panel_id| composition.panel(panel_id).is_some());
     }
 
-    fn set_basis(&mut self, basis: Basis) -> Option<ChartAction> {
+    fn set_basis(&mut self, basis: Basis) {
         self.drawings.finish_pending_edit();
         let previous_basis = self.basis;
         let basis_changed = previous_basis != basis;
@@ -1218,9 +1214,6 @@ impl KlineChart {
             let selected_tickers = self.data.selected_tickers();
             self.fetch.rebuild_handlers(&selected_tickers);
         }
-
-        // The next chart tick builds the normal fetch stage from the settled basis.
-        None
     }
 
     fn undo_edit(&mut self) -> Option<Action> {
@@ -1418,8 +1411,6 @@ impl KlineChart {
     }
 
     fn apply_command_inner(&mut self, command: ChartCommand) -> Option<ChartAction> {
-        let changes_presentation = command.changes_indicator_presentation();
-        let mut policy = command.update_policy();
         let mut request_fetch = false;
         let previous_requirements = self.data_requirements();
         let previous_panels = self
@@ -1429,28 +1420,22 @@ impl KlineChart {
             .iter()
             .map(|panel| panel.id)
             .collect::<Vec<_>>();
-        let mut dirty = false;
 
-        let result = match command {
+        let policy = match command {
             ChartCommand::SetBasis(basis) => {
-                dirty = true;
-                self.set_basis(basis)
+                self.set_basis(basis);
+                Some(UpdatePolicy::ImmediateReconfigure)
             }
-            ChartCommand::SetTradeDataEnabled(enabled) => {
-                self.apply_trade_data_enabled(enabled, &mut dirty);
-                None
-            }
-            ChartCommand::SetLegendVisibility(visibility) => {
-                self.apply_legend_visibility(visibility, &mut dirty);
-                None
-            }
+            ChartCommand::SetTradeDataEnabled(enabled) => self
+                .apply_trade_data_enabled(enabled)
+                .then_some(UpdatePolicy::ImmediateReconfigure),
+            ChartCommand::SetLegendVisibility(visibility) => self
+                .apply_legend_visibility(visibility)
+                .then_some(UpdatePolicy::Redraw),
             ChartCommand::SetCandlestickConfig { config } => {
                 let changed = self.options.candlestick != config;
-                if changed {
-                    self.options.candlestick = config;
-                    dirty = true;
-                }
-                None
+                self.options.candlestick = config;
+                changed.then_some(UpdatePolicy::Redraw)
             }
             ChartCommand::ResetCandlestickSettings => {
                 let default_style = self.options.candlestick.with_default_style();
@@ -1458,89 +1443,59 @@ impl KlineChart {
                 let mark_changed = self.indicators.composition.reset_primary_mark();
                 let ticker_info = self.data.base_ticker();
                 let series_changed = self.data.reset_series_style(ticker_info);
-                if config_changed {
-                    self.options.candlestick = default_style;
-                }
-                if config_changed || mark_changed || series_changed {
-                    dirty = true;
-                }
-                None
+                self.options.candlestick = default_style;
+                (config_changed || mark_changed || series_changed).then_some(UpdatePolicy::Redraw)
             }
-            ChartCommand::SetCandlestickMark { mark } => {
-                let changed = self.indicators.composition.set_primary_mark(mark);
-                if changed {
-                    dirty = true;
-                }
-                None
-            }
+            ChartCommand::SetCandlestickMark { mark } => self
+                .indicators
+                .composition
+                .set_primary_mark(mark)
+                .then_some(UpdatePolicy::Redraw),
             ChartCommand::SetCandlestickVisible { visible } => {
                 let changed = self.options.candlestick.visible != visible;
-                if changed {
-                    self.options.candlestick = self.options.candlestick.with_visible(visible);
-                    dirty = true;
-                }
-                None
+                self.options.candlestick = self.options.candlestick.with_visible(visible);
+                changed.then_some(UpdatePolicy::Redraw)
             }
             ChartCommand::SetFootprintVisible { visible } => {
                 let changed = self.options.footprint.visible != visible;
-                if changed {
-                    self.options.footprint = self.options.footprint.with_visible(visible);
-                    dirty = true;
-                }
-                None
+                self.options.footprint = self.options.footprint.with_visible(visible);
+                changed.then_some(UpdatePolicy::DeferredReconfigure)
             }
             ChartCommand::SetFootprintClusterKind { kind } => {
                 let changed = self.options.footprint.cluster_kind != kind;
-                if changed {
-                    self.options.footprint = self.options.footprint.with_cluster_kind(kind);
-                    dirty = true;
-                }
-                None
+                self.options.footprint = self.options.footprint.with_cluster_kind(kind);
+                changed.then_some(UpdatePolicy::Redraw)
             }
             ChartCommand::SetFootprintClusterScaling { scaling } => {
                 let changed = self.options.footprint.cluster_scaling != scaling;
-                if changed {
-                    self.options.footprint = self.options.footprint.with_cluster_scaling(scaling);
-                    dirty = true;
-                }
-                None
+                self.options.footprint = self.options.footprint.with_cluster_scaling(scaling);
+                changed.then_some(UpdatePolicy::Redraw)
             }
             ChartCommand::SetFootprintImbalanceConfig { config } => {
                 let changed = self.options.footprint.imbalance != config;
-                if changed {
-                    self.options.footprint = self.options.footprint.with_imbalance(config);
-                    dirty = true;
-                }
-                None
+                self.options.footprint = self.options.footprint.with_imbalance(config);
+                changed.then_some(UpdatePolicy::Redraw)
             }
             ChartCommand::SetFootprintPocConfig { config } => {
                 let changed = self.options.footprint.poc != config;
-                if changed {
-                    self.options.footprint = self.options.footprint.with_poc(config);
-                    dirty = true;
-                }
-                None
+                self.options.footprint = self.options.footprint.with_poc(config);
+                changed.then_some(UpdatePolicy::Redraw)
             }
             ChartCommand::ResetFootprintSettings => {
                 let default_options = self.options.footprint.with_default_options();
                 let changed = self.options.footprint != default_options;
-                if changed {
-                    self.options.footprint = default_options;
-                    dirty = true;
-                }
-                None
+                self.options.footprint = default_options;
+                changed.then_some(UpdatePolicy::Redraw)
             }
-            ChartCommand::SetTickMultiplier { multiplier } => {
-                if self.data.set_tick_multiplier(multiplier) {
-                    dirty = true;
-                }
-                None
-            }
+            ChartCommand::SetTickMultiplier { multiplier } => self
+                .data
+                .set_tick_multiplier(multiplier)
+                .then_some(UpdatePolicy::ImmediateReconfigure),
             ChartCommand::AddIndicator(kind) => {
                 let change = self.indicators.add_indicator(kind, self.basis, &self.data);
-                request_fetch =
-                    change.apply(&mut self.indicators, &self.data, &mut dirty, &mut policy);
-                None
+                let (policy, fetch) = change.apply(&mut self.indicators, &self.data);
+                request_fetch = fetch;
+                policy
             }
             ChartCommand::AddIndicatorOnSource {
                 kind,
@@ -1550,101 +1505,72 @@ impl KlineChart {
                 let change = self
                     .indicators
                     .add_indicator_on_source(kind, input_id, source, self.basis, &self.data);
-                request_fetch =
-                    change.apply(&mut self.indicators, &self.data, &mut dirty, &mut policy);
-                None
+                let (policy, fetch) = change.apply(&mut self.indicators, &self.data);
+                request_fetch = fetch;
+                policy
             }
             ChartCommand::RemoveIndicator(id) => {
                 let change = self.indicators.remove_indicator(id);
-                request_fetch =
-                    change.apply(&mut self.indicators, &self.data, &mut dirty, &mut policy);
-                None
+                let (policy, fetch) = change.apply(&mut self.indicators, &self.data);
+                request_fetch = fetch;
+                policy
             }
             ChartCommand::Indicator(command) => {
                 let change = self.indicators.apply(command);
-                request_fetch =
-                    change.apply(&mut self.indicators, &self.data, &mut dirty, &mut policy);
-                None
+                let (policy, fetch) = change.apply(&mut self.indicators, &self.data);
+                request_fetch = fetch;
+                policy
             }
-            ChartCommand::Study(command) => {
-                self.apply_study_command(command, &mut dirty, &mut policy);
-                None
-            }
+            ChartCommand::Study(command) => self.apply_study_command(command),
             ChartCommand::StudyInteraction(event) => {
                 self.studies
                     .apply_interaction(event, self.basis, &self.data);
-                dirty = true;
-                None
+                Some(UpdatePolicy::Redraw)
             }
-            ChartCommand::ToggleComparisonVisibility { ticker_info } => {
-                dirty = self
-                    .indicators
-                    .composition
-                    .toggle_comparison_visibility(ticker_info);
-                None
-            }
-            ChartCommand::SetSeriesColor { ticker_info, color } => {
-                let changed = self.data.set_series_color(ticker_info, color);
-                if changed {
-                    dirty = true;
-                }
-                None
-            }
-            ChartCommand::SetSeriesLineWidth { ticker_info, width } => {
-                let changed = self.data.set_series_line_width(ticker_info, width);
-                if changed {
-                    dirty = true;
-                }
-                None
-            }
+            ChartCommand::ToggleComparisonVisibility { ticker_info } => self
+                .indicators
+                .composition
+                .toggle_comparison_visibility(ticker_info)
+                .then_some(UpdatePolicy::Redraw),
+            ChartCommand::SetSeriesColor { ticker_info, color } => self
+                .data
+                .set_series_color(ticker_info, color)
+                .then_some(UpdatePolicy::Redraw),
+            ChartCommand::SetSeriesLineWidth { ticker_info, width } => self
+                .data
+                .set_series_line_width(ticker_info, width)
+                .then_some(UpdatePolicy::Redraw),
             ChartCommand::SetSeriesStrokeStyle {
                 ticker_info,
                 stroke_style,
-            } => {
-                let changed = self.data.set_series_stroke_style(ticker_info, stroke_style);
-                if changed {
-                    dirty = true;
-                }
-                None
-            }
-            ChartCommand::ResetSeriesSettings { ticker_info } => {
-                let changed = self.data.reset_series_style(ticker_info);
-                if changed {
-                    dirty = true;
-                }
-                None
-            }
+            } => self
+                .data
+                .set_series_stroke_style(ticker_info, stroke_style)
+                .then_some(UpdatePolicy::Redraw),
+            ChartCommand::ResetSeriesSettings { ticker_info } => self
+                .data
+                .reset_series_style(ticker_info)
+                .then_some(UpdatePolicy::Redraw),
             ChartCommand::AddTicker { ticker_info } => {
-                let changed = if ticker_info != self.data.base_ticker()
-                    && self.data.add_ticker(ticker_info, self.basis)
-                {
+                let changed = ticker_info != self.data.base_ticker()
+                    && self.data.add_ticker(ticker_info, self.basis);
+                if changed {
                     self.fetch.add_ticker(ticker_info);
                     let selected_tickers = self.data.selected_tickers();
                     self.indicators
                         .composition
                         .sync_comparison_sources(self.data.base_ticker(), &selected_tickers);
-
                     self.indicators.mark_for_candle_ticker(
                         &self.data,
                         ticker_info,
                         IndicatorRebuildReason::IndicatorStructureChanged,
                     );
-                    true
-                } else {
-                    false
-                };
-                if changed {
-                    dirty = true;
                 }
-                None
+                changed.then_some(UpdatePolicy::ImmediateReconfigure)
             }
-            ChartCommand::RemoveTicker { ticker_info } => {
-                let changed = self.remove_ticker(ticker_info);
-                if changed {
-                    dirty = true;
-                }
-                None
-            }
+            ChartCommand::RemoveTicker { ticker_info } => self
+                .remove_ticker(ticker_info)
+                .then_some(UpdatePolicy::ImmediateReconfigure),
         };
 
         self.reconcile_data_requirements(previous_requirements);
@@ -1655,18 +1581,18 @@ impl KlineChart {
             self.drawings.clear_history();
         }
 
-        if dirty {
+        if let Some(policy) = policy {
             self.request_settings_update(policy);
-            if changes_presentation && policy != UpdatePolicy::ImmediateReconfigure {
+            if policy != UpdatePolicy::ImmediateReconfigure {
                 self.refresh_indicator_presentation();
             }
+            if request_fetch && policy == UpdatePolicy::ImmediateReconfigure {
+                return self
+                    .request_fetch_action(false)
+                    .map(ChartAction::RequestFetch);
+            }
         }
-        if request_fetch && policy == UpdatePolicy::ImmediateReconfigure {
-            return self
-                .request_fetch_action(false)
-                .map(ChartAction::RequestFetch);
-        }
-        result
+        None
     }
 
     fn apply_drawing_update(&mut self, update: DrawingUpdate) {
@@ -1675,51 +1601,43 @@ impl KlineChart {
         }
     }
 
-    fn apply_trade_data_enabled(&mut self, enabled: bool, dirty: &mut bool) {
+    fn apply_trade_data_enabled(&mut self, enabled: bool) -> bool {
         if !enabled && self.trade_data_setting_lock_reason().is_some() {
-            return;
+            return false;
         }
-        if !self.options.set_trade_data_requested(enabled, self.basis) {
-            return;
-        }
-        *dirty = true;
+        self.options.set_trade_data_requested(enabled, self.basis)
     }
 
-    fn apply_legend_visibility(&mut self, visibility: LegendVisibility, dirty: &mut bool) {
-        if self.options.legend_visibility == visibility {
-            return;
-        }
+    fn apply_legend_visibility(&mut self, visibility: LegendVisibility) -> bool {
+        let changed = self.options.legend_visibility != visibility;
         self.options.legend_visibility = visibility;
-        *dirty = true;
+        changed
     }
 
-    fn apply_study_command(
-        &mut self,
-        command: StudyCommand,
-        dirty: &mut bool,
-        policy: &mut UpdatePolicy,
-    ) {
+    fn apply_study_command(&mut self, command: StudyCommand) -> Option<UpdatePolicy> {
         let previous_ids = self
             .studies
             .active()
-            .iter()
             .map(|study| study.id())
             .collect::<Vec<_>>();
         let change = self
             .studies
             .apply(command, self.basis, self.trade_data_enabled());
-        *policy = match change {
-            StudyChange::Unchanged => return,
+        let policy = match change {
+            StudyChange::Unchanged => return None,
             StudyChange::Visual => UpdatePolicy::Redraw,
             StudyChange::Reconfigure => UpdatePolicy::DeferredReconfigure,
         };
-        *dirty = true;
-        if !previous_ids
-            .into_iter()
-            .eq(self.studies.active().iter().map(|study| study.id()))
-        {
-            *policy = UpdatePolicy::ImmediateReconfigure;
-        }
+        Some(
+            if previous_ids
+                .into_iter()
+                .eq(self.studies.active().map(|study| study.id()))
+            {
+                policy
+            } else {
+                UpdatePolicy::ImmediateReconfigure
+            },
+        )
     }
 
     fn apply_shared_settings(&mut self, snapshot: &SettingsSnapshot) {
@@ -1747,9 +1665,8 @@ impl KlineChart {
     }
 
     fn apply_persisted_config(&mut self, config: &persisted::Config) {
-        let snapshot = config.settings_snapshot();
         self.drawings.clear_history();
-        self.apply_shared_settings(&snapshot);
+        self.apply_shared_settings(&config.settings);
 
         self.drawing_sidebar_visible = config.drawing_sidebar_visible;
         self.drawings.floating_toolbar =
@@ -1841,7 +1758,6 @@ impl KlineChart {
         let mut requirements = self
             .indicators
             .data_requirements(self.basis, self.data.base_ticker());
-        requirements.klines |= !self.data.selected_tickers().is_empty();
         requirements.trades |= self.options.trade_data_requested
             || matches!(self.basis, Basis::Tick(_))
             || self.options.footprint.visible
@@ -1850,7 +1766,26 @@ impl KlineChart {
     }
 
     pub(crate) fn settings_snapshot(&self) -> SettingsSnapshot {
-        self.serializable_config().settings_snapshot()
+        let studies = self.studies.snapshot();
+        SettingsSnapshot {
+            primary_scale_inverted: self.viewport.primary_scale_inverted,
+            trade_data_enabled: self.options.trade_data_requested,
+            legend_visibility: self.options.legend_visibility,
+            candlestick: self.options.candlestick,
+            footprint: self.options.footprint,
+            panels: self
+                .indicators
+                .composition
+                .panels
+                .iter()
+                .map(persisted::panel_config_from_spec)
+                .collect(),
+            splits: self.indicators.composition.splits.clone(),
+            active_studies: studies.active,
+            study_configs: studies.configs,
+            tpo_profile_edits: studies.edits,
+            indicator_instances: self.indicators.instances.instances().to_vec(),
+        }
     }
 
     pub(crate) fn desired_streams(&self) -> Vec<StreamKind> {
@@ -1880,29 +1815,12 @@ impl KlineChart {
     }
 
     pub(crate) fn serializable_config(&self) -> persisted::Config {
-        let studies = self.studies.snapshot();
         persisted::Config {
-            primary_scale_inverted: self.viewport.primary_scale_inverted,
-            trade_data_enabled: self.options.trade_data_requested,
-            legend_visibility: self.options.legend_visibility,
-            candlestick: self.options.candlestick,
-            footprint: self.options.footprint,
-            panels: self
-                .indicators
-                .composition
-                .panels
-                .iter()
-                .map(persisted::panel_config_from_spec)
-                .collect(),
-            splits: self.indicators.composition.splits.clone(),
+            settings: self.settings_snapshot(),
             drawings: self.drawings.tools.time_drawings().to_vec(),
             active_drawing_tool: self.drawings.tools.active_tool(),
             floating_toolbar_position: self.drawings.floating_toolbar.position,
             drawing_sidebar_visible: self.drawing_sidebar_visible,
-            studies: studies.active,
-            study_configs: studies.configs,
-            tpo_profile_edits: studies.edits,
-            indicator_instances: self.indicators.instances.instances().to_vec(),
             series: self
                 .data
                 .series()
@@ -1982,8 +1900,6 @@ impl RenderInvalidation {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 struct DataRequirements {
-    klines: bool,
-    directional_volume: bool,
     trades: bool,
     open_interest: bool,
 }
@@ -2069,74 +1985,6 @@ enum UpdatePolicy {
 }
 
 impl ChartCommand {
-    fn update_policy(&self) -> UpdatePolicy {
-        match self {
-            Self::SetLegendVisibility(_)
-            | Self::SetCandlestickConfig { .. }
-            | Self::ResetCandlestickSettings
-            | Self::SetCandlestickMark { .. }
-            | Self::SetCandlestickVisible { .. }
-            | Self::SetFootprintClusterKind { .. }
-            | Self::SetFootprintClusterScaling { .. }
-            | Self::SetFootprintImbalanceConfig { .. }
-            | Self::SetFootprintPocConfig { .. }
-            | Self::ResetFootprintSettings
-            | Self::ToggleComparisonVisibility { .. }
-            | Self::SetSeriesColor { .. }
-            | Self::SetSeriesLineWidth { .. }
-            | Self::SetSeriesStrokeStyle { .. }
-            | Self::ResetSeriesSettings { .. }
-            | Self::StudyInteraction(_) => UpdatePolicy::Redraw,
-            Self::SetBasis(_)
-            | Self::SetTradeDataEnabled(_)
-            | Self::SetTickMultiplier { .. }
-            | Self::AddIndicator(_)
-            | Self::AddIndicatorOnSource { .. }
-            | Self::RemoveIndicator(_)
-            | Self::AddTicker { .. }
-            | Self::RemoveTicker { .. }
-            | Self::Indicator(IndicatorCommand::InputChanged(
-                IndicatorInputCommand::SourceBinding { .. }
-                | IndicatorInputCommand::BaseSource { .. },
-            )) => UpdatePolicy::ImmediateReconfigure,
-            Self::SetFootprintVisible { .. } | Self::Indicator(_) | Self::Study(_) => {
-                UpdatePolicy::DeferredReconfigure
-            }
-        }
-    }
-
-    fn changes_indicator_presentation(&self) -> bool {
-        match self {
-            Self::SetBasis(_)
-            | Self::SetTradeDataEnabled(_)
-            | Self::ResetCandlestickSettings
-            | Self::SetCandlestickMark { .. }
-            | Self::SetFootprintVisible { .. }
-            | Self::SetTickMultiplier { .. }
-            | Self::AddIndicator(_)
-            | Self::AddIndicatorOnSource { .. }
-            | Self::RemoveIndicator(_)
-            | Self::Indicator(_)
-            | Self::Study(_)
-            | Self::AddTicker { .. }
-            | Self::RemoveTicker { .. } => true,
-            Self::SetLegendVisibility(_)
-            | Self::SetCandlestickConfig { .. }
-            | Self::SetCandlestickVisible { .. }
-            | Self::SetFootprintClusterKind { .. }
-            | Self::SetFootprintClusterScaling { .. }
-            | Self::SetFootprintImbalanceConfig { .. }
-            | Self::SetFootprintPocConfig { .. }
-            | Self::ResetFootprintSettings
-            | Self::StudyInteraction(_)
-            | Self::ToggleComparisonVisibility { .. }
-            | Self::SetSeriesColor { .. }
-            | Self::SetSeriesLineWidth { .. }
-            | Self::SetSeriesStrokeStyle { .. }
-            | Self::ResetSeriesSettings { .. } => false,
-        }
-    }
-
     fn indicator_input(command: IndicatorInputCommand) -> Self {
         Self::Indicator(IndicatorCommand::InputChanged(command))
     }
