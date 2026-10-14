@@ -652,13 +652,17 @@ impl KlineData {
             return KlineDataChange::Unchanged;
         };
 
+        let Some(series) = self
+            .series_index
+            .get(&ticker_info)
+            .copied()
+            .and_then(|index| self.series.get_mut(index))
+        else {
+            return KlineDataChange::Unchanged;
+        };
+
         if !trades.is_empty() {
-            let _ = self
-                .series_index
-                .get(&ticker_info)
-                .copied()
-                .and_then(|index| self.series.get_mut(index))
-                .map(|series| series.insert_time_trades(trades));
+            series.insert_time_trades(trades);
         }
         if trades.is_empty() && !is_batches_done {
             KlineDataChange::Unchanged

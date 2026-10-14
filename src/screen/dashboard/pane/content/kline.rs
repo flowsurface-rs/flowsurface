@@ -28,7 +28,7 @@ use crate::window::PixelRatio;
 use drawing::{DrawingMessage, DrawingState, DrawingTools, DrawingUpdate};
 use fetch::FetchCoordinator;
 use layout::{IndicatorRebuildReason, IndicatorState};
-use settings::{ChartOptions, InspectorEffect, InspectorState, SettingsContext};
+use settings::{InspectorEffect, InspectorState, SettingsContext};
 use studies::{StudyChange, StudyCommand, StudyState};
 use updates::DataUpdateEffect;
 use viewport::ViewportState;
@@ -46,11 +46,11 @@ use data::chart::kline::footprint::{ClusterKind, ClusterScaling};
 use data::chart::kline::series::KlineSeries;
 use data::chart::kline::viewport::XAxis;
 use data::chart::kline::{
-    self as persisted, CandlestickConfig, ChartSettings, DEFAULT_HORIZONTAL_SPACING_PX, FetchBatch,
-    FetchPlanInput, FootprintImbalanceConfig, FootprintPocConfig, HorizontalWorld, IndicatorId,
-    IndicatorInputSource, IndicatorInstanceId, IndicatorInstanceStore, IndicatorOutputRef,
-    KlineData, KlineStudy, LegendVisibility, LineStrokeStyle, SeriesColor, SettingsSnapshot,
-    visible_window,
+    self as persisted, CandlestickConfig, ChartOptions, ChartSettings,
+    DEFAULT_HORIZONTAL_SPACING_PX, FetchBatch, FetchPlanInput, FootprintImbalanceConfig,
+    FootprintPocConfig, HorizontalWorld, IndicatorId, IndicatorInputSource, IndicatorInstanceId,
+    IndicatorInstanceStore, IndicatorOutputRef, KlineData, KlineStudy, LegendVisibility,
+    LineStrokeStyle, SeriesColor, SettingsSnapshot, visible_window,
 };
 
 use exchange::adapter::StreamKind;
@@ -870,11 +870,6 @@ impl KlineChart {
         }
     }
 
-    fn indicator_requires_trade_data(&self, indicator: &IndicatorId) -> bool {
-        self.indicators
-            .requires_trade_data(indicator, self.basis, self.data.base_ticker())
-    }
-
     fn indicator_presentation_context(&self) -> IndicatorPresentationContext {
         self.indicators.presentation_context()
     }
@@ -1651,10 +1646,7 @@ impl KlineChart {
 
         self.viewport.primary_scale_inverted = snapshot.primary_scale_inverted;
 
-        self.options.trade_data_requested = snapshot.trade_data_enabled;
-        self.options.legend_visibility = snapshot.legend_visibility;
-        self.options.candlestick = snapshot.candlestick;
-        self.options.footprint = snapshot.footprint;
+        self.options = snapshot.options;
 
         self.studies.restore_settings(snapshot, self.basis);
 
@@ -1741,27 +1733,23 @@ impl KlineChart {
             return Some("Trade data is required for tick-based charts");
         }
 
-        let indicator_requires_trade_data =
-            self.indicators.selected_indicators().iter().any(|id| {
-                self.indicators.indicator(*id).is_some_and(|instance| {
-                    instance.kind.is_registered()
-                        && self.indicator_requires_trade_data(&instance.kind)
-                })
-            });
-        let study_requires_trade_data = self.studies.requires_trade_data();
-
-        (indicator_requires_trade_data || study_requires_trade_data)
+        self.consumer_data_requirements()
+            .trades
             .then_some("Trade data is required by an active indicator or study")
     }
 
-    fn data_requirements(&self) -> DataRequirements {
+    fn consumer_data_requirements(&self) -> DataRequirements {
         let mut requirements = self
             .indicators
             .data_requirements(self.basis, self.data.base_ticker());
-        requirements.trades |= self.options.trade_data_requested
-            || matches!(self.basis, Basis::Tick(_))
-            || self.options.footprint.visible
-            || self.studies.requires_trade_data();
+        requirements.trades |=
+            matches!(self.basis, Basis::Tick(_)) || self.studies.requires_trade_data();
+        requirements
+    }
+
+    fn data_requirements(&self) -> DataRequirements {
+        let mut requirements = self.consumer_data_requirements();
+        requirements.trades |= self.options.trade_data_requested || self.options.footprint.visible;
         requirements
     }
 
@@ -1769,10 +1757,7 @@ impl KlineChart {
         let studies = self.studies.snapshot();
         SettingsSnapshot {
             primary_scale_inverted: self.viewport.primary_scale_inverted,
-            trade_data_enabled: self.options.trade_data_requested,
-            legend_visibility: self.options.legend_visibility,
-            candlestick: self.options.candlestick,
-            footprint: self.options.footprint,
+            options: self.options,
             panels: self
                 .indicators
                 .composition

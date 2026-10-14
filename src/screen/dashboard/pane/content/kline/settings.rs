@@ -18,7 +18,7 @@ use data::chart::kline::KlineData;
 use data::chart::kline::footprint::{ClusterKind, ClusterScaling};
 use data::chart::kline::indicators::{AvailabilityContext, unsupported_reason};
 use data::chart::kline::{
-    BaseSeriesSource, CandlestickColorSlot, CandlestickConfig, FootprintConfig,
+    BaseSeriesSource, CandlestickColorSlot, CandlestickConfig, ChartOptions, FootprintConfig,
     FootprintImbalanceConfig, FootprintPocColorConfig, FootprintPocColorSlot, FootprintPocConfig,
     IndicatorAuthor, IndicatorConfig, IndicatorId, IndicatorOutputRef, IndicatorSetting,
     IndicatorSettingControl, IndicatorSettingValue, IndicatorSettingsContext,
@@ -274,30 +274,6 @@ impl<'a> SettingsContext<'a> {
                 })
             })
             .collect()
-    }
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-pub(super) struct ChartOptions {
-    pub(super) trade_data_requested: bool,
-    pub(super) legend_visibility: LegendVisibility,
-    pub(super) candlestick: CandlestickConfig,
-    pub(super) footprint: FootprintConfig,
-}
-
-impl ChartOptions {
-    pub(super) fn set_trade_data_requested(
-        &mut self,
-        enabled: bool,
-        basis: data::chart::Basis,
-    ) -> bool {
-        let mut changed = self.trade_data_requested != enabled;
-        self.trade_data_requested = enabled;
-        if !matches!(basis, data::chart::Basis::Tick(_)) {
-            changed |= self.footprint.visible != enabled;
-            self.footprint = self.footprint.with_visible(enabled);
-        }
-        changed
     }
 }
 

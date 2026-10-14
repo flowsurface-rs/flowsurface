@@ -1251,15 +1251,34 @@ impl Default for Config {
     }
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChartOptions {
+    #[serde(rename = "trade_data_enabled")]
+    pub trade_data_requested: bool,
+    pub legend_visibility: LegendVisibility,
+    pub candlestick: CandlestickConfig,
+    pub footprint: FootprintConfig,
+}
+
+impl ChartOptions {
+    pub fn set_trade_data_requested(&mut self, enabled: bool, basis: Basis) -> bool {
+        let mut changed = self.trade_data_requested != enabled;
+        self.trade_data_requested = enabled;
+        if !matches!(basis, Basis::Tick(_)) {
+            changed |= self.footprint.visible != enabled;
+            self.footprint = self.footprint.with_visible(enabled);
+        }
+        changed
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SettingsSnapshot {
     pub primary_scale_inverted: bool,
-    pub trade_data_enabled: bool,
-    #[serde(default)]
-    pub legend_visibility: LegendVisibility,
-    pub candlestick: CandlestickConfig,
-    pub footprint: FootprintConfig,
+    #[serde(flatten)]
+    pub options: ChartOptions,
     pub panels: Vec<PanelConfig>,
     pub splits: Vec<f32>,
     pub active_studies: Vec<KlineStudyId>,

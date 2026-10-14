@@ -2,7 +2,6 @@ mod instance;
 pub(crate) mod scene;
 pub(crate) mod ui;
 pub(crate) mod view;
-mod widget;
 
 pub(crate) use instance::InstanceBuilder;
 
