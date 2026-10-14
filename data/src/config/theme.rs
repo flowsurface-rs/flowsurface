@@ -18,7 +18,11 @@ pub struct Theme(pub iced_core::Theme);
 #[derive(Serialize, Deserialize)]
 struct SerTheme {
     name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "palette",
+        alias = "seed",
+        skip_serializing_if = "Option::is_none"
+    )]
     seed: Option<Seed>,
 }
 
