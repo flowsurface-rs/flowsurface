@@ -1,6 +1,5 @@
-use super::indicators::{AvailabilityContext, IndicatorAvailability, availability};
+use super::IndicatorHistoryRequirement;
 use super::series::KlineSeries;
-use super::{IndicatorHistoryRequirement, IndicatorInstanceId, IndicatorInstanceStore};
 use crate::chart::Basis;
 use exchange::adapter::Exchange;
 use exchange::{TickerInfo, Timeframe, UnixMs};
@@ -40,8 +39,6 @@ pub struct FetchPlanInput<'a> {
     pub horizontal_offset: f32,
     pub base_ticker: TickerInfo,
     pub series: &'a [KlineSeries],
-    pub active_indicators: &'a [IndicatorInstanceId],
-    pub indicator_instances: &'a IndicatorInstanceStore,
     pub open_interest_required: bool,
     pub trade_data_required: bool,
     pub trade_fetch_enabled: bool,
@@ -178,24 +175,6 @@ impl FetchPlanInput<'_> {
             }
 
             if self.open_interest_required {
-                let has_available_open_interest_consumer = self
-                    .active_indicators
-                    .iter()
-                    .copied()
-                    .filter_map(|id| self.indicator_instances.get(id))
-                    .filter(|instance| {
-                        super::indicators::indicator_definition(&instance.kind)
-                            .uses(super::indicators::IndicatorInputSource::OpenInterest)
-                    })
-                    .any(|instance| {
-                        matches!(
-                            self.indicator_availability(instance.id),
-                            IndicatorAvailability::Available
-                        )
-                    });
-                if !has_available_open_interest_consumer {
-                    return batches;
-                }
                 let Some(base_series) = self
                     .series
                     .iter()
@@ -301,26 +280,6 @@ impl FetchPlanInput<'_> {
         }
 
         None
-    }
-
-    fn indicator_availability(&self, id: IndicatorInstanceId) -> IndicatorAvailability {
-        let Some(instance) = self.indicator_instances.get(id) else {
-            return IndicatorAvailability::Unsupported(
-                super::indicators::IndicatorUnsupportedReason::NotInstalled,
-            );
-        };
-        if !instance.kind.is_registered() {
-            return IndicatorAvailability::Unsupported(
-                super::indicators::IndicatorUnsupportedReason::NotInstalled,
-            );
-        }
-        availability(
-            &instance.kind,
-            AvailabilityContext {
-                basis: self.basis,
-                base_ticker: self.base_ticker,
-            },
-        )
     }
 }
 

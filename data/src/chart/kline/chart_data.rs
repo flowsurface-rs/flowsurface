@@ -21,25 +21,6 @@ pub struct LiveIndicatorUpdate {
     pub index_change: KlineIndexChange,
 }
 
-pub enum KlineDataChange {
-    Unchanged,
-
-    LiveKline {
-        update: LiveIndicatorUpdate,
-    },
-    LiveTrades {
-        update: LiveIndicatorUpdate,
-    },
-    HistoricalKlines {
-        update: KlineUpdate,
-    },
-    HistoricalTrades,
-    HistoricalInput {
-        source: IndicatorInputSource,
-        update: HistoricalInputUpdate,
-    },
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HistoricalInputUpdate {
     Rejected,
@@ -506,19 +487,13 @@ impl KlineData {
         ticker_info: TickerInfo,
         klines: &[Kline],
         basis: Basis,
-    ) -> KlineDataChange {
-        let Some(idx) = self.series_index.get(&ticker_info).copied() else {
-            return KlineDataChange::Unchanged;
-        };
+    ) -> Option<KlineUpdate> {
+        let idx = self.series_index.get(&ticker_info).copied()?;
 
         if klines.is_empty() {
-            return KlineDataChange::Unchanged;
+            return None;
         }
-        self.series[idx]
-            .insert_klines(klines, basis)
-            .map_or(KlineDataChange::Unchanged, |update| {
-                KlineDataChange::HistoricalKlines { update }
-            })
+        self.series[idx].insert_klines(klines, basis)
     }
 
     pub fn update_live_kline(
@@ -528,19 +503,15 @@ impl KlineData {
         basis: Basis,
         indicator_ids: &[IndicatorInstanceId],
         trade_data_enabled: bool,
-    ) -> KlineDataChange {
-        let Some(idx) = self.series_index.get(ticker_info).copied() else {
-            return KlineDataChange::Unchanged;
-        };
+    ) -> Option<LiveIndicatorUpdate> {
+        let idx = self.series_index.get(ticker_info).copied()?;
         let previous_time = self.series[idx]
             .latest_point()
             .map(|point| point.kline.time);
         let next_time = kline.time;
         let is_base = *ticker_info == self.base_ticker;
         let starts_new_bar = previous_time.is_some_and(|time| next_time > time);
-        let Some(update) = self.series[idx].update_latest_kline(kline, basis) else {
-            return KlineDataChange::Unchanged;
-        };
+        let update = self.series[idx].update_latest_kline(kline, basis)?;
         let rebuild_scope = (is_base
             && update.scope.is_full()
             && previous_time.is_some_and(|time| next_time < time))
@@ -556,15 +527,13 @@ impl KlineData {
         } else {
             Vec::new()
         };
-        KlineDataChange::LiveKline {
-            update: LiveIndicatorUpdate {
-                committed_bar: starts_new_bar && is_base,
-                rebuild_scope,
-                closed_trade_correction: false,
-                coverage_frames,
-                index_change: update.index_change,
-            },
-        }
+        Some(LiveIndicatorUpdate {
+            committed_bar: starts_new_bar && is_base,
+            rebuild_scope,
+            closed_trade_correction: false,
+            coverage_frames,
+            index_change: update.index_change,
+        })
     }
 
     pub fn insert_live_trades(
@@ -574,13 +543,11 @@ impl KlineData {
         basis: Basis,
         indicator_ids: &[IndicatorInstanceId],
         trade_data_enabled: bool,
-    ) -> KlineDataChange {
+    ) -> Option<LiveIndicatorUpdate> {
         if trades.is_empty() {
-            return KlineDataChange::Unchanged;
+            return None;
         }
-        let Some(index) = self.series_index.get(ticker_info).copied() else {
-            return KlineDataChange::Unchanged;
-        };
+        let index = self.series_index.get(ticker_info).copied()?;
 
         let is_base = *ticker_info == self.base_ticker;
         let correction_start = is_base
@@ -624,21 +591,19 @@ impl KlineData {
         let coverage_frames = correction_start
             .map(|start| self.committed_indicator_frames_from(start, trade_data_enabled))
             .unwrap_or(newly_committed_frames);
-        KlineDataChange::LiveTrades {
-            update: LiveIndicatorUpdate {
-                committed_bar: committed_len > previous_committed_len,
-                rebuild_scope: if is_base && scope.is_full() {
-                    Some(IndicatorUpdateScope::Full)
-                } else if deferred_append {
-                    Some(IndicatorUpdateScope::From(previous_committed_len))
-                } else {
-                    None
-                },
-                closed_trade_correction: correction_start.is_some(),
-                coverage_frames,
-                index_change: KlineIndexChange::None,
+        Some(LiveIndicatorUpdate {
+            committed_bar: committed_len > previous_committed_len,
+            rebuild_scope: if is_base && scope.is_full() {
+                Some(IndicatorUpdateScope::Full)
+            } else if deferred_append {
+                Some(IndicatorUpdateScope::From(previous_committed_len))
+            } else {
+                None
             },
-        }
+            closed_trade_correction: correction_start.is_some(),
+            coverage_frames,
+            index_change: KlineIndexChange::None,
+        })
     }
 
     pub fn insert_historical_trades(
@@ -647,9 +612,9 @@ impl KlineData {
         trades: &[Trade],
         is_batches_done: bool,
         basis: Basis,
-    ) -> KlineDataChange {
+    ) -> bool {
         let Basis::Time(_) = basis else {
-            return KlineDataChange::Unchanged;
+            return false;
         };
 
         let Some(series) = self
@@ -658,17 +623,13 @@ impl KlineData {
             .copied()
             .and_then(|index| self.series.get_mut(index))
         else {
-            return KlineDataChange::Unchanged;
+            return false;
         };
 
         if !trades.is_empty() {
             series.insert_time_trades(trades);
         }
-        if trades.is_empty() && !is_batches_done {
-            KlineDataChange::Unchanged
-        } else {
-            KlineDataChange::HistoricalTrades
-        }
+        !trades.is_empty() || is_batches_done
     }
 
     pub fn insert_historical_open_interest(
@@ -676,42 +637,27 @@ impl KlineData {
         ticker_info: TickerInfo,
         series: &OpenInterestSeries,
         indicators: &IndicatorInstanceStore,
-    ) -> KlineDataChange {
+    ) -> HistoricalInputUpdate {
         if ticker_info != self.base_ticker {
-            return KlineDataChange::HistoricalInput {
-                source: IndicatorInputSource::OpenInterest,
-                update: HistoricalInputUpdate::Rejected,
-            };
+            return HistoricalInputUpdate::Rejected;
         }
         let Some(idx) = self.series_index.get(&ticker_info).copied() else {
-            return KlineDataChange::HistoricalInput {
-                source: IndicatorInputSource::OpenInterest,
-                update: HistoricalInputUpdate::Rejected,
-            };
+            return HistoricalInputUpdate::Rejected;
         };
 
         let has_open_interest_consumer = self
             .indicator_host
             .has_input_consumer(IndicatorInputSource::OpenInterest, indicators);
         if series.is_empty() {
-            return KlineDataChange::HistoricalInput {
-                source: IndicatorInputSource::OpenInterest,
-                update: HistoricalInputUpdate::NoData {
-                    has_consumer: has_open_interest_consumer,
-                },
+            return HistoricalInputUpdate::NoData {
+                has_consumer: has_open_interest_consumer,
             };
         }
         if !has_open_interest_consumer {
-            return KlineDataChange::HistoricalInput {
-                source: IndicatorInputSource::OpenInterest,
-                update: HistoricalInputUpdate::Ignored,
-            };
+            return HistoricalInputUpdate::Ignored;
         }
         self.series[idx].insert_open_interest(series);
-        KlineDataChange::HistoricalInput {
-            source: IndicatorInputSource::OpenInterest,
-            update: HistoricalInputUpdate::Applied,
-        }
+        HistoricalInputUpdate::Applied
     }
 
     pub fn recurring_profile_cache_requirements(

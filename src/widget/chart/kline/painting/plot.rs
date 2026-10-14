@@ -63,9 +63,7 @@ impl PlotRenderer<'_> {
                 PrimaryPlotDetail::CandleOnly
             }
         };
-        let (candle_body_width_phys, wick_width_phys) =
-            candlestick_widths(scene.logical_bar_spacing(), pixels);
-        let indicator_width_phys = candle_body_width_phys;
+        let (indicator_width_phys, _) = candlestick_widths(scene.logical_bar_spacing(), pixels);
 
         if layer == CanvasLayer::Background {
             for indicator_panel in &scene.indicator_panels {
@@ -107,33 +105,12 @@ impl PlotRenderer<'_> {
                         let Some(spec) = self.indicators.indicator_output_spec(output) else {
                             continue;
                         };
-                        match spec.value_type {
-                            data::chart::kline::OutputValueType::Ohlc => {
-                                marks.draw_indicator_ohlc_output(
-                                    frame,
-                                    output.instance_id,
-                                    output,
-                                    layer.required_input,
-                                    |value| {
-                                        scene.map_indicator_plot(indicator_panel.panel_index, value)
-                                    },
-                                    indicator_width_phys,
-                                    wick_width_phys,
-                                );
-                            }
-                            data::chart::kline::OutputValueType::Range => {
-                                marks.draw_indicator_range_output(
-                                    frame,
-                                    output,
-                                    layer.required_input,
-                                    |value| {
-                                        scene.map_indicator_plot(indicator_panel.panel_index, value)
-                                    },
-                                );
-                            }
-                            data::chart::kline::OutputValueType::Number
-                            | data::chart::kline::OutputValueType::Boolean => {}
-                        }
+                        marks.draw_indicator_structural_output(
+                            frame,
+                            layer,
+                            spec.value_type,
+                            |value| scene.map_indicator_plot(indicator_panel.panel_index, value),
+                        );
                     }
                     for value_id in self
                         .indicators
@@ -247,35 +224,12 @@ impl PlotRenderer<'_> {
                         let Some(spec) = self.indicators.indicator_output_spec(output) else {
                             continue;
                         };
-                        match spec.value_type {
-                            data::chart::kline::OutputValueType::Ohlc => {
-                                marks.draw_indicator_ohlc_output(
-                                    frame,
-                                    output.instance_id,
-                                    output,
-                                    layer.required_input,
-                                    |value| {
-                                        scene
-                                            .map_primary_plot_with_anchor(value, base_series_anchor)
-                                    },
-                                    indicator_width_phys,
-                                    wick_width_phys,
-                                );
-                            }
-                            data::chart::kline::OutputValueType::Range => {
-                                marks.draw_indicator_range_output(
-                                    frame,
-                                    output,
-                                    layer.required_input,
-                                    |value| {
-                                        scene
-                                            .map_primary_plot_with_anchor(value, base_series_anchor)
-                                    },
-                                );
-                            }
-                            data::chart::kline::OutputValueType::Number
-                            | data::chart::kline::OutputValueType::Boolean => {}
-                        }
+                        marks.draw_indicator_structural_output(
+                            frame,
+                            layer,
+                            spec.value_type,
+                            |value| scene.map_primary_plot_with_anchor(value, base_series_anchor),
+                        );
                         if annotation_ids.insert(output.instance_id) {
                             marks.draw_indicator_markers_and_levels(
                                 frame,

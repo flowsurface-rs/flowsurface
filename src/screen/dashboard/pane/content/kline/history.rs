@@ -1,4 +1,4 @@
-use super::drawing::{DrawingEditState, DrawingUpdate};
+use super::drawing::{DrawingEditState, DrawingTools, DrawingUpdate};
 use std::collections::VecDeque;
 
 const HISTORY_LIMIT: usize = 100;
@@ -20,28 +20,26 @@ impl DrawingHistory {
         &mut self,
         update: DrawingUpdate,
         before: DrawingEditState,
-        after: DrawingEditState,
-        is_dragging: bool,
+        tools: &DrawingTools,
     ) {
         match update {
             DrawingUpdate::AtomicEdit => {
-                self.finish_drawing(before.clone());
+                self.finish_drawing(|| before.clone());
+                let after = tools.edit_state();
                 if before != after {
                     self.record(before, after);
                 }
             }
             DrawingUpdate::GestureStarted { .. } => {
-                self.finish_drawing(before.clone());
+                self.finish_drawing(|| before.clone());
                 self.begin_drawing(before);
             }
             DrawingUpdate::GestureUpdated => {}
             DrawingUpdate::GestureFinished { .. } => {
-                self.finish_drawing(after);
+                self.finish_drawing(|| tools.edit_state());
             }
             DrawingUpdate::None | DrawingUpdate::StateOnly | DrawingUpdate::Visual => {
-                if self.has_pending_drawing() && !is_dragging {
-                    self.finish_drawing(after);
-                }
+                self.finish_if_idle(tools);
             }
         }
     }
@@ -59,17 +57,20 @@ impl DrawingHistory {
         self.pending_drawing = Some(before);
     }
 
-    pub(super) fn finish_drawing(&mut self, after: DrawingEditState) {
+    pub(super) fn finish_drawing(&mut self, after: impl FnOnce() -> DrawingEditState) {
         let Some(before) = self.pending_drawing.take() else {
             return;
         };
+        let after = after();
         if before != after {
             self.record(before, after);
         }
     }
 
-    fn has_pending_drawing(&self) -> bool {
-        self.pending_drawing.is_some()
+    pub(super) fn finish_if_idle(&mut self, tools: &DrawingTools) {
+        if !tools.is_dragging() {
+            self.finish_drawing(|| tools.edit_state());
+        }
     }
 
     pub(super) fn clear(&mut self) {

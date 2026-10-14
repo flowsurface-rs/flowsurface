@@ -17,7 +17,7 @@ use crate::config::theme::ThemeColor;
 use crate::config::theme::ThemeColorRole;
 use crate::config::theme::ThemeColorShade;
 
-pub use chart_data::{HistoricalInputUpdate, KlineData, KlineDataChange, LiveIndicatorUpdate};
+pub use chart_data::{HistoricalInputUpdate, KlineData, LiveIndicatorUpdate};
 use composition::{
     LayerSource as DomainLayerSource, LayerSpec, PanelSpec,
     PanelValuePrecision as DomainPanelValuePrecision,
@@ -29,13 +29,12 @@ pub use indicators::{
     IndicatorFillSpec, IndicatorHistoryRequirement, IndicatorHost, IndicatorInputAvailability,
     IndicatorInputCoverage, IndicatorInputCoverageState, IndicatorInputRequirement,
     IndicatorInputSource, IndicatorMarkSpec, IndicatorOutputLayerSpec, IndicatorOutputRef,
-    IndicatorOverlayChannelSpec, IndicatorOverlaySource, IndicatorPanelRecipe,
-    IndicatorReadoutScope, IndicatorReadoutSpec, IndicatorSegmentSpec, IndicatorSetting,
-    IndicatorSettingChoice, IndicatorSettingControl, IndicatorSettingValue,
-    IndicatorSettingsContext, IndicatorSourceInput, IndicatorUnsupportedReason, OpenInterestSeries,
-    OutputChannelSpec, OutputValue, OutputValueType, TableColumnColor, TableColumnFormat,
-    TableColumnSpec, TableColumnValue, availability, declared_input_requirements,
-    indicator_definition, table_columns, unsupported_reason,
+    IndicatorOverlayChannelSpec, IndicatorPanelRecipe, IndicatorReadoutScope, IndicatorReadoutSpec,
+    IndicatorSegmentSpec, IndicatorSetting, IndicatorSettingChoice, IndicatorSettingControl,
+    IndicatorSettingValue, IndicatorSettingsContext, IndicatorSourceInput,
+    IndicatorUnsupportedReason, OpenInterestSeries, OutputChannelSpec, OutputValue,
+    OutputValueType, TableColumnColor, TableColumnFormat, TableColumnSpec, availability,
+    declared_input_requirements, indicator_definition, table_columns, unsupported_reason,
 };
 pub use indicators::{IndicatorConfig, IndicatorId};
 pub use series::{KlineIndexChange, KlineSeriesPoint, KlineSeriesPoints, KlineUpdate, SeriesColor};
@@ -717,11 +716,10 @@ impl IndicatorInstanceStore {
             );
 
             for fill in kind.fill_specs() {
-                let channel_offset = |source: &IndicatorOverlaySource| {
-                    let IndicatorOverlaySource::Channel(channel) = source;
+                let channel_offset = |channel: &str| {
                     kind.output_channels()
                         .iter()
-                        .find(|output| output.id == *channel)
+                        .find(|output| output.id == channel)
                         .map(|output| i64::from(output.offset_bars))
                         .unwrap_or_default()
                 };

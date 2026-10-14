@@ -2,7 +2,7 @@ use super::fetch::FetchCoordinator;
 use super::layout::{IndicatorRebuildReason, IndicatorState};
 use data::chart::Basis;
 use data::chart::kline::{
-    HistoricalInputUpdate, IndicatorUpdateScope, KlineData, KlineDataChange, KlineIndexChange,
+    HistoricalInputUpdate, IndicatorInputSource, IndicatorUpdateScope, KlineData, KlineIndexChange,
     OpenInterestSeries,
 };
 use exchange::{Kline, TickerInfo, Timeframe, Trade};
@@ -65,28 +65,40 @@ impl DataUpdate<'_> {
         trade_data_enabled: bool,
     ) -> DataUpdateEffect {
         let indicator_ids = indicators.incremental_ids();
-        let change = self.ingest(
-            basis,
-            data,
-            fetch,
-            indicators,
-            &indicator_ids,
-            trade_data_enabled,
-        );
-        if matches!(&change, KlineDataChange::Unchanged)
-            || matches!(
-                &change,
-                KlineDataChange::HistoricalInput { update, .. } if !update.needs_rebuild()
-            )
-        {
-            return DataUpdateEffect::Unchanged;
-        }
+        match self {
+            DataUpdate::HistoricalKlines {
+                req_id,
+                ticker_info,
+                klines,
+                is_batches_done,
+                has_data,
+                ..
+            } => {
+                if req_id.is_some_and(|req_id| !fetch.accepts_data(req_id)) {
+                    return DataUpdateEffect::Unchanged;
+                }
+                if !data
+                    .series()
+                    .iter()
+                    .any(|series| series.ticker_info == *ticker_info)
+                {
+                    if let Some(req_id) = req_id {
+                        fetch.mark_failed_for(*ticker_info, *req_id);
+                    }
+                    return DataUpdateEffect::Unchanged;
+                }
 
-        match (self, change) {
-            (
-                DataUpdate::HistoricalKlines { ticker_info, .. },
-                KlineDataChange::HistoricalKlines { update },
-            ) => {
+                let change = data.insert_historical_klines(*ticker_info, klines, basis);
+                if *is_batches_done && let Some(req_id) = req_id {
+                    if *has_data {
+                        fetch.mark_completed(*ticker_info, *req_id);
+                    } else {
+                        fetch.mark_no_data(*ticker_info, *req_id);
+                    }
+                }
+                let Some(update) = change else {
+                    return DataUpdateEffect::Unchanged;
+                };
                 if *ticker_info == data.base_ticker() {
                     remap_indicator_outputs(data, indicators, update.index_change);
                 }
@@ -101,7 +113,18 @@ impl DataUpdate<'_> {
                 );
                 DataUpdateEffect::HistoricalChanged
             }
-            (DataUpdate::LiveKline { ticker_info, .. }, KlineDataChange::LiveKline { update }) => {
+            DataUpdate::LiveKline {
+                ticker_info, kline, ..
+            } => {
+                let Some(update) = data.update_live_kline(
+                    ticker_info,
+                    kline,
+                    basis,
+                    &indicator_ids,
+                    trade_data_enabled,
+                ) else {
+                    return DataUpdateEffect::Unchanged;
+                };
                 if **ticker_info == data.base_ticker() {
                     remap_indicator_outputs(data, indicators, update.index_change);
                 }
@@ -125,10 +148,30 @@ impl DataUpdate<'_> {
                 );
                 DataUpdateEffect::LiveChanged
             }
-            (
-                DataUpdate::LiveTrades { ticker_info, .. },
-                KlineDataChange::LiveTrades { update },
-            ) => {
+            DataUpdate::LiveTrades {
+                ticker_info,
+                trades,
+            } => {
+                let update_indicator_ids = if data.has_closed_trade_correction(trades, basis) {
+                    indicator_ids
+                        .iter()
+                        .copied()
+                        .filter(|id| {
+                            !indicators.trade_request_affects_indicator(*id, data, **ticker_info)
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    indicator_ids
+                };
+                let Some(update) = data.insert_live_trades(
+                    ticker_info,
+                    trades,
+                    basis,
+                    &update_indicator_ids,
+                    trade_data_enabled,
+                ) else {
+                    return DataUpdateEffect::Unchanged;
+                };
                 if update.rebuild_scope.is_some() || update.closed_trade_correction {
                     let scope = update.rebuild_scope.unwrap_or(IndicatorUpdateScope::Full);
                     let reason = if !basis.is_time() && scope.is_full() {
@@ -151,10 +194,25 @@ impl DataUpdate<'_> {
                 );
                 DataUpdateEffect::LiveChanged
             }
-            (
-                DataUpdate::HistoricalTrades { ticker_info, .. },
-                KlineDataChange::HistoricalTrades,
-            ) => {
+            DataUpdate::HistoricalTrades {
+                ticker_info,
+                trades,
+                is_batches_done,
+                req_id,
+            } => {
+                if req_id.is_some_and(|req_id| !fetch.accepts_data(req_id)) {
+                    return DataUpdateEffect::Unchanged;
+                }
+
+                let change =
+                    data.insert_historical_trades(*ticker_info, trades, *is_batches_done, basis);
+                if let Some(req_id) = req_id {
+                    fetch.record_trade_batch(*req_id, trades.len());
+                }
+                fetch.complete_trade_fetch(*ticker_info, *req_id, *is_batches_done);
+                if !change {
+                    return DataUpdateEffect::Unchanged;
+                }
                 if basis.is_time() {
                     indicators.mark_for_trade_ticker(
                         data,
@@ -170,110 +228,13 @@ impl DataUpdate<'_> {
                 }
                 DataUpdateEffect::HistoricalChanged
             }
-            (_, KlineDataChange::HistoricalInput { source, update }) => {
-                debug_assert!(update.needs_rebuild());
-                indicators.mark_for_inputs(data, &[source], IndicatorRebuildReason::InputFetch);
-                DataUpdateEffect::HistoricalChanged
-            }
-            _ => unreachable!("data update outcome does not match its input"),
-        }
-    }
-
-    fn ingest(
-        &self,
-        basis: Basis,
-        data: &mut KlineData,
-        fetch: &mut FetchCoordinator,
-        indicators: &IndicatorState,
-        indicator_ids: &[data::chart::kline::IndicatorInstanceId],
-        trade_data_enabled: bool,
-    ) -> KlineDataChange {
-        match self {
-            DataUpdate::HistoricalKlines {
-                req_id,
-                ticker_info,
-                klines,
-                is_batches_done,
-                has_data,
-                ..
-            } => {
-                if req_id.is_some_and(|req_id| !fetch.accepts_data(req_id)) {
-                    return KlineDataChange::Unchanged;
-                }
-                if !data
-                    .series()
-                    .iter()
-                    .any(|series| series.ticker_info == *ticker_info)
-                {
-                    if let Some(req_id) = req_id {
-                        fetch.mark_failed_for(*ticker_info, *req_id);
-                    }
-                    return KlineDataChange::Unchanged;
-                }
-
-                let change = data.insert_historical_klines(*ticker_info, klines, basis);
-                if *is_batches_done && let Some(req_id) = req_id {
-                    if *has_data {
-                        fetch.mark_completed(*ticker_info, *req_id);
-                    } else {
-                        fetch.mark_no_data(*ticker_info, *req_id);
-                    }
-                }
-                change
-            }
-            DataUpdate::LiveKline {
-                ticker_info, kline, ..
-            } => {
-                data.update_live_kline(ticker_info, kline, basis, indicator_ids, trade_data_enabled)
-            }
-            DataUpdate::LiveTrades {
-                ticker_info,
-                trades,
-            } => {
-                let update_indicator_ids = if data.has_closed_trade_correction(trades, basis) {
-                    indicator_ids
-                        .iter()
-                        .copied()
-                        .filter(|id| {
-                            !indicators.trade_request_affects_indicator(*id, data, **ticker_info)
-                        })
-                        .collect::<Vec<_>>()
-                } else {
-                    indicator_ids.to_vec()
-                };
-                data.insert_live_trades(
-                    ticker_info,
-                    trades,
-                    basis,
-                    &update_indicator_ids,
-                    trade_data_enabled,
-                )
-            }
-            DataUpdate::HistoricalTrades {
-                ticker_info,
-                trades,
-                is_batches_done,
-                req_id,
-            } => {
-                if req_id.is_some_and(|req_id| !fetch.accepts_data(req_id)) {
-                    return KlineDataChange::Unchanged;
-                }
-
-                let change =
-                    data.insert_historical_trades(*ticker_info, trades, *is_batches_done, basis);
-                if let Some(req_id) = req_id {
-                    fetch.record_trade_batch(*req_id, trades.len());
-                }
-                fetch.complete_trade_fetch(*ticker_info, *req_id, *is_batches_done);
-                change
-            }
             DataUpdate::HistoricalOpenInterest {
                 req_id,
                 ticker_info,
                 series,
             } => {
                 if req_id.is_some_and(|req_id| !fetch.accepts_data(req_id)) {
-                    return KlineDataChange::Unchanged;
+                    return DataUpdateEffect::Unchanged;
                 }
 
                 let change = data.insert_historical_open_interest(
@@ -282,10 +243,7 @@ impl DataUpdate<'_> {
                     &indicators.instances,
                 );
                 if let Some(req_id) = req_id {
-                    let KlineDataChange::HistoricalInput { update, .. } = &change else {
-                        unreachable!("open-interest update returned another outcome")
-                    };
-                    match update {
+                    match change {
                         HistoricalInputUpdate::Rejected => {
                             fetch.mark_failed_for(*ticker_info, *req_id)
                         }
@@ -297,7 +255,16 @@ impl DataUpdate<'_> {
                         }
                     }
                 }
-                change
+                if change.needs_rebuild() {
+                    indicators.mark_for_inputs(
+                        data,
+                        &[IndicatorInputSource::OpenInterest],
+                        IndicatorRebuildReason::InputFetch,
+                    );
+                    DataUpdateEffect::HistoricalChanged
+                } else {
+                    DataUpdateEffect::Unchanged
+                }
             }
         }
     }

@@ -1,5 +1,5 @@
 use super::YUnit;
-use super::indicators::{IndicatorAttachmentMode, IndicatorPanelRecipe, TableColumnValue};
+use super::indicators::{IndicatorAttachmentMode, IndicatorPanelRecipe};
 use super::{IndicatorId, IndicatorInstanceId, IndicatorInstanceStore, IndicatorOutputRef};
 use exchange::unit::{Power10, Price, PriceStep, Qty};
 use exchange::{Ticker, TickerInfo};
@@ -59,10 +59,7 @@ pub enum MarkKind {
 
 impl MarkKind {
     pub const fn supports_line_styling(self) -> bool {
-        matches!(
-            self,
-            Self::Line | Self::StepLine | Self::Area | Self::Segment | Self::HorizontalLevel
-        )
+        self.is_line_like()
     }
 
     pub const fn is_line_like(self) -> bool {
@@ -75,10 +72,7 @@ impl MarkKind {
     /// Marks that consume a bar-anchored numeric series. Sparse outputs are
     /// joined only across consecutive available samples by the renderer.
     pub const fn is_series_line_like(self) -> bool {
-        matches!(
-            self,
-            Self::Line | Self::StepLine | Self::Area | Self::Segment | Self::HorizontalLevel
-        )
+        self.is_line_like()
     }
 }
 
@@ -919,16 +913,6 @@ impl PanelSpec {
         }
     }
 
-    pub fn set_base_layer(&mut self, layer_id: LayerId) -> bool {
-        if self.layers.iter().any(|layer| layer.id == layer_id) {
-            self.base_layer = Some(layer_id);
-            self.enforce_comparison_mark_policy();
-            true
-        } else {
-            false
-        }
-    }
-
     fn set_layer_mark(&mut self, layer_id: LayerId, mark: MarkKind) -> bool {
         let is_multi_source = self.uses_multi_source();
         let force_line = self.comparison_policy.force_line_for_non_base_sources
@@ -1087,10 +1071,6 @@ impl ChartComposition {
 
     pub fn panel_effective_scale_mode(&self, panel_id: PanelId) -> Option<PanelScaleMode> {
         self.panel(panel_id).map(PanelSpec::effective_scale_mode)
-    }
-
-    pub fn panel_effective_data_kind(&self, panel_id: PanelId) -> Option<LayerDataKind> {
-        self.panel(panel_id).map(PanelSpec::effective_data_kind)
     }
 
     pub fn panel_effective_mark(&self, panel_id: PanelId) -> Option<MarkKind> {
@@ -1312,19 +1292,6 @@ impl ChartComposition {
         true
     }
 
-    pub fn set_panel_value_precision(
-        &mut self,
-        panel_id: PanelId,
-        value_precision: Option<PanelValuePrecision>,
-    ) -> bool {
-        let Some(panel) = self.panel_mut(panel_id) else {
-            return false;
-        };
-
-        panel.value_precision = value_precision;
-        true
-    }
-
     fn set_panel_layer_mark(
         &mut self,
         panel_id: PanelId,
@@ -1367,46 +1334,6 @@ impl ChartComposition {
             return false;
         };
         layer.mark_override.take().is_some()
-    }
-
-    fn set_panel_layer_data_kind(
-        &mut self,
-        panel_id: PanelId,
-        layer_id: LayerId,
-        data_kind: LayerDataKind,
-    ) -> bool {
-        let Some(panel) = self.panel_mut(panel_id) else {
-            return false;
-        };
-
-        let Some(layer) = panel.layers.iter_mut().find(|layer| layer.id == layer_id) else {
-            return false;
-        };
-
-        layer.data_kind = data_kind;
-        if matches!(layer.effective_mark(), MarkKind::Bar(_)) {
-            layer.mark_override = Some(MarkKind::Bar(default_bar_mode_for_data_kind(data_kind)));
-        }
-        true
-    }
-
-    fn set_panel_layer_bar_mode(
-        &mut self,
-        panel_id: PanelId,
-        layer_id: LayerId,
-        mode: BarMode,
-    ) -> bool {
-        let Some(panel) = self.panel_mut(panel_id) else {
-            return false;
-        };
-
-        let Some(layer) = panel.layers.iter_mut().find(|layer| layer.id == layer_id) else {
-            return false;
-        };
-
-        layer.mark_override = Some(MarkKind::Bar(mode));
-        panel.enforce_comparison_mark_policy();
-        true
     }
 
     pub fn remove_panel(&mut self, panel_id: PanelId) -> bool {
@@ -1782,24 +1709,6 @@ impl ChartComposition {
         changed
     }
 
-    pub fn set_panel_data_kind(&mut self, panel_index: usize, data_kind: LayerDataKind) -> bool {
-        let Some((panel_id, layer_id)) = self.panel_base_layer_ids(panel_index) else {
-            return false;
-        };
-        self.set_panel_layer_data_kind(panel_id, layer_id, data_kind)
-    }
-
-    fn set_panel_bar_mode(&mut self, panel_index: usize, mode: BarMode) -> bool {
-        let Some((panel_id, layer_id)) = self.panel_base_layer_ids(panel_index) else {
-            return false;
-        };
-        self.set_panel_layer_bar_mode(panel_id, layer_id, mode)
-    }
-
-    pub fn set_panel_histogram_mode(&mut self, panel_index: usize, mode: HistogramMode) -> bool {
-        self.set_panel_bar_mode(panel_index, BarMode::Histogram(mode))
-    }
-
     pub fn add_indicator(&mut self, id: IndicatorInstanceId, indicator: IndicatorId) -> bool {
         if self.selected_indicators().contains(&id) {
             return false;
@@ -1881,9 +1790,7 @@ impl ChartComposition {
                 panel_title,
                 columns,
             } => {
-                let Some(channel_id) = columns.first().map(|column| match &column.value {
-                    TableColumnValue::Channel(channel) => channel.clone(),
-                }) else {
+                let Some(channel_id) = columns.first().map(|column| column.value.clone()) else {
                     return false;
                 };
                 let Some(panel_id) = self.add_table_panel(panel_title, DataSourceId::Primary)

@@ -1092,8 +1092,6 @@ impl KlineChart {
             horizontal_offset,
             base_ticker,
             series: self.data.series(),
-            active_indicators: &active_indicators,
-            indicator_instances: &self.indicators.instances,
             open_interest_required: data_requirements.open_interest,
             trade_data_required: data_requirements.trades,
             trade_fetch_enabled: crate::connector::fetcher::is_trade_fetch_enabled(),

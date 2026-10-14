@@ -43,11 +43,6 @@ impl IndicatorId {
         self.id()
     }
 
-    fn supports_market(&self, market: exchange::adapter::MarketKind) -> bool {
-        let supported_markets = &self.definition().supported_markets;
-        supported_markets.is_empty() || supported_markets.contains(&market)
-    }
-
     pub fn default_instance_slot(&self) -> u64 {
         self.id()
             .bytes()
@@ -150,9 +145,6 @@ impl IndicatorId {
         let Some(registration) = catalog().get(self) else {
             return Some(IndicatorUnsupportedReason::NotInstalled);
         };
-        if !self.supports_market(context.base_ticker.market_type()) {
-            return Some(IndicatorUnsupportedReason::SourceNotSupported);
-        }
         registration.unsupported_reason(context)
     }
 
@@ -160,7 +152,7 @@ impl IndicatorId {
         if let Some(reason) = self.unsupported_reason(context) {
             return IndicatorAvailability::Unsupported(reason);
         }
-        self.definition().availability(context)
+        IndicatorAvailability::Available
     }
 
     pub fn declared_input_requirements(&self) -> Vec<IndicatorInputRequirement> {
@@ -176,13 +168,6 @@ impl IndicatorId {
 
     pub fn default_view(&self) -> &'static super::IndicatorPanelRecipe {
         self.definition().default_view()
-    }
-
-    pub fn for_market(market: exchange::adapter::MarketKind) -> Vec<Self> {
-        all_indicators()
-            .into_iter()
-            .filter(|indicator| indicator.supports_market(market))
-            .collect()
     }
 
     pub fn requires_trade_data(&self) -> bool {

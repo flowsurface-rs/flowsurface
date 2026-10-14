@@ -16,7 +16,7 @@ use crate::{
 };
 use data::chart::kline::KlineData;
 use data::chart::kline::footprint::{ClusterKind, ClusterScaling};
-use data::chart::kline::indicators::{AvailabilityContext, unsupported_reason};
+use data::chart::kline::indicators::{AvailabilityContext, all_indicators, unsupported_reason};
 use data::chart::kline::{
     BaseSeriesSource, CandlestickColorSlot, CandlestickConfig, ChartOptions, FootprintConfig,
     FootprintImbalanceConfig, FootprintPocColorConfig, FootprintPocColorSlot, FootprintPocConfig,
@@ -234,7 +234,7 @@ impl<'a> SettingsContext<'a> {
             return Vec::new();
         };
 
-        IndicatorId::for_market(self.data.base_ticker().market_type())
+        all_indicators()
             .into_iter()
             .filter(|kind| {
                 unsupported_reason(

@@ -263,24 +263,44 @@ pub enum Event {
 
 impl DrawingState {
     pub(super) fn update(&mut self, event: Event, settings: &mut DrawingSettings) -> DrawingUpdate {
-        let before = self.tools.edit_state();
         let update = match event {
-            Event::Tools(message) => self.tools.update(message, settings),
+            Event::Tools(
+                message @ (DrawingMessage::SetSelectedDrawingStrokeColor(_)
+                | DrawingMessage::SetSelectedDrawingStrokeShade(_)
+                | DrawingMessage::SetSelectedDrawingFillColor(_)
+                | DrawingMessage::SetSelectedDrawingFillShade(_)
+                | DrawingMessage::SetSelectedDrawingStrokeWidth(_)
+                | DrawingMessage::SetHorizontalLineRay(_)
+                | DrawingMessage::SetBoxExtendRight(_)
+                | DrawingMessage::DeleteSelectedDrawing
+                | DrawingMessage::DeleteDrawing(_)
+                | DrawingMessage::DeleteAllDrawings),
+            ) => {
+                let before = self.tools.edit_state();
+                let update = self.tools.update(message, settings);
+                return self.record_update(update, before);
+            }
+            Event::Tools(
+                message @ (DrawingMessage::SelectTool(_)
+                | DrawingMessage::ToggleMagnet
+                | DrawingMessage::ShowToolsPage
+                | DrawingMessage::ShowObjectListPage
+                | DrawingMessage::ClearSelection
+                | DrawingMessage::OpenDrawingToolbar(_)
+                | DrawingMessage::SelectBoxBorderStyle
+                | DrawingMessage::SelectBoxFillStyle),
+            ) => self.tools.update(message, settings),
             Event::FloatingToolbar(event) => {
                 self.floating_toolbar.update(event);
                 DrawingUpdate::None
             }
         };
-        self.record_update(update, before)
+        self.history.finish_if_idle(&self.tools);
+        update
     }
 
     fn record_update(&mut self, update: DrawingUpdate, before: DrawingEditState) -> DrawingUpdate {
-        self.history.apply_update(
-            update,
-            before,
-            self.tools.edit_state(),
-            self.tools.is_dragging(),
-        );
+        self.history.apply_update(update, before, &self.tools);
         update
     }
 
@@ -289,19 +309,38 @@ impl DrawingState {
         event: KlineWidgetDrawingEvent,
         settings: &DrawingSettings,
     ) -> DrawingUpdate {
-        let before = self.tools.edit_state();
-        let update = self.tools.handle_widget_drawing_event(event, settings);
-        self.record_update(update, before)
+        let update = match event {
+            KlineWidgetDrawingEvent::AnchorPressed(_)
+            | KlineWidgetDrawingEvent::DragStarted { .. } => {
+                let before = self.tools.edit_state();
+                let update = self.tools.handle_widget_drawing_event(event, settings);
+                return self.record_update(update, before);
+            }
+            KlineWidgetDrawingEvent::MagnetModifierChanged(_)
+            | KlineWidgetDrawingEvent::Selected(_)
+            | KlineWidgetDrawingEvent::MarqueeSelected(_)
+            | KlineWidgetDrawingEvent::AnchorMoved(_)
+            | KlineWidgetDrawingEvent::DragMoved { .. }
+            | KlineWidgetDrawingEvent::DragFinished { .. }
+            | KlineWidgetDrawingEvent::MeasureClick(_)
+            | KlineWidgetDrawingEvent::MeasureMove(_)
+            | KlineWidgetDrawingEvent::MeasureCanceled
+            | KlineWidgetDrawingEvent::DraftCanceled => {
+                self.tools.handle_widget_drawing_event(event, settings)
+            }
+        };
+        self.history.finish_if_idle(&self.tools);
+        update
     }
 
     pub(super) fn handle_escape(&mut self) -> DrawingUpdate {
-        let before = self.tools.edit_state();
         let update = self.tools.handle_escape();
-        self.record_update(update, before)
+        self.history.finish_if_idle(&self.tools);
+        update
     }
 
     pub(super) fn finish_pending_edit(&mut self) {
-        self.history.finish_drawing(self.tools.edit_state());
+        self.history.finish_drawing(|| self.tools.edit_state());
     }
 
     pub(super) fn clear_history(&mut self) {

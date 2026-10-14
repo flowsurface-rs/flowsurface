@@ -291,10 +291,11 @@ impl IndicatorPresentationContext {
                 add_slot(style_slot, layer.mark.supports_line_styling());
             }
 
-            for overlay in indicator.overlay_channels().iter().filter(|overlay| {
-                let data::chart::kline::IndicatorOverlaySource::Channel(channel) = &overlay.source;
-                channel == &layer.presentation_output.channel_id
-            }) {
+            for overlay in indicator
+                .overlay_channels()
+                .iter()
+                .filter(|overlay| overlay.source == layer.presentation_output.channel_id)
+            {
                 add_slot(&overlay.color_slot, true);
             }
         }
@@ -1165,16 +1166,14 @@ impl<'a> IndicatorView<'a> {
         }
 
         if let Some(kind) = self.indicator_kind(output.instance_id)
-            && let Some(channel) = kind.overlay_channels().iter().find(|channel| {
-                let data::chart::kline::IndicatorOverlaySource::Channel(channel_id) =
-                    &channel.source;
-                channel_id == &output.channel_id
-            })
+            && let Some(channel) = kind
+                .overlay_channels()
+                .iter()
+                .find(|channel| channel.source == output.channel_id)
         {
-            let data::chart::kline::IndicatorOverlaySource::Channel(channel_id) = &channel.source;
             return Some(OverlayChannelSpec {
                 label: &channel.label,
-                source: channel_id,
+                source: &channel.source,
                 line_width: channel.line_width,
                 color_role: channel.color_role,
                 color_slot: &channel.color_slot,
@@ -1724,8 +1723,7 @@ impl IndicatorView<'_> {
                 .iter()
                 .filter(|readout| effective_mark.is_none_or(|mark| readout.scope.matches(mark)))
                 .filter_map(|readout| {
-                    let data::chart::kline::IndicatorOverlaySource::Channel(channel_id) =
-                        &readout.source;
+                    let channel_id = &readout.source;
                     let source_index = self.indicator_source_index_for_scene_at_channel(
                         scene,
                         series_index,

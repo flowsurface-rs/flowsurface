@@ -6,11 +6,10 @@ use super::{
     IndicatorConfigError, IndicatorDefinition, IndicatorFillGeometry, IndicatorFillSpec,
     IndicatorHistoryRequirement, IndicatorInputCoverageState, IndicatorInputRequirement,
     IndicatorInputSource, IndicatorMarkSpec, IndicatorOutputLayerSpec, IndicatorOverlayChannelSpec,
-    IndicatorOverlaySource, IndicatorPanelRecipe, IndicatorReadoutScope, IndicatorReadoutSpec,
-    IndicatorSegmentSpec, IndicatorSetting, IndicatorSettingChoice, IndicatorSettingControl,
-    IndicatorSettingValue, IndicatorSettingsContext, IndicatorSourceInput,
-    IndicatorUnsupportedReason, OutputChannelSpec, OutputValue, OutputValueType, TableColumnColor,
-    TableColumnFormat, TableColumnSpec, TableColumnValue,
+    IndicatorPanelRecipe, IndicatorReadoutScope, IndicatorReadoutSpec, IndicatorSegmentSpec,
+    IndicatorSetting, IndicatorSettingChoice, IndicatorSettingControl, IndicatorSettingValue,
+    IndicatorSettingsContext, IndicatorSourceInput, IndicatorUnsupportedReason, OutputChannelSpec,
+    OutputValue, OutputValueType, TableColumnColor, TableColumnFormat, TableColumnSpec,
 };
 use crate::chart::Basis;
 use crate::chart::kline::composition::{
@@ -22,8 +21,8 @@ use exchange::UnixMs;
 use indicator_engine::{
     Color, CompiledIndicator, FrameOutput, HorizontalLevelOutput,
     IndicatorConfig as EngineIndicatorConfig, IndicatorFrame, IndicatorInstance, InputValue,
-    MarkerOutput, OhlcOutput, PlotDescriptor, PlotValueType, RangeOutput, RegionOutput,
-    RegionUpdate, RuntimeError, RuntimeLimits, SegmentOutput, Value, ValueType,
+    MarkerOutput, OhlcOutput, PlanningError, PlotDescriptor, PlotValueType, RangeOutput,
+    RegionOutput, RegionUpdate, RuntimeError, RuntimeLimits, SegmentOutput, Value, ValueType,
 };
 use rustc_hash::FxHashMap;
 use std::collections::BTreeMap;
@@ -840,7 +839,7 @@ fn descriptor_view(
             let color_slot = plot.color_slot.clone()?;
             Some(IndicatorOverlayChannelSpec {
                 label: plot.label.clone(),
-                source: IndicatorOverlaySource::Channel(plot.id.clone()),
+                source: plot.id.clone(),
                 line_width: plot.width,
                 color_role: style_role_for_plot(style_slots, &color_slot),
                 color_slot,
@@ -852,8 +851,8 @@ fn descriptor_view(
         .fills
         .iter()
         .map(|fill| IndicatorFillSpec {
-            upper: IndicatorOverlaySource::Channel(fill.upper.clone()),
-            lower: IndicatorOverlaySource::Channel(fill.lower.clone()),
+            upper: fill.upper.clone(),
+            lower: fill.lower.clone(),
             upper_offset_bars: fill.upper_offset_bars,
             lower_offset_bars: fill.lower_offset_bars,
             style_by: fill.style_by.clone(),
@@ -876,7 +875,7 @@ fn descriptor_view(
         .iter()
         .map(|readout| IndicatorReadoutSpec {
             label: readout.label.clone(),
-            source: IndicatorOverlaySource::Channel(readout.channel.clone()),
+            source: readout.channel.clone(),
             color_role: style_role_for_plot(style_slots, &readout.color_slot),
             color_slot: readout.color_slot.clone(),
             scope: readout
@@ -916,7 +915,7 @@ fn descriptor_view(
                 .iter()
                 .map(|column| TableColumnSpec {
                     label: column.label.clone(),
-                    value: TableColumnValue::Channel(column.channel.clone()),
+                    value: column.channel.clone(),
                     format: parse_table_format(&column.format),
                     color: match &column.color {
                         indicator_engine::PresentationColumnColor::Static { slot } => {
@@ -1403,16 +1402,19 @@ impl IndicatorRegistration {
         &self,
         config: IndicatorConfig,
     ) -> Result<ScriptIndicatorRuntime, IndicatorConfigError> {
-        self.validate_config(&config)?;
         ScriptIndicatorRuntime::new(self.compiled.clone(), config)
     }
 }
 
+enum ScriptRuntimeState {
+    Active(Box<IndicatorInstance>),
+    Quarantined(String),
+}
+
 pub(crate) struct ScriptIndicatorRuntime {
     compiled: Arc<CompiledIndicator>,
-    instance: Option<IndicatorInstance>,
+    state: ScriptRuntimeState,
     outputs: IndicatorOutputStore,
-    diagnostic: Option<String>,
 }
 
 impl ScriptIndicatorRuntime {
@@ -1423,23 +1425,21 @@ impl ScriptIndicatorRuntime {
         let instance = Self::instantiate(&compiled, &config)?;
         Ok(Self {
             compiled,
-            instance: Some(instance),
+            state: ScriptRuntimeState::Active(Box::new(instance)),
             outputs: IndicatorOutputStore::default(),
-            diagnostic: None,
         })
     }
 
     fn quarantine(&mut self, phase: &str, error: impl std::fmt::Display) {
-        if self.diagnostic.is_none() {
+        if matches!(self.state, ScriptRuntimeState::Active(_)) {
             let diagnostic = format!("{phase}: {error}");
             log::error!(
                 "indicator {} quarantined: {diagnostic}",
                 self.compiled.descriptor.id
             );
-            self.diagnostic = Some(diagnostic);
+            self.state = ScriptRuntimeState::Quarantined(diagnostic);
         }
         self.outputs = IndicatorOutputStore::default();
-        self.instance = None;
     }
 
     fn instantiate(
@@ -1453,51 +1453,45 @@ impl ScriptIndicatorRuntime {
             RuntimeLimits::untrusted(),
         )
         .map_err(|error| {
-            IndicatorConfigError::Deserialize(format!("indicator could not be planned: {error}"))
+            let message = match error {
+                PlanningError::HistoryAnalysisWorkLimitExceeded
+                | PlanningError::HistoryAnalysisDepthLimitExceeded => error.to_string(),
+                _ => format!("indicator could not be planned: {error}"),
+            };
+            IndicatorConfigError::Deserialize(message)
         })
     }
 }
 
 impl ScriptIndicatorRuntime {
     pub(super) fn committed_index(&self) -> Option<usize> {
-        self.instance
-            .as_ref()
-            .and_then(IndicatorInstance::committed_index)
+        match &self.state {
+            ScriptRuntimeState::Active(instance) => instance.committed_index(),
+            ScriptRuntimeState::Quarantined(_) => None,
+        }
     }
 
     pub(super) fn evaluate_closed(&mut self, frame: &IndicatorFrame) {
-        if self.diagnostic.is_some() {
+        let ScriptRuntimeState::Active(instance) = &mut self.state else {
             return;
-        }
-        let result = self
-            .instance
-            .as_mut()
-            .map(|instance| instance.evaluate_closed(frame.clone()))
-            .map(|result| result.and_then(|output| self.outputs.apply_output(output, false)));
-        match result {
-            Some(Ok(())) => {}
-            Some(Err(error)) => {
-                self.quarantine(&format!("closed bar {} failed", frame.index), error)
-            }
-            None => {}
+        };
+        let result = instance
+            .evaluate_closed(frame.clone())
+            .and_then(|output| self.outputs.apply_output(output, false));
+        if let Err(error) = result {
+            self.quarantine(&format!("closed bar {} failed", frame.index), error);
         }
     }
 
     pub(super) fn preview_open(&mut self, frame: &IndicatorFrame) {
-        if self.diagnostic.is_some() {
+        let ScriptRuntimeState::Active(instance) = &mut self.state else {
             return;
-        }
-        let result = self
-            .instance
-            .as_mut()
-            .map(|instance| instance.preview_open(frame.clone()))
-            .map(|result| result.and_then(|output| self.outputs.apply_output(output, true)));
-        match result {
-            Some(Ok(())) => {}
-            Some(Err(error)) => {
-                self.quarantine(&format!("preview bar {} failed", frame.index), error)
-            }
-            None => {}
+        };
+        let result = instance
+            .preview_open(frame.clone())
+            .and_then(|output| self.outputs.apply_output(output, true));
+        if let Err(error) = result {
+            self.quarantine(&format!("preview bar {} failed", frame.index), error);
         }
     }
 
@@ -1548,7 +1542,10 @@ impl ScriptIndicatorRuntime {
     }
 
     pub(super) fn diagnostic(&self) -> Option<&str> {
-        self.diagnostic.as_deref()
+        match &self.state {
+            ScriptRuntimeState::Active(_) => None,
+            ScriptRuntimeState::Quarantined(diagnostic) => Some(diagnostic),
+        }
     }
 }
 

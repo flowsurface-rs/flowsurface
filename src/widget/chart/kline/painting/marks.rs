@@ -12,7 +12,7 @@ use crate::{style, widget::chart::kline::painting};
 use data::chart::kline::series::KlineSeries;
 use data::chart::kline::{
     IndicatorFillGeometry, IndicatorFillSpec, IndicatorInputSource, IndicatorOutputRef,
-    LineStrokeStyle, OutputValue, TableColumnColor, TableColumnFormat, TableColumnValue,
+    LineStrokeStyle, OutputValue, TableColumnColor, TableColumnFormat,
 };
 use data::config::theme::ACCENT_COUNT;
 use data::config::theme::ThemeColorRole;
@@ -627,8 +627,38 @@ impl MarkRenderer<'_> {
             );
     }
 
+    pub(crate) fn draw_indicator_structural_output(
+        &self,
+        frame: &mut PaintInputs,
+        layer: &ResolvedIndicatorLayer,
+        value_type: data::chart::kline::OutputValueType,
+        map_y: impl Fn(f64) -> Option<f32>,
+    ) {
+        let output = &layer.presentation_output;
+        match value_type {
+            data::chart::kline::OutputValueType::Ohlc => {
+                let (body_width, wick_width) =
+                    candlestick_widths(self.scene.logical_bar_spacing(), self.pixels);
+                self.draw_indicator_ohlc_output(
+                    frame,
+                    output.instance_id,
+                    output,
+                    layer.required_input,
+                    map_y,
+                    body_width,
+                    wick_width,
+                );
+            }
+            data::chart::kline::OutputValueType::Range => {
+                self.draw_indicator_range_output(frame, output, layer.required_input, map_y);
+            }
+            data::chart::kline::OutputValueType::Number
+            | data::chart::kline::OutputValueType::Boolean => {}
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn draw_indicator_ohlc_output(
+    fn draw_indicator_ohlc_output(
         &self,
         frame: &mut PaintInputs,
         value_id: PanelValueId,
@@ -720,7 +750,7 @@ impl MarkRenderer<'_> {
         );
     }
 
-    pub(crate) fn draw_indicator_range_output(
+    fn draw_indicator_range_output(
         &self,
         frame: &mut PaintInputs,
         output: &IndicatorOutputRef,
@@ -1187,8 +1217,8 @@ impl MarkRenderer<'_> {
         let Some(units) = scene.bar_units.first() else {
             return segments;
         };
-        let data::chart::kline::IndicatorOverlaySource::Channel(upper_channel) = &fill.upper;
-        let data::chart::kline::IndicatorOverlaySource::Channel(lower_channel) = &fill.lower;
+        let upper_channel = &fill.upper;
+        let lower_channel = &fill.lower;
         let effective_offset = |channel_id: &str, explicit: i32| {
             if explicit != 0 {
                 i64::from(explicit)
@@ -1314,7 +1344,7 @@ impl MarkRenderer<'_> {
     ) -> iced::Color {
         let generated_accents = self.generated_accents;
         let palette = self.palette;
-        let data::chart::kline::IndicatorOverlaySource::Channel(upper_channel) = &fill.upper;
+        let upper_channel = &fill.upper;
         let style_slot = style_by.map_or_else(
             || fill.color_slot.as_str(),
             |state| match (
@@ -1346,7 +1376,6 @@ impl MarkRenderer<'_> {
         frame: &mut PaintInputs,
         indicator_panel: &IndicatorPanelScene,
     ) {
-        let pixels = self.pixels;
         let scene = self.scene;
         if self
             .indicators
@@ -1380,64 +1409,16 @@ impl MarkRenderer<'_> {
                 .fill_specs_for_panel_value(Some(value_id))
                 .iter()
             {
-                let color = self.indicator_fill_color(value_id, fill, None);
-                frame.with_clip(panel_plot, |frame| match fill.geometry {
-                    IndicatorFillGeometry::PanelBand => {
-                        let Some(upper_value) = self
-                            .indicators
-                            .indicator_source_value_for_latest_bar_with_offset(
-                                value_id,
-                                match &fill.upper {
-                                    data::chart::kline::IndicatorOverlaySource::Channel(
-                                        channel,
-                                    ) => channel,
-                                },
-                                fill.upper_offset_bars,
-                            )
-                        else {
-                            return;
-                        };
-                        let Some(lower_value) = self
-                            .indicators
-                            .indicator_source_value_for_latest_bar_with_offset(
-                                value_id,
-                                match &fill.lower {
-                                    data::chart::kline::IndicatorOverlaySource::Channel(
-                                        channel,
-                                    ) => channel,
-                                },
-                                fill.lower_offset_bars,
-                            )
-                        else {
-                            return;
-                        };
-                        let Some(upper_y) =
-                            scene.map_indicator_plot(indicator_panel.panel_index, upper_value)
-                        else {
-                            return;
-                        };
-                        let Some(lower_y) =
-                            scene.map_indicator_plot(indicator_panel.panel_index, lower_value)
-                        else {
-                            return;
-                        };
-                        fill_static_band(frame, panel_plot, upper_y, lower_y, color, pixels);
-                    }
-                    IndicatorFillGeometry::SeriesBand => {
-                        let segments = self.band_segments(value_id, fill, |value| {
-                            scene.map_indicator_plot(indicator_panel.panel_index, value)
-                        });
-                        fill_band_segments(frame, segments, pixels, |style| {
-                            self.indicator_fill_color(value_id, fill, style)
-                        });
-                    }
+                frame.with_clip(panel_plot, |frame| {
+                    self.fill_indicator_band(frame, value_id, fill, panel_plot, |value| {
+                        scene.map_indicator_plot(indicator_panel.panel_index, value)
+                    });
                 });
             }
         }
     }
 
     pub(crate) fn fill_primary_overlay_backgrounds(&self, frame: &mut PaintInputs) {
-        let pixels = self.pixels;
         let scene = self.scene;
         let Some(primary_panel_id) = self.indicators.composition.primary_panel_id() else {
             return;
@@ -1476,74 +1457,55 @@ impl MarkRenderer<'_> {
                     .fill_specs_for_panel_value(Some(value_id))
                     .iter()
                 {
-                    let color = self.indicator_fill_color(value_id, fill, None);
-                    match fill.geometry {
-                        IndicatorFillGeometry::PanelBand => {
-                            let Some(upper_value) = self
-                                .indicators
-                                .indicator_source_value_for_latest_bar_with_offset(
-                                    value_id,
-                                    match &fill.upper {
-                                        data::chart::kline::IndicatorOverlaySource::Channel(
-                                            channel,
-                                        ) => channel,
-                                    },
-                                    fill.upper_offset_bars,
-                                )
-                            else {
-                                continue;
-                            };
-                            let Some(lower_value) = self
-                                .indicators
-                                .indicator_source_value_for_latest_bar_with_offset(
-                                    value_id,
-                                    match &fill.lower {
-                                        data::chart::kline::IndicatorOverlaySource::Channel(
-                                            channel,
-                                        ) => channel,
-                                    },
-                                    fill.lower_offset_bars,
-                                )
-                            else {
-                                continue;
-                            };
-                            let Some(upper_y) =
-                                scene.map_primary_plot_with_anchor(upper_value, base_series_anchor)
-                            else {
-                                continue;
-                            };
-                            let Some(lower_y) =
-                                scene.map_primary_plot_with_anchor(lower_value, base_series_anchor)
-                            else {
-                                continue;
-                            };
-                            fill_static_band(frame, primary_plot, upper_y, lower_y, color, pixels);
-                        }
-                        IndicatorFillGeometry::SeriesBand => {
-                            let segments = self.band_segments(value_id, fill, |value| {
-                                scene.map_primary_plot_with_anchor(value, base_series_anchor)
-                            });
-                            fill_band_segments(frame, segments, pixels, |style| {
-                                self.indicator_fill_color(value_id, fill, style)
-                            });
-                        }
-                    }
+                    self.fill_indicator_band(frame, value_id, fill, primary_plot, |value| {
+                        scene.map_primary_plot_with_anchor(value, base_series_anchor)
+                    });
                 }
             }
         });
     }
 
-    fn table_column_value(
+    fn fill_indicator_band(
         &self,
-        series: &KlineSeries,
+        frame: &mut PaintInputs,
         value_id: PanelValueId,
-        bar_index: usize,
-        column: &TableColumnValue,
-    ) -> Option<OutputValue> {
-        match column {
-            TableColumnValue::Channel(channel) => self
-                .indicators
-                .indicator_output_value_for_series_at_channel(series, value_id, channel, bar_index),
+        fill: &IndicatorFillSpec,
+        plot: Rectangle,
+        mut map_y: impl FnMut(f64) -> Option<f32>,
+    ) {
+        match fill.geometry {
+            IndicatorFillGeometry::PanelBand => {
+                let Some(upper_y) = self
+                    .indicators
+                    .indicator_source_value_for_latest_bar_with_offset(
+                        value_id,
+                        &fill.upper,
+                        fill.upper_offset_bars,
+                    )
+                    .and_then(&mut map_y)
+                else {
+                    return;
+                };
+                let Some(lower_y) = self
+                    .indicators
+                    .indicator_source_value_for_latest_bar_with_offset(
+                        value_id,
+                        &fill.lower,
+                        fill.lower_offset_bars,
+                    )
+                    .and_then(&mut map_y)
+                else {
+                    return;
+                };
+                let color = self.indicator_fill_color(value_id, fill, None);
+                fill_static_band(frame, plot, upper_y, lower_y, color, self.pixels);
+            }
+            IndicatorFillGeometry::SeriesBand => {
+                let segments = self.band_segments(value_id, fill, map_y);
+                fill_band_segments(frame, segments, self.pixels, |style| {
+                    self.indicator_fill_color(value_id, fill, style)
+                });
+            }
         }
     }
 
@@ -1652,8 +1614,14 @@ impl MarkRenderer<'_> {
                         {
                             return;
                         }
-                        let Some(value) =
-                            self.table_column_value(series, value_id, bar_index, &column.value)
+                        let Some(value) = self
+                            .indicators
+                            .indicator_output_value_for_series_at_channel(
+                                series,
+                                value_id,
+                                &column.value,
+                                bar_index,
+                            )
                         else {
                             return;
                         };
