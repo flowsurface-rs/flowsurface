@@ -3,7 +3,7 @@ pub mod qty;
 pub mod time;
 
 pub use price::{Price, PriceStep};
-pub use qty::Qty;
+pub use qty::{Qty, QtyNormalization, RawQtyUnit};
 pub use time::{UnixMs, UnixMsRangeError};
 
 pub type ContractSize = Power10<-4, 6>;

@@ -16,6 +16,17 @@ pub enum PersistStreamKind {
     DepthAndTrades(PersistDepth),
 }
 
+impl PersistStreamKind {
+    pub fn exchange(&self) -> exchange::adapter::Exchange {
+        match self {
+            PersistStreamKind::Kline { ticker, .. } => ticker.exchange,
+            PersistStreamKind::Depth(d) => d.ticker.exchange,
+            PersistStreamKind::Trades { ticker } => ticker.exchange,
+            PersistStreamKind::DepthAndTrades(d) => d.ticker.exchange,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct PersistDepth {
     pub ticker: Ticker,
@@ -66,7 +77,7 @@ impl PersistStreamKind {
                         timeframe,
                     }]
                 })
-                .ok_or_else(|| format!("TickerInfo not found for {}", ticker)),
+                .ok_or_else(|| format!("Ticker metadata not found for {}", ticker)),
             PersistStreamKind::Depth(d) => resolver(&d.ticker)
                 .map(|ti| {
                     vec![StreamKind::Depth {
@@ -75,10 +86,10 @@ impl PersistStreamKind {
                         push_freq: d.push_freq,
                     }]
                 })
-                .ok_or_else(|| format!("TickerInfo not found for {}", d.ticker)),
+                .ok_or_else(|| format!("Ticker metadata not found for {}", d.ticker)),
             PersistStreamKind::Trades { ticker } => resolver(&ticker)
                 .map(|ti| vec![StreamKind::Trades { ticker_info: ti }])
-                .ok_or_else(|| format!("TickerInfo not found for {}", ticker)),
+                .ok_or_else(|| format!("Ticker metadata not found for {}", ticker)),
             PersistStreamKind::DepthAndTrades(d) => resolver(&d.ticker)
                 .map(|ti| {
                     vec![
@@ -90,7 +101,7 @@ impl PersistStreamKind {
                         StreamKind::Trades { ticker_info: ti },
                     ]
                 })
-                .ok_or_else(|| format!("TickerInfo not found for {}", d.ticker)),
+                .ok_or_else(|| format!("Ticker metadata not found for {}", d.ticker)),
         }
     }
 }

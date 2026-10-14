@@ -9,6 +9,7 @@ use exchange::{Kline, Timeframe, Trade, UnixMs};
 
 use super::plot::AnySeries;
 
+pub mod bar_analysis;
 pub mod cumulative_delta;
 pub mod open_interest;
 pub mod volume;
@@ -134,6 +135,9 @@ pub struct FetchCtx<'a> {
 pub fn make_empty(which: KlineIndicator) -> Box<dyn KlineIndicatorImpl> {
     match which {
         KlineIndicator::Volume => Box::new(super::kline::volume::VolumeIndicator::new()),
+        KlineIndicator::BarAnalysis => {
+            Box::new(super::kline::bar_analysis::BarAnalysisIndicator::new())
+        }
         KlineIndicator::CumulativeDelta => {
             Box::new(super::kline::cumulative_delta::CumulativeDeltaIndicator::new())
         }

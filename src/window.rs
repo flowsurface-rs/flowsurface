@@ -5,6 +5,9 @@ use iced::{Point, Size, Subscription, Task, window};
 
 pub use iced::window::{Id, Position, Settings, close, open};
 
+// Windows popout rendering can freeze, enable when upstream rendering is fixed.
+pub const MULTI_WINDOW_SUPPORTED: bool = !cfg!(target_os = "windows");
+
 #[derive(Debug, Clone, Copy)]
 pub struct Window {
     pub id: Id,
@@ -91,6 +94,10 @@ where
 #[cfg(target_os = "linux")]
 pub fn settings() -> Settings {
     Settings {
+        platform_specific: iced::window::settings::PlatformSpecific {
+            application_id: "com.flowsurface.flowsurface".into(),
+            ..Default::default()
+        },
         min_size: Some(Size::new(800.0, 600.0)),
         ..Default::default()
     }
@@ -114,6 +121,14 @@ pub fn settings() -> Settings {
 #[cfg(target_os = "windows")]
 pub fn settings() -> Settings {
     Settings {
+        icon: Some(
+            window::icon::from_rgba(
+                include_bytes!("../assets/app-icon/windows-window.rgba").to_vec(),
+                64,
+                64,
+            )
+            .expect("embedded Windows window icon must be valid"),
+        ),
         min_size: Some(Size::new(800.0, 600.0)),
         ..Default::default()
     }

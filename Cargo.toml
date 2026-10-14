@@ -10,7 +10,7 @@ repository.workspace = true
 homepage.workspace = true
 
 [workspace.package]
-version = "0.8.9"
+version = "0.8.10"
 edition = "2024"
 repository = "https://github.com/flowsurface-rs/flowsurface"
 homepage = "https://flowsurface.com"
@@ -33,8 +33,12 @@ enum-map = "2.7.3"
 url = "2.5.8"
 rand = "0.10.1"
 uuid = { version = "1.23.1", features = ["v4"] }
-data = { version = "0.8.9", path = "data", package = "flowsurface-data" }
-exchange = { version = "0.8.9", path = "exchange", package = "flowsurface-exchange" }
+data = { version = "0.8.10", path = "data", package = "flowsurface-data" }
+exchange = { version = "0.8.10", path = "exchange", package = "flowsurface-exchange" }
+arrow-ipc = { version = "59.1", default-features = false }
+arrow-array = { version = "59.1", default-features = false }
+arrow-schema = { version = "59.1", default-features = false }
+reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls"] }
 
 [dependencies]
 iced = { version = "0.15.0-dev", default-features = false, features = [
@@ -61,15 +65,28 @@ rustc-hash.workspace = true
 enum-map.workspace = true
 url.workspace = true
 fern = "0.7.1"
+reqwest.workspace = true
 rodio = { version = "0.22.2", default-features = false, features = [ "playback", "wav" ]}
 
 bytemuck = "1.25.0"
 iced_wgpu = { version = "0.15.0-dev", features = ["geometry"] }
 exchange.workspace = true
+arrow-ipc.workspace = true
+arrow-array.workspace = true
+arrow-schema.workspace = true
+bytes = "1.11.1"
 data.workspace = true
 
 [features]
 debug = ["iced/hot"]
+
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = "3.0.2"
+
+[profile.packaging]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
 
 [patch.crates-io]
 iced = { git = "https://github.com/iced-rs/iced", rev = "bb22add15fc5528b5eb319408d5e60992fdc8a90" }

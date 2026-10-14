@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use exchange::UnixMs;
-use exchange::unit::{Price, Qty};
+use exchange::Trade;
+use exchange::unit::Qty;
 use serde::{Deserialize, Serialize};
 
 use crate::util::ok_or_default;
@@ -29,20 +29,6 @@ impl Default for Config {
 
 fn default_buffer_filter() -> Duration {
     Duration::from_millis(TRADE_RETENTION_MS)
-}
-
-#[derive(Debug, Clone)]
-pub struct TradeDisplay {
-    pub time_str: String,
-    pub price: Price,
-    pub qty: Qty,
-    pub is_sell: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct TradeEntry {
-    pub ts_ms: UnixMs,
-    pub display: TradeDisplay,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Copy)]
@@ -123,7 +109,7 @@ impl HistAgg {
         Qty::from_units(rounded)
     }
 
-    pub fn add(&mut self, trade: &TradeDisplay) {
+    pub fn add(&mut self, trade: &Trade) {
         let qty = trade.qty;
 
         if trade.is_sell {
@@ -135,7 +121,7 @@ impl HistAgg {
         }
     }
 
-    pub fn remove(&mut self, trade: &TradeDisplay) {
+    pub fn remove(&mut self, trade: &Trade) {
         let qty = trade.qty;
 
         if trade.is_sell {

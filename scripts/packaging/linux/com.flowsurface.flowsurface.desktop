@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Flowsurface
+Comment=Real-time charts for crypto markets
+Exec=flowsurface
+Icon=com.flowsurface.flowsurface
+Terminal=false
+Categories=Office;Finance;
+StartupWMClass=com.flowsurface.flowsurface

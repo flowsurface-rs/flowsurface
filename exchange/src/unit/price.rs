@@ -36,13 +36,7 @@ impl Price {
             .checked_pow(exp)
             .expect("Price::to_string unit overflow");
 
-        let u = self.units;
-        let half = unit / 2;
-        let rounded_units = if u >= 0 {
-            ((u + half).div_euclid(unit)) * unit
-        } else {
-            ((u - half).div_euclid(unit)) * unit
-        };
+        let rounded_units = Self::round_units_half_away(self.units, unit);
 
         let decimals: u32 = if precision.power < 0 {
             ((-precision.power) as u32).min(scale_u)
@@ -91,14 +85,30 @@ impl Price {
         Self { units: u }
     }
 
+    /// Round `units` to the nearest multiple of `unit`, half away from zero,
+    /// saturating to the i64 range instead of wrapping at the extremes. Runs
+    /// in u64 so extreme (saturating) magnitudes can never overflow.
+    fn round_units_half_away(units: i64, unit: i64) -> i64 {
+        let half = unit / 2;
+        let mag = units.unsigned_abs();
+        let rounded_mag = ((mag + half as u64) / unit as u64) * unit as u64;
+        if units >= 0 {
+            rounded_mag.min(i64::MAX as u64) as i64
+        } else if rounded_mag > (i64::MAX as u64) + 1 {
+            i64::MIN
+        } else {
+            (rounded_mag as i64).wrapping_neg()
+        }
+    }
+
     pub fn round_to_step(self, step: PriceStep) -> Self {
         let unit = step.units;
         if unit <= 1 {
             return self;
         }
-        let half = unit / 2;
-        let rounded = ((self.units + half).div_euclid(unit)) * unit;
-        Self { units: rounded }
+        Self {
+            units: Self::round_units_half_away(self.units, unit),
+        }
     }
 
     /// Floor to multiple of an arbitrary step
@@ -138,9 +148,28 @@ impl Price {
         }
     }
 
-    /// Create Price from raw atomic units (no rounding) — internal only
+    /// Create Price from raw atomic units (no rounding)
     pub fn from_units(units: i64) -> Self {
         Self { units }
+    }
+
+    /// Difference of two prices, saturating instead of panicking on overflow
+    /// (mirrors `i64::saturating_sub`).
+    pub fn saturating_sub(self, rhs: Self) -> Self {
+        Self {
+            units: self.units.saturating_sub(rhs.units),
+        }
+    }
+
+    /// Normalized position of `self` within `[low, high]`: `0.0` at `low`,
+    /// `1.0` at `high`. Returns `0.0` for an empty range.
+    pub fn ratio_in_range(self, low: Self, high: Self) -> f64 {
+        let range = high.units.saturating_sub(low.units);
+        if range == 0 {
+            0.0
+        } else {
+            self.units.saturating_sub(low.units) as f64 / range as f64
+        }
     }
 
     /// Returns the atomic-unit count that corresponds to one min tick (min_tick / atomic_unit)
@@ -158,9 +187,9 @@ impl Price {
         if unit <= 1 {
             return self;
         }
-        let half = unit / 2;
-        let rounded = ((self.units + half).div_euclid(unit)) * unit;
-        Self { units: rounded }
+        Self {
+            units: Self::round_units_half_away(self.units, unit),
+        }
     }
 
     pub fn add_steps(self, steps: i64, step: PriceStep) -> Self {

@@ -6,7 +6,7 @@ pub mod proxy;
 mod ws;
 
 use super::Timeframe;
-pub use super::error::AdapterError;
+pub use super::error::{AdapterError, FetchError};
 use crate::{
     Kline, Price, PushFrequency, TickMultiplier, TickerInfo, Trade, UnixMs, depth::Depth, unit::Qty,
 };
@@ -306,7 +306,9 @@ impl FromStr for Venue {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize, Enum)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize, Enum, Ord, PartialOrd,
+)]
 pub enum Exchange {
     BinanceLinear,
     BinanceInverse,

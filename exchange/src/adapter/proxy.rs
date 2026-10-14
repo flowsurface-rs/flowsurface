@@ -149,6 +149,7 @@ pub struct Proxy {
 }
 
 impl Proxy {
+    /// Construct a `Proxy` from pre-validated parts.
     pub fn new(
         scheme: ProxyScheme,
         host: impl Into<String>,
@@ -174,6 +175,48 @@ impl Proxy {
 
         proxy.try_to_url_string()?;
         Ok(proxy)
+    }
+
+    /// Build a `Proxy` from raw (unparsed) form-like inputs.
+    ///
+    /// Parses the port string, validates mutual auth requirements, and
+    /// delegates to [`Proxy::new`].
+    pub fn from_raw_parts(
+        scheme: ProxyScheme,
+        host: &str,
+        port: &str,
+        username: &str,
+        password: &str,
+    ) -> Result<Self, String> {
+        let host = host.trim();
+        let port = port.trim();
+        let username = username.trim();
+        let password = password.trim();
+
+        if host.is_empty() {
+            return Err("Proxy host is required".to_string());
+        }
+
+        let port: u16 = port
+            .parse()
+            .map_err(|_| "Proxy port must be a number (1-65535)".to_string())?;
+        if port == 0 {
+            return Err("Proxy port must be a number (1-65535)".to_string());
+        }
+
+        let has_user = !username.is_empty();
+        let has_pass = !password.is_empty();
+        if has_user ^ has_pass {
+            return Err("Provide both username and password (or neither)".to_string());
+        }
+
+        let auth = if has_user && has_pass {
+            Some(ProxyAuth::try_new(username, password)?)
+        } else {
+            None
+        };
+
+        Self::new(scheme, host, port, auth)
     }
 
     pub fn scheme(&self) -> ProxyScheme {

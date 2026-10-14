@@ -2,6 +2,33 @@ use std::env;
 use std::process::Command;
 
 fn main() {
+    #[cfg(windows)]
+    {
+        println!("cargo:rerun-if-changed=assets/app-icon/flowsurface.ico");
+        println!("cargo:rerun-if-changed=scripts/packaging/windows/flowsurface.manifest");
+        println!("cargo:rerun-if-changed=scripts/packaging/windows/flowsurface.rc");
+        let macros = [
+            format!(
+                "APP_VERSION={},{},{},0",
+                env!("CARGO_PKG_VERSION_MAJOR"),
+                env!("CARGO_PKG_VERSION_MINOR"),
+                env!("CARGO_PKG_VERSION_PATCH")
+            ),
+            format!("APP_VERSION_STRING=\"{}\"", env!("CARGO_PKG_VERSION")),
+            format!("APP_NAME=\"{}\"", env!("CARGO_PKG_NAME")),
+            format!("APP_DESCRIPTION=\"{}\"", env!("CARGO_PKG_DESCRIPTION")),
+            format!(
+                "APP_FILE_FLAGS={}",
+                u8::from(env::var("PROFILE").as_deref() == Ok("debug"))
+            ),
+        ];
+        embed_resource::compile(
+            "scripts/packaging/windows/flowsurface.rc",
+            embed_resource::ParamsMacrosAndIncludeDirs(macros, ["scripts/packaging/windows"]),
+        )
+        .manifest_required()
+        .expect("Windows resource compilation failed");
+    }
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rerun-if-changed=.git/refs");

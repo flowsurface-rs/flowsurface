@@ -10,10 +10,6 @@ use tokio::sync::{mpsc, oneshot};
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::Duration;
-
-const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 type ResponseTx<T> = oneshot::Sender<Result<T, AdapterError>>;
 
@@ -59,28 +55,8 @@ pub(super) struct HttpHub<L> {
 }
 
 impl<L: RateLimiter> HttpHub<L> {
-    pub(super) fn new(
-        limiter: L,
-        proxy_cfg: Option<&crate::adapter::Proxy>,
-    ) -> Result<Self, AdapterError> {
-        Self::with_config(limiter, proxy_cfg)
-    }
-
-    pub(super) fn with_config(
-        limiter: L,
-        proxy_cfg: Option<&crate::adapter::Proxy>,
-    ) -> Result<Self, AdapterError> {
-        let builder = Client::builder()
-            .connect_timeout(HTTP_CONNECT_TIMEOUT)
-            .timeout(HTTP_REQUEST_TIMEOUT);
-
-        let builder = crate::adapter::proxy::try_apply_proxy(builder, proxy_cfg);
-
-        let client = builder.build().map_err(|error| {
-            AdapterError::InvalidRequest(format!("Failed to build worker HTTP client: {error}"))
-        })?;
-
-        Ok(Self { client, limiter })
+    pub(super) fn with_client(client: Client, limiter: L) -> Self {
+        Self { client, limiter }
     }
 
     pub(super) fn client(&self) -> &Client {

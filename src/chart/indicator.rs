@@ -1,14 +1,15 @@
 pub mod kline;
 pub mod plot;
 
-use super::scale::linear;
+use super::ticks::y;
 use super::{Interaction, Message};
 use crate::chart::{
     Caches, TEXT_SIZE, ViewState,
     indicator::plot::{AnySeries, ChartCanvas, Plot},
-    scale::{AxisLabel, LabelContent, calc_label_rect},
+    ticks::{AxisLabel, LabelContent, calc_label_rect},
 };
 use data::chart::Basis;
+use data::chart::ticks::Y_LABEL_DENSITY_INDICATOR;
 use data::util::{abbr_large_numbers, round_to_tick};
 
 use iced::{
@@ -146,14 +147,13 @@ impl canvas::Program<Message> for IndicatorLabel<'_> {
         let tick_size = data::util::guesstimate_ticks(range);
 
         let labels = self.label_cache.draw(renderer, bounds.size(), |frame| {
-            let mut all_labels = linear::generate_labels(
+            let mut all_labels = y::LabelLayout::new(
                 bounds,
-                self.min,
-                self.max,
                 TEXT_SIZE,
                 palette.background.base.text,
-                None,
-            );
+                Y_LABEL_DENSITY_INDICATOR,
+            )
+            .generate(f64::from(self.min), f64::from(self.max), None);
 
             let common_bounds = Rectangle {
                 x: self.chart_bounds.x,

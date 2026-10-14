@@ -26,11 +26,11 @@ rustc-hash.workspace = true
 url.workspace = true
 rand.workspace = true
 
-tokio = { version = "1.52", default-features = false, features = ["rt", "macros"] }
+tokio = { version = "1.52", default-features = false, features = ["rt", "macros", "io-util", "time"] }
 reqwest = { version = "0.12.28", default-features = false, features = ["json", "brotli", "rustls-tls", "socks"] }
 bytes = "1.11.1"
 sonic-rs = { version = "0.5.8", default-features = false }
-fastwebsockets = { version = "0.10.0", default-features = false, features = ["upgrade"] }
+fastwebsockets = { version = "0.10.0", default-features = false, features = ["upgrade", "unstable-split"] }
 http-body-util = "0.1.3"
 hyper = { version = "1", default-features = false, features = ["http1", "client"] }
 hyper-util = { version = "0.1.20", default-features = false }

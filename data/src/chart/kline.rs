@@ -1,4 +1,4 @@
-use crate::aggr::time::DataPoint;
+use crate::{aggr::time::DataPoint, chart::indicator::KlineIndicator};
 use exchange::{
     Kline, Trade, UnixMs,
     unit::price::{Price, PriceStep},
@@ -152,7 +152,7 @@ impl GroupedTrades {
 
     pub fn max_cluster_qty(&self, cluster_kind: ClusterKind) -> Qty {
         match cluster_kind {
-            ClusterKind::BidAsk => self.buy_qty.max(self.sell_qty),
+            ClusterKind::BidAsk | ClusterKind::Table => self.buy_qty.max(self.sell_qty),
             ClusterKind::DeltaProfile => self.buy_qty.abs_diff(self.sell_qty),
             ClusterKind::VolumeProfile => self.total_qty(),
         }
@@ -205,6 +205,7 @@ impl KlineTrades {
             .or_insert_with(|| GroupedTrades::new(trade));
     }
 
+    /// Max of some extracted qty across price levels within [`lowest`, `highest`].
     pub fn max_qty_by<F>(&self, highest: Price, lowest: Price, f: F) -> Qty
     where
         F: Fn(&GroupedTrades) -> Qty,
@@ -218,8 +219,21 @@ impl KlineTrades {
         max_qty
     }
 
+    /// Max cluster qty considering only price levels within [`lowest`, `highest`].
+    /// Used by the aggregate visible-range computation where the viewport may
+    /// show only a subset of each bar's full price range (y-pan/zoom).
     pub fn max_cluster_qty(&self, cluster_kind: ClusterKind, highest: Price, lowest: Price) -> Qty {
         self.max_qty_by(highest, lowest, |group| group.max_cluster_qty(cluster_kind))
+    }
+
+    /// Max cluster qty across all price levels in this bar (unfiltered).
+    /// Used for per-bar individual scaling, the full bar should contribute.
+    pub fn max_cluster_qty_all(&self, cluster_kind: ClusterKind) -> Qty {
+        self.trades
+            .values()
+            .map(|group| group.max_cluster_qty(cluster_kind))
+            .max()
+            .unwrap_or_default()
     }
 
     pub fn calculate_poc(&mut self) {
@@ -319,6 +333,13 @@ pub enum KlineChartKind {
 }
 
 impl KlineChartKind {
+    pub fn allows_indicator(&self, indicator: KlineIndicator) -> bool {
+        !matches!(
+            (self, indicator),
+            (KlineChartKind::Candles, KlineIndicator::BarAnalysis)
+        )
+    }
+
     pub fn min_scaling(&self) -> f32 {
         match self {
             KlineChartKind::Footprint { .. } => 0.4,
@@ -375,14 +396,25 @@ pub enum ClusterKind {
     BidAsk,
     VolumeProfile,
     DeltaProfile,
+    Table,
 }
 
 impl ClusterKind {
-    pub const ALL: [ClusterKind; 3] = [
+    pub const ALL: [ClusterKind; 4] = [
         ClusterKind::BidAsk,
         ClusterKind::VolumeProfile,
         ClusterKind::DeltaProfile,
+        ClusterKind::Table,
     ];
+
+    /// Minimum footprint cell width (in unscaled pixels) for the cluster rendering mode.
+    pub fn min_footprint_width(self) -> f32 {
+        match self {
+            ClusterKind::VolumeProfile | ClusterKind::DeltaProfile => 80.0,
+            ClusterKind::BidAsk => 120.0,
+            ClusterKind::Table => 100.0,
+        }
+    }
 }
 
 impl std::fmt::Display for ClusterKind {
@@ -391,16 +423,19 @@ impl std::fmt::Display for ClusterKind {
             ClusterKind::BidAsk => write!(f, "Bid/Ask"),
             ClusterKind::VolumeProfile => write!(f, "Volume Profile"),
             ClusterKind::DeltaProfile => write!(f, "Delta Profile"),
+            ClusterKind::Table => write!(f, "Table"),
         }
     }
 }
 
-#[derive(Debug, Default, Copy, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Default, Debug, Copy, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Config {
     // Whether to show last value labels on top right/left when not hovering
     // e.g. OHLC/bar change values for the main chart, or last value of an indicator series
     pub data_labels_always_visible: bool,
+    // Whether to show the footprint per-bar summary below each candle.
+    pub show_footprint_summary: bool,
 }
 
 #[derive(Default, Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
@@ -421,6 +456,19 @@ impl ClusterScaling {
         ClusterScaling::Hybrid { weight: 0.2 },
         ClusterScaling::Datapoint,
     ];
+
+    /// Blend the global visible-range max qty with the per-candle individual max qty
+    /// according to the scaling strategy.
+    pub fn effective_qty(self, visible_max: f64, individual_max: Qty) -> f64 {
+        match self {
+            ClusterScaling::VisibleRange => Qty::scale_or_one(visible_max),
+            ClusterScaling::Datapoint => individual_max.to_scale_or_one(),
+            ClusterScaling::Hybrid { weight } => {
+                let w = weight.clamp(0.0, 1.0) as f64;
+                Qty::scale_or_one(visible_max * w + individual_max.to_f64() * (1.0 - w))
+            }
+        }
+    }
 }
 
 impl std::fmt::Display for ClusterScaling {
