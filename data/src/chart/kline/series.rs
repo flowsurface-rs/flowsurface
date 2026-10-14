@@ -397,7 +397,9 @@ impl VisibleTradeProfileCache {
             for (&price, row) in &self.rows {
                 let volume = row.buy_qty + row.sell_qty;
                 distribution.max_qty = distribution.max_qty.max(volume);
-                if distribution.poc.is_none_or(|poc| volume > poc.volume) {
+                if distribution.poc.is_none_or(|poc| {
+                    volume > poc.volume || (volume == poc.volume && price > poc.price)
+                }) {
                     distribution.poc = Some(PointOfControl {
                         price,
                         volume,

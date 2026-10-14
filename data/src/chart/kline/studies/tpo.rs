@@ -1046,31 +1046,19 @@ fn value_area_indexes(
     rows: &[TpoRow],
     value_area_percent: u8,
 ) -> (Option<usize>, Option<usize>, Option<usize>) {
-    let Some(mut poc) = rows
+    let Some(poc) = rows
         .iter()
         .enumerate()
         .filter(|(_, row)| row.count() > 0)
         .max_by(|(left_index, left), (right_index, right)| {
             left.count()
                 .cmp(&right.count())
-                .then_with(|| right_index.cmp(left_index))
+                .then_with(|| left_index.cmp(right_index))
         })
         .map(|(index, _)| index)
     else {
         return (None, None, None);
     };
-
-    let midpoint = (rows.len().saturating_sub(1)) as i64;
-    let midpoint_distance = |index: usize| ((index as i64 * 2) - midpoint).unsigned_abs();
-    for (index, row) in rows.iter().enumerate() {
-        if row.count() > rows[poc].count()
-            || (row.count() == rows[poc].count()
-                && (midpoint_distance(index) < midpoint_distance(poc)
-                    || (midpoint_distance(index) == midpoint_distance(poc) && index < poc)))
-        {
-            poc = index;
-        }
-    }
 
     let target = (rows.iter().map(TpoRow::count).sum::<usize>() * usize::from(value_area_percent))
         .div_ceil(100);

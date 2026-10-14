@@ -288,7 +288,7 @@ impl ProfileAccumulator {
         let total_qty = level.0 + level.1;
         self.max_qty = self.max_qty.max(total_qty);
         if self.poc.is_none_or(|current| {
-            total_qty > current.volume || (total_qty == current.volume && price < current.price)
+            total_qty > current.volume || (total_qty == current.volume && price > current.price)
         }) {
             self.poc = Some(PointOfControl {
                 price,
