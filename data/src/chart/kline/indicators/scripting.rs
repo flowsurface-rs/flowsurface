@@ -23,14 +23,17 @@ use indicator_engine::{
     Color, CompiledIndicator, FrameOutput, HorizontalLevelOutput,
     IndicatorConfig as EngineIndicatorConfig, IndicatorFrame, IndicatorInstance, InputValue,
     MarkerOutput, OhlcOutput, PlotDescriptor, PlotValueType, RangeOutput, RegionOutput,
-    RegionUpdate, RuntimeLimits, SegmentOutput, Value, ValueType,
+    RegionUpdate, RuntimeError, RuntimeLimits, SegmentOutput, Value, ValueType,
 };
 use rustc_hash::FxHashMap;
 use std::collections::BTreeMap;
+use std::mem::size_of;
 use std::ops::Range;
 use std::str::FromStr;
 use std::sync::Arc;
 use url::Url;
+
+const MAX_RETAINED_OUTPUT_BYTES: usize = 32 * 1024 * 1024;
 
 struct PresentationParts {
     panel_recipe: IndicatorPanelRecipe,
@@ -43,6 +46,7 @@ struct PresentationParts {
 
 #[derive(Debug, Clone, Default)]
 struct IndicatorOutputStore {
+    budget: RetainedOutputBudget,
     series: FxHashMap<String, FxHashMap<usize, SeriesOutput>>,
     markers: BTreeMap<String, BTreeMap<usize, MarkerOutput>>,
     segments: BTreeMap<String, BTreeMap<usize, SegmentOutput>>,
@@ -50,8 +54,69 @@ struct IndicatorOutputStore {
     ohlc: BTreeMap<String, BTreeMap<usize, OhlcOutput>>,
     ranges: BTreeMap<String, BTreeMap<usize, RangeOutput>>,
     regions: BTreeMap<String, BTreeMap<i64, RegionOutput>>,
+    active_region_bytes: usize,
     persistent_regions: PersistentRegionStore,
     preview_persistent_regions: Option<PersistentRegionStore>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct RetainedOutputBudget {
+    bytes: usize,
+}
+
+impl RetainedOutputBudget {
+    fn reserve(&mut self, bytes: usize) -> Result<(), RuntimeError> {
+        let total = self
+            .bytes
+            .checked_add(bytes)
+            .ok_or(retained_output_error())?;
+        if total > MAX_RETAINED_OUTPUT_BYTES {
+            return Err(retained_output_error());
+        }
+        self.bytes = total;
+        Ok(())
+    }
+
+    fn release(&mut self, bytes: usize) -> Result<(), RuntimeError> {
+        self.bytes = self
+            .bytes
+            .checked_sub(bytes)
+            .ok_or(retained_output_error())?;
+        Ok(())
+    }
+}
+
+fn retained_output_error() -> RuntimeError {
+    RuntimeError::ResourceLimitExceeded("retained output bytes")
+}
+
+// Charge record storage and string contents; allocator slack is outside this budget.
+fn retained_record_bytes<T>(strings: &[&str]) -> Result<usize, RuntimeError> {
+    strings.iter().try_fold(size_of::<T>(), |bytes, text| {
+        bytes.checked_add(text.len()).ok_or(retained_output_error())
+    })
+}
+
+fn marker_retained_bytes(marker: &MarkerOutput) -> Result<usize, RuntimeError> {
+    retained_record_bytes::<(usize, MarkerOutput)>(&[
+        &marker.id,
+        marker.text.as_deref().unwrap_or_default(),
+    ])
+}
+
+fn segment_retained_bytes(segment: &SegmentOutput) -> Result<usize, RuntimeError> {
+    retained_record_bytes::<(usize, SegmentOutput)>(&[
+        &segment.id,
+        segment.text.as_deref().unwrap_or_default(),
+    ])
+}
+
+fn region_retained_bytes(region: &RegionOutput) -> Result<usize, RuntimeError> {
+    retained_record_bytes::<(i64, RegionOutput)>(&[
+        &region.id,
+        region.border_color_slot.as_deref().unwrap_or_default(),
+        region.fill_color_slot.as_deref().unwrap_or_default(),
+    ])
 }
 
 #[derive(Debug, Clone)]
@@ -68,6 +133,7 @@ struct PersistentRegion {
 
 #[derive(Debug, Clone)]
 struct PersistentRegionStore {
+    retained_bytes: usize,
     values: BTreeMap<(String, i64), PersistentRegion>,
     order: BTreeMap<usize, (String, i64)>,
     next_sequence: usize,
@@ -77,6 +143,7 @@ struct PersistentRegionStore {
 impl Default for PersistentRegionStore {
     fn default() -> Self {
         Self {
+            retained_bytes: 0,
             values: BTreeMap::new(),
             order: BTreeMap::new(),
             next_sequence: 0,
@@ -86,45 +153,100 @@ impl Default for PersistentRegionStore {
 }
 
 impl PersistentRegionStore {
-    fn upsert(&mut self, region: RegionOutput) {
-        let key = (region.id.clone(), region.key);
-        if let Some(existing) = self.values.get_mut(&key) {
-            existing.region = region;
-            return;
-        }
-        let sequence = self.next_sequence;
-        self.next_sequence = self.next_sequence.saturating_add(1);
-        self.values
-            .insert(key.clone(), PersistentRegion { region, sequence });
-        self.order.insert(sequence, key);
-        while self.values.len() > self.limit {
-            let Some((sequence, key)) = self.order.pop_first() else {
-                break;
-            };
-            if self
-                .values
-                .get(&key)
-                .is_some_and(|value| value.sequence == sequence)
-            {
-                self.values.remove(&key);
-            }
-        }
+    fn region_bytes(region: &RegionOutput) -> Result<usize, RuntimeError> {
+        retained_record_bytes::<(((String, i64), PersistentRegion), (usize, (String, i64)))>(&[
+            &region.id,
+            &region.id,
+            &region.id,
+            region.border_color_slot.as_deref().unwrap_or_default(),
+            region.fill_color_slot.as_deref().unwrap_or_default(),
+        ])
     }
 
-    fn remove(&mut self, id: &str, key: i64) {
+    fn upsert(
+        &mut self,
+        region: &RegionOutput,
+        budget: &mut RetainedOutputBudget,
+    ) -> Result<(), RuntimeError> {
+        let key = (region.id.clone(), region.key);
+        if let Some(existing) = self.values.get_mut(&key) {
+            let previous_bytes = Self::region_bytes(&existing.region)?;
+            budget.release(previous_bytes)?;
+            self.retained_bytes = self
+                .retained_bytes
+                .checked_sub(previous_bytes)
+                .ok_or(retained_output_error())?;
+            let bytes = Self::region_bytes(region)?;
+            budget.reserve(bytes)?;
+            self.retained_bytes = self
+                .retained_bytes
+                .checked_add(bytes)
+                .ok_or(retained_output_error())?;
+            existing.region = region.clone();
+            return Ok(());
+        }
+
+        if self.values.len() >= self.limit
+            && let Some((_, oldest_key)) = self.order.first_key_value()
+        {
+            let oldest_key = oldest_key.clone();
+            self.remove(&oldest_key.0, oldest_key.1, budget)?;
+        }
+
+        let bytes = Self::region_bytes(region)?;
+        budget.reserve(bytes)?;
+
+        self.retained_bytes = self
+            .retained_bytes
+            .checked_add(bytes)
+            .ok_or(retained_output_error())?;
+        let sequence = self.next_sequence;
+        self.next_sequence = self
+            .next_sequence
+            .checked_add(1)
+            .ok_or(retained_output_error())?;
+        self.values.insert(
+            key.clone(),
+            PersistentRegion {
+                region: region.clone(),
+                sequence,
+            },
+        );
+        self.order.insert(sequence, key);
+        Ok(())
+    }
+
+    fn remove(
+        &mut self,
+        id: &str,
+        key: i64,
+        budget: &mut RetainedOutputBudget,
+    ) -> Result<(), RuntimeError> {
         let key = (id.to_owned(), key);
         if let Some(region) = self.values.remove(&key) {
             self.order.remove(&region.sequence);
+            let bytes = Self::region_bytes(&region.region)?;
+            budget.release(bytes)?;
+            self.retained_bytes = self
+                .retained_bytes
+                .checked_sub(bytes)
+                .ok_or(retained_output_error())?;
         }
+        Ok(())
     }
 
-    fn apply_updates(&mut self, updates: &[RegionUpdate]) {
+    fn apply_updates(
+        &mut self,
+        updates: &[RegionUpdate],
+        budget: &mut RetainedOutputBudget,
+    ) -> Result<(), RuntimeError> {
         for update in updates {
             match update {
-                RegionUpdate::Upsert(region) => self.upsert(region.clone()),
-                RegionUpdate::Remove { id, key } => self.remove(id, *key),
+                RegionUpdate::Upsert(region) => self.upsert(region, budget)?,
+                RegionUpdate::Remove { id, key } => self.remove(id, *key, budget)?,
             }
         }
+        Ok(())
     }
 }
 
@@ -165,6 +287,7 @@ impl IndicatorOutputStore {
         let include = |region: &RegionOutput| {
             source_range.is_none_or(|range| region_intersects_source_range(region, range))
         };
+
         let mut regions = self
             .regions
             .iter()
@@ -176,6 +299,7 @@ impl IndicatorOutputStore {
             .preview_persistent_regions
             .as_ref()
             .unwrap_or(&self.persistent_regions);
+
         for ((id, key), value) in &persistent_regions.values {
             if !include(&value.region) {
                 continue;
@@ -190,11 +314,64 @@ impl IndicatorOutputStore {
         self.region_values_in_range(None)
     }
 
-    fn apply_output(&mut self, output: FrameOutput, preview: bool) {
-        for values in self.series.values_mut() {
-            values.remove(&output.index);
+    fn apply_output(&mut self, output: FrameOutput, preview: bool) -> Result<(), RuntimeError> {
+        if let Some(previous) = self.preview_persistent_regions.take() {
+            self.budget.release(previous.retained_bytes)?;
         }
+        self.budget.release(self.active_region_bytes)?;
+        self.active_region_bytes = 0;
+        self.regions.clear();
+
+        for values in self.series.values_mut() {
+            if values.remove(&output.index).is_some() {
+                self.budget.release(size_of::<(usize, SeriesOutput)>())?;
+            }
+        }
+        for values in self.markers.values_mut() {
+            if let Some(previous) = values.remove(&output.index) {
+                self.budget.release(marker_retained_bytes(&previous)?)?;
+            }
+        }
+        for values in self.segments.values_mut() {
+            if let Some(previous) = values.remove(&output.index) {
+                self.budget.release(segment_retained_bytes(&previous)?)?;
+            }
+        }
+        for values in self.ohlc.values_mut() {
+            if let Some(previous) = values.remove(&output.index) {
+                self.budget
+                    .release(retained_record_bytes::<(usize, OhlcOutput)>(&[
+                        &previous.id
+                    ])?)?;
+            }
+        }
+        for values in self.ranges.values_mut() {
+            if let Some(previous) = values.remove(&output.index) {
+                self.budget
+                    .release(retained_record_bytes::<(usize, RangeOutput)>(&[
+                        &previous.id
+                    ])?)?;
+            }
+        }
+
         for plot in output.plots.iter() {
+            if self
+                .series
+                .get_mut(&plot.id)
+                .and_then(|values| values.remove(&output.index))
+                .is_some()
+            {
+                self.budget.release(size_of::<(usize, SeriesOutput)>())?;
+            }
+
+            if !self.series.contains_key(&plot.id) {
+                self.budget.reserve(retained_record_bytes::<(
+                    String,
+                    FxHashMap<usize, SeriesOutput>,
+                )>(&[&plot.id])?)?;
+            }
+
+            self.budget.reserve(size_of::<(usize, SeriesOutput)>())?;
             self.series.entry(plot.id.clone()).or_default().insert(
                 output.index,
                 SeriesOutput {
@@ -203,65 +380,161 @@ impl IndicatorOutputStore {
                 },
             );
         }
-        for values in self.markers.values_mut() {
-            values.remove(&output.index);
-        }
+
         for marker in output.markers.iter() {
+            if let Some(previous) = self
+                .markers
+                .get_mut(&marker.id)
+                .and_then(|values| values.remove(&output.index))
+            {
+                self.budget.release(marker_retained_bytes(&previous)?)?;
+            }
+            if !self.markers.contains_key(&marker.id) {
+                self.budget.reserve(retained_record_bytes::<(
+                    String,
+                    BTreeMap<usize, MarkerOutput>,
+                )>(&[&marker.id])?)?;
+            }
+
+            self.budget.reserve(marker_retained_bytes(marker)?)?;
             self.markers
                 .entry(marker.id.clone())
                 .or_default()
                 .insert(output.index, marker.clone());
         }
-        for values in self.segments.values_mut() {
-            values.remove(&output.index);
-        }
+
         for segment in output.segments.iter() {
+            if let Some(previous) = self
+                .segments
+                .get_mut(&segment.id)
+                .and_then(|values| values.remove(&output.index))
+            {
+                self.budget.release(segment_retained_bytes(&previous)?)?;
+            }
+
+            if !self.segments.contains_key(&segment.id) {
+                self.budget.reserve(retained_record_bytes::<(
+                    String,
+                    BTreeMap<usize, SegmentOutput>,
+                )>(&[&segment.id])?)?;
+            }
+
+            self.budget.reserve(segment_retained_bytes(segment)?)?;
             self.segments
                 .entry(segment.id.clone())
                 .or_default()
                 .insert(output.index, segment.clone());
         }
+
         for level in output.levels.iter() {
+            if let Some(previous) = self.levels.remove(&level.id) {
+                self.budget
+                    .release(retained_record_bytes::<(String, HorizontalLevelOutput)>(
+                        &[&previous.id, &previous.id],
+                    )?)?;
+            }
+
+            self.budget
+                .reserve(retained_record_bytes::<(String, HorizontalLevelOutput)>(
+                    &[&level.id, &level.id],
+                )?)?;
             self.levels.insert(level.id.clone(), level.clone());
         }
-        for values in self.ohlc.values_mut() {
-            values.remove(&output.index);
-        }
+
         for ohlc in output.ohlc.iter() {
+            if let Some(previous) = self
+                .ohlc
+                .get_mut(&ohlc.id)
+                .and_then(|values| values.remove(&output.index))
+            {
+                self.budget
+                    .release(retained_record_bytes::<(usize, OhlcOutput)>(&[
+                        &previous.id
+                    ])?)?;
+            }
+
+            if !self.ohlc.contains_key(&ohlc.id) {
+                self.budget.reserve(retained_record_bytes::<(
+                    String,
+                    BTreeMap<usize, OhlcOutput>,
+                )>(&[&ohlc.id])?)?;
+            }
+
+            self.budget
+                .reserve(retained_record_bytes::<(usize, OhlcOutput)>(&[&ohlc.id])?)?;
             self.ohlc
                 .entry(ohlc.id.clone())
                 .or_default()
                 .insert(output.index, ohlc.clone());
         }
-        for values in self.ranges.values_mut() {
-            values.remove(&output.index);
-        }
+
         for range in output.ranges.iter() {
+            if let Some(previous) = self
+                .ranges
+                .get_mut(&range.id)
+                .and_then(|values| values.remove(&output.index))
+            {
+                self.budget
+                    .release(retained_record_bytes::<(usize, RangeOutput)>(&[
+                        &previous.id
+                    ])?)?;
+            }
+
+            if !self.ranges.contains_key(&range.id) {
+                self.budget.reserve(retained_record_bytes::<(
+                    String,
+                    BTreeMap<usize, RangeOutput>,
+                )>(&[&range.id])?)?;
+            }
+
+            self.budget
+                .reserve(retained_record_bytes::<(usize, RangeOutput)>(&[&range.id])?)?;
             self.ranges
                 .entry(range.id.clone())
                 .or_default()
                 .insert(output.index, range.clone());
         }
-        self.regions.clear();
+
+        let previous_bytes = self.budget.bytes;
         for region in output.regions.iter() {
+            if let Some(previous) = self
+                .regions
+                .get_mut(&region.id)
+                .and_then(|values| values.remove(&region.key))
+            {
+                self.budget.release(region_retained_bytes(&previous)?)?;
+            }
+            if !self.regions.contains_key(&region.id) {
+                self.budget.reserve(retained_record_bytes::<(
+                    String,
+                    BTreeMap<i64, RegionOutput>,
+                )>(&[&region.id])?)?;
+            }
+            self.budget.reserve(region_retained_bytes(region)?)?;
             self.regions
                 .entry(region.id.clone())
                 .or_default()
                 .insert(region.key, region.clone());
         }
+
+        self.active_region_bytes = self
+            .budget
+            .bytes
+            .checked_sub(previous_bytes)
+            .ok_or(retained_output_error())?;
         if preview {
-            self.preview_persistent_regions = if output.region_updates.is_empty() {
-                None
-            } else {
+            if !output.region_updates.is_empty() {
+                self.budget
+                    .reserve(self.persistent_regions.retained_bytes)?;
                 let mut persistent_regions = self.persistent_regions.clone();
-                persistent_regions.apply_updates(&output.region_updates);
-                Some(persistent_regions)
-            };
+                persistent_regions.apply_updates(&output.region_updates, &mut self.budget)?;
+                self.preview_persistent_regions = Some(persistent_regions);
+            }
         } else {
             self.persistent_regions
-                .apply_updates(&output.region_updates);
-            self.preview_persistent_regions = None;
+                .apply_updates(&output.region_updates, &mut self.budget)?;
         }
+        Ok(())
     }
 }
 
@@ -272,6 +545,7 @@ fn validated_http_url(
 ) -> Result<String, String> {
     let url = Url::parse(value)
         .map_err(|_| format!("{indicator}: indicator {field} must be a valid URL"))?;
+
     if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
         return Err(format!(
             "{indicator}: indicator {field} must be an absolute http(s) URL"
@@ -306,6 +580,7 @@ fn definition_from_compiled(compiled: &CompiledIndicator) -> Result<IndicatorDef
             IndicatorInputSource::OpenInterest,
         ));
     }
+
     let style_slots = descriptor_styles(compiled)?;
     let outputs = descriptor_outputs(compiled);
     let author = compiled
@@ -334,6 +609,7 @@ fn definition_from_compiled(compiled: &CompiledIndicator) -> Result<IndicatorDef
         fill_specs,
         region_style_slots,
     } = descriptor_view(compiled, &style_slots)?;
+
     let definition = IndicatorDefinition::new(
         compiled.descriptor.title.clone(),
         inputs,
@@ -373,6 +649,7 @@ fn definition_from_compiled(compiled: &CompiledIndicator) -> Result<IndicatorDef
     .with_region_style_slots(region_style_slots)
     .with_display_specs(mark_specs, overlay_channels, fill_specs)
     .with_segment_specs(segment_specs);
+
     definition.validate().map_err(|error| {
         format!(
             "{}: invalid indicator definition: {error:?}",
@@ -1195,9 +1472,10 @@ impl ScriptIndicatorRuntime {
         let result = self
             .instance
             .as_mut()
-            .map(|instance| instance.evaluate_closed(frame.clone()));
+            .map(|instance| instance.evaluate_closed(frame.clone()))
+            .map(|result| result.and_then(|output| self.outputs.apply_output(output, false)));
         match result {
-            Some(Ok(output)) => self.outputs.apply_output(output, false),
+            Some(Ok(())) => {}
             Some(Err(error)) => {
                 self.quarantine(&format!("closed bar {} failed", frame.index), error)
             }
@@ -1212,9 +1490,10 @@ impl ScriptIndicatorRuntime {
         let result = self
             .instance
             .as_mut()
-            .map(|instance| instance.preview_open(frame.clone()));
+            .map(|instance| instance.preview_open(frame.clone()))
+            .map(|result| result.and_then(|output| self.outputs.apply_output(output, true)));
         match result {
-            Some(Ok(output)) => self.outputs.apply_output(output, true),
+            Some(Ok(())) => {}
             Some(Err(error)) => {
                 self.quarantine(&format!("preview bar {} failed", frame.index), error)
             }
@@ -1655,14 +1934,14 @@ mark(title = "Bars", source = "value", kind = "histogram", color_slot = "bars")
             regions: vec![region(1, 10.0), region(2, 20.0)].into(),
             ..Default::default()
         };
-        store.apply_output(first, false);
+        store.apply_output(first, false).unwrap();
         assert_eq!(store.region_values().len(), 2);
 
         let second = FrameOutput {
             regions: vec![region(1, 30.0), region(1, 40.0)].into(),
             ..Default::default()
         };
-        store.apply_output(second, false);
+        store.apply_output(second, false).unwrap();
         let regions = store.region_values();
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].upper, 40.0);
@@ -1675,7 +1954,7 @@ mark(title = "Bars", source = "value", kind = "histogram", color_slot = "bars")
             region_updates: vec![RegionUpdate::Upsert(region(1, 10.0))].into(),
             ..Default::default()
         };
-        store.apply_output(closed, false);
+        store.apply_output(closed, false).unwrap();
         assert_eq!(store.region_values()[0].upper, 10.0);
 
         let preview = FrameOutput {
@@ -1686,7 +1965,7 @@ mark(title = "Bars", source = "value", kind = "histogram", color_slot = "bars")
             .into(),
             ..Default::default()
         };
-        store.apply_output(preview, true);
+        store.apply_output(preview, true).unwrap();
         let preview_regions = store.region_values();
         assert_eq!(preview_regions.len(), 2);
         assert_eq!(
@@ -1697,7 +1976,7 @@ mark(title = "Bars", source = "value", kind = "histogram", color_slot = "bars")
             Some(20.0)
         );
 
-        store.apply_output(FrameOutput::default(), true);
+        store.apply_output(FrameOutput::default(), true).unwrap();
         let reverted = store.region_values();
         assert_eq!(reverted.len(), 1);
         assert_eq!(reverted[0].upper, 10.0);
@@ -1710,9 +1989,9 @@ mark(title = "Bars", source = "value", kind = "histogram", color_slot = "bars")
             .into(),
             ..Default::default()
         };
-        store.apply_output(preview_removed, true);
+        store.apply_output(preview_removed, true).unwrap();
         assert!(store.region_values().is_empty());
-        store.apply_output(FrameOutput::default(), true);
+        store.apply_output(FrameOutput::default(), true).unwrap();
         assert_eq!(store.region_values()[0].upper, 10.0);
 
         let removed = FrameOutput {
@@ -1723,7 +2002,7 @@ mark(title = "Bars", source = "value", kind = "histogram", color_slot = "bars")
             .into(),
             ..Default::default()
         };
-        store.apply_output(removed, false);
+        store.apply_output(removed, false).unwrap();
         assert!(store.region_values().is_empty());
     }
 
@@ -1734,25 +2013,29 @@ mark(title = "Bars", source = "value", kind = "histogram", color_slot = "bars")
         let updates = (0..limit as i64)
             .map(|key| RegionUpdate::Upsert(region(key, key as f64)))
             .collect::<Vec<_>>();
-        store.apply_output(
-            FrameOutput {
-                region_updates: updates.into(),
-                ..Default::default()
-            },
-            false,
-        );
+        store
+            .apply_output(
+                FrameOutput {
+                    region_updates: updates.into(),
+                    ..Default::default()
+                },
+                false,
+            )
+            .unwrap();
 
-        store.apply_output(
-            FrameOutput {
-                region_updates: vec![
-                    RegionUpdate::Upsert(region(1, 100.0)),
-                    RegionUpdate::Upsert(region(limit as i64, 200.0)),
-                ]
-                .into(),
-                ..Default::default()
-            },
-            false,
-        );
+        store
+            .apply_output(
+                FrameOutput {
+                    region_updates: vec![
+                        RegionUpdate::Upsert(region(1, 100.0)),
+                        RegionUpdate::Upsert(region(limit as i64, 200.0)),
+                    ]
+                    .into(),
+                    ..Default::default()
+                },
+                false,
+            )
+            .unwrap();
 
         let regions = store.region_values();
         assert_eq!(regions.len(), limit);
@@ -1772,22 +2055,26 @@ mark(title = "Bars", source = "value", kind = "histogram", color_slot = "bars")
         let committed_updates = (0..limit as i64)
             .map(|key| RegionUpdate::Upsert(region(key, key as f64)))
             .collect::<Vec<_>>();
-        store.apply_output(
-            FrameOutput {
-                region_updates: committed_updates.into(),
-                ..Default::default()
-            },
-            false,
-        );
+        store
+            .apply_output(
+                FrameOutput {
+                    region_updates: committed_updates.into(),
+                    ..Default::default()
+                },
+                false,
+            )
+            .unwrap();
 
         let preview_update = RegionUpdate::Upsert(region(limit as i64, 100.0));
-        store.apply_output(
-            FrameOutput {
-                region_updates: vec![preview_update.clone()].into(),
-                ..Default::default()
-            },
-            true,
-        );
+        store
+            .apply_output(
+                FrameOutput {
+                    region_updates: vec![preview_update.clone()].into(),
+                    ..Default::default()
+                },
+                true,
+            )
+            .unwrap();
         let preview_regions = store.region_values();
         assert_eq!(preview_regions.len(), limit);
         assert!(!preview_regions.iter().any(|region| region.key == 0));
@@ -1797,19 +2084,21 @@ mark(title = "Bars", source = "value", kind = "histogram", color_slot = "bars")
                 .any(|region| region.key == limit as i64)
         );
 
-        store.apply_output(FrameOutput::default(), true);
+        store.apply_output(FrameOutput::default(), true).unwrap();
         let reverted = store.region_values();
         assert_eq!(reverted.len(), limit);
         assert!(reverted.iter().any(|region| region.key == 0));
         assert!(!reverted.iter().any(|region| region.key == limit as i64));
 
-        store.apply_output(
-            FrameOutput {
-                region_updates: vec![preview_update].into(),
-                ..Default::default()
-            },
-            false,
-        );
+        store
+            .apply_output(
+                FrameOutput {
+                    region_updates: vec![preview_update].into(),
+                    ..Default::default()
+                },
+                false,
+            )
+            .unwrap();
         let committed = store.region_values();
         assert_eq!(committed.len(), limit);
         assert!(!committed.iter().any(|region| region.key == 0));
