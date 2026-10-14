@@ -1,13 +1,12 @@
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::overlay;
-use iced::advanced::renderer;
+use iced::advanced::renderer::{self, Renderer as _};
 use iced::advanced::widget::{self, Operation, Tree};
-use iced::advanced::{Shell, Widget};
+use iced::advanced::{Shell, Widget, shell};
 use iced::time::{self, Duration, Instant};
 use iced::widget::{button, column, container, row, space, text};
 use iced::{
-    Alignment, Center, Element, Event, Fill, Length, Point, Rectangle, Renderer, Size, Theme,
-    Vector,
+    Alignment, Center, Element, Event, Fill, Length, Rectangle, Renderer, Size, Theme, Vector,
 };
 use iced::{Border, mouse, padding, theme, window};
 
@@ -156,20 +155,23 @@ where
     }
 }
 
+#[derive(Default)]
+struct State {
+    instants: Vec<Option<Instant>>,
+    layout_cache: layout::flex::Cache,
+}
+
 impl<Message> Widget<Message, Theme, Renderer> for Manager<'_, Message> {
     fn size(&self) -> Size<Length> {
         self.content.as_widget().size()
     }
 
-    fn layout(
-        &mut self,
-        tree: &mut Tree,
-        renderer: &Renderer,
-        limits: &layout::Limits,
-    ) -> layout::Node {
+    fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) {
         self.content
             .as_widget_mut()
-            .layout(&mut tree.children[0], renderer, limits)
+            .layout(&mut tree.children[0], renderer, limits);
+        tree.children[0].translation = Vector::ZERO;
+        tree.size = tree.children[0].size;
     }
 
     fn tag(&self) -> widget::tree::Tag {
@@ -178,11 +180,11 @@ impl<Message> Widget<Message, Theme, Renderer> for Manager<'_, Message> {
     }
 
     fn state(&self) -> widget::tree::State {
-        widget::tree::State::new(Vec::<Option<Instant>>::new())
+        widget::tree::State::new(State::default())
     }
 
     fn diff(&mut self, tree: &mut Tree) {
-        let instants = tree.state.downcast_mut::<Vec<Option<Instant>>>();
+        let instants = &mut tree.state.downcast_mut::<State>().instants;
 
         // Invalidating removed instants to None allows us to remove
         // them here so that diffing for removed / new toast instants
@@ -208,31 +210,38 @@ impl<Message> Widget<Message, Theme, Renderer> for Manager<'_, Message> {
     fn operate(
         &mut self,
         tree: &mut Tree,
-        layout: Layout<'_>,
+        layout: Layout,
+        viewport: &Rectangle,
         renderer: &Renderer,
         operation: &mut dyn Operation,
     ) {
-        operation.container(None, layout.bounds());
+        let child_layout = layout.iter(&tree.children).next().unwrap().0;
+        operation.container(None, layout.bounds(), viewport);
 
-        self.content
-            .as_widget_mut()
-            .operate(&mut tree.children[0], layout, renderer, operation);
+        self.content.as_widget_mut().operate(
+            &mut tree.children[0],
+            child_layout,
+            viewport,
+            renderer,
+            operation,
+        );
     }
 
     fn update(
         &mut self,
         tree: &mut Tree,
         event: &Event,
-        layout: Layout<'_>,
+        layout: Layout,
         cursor: mouse::Cursor,
         renderer: &Renderer,
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
+        let child_layout = layout.iter(&tree.children).next().unwrap().0;
         self.content.as_widget_mut().update(
             &mut tree.children[0],
             event,
-            layout,
+            child_layout,
             cursor,
             renderer,
             shell,
@@ -246,16 +255,17 @@ impl<Message> Widget<Message, Theme, Renderer> for Manager<'_, Message> {
         renderer: &mut Renderer,
         theme: &Theme,
         style: &renderer::Style,
-        layout: Layout<'_>,
+        layout: Layout,
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
+        let child_layout = layout.iter(&tree.children).next().unwrap().0;
         self.content.as_widget().draw(
             &tree.children[0],
             renderer,
             theme,
             style,
-            layout,
+            child_layout,
             cursor,
             viewport,
         );
@@ -264,14 +274,15 @@ impl<Message> Widget<Message, Theme, Renderer> for Manager<'_, Message> {
     fn mouse_interaction(
         &self,
         tree: &Tree,
-        layout: Layout<'_>,
+        layout: Layout,
         cursor: mouse::Cursor,
         viewport: &Rectangle,
         renderer: &Renderer,
     ) -> mouse::Interaction {
+        let child_layout = layout.iter(&tree.children).next().unwrap().0;
         self.content.as_widget().mouse_interaction(
             &tree.children[0],
-            layout,
+            child_layout,
             cursor,
             viewport,
             renderer,
@@ -281,47 +292,57 @@ impl<Message> Widget<Message, Theme, Renderer> for Manager<'_, Message> {
     fn overlay<'b>(
         &'b mut self,
         tree: &'b mut Tree,
-        layout: Layout<'b>,
+        layout: Layout,
         renderer: &Renderer,
         viewport: &Rectangle,
         translation: Vector,
-    ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
-        let instants = tree.state.downcast_mut::<Vec<Option<Instant>>>();
-
+        window: Size,
+    ) -> Vec<overlay::Element<'b, Message, Theme, Renderer>> {
+        let child_layout = layout.iter(&tree.children).next().unwrap().0;
+        let state = tree.state.downcast_mut::<State>();
         let (content_state, toasts_state) = tree.children.split_at_mut(1);
-
-        let content = self.content.as_widget_mut().overlay(
+        let mut overlays = self.content.as_widget_mut().overlay(
             &mut content_state[0],
-            layout,
+            child_layout,
             renderer,
             viewport,
             translation,
+            window,
         );
 
-        let toasts = (!self.toasts.is_empty()).then(|| {
-            overlay::Element::new(Box::new(Overlay {
-                position: layout.bounds().position() + translation,
+        if !self.toasts.is_empty() {
+            let limits = layout::Limits::new(Size::ZERO, layout.size());
+            let size = layout::flex::resolve(
+                layout::flex::Axis::Vertical,
+                renderer,
+                &limits,
+                Fill,
+                Fill,
+                32.into(),
+                10.0,
+                self.alignment,
+                toasts_state,
+                &mut self.toasts,
+                &mut state.layout_cache,
+            );
+            let toast_layout = Layout::new(size).move_to(layout.position() + translation);
+            overlays.push(overlay::Element::new(Box::new(Overlay {
+                layout: toast_layout,
                 viewport: *viewport,
-                bounds: layout.bounds(),
-                alignment: self.alignment,
                 toasts: &mut self.toasts,
                 state: toasts_state,
-                instants,
+                instants: &mut state.instants,
                 on_close: &self.on_close,
                 timeout_secs: self.timeout_secs,
-            }))
-        });
-        let overlays = content.into_iter().chain(toasts).collect::<Vec<_>>();
-
-        (!overlays.is_empty()).then(|| overlay::Group::with_children(overlays).overlay())
+            })));
+        }
+        overlays
     }
 }
 
 struct Overlay<'a, 'b, Message> {
-    position: Point,
+    layout: Layout,
     viewport: Rectangle,
-    bounds: Rectangle,
-    alignment: Alignment,
     toasts: &'b mut [Element<'a, Message>],
     state: &'b mut [Tree],
     instants: &'b mut [Option<Instant>],
@@ -330,28 +351,9 @@ struct Overlay<'a, 'b, Message> {
 }
 
 impl<Message> overlay::Overlay<Message, Theme, Renderer> for Overlay<'_, '_, Message> {
-    fn layout(&mut self, renderer: &Renderer, _bounds: Size) -> layout::Node {
-        let limits = layout::Limits::new(Size::ZERO, self.bounds.size());
-
-        layout::flex::resolve(
-            layout::flex::Axis::Vertical,
-            renderer,
-            &limits,
-            Fill,
-            Fill,
-            32.into(),
-            10.0,
-            self.alignment,
-            self.toasts,
-            self.state,
-        )
-        .translate(Vector::new(self.position.x, self.position.y))
-    }
-
     fn update(
         &mut self,
         event: &Event,
-        layout: Layout<'_>,
         cursor: mouse::Cursor,
         renderer: &Renderer,
         shell: &mut Shell<'_, Message>,
@@ -375,20 +377,19 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for Overlay<'_, '_, Mes
                 });
         }
 
-        let viewport = layout.bounds();
+        let viewport = self.layout.bounds();
 
-        for (((child, state), child_layout), instant) in self
+        for ((child, (child_layout, state)), instant) in self
             .toasts
             .iter_mut()
-            .zip(self.state.iter_mut())
-            .zip(layout.children())
+            .zip(self.layout.iter_mut(self.state))
             .zip(self.instants.iter_mut())
         {
             if !toast_body_visible(child_layout.bounds(), viewport) {
                 continue;
             }
 
-            let mut local_messages = vec![];
+            let mut local_messages = shell::Bus::new();
             let mut local_shell = shell.local(&mut local_messages);
 
             child.as_widget_mut().update(
@@ -414,48 +415,38 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for Overlay<'_, '_, Mes
         renderer: &mut Renderer,
         theme: &Theme,
         style: &renderer::Style,
-        layout: Layout<'_>,
         cursor: mouse::Cursor,
     ) {
-        let viewport = layout.bounds();
+        let viewport = self.layout.bounds();
 
-        for ((child, state), child_layout) in self
-            .toasts
-            .iter()
-            .zip(self.state.iter())
-            .zip(layout.children())
-        {
-            if !toast_body_visible(child_layout.bounds(), viewport) {
-                continue;
+        renderer.with_layer(viewport, |renderer| {
+            for (child, (child_layout, state)) in
+                self.toasts.iter().zip(self.layout.iter(self.state))
+            {
+                if !toast_body_visible(child_layout.bounds(), viewport) {
+                    continue;
+                }
+
+                child.as_widget().draw(
+                    state,
+                    renderer,
+                    theme,
+                    style,
+                    child_layout,
+                    cursor,
+                    &viewport,
+                );
             }
-
-            child.as_widget().draw(
-                state,
-                renderer,
-                theme,
-                style,
-                child_layout,
-                cursor,
-                &viewport,
-            );
-        }
+        });
     }
 
-    fn operate(
-        &mut self,
-        layout: Layout<'_>,
-        renderer: &Renderer,
-        operation: &mut dyn widget::Operation,
-    ) {
-        operation.container(None, layout.bounds());
+    fn operate(&mut self, renderer: &Renderer, operation: &mut dyn widget::Operation) {
+        operation.container(None, self.layout.bounds(), &self.layout.bounds());
 
-        let viewport = layout.bounds();
+        let viewport = self.layout.bounds();
 
-        for ((child, state), child_layout) in self
-            .toasts
-            .iter_mut()
-            .zip(self.state.iter_mut())
-            .zip(layout.children())
+        for (child, (child_layout, state)) in
+            self.toasts.iter_mut().zip(self.layout.iter_mut(self.state))
         {
             if !toast_body_visible(child_layout.bounds(), viewport) {
                 continue;
@@ -463,23 +454,17 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for Overlay<'_, '_, Mes
 
             child
                 .as_widget_mut()
-                .operate(state, child_layout, renderer, operation);
+                .operate(state, child_layout, &viewport, renderer, operation);
         }
     }
 
-    fn mouse_interaction(
-        &self,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        renderer: &Renderer,
-    ) -> mouse::Interaction {
-        let viewport = layout.bounds();
+    fn mouse_interaction(&self, cursor: mouse::Cursor, renderer: &Renderer) -> mouse::Interaction {
+        let viewport = self.layout.bounds();
 
         self.toasts
             .iter()
-            .zip(self.state.iter())
-            .zip(layout.children())
-            .filter_map(|((child, state), child_layout)| {
+            .zip(self.layout.iter(self.state))
+            .filter_map(|(child, (child_layout, state))| {
                 if !toast_body_visible(child_layout.bounds(), viewport) {
                     return None;
                 }

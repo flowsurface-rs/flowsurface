@@ -71,8 +71,11 @@ struct State {
 impl State {
     // Children order (root):
     // 0 plot, 1 y_axis, 2 x_axis, 3 corner
-    fn bounds_from_layout(layout: Layout<'_>) -> (Rectangle, Rectangle, Rectangle, Rectangle) {
-        let mut children = layout.children();
+    fn bounds_from_layout(
+        layout: Layout,
+        children: &[Tree],
+    ) -> (Rectangle, Rectangle, Rectangle, Rectangle) {
+        let mut children = layout.iter(children).map(|(layout, _)| layout);
 
         let plot = children
             .next()
@@ -128,12 +131,11 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
         }
     }
 
-    fn layout(
-        &mut self,
-        _tree: &mut Tree,
-        _renderer: &Renderer,
-        limits: &layout::Limits,
-    ) -> layout::Node {
+    fn diff(&mut self, tree: &mut Tree) {
+        tree.children.resize_with(4, Tree::empty);
+    }
+
+    fn layout(&mut self, tree: &mut Tree, _renderer: &Renderer, limits: &layout::Limits) {
         let size = limits.resolve(Length::Fill, Length::Fill, Size::ZERO);
 
         let gutter_w = layout::Limits::new(Size::ZERO, size)
@@ -152,27 +154,22 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
         let plot_w = (size.width - gutter_w).max(0.0);
         let plot_h = (size.height - x_axis_h).max(0.0);
 
-        let plot_node = layout::Node::new(Size::new(plot_w, plot_h));
-
-        let y_axis_node =
-            layout::Node::new(Size::new(gutter_w, plot_h)).move_to(iced::Point::new(plot_w, 0.0));
-
-        // X axis must match plot width
-        let x_axis_node =
-            layout::Node::new(Size::new(plot_w, x_axis_h)).move_to(iced::Point::new(0.0, plot_h));
-
-        // Bottom-right empty corner cell
-        let corner_node = layout::Node::new(Size::new(gutter_w, x_axis_h))
-            .move_to(iced::Point::new(plot_w, plot_h));
-
-        layout::Node::with_children(size, vec![plot_node, y_axis_node, x_axis_node, corner_node])
+        tree.children[0].size = Size::new(plot_w, plot_h);
+        tree.children[0].translation = Vector::ZERO;
+        tree.children[1].size = Size::new(gutter_w, plot_h);
+        tree.children[1].translation = Vector::new(plot_w, 0.0);
+        tree.children[2].size = Size::new(plot_w, x_axis_h);
+        tree.children[2].translation = Vector::new(0.0, plot_h);
+        tree.children[3].size = Size::new(gutter_w, x_axis_h);
+        tree.children[3].translation = Vector::new(plot_w, plot_h);
+        tree.size = size;
     }
 
     fn update(
         &mut self,
         tree: &mut Tree,
         event: &Event,
-        layout: Layout<'_>,
+        layout: Layout,
         cursor: mouse::Cursor,
         _renderer: &Renderer,
         shell: &mut Shell<'_, Message>,
@@ -181,7 +178,7 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
         use iced::widget::canvas::Program as _;
 
         let (plot_bounds, y_axis_bounds, x_axis_bounds, _corner) =
-            State::bounds_from_layout(layout);
+            State::bounds_from_layout(layout, &tree.children);
 
         let state = tree.state.downcast_mut::<State>();
 
@@ -288,12 +285,12 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
         renderer: &mut Renderer,
         theme: &Theme,
         _style: &renderer::Style,
-        layout: Layout<'_>,
+        layout: Layout,
         cursor: mouse::Cursor,
         _viewport: &Rectangle,
     ) {
         let (plot_bounds, y_axis_bounds, x_axis_bounds, _corner) =
-            State::bounds_from_layout(layout);
+            State::bounds_from_layout(layout, &tree.children);
         if plot_bounds.width < 1.0 || plot_bounds.height < 1.0 {
             return;
         }
@@ -393,7 +390,7 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
     fn mouse_interaction(
         &self,
         tree: &Tree,
-        layout: Layout<'_>,
+        layout: Layout,
         cursor: mouse::Cursor,
         _viewport: &Rectangle,
         _renderer: &Renderer,
@@ -401,7 +398,7 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
         use iced::widget::canvas::Program as _;
 
         let (plot_bounds, y_axis_bounds, x_axis_bounds, _corner) =
-            State::bounds_from_layout(layout);
+            State::bounds_from_layout(layout, &tree.children);
 
         let state = tree.state.downcast_ref::<State>();
 

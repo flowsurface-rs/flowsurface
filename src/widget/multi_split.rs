@@ -2,7 +2,7 @@ use iced::{
     Element, Event, Length, Point, Rectangle, Renderer, Size, Theme, Vector,
     advanced::{
         Layout, Shell, Widget,
-        layout::{Limits, Node},
+        layout::Limits,
         overlay,
         renderer::Style,
         widget::{Operation, Tree, tree},
@@ -87,12 +87,11 @@ impl<Message> Widget<Message, Theme, Renderer> for MultiSplit<'_, Message> {
         tree.diff_children(&mut self.panels[..]);
     }
 
-    fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &Limits) -> Node {
-        let max_limits = limits.max();
+    fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &Limits) {
+        let max_limits = limits.max;
 
         let panel_count = self.panels.len().div_ceil(2);
 
-        let mut children = Vec::with_capacity(self.panels.len());
         let mut current_y = 0.0;
 
         for i in 0..self.panels.len() {
@@ -114,12 +113,12 @@ impl<Message> Widget<Message, Theme, Renderer> for MultiSplit<'_, Message> {
                     Size::new(max_limits.width, height.max(0.0)),
                 );
 
-                let panel_node = self.panels[i]
-                    .as_widget_mut()
-                    .layout(&mut tree.children[i], renderer, &panel_limits)
-                    .translate(Vector::new(0.0, current_y));
-
-                children.push(panel_node);
+                self.panels[i].as_widget_mut().layout(
+                    &mut tree.children[i],
+                    renderer,
+                    &panel_limits,
+                );
+                tree.children[i].translation = Vector::new(0.0, current_y);
 
                 if !is_last {
                     current_y += height;
@@ -130,24 +129,24 @@ impl<Message> Widget<Message, Theme, Renderer> for MultiSplit<'_, Message> {
                     Size::new(max_limits.width, DRAG_SIZE),
                 );
 
-                let ruler_node = self.panels[i]
-                    .as_widget_mut()
-                    .layout(&mut tree.children[i], renderer, &ruler_limits)
-                    .translate(Vector::new(0.0, current_y));
-
-                children.push(ruler_node);
+                self.panels[i].as_widget_mut().layout(
+                    &mut tree.children[i],
+                    renderer,
+                    &ruler_limits,
+                );
+                tree.children[i].translation = Vector::new(0.0, current_y);
                 current_y += DRAG_SIZE;
             }
         }
 
-        Node::with_children(max_limits, children)
+        tree.size = max_limits;
     }
 
     fn update(
         &mut self,
         tree: &mut Tree,
         event: &Event,
-        layout: Layout<'_>,
+        layout: Layout,
         cursor: Cursor,
         renderer: &Renderer,
         shell: &mut Shell<'_, Message>,
@@ -155,9 +154,8 @@ impl<Message> Widget<Message, Theme, Renderer> for MultiSplit<'_, Message> {
     ) {
         self.panels
             .iter_mut()
-            .zip(&mut tree.children)
-            .zip(layout.children())
-            .for_each(|((child, tree), layout)| {
+            .zip(layout.iter_mut(&mut tree.children))
+            .for_each(|(child, (layout, tree))| {
                 child
                     .as_widget_mut()
                     .update(tree, event, layout, cursor, renderer, shell, viewport);
@@ -171,7 +169,11 @@ impl<Message> Widget<Message, Theme, Renderer> for MultiSplit<'_, Message> {
         let bounds = layout.bounds();
 
         let mut ruler_bounds = Vec::new();
-        for (i, layout_child) in layout.children().enumerate() {
+        for (i, layout_child) in layout
+            .iter(&tree.children)
+            .map(|(layout, _)| layout)
+            .enumerate()
+        {
             if i % 2 == 1 {
                 ruler_bounds.push((i / 2, layout_child.bounds().expand(DRAG_SIZE * 4.0)));
             }
@@ -250,16 +252,15 @@ impl<Message> Widget<Message, Theme, Renderer> for MultiSplit<'_, Message> {
         renderer: &mut Renderer,
         theme: &Theme,
         style: &Style,
-        layout: Layout<'_>,
+        layout: Layout,
         cursor: Cursor,
         viewport: &Rectangle,
     ) {
         self.panels
             .iter()
-            .zip(&tree.children)
-            .zip(layout.children())
-            .filter(|(_, layout)| layout.bounds().intersects(viewport))
-            .for_each(|((child, tree), layout)| {
+            .zip(layout.iter(&tree.children))
+            .filter(|(_, (layout, _))| layout.bounds().intersects(viewport))
+            .for_each(|(child, (layout, tree))| {
                 child
                     .as_widget()
                     .draw(tree, renderer, theme, style, layout, cursor, viewport);
@@ -269,7 +270,7 @@ impl<Message> Widget<Message, Theme, Renderer> for MultiSplit<'_, Message> {
     fn mouse_interaction(
         &self,
         tree: &Tree,
-        layout: Layout<'_>,
+        layout: Layout,
         cursor: Cursor,
         viewport: &Rectangle,
         renderer: &Renderer,
@@ -281,9 +282,8 @@ impl<Message> Widget<Message, Theme, Renderer> for MultiSplit<'_, Message> {
         } else {
             self.panels
                 .iter()
-                .zip(&tree.children)
-                .zip(layout.children())
-                .map(|((child, tree), layout)| {
+                .zip(layout.iter(&tree.children))
+                .map(|(child, (layout, tree))| {
                     child
                         .as_widget()
                         .mouse_interaction(tree, layout, cursor, viewport, renderer)
@@ -296,11 +296,12 @@ impl<Message> Widget<Message, Theme, Renderer> for MultiSplit<'_, Message> {
     fn overlay<'b>(
         &'b mut self,
         tree: &'b mut Tree,
-        layout: Layout<'b>,
+        layout: Layout,
         renderer: &Renderer,
         viewport: &Rectangle,
         translation: Vector,
-    ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
+        window: Size,
+    ) -> Vec<overlay::Element<'b, Message, Theme, Renderer>> {
         overlay::from_children(
             &mut self.panels,
             tree,
@@ -308,17 +309,19 @@ impl<Message> Widget<Message, Theme, Renderer> for MultiSplit<'_, Message> {
             renderer,
             viewport,
             translation,
+            window,
         )
     }
 
     fn operate(
         &mut self,
         _tree: &mut Tree,
-        layout: Layout<'_>,
+        layout: Layout,
+        viewport: &Rectangle,
         _renderer: &Renderer,
         operation: &mut dyn Operation,
     ) {
-        operation.container(None, layout.bounds());
+        operation.container(None, layout.bounds(), viewport);
     }
 }
 

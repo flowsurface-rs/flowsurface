@@ -89,6 +89,6 @@ lto = "fat"
 codegen-units = 1
 
 [patch.crates-io]
-iced = { git = "https://github.com/iced-rs/iced", rev = "bb22add15fc5528b5eb319408d5e60992fdc8a90" }
-iced_core = { git = "https://github.com/iced-rs/iced", rev = "bb22add15fc5528b5eb319408d5e60992fdc8a90" }
-iced_wgpu = { git = "https://github.com/iced-rs/iced", rev = "bb22add15fc5528b5eb319408d5e60992fdc8a90" }
+iced = { git = "https://github.com/iced-rs/iced", rev = "da17d4d761670f15db5b665a6c37e2bfd2cff889" }
+iced_core = { git = "https://github.com/iced-rs/iced", rev = "da17d4d761670f15db5b665a6c37e2bfd2cff889" }
+iced_wgpu = { git = "https://github.com/iced-rs/iced", rev = "da17d4d761670f15db5b665a6c37e2bfd2cff889" }

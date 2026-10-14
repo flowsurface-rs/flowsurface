@@ -568,7 +568,7 @@ impl TickersTable {
                 scrollable::Scrollbar::new().width(8).scroller_width(6),
             ),
         )
-        .on_scroll(Message::Scrolled)
+        .on_scroll(|scroll| Message::Scrolled(scroll.viewport))
         .style(style::scroll_bar)
         .into()
     }
@@ -1265,7 +1265,7 @@ impl TickersTable {
                 scrollable::Scrollbar::new().width(8).scroller_width(6),
             ),
         )
-        .on_scroll(on_scroll)
+        .on_scroll(move |scroll| on_scroll(scroll.viewport))
         .style(style::scroll_bar)
         .into()
     }

@@ -55,6 +55,11 @@ pub enum Action {
     },
 }
 
+struct State {
+    action: Action,
+    layout_cache: layout::flex::Cache,
+}
+
 #[derive(Debug, Clone)]
 pub enum DragEvent {
     Picked { index: usize },
@@ -194,7 +199,8 @@ where
     fn compute_target_index(
         &self,
         cursor_position: Point,
-        layout: Layout<'_>,
+        layout: Layout,
+        children: &[Tree],
         dragged_index: usize,
     ) -> usize {
         let cursor_y = cursor_position.y;
@@ -210,7 +216,7 @@ where
             return self.children.len();
         }
 
-        for (i, child_layout) in layout.children().enumerate() {
+        for (i, child_layout) in layout.iter(children).map(|(layout, _)| layout).enumerate() {
             let child_bounds = child_layout.bounds();
             let y = child_bounds.y;
             let height = child_bounds.height;
@@ -262,11 +268,14 @@ where
     Renderer: renderer::Renderer,
 {
     fn tag(&self) -> tree::Tag {
-        tree::Tag::of::<Action>()
+        tree::Tag::of::<State>()
     }
 
     fn state(&self) -> tree::State {
-        tree::State::new(Action::Idle)
+        tree::State::new(State {
+            action: Action::Idle,
+            layout_cache: layout::flex::Cache::default(),
+        })
     }
 
     fn diff(&mut self, tree: &mut Tree) {
@@ -289,13 +298,9 @@ where
         }
     }
 
-    fn layout(
-        &mut self,
-        tree: &mut Tree,
-        renderer: &Renderer,
-        limits: &layout::Limits,
-    ) -> layout::Node {
-        layout::flex::resolve(
+    fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) {
+        let state = tree.state.downcast_mut::<State>();
+        tree.size = layout::flex::resolve(
             layout::flex::Axis::Vertical,
             renderer,
             limits,
@@ -304,28 +309,29 @@ where
             self.padding,
             self.spacing,
             self.align,
-            &mut self.children,
             &mut tree.children,
-        )
+            &mut self.children,
+            &mut state.layout_cache,
+        );
     }
 
     fn operate(
         &mut self,
         tree: &mut Tree,
-        layout: Layout<'_>,
+        layout: Layout,
+        viewport: &Rectangle,
         renderer: &Renderer,
         operation: &mut dyn Operation,
     ) {
-        operation.container(None, layout.bounds());
+        operation.container(None, layout.bounds(), viewport);
         operation.traverse(&mut |operation| {
             self.children
                 .iter_mut()
-                .zip(&mut tree.children)
-                .zip(layout.children())
-                .for_each(|((child, state), layout)| {
+                .zip(layout.iter_mut(&mut tree.children))
+                .for_each(|(child, (layout, state))| {
                     child
                         .as_widget_mut()
-                        .operate(state, layout, renderer, operation);
+                        .operate(state, layout, viewport, renderer, operation);
                 });
         });
     }
@@ -334,13 +340,13 @@ where
         &mut self,
         tree: &mut Tree,
         event: &Event,
-        layout: Layout<'_>,
+        layout: Layout,
         cursor: mouse::Cursor,
         renderer: &Renderer,
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
-        let action = tree.state.downcast_mut::<Action>();
+        let action = &mut tree.state.downcast_mut::<State>().action;
 
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
@@ -354,7 +360,11 @@ where
                         height: bounds.height,
                     };
 
-                    for (index, child_layout) in layout.children().enumerate() {
+                    for (index, child_layout) in layout
+                        .iter(&tree.children)
+                        .map(|(layout, _)| layout)
+                        .enumerate()
+                    {
                         if cursor.is_over(drag_handle_bounds)
                             && child_layout.bounds().contains(cursor_position)
                         {
@@ -409,7 +419,8 @@ where
                     Action::Dragging {
                         index, last_cursor, ..
                     } => {
-                        let target_index = self.compute_target_index(last_cursor, layout, index);
+                        let target_index =
+                            self.compute_target_index(last_cursor, layout, &tree.children, index);
 
                         if let Some(on_reorder) = &self.on_drag {
                             shell.publish(on_reorder(DragEvent::Dropped {
@@ -431,9 +442,8 @@ where
 
         self.children
             .iter_mut()
-            .zip(&mut tree.children)
-            .zip(layout.children())
-            .for_each(|((child, tree), layout)| {
+            .zip(layout.iter_mut(&mut tree.children))
+            .for_each(|(child, (layout, tree))| {
                 child
                     .as_widget_mut()
                     .update(tree, event, layout, cursor, renderer, shell, viewport);
@@ -443,12 +453,12 @@ where
     fn mouse_interaction(
         &self,
         tree: &Tree,
-        layout: Layout<'_>,
+        layout: Layout,
         cursor: mouse::Cursor,
         viewport: &Rectangle,
         renderer: &Renderer,
     ) -> mouse::Interaction {
-        let action = tree.state.downcast_ref::<Action>();
+        let action = &tree.state.downcast_ref::<State>().action;
 
         match action {
             Action::Dragging { .. } | Action::Picking { .. } => {
@@ -471,9 +481,8 @@ where
 
         self.children
             .iter()
-            .zip(&tree.children)
-            .zip(layout.children())
-            .map(|((child, state), layout)| {
+            .zip(layout.iter(&tree.children))
+            .map(|(child, (layout, state))| {
                 child
                     .as_widget()
                     .mouse_interaction(state, layout, cursor, viewport, renderer)
@@ -488,11 +497,11 @@ where
         renderer: &mut Renderer,
         theme: &Theme,
         defaults: &renderer::Style,
-        layout: Layout<'_>,
+        layout: Layout,
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        let action = tree.state.downcast_ref::<Action>();
+        let action = &tree.state.downcast_ref::<State>().action;
 
         match action {
             Action::Dragging {
@@ -504,17 +513,17 @@ where
                 let child_count = self.children.len();
                 // Always use last_cursor (which is clamped) instead of checking actual cursor position
                 let target_index = self
-                    .compute_target_index(*last_cursor, layout, *index)
+                    .compute_target_index(*last_cursor, layout, &tree.children, *index)
                     .min(child_count);
 
-                let drag_bounds = layout.children().nth(*index).unwrap().bounds();
+                let drag_bounds = layout.iter(&tree.children).nth(*index).unwrap().0.bounds();
                 let drag_height = drag_bounds.height + self.spacing;
 
                 // Draw all children with appropriate translations
                 for i in 0..child_count {
                     let child = &self.children[i];
                     let state = &tree.children[i];
-                    let child_layout = layout.children().nth(i).unwrap();
+                    let child_layout = layout.iter(&tree.children).nth(i).unwrap().0;
 
                     if i == *index {
                         // Draw the dragged item at cursor position
@@ -570,12 +579,11 @@ where
                         viewport
                     };
 
-                    for ((child, state), layout) in self
+                    for (child, (layout, state)) in self
                         .children
                         .iter()
-                        .zip(&tree.children)
-                        .zip(layout.children())
-                        .filter(|(_, layout)| layout.bounds().intersects(viewport))
+                        .zip(layout.iter(&tree.children))
+                        .filter(|(_, (layout, _))| layout.bounds().intersects(viewport))
                     {
                         child
                             .as_widget()
@@ -588,11 +596,12 @@ where
     fn overlay<'b>(
         &'b mut self,
         tree: &'b mut Tree,
-        layout: Layout<'b>,
+        layout: Layout,
         renderer: &Renderer,
         viewport: &Rectangle,
         translation: Vector,
-    ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
+        window: Size,
+    ) -> Vec<overlay::Element<'b, Message, Theme, Renderer>> {
         overlay::from_children(
             &mut self.children,
             tree,
@@ -600,6 +609,7 @@ where
             renderer,
             viewport,
             translation,
+            window,
         )
     }
 }

@@ -58,7 +58,7 @@ fn main() {
                 Cow::Borrowed(style::AZERET_MONO_BYTES),
                 Cow::Borrowed(style::ICONS_BYTES),
             ],
-            default_text_size: style::text_size::BODY.into(),
+            text_size: style::text_size::BODY.into(),
             ..Default::default()
         })
         .title(Flowsurface::title)

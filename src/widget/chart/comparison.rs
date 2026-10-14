@@ -228,10 +228,15 @@ where
         Some(((min_x, max_x), (min_pct, max_pct)))
     }
 
-    fn compute_scene(&self, layout: Layout<'_>, cursor: mouse::Cursor) -> Option<Scene> {
+    fn compute_scene(
+        &self,
+        layout: Layout,
+        children: &[Tree],
+        cursor: mouse::Cursor,
+    ) -> Option<Scene> {
         let ((min_x, max_x), (min_pct, max_pct)) = self.compute_domains(self.pan)?;
 
-        let regions = Regions::from_layout(layout);
+        let regions = Regions::from_layout(layout, children);
         let plot = regions.plot;
         let span_ms = max_x.saturating_sub(min_x).max(1) as f32;
         let px_per_ms = if plot.width > 0.0 {
@@ -714,52 +719,40 @@ where
         }
     }
 
-    fn layout(
-        &mut self,
-        _tree: &mut Tree,
-        _renderer: &Renderer,
-        limits: &layout::Limits,
-    ) -> layout::Node {
-        // Column: [ Row(plot, y_axis) , x_axis ]
-        let gutter_w = Y_AXIS_GUTTER;
-        let x_axis_h = X_AXIS_HEIGHT;
+    fn diff(&mut self, tree: &mut Tree) {
+        tree.children.resize_with(2, Tree::empty);
+        tree.children[0].children.resize_with(2, Tree::empty);
+    }
 
-        // First row: plot + y-axis
-        let row_node = layout::next_to_each_other(
-            &limits.shrink(Size::new(0.0, x_axis_h)),
-            0.0,
-            |l| {
-                layout::atomic(
-                    &l.shrink(Size::new(gutter_w, 0.0)),
-                    Length::Fill,
-                    Length::Fill,
-                )
-            },
-            |l| layout::atomic(l, gutter_w, Length::Fill),
+    fn layout(&mut self, tree: &mut Tree, _renderer: &Renderer, limits: &layout::Limits) {
+        let size = limits.resolve(Length::Fill, Length::Fill, Size::ZERO);
+        let content_limits = layout::Limits::new(Size::ZERO, size);
+        let row_limits = content_limits.shrink(Size::new(0.0, X_AXIS_HEIGHT));
+        let plot_size = layout::atomic(
+            &row_limits.shrink(Size::new(Y_AXIS_GUTTER, 0.0)),
+            Length::Fill,
+            Length::Fill,
         );
-
-        // X axis full width at bottom
-        let x_axis_node = layout::atomic(limits, Length::Fill, x_axis_h);
-
-        let row_node_height = row_node.size().height;
-
-        let total_w = row_node.size().width;
-        let total_h = row_node_height + x_axis_h;
-
-        layout::Node::with_children(
-            Size::new(total_w, total_h),
-            vec![
-                row_node.move_to(Point::new(0.0, 0.0)),
-                x_axis_node.move_to(Point::new(0.0, row_node_height)),
-            ],
-        )
+        let y_axis_size = layout::atomic(
+            &row_limits.shrink(Size::new(plot_size.width, 0.0)),
+            Y_AXIS_GUTTER,
+            Length::Fill,
+        );
+        let row = &mut tree.children[0];
+        layout::next_to_each_other(row, plot_size, y_axis_size, 0.0);
+        row.translation = Vector::ZERO;
+        let row_size = row.size;
+        let x_axis = &mut tree.children[1];
+        x_axis.size = layout::atomic(&content_limits, Length::Fill, X_AXIS_HEIGHT);
+        x_axis.translation = Vector::new(0.0, row_size.height);
+        tree.size = Size::new(row_size.width, row_size.height + x_axis.size.height);
     }
 
     fn update(
         &mut self,
         tree: &mut Tree,
         event: &Event,
-        layout: Layout<'_>,
+        layout: Layout,
         cursor: mouse::Cursor,
         _renderer: &Renderer,
         shell: &mut Shell<'_, M>,
@@ -773,7 +766,7 @@ where
             Event::Mouse(mouse_event) => {
                 let state = tree.state.downcast_mut::<State>();
                 let bounds = layout.bounds();
-                let regions = Regions::from_layout(layout);
+                let regions = Regions::from_layout(layout, &tree.children);
 
                 let Some(cursor_pos) = cursor.position_in(bounds) else {
                     if state.is_panning {
@@ -829,7 +822,7 @@ where
                             return;
                         }
 
-                        if let Some(scene) = self.compute_scene(layout, cursor)
+                        if let Some(scene) = self.compute_scene(layout, &tree.children, cursor)
                             && let Some(legend) = scene.legend.as_ref()
                         {
                             for row in &legend.rows {
@@ -902,14 +895,14 @@ where
         renderer: &mut Renderer,
         theme: &Theme,
         _style: &renderer::Style,
-        layout: Layout<'_>,
+        layout: Layout,
         cursor: mouse::Cursor,
         _viewport: &Rectangle,
     ) {
         use advanced::Renderer as _;
 
         let state = tree.state.downcast_ref::<State>();
-        let Some(scene) = self.compute_scene(layout, cursor) else {
+        let Some(scene) = self.compute_scene(layout, &tree.children, cursor) else {
             return;
         };
 
@@ -1025,14 +1018,14 @@ where
 
     fn mouse_interaction(
         &self,
-        _state: &Tree,
-        layout: Layout<'_>,
+        tree: &Tree,
+        layout: Layout,
         cursor: advanced::mouse::Cursor,
         _viewport: &Rectangle,
         _renderer: &Renderer,
     ) -> advanced::mouse::Interaction {
         if let Some(cursor_in_layout) = cursor.position_in(layout.bounds()) {
-            if let Some(scene) = self.compute_scene(layout, cursor) {
+            if let Some(scene) = self.compute_scene(layout, &tree.children, cursor) {
                 if let Some(legend) = scene.legend.as_ref() {
                     for row in &legend.rows {
                         if row.cog.contains(cursor_in_layout)
@@ -1047,7 +1040,7 @@ where
                     return advanced::mouse::Interaction::default();
                 }
 
-                let state = _state.state.downcast_ref::<State>();
+                let state = tree.state.downcast_ref::<State>();
                 if state.is_panning {
                     return advanced::mouse::Interaction::Grabbing;
                 }
@@ -1684,16 +1677,18 @@ struct Regions {
 }
 
 impl Regions {
-    fn from_layout(root: Layout<'_>) -> Self {
+    fn from_layout(root: Layout, children: &[Tree]) -> Self {
         let root_bounds = root.bounds();
 
         // root.children = [ row, x_axis ]
-        let row = root.child(0);
-        let x_abs = root.child(1).bounds();
+        let mut regions = root.iter(children);
+        let (row, row_tree) = regions.next().unwrap();
+        let x_abs = regions.next().unwrap().0.bounds();
 
         // row.children  = [ plot, y_axis ]
-        let plot_abs = row.child(0).bounds();
-        let y_abs = row.child(1).bounds();
+        let mut row_regions = row.iter(&row_tree.children);
+        let plot_abs = row_regions.next().unwrap().0.bounds();
+        let y_abs = row_regions.next().unwrap().0.bounds();
 
         let to_local = |r: Rectangle| Rectangle {
             x: r.x - root_bounds.x,

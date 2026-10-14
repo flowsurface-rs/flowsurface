@@ -159,8 +159,8 @@ impl ThemeEditor {
         let hex_input = iced::widget::text_input(
             "",
             self.hex_input
-                .as_deref()
-                .unwrap_or(data::config::theme::color_to_hex(color).as_str()),
+                .clone()
+                .unwrap_or_else(|| data::config::theme::color_to_hex(color)),
         )
         .on_input(Message::HexInput)
         .width(80)

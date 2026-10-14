@@ -5,7 +5,7 @@ use iced::widget::canvas::{LineDash, Stroke};
 use iced::widget::container::{self, Style};
 use iced::widget::pane_grid::{Highlight, Line};
 use iced::widget::scrollable::{AutoScroll, Rail, Scroller};
-use iced::{Border, Color, Font, Renderer, Shadow, Theme, widget};
+use iced::{Border, Color, Font, Shadow, Theme, widget};
 
 pub const ICONS_BYTES: &[u8] = include_bytes!(".././assets/fonts/icons.ttf");
 pub const ICONS_FONT: Font = Font::new("icons");
@@ -76,7 +76,7 @@ impl From<Icon> for char {
     }
 }
 
-pub fn icon_text<'a>(icon: Icon, size: u16) -> Text<'a, Theme, Renderer> {
+pub fn icon_text<'a>(icon: Icon, size: u16) -> Text<'a, Theme> {
     iced::widget::text(char::from(icon).to_string())
         .font(ICONS_FONT)
         .size(iced::Pixels(size.into()))
@@ -646,7 +646,6 @@ pub fn validated_text_input(
                 palette.danger.base.color
             },
         },
-        icon: palette.background.strong.text,
         placeholder,
         value: palette.background.base.text,
         selection: palette.background.strongest.color,

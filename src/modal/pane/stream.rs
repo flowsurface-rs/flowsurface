@@ -502,8 +502,8 @@ impl Modifier {
 
                             numeric_input_box::<_, Message>(
                                 "Custom: ",
-                                &format!("{}-{}", TICK_COUNT_MIN, TICK_COUNT_MAX),
-                                &raw_input_buf.to_display_string(),
+                                format!("{}-{}", TICK_COUNT_MIN, TICK_COUNT_MAX),
+                                raw_input_buf.to_display_string(),
                                 is_input_valid,
                                 Message::TickCountInputChanged,
                                 tick_count_to_submit
@@ -571,8 +571,8 @@ impl Modifier {
 
                             numeric_input_box::<_, Message>(
                                 "Custom: ",
-                                &format!("{}-{}", TICK_MULTIPLIER_MIN, TICK_MULTIPLIER_MAX),
-                                &raw_input_buf.to_display_string(),
+                                format!("{}-{}", TICK_MULTIPLIER_MIN, TICK_MULTIPLIER_MAX),
+                                raw_input_buf.to_display_string(),
                                 is_input_valid,
                                 Message::TicksizeInputChanged,
                                 tick_multiplier_to_submit.map(Message::TicksizeSelected),

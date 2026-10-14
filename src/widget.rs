@@ -217,8 +217,8 @@ where
 
 pub fn numeric_input_box<'a, F, Message: Clone + 'static>(
     label: &'a str,
-    placeholder: &str,
-    raw_input_buf: &str,
+    placeholder: impl iced::advanced::text::IntoFragment<'a>,
+    raw_input_buf: impl iced::advanced::text::IntoFragment<'a>,
     is_input_valid: bool,
     on_input_changed: F,
     on_submit_maybe: Option<Message>,
