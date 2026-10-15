@@ -1,4 +1,4 @@
-use super::chrome::{SERIES_END_LABEL_GAP, series_display_name};
+use super::chrome::{PreparedChrome, SERIES_END_LABEL_GAP, series_display_name};
 use super::drawing::{AxisBadgeFilter, DrawingView};
 use super::layout::place_non_overlapping_labels;
 use super::painting::{self, PaintInputs, PixelGeometry};
@@ -12,21 +12,22 @@ use iced::theme::palette::Extended;
 use iced::widget::canvas;
 use iced::{Point, Rectangle};
 
-// Admit readouts once; retain each countdown width and overlap result between data deadlines.
-pub(super) struct InteractionTextInputs {
+/// Crosshair, last-price/countdown, and active drawing badges on the axes.
+/// Retains countdown widths and collision decisions between scene preparations.
+pub(super) struct AxisBadgeInputs {
     pub(super) interval: Option<u64>,
     pub(super) variants: Vec<CountdownVariant>,
 }
 
 pub(super) struct CountdownVariant {
     pub(super) timer_length: usize,
-    pub(super) before_timer: PaintInputs,
+    pub(super) before_timer: PreparedChrome,
     pub(super) timer: Option<canvas::Text>,
-    pub(super) after_timer: PaintInputs,
+    pub(super) after_timer: PreparedChrome,
 }
 
-impl InteractionTextInputs {
-    pub(super) fn resolve(&self, utc_ms: u64) -> PaintInputs {
+impl AxisBadgeInputs {
+    pub(super) fn resolve(&self, utc_ms: u64) -> PreparedChrome {
         let (variant, timer) = self.countdown_variant(utc_ms);
         variant.resolve(timer)
     }
@@ -57,7 +58,7 @@ impl InteractionTextInputs {
 }
 
 impl CountdownVariant {
-    fn resolve(&self, timer: Option<String>) -> PaintInputs {
+    fn resolve(&self, timer: Option<String>) -> PreparedChrome {
         let mut inputs = self.before_timer.clone();
         if let (Some(text), Some(content)) = (&self.timer, timer) {
             let mut text = text.clone();
@@ -192,13 +193,14 @@ impl OverlayView<'_> {
         self.fill_unavailable_indicator_messages(frame, scene, palette);
     }
 
-    pub(super) fn text_inputs(
+    pub(super) fn axis_badge_inputs(
         &self,
         scene: &Scene,
+        bounds: Rectangle,
         palette: &Extended,
         drawing_magnet: bool,
         pixels: PixelGeometry,
-    ) -> InteractionTextInputs {
+    ) -> AxisBadgeInputs {
         let interval = match self.coordinates.basis {
             Basis::Time(timeframe) => Some(timeframe.to_milliseconds().max(1)),
             _ => None,
@@ -218,6 +220,7 @@ impl OverlayView<'_> {
             .map(|timer| {
                 self.prepare_countdown_variant(
                     scene,
+                    bounds,
                     palette,
                     drawing_magnet,
                     pixels,
@@ -225,18 +228,19 @@ impl OverlayView<'_> {
                 )
             })
             .collect();
-        InteractionTextInputs { interval, variants }
+        AxisBadgeInputs { interval, variants }
     }
 
     fn prepare_countdown_variant(
         &self,
         scene: &Scene,
+        bounds: Rectangle,
         palette: &Extended,
         drawing_magnet: bool,
         pixels: PixelGeometry,
         timer_text: Option<&str>,
     ) -> CountdownVariant {
-        let mut before_timer = PaintInputs::default();
+        let mut before_timer = PreparedChrome::new(bounds);
         let frame = &mut before_timer;
         let mut badge_filter = AxisBadgeFilter::default();
 
@@ -302,7 +306,7 @@ impl OverlayView<'_> {
 
         let timer =
             self.fill_last_price_axis_badge(frame, scene, palette, &mut badge_filter, timer_text);
-        let mut after_timer = PaintInputs::default();
+        let mut after_timer = PreparedChrome::new(bounds);
         self.drawing.fill_active_drawing_axis_labels(
             &mut after_timer,
             palette,
@@ -319,7 +323,7 @@ impl OverlayView<'_> {
 
     fn fill_last_price_axis_badge(
         &self,
-        frame: &mut PaintInputs,
+        frame: &mut PreparedChrome,
         scene: &Scene,
         palette: &Extended,
         filter: &mut AxisBadgeFilter,

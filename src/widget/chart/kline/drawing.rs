@@ -1,3 +1,4 @@
+use super::chrome::PreparedChrome;
 use super::composition::PanelScaleMode;
 use super::composition::{MarkKind, PanelId};
 use super::interaction::{LayerContext, LayerEffects, LayerGesture};
@@ -1114,7 +1115,7 @@ impl DrawingView<'_> {
 
     pub(super) fn draw_x_axis_badge(
         &self,
-        frame: &mut PaintInputs,
+        frame: &mut PreparedChrome,
         palette: &Extended,
         x: f32,
         text: &str,
@@ -1159,7 +1160,7 @@ impl DrawingView<'_> {
 
     pub(super) fn draw_y_axis_badge(
         &self,
-        frame: &mut PaintInputs,
+        frame: &mut PreparedChrome,
         palette: &Extended,
         y: f32,
         text: &str,
@@ -1179,7 +1180,7 @@ impl DrawingView<'_> {
 
     fn draw_y_axis_badge_with_colors(
         &self,
-        frame: &mut PaintInputs,
+        frame: &mut PreparedChrome,
         y: f32,
         text: &str,
         clamp_bounds: Rectangle,
@@ -1225,7 +1226,7 @@ impl DrawingView<'_> {
 
     pub(super) fn draw_y_axis_badge_with_timer(
         &self,
-        frame: &mut PaintInputs,
+        frame: &mut PreparedChrome,
         y: f32,
         value_text: &str,
         timer_text: Option<&str>,
@@ -1298,7 +1299,7 @@ impl DrawingView<'_> {
 
     pub(super) fn fill_active_drawing_axis_labels(
         &self,
-        frame: &mut PaintInputs,
+        frame: &mut PreparedChrome,
         palette: &Extended,
         filter: &mut AxisBadgeFilter,
         pixels: PixelGeometry,

@@ -11,23 +11,30 @@ use iced::widget::canvas;
 use iced::{Point, Rectangle, Size};
 use std::time::Instant;
 
+/// Separately cached canvas content, not a one-to-one mapping to GPU render passes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Enum)]
 pub(super) enum CanvasLayer {
-    Background,
+    /// Indicator fills, tables, bars, annotations, and studies painted before series lines.
+    PlotUnderlay,
+    /// Study content below series lines, such as TPO profiles and letters.
     StudyUnderlay,
-    Foreground,
-    Drawings,
+    /// Base/comparison and indicator lines, panel titles, and the last-price line.
+    SeriesPlots,
+    /// Committed drawing objects; previews, handles, and measurement bubbles use Overlay.
+    SavedDrawings,
+    /// Candles or footprints, followed by studies painted above the series.
     PriceBars,
-    YAxis,
-    XAxis,
+    YAxisLabels,
+    XAxisLabels,
+    /// Crosshair, drawing/study interactions, series-end labels, and unavailable notices.
     Overlay,
-    InteractionText,
-    Marquee,
+    /// The plot-clipped rectangle used to select saved drawings.
+    SelectionMarquee,
 }
 
 impl CanvasLayer {
     pub(super) fn is_interaction(self) -> bool {
-        matches!(self, Self::Overlay | Self::InteractionText | Self::Marquee)
+        matches!(self, Self::Overlay | Self::SelectionMarquee)
     }
 }
 
@@ -231,10 +238,6 @@ impl PaintInputs {
             .push(PaintOperation::Text(PreparedText(text.into())));
     }
 
-    pub(super) fn append(&mut self, other: &Self) {
-        self.operations.extend(other.operations.iter().cloned());
-    }
-
     pub(super) fn fill_rectangle(
         &mut self,
         position: Point,
@@ -348,17 +351,6 @@ pub(super) struct ResolvedLayer {
     // DPI participates in geometry validity even when resolved paint operations are unchanged.
     pub(super) pixel_ratio: PixelRatio,
     pub(super) inputs: PaintInputs,
-}
-
-impl ResolvedLayer {
-    pub(super) fn with_inputs(&self, inputs: PaintInputs) -> Self {
-        Self {
-            root_origin: self.root_origin,
-            placement: self.placement,
-            pixel_ratio: self.pixel_ratio,
-            inputs,
-        }
-    }
 }
 
 #[derive(Default)]

@@ -29,6 +29,7 @@ const STUDY_COUNT_BADGE_GAP: f32 = 4.0;
 const STUDY_COUNT_BADGE_HORIZONTAL_PAD: f32 = 4.0;
 const STUDY_COUNT_BADGE_HEIGHT: f32 = TEXT_SIZE + 2.0;
 
+#[derive(Clone)]
 pub(super) struct PreparedChrome {
     bounds: Rectangle,
     quads: Vec<(iced_core::renderer::Quad, Color)>,
@@ -42,6 +43,11 @@ impl PreparedChrome {
             quads: Vec::new(),
             text: Vec::new(),
         }
+    }
+
+    pub(super) fn append(&mut self, other: &Self) {
+        self.quads.extend(other.quads.iter().copied());
+        self.text.extend(other.text.iter().cloned());
     }
 
     pub(super) fn fill_rectangle(&mut self, position: Point, size: Size, color: Color) {

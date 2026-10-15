@@ -88,35 +88,41 @@ const TICKER_LEGEND_PADDING: f32 = 4.0;
 const TOOLTIP_ROW_LEFT_PAD: f32 = TICKER_LEGEND_PADDING * 2.0;
 const TICKER_LEGEND_ROW_H: f32 = TEXT_SIZE + 6.0;
 
-/// The order used by [`KlineWidget::draw`] to compose chart render passes.
+/// The submission order used by [`KlineWidget::draw`]; Iced may merge compatible layers.
 ///
 /// # Note
 ///
 /// Keep plot, widget, and legend passes separate because `iced_wgpu` renders
 /// quads before meshes and text within each renderer layer.
 const PAINT_ORDER: [PaintStep; 14] = [
-    PaintStep::Canvas(CanvasLayer::Background),
+    PaintStep::Canvas(CanvasLayer::PlotUnderlay),
     PaintStep::Canvas(CanvasLayer::StudyUnderlay),
-    PaintStep::Canvas(CanvasLayer::Foreground),
-    PaintStep::Canvas(CanvasLayer::Drawings),
+    PaintStep::Canvas(CanvasLayer::SeriesPlots),
+    PaintStep::Canvas(CanvasLayer::SavedDrawings),
     PaintStep::Canvas(CanvasLayer::PriceBars),
-    PaintStep::Canvas(CanvasLayer::YAxis),
-    PaintStep::Canvas(CanvasLayer::XAxis),
+    PaintStep::Canvas(CanvasLayer::YAxisLabels),
+    PaintStep::Canvas(CanvasLayer::XAxisLabels),
     PaintStep::Canvas(CanvasLayer::Overlay),
-    PaintStep::Canvas(CanvasLayer::InteractionText),
-    PaintStep::Canvas(CanvasLayer::Marquee),
-    PaintStep::StudyControls,
+    PaintStep::Canvas(CanvasLayer::SelectionMarquee),
+    PaintStep::AxisBadges,
+    PaintStep::StudyChrome,
     PaintStep::Legends,
-    PaintStep::Separators,
+    PaintStep::ChartSeparators,
     PaintStep::PanelControls,
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PaintStep {
+    /// Crosshair, last-price/countdown, and drawing readouts above the selection marquee.
+    AxisBadges,
+    /// Ticker, footprint, study, and indicator legend rows, including their actions.
     Legends,
-    Separators,
+    /// Panel splitters and the plot's axis boundaries.
+    ChartSeparators,
+    /// Panel move/close buttons and the primary autoscale/scale-mode buttons.
     PanelControls,
-    StudyControls,
+    /// Study-specific controls and markers, such as TPO merge/reset and handles.
+    StudyChrome,
     Canvas(CanvasLayer),
 }
 
@@ -137,9 +143,10 @@ struct GutterCacheKey {
 struct State {
     layers: CanvasLayers,
     scheduler: RenderScheduler,
-    interaction_text: Option<overlay::InteractionTextInputs>,
+    axis_badge_inputs: Option<overlay::AxisBadgeInputs>,
+    axis_badges: Option<chrome::PreparedChrome>,
     panel_controls: Option<chrome::PreparedPanelControls>,
-    study_controls: Option<chrome::PreparedChrome>,
+    study_chrome: Option<chrome::PreparedChrome>,
     legends: Option<chrome::PreparedChrome>,
     scene_cache: SceneCache,
     interaction: UserInteraction,
@@ -154,9 +161,10 @@ impl Default for State {
         Self {
             layers: CanvasLayers::default(),
             scheduler: RenderScheduler::default(),
-            interaction_text: None,
+            axis_badge_inputs: None,
+            axis_badges: None,
             panel_controls: None,
-            study_controls: None,
+            study_chrome: None,
             legends: None,
             interaction: UserInteraction::default(),
             study_objects: StudyStates::default(),
@@ -504,13 +512,10 @@ impl<'a> KlineWidget<'a> {
         utc_ms: u64,
     ) {
         if request == RenderRequest::None {
-            if let (Some(prepared), Some(layer)) = (
-                state.interaction_text.as_ref(),
-                state.layers[CanvasLayer::InteractionText].resolved(),
-            ) {
-                let layer = layer.with_inputs(prepared.resolve(utc_ms));
-                state.layers[CanvasLayer::InteractionText].prepare(layer);
-            }
+            state.axis_badges = state
+                .axis_badge_inputs
+                .as_ref()
+                .map(|prepared| prepared.resolve(utc_ms));
             return;
         }
         let Some(scene) = scene else {
@@ -525,9 +530,10 @@ impl<'a> KlineWidget<'a> {
                     });
                 }
             }
-            state.interaction_text = None;
+            state.axis_badge_inputs = None;
+            state.axis_badges = None;
             state.panel_controls = None;
-            state.study_controls = None;
+            state.study_chrome = None;
             state.legends = None;
             return;
         };
@@ -551,15 +557,25 @@ impl<'a> KlineWidget<'a> {
         self.legend_view()
             .fill_legends(&mut legends, scene, palette, accents);
         state.legends = Some(legends);
-        let mut study_controls = chrome::PreparedChrome::new(bounds);
+        let mut study_chrome = chrome::PreparedChrome::new(bounds);
         self.study_objects.prepare_controls(
             self.layer_context(scene, None, state.interaction.modifiers()),
             &state.study_objects,
-            &mut study_controls,
+            &mut study_chrome,
             palette,
             root_pixels,
         );
-        state.study_controls = Some(study_controls);
+        state.study_chrome = Some(study_chrome);
+
+        let prepared = self.overlay_view(scene).axis_badge_inputs(
+            scene,
+            bounds,
+            palette,
+            drawing_magnet,
+            root_pixels,
+        );
+        state.axis_badges = Some(prepared.resolve(utc_ms));
+        state.axis_badge_inputs = Some(prepared);
 
         for step in PAINT_ORDER {
             let PaintStep::Canvas(layer) = step else {
@@ -571,12 +587,12 @@ impl<'a> KlineWidget<'a> {
                 continue;
             }
             let placement = match layer {
-                CanvasLayer::Background
+                CanvasLayer::PlotUnderlay
                 | CanvasLayer::StudyUnderlay
-                | CanvasLayer::Foreground
+                | CanvasLayer::SeriesPlots
                 | CanvasLayer::PriceBars => LayerPlacement::Plot(scene.plot_rect()),
-                CanvasLayer::YAxis => LayerPlacement::Axis(scene.layout.regions.y_axis),
-                CanvasLayer::XAxis => LayerPlacement::Axis(scene.layout.regions.x_axis),
+                CanvasLayer::YAxisLabels => LayerPlacement::Axis(scene.layout.regions.y_axis),
+                CanvasLayer::XAxisLabels => LayerPlacement::Axis(scene.layout.regions.x_axis),
                 _ => LayerPlacement::Widget(bounds.size()),
             };
             let origin = placement.origin();
@@ -586,9 +602,9 @@ impl<'a> KlineWidget<'a> {
             );
             let mut inputs = PaintInputs::default();
             match layer {
-                CanvasLayer::Background
+                CanvasLayer::PlotUnderlay
                 | CanvasLayer::StudyUnderlay
-                | CanvasLayer::Foreground
+                | CanvasLayer::SeriesPlots
                 | CanvasLayer::PriceBars => {
                     self.plot_renderer().paint(
                         &mut inputs,
@@ -599,16 +615,16 @@ impl<'a> KlineWidget<'a> {
                         pixels,
                         layer,
                     );
-                    if layer == CanvasLayer::Foreground {
+                    if layer == CanvasLayer::SeriesPlots {
                         self.fill_panel_titles(&mut inputs, scene, palette);
                         self.overlay_view(scene)
                             .paint_last_price_line(&mut inputs, scene, palette);
                     }
                 }
-                CanvasLayer::Drawings => self
+                CanvasLayer::SavedDrawings => self
                     .drawing_view_at(scene, None, state.interaction.modifiers())
                     .fill_drawing_objects(&mut inputs, palette, accents, pixels),
-                CanvasLayer::YAxis => self.fill_y_axis_labels(
+                CanvasLayer::YAxisLabels => self.fill_y_axis_labels(
                     &mut inputs,
                     scene,
                     state
@@ -617,7 +633,7 @@ impl<'a> KlineWidget<'a> {
                         .map(|entry| &entry.y_axis_labels),
                     palette,
                 ),
-                CanvasLayer::XAxis => {
+                CanvasLayer::XAxisLabels => {
                     self.axes(scene)
                         .x_labels(pixels)
                         .paint(&mut inputs, palette, &[])
@@ -645,17 +661,7 @@ impl<'a> KlineWidget<'a> {
                             .fill_drawing_interaction(&mut inputs, palette, accents, root_pixels);
                     }
                 }
-                CanvasLayer::InteractionText => {
-                    let prepared = self.overlay_view(scene).text_inputs(
-                        scene,
-                        palette,
-                        drawing_magnet,
-                        root_pixels,
-                    );
-                    inputs = prepared.resolve(utc_ms);
-                    state.interaction_text = Some(prepared);
-                }
-                CanvasLayer::Marquee => {
+                CanvasLayer::SelectionMarquee => {
                     if let Some(marquee) = state.marquee()
                         && let Some(rect) = self.drawing_view(scene).clipped_marquee_rect(
                             marquee.panel_index,
@@ -2403,8 +2409,13 @@ where
         use advanced::text::Renderer as _;
         for step in PAINT_ORDER {
             match step {
-                PaintStep::StudyControls => {
-                    if let Some(controls) = &state.study_controls {
+                PaintStep::AxisBadges => {
+                    if let Some(chrome) = &state.axis_badges {
+                        chrome.draw(renderer);
+                    }
+                }
+                PaintStep::StudyChrome => {
+                    if let Some(controls) = &state.study_chrome {
                         controls.draw(renderer);
                     }
                 }
@@ -2413,7 +2424,7 @@ where
                         legends.draw(renderer);
                     }
                 }
-                PaintStep::Separators => {
+                PaintStep::ChartSeparators => {
                     if let Some(environment) = state.scheduler.presentation() {
                         let origin = environment.bounds.position();
 
@@ -2503,8 +2514,8 @@ where
                         );
                     }
                 }
-                PaintStep::Canvas(layer) => {
-                    let cache = &state.layers[layer];
+                PaintStep::Canvas(layer_kind) => {
+                    let cache = &state.layers[layer_kind];
                     let Some(layer) = cache.resolved() else {
                         continue;
                     };
@@ -2529,10 +2540,18 @@ where
                                     );
                                 })
                             }
-                            LayerPlacement::Widget(size) => renderer
-                                .with_layer(Rectangle::with_size(size), |renderer| {
-                                    renderer.draw_geometry(geometry)
-                                }),
+                            LayerPlacement::Widget(size) => {
+                                let clip = if layer_kind == CanvasLayer::SavedDrawings {
+                                    let Some(environment) = state.scheduler.presentation() else {
+                                        return;
+                                    };
+                                    environment.layout.regions.plot
+                                } else {
+                                    Rectangle::with_size(size)
+                                };
+                                renderer
+                                    .with_layer(clip, |renderer| renderer.draw_geometry(geometry))
+                            }
                         },
                     );
                 }

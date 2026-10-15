@@ -65,7 +65,7 @@ impl PlotRenderer<'_> {
         };
         let (indicator_width_phys, _) = candlestick_widths(scene.logical_bar_spacing(), pixels);
 
-        if layer == CanvasLayer::Background {
+        if layer == CanvasLayer::PlotUnderlay {
             for indicator_panel in &scene.indicator_panels {
                 if matches!(indicator_panel.presentation, PanelPresentation::Table) {
                     marks.fill_table_panel(frame, indicator_panel);
@@ -346,7 +346,7 @@ impl PlotRenderer<'_> {
             }
         }
 
-        if layer == CanvasLayer::Background {
+        if layer == CanvasLayer::PlotUnderlay {
             return;
         }
         if layer == CanvasLayer::StudyUnderlay {
