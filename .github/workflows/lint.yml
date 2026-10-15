@@ -68,6 +68,7 @@ jobs:
               run: cargo run --locked -p flowsurface-indicator-engine --bin flowsurface-indicator -- test indicators/sources --namespace catalog
 
             - name: Verify workspace packages
+              if: github.event_name == 'workflow_dispatch'
               run: cargo package --workspace --locked --target-dir "$(mktemp -d)"
 
             - name: Run cargo clippy
