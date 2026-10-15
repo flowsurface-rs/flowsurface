@@ -1698,10 +1698,7 @@ impl KlineChart {
         self.render_invalidation.invalidate();
     }
 
-    pub fn apply_settings_snapshot(
-        &mut self,
-        snapshot: &SettingsSnapshot,
-    ) -> Option<Action> {
+    pub fn apply_settings_snapshot(&mut self, snapshot: &SettingsSnapshot) -> Option<Action> {
         self.apply_shared_settings(snapshot);
         let selected_tickers = self.data.selected_tickers();
         self.fetch.rebuild_handlers(&selected_tickers);

@@ -66,10 +66,7 @@ impl PreparedIndicatorReadouts {
 }
 
 impl<'a> LegendView<'a> {
-    pub fn indicator_unavailable_message(
-        &self,
-        value_id: Option<PanelValueId>,
-    ) -> Option<&'a str> {
+    pub fn indicator_unavailable_message(&self, value_id: Option<PanelValueId>) -> Option<&'a str> {
         let value_id = value_id?;
         self.indicators.presentation.unavailable_message(value_id)
     }
@@ -1739,11 +1736,7 @@ pub struct TickerLegendLayout {
 }
 
 impl TickerLegendLayout {
-    pub fn hit_test(
-        &self,
-        layout: &PanelLayoutTree,
-        root_local: Point,
-    ) -> Option<TickerLegendHit> {
+    pub fn hit_test(&self, layout: &PanelLayoutTree, root_local: Point) -> Option<TickerLegendHit> {
         let plot_local = layout.plot_local_point(root_local)?;
         if !self.bg.contains(plot_local) {
             return None;
@@ -1940,11 +1933,7 @@ pub struct StudyLegendLayout {
 }
 
 impl StudyLegendLayout {
-    pub fn hit_test(
-        &self,
-        layout: &PanelLayoutTree,
-        root_local: Point,
-    ) -> Option<StudyLegendHit> {
+    pub fn hit_test(&self, layout: &PanelLayoutTree, root_local: Point) -> Option<StudyLegendHit> {
         let plot_local = layout.plot_local_point(root_local)?;
 
         if self.category.row_rect.contains(plot_local) {

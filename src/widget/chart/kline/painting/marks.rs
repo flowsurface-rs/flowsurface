@@ -1552,11 +1552,7 @@ impl MarkRenderer<'_> {
         (0.1 + relative * 0.7) as f32
     }
 
-    pub fn fill_table_panel(
-        &self,
-        frame: &mut PaintInputs,
-        indicator_panel: &IndicatorPanelScene,
-    ) {
+    pub fn fill_table_panel(&self, frame: &mut PaintInputs, indicator_panel: &IndicatorPanelScene) {
         let palette = self.palette;
         let scene = self.scene;
         let Some(value_id) = indicator_panel.value_id else {

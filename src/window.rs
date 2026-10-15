@@ -80,11 +80,7 @@ impl WindowScaleFactors {
         self.factors.remove(&window);
     }
 
-    pub fn pixel_ratio_for_window(
-        &self,
-        window: Id,
-        ui_scale_factor: ScaleFactor,
-    ) -> PixelRatio {
+    pub fn pixel_ratio_for_window(&self, window: Id, ui_scale_factor: ScaleFactor) -> PixelRatio {
         let window_scale_factor = self.factors.get(&window).copied().unwrap_or_default();
 
         PixelRatio::from_product(f32::from(ui_scale_factor) * window_scale_factor.value())

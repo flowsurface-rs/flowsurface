@@ -184,10 +184,7 @@ impl IndicatorPresentationContext {
         }
     }
 
-    pub fn with_rebuild_in_flight_ids(
-        mut self,
-        rebuild_in_flight_ids: Vec<PanelValueId>,
-    ) -> Self {
+    pub fn with_rebuild_in_flight_ids(mut self, rebuild_in_flight_ids: Vec<PanelValueId>) -> Self {
         self.rebuild_in_flight_ids = rebuild_in_flight_ids;
         self
     }
@@ -197,10 +194,7 @@ impl IndicatorPresentationContext {
         self
     }
 
-    pub fn presentation(
-        &self,
-        value_id: PanelValueId,
-    ) -> Option<&ResolvedIndicatorPresentation> {
+    pub fn presentation(&self, value_id: PanelValueId) -> Option<&ResolvedIndicatorPresentation> {
         self.presentations
             .iter()
             .find(|presentation| presentation.value_id == value_id)
