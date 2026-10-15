@@ -26,13 +26,13 @@ use iced::theme::palette::Extended;
 use iced::widget::canvas;
 use iced::{Point, Rectangle};
 
-pub(crate) struct LegendView<'a> {
-    pub(crate) coordinates: ChartCoordinates<'a>,
-    pub(crate) indicators: IndicatorView<'a>,
-    pub(crate) candlestick: &'a CandlestickConfig,
-    pub(crate) footprint: &'a FootprintConfig,
-    pub(crate) study_legend: Option<&'a StudiesLegend>,
-    pub(crate) legend_visibility: LegendVisibility,
+pub struct LegendView<'a> {
+    pub coordinates: ChartCoordinates<'a>,
+    pub indicators: IndicatorView<'a>,
+    pub candlestick: &'a CandlestickConfig,
+    pub footprint: &'a FootprintConfig,
+    pub study_legend: Option<&'a StudiesLegend>,
+    pub legend_visibility: LegendVisibility,
 }
 
 struct PreparedIndicatorReadouts {
@@ -66,7 +66,7 @@ impl PreparedIndicatorReadouts {
 }
 
 impl<'a> LegendView<'a> {
-    pub(crate) fn indicator_unavailable_message(
+    pub fn indicator_unavailable_message(
         &self,
         value_id: Option<PanelValueId>,
     ) -> Option<&'a str> {
@@ -74,7 +74,7 @@ impl<'a> LegendView<'a> {
         self.indicators.presentation.unavailable_message(value_id)
     }
 
-    pub(crate) fn indicator_marker(&self, value_id: PanelValueId) -> Option<(&'static str, bool)> {
+    pub fn indicator_marker(&self, value_id: PanelValueId) -> Option<(&'static str, bool)> {
         if self.indicators.presentation.is_loading(value_id) {
             return Some(("...", true));
         }
@@ -82,14 +82,14 @@ impl<'a> LegendView<'a> {
             .map(|_| ("!", false))
     }
 
-    pub(crate) fn indicator_label_x(&self, row_x: f32, value_id: PanelValueId) -> f32 {
+    pub fn indicator_label_x(&self, row_x: f32, value_id: PanelValueId) -> f32 {
         let marker_width = self.indicator_marker(value_id).map_or(0.0, |(marker, _)| {
             marker.chars().count() as f32 * CHAR_W + TICKER_LEGEND_PADDING
         });
         row_x + TOOLTIP_ROW_LEFT_PAD + marker_width
     }
 
-    pub(crate) fn build_ticker_legend_layout(
+    pub fn build_ticker_legend_layout(
         &self,
         layout: &PanelLayoutTree,
         primary_panel: usize,
@@ -223,7 +223,7 @@ impl<'a> LegendView<'a> {
         Some(TickerLegendLayout { bg, rows })
     }
 
-    pub(crate) fn build_study_legend_layout(
+    pub fn build_study_legend_layout(
         &self,
         layout: &PanelLayoutTree,
         primary_panel: usize,
@@ -662,7 +662,7 @@ impl<'a> LegendView<'a> {
         });
     }
 
-    pub(crate) fn build_indicator_legend_layout(
+    pub fn build_indicator_legend_layout(
         &self,
         layout: &PanelLayoutTree,
         primary_panel: usize,
@@ -1535,7 +1535,7 @@ impl<'a> LegendView<'a> {
         }
     }
 
-    pub(crate) fn fill_legends(
+    pub fn fill_legends(
         &self,
         inputs: &mut PreparedChrome,
         scene: &Scene,
@@ -1561,11 +1561,11 @@ impl<'a> LegendView<'a> {
     }
 }
 
-pub(crate) fn indicator_marker_x(row_x: f32) -> f32 {
+pub fn indicator_marker_x(row_x: f32) -> f32 {
     row_x + TOOLTIP_ROW_LEFT_PAD
 }
 
-pub(crate) fn tooltip_rows_before_studies(
+pub fn tooltip_rows_before_studies(
     ticker_legend: Option<&TickerLegendLayout>,
     footprint_legend: Option<&FootprintLegendLayout>,
     show_legend_values: bool,
@@ -1576,7 +1576,7 @@ pub(crate) fn tooltip_rows_before_studies(
         + usize::from(footprint_legend.is_some())
 }
 
-pub(crate) fn tooltip_rows_before_indicators(
+pub fn tooltip_rows_before_indicators(
     ticker_legend: Option<&TickerLegendLayout>,
     footprint_legend: Option<&FootprintLegendLayout>,
     study_legend: Option<&StudyLegendLayout>,
@@ -1697,7 +1697,7 @@ fn draw_legend_icon_button(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TickerLegendIconKind {
+pub enum TickerLegendIconKind {
     Settings,
     Visibility,
     Close,
@@ -1712,7 +1712,7 @@ impl TickerLegendIconKind {
         }
     }
 
-    pub(crate) fn into_event(self, ticker: TickerInfo) -> KlineWidgetEvent {
+    pub fn into_event(self, ticker: TickerInfo) -> KlineWidgetEvent {
         match self {
             Self::Settings => KlineWidgetEvent::TickerSettings(ticker),
             Self::Visibility => KlineWidgetEvent::TickerVisibilityToggled(ticker),
@@ -1722,8 +1722,8 @@ impl TickerLegendIconKind {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct TickerLegendRowHit {
-    pub(crate) ticker: TickerInfo,
+pub struct TickerLegendRowHit {
+    pub ticker: TickerInfo,
     y_center: f32,
     row_rect: Rectangle,
     settings: Rectangle,
@@ -1733,13 +1733,13 @@ pub(crate) struct TickerLegendRowHit {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct TickerLegendLayout {
+pub struct TickerLegendLayout {
     bg: Rectangle,
-    pub(crate) rows: Vec<TickerLegendRowHit>,
+    pub rows: Vec<TickerLegendRowHit>,
 }
 
 impl TickerLegendLayout {
-    pub(crate) fn hit_test(
+    pub fn hit_test(
         &self,
         layout: &PanelLayoutTree,
         root_local: Point,
@@ -1776,13 +1776,13 @@ impl TickerLegendLayout {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum TickerLegendHit {
+pub enum TickerLegendHit {
     Row(usize),
     Icon(usize, TickerLegendIconKind),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FootprintLegendIconKind {
+pub enum FootprintLegendIconKind {
     Settings,
     Hide,
 }
@@ -1795,7 +1795,7 @@ impl FootprintLegendIconKind {
         }
     }
 
-    pub(crate) fn into_event(self) -> KlineWidgetEvent {
+    pub fn into_event(self) -> KlineWidgetEvent {
         match self {
             Self::Settings => KlineWidgetEvent::FootprintSettings,
             Self::Hide => KlineWidgetEvent::FootprintsVisibilityToggled,
@@ -1811,13 +1811,13 @@ struct FootprintLegendRowHit {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct FootprintLegendLayout {
+pub struct FootprintLegendLayout {
     row: FootprintLegendRowHit,
     cluster_kind: ClusterKind,
 }
 
 impl FootprintLegendLayout {
-    pub(crate) fn new(
+    pub fn new(
         layout: &PanelLayoutTree,
         primary_panel: usize,
         preceding_rows: usize,
@@ -1850,7 +1850,7 @@ impl FootprintLegendLayout {
         })
     }
 
-    pub(crate) fn hit_test(
+    pub fn hit_test(
         &self,
         layout: &PanelLayoutTree,
         root_local: Point,
@@ -1870,13 +1870,13 @@ impl FootprintLegendLayout {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum FootprintLegendHit {
+pub enum FootprintLegendHit {
     Row,
     Icon(FootprintLegendIconKind),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum StudiesLegendIconKind {
+pub enum StudiesLegendIconKind {
     ExpandCollapse,
     Visibility,
     Close,
@@ -1909,15 +1909,15 @@ struct StudiesLegendRowHit {
     visible: bool,
 }
 
-pub(crate) struct StudyLegendRow {
-    pub(crate) id: KlineStudyId,
-    pub(crate) label: String,
-    pub(crate) visible: bool,
+pub struct StudyLegendRow {
+    pub id: KlineStudyId,
+    pub label: String,
+    pub visible: bool,
 }
 
-pub(crate) struct StudiesLegend {
-    pub(crate) expanded: bool,
-    pub(crate) rows: Vec<StudyLegendRow>,
+pub struct StudiesLegend {
+    pub expanded: bool,
+    pub rows: Vec<StudyLegendRow>,
 }
 
 impl StudiesLegend {
@@ -1933,14 +1933,14 @@ struct StudyLegendRowHit {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct StudyLegendLayout {
+pub struct StudyLegendLayout {
     category: StudiesLegendRowHit,
     study_count: usize,
     rows: Vec<StudyLegendRowHit>,
 }
 
 impl StudyLegendLayout {
-    pub(crate) fn hit_test(
+    pub fn hit_test(
         &self,
         layout: &PanelLayoutTree,
         root_local: Point,
@@ -1981,7 +1981,7 @@ impl StudyLegendLayout {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum StudyLegendHit {
+pub enum StudyLegendHit {
     CategoryRow,
     CategoryIcon(StudiesLegendIconKind),
     StudyRow(usize),
@@ -1989,7 +1989,7 @@ pub(crate) enum StudyLegendHit {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LegendRowAction {
+pub enum LegendRowAction {
     Visibility,
     Settings,
     Close,
@@ -2079,8 +2079,8 @@ impl LegendRowControls {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct IndicatorLegendRowHit {
-    pub(crate) value_id: super::PanelValueId,
+pub struct IndicatorLegendRowHit {
+    pub value_id: super::PanelValueId,
     y_center: f32,
     controls: LegendRowControls,
     visible: bool,
@@ -2088,12 +2088,12 @@ pub(crate) struct IndicatorLegendRowHit {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct IndicatorLegendLayout {
-    pub(crate) rows: Vec<IndicatorLegendRowHit>,
+pub struct IndicatorLegendLayout {
+    pub rows: Vec<IndicatorLegendRowHit>,
 }
 
 impl IndicatorLegendLayout {
-    pub(crate) fn hit_test(
+    pub fn hit_test(
         &self,
         layout: &PanelLayoutTree,
         root_local: Point,
@@ -2113,16 +2113,16 @@ impl IndicatorLegendLayout {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum IndicatorLegendHit {
+pub enum IndicatorLegendHit {
     Row(usize),
     Icon(usize, LegendRowAction),
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct IndicatorHeaderValue<'a> {
-    pub(crate) value_id: PanelValueId,
-    pub(crate) label: &'a str,
-    pub(crate) value: f64,
-    pub(crate) color_role: ThemeColorRole,
-    pub(crate) color_slot: &'a str,
+pub struct IndicatorHeaderValue<'a> {
+    pub value_id: PanelValueId,
+    pub label: &'a str,
+    pub value: f64,
+    pub color_role: ThemeColorRole,
+    pub color_slot: &'a str,
 }

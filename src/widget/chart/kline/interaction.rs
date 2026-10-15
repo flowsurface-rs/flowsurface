@@ -28,7 +28,7 @@ pub(super) enum NavigationFallback {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SelectionDisposition {
+pub enum SelectionDisposition {
     Preserve,
     Clear,
 }
@@ -193,14 +193,14 @@ impl DragAction {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SceneActivity {
+pub enum SceneActivity {
     Idle,
     Pan,
     Drag,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum HorizontalWheelZoomMode {
+pub enum HorizontalWheelZoomMode {
     LiveEdge,
     Cursor,
 }

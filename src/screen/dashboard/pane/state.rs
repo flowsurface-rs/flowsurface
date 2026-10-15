@@ -359,7 +359,7 @@ impl State {
         }
     }
 
-    pub(crate) fn view<'a>(
+    pub fn view<'a>(
         &'a self,
         id: pane_grid::Pane,
         panes: usize,

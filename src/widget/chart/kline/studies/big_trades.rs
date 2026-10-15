@@ -38,13 +38,13 @@ impl Cell {
     }
 }
 
-pub(crate) struct BigTradesObject {
+pub struct BigTradesObject {
     config: BigTradesConfig,
     enabled: bool,
 }
 
 impl BigTradesObject {
-    pub(crate) fn new(config: BigTradesConfig, enabled: bool) -> Self {
+    pub fn new(config: BigTradesConfig, enabled: bool) -> Self {
         Self { config, enabled }
     }
 

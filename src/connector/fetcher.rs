@@ -170,45 +170,45 @@ impl RequestHandler {
         Ok(Some(id))
     }
 
-    pub(crate) fn is_pending(&self, id: Uuid) -> bool {
+    pub fn is_pending(&self, id: Uuid) -> bool {
         self.requests
             .get(&id)
             .is_some_and(|request| request.status == RequestStatus::Pending)
     }
 
-    pub(crate) fn is_profile_request(&self, id: Uuid) -> bool {
+    pub fn is_profile_request(&self, id: Uuid) -> bool {
         self.requests.get(&id).is_some_and(|request| {
             request.status == RequestStatus::Pending
                 && matches!(request.fetch_type, FetchRange::ProfileKline { .. })
         })
     }
 
-    pub(crate) fn request_ids(&self) -> impl Iterator<Item = Uuid> + '_ {
+    pub fn request_ids(&self) -> impl Iterator<Item = Uuid> + '_ {
         self.requests.keys().copied()
     }
 
-    pub(crate) fn has_pending_trade_fetch(&self) -> bool {
+    pub fn has_pending_trade_fetch(&self) -> bool {
         self.requests.values().any(|request| {
             request.status == RequestStatus::Pending
                 && matches!(request.fetch_type, FetchRange::Trades(..))
         })
     }
 
-    pub(crate) fn has_pending_profile_fetch(&self) -> bool {
+    pub fn has_pending_profile_fetch(&self) -> bool {
         self.requests.values().any(|request| {
             request.status == RequestStatus::Pending
                 && matches!(request.fetch_type, FetchRange::ProfileKline { .. })
         })
     }
 
-    pub(crate) fn pending_ranges(&self) -> impl Iterator<Item = FetchRange> + '_ {
+    pub fn pending_ranges(&self) -> impl Iterator<Item = FetchRange> + '_ {
         self.requests
             .values()
             .filter(|request| request.status == RequestStatus::Pending)
             .map(|request| request.fetch_type)
     }
 
-    pub(crate) fn pending_trade_count(&self) -> Option<usize> {
+    pub fn pending_trade_count(&self) -> Option<usize> {
         self.requests.values().find_map(|request| {
             (request.status == RequestStatus::Pending
                 && matches!(request.fetch_type, FetchRange::Trades(..)))
@@ -216,7 +216,7 @@ impl RequestHandler {
         })
     }
 
-    pub(crate) fn record_trade_batch(&mut self, id: Uuid, count: usize) -> bool {
+    pub fn record_trade_batch(&mut self, id: Uuid, count: usize) -> bool {
         let Some(request) = self.requests.get_mut(&id) else {
             return false;
         };
@@ -247,7 +247,7 @@ impl RequestHandler {
         true
     }
 
-    pub(crate) fn mark_profile_completed(&mut self, id: Uuid) -> Option<FetchRange> {
+    pub fn mark_profile_completed(&mut self, id: Uuid) -> Option<FetchRange> {
         let request = self.requests.get(&id)?;
         if request.status != RequestStatus::Pending
             || !matches!(request.fetch_type, FetchRange::ProfileKline { .. })
@@ -300,7 +300,7 @@ impl RequestHandler {
         removed
     }
 
-    pub(crate) fn clear_pending_profile_requests(&mut self) -> Vec<Uuid> {
+    pub fn clear_pending_profile_requests(&mut self) -> Vec<Uuid> {
         let removed = self
             .requests
             .iter()
@@ -317,7 +317,7 @@ impl RequestHandler {
         removed
     }
 
-    pub(crate) fn clear_pending_trade_requests(&mut self) -> Vec<Uuid> {
+    pub fn clear_pending_trade_requests(&mut self) -> Vec<Uuid> {
         let removed = self
             .requests
             .iter()
@@ -334,7 +334,7 @@ impl RequestHandler {
         removed
     }
 
-    pub(crate) fn reset_for_basis_change(&mut self) {
+    pub fn reset_for_basis_change(&mut self) {
         self.requests.clear();
     }
 }

@@ -10,7 +10,7 @@ use data::chart::kline::series::KlineSeries;
 use iced::theme::palette::Extended;
 use iced::{Color, Font, Point, Rectangle, Size};
 pub(super) use legend::*;
-pub(crate) use legend::{StudiesLegend, StudyLegendRow};
+pub use legend::{StudiesLegend, StudyLegendRow};
 
 const PANEL_TITLE_LEFT_PAD: f32 = 6.0;
 const PANEL_TITLE_TO_CONTROLS_GAP: f32 = 8.0;

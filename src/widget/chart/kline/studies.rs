@@ -5,24 +5,24 @@ mod volume_profile;
 
 use super::interaction::{LayerContext, LayerEffects};
 use super::painting::PixelGeometry;
-pub(crate) use big_trades::BigTradesObject;
+pub use big_trades::BigTradesObject;
 use data::chart::kline::KlineStudyId;
 use data::config::theme::ACCENT_COUNT;
 use iced::advanced::mouse::Interaction;
 use iced::theme::palette::Extended;
 use rustc_hash::FxHashMap;
-pub(crate) use tpo::{TpoInteraction, TpoObject};
-pub(crate) use volume_profile::{ProfileBarSource, VolumeProfileObject};
+pub use tpo::{TpoInteraction, TpoObject};
+pub use volume_profile::{ProfileBarSource, VolumeProfileObject};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum StudyObjectKey {
+pub enum StudyObjectKey {
     Study(KlineStudyId),
     VolumeProfiles,
     BigTrades,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct LayerHit {
+pub struct LayerHit {
     pub(super) key: StudyObjectKey,
     pub(super) priority: i16,
     pub(super) precedes_tools: bool,
@@ -31,7 +31,7 @@ pub(crate) struct LayerHit {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum LayerPointerInput {
+pub enum LayerPointerInput {
     /// Clear selection outside the target after a confirmed plot click.
     PlotClicked {
         target: Option<StudyObjectKey>,
@@ -46,7 +46,7 @@ pub(crate) enum LayerPointerInput {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LayerPaintPhase {
+pub enum LayerPaintPhase {
     Underlay,
     BeforeIndicators,
     AfterIndicators,
@@ -58,7 +58,7 @@ pub enum StudyObjectEvent {
     Tpo(TpoInteraction),
 }
 
-pub(crate) enum StudyObject<'a> {
+pub enum StudyObject<'a> {
     Tpo(TpoObject<'a>),
     VolumeProfiles(VolumeProfileObject<'a>),
     BigTrades(BigTradesObject),

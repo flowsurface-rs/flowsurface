@@ -13,7 +13,7 @@ use iced::{
 };
 use rustc_hash::FxHashMap;
 
-pub(crate) mod tickers_table;
+pub mod tickers_table;
 
 #[derive(Debug, Clone)]
 pub enum Message {

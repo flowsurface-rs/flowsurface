@@ -5,13 +5,13 @@ use data::chart::kline::series::KlineWindows;
 use data::chart::kline::viewport::YUnit;
 use exchange::unit::Price;
 
-pub(crate) struct WindowDomains<'a> {
-    pub(crate) windows: KlineWindows<'a>,
-    pub(crate) indicators: IndicatorView<'a>,
-    pub(crate) coordinates: ChartCoordinates<'a>,
-    pub(crate) min_x_unit: i64,
-    pub(crate) max_x_unit: i64,
-    pub(crate) include_footprint_range: bool,
+pub struct WindowDomains<'a> {
+    pub windows: KlineWindows<'a>,
+    pub indicators: IndicatorView<'a>,
+    pub coordinates: ChartCoordinates<'a>,
+    pub min_x_unit: i64,
+    pub max_x_unit: i64,
+    pub include_footprint_range: bool,
 }
 
 impl WindowDomains<'_> {
@@ -180,7 +180,7 @@ impl WindowDomains<'_> {
         !primary_mark.is_line_like() || self.include_footprint_range
     }
 
-    pub(crate) fn percent_scale_state(
+    pub fn percent_scale_state(
         &self,
         primary_mark: MarkKind,
         primary_scale_mode: PanelScaleMode,
@@ -213,7 +213,7 @@ impl WindowDomains<'_> {
         })
     }
 
-    pub(crate) fn primary_domain(
+    pub fn primary_domain(
         &self,
         primary_value_precision: Option<PanelValuePrecision>,
         primary_mark: MarkKind,
@@ -320,7 +320,7 @@ impl WindowDomains<'_> {
         Some((YUnit(padded_min), YUnit(padded_max)))
     }
 
-    pub(crate) fn indicator_domain(
+    pub fn indicator_domain(
         &self,
         output_layers: &[ResolvedIndicatorLayer],
         panel_value_precision: Option<PanelValuePrecision>,

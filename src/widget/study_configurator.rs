@@ -193,7 +193,7 @@ fn volume_profile_color_section<'a>(
     sections.extend(controls).into()
 }
 
-pub(crate) fn poc_line_controls<'a, M: Clone + 'a>(
+pub fn poc_line_controls<'a, M: Clone + 'a>(
     show_poc: bool,
     show_npoc: bool,
     enabled: bool,

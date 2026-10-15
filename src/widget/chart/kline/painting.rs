@@ -381,7 +381,7 @@ pub(super) struct PixelSpan {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct PixelGeometry {
+pub struct PixelGeometry {
     ratio: f32,
     origin: Point,
 }

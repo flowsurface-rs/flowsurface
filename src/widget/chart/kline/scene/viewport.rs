@@ -7,11 +7,11 @@ use data::chart::kline::viewport::{
     ZOOM_SENSITIVITY, autoscale_span_limits,
 };
 
-pub(crate) struct PanelViewportView<'a> {
-    pub(crate) coordinates: ChartCoordinates<'a>,
-    pub(crate) pixel_ratio: PixelRatio,
-    pub(crate) primary_viewport: PrimaryViewportState,
-    pub(crate) indicator_y_ranges: &'a [(PanelId, YUnitRange)],
+pub struct PanelViewportView<'a> {
+    pub coordinates: ChartCoordinates<'a>,
+    pub pixel_ratio: PixelRatio,
+    pub primary_viewport: PrimaryViewportState,
+    pub indicator_y_ranges: &'a [(PanelId, YUnitRange)],
 }
 
 impl PanelViewportView<'_> {
@@ -187,7 +187,7 @@ impl PanelViewportView<'_> {
         }
     }
 
-    pub(crate) fn apply_panel_viewports(&self, scene: &mut Scene) {
+    pub fn apply_panel_viewports(&self, scene: &mut Scene) {
         if !scene
             .primary
             .mode
@@ -210,7 +210,7 @@ impl PanelViewportView<'_> {
         }
     }
 
-    pub(crate) fn reconciled_y_ranges(&self, scene: &Scene) -> Vec<(PanelId, YUnitRange)> {
+    pub fn reconciled_y_ranges(&self, scene: &Scene) -> Vec<(PanelId, YUnitRange)> {
         let mut changes = Vec::new();
 
         if !scene.primary.mode.uses_percent_base()
@@ -238,7 +238,7 @@ impl PanelViewportView<'_> {
         changes
     }
 
-    pub(crate) fn panel_y_zoom_range(
+    pub fn panel_y_zoom_range(
         &self,
         scene: &Scene,
         panel_index: usize,
@@ -264,7 +264,7 @@ impl PanelViewportView<'_> {
         PanelYValueRange::normalized(min, max)
     }
 
-    pub(crate) fn panel_viewport_after_y_zoom(
+    pub fn panel_viewport_after_y_zoom(
         &self,
         scene: &Scene,
         panel_index: usize,
@@ -304,7 +304,7 @@ impl PanelViewportView<'_> {
         }
     }
 
-    pub(crate) fn panel_viewport_after_primary_y_pan(
+    pub fn panel_viewport_after_primary_y_pan(
         &self,
         scene: &Scene,
         panel_index: usize,

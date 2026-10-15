@@ -697,7 +697,7 @@ impl DrawingTools {
             || self.sidebar_page == SidebarPage::ObjectList
     }
 
-    pub(crate) fn from_parts(active_tool: DrawingTool, mut drawings: Vec<DrawingEntity>) -> Self {
+    pub fn from_parts(active_tool: DrawingTool, mut drawings: Vec<DrawingEntity>) -> Self {
         drawings.retain(|drawing| drawing.object.coordinates_match(DrawingX::default()));
         for drawing in &mut drawings {
             if matches!(&drawing.object, DrawingObject::Box { .. }) {
@@ -729,7 +729,7 @@ impl DrawingTools {
         }
     }
 
-    pub(crate) fn active_tool(&self) -> DrawingTool {
+    pub fn active_tool(&self) -> DrawingTool {
         self.active_tool
     }
 
@@ -890,7 +890,7 @@ impl DrawingTools {
         })
     }
 
-    pub(crate) fn update(
+    pub fn update(
         &mut self,
         message: DrawingMessage,
         settings: &mut DrawingSettings,
@@ -1030,7 +1030,7 @@ impl DrawingTools {
         }
     }
 
-    pub(crate) fn sidebar_view<'a, Message>(
+    pub fn sidebar_view<'a, Message>(
         &'a self,
         composition: &'a ChartComposition,
         on_sidebar_message: fn(DrawingMessage) -> Message,
@@ -1370,7 +1370,7 @@ impl DrawingTools {
             .padding([4, 2])
     }
 
-    pub(crate) fn snapshot(&self) -> DrawingSnapshot<'_> {
+    pub fn snapshot(&self) -> DrawingSnapshot<'_> {
         DrawingSnapshot::new(
             self.active_tool,
             self.magnet_enabled,
@@ -1501,7 +1501,7 @@ impl DrawingTools {
         }
     }
 
-    pub(crate) fn handle_escape(&mut self) -> DrawingUpdate {
+    pub fn handle_escape(&mut self) -> DrawingUpdate {
         if self.set_sidebar_page(SidebarPage::Tools) {
             return DrawingUpdate::Visual;
         }
@@ -1533,7 +1533,7 @@ impl DrawingTools {
         DrawingUpdate::None
     }
 
-    pub(crate) fn drawing_draft(&self) -> Option<&DrawingDraft> {
+    pub fn drawing_draft(&self) -> Option<&DrawingDraft> {
         match &self.interaction {
             DrawingInteraction::Drafting(draft) => Some(draft),
             DrawingInteraction::Idle | DrawingInteraction::Dragging(_) => None,

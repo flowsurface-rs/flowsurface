@@ -16,7 +16,7 @@ use iced::theme::palette::Extended;
 use std::{ops::Range, sync::Arc};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) enum IndicatorBarValues {
+pub enum IndicatorBarValues {
     Plain {
         value: f64,
     },
@@ -45,7 +45,7 @@ fn resolve_indicator_bar_values(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum IndicatorPresentationStatus {
+pub enum IndicatorPresentationStatus {
     Available,
     Loading,
     Fallback {
@@ -61,7 +61,7 @@ pub(crate) enum IndicatorPresentationStatus {
     },
 }
 
-pub(crate) fn resolve_indicator_presentation_status<F>(
+pub fn resolve_indicator_presentation_status<F>(
     base_message: Option<&str>,
     input_coverage: &IndicatorInputCoverage,
     selected_mark: Option<MarkKind>,
@@ -138,41 +138,41 @@ impl IndicatorPresentationStatus {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ResolvedIndicatorLayer {
-    pub(crate) base_output: IndicatorOutputRef,
-    pub(crate) presentation_output: IndicatorOutputRef,
-    pub(crate) data_kind: LayerDataKind,
-    pub(crate) purpose: LayerPurpose,
-    pub(crate) mark: MarkKind,
-    pub(crate) required_input: Option<IndicatorInputSource>,
-    pub(crate) visible: bool,
+pub struct ResolvedIndicatorLayer {
+    pub base_output: IndicatorOutputRef,
+    pub presentation_output: IndicatorOutputRef,
+    pub data_kind: LayerDataKind,
+    pub purpose: LayerPurpose,
+    pub mark: MarkKind,
+    pub required_input: Option<IndicatorInputSource>,
+    pub visible: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ResolvedIndicatorStyleSlot {
-    pub(crate) id: String,
-    pub(crate) supports_line_styling: bool,
+pub struct ResolvedIndicatorStyleSlot {
+    pub id: String,
+    pub supports_line_styling: bool,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ResolvedIndicatorPresentation {
-    pub(crate) value_id: PanelValueId,
-    pub(crate) effective_mark: Option<MarkKind>,
-    pub(crate) status: IndicatorPresentationStatus,
-    pub(crate) resolved_layers: Vec<ResolvedIndicatorLayer>,
-    pub(crate) active_readouts: Vec<IndicatorReadoutSpec>,
+pub struct ResolvedIndicatorPresentation {
+    pub value_id: PanelValueId,
+    pub effective_mark: Option<MarkKind>,
+    pub status: IndicatorPresentationStatus,
+    pub resolved_layers: Vec<ResolvedIndicatorLayer>,
+    pub active_readouts: Vec<IndicatorReadoutSpec>,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct IndicatorPresentationContext {
-    pub(crate) input_coverage: IndicatorInputCoverage,
+pub struct IndicatorPresentationContext {
+    pub input_coverage: IndicatorInputCoverage,
     presentations: Arc<[ResolvedIndicatorPresentation]>,
     rebuild_in_flight_ids: Vec<PanelValueId>,
     pending_input_ids: Vec<PanelValueId>,
 }
 
 impl IndicatorPresentationContext {
-    pub(crate) fn new(
+    pub fn new(
         input_coverage: IndicatorInputCoverage,
         presentations: Arc<[ResolvedIndicatorPresentation]>,
     ) -> Self {
@@ -184,7 +184,7 @@ impl IndicatorPresentationContext {
         }
     }
 
-    pub(crate) fn with_rebuild_in_flight_ids(
+    pub fn with_rebuild_in_flight_ids(
         mut self,
         rebuild_in_flight_ids: Vec<PanelValueId>,
     ) -> Self {
@@ -192,12 +192,12 @@ impl IndicatorPresentationContext {
         self
     }
 
-    pub(crate) fn with_pending_input_ids(mut self, pending_input_ids: Vec<PanelValueId>) -> Self {
+    pub fn with_pending_input_ids(mut self, pending_input_ids: Vec<PanelValueId>) -> Self {
         self.pending_input_ids = pending_input_ids;
         self
     }
 
-    pub(crate) fn presentation(
+    pub fn presentation(
         &self,
         value_id: PanelValueId,
     ) -> Option<&ResolvedIndicatorPresentation> {
@@ -218,7 +218,7 @@ impl IndicatorPresentationContext {
             .is_some_and(|presentation| presentation.status.is_unavailable())
     }
 
-    pub(crate) fn is_loading(&self, value_id: PanelValueId) -> bool {
+    pub fn is_loading(&self, value_id: PanelValueId) -> bool {
         self.presentation(value_id).is_some_and(|presentation| {
             presentation.status.is_loading()
                 || (self.pending_input_ids.contains(&value_id)
@@ -227,12 +227,12 @@ impl IndicatorPresentationContext {
         })
     }
 
-    pub(crate) fn unavailable_message(&self, value_id: PanelValueId) -> Option<&str> {
+    pub fn unavailable_message(&self, value_id: PanelValueId) -> Option<&str> {
         self.presentation(value_id)
             .and_then(|presentation| presentation.status.message())
     }
 
-    pub(crate) fn style_slots_for(
+    pub fn style_slots_for(
         &self,
         value_id: PanelValueId,
         indicator: &IndicatorId,
@@ -1808,13 +1808,13 @@ pub(super) enum IndicatorLinePointStatus {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct OverlayChannelSpec<'a> {
-    pub(crate) label: &'a str,
-    pub(crate) source: &'a str,
+pub struct OverlayChannelSpec<'a> {
+    pub label: &'a str,
+    pub source: &'a str,
     line_width: f32,
     color_role: ThemeColorRole,
     color_slot: &'a str,
-    pub(crate) style_by: Option<&'a str>,
+    pub style_by: Option<&'a str>,
 }
 
 impl IndicatorView<'_> {

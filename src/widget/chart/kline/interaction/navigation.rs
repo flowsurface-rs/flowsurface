@@ -15,13 +15,13 @@ const PIXELS_PER_SCROLL_LINE: f32 = 40.0;
 const HORIZONTAL_DRAG_SCALE_DELTA_PER_PX: f32 = 0.3 / 9.0;
 const Y_AXIS_DRAG_SCALE_DELTA_PER_PX: f32 = 0.1;
 
-pub(crate) struct NavigationView<'a> {
-    pub(crate) viewports: PanelViewportView<'a>,
-    pub(crate) horizontal_world: HorizontalWorld,
+pub struct NavigationView<'a> {
+    pub viewports: PanelViewportView<'a>,
+    pub horizontal_world: HorizontalWorld,
 }
 
 impl NavigationView<'_> {
-    pub(crate) fn wheel(
+    pub fn wheel(
         &self,
         delta: mouse::ScrollDelta,
         zone: LayoutHitZone,
@@ -92,7 +92,7 @@ impl NavigationView<'_> {
         }
     }
 
-    pub(crate) fn axis_reset(
+    pub fn axis_reset(
         &self,
         zone: LayoutHitZone,
         click_kind: Option<click::Kind>,
@@ -118,7 +118,7 @@ impl NavigationView<'_> {
         Some(effects)
     }
 
-    pub(crate) fn begin_axis_drag(
+    pub fn begin_axis_drag(
         &self,
         zone: LayoutHitZone,
         layout: &PanelLayoutTree,
@@ -162,7 +162,7 @@ impl NavigationView<'_> {
         Some(effects)
     }
 
-    pub(crate) fn drag(
+    pub fn drag(
         &self,
         action: DragAction,
         motion: PointerMotion,

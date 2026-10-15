@@ -885,7 +885,7 @@ fn format_value(value: f32, step: f32) -> String {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct ChartCoordinates<'a> {
+pub struct ChartCoordinates<'a> {
     pub(super) series: &'a [KlineSeries],
     pub(super) composition: &'a ChartComposition,
     pub(super) basis: Basis,

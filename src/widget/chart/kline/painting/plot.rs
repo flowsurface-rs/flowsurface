@@ -21,16 +21,16 @@ enum PrimaryPlotDetail {
     Footprint,
 }
 
-pub(crate) struct PlotRenderer<'a> {
-    pub(crate) coordinates: ChartCoordinates<'a>,
-    pub(crate) indicators: IndicatorView<'a>,
-    pub(crate) footprints: FootprintRenderer<'a>,
-    pub(crate) study_objects: &'a StudyObjects<'a>,
-    pub(crate) trade_data_enabled: bool,
+pub struct PlotRenderer<'a> {
+    pub coordinates: ChartCoordinates<'a>,
+    pub indicators: IndicatorView<'a>,
+    pub footprints: FootprintRenderer<'a>,
+    pub study_objects: &'a StudyObjects<'a>,
+    pub trade_data_enabled: bool,
 }
 
 impl PlotRenderer<'_> {
-    pub(crate) fn paint(
+    pub fn paint(
         &self,
         frame: &mut PaintInputs,
         scene: &Scene,

@@ -51,16 +51,16 @@ struct IndicatorLineRun {
     color: iced::Color,
 }
 
-pub(crate) struct MarkRenderer<'a> {
-    pub(crate) indicators: IndicatorView<'a>,
-    pub(crate) scene: &'a Scene,
-    pub(crate) palette: &'a Extended,
-    pub(crate) generated_accents: &'a [iced::Color; ACCENT_COUNT],
-    pub(crate) pixels: PixelGeometry,
+pub struct MarkRenderer<'a> {
+    pub indicators: IndicatorView<'a>,
+    pub scene: &'a Scene,
+    pub palette: &'a Extended,
+    pub generated_accents: &'a [iced::Color; ACCENT_COUNT],
+    pub pixels: PixelGeometry,
 }
 
 impl MarkRenderer<'_> {
-    pub(crate) fn draw_indicator_bars(
+    pub fn draw_indicator_bars(
         &self,
         frame: &mut PaintInputs,
         panel_index: usize,
@@ -219,7 +219,7 @@ impl MarkRenderer<'_> {
         );
     }
 
-    pub(crate) fn draw_candles(
+    pub fn draw_candles(
         &self,
         frame: &mut PaintInputs,
         map_y: impl Fn(f32) -> f32,
@@ -266,7 +266,7 @@ impl MarkRenderer<'_> {
         );
     }
 
-    pub(crate) fn draw_series_line(&self, frame: &mut PaintInputs, series_index: usize) {
+    pub fn draw_series_line(&self, frame: &mut PaintInputs, series_index: usize) {
         let scene = self.scene;
         let pixels = self.pixels;
         let palette = self.palette;
@@ -351,7 +351,7 @@ impl MarkRenderer<'_> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn draw_line(
+    pub fn draw_line(
         &self,
         frame: &mut PaintInputs,
         value_id: PanelValueId,
@@ -523,7 +523,7 @@ impl MarkRenderer<'_> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn draw_points(
+    pub fn draw_points(
         &self,
         frame: &mut PaintInputs,
         value_id: PanelValueId,
@@ -627,7 +627,7 @@ impl MarkRenderer<'_> {
             );
     }
 
-    pub(crate) fn draw_indicator_structural_output(
+    pub fn draw_indicator_structural_output(
         &self,
         frame: &mut PaintInputs,
         layer: &ResolvedIndicatorLayer,
@@ -899,7 +899,7 @@ impl MarkRenderer<'_> {
         }
     }
 
-    pub(crate) fn draw_indicator_regions(
+    pub fn draw_indicator_regions(
         &self,
         frame: &mut PaintInputs,
         value_id: PanelValueId,
@@ -1007,7 +1007,7 @@ impl MarkRenderer<'_> {
         }
     }
 
-    pub(crate) fn draw_indicator_markers_and_levels(
+    pub fn draw_indicator_markers_and_levels(
         &self,
         frame: &mut PaintInputs,
         value_id: PanelValueId,
@@ -1371,7 +1371,7 @@ impl MarkRenderer<'_> {
             .scale_alpha(fill.opacity.clamp(0.0, 1.0))
     }
 
-    pub(crate) fn fill_indicator_panel_background(
+    pub fn fill_indicator_panel_background(
         &self,
         frame: &mut PaintInputs,
         indicator_panel: &IndicatorPanelScene,
@@ -1418,7 +1418,7 @@ impl MarkRenderer<'_> {
         }
     }
 
-    pub(crate) fn fill_primary_overlay_backgrounds(&self, frame: &mut PaintInputs) {
+    pub fn fill_primary_overlay_backgrounds(&self, frame: &mut PaintInputs) {
         let scene = self.scene;
         let Some(primary_panel_id) = self.indicators.composition.primary_panel_id() else {
             return;
@@ -1552,7 +1552,7 @@ impl MarkRenderer<'_> {
         (0.1 + relative * 0.7) as f32
     }
 
-    pub(crate) fn fill_table_panel(
+    pub fn fill_table_panel(
         &self,
         frame: &mut PaintInputs,
         indicator_panel: &IndicatorPanelScene,
@@ -2077,7 +2077,7 @@ fn table_color_slot(color: &TableColumnColor, value: OutputValue) -> Option<&str
     }
 }
 
-pub(crate) fn candlestick_widths(bar_spacing: f32, pixels: PixelGeometry) -> (i32, i32) {
+pub fn candlestick_widths(bar_spacing: f32, pixels: PixelGeometry) -> (i32, i32) {
     let pixel_ratio = pixels.ratio();
     let from = 2.5_f32;
     let to = 4.0_f32;

@@ -527,7 +527,7 @@ impl Dashboard {
         Task::none()
     }
 
-    pub(crate) fn get_pane(
+    pub fn get_pane(
         &self,
         main_window: window::Id,
         window: window::Id,
@@ -593,7 +593,7 @@ impl Dashboard {
             }))
     }
 
-    pub(crate) fn view<'a>(
+    pub fn view<'a>(
         &'a self,
         main_window: &'a Window,
         tickers_table: &'a TickersTable,
@@ -627,7 +627,7 @@ impl Dashboard {
         pane_grid.map(move |message| Message::Pane(main_window.id, message))
     }
 
-    pub(crate) fn view_window<'a>(
+    pub fn view_window<'a>(
         &'a self,
         window: window::Id,
         main_window: &'a Window,

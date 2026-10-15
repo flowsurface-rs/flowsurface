@@ -20,7 +20,7 @@ use iced::{Point, Size};
 use std::collections::BTreeMap;
 use std::{cell::RefCell, sync::Arc};
 
-pub(crate) enum ProfileBarSource<'a> {
+pub enum ProfileBarSource<'a> {
     Empty,
     External {
         bars: &'a BTreeMap<UnixMs, Kline>,
@@ -93,7 +93,7 @@ struct VisibleProfile {
 }
 
 #[derive(Default)]
-pub(crate) struct VolumeProfileState {
+pub struct VolumeProfileState {
     visible: RefCell<Option<VisibleProfile>>,
 }
 
@@ -114,14 +114,14 @@ impl VolumeProfileState {
     }
 }
 
-pub(crate) struct VolumeProfileObject<'a> {
+pub struct VolumeProfileObject<'a> {
     studies: Vec<KlineStudy>,
     profile_bars: ProfileBarSource<'a>,
     recurring_profiles: &'a BTreeMap<Timeframe, RecurringKlineProfileIndex>,
 }
 
 impl<'a> VolumeProfileObject<'a> {
-    pub(crate) fn new(
+    pub fn new(
         studies: Vec<KlineStudy>,
         profile_bars: ProfileBarSource<'a>,
         recurring_profiles: &'a BTreeMap<Timeframe, RecurringKlineProfileIndex>,

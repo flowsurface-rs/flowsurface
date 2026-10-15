@@ -1,6 +1,6 @@
 mod axes;
 mod chrome;
-pub(crate) mod drawing;
+pub mod drawing;
 mod footprint;
 mod interaction;
 mod layout;
@@ -8,7 +8,7 @@ mod overlay;
 mod painting;
 mod presentation;
 mod scene;
-pub(crate) mod studies;
+pub mod studies;
 
 use axes::AxisInputs;
 
@@ -18,7 +18,7 @@ use scene::{
     PanelValueScale, PrimaryPercentScaleState, PrimaryScale, SceneBase, SceneCacheEntry, XViewport,
 };
 
-pub(crate) use chrome::{StudiesLegend, StudyLegendRow};
+pub use chrome::{StudiesLegend, StudyLegendRow};
 
 use crate::widget::chart::kline::chrome::PreparedPanelControls;
 use crate::{style, theme::ThemeState, window::PixelRatio};
@@ -30,13 +30,13 @@ use data::UserTimezone;
 use data::chart::Basis;
 use data::chart::kline::composition;
 use data::chart::kline::series::KlineSeries;
-pub(crate) use data::chart::kline::viewport::PrimaryViewportState;
+pub use data::chart::kline::viewport::PrimaryViewportState;
 use data::chart::kline::{
     CandlestickConfig, DEFAULT_HORIZONTAL_SPACING_PX, FootprintConfig, KlineStudyId,
     LegendVisibility,
 };
 use data::chart::kline::{HorizontalWorld, IndicatorHost, IndicatorInstanceStore};
-pub(crate) use data::chart::kline::{YUnit, YUnitRange};
+pub use data::chart::kline::{YUnit, YUnitRange};
 
 use drawing::{
     DrawingMeasure, DrawingPointerInput, DrawingSnapshot, DrawingTool, DrawingView,
@@ -44,7 +44,7 @@ use drawing::{
 };
 use exchange::TickerInfo;
 pub(super) use interaction::SceneActivity;
-pub(crate) use interaction::SelectionDisposition;
+pub use interaction::SelectionDisposition;
 use interaction::{
     DragAction, GestureSource, LayerContext, PointerMove, PressAction, ReleasedGesture,
     UserInteraction,
@@ -54,8 +54,8 @@ use painting::{
     CanvasLayer, CanvasLayers, LayerPlacement, PaintInputs, PixelGeometry, RenderRequest,
     RenderScheduler, ResolvedLayer,
 };
-pub(crate) use presentation::IndicatorPresentationStatus;
-pub(crate) use presentation::{
+pub use presentation::IndicatorPresentationStatus;
+pub use presentation::{
     IndicatorPresentationContext, ResolvedIndicatorLayer, ResolvedIndicatorPresentation,
     ResolvedIndicatorStyleSlot, resolve_indicator_presentation_status,
 };
@@ -76,7 +76,7 @@ use std::{sync::Arc, time::Duration};
 
 const Y_AXIS_GUTTER: f32 = 66.0;
 const X_AXIS_HEIGHT: f32 = 24.0;
-pub(crate) const MIN_FULL_CACHE_REFRESH_INTERVAL: Duration = Duration::from_micros(33_333);
+pub const MIN_FULL_CACHE_REFRESH_INTERVAL: Duration = Duration::from_micros(33_333);
 
 const TEXT_SIZE: f32 = 12.0;
 const CHAR_W: f32 = TEXT_SIZE * 0.64;
@@ -253,7 +253,7 @@ impl From<KlineWidgetDrawingEvent> for KlineWidgetEvent {
     }
 }
 
-pub(crate) struct KlineWidget<'a> {
+pub struct KlineWidget<'a> {
     series: &'a [KlineSeries],
     indicator_host: &'a IndicatorHost,
     composition: &'a ChartComposition,

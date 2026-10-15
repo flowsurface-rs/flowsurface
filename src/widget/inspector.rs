@@ -5,8 +5,8 @@ use iced::{
 
 const BODY_VERTICAL_PADDING: f32 = 8.0;
 const SECTION_TITLE_SPACING: f32 = 8.0;
-pub(crate) const SECTION_SPACING: f32 = 16.0;
-pub(crate) const MODAL_SECTION_SPACING: f32 = 8.0;
+pub const SECTION_SPACING: f32 = 16.0;
+pub const MODAL_SECTION_SPACING: f32 = 8.0;
 const SECTION_PADDING: f32 = 8.0;
 const FOOTER_SPACING: f32 = 4.0;
 const FOOTER_VERTICAL_PADDING: f32 = 4.0;
@@ -18,7 +18,7 @@ pub enum InspectorTab {
     Source,
 }
 
-pub(crate) fn modal_container<'a, Message: 'a>(
+pub fn modal_container<'a, Message: 'a>(
     content: impl Into<Element<'a, Message>>,
 ) -> Element<'a, Message> {
     container(content)
@@ -28,7 +28,7 @@ pub(crate) fn modal_container<'a, Message: 'a>(
         .into()
 }
 
-pub(crate) fn setting_section<'a, Message>(
+pub fn setting_section<'a, Message>(
     label: impl iced::widget::text::IntoFragment<'a>,
     control: impl Into<Element<'a, Message>>,
 ) -> InspectorSection<'a, Message>
@@ -104,7 +104,7 @@ where
         .into()
 }
 
-pub(crate) fn tabbed_content<'a, Message>(
+pub fn tabbed_content<'a, Message>(
     selected_tab: InspectorTab,
     on_select: impl Fn(InspectorTab) -> Message + Copy + 'a,
     contents: impl IntoIterator<Item = (InspectorTab, Option<Element<'a, Message>>)>,
@@ -172,7 +172,7 @@ impl<'a, Message: 'a> InspectorSection<'a, Message> {
         }
     }
 
-    pub(crate) fn map<Next>(
+    pub fn map<Next>(
         self,
         mapper: impl Fn(Message) -> Next + Copy + 'a,
     ) -> InspectorSection<'a, Next>
@@ -284,7 +284,7 @@ impl InspectorBody {
 pub struct InspectorFooter;
 
 impl InspectorFooter {
-    pub(crate) const HEIGHT: f32 = 40.0;
+    pub const HEIGHT: f32 = 40.0;
 
     pub fn view<'a, Message: 'a>(
         content: impl Into<Element<'a, Message>>,

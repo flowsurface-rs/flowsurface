@@ -65,7 +65,7 @@ enum TpoClick {
     },
 }
 
-pub(crate) struct TpoObject<'a> {
+pub struct TpoObject<'a> {
     key: StudyObjectKey,
     profiles: &'a [TpoProfile],
     edits: &'a TpoBoundaryEdits,
@@ -73,7 +73,7 @@ pub(crate) struct TpoObject<'a> {
 }
 
 #[derive(Default)]
-pub(crate) struct TpoState {
+pub struct TpoState {
     selected_profile: Option<UnixMs>,
     pending_click: Option<TpoClick>,
     drag: Option<TpoDrag>,
@@ -86,7 +86,7 @@ impl TpoState {
 }
 
 impl<'a> TpoObject<'a> {
-    pub(crate) fn new(
+    pub fn new(
         key: data::chart::kline::KlineStudyId,
         profiles: &'a [TpoProfile],
         edits: &'a TpoBoundaryEdits,

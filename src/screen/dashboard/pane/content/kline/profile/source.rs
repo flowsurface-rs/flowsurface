@@ -109,7 +109,7 @@ impl ProfileKlineSource {
         (self.timeframe == Some(timeframe)).then_some(&self.bars)
     }
 
-    pub(crate) fn revision(&self) -> u64 {
+    pub fn revision(&self) -> u64 {
         self.revision
     }
 
@@ -234,20 +234,20 @@ impl ProfileKlineSource {
         true
     }
 
-    pub(crate) fn is_active(&self, timeframe: Timeframe, time: UnixMs) -> bool {
+    pub fn is_active(&self, timeframe: Timeframe, time: UnixMs) -> bool {
         self.timeframe == Some(timeframe)
             && self
                 .retained
                 .is_some_and(|retained| contains(retained, time))
     }
 
-    pub(crate) fn retained(&self, timeframe: Timeframe) -> Option<(UnixMs, UnixMs)> {
+    pub fn retained(&self, timeframe: Timeframe) -> Option<(UnixMs, UnixMs)> {
         (self.timeframe == Some(timeframe))
             .then_some(self.retained)
             .flatten()
     }
 
-    pub(crate) fn clear(&mut self) -> bool {
+    pub fn clear(&mut self) -> bool {
         let changed = !self.bars.is_empty()
             || !self.empty_ranges.is_empty()
             || self.retained.is_some()

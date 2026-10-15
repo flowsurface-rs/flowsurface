@@ -48,7 +48,7 @@ pub(super) struct TpoState {
 }
 
 impl TpoState {
-    pub(crate) fn invalidate(&mut self) {
+    pub fn invalidate(&mut self) {
         self.rebuild_state = TpoRebuildState::Full;
         self.last_rebuild_source = None;
     }
@@ -65,7 +65,7 @@ impl TpoState {
         changed
     }
 
-    pub(crate) fn rebuild(
+    pub fn rebuild(
         &mut self,
         study: Option<KlineStudy>,
         load_bars: impl Fn(TpoBarScope) -> Vec<Kline>,
@@ -452,11 +452,11 @@ impl TpoState {
         }
     }
 
-    pub(crate) fn profiles(&self) -> &[TpoProfile] {
+    pub fn profiles(&self) -> &[TpoProfile] {
         &self.profiles
     }
 
-    pub(crate) fn edits(&self) -> &TpoBoundaryEdits {
+    pub fn edits(&self) -> &TpoBoundaryEdits {
         &self.edits
     }
 

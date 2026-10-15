@@ -23,14 +23,14 @@ impl Window {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct WindowScaleFactor(f32);
+pub struct WindowScaleFactor(f32);
 
 impl WindowScaleFactor {
-    pub(crate) fn new(value: f32) -> Self {
+    pub fn new(value: f32) -> Self {
         Self(positive_scale_or_default(value))
     }
 
-    pub(crate) fn value(self) -> f32 {
+    pub fn value(self) -> f32 {
         self.0
     }
 }
@@ -45,11 +45,11 @@ impl Default for WindowScaleFactor {
 pub struct PixelRatio(f32);
 
 impl PixelRatio {
-    pub(crate) fn from_product(value: f32) -> Self {
+    pub fn from_product(value: f32) -> Self {
         Self(positive_scale_or_default(value))
     }
 
-    pub(crate) fn value(self) -> f32 {
+    pub fn value(self) -> f32 {
         self.0
     }
 }
@@ -61,26 +61,26 @@ impl Default for PixelRatio {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct WindowScaleFactors {
+pub struct WindowScaleFactors {
     factors: HashMap<Id, WindowScaleFactor>,
 }
 
 impl WindowScaleFactors {
-    pub(crate) fn new(main_window: Id) -> Self {
+    pub fn new(main_window: Id) -> Self {
         Self {
             factors: HashMap::from([(main_window, WindowScaleFactor::default())]),
         }
     }
 
-    pub(crate) fn set(&mut self, window: Id, scale_factor: WindowScaleFactor) {
+    pub fn set(&mut self, window: Id, scale_factor: WindowScaleFactor) {
         self.factors.insert(window, scale_factor);
     }
 
-    pub(crate) fn remove(&mut self, window: Id) {
+    pub fn remove(&mut self, window: Id) {
         self.factors.remove(&window);
     }
 
-    pub(crate) fn pixel_ratio_for_window(
+    pub fn pixel_ratio_for_window(
         &self,
         window: Id,
         ui_scale_factor: ScaleFactor,

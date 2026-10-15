@@ -46,7 +46,7 @@ impl SeriesStyleEntry {
         }
     }
 
-    pub(crate) fn view<'a>(&self, theme_accents: ThemeAccents) -> Element<'a, Message> {
+    pub fn view<'a>(&self, theme_accents: ThemeAccents) -> Element<'a, Message> {
         let theme_color = self.color.theme_color().unwrap_or_default();
         let color_choices =
             theme_color_control(theme_color, theme_accents, Message::ColorAccentChanged);
