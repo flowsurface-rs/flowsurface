@@ -27,6 +27,8 @@ pub struct State {
     pub network: Network,
     pub size_in_quote_ccy: exchange::SizeUnit,
     pub cache_market_metadata: bool,
+    #[serde(default = "default_antialiasing")]
+    pub antialiasing: bool,
 }
 
 impl State {
@@ -42,6 +44,7 @@ impl State {
         network: Network,
         volume_size_unit: exchange::SizeUnit,
         cache_market_metadata: bool,
+        antialiasing: bool,
     ) -> Self {
         State {
             layout_manager,
@@ -55,6 +58,11 @@ impl State {
             network,
             size_in_quote_ccy: volume_size_unit,
             cache_market_metadata,
+            antialiasing,
         }
     }
+}
+
+const fn default_antialiasing() -> bool {
+    true
 }

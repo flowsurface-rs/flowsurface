@@ -2,7 +2,7 @@ language(1)
 indicator(
     "Volume", id = "core.volume",
     description = "Displays total or buy/sell volume, with optional highlighting when candle direction conflicts with volume.",
-    source = "https://github.com/flowsurface-rs/flowsurface/blob/main/indicators/core/volume.ind",
+    source = "https://github.com/flowsurface-rs/flowsurface/blob/main/data/indicators/sources/volume.ind",
     sourceable = true,
     optional_trades = true, max_bars_back = 1)
 format(precision = "base_ticker_min_qty", axis_labels = "abbreviated", header_labels = "commas", scale = "fit_visible_include_zero")

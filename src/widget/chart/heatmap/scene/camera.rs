@@ -54,17 +54,17 @@ impl Camera {
         row_height: f32,
         base_price: exchange::unit::Price,
         step: exchange::unit::PriceStep,
-    ) -> exchange::unit::Price {
+    ) -> Option<exchange::unit::Price> {
         let y = self.offset[1];
 
         if !row_height.is_finite() || row_height <= 0.0 || !y.is_finite() {
-            return base_price;
+            return Some(base_price);
         }
 
         let steps_f = (-(y) / row_height).round();
         let steps_i = steps_f as i64;
 
-        base_price.add_steps(steps_i, step)
+        base_price.checked_add_steps(steps_i, step)
     }
 
     fn right_pad_world(&self, viewport_w: f32) -> f32 {

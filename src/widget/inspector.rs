@@ -1,15 +1,21 @@
 use iced::{
-    Element, Length, Renderer, Size, advanced,
-    widget::{column, container, row, rule},
+    Element, Length,
+    widget::{button, column, container, row, rule},
 };
 
 const BODY_VERTICAL_PADDING: f32 = 4.0;
 const SECTION_TITLE_SPACING: f32 = 8.0;
 pub(crate) const SECTION_SPACING: f32 = 16.0;
 pub(crate) const MODAL_SECTION_SPACING: f32 = 8.0;
-const MODAL_ROW_SPACING: f32 = 4.0;
 const SECTION_PADDING: f32 = 8.0;
 const FOOTER_SPACING: f32 = 4.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InspectorTab {
+    Inputs,
+    Style,
+    Source,
+}
 
 pub(crate) fn modal_container<'a, Message: 'a>(
     content: impl Into<Element<'a, Message>>,
@@ -21,53 +27,86 @@ pub(crate) fn modal_container<'a, Message: 'a>(
         .into()
 }
 
-pub(crate) fn modal_row<'a, Message: 'a>(
-    children: impl IntoIterator<Item = Element<'a, Message>>,
-) -> Element<'a, Message> {
-    crate::widget::decorate::decorate(row(children).width(Length::Fill).spacing(MODAL_ROW_SPACING))
-        .layout(EqualHeightRowLayout)
-        .into()
-}
-
-struct EqualHeightRowLayout;
-
-impl<'a, Message: 'a> crate::widget::decorate::Layout<'a, Message, iced::Theme, Renderer, ()>
-    for EqualHeightRowLayout
+pub(crate) fn setting_section<'a, Message>(
+    label: impl iced::widget::text::IntoFragment<'a>,
+    control: impl Into<Element<'a, Message>>,
+) -> InspectorSection<'a, Message>
+where
+    Message: 'a,
 {
-    fn layout(
-        &mut self,
-        _state: &mut (),
-        inner: &mut Element<'a, Message>,
-        tree: &mut advanced::widget::Tree,
-        renderer: &Renderer,
-        limits: &advanced::layout::Limits,
-    ) -> advanced::layout::Node {
-        let layout = inner.as_widget_mut().layout(tree, renderer, limits);
-        equalize_row_height(layout)
-    }
+    InspectorSection::new(
+        crate::widget::text::body(label),
+        container(control).width(Length::Fill),
+    )
 }
 
-fn equalize_row_height(layout: advanced::layout::Node) -> advanced::layout::Node {
-    let row_height = layout
-        .children()
-        .iter()
-        .map(|child| child.size().height)
-        .fold(layout.size().height, f32::max);
-    let children = layout
-        .children()
-        .iter()
-        .map(|child| {
-            let bounds = child.bounds();
-            advanced::layout::Node::with_children(
-                Size::new(bounds.width, row_height),
-                child.children().to_vec(),
-            )
-            .move_to(bounds.position())
-        })
-        .collect();
+pub(crate) fn tabs<'a, Message>(
+    selected_tab: InspectorTab,
+    on_select: impl Fn(InspectorTab) -> Message + Copy + 'a,
+    show_source: bool,
+) -> Element<'a, Message>
+where
+    Message: Clone + 'a,
+{
+    let tab_button = move |label, tab, width| {
+        let is_selected = selected_tab == tab;
+        let label = crate::widget::text::emphasis(label).align_x(iced::Alignment::Center);
+        let label = if is_selected {
+            label.style(|theme| iced::widget::text::Style {
+                color: Some(theme.extended_palette().primary.strong.color),
+            })
+        } else {
+            label
+        };
+        let button = button(label)
+            .padding([4, 10])
+            .width(width)
+            .style(move |theme, status| {
+                let mut style = crate::style::button::transparent(theme, status, is_selected);
+                if is_selected {
+                    style.background = None;
+                }
+                style
+            });
 
-    advanced::layout::Node::with_children(Size::new(layout.size().width, row_height), children)
-        .move_to(layout.bounds().position())
+        let button = if is_selected {
+            button
+        } else {
+            button.on_press(on_select(tab))
+        };
+
+        column![
+            button,
+            rule::horizontal(2.0).style(move |theme| {
+                let mut style = crate::style::tab_ruler(theme);
+                if is_selected {
+                    style.color = theme.extended_palette().primary.strong.color;
+                }
+                style
+            }),
+        ]
+        .width(width)
+    };
+
+    let mut tab_buttons = row![];
+    if show_source {
+        tab_buttons = tab_buttons.push(tab_button("i", InspectorTab::Source, Length::Shrink));
+    }
+    tab_buttons = tab_buttons
+        .push(tab_button(
+            "Inputs",
+            InspectorTab::Inputs,
+            Length::FillPortion(1),
+        ))
+        .push(tab_button(
+            "Style",
+            InspectorTab::Style,
+            Length::FillPortion(1),
+        ));
+
+    column![container(tab_buttons).center_x(Length::Fill)]
+        .spacing(4)
+        .into()
 }
 
 pub struct InspectorSection<'a, Message> {
@@ -126,10 +165,7 @@ impl<'a, Message: 'a> InspectorSectionList<'a, Message> {
     fn view(self) -> Element<'a, Message> {
         let mut content = column![].spacing(SECTION_SPACING).width(Length::Fill);
 
-        for (index, section) in self.sections.into_iter().enumerate() {
-            if index > 0 {
-                content = content.push(rule::horizontal(1.0).style(crate::style::split_ruler));
-            }
+        for section in self.sections.into_iter() {
             content = content.push(section.content);
         }
 

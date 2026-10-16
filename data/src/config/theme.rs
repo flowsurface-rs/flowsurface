@@ -8,20 +8,31 @@ use iced_core::{
     theme::{Custom, Palette},
 };
 use palette::{
-    Clamp, FromColor, Hsva, IsWithinBounds, Oklab, Oklch, RgbHue, Srgb,
+    Clamp, FromColor, Hsva, IsWithinBounds, OklabHue, Oklch, Srgb,
     convert::FromColorUnclamped,
     rgb::{Rgb, Rgba},
 };
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 
-const MIN_ACCENT_HUE_SEPARATION: f32 = 45.0;
-const MIN_CANDIDATE_PERCEPTUAL_DISTANCE: f32 = 0.001;
+/// Amount of accent colors, one per [`ThemeAccent`].
+pub const ACCENT_COUNT: usize = ThemeAccent::ALL.len();
+/// Every accent but the last one takes a hue; the last one is the endpoint of the
+/// accent lightness scale.
+const CHROMATIC_ACCENT_COUNT: usize = ACCENT_COUNT - 1;
+/// Smallest hue distance two accents of one theme may have.
+const MIN_ACCENT_HUE_SEPARATION: f32 = 42.0;
+/// Smallest hue distance an accent may have to one of the theme's signal hues.
+const MIN_SIGNAL_HUE_SEPARATION: f32 = 12.0;
+/// Chroma below which a hue is not recognizable, so the color cannot claim one.
+const MIN_HUE_REFERENCE_CHROMA: f32 = 0.04;
+/// Largest hue distance possible, half of the wheel.
+const MAX_HUE_DISTANCE: f32 = 180.0;
+/// Placement resolution on the hue wheel.
+const HUE_CANDIDATE_STEP: f32 = 0.5;
+const HUE_CANDIDATE_COUNT: usize = (360.0 / HUE_CANDIDATE_STEP) as usize;
 const TARGET_ACCENT_CHROMA: f32 = 0.14;
-const SEMANTIC_EXCLUSION_DISTANCE: f32 = 0.08;
-const THEME_AFFINITY_WEIGHT: f32 = 0.6;
-const HUE_DIVERSITY_WEIGHT: f32 = 0.25;
-const COLOR_DIVERSITY_WEIGHT: f32 = 0.15;
-const SEMANTIC_COLLISION_WEIGHT: f32 = 0.25;
+const ENDPOINT_ACCENT_CHROMA: f32 = 0.02;
 
 #[derive(Debug, Clone)]
 pub struct Theme(pub iced_core::Theme);
@@ -34,16 +45,20 @@ pub enum ThemeAccent {
     Four,
     Five,
     Six,
+    Seven,
+    Eight,
 }
 
 impl ThemeAccent {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 8] = [
         Self::One,
         Self::Two,
         Self::Three,
         Self::Four,
         Self::Five,
         Self::Six,
+        Self::Seven,
+        Self::Eight,
     ];
 
     pub const fn index(self) -> usize {
@@ -54,6 +69,8 @@ impl ThemeAccent {
             Self::Four => 3,
             Self::Five => 4,
             Self::Six => 5,
+            Self::Seven => 6,
+            Self::Eight => 7,
         }
     }
 }
@@ -64,200 +81,173 @@ impl std::fmt::Display for ThemeAccent {
     }
 }
 
-pub fn generated_theme_accents(palette: &Extended) -> [Color; 6] {
-    generate_theme_accents(palette)
+/// Derives the accent palette of `palette`.
+///
+/// Every chromatic accent has the same lightness, so no series color is louder than
+/// another and they are told apart by hue alone. The last accent is the endpoint of
+/// the lightness scale instead of a hue.
+pub fn generated_theme_accents(palette: &Extended) -> [Color; ACCENT_COUNT] {
+    let lightness = if palette.is_dark { 0.7 } else { 0.5 };
+    let hues = AccentHues::new(palette).place_all();
+
+    std::array::from_fn(|index| {
+        hues.get(index).map_or_else(
+            || endpoint_accent(palette),
+            |hue| accent_color(*hue, lightness, TARGET_ACCENT_CHROMA),
+        )
+    })
 }
 
-fn generate_theme_accents(palette: &Extended) -> [Color; 6] {
-    const HUE_OFFSETS: [f32; 24] = [
-        -180.0, -165.0, -150.0, -135.0, -120.0, -105.0, -90.0, -75.0, -60.0, -45.0, -30.0, -15.0,
-        0.0, 15.0, 30.0, 45.0, 60.0, 75.0, 90.0, 105.0, 120.0, 135.0, 150.0, 165.0,
-    ];
-    let anchors = [
-        palette.primary.base.color,
-        palette.secondary.strong.color,
-        palette.success.base.color,
-        palette.danger.base.color,
-        palette.warning.base.color,
-    ];
-    let harmony_references = theme_hue_references(palette);
-    let semantic_references = [
-        (to_oklab(palette.primary.base.color), 1.1),
-        (to_oklab(palette.secondary.strong.color), 0.9),
-        (to_oklab(palette.background.base.color), 1.5),
-        (to_oklab(palette.success.base.color), 2.0),
-        (to_oklab(palette.danger.base.color), 2.0),
-        (to_oklab(palette.warning.base.color), 1.8),
-    ];
-    let harmony_reference_slice = harmony_references.as_slice();
-    let candidates = anchors
-        .into_iter()
-        .flat_map(|anchor| {
-            HUE_OFFSETS.into_iter().map(move |hue_offset| {
-                generated_accent_candidate(anchor, hue_offset, palette, harmony_reference_slice)
-            })
-        })
-        .collect::<Vec<_>>();
+/// Places the chromatic accents on the hue wheel.
+///
+/// Every accent keeps [`MIN_ACCENT_HUE_SEPARATION`] from the accents placed before
+/// it, and prefers positions that keep [`MIN_SIGNAL_HUE_SEPARATION`] from the theme's
+/// signal hues, so a series color never reads as a candle or status color.
+struct AccentHues {
+    signal_hues: Vec<f32>,
+    identity_hue: Option<f32>,
+    placed: Vec<f32>,
+}
 
-    let mut selected: Vec<GeneratedAccentCandidate> = Vec::with_capacity(ThemeAccent::ALL.len());
-    for _ in ThemeAccent::ALL {
-        let eligible = candidates
-            .iter()
-            .filter(|candidate| {
-                selected.iter().all(|selected| {
-                    hue_distance(candidate.hue, selected.hue) >= MIN_ACCENT_HUE_SEPARATION
-                        && perceptual_distance(candidate.lab, selected.lab)
-                            >= MIN_CANDIDATE_PERCEPTUAL_DISTANCE
-                })
-            })
-            .collect::<Vec<_>>();
-
-        let next =
-            if eligible.is_empty() {
-                candidates
-                    .iter()
-                    .filter(|candidate| {
-                        selected.iter().all(|selected| {
-                            perceptual_distance(candidate.lab, selected.lab)
-                                >= MIN_CANDIDATE_PERCEPTUAL_DISTANCE
-                        })
-                    })
-                    .max_by(|left, right| {
-                        minimum_hue_clearance(left, &selected)
-                            .total_cmp(&minimum_hue_clearance(right, &selected))
-                            .then_with(|| {
-                                candidate_score(left, &semantic_references, &selected).total_cmp(
-                                    &candidate_score(right, &semantic_references, &selected),
-                                )
-                            })
-                    })
-            } else {
-                eligible.into_iter().max_by(|left, right| {
-                    candidate_score(left, &semantic_references, &selected)
-                        .total_cmp(&candidate_score(right, &semantic_references, &selected))
-                })
-            }
-            .unwrap_or(&candidates[0]);
-        selected.push(*next);
+impl AccentHues {
+    fn new(palette: &Extended) -> Self {
+        Self {
+            signal_hues: [
+                palette.primary.base.color,
+                palette.success.base.color,
+                palette.danger.base.color,
+                palette.warning.base.color,
+            ]
+            .into_iter()
+            .filter_map(chromatic_hue)
+            .collect(),
+            identity_hue: chromatic_hue(palette.primary.base.color),
+            placed: Vec::with_capacity(CHROMATIC_ACCENT_COUNT),
+        }
     }
 
-    selected
-        .into_iter()
-        .map(|candidate| candidate.color)
-        .collect::<Vec<_>>()
-        .try_into()
-        .unwrap_or([Color::TRANSPARENT; 6])
+    fn place_all(mut self) -> Vec<f32> {
+        self.placed.push(self.initial_hue());
+
+        while self.placed.len() < CHROMATIC_ACCENT_COUNT {
+            self.placed.push(self.next_hue());
+        }
+
+        self.placed
+    }
+
+    /// The theme's own hue, or the hue furthest from every signal hue when the theme
+    /// has no chromatic primary to derive the palette from.
+    fn initial_hue(&self) -> f32 {
+        match self.identity_hue {
+            Some(identity_hue) => self.best_hue(|hue| self.identity_rank(hue, identity_hue)),
+            None => self.best_hue(|hue| self.accent_rank(hue)),
+        }
+    }
+
+    /// The hue in the widest gap left on the wheel.
+    fn next_hue(&self) -> f32 {
+        self.best_hue(|hue| self.accent_rank(hue))
+    }
+
+    /// Ranks a position for a new accent: inside both separation budgets first, then
+    /// the widest gap between the placed accents, then the furthest from the signal
+    /// hues. Accent separation thus outranks signal clearance where the wheel is too
+    /// crowded for both.
+    fn accent_rank(&self, hue: f32) -> (bool, f32, f32) {
+        let accent_clearance = self.accent_clearance(hue);
+        let signal_clearance = self.signal_clearance(hue);
+
+        (
+            accent_clearance >= MIN_ACCENT_HUE_SEPARATION
+                && signal_clearance >= MIN_SIGNAL_HUE_SEPARATION,
+            accent_clearance,
+            signal_clearance,
+        )
+    }
+
+    /// Ranks a position for the first accent of a theme that has a hue of its own:
+    /// inside both separation budgets first, then the closest to that hue.
+    fn identity_rank(&self, hue: f32, identity_hue: f32) -> (bool, f32, f32) {
+        let (within_budget, _, signal_clearance) = self.accent_rank(hue);
+
+        (
+            within_budget,
+            -hue_distance(hue, identity_hue),
+            signal_clearance,
+        )
+    }
+
+    /// The hue with the highest rank, ties going to the lower hue.
+    fn best_hue(&self, rank: impl Fn(f32) -> (bool, f32, f32)) -> f32 {
+        let mut best_hue = 0.0;
+        let mut best_rank = (false, f32::NEG_INFINITY, f32::NEG_INFINITY);
+
+        for hue in candidate_hues() {
+            let candidate = rank(hue);
+            if candidate.partial_cmp(&best_rank) == Some(Ordering::Greater) {
+                best_rank = candidate;
+                best_hue = hue;
+            }
+        }
+
+        best_hue
+    }
+
+    /// Distance from `hue` to the nearest placed accent.
+    fn accent_clearance(&self, hue: f32) -> f32 {
+        self.placed
+            .iter()
+            .map(|placed| hue_distance(hue, *placed))
+            .fold(MAX_HUE_DISTANCE, f32::min)
+    }
+
+    /// Distance from `hue` to the nearest signal hue.
+    fn signal_clearance(&self, hue: f32) -> f32 {
+        self.signal_hues
+            .iter()
+            .map(|signal_hue| hue_distance(hue, *signal_hue))
+            .fold(MAX_HUE_DISTANCE, f32::min)
+    }
 }
 
-pub fn generated_theme_accent(palette: &Extended, accent: ThemeAccent) -> Color {
-    generated_theme_accents(palette)[accent.index()]
+/// The hue of `color`, when it has enough chroma for a hue to be recognizable.
+fn chromatic_hue(color: Color) -> Option<f32> {
+    let oklch = to_oklch(color);
+
+    (oklch.chroma >= MIN_HUE_REFERENCE_CHROMA).then(|| oklch.hue.into_positive_degrees())
 }
 
-#[derive(Debug, Clone, Copy)]
-struct GeneratedAccentCandidate {
-    color: Color,
-    lab: Oklab,
-    hue: f32,
-    theme_affinity: f32,
-    contrast_bonus: f32,
+/// The endpoint of the accent lightness scale: near white on dark themes and near
+/// black on light themes, so the accent stays usable on any palette. It has no place
+/// in the hue placement, because at this chroma its hue cannot be told apart.
+fn endpoint_accent(palette: &Extended) -> Color {
+    let lightness = if palette.is_dark { 0.96 } else { 0.04 };
+
+    match chromatic_hue(palette.primary.base.color) {
+        // A trace of the theme's hue keeps the endpoint from looking foreign.
+        Some(hue) => accent_color(hue, lightness, ENDPOINT_ACCENT_CHROMA),
+        None => accent_color(0.0, lightness, 0.0),
+    }
 }
 
-fn generated_accent_candidate(
-    source: Color,
-    hue_offset: f32,
-    palette: &Extended,
-    harmony_references: &[(f32, f32)],
-) -> GeneratedAccentCandidate {
-    let mut oklch = Oklch::from_color(Srgb::new(source.r, source.g, source.b));
-    oklch.hue += hue_offset;
-    oklch.l = if palette.is_dark { 0.7 } else { 0.5 };
-    oklch.chroma = TARGET_ACCENT_CHROMA;
+fn accent_color(hue: f32, lightness: f32, chroma: f32) -> Color {
+    let mut oklch = Oklch::from_color(Srgb::new(0.0, 0.0, 0.0));
+    oklch.l = lightness;
+    oklch.chroma = chroma;
+    oklch.hue = OklabHue::from_degrees(hue);
 
     let rgb = gamut_mapped_srgb(oklch);
-    let color = Color {
+    Color {
         r: rgb.red,
         g: rgb.green,
         b: rgb.blue,
         a: 1.0,
-    };
-    let hue = Oklch::from_color(rgb).hue.into_positive_degrees();
-    let contrast_bonus =
-        (contrast_ratio(color, palette.background.base.color) - 1.0).clamp(0.0, 3.0) * 0.01;
-    GeneratedAccentCandidate {
-        color,
-        lab: to_oklab(color),
-        hue,
-        theme_affinity: theme_hue_affinity(hue, harmony_references),
-        contrast_bonus,
     }
 }
 
-fn candidate_score(
-    candidate: &GeneratedAccentCandidate,
-    semantic_references: &[(Oklab, f32); 6],
-    selected: &[GeneratedAccentCandidate],
-) -> f32 {
-    let semantic_collision_penalty = semantic_references
-        .iter()
-        .map(|(color, weight)| {
-            ((SEMANTIC_EXCLUSION_DISTANCE - perceptual_distance(candidate.lab, *color)).max(0.0)
-                / SEMANTIC_EXCLUSION_DISTANCE)
-                / weight
-        })
-        .sum::<f32>();
-
-    let (hue_diversity, color_diversity) = if selected.is_empty() {
-        (1.0, 0.0)
-    } else {
-        let color_clearance = selected
-            .iter()
-            .map(|selected| perceptual_distance(candidate.lab, selected.lab))
-            .fold(f32::INFINITY, f32::min);
-
-        (
-            (minimum_hue_clearance(candidate, selected) / 180.0).clamp(0.0, 1.0),
-            (color_clearance / 0.25).clamp(0.0, 1.0),
-        )
-    };
-
-    candidate.theme_affinity * THEME_AFFINITY_WEIGHT
-        + hue_diversity * HUE_DIVERSITY_WEIGHT
-        + color_diversity * COLOR_DIVERSITY_WEIGHT
-        - semantic_collision_penalty * SEMANTIC_COLLISION_WEIGHT
-        + candidate.contrast_bonus
-}
-
-fn minimum_hue_clearance(
-    candidate: &GeneratedAccentCandidate,
-    selected: &[GeneratedAccentCandidate],
-) -> f32 {
-    selected
-        .iter()
-        .map(|selected| hue_distance(candidate.hue, selected.hue))
-        .fold(180.0, f32::min)
-}
-
-fn theme_hue_references(palette: &Extended) -> Vec<(f32, f32)> {
-    [
-        (palette.primary.base.color, 1.0),
-        (palette.secondary.strong.color, 0.8),
-        (palette.success.base.color, 0.35),
-        (palette.danger.base.color, 0.35),
-        (palette.warning.base.color, 0.35),
-    ]
-    .into_iter()
-    .filter_map(|(color, weight)| {
-        let oklch = to_oklch(color);
-        (oklch.chroma > 0.02).then_some((oklch.hue.into_positive_degrees(), weight))
-    })
-    .collect()
-}
-
-fn theme_hue_affinity(hue: f32, references: &[(f32, f32)]) -> f32 {
-    references
-        .iter()
-        .map(|(reference, weight)| (1.0 - hue_distance(hue, *reference) / 180.0) * weight)
-        .fold(0.0, f32::max)
+fn candidate_hues() -> impl Iterator<Item = f32> {
+    (0..HUE_CANDIDATE_COUNT).map(|step| step as f32 * HUE_CANDIDATE_STEP)
 }
 
 fn hue_distance(first: f32, second: f32) -> f32 {
@@ -295,60 +285,6 @@ fn to_oklch(color: Color) -> Oklch {
     Oklch::from_color(Srgb::new(color.r, color.g, color.b))
 }
 
-fn to_oklab(color: Color) -> Oklab {
-    Oklab::from_color(Srgb::new(color.r, color.g, color.b))
-}
-
-fn perceptual_distance(first: Oklab, second: Oklab) -> f32 {
-    let delta_l = first.l - second.l;
-    let delta_a = first.a - second.a;
-    let delta_b = first.b - second.b;
-
-    (delta_l * delta_l + delta_a * delta_a + delta_b * delta_b).sqrt()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn built_in_accents_have_separated_hues() {
-        for theme in iced_core::Theme::ALL {
-            let accents = generated_theme_accents(theme.extended_palette());
-            let hues = accents.map(|color| to_oklch(color).hue.into_positive_degrees());
-
-            for first_index in 0..hues.len() {
-                for second_index in first_index + 1..hues.len() {
-                    assert!(
-                        hue_distance(hues[first_index], hues[second_index])
-                            >= MIN_ACCENT_HUE_SEPARATION - 0.01,
-                        "{theme:?} generated accents are too close in hue: {:?}",
-                        hues
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn built_in_accents_have_perceptual_separation() {
-        for theme in iced_core::Theme::ALL {
-            let accents = generated_theme_accents(theme.extended_palette());
-            let labs = accents.map(to_oklab);
-
-            for first_index in 0..labs.len() {
-                for second_index in first_index + 1..labs.len() {
-                    assert!(
-                        perceptual_distance(labs[first_index], labs[second_index]) >= 0.07,
-                        "{theme:?} generated accents are too close perceptually: {:?}",
-                        accents
-                    );
-                }
-            }
-        }
-    }
-}
-
 #[derive(Serialize, Deserialize)]
 struct SerTheme {
     name: String,
@@ -374,7 +310,7 @@ pub fn default_theme() -> Custom {
         Palette {
             background: Color::from_rgb8(24, 22, 22),
             text: Color::from_rgb8(197, 201, 197),
-            primary: Color::from_rgb8(200, 200, 200),
+            primary: Color::from_rgb8(169, 174, 191),
             success: Color::from_rgb8(81, 205, 160),
             danger: Color::from_rgb8(192, 80, 77),
             warning: Color::from_rgb8(238, 216, 139),
@@ -504,6 +440,29 @@ pub enum ThemeColorRole {
     Warning,
 }
 
+impl ThemeColorRole {
+    pub const ALL: &'static [Self] = &[
+        Self::Neutral,
+        Self::Secondary,
+        Self::Primary,
+        Self::Success,
+        Self::Danger,
+        Self::Warning,
+    ];
+}
+
+impl std::str::FromStr for ThemeColorRole {
+    type Err = UnknownThemeColor;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|role| role.to_string().eq_ignore_ascii_case(value))
+            .ok_or_else(|| UnknownThemeColor::Role(value.to_owned()))
+    }
+}
+
 impl std::fmt::Display for ThemeColorRole {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let label = match self {
@@ -550,6 +509,36 @@ impl std::fmt::Display for ThemeColorShade {
         formatter.write_str(label)
     }
 }
+
+impl std::str::FromStr for ThemeColorShade {
+    type Err = UnknownThemeColor;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|shade| shade.to_string().eq_ignore_ascii_case(value))
+            .ok_or_else(|| UnknownThemeColor::Shade(value.to_owned()))
+    }
+}
+
+/// A theme colour name that does not match any known role or shade.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UnknownThemeColor {
+    Role(String),
+    Shade(String),
+}
+
+impl std::fmt::Display for UnknownThemeColor {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Role(value) => write!(formatter, "unknown theme role '{value}'"),
+            Self::Shade(value) => write!(formatter, "unknown theme shade '{value}'"),
+        }
+    }
+}
+
+impl std::error::Error for UnknownThemeColor {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThemeColor {
@@ -765,12 +754,6 @@ fn from_hsl(hsl: Hsl) -> Color {
         b: b1 + m,
         a: hsl.a,
     }
-}
-
-pub fn from_hsv_degrees(h_deg: f32, s: f32, v: f32) -> Color {
-    // Hue in degrees [0,360), s,v in [0,1]
-    let hue = RgbHue::from_degrees(h_deg);
-    from_hsva(Hsva::new(hue, s, v, 1.0))
 }
 
 /// Alpha-composite a foreground color over a background.

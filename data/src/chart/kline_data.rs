@@ -75,30 +75,6 @@ impl DataPoint for KlineDataPoint {
     fn clear_trades(&mut self) {
         self.clear_trades();
     }
-
-    fn last_trade_time(&self) -> Option<UnixMs> {
-        self.last_trade_time()
-    }
-
-    fn first_trade_time(&self) -> Option<UnixMs> {
-        self.first_trade_time()
-    }
-
-    fn last_price(&self) -> Price {
-        self.kline.close
-    }
-
-    fn kline(&self) -> Option<&Kline> {
-        Some(&self.kline)
-    }
-
-    fn value_high(&self) -> Price {
-        self.kline.high
-    }
-
-    fn value_low(&self) -> Price {
-        self.kline.low
-    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -165,6 +141,18 @@ pub struct KlineTrades {
     pub poc: Option<PointOfControl>,
 }
 
+/// Aggregated directional trade quantities and counts for one footprint.
+///
+/// Keeping this summary alongside the grouped trades makes the footprint the
+/// single source of truth for indicator inputs as well as rendering.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TradeSummary {
+    pub buy_count: u64,
+    pub sell_count: u64,
+    pub buy_qty: Qty,
+    pub sell_qty: Qty,
+}
+
 impl KlineTrades {
     pub fn new() -> Self {
         Self {
@@ -179,6 +167,22 @@ impl KlineTrades {
 
     pub fn last_trade_t(&self) -> Option<UnixMs> {
         self.trades.values().map(|group| group.last_time).max()
+    }
+
+    pub fn trade_summary(&self) -> Option<TradeSummary> {
+        if self.trades.is_empty() {
+            return None;
+        }
+
+        let mut summary = TradeSummary::default();
+        for group in self.trades.values() {
+            summary.buy_count = summary.buy_count.saturating_add(group.buy_count as u64);
+            summary.sell_count = summary.sell_count.saturating_add(group.sell_count as u64);
+            summary.buy_qty += group.buy_qty;
+            summary.sell_qty += group.sell_qty;
+        }
+
+        Some(summary)
     }
 
     /// Add trade to the bin at the step multiple computed with side-based rounding.

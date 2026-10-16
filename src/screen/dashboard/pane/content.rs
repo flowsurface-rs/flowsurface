@@ -3,20 +3,16 @@ pub(super) mod kline;
 pub(super) mod ladder;
 pub(super) mod timesales;
 
-use super::state::{Action, Event, Message, settings_message};
+use super::state::{Event, Message};
 use crate::{
-    screen::sidebar::{
-        kline_indicators,
-        pane_settings::{heatmap_shader_cfg_view, ladder_cfg_view, timesales_cfg_view},
+    screen::sidebar::pane_settings::{
+        self, heatmap_shader_cfg_view, ladder_cfg_view, timesales_cfg_view,
     },
     theme::ThemeAccents,
     widget::inspector::{InspectorContent, InspectorSection},
 };
 use data::{
-    chart::{
-        Basis,
-        kline::{IndicatorUnsupportedReason, KlineIndicator, KlineStudy},
-    },
+    chart::Basis,
     layout::pane::{ContentKind, Settings, VisualConfig},
 };
 use exchange::{TickerInfo, Timeframe};
@@ -27,21 +23,9 @@ use iced::{
 use std::time::Instant;
 
 use heatmap::HeatmapShader;
-use kline::{Action as KlineAction, ChartCommand, FootprintCommand, KlineChart};
+use kline::{Action as KlineAction, ChartCommand, KlineChart};
 use ladder::Ladder;
 use timesales::TimeAndSales;
-
-pub(super) enum DueTick {
-    /// No immediate content work is due, the pane may run its regular invalidation.
-    ///
-    /// e.g. a viewport fetch deadline has not elapsed.
-    NotDue,
-    /// Immediate content work was processed.
-    ///
-    /// e.g. a due viewport fetch was planned.
-    /// `None` means planning found no request and still skips regular invalidation.
-    Handled(Option<Action>),
-}
 
 #[derive(Default)]
 pub enum Content {
@@ -54,7 +38,6 @@ pub enum Content {
     Kline {
         chart: Option<Box<KlineChart>>,
         layout: Option<Box<data::chart::kline::Config>>,
-        kline_indicators: Box<kline_indicators::State>,
     },
     TimeAndSales(Option<Box<TimeAndSales>>),
     Ladder(Option<Box<Ladder>>),
@@ -66,17 +49,10 @@ impl Content {
         tickers: &[TickerInfo],
         settings: &Settings,
     ) -> Self {
-        let kline_indicators = match current_content {
-            Content::Kline {
-                kline_indicators, ..
-            } => kline_indicators.clone(),
-            _ => Box::new(kline_indicators::State::default()),
-        };
         let Some(_base_ticker) = tickers.first().copied() else {
             return Content::Kline {
                 chart: None,
                 layout: None,
-                kline_indicators,
             };
         };
 
@@ -97,15 +73,19 @@ impl Content {
             |layout| KlineChart::new_with_tickers_and_config(basis, tickers, layout),
         );
         if let Some(multiplier) = settings.tick_multiply {
-            let _ = chart.apply_command(ChartCommand::Footprint(
-                FootprintCommand::SetTickMultiplier(multiplier),
-            ));
+            let _ = chart.apply_command(ChartCommand::SetFootprintTickMultiplier { multiplier });
+        }
+        if let Content::Kline {
+            chart: Some(previous),
+            ..
+        } = current_content
+        {
+            chart.preserve_indicator_browser_state_from(previous);
         }
 
         Content::Kline {
             chart: Some(Box::new(chart)),
             layout: None,
-            kline_indicators,
         }
     }
 
@@ -115,7 +95,6 @@ impl Content {
             ContentKind::CandlestickChart => Content::Kline {
                 chart: None,
                 layout: None,
-                kline_indicators: Box::new(kline_indicators::State::default()),
             },
             ContentKind::ShaderHeatmap => Content::ShaderHeatmap {
                 chart: None,
@@ -159,15 +138,12 @@ impl Content {
         }
     }
 
-    /// Processes immediate content work before the pane's regular invalidation.
-    pub(super) fn take_due_tick(&mut self, now: Instant) -> DueTick {
-        match self {
-            Content::Kline {
-                chart: Some(chart), ..
-            } if chart.viewport_fetch_due(now) => {
-                DueTick::Handled(chart.take_viewport_fetch_action(now).map(Action::Chart))
-            }
-            _ => DueTick::NotDue,
+    pub(super) fn redraw_data_if_due(&mut self, now: Instant) {
+        if let Content::Kline {
+            chart: Some(chart), ..
+        } = self
+        {
+            chart.redraw_data_if_due(now);
         }
     }
 
@@ -242,42 +218,6 @@ impl Content {
         }
     }
 
-    pub fn allows_kline_indicator(&self, indicator: KlineIndicator) -> bool {
-        matches!(self, Content::Kline { chart: Some(_), .. })
-            && self.kline_indicator_unavailable_reason(indicator).is_none()
-    }
-
-    pub fn kline_indicator_unavailable_reason(
-        &self,
-        indicator: KlineIndicator,
-    ) -> Option<IndicatorUnsupportedReason> {
-        let Content::Kline {
-            chart: Some(chart), ..
-        } = self
-        else {
-            return None;
-        };
-
-        if let Some(reason) = chart.indicator_unsupported_reason(indicator) {
-            return Some(reason);
-        }
-
-        if !chart.trade_data_enabled() && chart.indicator_requires_trade_data(indicator) {
-            return Some(IndicatorUnsupportedReason::MissingRequiredInput);
-        }
-
-        None
-    }
-
-    pub fn allows_kline_study(&self, study: KlineStudy) -> bool {
-        matches!(
-            self,
-            Content::Kline {
-                chart: Some(chart), ..
-            } if chart.study_is_available(study)
-        )
-    }
-
     pub(super) fn pane_settings_content<'a>(
         &'a self,
         pane: pane_grid::Pane,
@@ -298,8 +238,7 @@ impl Content {
                 content.set_footer(
                     row![
                         space::horizontal(),
-                        button("Sync all")
-                            .on_press(Message::PaneEvent(pane, Event::SyncKlineSettings,)),
+                        button("Sync all").on_press(Message::SyncKlineSettings(pane)),
                     ]
                     .align_y(Alignment::Center),
                 );
@@ -337,34 +276,6 @@ impl Content {
             | Self::ShaderHeatmap { chart: None, .. } => None,
         }
     }
-
-    pub(super) fn chart_settings_content<'a>(
-        &'a self,
-        pane: pane_grid::Pane,
-        theme_accents: ThemeAccents,
-    ) -> Option<InspectorContent<'a, Message>> {
-        match self {
-            Self::Kline {
-                chart: Some(chart), ..
-            } => chart
-                .contextual_settings_section(theme_accents)
-                .map(|section| {
-                    let section = section.map(move |message| {
-                        Message::PaneEvent(pane, Event::KlineInteraction(message))
-                    });
-                    let mut content = InspectorContent::new(vec![section]);
-
-                    if let Some(footer) = chart.contextual_settings_footer() {
-                        content.set_footer(footer.map(move |message| {
-                            Message::PaneEvent(pane, Event::KlineInteraction(message))
-                        }));
-                    }
-
-                    content
-                }),
-            _ => None,
-        }
-    }
 }
 
 impl std::fmt::Display for Content {
@@ -383,5 +294,14 @@ impl PartialEq for Content {
                 | (Content::TimeAndSales(_), Content::TimeAndSales(_))
                 | (Content::Ladder(_), Content::Ladder(_))
         )
+    }
+}
+
+fn settings_message(pane: pane_grid::Pane, message: pane_settings::Message) -> Message {
+    match message {
+        pane_settings::Message::VisualConfigChanged { config, sync_all } => {
+            Message::VisualConfigChanged(pane, config, sync_all)
+        }
+        message => Message::PaneEvent(pane, Event::Settings(message)),
     }
 }

@@ -42,10 +42,10 @@ impl Default for WindowScaleFactor {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct PixelRatio(f32);
+pub struct PixelRatio(f32);
 
 impl PixelRatio {
-    fn from_product(value: f32) -> Self {
+    pub(crate) fn from_product(value: f32) -> Self {
         Self(positive_scale_or_default(value))
     }
 

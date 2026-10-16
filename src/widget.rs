@@ -1,19 +1,18 @@
 use super::Element;
 use crate::{
-    screen::ConfirmDialog,
-    style::{self, Icon, icon_text, modal_container},
+    style::{self, Icon, icon_text},
     theme::ThemeAccents,
 };
-use data::config::theme::{ThemeColorRole, ThemeColorShade, darken, lighten, mix_color};
+use data::config::theme::{
+    ACCENT_COUNT, ThemeColorRole, ThemeColorShade, darken, lighten, mix_color,
+};
 use data::{chart::kline::ThemeAccent, config::theme::ThemeColor};
 use iced::{
-    Alignment::{self, Center},
-    Color,
-    Length::Fill,
-    Theme, border, padding,
+    Alignment, Color,
+    Length::{self, Fill},
+    Theme, padding,
     widget::{
-        button, column, container, row, scrollable, slider, space, text as iced_text,
-        tooltip::Position,
+        button, column, container, row, scrollable, space, text as iced_text, tooltip::Position,
     },
 };
 
@@ -122,58 +121,42 @@ pub fn scrollable_content<'a, Message: 'a>(
     .into()
 }
 
-pub fn confirm_dialog_container<'a, Message: 'a + Clone>(
-    confirm_dialog: ConfirmDialog<Message>,
-    on_cancel: Message,
-) -> Element<'a, Message> {
-    let dialog = confirm_dialog.message;
-    let on_confirm = *confirm_dialog.on_confirm;
-    let on_confirm_msg = confirm_dialog.on_confirm_btn_text;
-
-    container(
-        column![
-            iced_text(dialog).size(crate::style::text_size::SECTION),
-            row![
-                button(iced_text("Cancel"))
-                    .style(|theme, status| style::button::transparent(theme, status, false))
-                    .on_press(on_cancel),
-                button(iced_text(on_confirm_msg.unwrap_or("Confirm".to_string())))
-                    .on_press(on_confirm),
-            ]
-            .spacing(8),
-        ]
-        .align_x(Alignment::Center)
-        .spacing(16),
-    )
-    .padding(24)
-    .style(style::dashboard_modal)
-    .into()
-}
-
-pub fn classic_slider_row<'a, Message>(
-    label: iced::widget::Text<'a>,
-    slider: Element<'a, Message>,
-    placeholder: Option<iced::widget::Text<'a>>,
+pub fn classic_slider_row<'a, T, Message>(
+    label: Option<iced::widget::Text<'a>>,
+    range: std::ops::RangeInclusive<T>,
+    current: T,
+    on_change: impl Fn(T) -> Message + 'a,
+    format_value: impl Fn(&T) -> String,
+    step: Option<T>,
 ) -> Element<'a, Message>
 where
+    T: 'static + Copy + PartialOrd + Into<f64> + From<u8> + num_traits::FromPrimitive,
     Message: Clone + 'a,
 {
-    let slider = if let Some(placeholder) = placeholder {
-        column![slider, placeholder]
-            .spacing(2)
-            .align_x(Alignment::Center)
-    } else {
-        column![slider]
+    let mut slider = iced::widget::slider(range, current, on_change).width(Fill);
+
+    if let Some(step) = step {
+        slider = slider.step(step);
+    }
+
+    let slider = column![slider, text::emphasis(format_value(&current))]
+        .width(Length::Fill)
+        .spacing(2)
+        .align_x(Alignment::Center);
+    let content = match label {
+        Some(label) => row![
+            container(label.wrapping(iced::widget::text::Wrapping::Word),)
+                .width(Length::Shrink)
+                .max_width(80.0),
+            slider,
+        ]
+        .spacing(8),
+        None => row![slider],
     };
 
-    container(
-        row![label, slider]
-            .align_y(Alignment::Center)
-            .spacing(8)
-            .padding(8),
-    )
-    .style(style::modal_container)
-    .into()
+    container(content.align_y(Alignment::Center).padding(8))
+        .style(style::modal_container)
+        .into()
 }
 
 pub fn button_with_tooltip<'a, M: Clone + 'a>(
@@ -237,68 +220,6 @@ where
         .into()
 }
 
-pub fn labeled_slider<'a, T, Message: Clone + 'static>(
-    label: impl iced_text::IntoFragment<'a>,
-    range: std::ops::RangeInclusive<T>,
-    current: T,
-    on_change: impl Fn(T) -> Message + 'a,
-    to_string: impl Fn(&T) -> String,
-    step: Option<T>,
-) -> Element<'a, Message>
-where
-    T: 'static + Copy + PartialOrd + Into<f64> + From<u8> + num_traits::FromPrimitive,
-{
-    let mut slider = iced::widget::slider(range, current, on_change)
-        .width(Fill)
-        .height(24)
-        .style(|theme: &Theme, status| {
-            let palette = theme.extended_palette();
-
-            slider::Style {
-                rail: slider::Rail {
-                    backgrounds: (
-                        palette.background.strong.color.into(),
-                        Color::TRANSPARENT.into(),
-                    ),
-                    width: 24.0,
-                    border: border::rounded(2),
-                },
-                handle: slider::Handle {
-                    shape: slider::HandleShape::Rectangle {
-                        width: 2,
-                        border_radius: 2.0.into(),
-                    },
-                    background: match status {
-                        iced::widget::slider::Status::Active => {
-                            palette.background.strong.color.into()
-                        }
-                        iced::widget::slider::Status::Hovered => palette.primary.base.color.into(),
-                        iced::widget::slider::Status::Dragged => palette.primary.weak.color.into(),
-                    },
-                    border_width: 0.0,
-                    border_color: Color::TRANSPARENT,
-                },
-            }
-        });
-
-    if let Some(v) = step {
-        slider = slider.step(v);
-    }
-
-    iced::widget::stack![
-        container(slider).style(modal_container),
-        row![
-            iced_text(label),
-            space::horizontal(),
-            iced_text(to_string(&current))
-        ]
-        .padding([0, 10])
-        .height(Fill)
-        .align_y(Center),
-    ]
-    .into()
-}
-
 pub fn theme_color_control<'a, Message>(
     selected: ThemeColor,
     theme_accents: ThemeAccents,
@@ -330,13 +251,13 @@ where
             )
         }));
 
-    row(color_choices).spacing(4).into()
+    row(color_choices).spacing(2).into()
 }
 
 pub fn resolve_theme_color(
     color: ThemeColor,
     palette: &iced::theme::palette::Extended,
-    generated_accents: &[Color; 6],
+    generated_accents: &[Color; ACCENT_COUNT],
 ) -> Color {
     let base = color.accent.map_or_else(
         || match color.role {

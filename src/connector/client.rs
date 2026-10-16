@@ -201,7 +201,7 @@ impl ServerClient {
             log::warn!("Server arrow request failed: {e}");
             AdapterError::FetchError(FetchError::new(
                 "server arrow request failed".to_string(),
-                "External data source error. Check logs for details.",
+                "Market data source error. Check logs for details.",
             ))
         })?;
 
@@ -232,7 +232,7 @@ impl ServerClient {
             AdapterError::ParseError(format!("server (arrow): {e}"))
         })?;
 
-        parse_arrow_trades(bytes, &ticker_info)
+        parse_arrow_trades(bytes, &ticker_info, from, to)
     }
 }
 
@@ -315,6 +315,8 @@ pub struct ParsedArrowBatch {
 fn parse_arrow_trades(
     data: bytes::Bytes,
     ticker_info: &TickerInfo,
+    from: UnixMs,
+    to: UnixMs,
 ) -> Result<ParsedArrowBatch, AdapterError> {
     let reader = StreamReader::try_new(std::io::Cursor::new(data), None)
         .map_err(|e| AdapterError::ParseError(format!("arrow stream open: {e}")))?;
@@ -420,11 +422,7 @@ fn parse_arrow_trades(
         }
     }
 
-    // Fast path: if no nulls were encountered, last_ts is simply the
-    // timestamp of the last valid trade.
-    if last_ts.is_none() {
-        last_ts = trades.last().map(|t| t.time);
-    }
+    last_ts = last_ts.max(trades.last().map(|trade| trade.time));
 
     if skipped_total > 0 {
         log::warn!(
@@ -436,7 +434,7 @@ fn parse_arrow_trades(
 
     if trades.is_empty() {
         log::info!(
-            "Arrow stream contained no valid trades for {} ({}) (raw rows: {raw_row_count})",
+            "Arrow stream contained no valid trades for {} ({}) in range [{from}, {to}) (raw rows: {raw_row_count})",
             ticker_info.ticker,
             ticker_info.exchange(),
         );

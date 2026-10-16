@@ -1,3 +1,5 @@
+use super::toolbar::{FloatingToolbarEvent, FloatingToolbarState};
+use super::{FLOATING_TOOLBAR_HANDLE_WIDTH, FLOATING_TOOLBAR_HEIGHT};
 use crate::style;
 use crate::theme::ThemeAccents;
 use crate::widget::chart::kline::drawing::{
@@ -6,21 +8,22 @@ use crate::widget::chart::kline::drawing::{
     DrawingTool, DrawingX, KlineWidgetDrawingEvent, MAX_DRAWING_STROKE_WIDTH,
     MIN_DRAWING_STROKE_WIDTH, MeasureState,
 };
-use crate::widget::{color_swatch_button, labeled_slider, tooltip};
+use crate::widget::{color_swatch_button, tooltip};
 use data::chart::kline::DrawingSettings;
 use data::chart::kline::composition::{ChartComposition, PanelId, PanelRole};
 use data::config::theme::{ThemeAccent, ThemeColor, ThemeColorRole, ThemeColorShade};
 
-use iced::widget::{checkbox, pick_list, row, tooltip::Position as TooltipPosition};
+use iced::widget::{checkbox, pick_list, row, text, tooltip::Position as TooltipPosition};
 use iced::{Element, Length};
 
 const SIDEBAR_WIDTH: f32 = 36.0;
 const OBJECT_LIST_SIDEBAR_WIDTH: f32 = 196.0;
+pub(super) const DRAWING_SIDEBAR_PADDING: f32 = 4.0;
 const DRAWING_STROKE_WIDTH_STEP: f32 = 0.5;
 const DRAWING_FILL_ALPHA: f32 = 0.16;
 const DRAWING_TOOLBAR_SHADE_WIDTH: f32 = 76.0;
 const DRAWING_TOOLBAR_STYLE_TARGET_WIDTH: f32 = 72.0;
-const DRAWING_TOOLBAR_WIDTH_CONTROL_WIDTH: f32 = 96.0;
+const DRAWING_TOOLBAR_WIDTH_CONTROL_WIDTH: f32 = 64.0;
 const DRAWING_TOOLBAR_DIVIDER_HEIGHT: f32 = 24.0;
 
 fn ensure_box_fill_color(style: &mut DrawingStyle) {
@@ -96,20 +99,27 @@ where
     let current_value = current.representative().unwrap_or(MIN_DRAWING_STROKE_WIDTH);
     let is_mixed = current.is_mixed();
 
-    labeled_slider(
-        "Width",
+    let tooltip = if is_mixed {
+        "Width: Mixed".to_string()
+    } else {
+        format!("Width: {current_value}")
+    };
+    let slider = iced::widget::slider(
         MIN_DRAWING_STROKE_WIDTH..=MAX_DRAWING_STROKE_WIDTH,
         current_value,
         move |width| on_sidebar_message(DrawingMessage::SetSelectedDrawingStrokeWidth(width)),
-        move |value| {
-            if is_mixed {
-                "Mixed".to_string()
-            } else {
-                format!("{value:.1}")
-            }
-        },
-        Some(DRAWING_STROKE_WIDTH_STEP),
     )
+    .step(DRAWING_STROKE_WIDTH_STEP)
+    .width(Length::Fill);
+
+    iced::widget::tooltip(
+        slider,
+        iced::widget::container(text(tooltip))
+            .style(style::tooltip)
+            .padding(8),
+        TooltipPosition::Top,
+    )
+    .into()
 }
 
 fn drawing_extend_checkbox<'a, Message>(
@@ -238,6 +248,139 @@ impl DrawingUpdate {
                     visual_changed: true
                 }
         )
+    }
+}
+
+#[derive(Default)]
+pub(super) struct DrawingState {
+    pub(super) tools: DrawingTools,
+    pub(super) floating_toolbar: FloatingToolbarState,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Event {
+    Tools(DrawingMessage),
+    FloatingToolbar(FloatingToolbarEvent),
+}
+
+impl DrawingState {
+    pub(super) fn update(&mut self, event: Event, settings: &mut DrawingSettings) -> DrawingUpdate {
+        match event {
+            Event::Tools(message) => self.tools.update(message, settings),
+            Event::FloatingToolbar(event) => {
+                self.floating_toolbar.update(event);
+                DrawingUpdate::None
+            }
+        }
+    }
+
+    pub(super) fn view<'a>(&'a self, theme_accents: ThemeAccents) -> iced::Element<'a, Event> {
+        let floating_toolbar = iced::widget::responsive(move |overlay_size| {
+            self.tools
+                .selected_toolbar_view(theme_accents, Event::Tools)
+                .map(|controls| self.floating_toolbar_content(controls, overlay_size))
+                .unwrap_or_else(|| self.empty_floating_toolbar_content())
+        });
+
+        let mut overlay = iced::widget::Stack::new()
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .push(floating_toolbar);
+
+        if self.floating_toolbar.is_dragging {
+            overlay = overlay.push(iced::widget::responsive(move |overlay_size| {
+                self.floating_toolbar_drag_capture(overlay_size)
+            }));
+        }
+
+        overlay.into()
+    }
+
+    pub(super) fn sidebar_view<'a>(
+        &'a self,
+        composition: &'a ChartComposition,
+    ) -> iced::Element<'a, Event> {
+        self.tools
+            .sidebar_view(composition, Event::Tools)
+            .padding(DRAWING_SIDEBAR_PADDING)
+            .into()
+    }
+
+    fn empty_floating_toolbar_content<'a>(&self) -> iced::Element<'a, Event> {
+        iced::widget::container(iced::widget::space::horizontal())
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    }
+
+    fn floating_toolbar_content<'a>(
+        &'a self,
+        controls: iced::Element<'a, Event>,
+        overlay_size: iced::Size,
+    ) -> iced::Element<'a, Event> {
+        let drag_handle = iced::widget::mouse_area(
+            iced::widget::container(style::icon_text(style::Icon::DragHandle, 12))
+                .width(FLOATING_TOOLBAR_HANDLE_WIDTH)
+                .height(Length::Fill)
+                .align_x(iced::alignment::Horizontal::Center)
+                .align_y(iced::alignment::Vertical::Center),
+        )
+        .on_move(|cursor| Event::FloatingToolbar(FloatingToolbarEvent::HandleMoved(cursor)))
+        .on_press(Event::FloatingToolbar(FloatingToolbarEvent::DragStarted))
+        .interaction(iced::mouse::Interaction::Grab);
+
+        let scrollable_controls = iced::widget::scrollable::Scrollable::with_direction(
+            controls,
+            iced::widget::scrollable::Direction::Horizontal(
+                iced::widget::scrollable::Scrollbar::new()
+                    .width(6)
+                    .scroller_width(6),
+            ),
+        )
+        .anchor_left()
+        .width(Length::Shrink)
+        .height(Length::Fill)
+        .style(style::scroll_bar);
+        let toolbar = iced::widget::mouse_area(
+            iced::widget::container(iced::widget::row![drag_handle, scrollable_controls])
+                .style(style::chart_toolbar)
+                .width(Length::Shrink)
+                .height(FLOATING_TOOLBAR_HEIGHT),
+        )
+        .interaction(iced::mouse::Interaction::Idle);
+        let position = self.floating_toolbar.position_within(overlay_size);
+
+        iced::widget::container(
+            iced::widget::column![
+                iced::widget::space::vertical().height(position.y),
+                iced::widget::row![iced::widget::space::horizontal().width(position.x), toolbar,],
+            ]
+            .width(Length::Fill)
+            .height(Length::Fill),
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+    }
+
+    fn floating_toolbar_drag_capture<'a>(
+        &'a self,
+        overlay_size: iced::Size,
+    ) -> iced::Element<'a, Event> {
+        iced::widget::mouse_area(
+            iced::widget::space::horizontal()
+                .width(Length::Fill)
+                .height(Length::Fill),
+        )
+        .on_move(move |cursor| {
+            Event::FloatingToolbar(FloatingToolbarEvent::DragMoved {
+                cursor,
+                overlay_size,
+            })
+        })
+        .on_release(Event::FloatingToolbar(FloatingToolbarEvent::DragFinished))
+        .interaction(iced::mouse::Interaction::Grabbing)
+        .into()
     }
 }
 
@@ -2043,135 +2186,6 @@ impl DrawingTools {
             }
             DrawingObject::HorizontalLine { panel_id, .. } => panel_exists(*panel_id),
             DrawingObject::VerticalLine { .. } => true,
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use data::aggr::TickCount;
-    use data::chart::Basis;
-    use data::chart::kline::YUnit;
-    use exchange::{Timeframe, UnixMs};
-
-    fn anchor(x: DrawingX, y: i64) -> DrawingAnchor {
-        DrawingAnchor {
-            panel_id: PanelId(1),
-            x,
-            y_unit: YUnit(y),
-        }
-    }
-
-    #[test]
-    fn drawing_sessions_keep_time_storage_and_prune_both_collections() {
-        let settings = DrawingSettings::default();
-        let time = anchor(DrawingX::Time(UnixMs::new(60_000)), 100);
-        let tick = anchor(DrawingX::Tick(30.0), 100);
-        let mut tools = DrawingTools {
-            active_tool: DrawingTool::HorizontalLine,
-            ..DrawingTools::default()
-        };
-        assert!(tools.start_drawing_from_anchor(time, &settings));
-        let saved = tools.time_drawings().to_vec();
-        tools.set_basis(Basis::Tick(TickCount(10)));
-        assert!(tools.snapshot().entities.is_empty());
-        assert_eq!(tools.time_drawings(), saved);
-        assert!(!tools.start_drawing_from_anchor(time, &settings));
-        assert!(!tools.start_drawing_from_anchor(anchor(DrawingX::Tick(f64::NAN), 100), &settings));
-        assert!(tools.start_drawing_from_anchor(tick, &settings));
-        let both = tools.edit_state();
-        tools.set_basis(Basis::Tick(TickCount(20)));
-        assert_eq!(tools.edit_state(), both);
-        assert!(tools.snapshot().selected_drawings.is_empty());
-        assert!(tools.prune_panel_drawings(PanelId(1)));
-        assert!(tools.snapshot().entities.is_empty());
-        assert!(tools.time_drawings().is_empty());
-        tools.restore_edit_state(both);
-        assert_eq!(tools.snapshot().entities.len(), 1);
-        assert_eq!(tools.time_drawings(), saved);
-        tools.set_basis(Basis::Time(Timeframe::M1));
-        assert_eq!(tools.snapshot().entities, saved);
-        tools.set_basis(Basis::Time(Timeframe::M5));
-        assert_eq!(tools.snapshot().entities, saved);
-        tools.set_basis(Basis::Tick(TickCount(10)));
-        assert!(tools.snapshot().entities.is_empty());
-    }
-
-    #[test]
-    fn drawing_tools_edit_all_shapes_in_both_coordinate_spaces() {
-        for tick_mode in [false, true] {
-            let x = |position| {
-                if tick_mode {
-                    DrawingX::Tick(position as f64)
-                } else {
-                    DrawingX::Time(UnixMs::new(position))
-                }
-            };
-            for tool in [
-                DrawingTool::Trendline,
-                DrawingTool::Box,
-                DrawingTool::HorizontalLine,
-                DrawingTool::VerticalLine,
-            ] {
-                let mut tools = DrawingTools::default();
-                if tick_mode {
-                    tools.set_basis(Basis::Tick(TickCount(20)));
-                }
-                tools.active_tool = tool;
-                let settings = DrawingSettings {
-                    horizontal_line_ray: true,
-                    ..Default::default()
-                };
-                assert!(tools.start_drawing_from_anchor(anchor(x(30), 100), &settings));
-                if tools.drawing_draft().is_some() {
-                    assert!(tools.update_drawing_draft_anchor(anchor(x(60), 200)));
-                    assert!(tools.commit_drawing_draft(anchor(x(60), 200)).is_some());
-                }
-                let original = tools.drawings[0].object.clone();
-                let id = tools.drawings[0].id;
-                let origin = anchor(x(40), 100);
-                let current = anchor(x(60), 110);
-                assert!(tools.start_drawing_drag(
-                    id,
-                    DrawingDragTarget::Translate,
-                    DrawingDragOperation::Move,
-                    origin
-                ));
-                assert!(tools.update_drawing_drag(id, DrawingDragTarget::Translate, current));
-                assert_eq!(
-                    tools.drawings[0].object,
-                    original.translated(origin, current).unwrap()
-                );
-                assert!(tools.finish_drawing_drag(id));
-                let handle = match tool {
-                    DrawingTool::Trendline => {
-                        Some(data::chart::kline::drawing::DrawingHandleKind::TrendlineStart)
-                    }
-                    DrawingTool::Box => {
-                        Some(data::chart::kline::drawing::DrawingHandleKind::BoxTopLeft)
-                    }
-                    DrawingTool::HorizontalLine => {
-                        Some(data::chart::kline::drawing::DrawingHandleKind::HorizontalLineStart)
-                    }
-                    _ => None,
-                };
-                if let Some(handle) = handle {
-                    let target = DrawingDragTarget::Handle(handle);
-                    assert!(tools.start_drawing_drag(
-                        id,
-                        target,
-                        DrawingDragOperation::Move,
-                        origin
-                    ));
-                    assert!(tools.update_drawing_drag(id, target, current));
-                    assert!(tools.finish_drawing_drag(id));
-                }
-                assert!(tools.measure_click(origin));
-                assert!(tools.measure_move(current));
-                assert!(tools.measure_click(current));
-                assert!(matches!(tools.measure, Some(DrawingMeasure::Committed(_))));
-            }
         }
     }
 }

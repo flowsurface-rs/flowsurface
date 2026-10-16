@@ -168,11 +168,10 @@ impl GridRing {
             // Map price -> y bin (view-relative around base_price).
             let dy_bins: i64 = self.price_delta_y_bins(*price, base_price, step_units);
 
-            let y_i64 = half_h + dy_bins;
-            if y_i64 < 0 || y_i64 >= self.tex_h as i64 {
+            let Some(y) = Self::texture_y_index(half_h, dy_bins, self.tex_h) else {
                 continue;
-            }
-            let y = y_i64 as usize;
+            };
+            let y = y as usize;
 
             for run in runs.iter() {
                 // Overlap run with [oldest_time, latest_time+aggr)
@@ -309,14 +308,14 @@ impl GridRing {
         }
 
         let step_units = step.units.max(1);
-        let recenter_threshold_bins: i64 = (self.tex_h as i64) / 4;
+        let recenter_threshold_bins: u64 = (self.tex_h as u64) / 4;
 
         match self.y_anchor {
             None => self.y_anchor = Some(recenter_target),
             Some(anchor) => {
                 let delta_bins = self.price_delta_y_bins(recenter_target, anchor, step_units);
 
-                if delta_bins.unsigned_abs() as i64 > recenter_threshold_bins.max(1) {
+                if delta_bins.unsigned_abs() > recenter_threshold_bins.max(1) {
                     self.y_anchor = Some(recenter_target);
                     self.clear_all();
                     self.last_bucket = None;
@@ -381,11 +380,16 @@ impl GridRing {
     fn price_delta_y_bins(&self, price: Price, anchor: Price, step_units: i64) -> i64 {
         let delta_steps = {
             let step_units = step_units.max(1);
-            (price.units - anchor.units).div_euclid(step_units)
+            price.saturating_sub(anchor).units.div_euclid(step_units)
         };
 
         let steps_per_y_bin = self.steps_per_y_bin.max(1);
         delta_steps / steps_per_y_bin
+    }
+
+    fn texture_y_index(half_h: i64, delta_bins: i64, tex_h: u32) -> Option<u32> {
+        let y = half_h.checked_add(delta_bins)?;
+        (0..i64::from(tex_h)).contains(&y).then_some(y as u32)
     }
 
     /// Map an absolute bucket index to the ring texture x coordinate.
@@ -449,9 +453,9 @@ impl GridRing {
 
         let delta_bins = self
             .price_delta_y_bins(target, anchor, step_units)
-            .unsigned_abs() as i64;
+            .unsigned_abs();
 
-        let margin_bins = ((tex_h as f32) * RECENTER_Y_MARGIN_FRAC).round().max(1.0) as i64;
+        let margin_bins = ((tex_h as f32) * RECENTER_Y_MARGIN_FRAC).round().max(1.0) as u64;
 
         delta_bins > margin_bins
     }
@@ -590,17 +594,15 @@ impl GridRing {
             let q = qty_sum.to_f32_lossy();
             let dy_bins = self.price_delta_y_bins(rounded_price, anchor, step_units);
 
-            let y_i64 = half_h + dy_bins;
-            if y_i64 < 0 || y_i64 >= self.tex_h as i64 {
+            let Some(y) = Self::texture_y_index(half_h, dy_bins, self.tex_h) else {
                 return;
-            }
+            };
 
             let q_u32 = (q * qty_scale).round().clamp(0.0, u32::MAX as f32) as u32;
             if q_u32 == 0 {
                 return;
             }
 
-            let y = y_i64 as u32;
             let idx = (y as usize) * w + x_usize;
 
             if is_bid {

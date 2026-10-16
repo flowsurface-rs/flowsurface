@@ -53,6 +53,10 @@ pub mod text_color {
     pub fn muted(theme: &Theme) -> Style {
         from_color(theme.extended_palette().background.weaker.text)
     }
+
+    pub fn secondary(theme: &Theme) -> Style {
+        from_color(theme.extended_palette().secondary.strong.color)
+    }
 }
 
 /// Icon glyph code points for the `icons` font (`assets/fonts/icons.ttf`).
@@ -420,6 +424,27 @@ pub mod button {
         }
     }
 
+    pub fn tooltip_indicator(theme: &Theme, status: Status) -> Style {
+        let palette = theme.extended_palette();
+        let accent = palette.secondary.base.color;
+
+        Style {
+            text_color: accent,
+            border: Border {
+                width: 1.0,
+                color: accent.scale_alpha(0.75),
+                radius: 3.0.into(),
+            },
+            background: match status {
+                Status::Active => Some(accent.scale_alpha(0.1).into()),
+                Status::Pressed => Some(accent.scale_alpha(0.3).into()),
+                Status::Hovered => Some(accent.scale_alpha(0.2).into()),
+                Status::Disabled => Some(palette.background.weakest.color.into()),
+            },
+            ..Default::default()
+        }
+    }
+
     pub fn text_link(theme: &Theme, status: Status) -> Style {
         let palette = theme.extended_palette();
 
@@ -688,7 +713,7 @@ pub fn chart_sidebar_container(theme: &Theme) -> Style {
     }
 }
 
-pub fn chart_toolbar_container(theme: &Theme) -> Style {
+pub fn chart_toolbar(theme: &Theme) -> Style {
     let palette = theme.extended_palette();
 
     Style {
@@ -697,6 +722,26 @@ pub fn chart_toolbar_container(theme: &Theme) -> Style {
         border: Border {
             width: 1.0,
             color: palette.background.strong.color,
+            radius: 4.0.into(),
+        },
+        shadow: Shadow {
+            offset: iced::Vector { x: 0.0, y: 0.0 },
+            blur_radius: 8.0,
+            color: Color::BLACK.scale_alpha(if palette.is_dark { 0.8 } else { 0.2 }),
+        },
+        snap: true,
+    }
+}
+
+pub fn chart_info_tooltip(theme: &Theme) -> Style {
+    let palette = theme.extended_palette();
+
+    Style {
+        text_color: Some(palette.primary.weak.text),
+        background: Some(palette.primary.weak.color.into()),
+        border: Border {
+            width: 1.0,
+            color: palette.primary.strong.color,
             radius: 4.0.into(),
         },
         shadow: Shadow {
@@ -884,6 +929,17 @@ pub fn split_ruler(theme: &Theme) -> iced::widget::rule::Style {
 
     iced::widget::rule::Style {
         color: palette.background.strong.color.scale_alpha(0.25),
+        radius: iced::border::Radius::default(),
+        fill_mode: iced::widget::rule::FillMode::Full,
+        snap: true,
+    }
+}
+
+pub fn tab_ruler(theme: &Theme) -> iced::widget::rule::Style {
+    let palette = theme.extended_palette();
+
+    iced::widget::rule::Style {
+        color: palette.background.strong.color.scale_alpha(0.5),
         radius: iced::border::Radius::default(),
         fill_mode: iced::widget::rule::FillMode::Full,
         snap: true,

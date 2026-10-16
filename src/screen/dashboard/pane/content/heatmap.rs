@@ -699,6 +699,10 @@ impl HeatmapShader {
             exchange::unit::qty::volume_size_unit() == exchange::SizeUnit::Quote;
         let order_size_filter = self.config.order_size_filter.max(0.0);
 
+        let Some(recenter_target) = self.scene.price_at_center(base_price, self.step) else {
+            return;
+        };
+
         let prev_steps_per_y_bin: i64 = self.scene.params.steps_per_y_bin();
         let new_steps_per_y_bin: i64 = w.steps_per_y_bin.max(1);
 
@@ -707,8 +711,6 @@ impl HeatmapShader {
         // Consume one-shot rebuild directives.
         let force_from_policy = self.rebuild_policy.take_force_rebuild_from_historical();
         let force_full_rebuild = force_from_policy;
-
-        let recenter_target = self.scene.price_at_center(base_price, self.step);
 
         let need_full_rebuild = self.depth_grid.should_full_rebuild(
             prev_steps_per_y_bin,
@@ -812,17 +814,15 @@ impl HeatmapShader {
         };
 
         self.scene.params.set_trade_fade(w);
+        if let Some(recenter_target) = self.scene.price_at_center(base_price, self.step)
+            && self.depth_grid.should_recenter(recenter_target, self.step)
         {
-            let recenter_target = self.scene.price_at_center(base_price, self.step);
-
-            if self.depth_grid.should_recenter(recenter_target, self.step) {
-                // Recenter implies a y-mapping change: force rebuild-from-historical so older cols
-                // get repopulated under the new anchor
-                self.rebuild_policy = self
-                    .rebuild_policy
-                    .request_rebuild_from_historical()
-                    .promote_to_immediate();
-            }
+            // Recenter implies a y-mapping change: force rebuild-from-historical so older cols
+            // get repopulated under the new anchor
+            self.rebuild_policy = self
+                .rebuild_policy
+                .request_rebuild_from_historical()
+                .promote_to_immediate();
         }
 
         let aggr_time = aggr_time.max(1);
@@ -941,7 +941,10 @@ impl HeatmapShader {
         let recenter_target = if is_interacting {
             self.depth_grid.y_anchor_price().unwrap_or(base_price)
         } else {
-            self.scene.price_at_center(base_price, self.step)
+            self.scene
+                .price_at_center(base_price, self.step)
+                .or_else(|| self.depth_grid.y_anchor_price())
+                .unwrap_or(base_price)
         };
 
         // If live ingest is about to recenter, schedule a forced rebuild-from-historical

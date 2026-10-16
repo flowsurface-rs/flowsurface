@@ -1,28 +1,18 @@
 use std::collections::BTreeMap;
 
+use rustc_hash::FxHashSet;
+
 use crate::chart::Basis;
 use crate::chart::heatmap::HeatmapDataPoint;
 use crate::chart::kline_data::{ClusterKind, KlineDataPoint, KlineTrades, NPoc};
 
 use exchange::unit::{Price, PriceStep, Qty};
-use exchange::{Kline, Timeframe, Trade, UnixMs, Volume};
+use exchange::{Kline, Timeframe, Trade, UnixMs};
 
 pub trait DataPoint {
     fn add_trade(&mut self, trade: &Trade, step: PriceStep);
 
     fn clear_trades(&mut self);
-
-    fn last_trade_time(&self) -> Option<UnixMs>;
-
-    fn first_trade_time(&self) -> Option<UnixMs>;
-
-    fn last_price(&self) -> Price;
-
-    fn kline(&self) -> Option<&Kline>;
-
-    fn value_high(&self) -> Price;
-
-    fn value_low(&self) -> Price;
 }
 
 pub struct TimeSeries<D: DataPoint> {
@@ -31,53 +21,19 @@ pub struct TimeSeries<D: DataPoint> {
     pub tick_size: PriceStep,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OrderedChange {
+    Tail { from: UnixMs },
+    Rebuild,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct KlineInsertReport {
+    pub inserted_timestamps: Vec<UnixMs>,
+    pub ordered_change: OrderedChange,
+}
+
 impl<D: DataPoint> TimeSeries<D> {
-    pub fn base_price(&self) -> Price {
-        self.datapoints
-            .values()
-            .last()
-            .map_or(Price::from_f32(0.0), DataPoint::last_price)
-    }
-
-    pub fn latest_timestamp(&self) -> Option<UnixMs> {
-        self.datapoints.keys().last().copied()
-    }
-
-    pub fn latest_kline(&self) -> Option<&Kline> {
-        self.datapoints.values().last().and_then(|dp| dp.kline())
-    }
-
-    pub fn price_scale(&self, lookback: usize) -> (Price, Price) {
-        let mut iter = self.datapoints.iter().rev().take(lookback);
-
-        if let Some((_, first)) = iter.next() {
-            let mut high = first.value_high();
-            let mut low = first.value_low();
-
-            for (_, dp) in iter {
-                let value_high = dp.value_high();
-                let value_low = dp.value_low();
-                if value_high > high {
-                    high = value_high;
-                }
-                if value_low < low {
-                    low = value_low;
-                }
-            }
-
-            (high, low)
-        } else {
-            (Price::from_f32(0.0), Price::from_f32(0.0))
-        }
-    }
-
-    pub fn volume_data<'a>(&'a self) -> BTreeMap<UnixMs, exchange::Volume>
-    where
-        BTreeMap<UnixMs, exchange::Volume>: From<&'a TimeSeries<D>>,
-    {
-        self.into()
-    }
-
     pub fn timerange(&self) -> (UnixMs, UnixMs) {
         let earliest = self
             .datapoints
@@ -93,36 +49,6 @@ impl<D: DataPoint> TimeSeries<D> {
             .unwrap_or(UnixMs::ZERO);
 
         (earliest, latest)
-    }
-
-    pub fn min_max_price_in_range_prices(
-        &self,
-        earliest: UnixMs,
-        latest: UnixMs,
-    ) -> Option<(Price, Price)> {
-        let mut it = self.datapoints.range(earliest..=latest);
-
-        let (_, first) = it.next()?;
-        let mut min_price = first.value_low();
-        let mut max_price = first.value_high();
-
-        for (_, dp) in it {
-            let low = dp.value_low();
-            let high = dp.value_high();
-            if low < min_price {
-                min_price = low;
-            }
-            if high > max_price {
-                max_price = high;
-            }
-        }
-
-        Some((min_price, max_price))
-    }
-
-    pub fn min_max_price_in_range(&self, earliest: UnixMs, latest: UnixMs) -> Option<(f32, f32)> {
-        self.min_max_price_in_range_prices(earliest, latest)
-            .map(|(min_p, max_p)| (min_p.to_f32_lossy(), max_p.to_f32_lossy()))
     }
 
     /// Ensures a datapoint bucket exists at `rounded_t` and ingests all trades into it.
@@ -152,77 +78,6 @@ impl<D: DataPoint> TimeSeries<D> {
             phase
         }
     }
-
-    fn check_kline_integrity_range(
-        &self,
-        earliest: UnixMs,
-        latest: UnixMs,
-        interval: u64,
-    ) -> Option<Vec<UnixMs>> {
-        const MAX_INTEGRITY_SCAN: u64 = 1_000_000;
-        let mut time = earliest;
-        let mut missing_count = 0;
-
-        for _ in 0..MAX_INTEGRITY_SCAN {
-            if time >= latest {
-                break;
-            }
-            if !self.datapoints.contains_key(&time) {
-                missing_count += 1;
-                break;
-            }
-            time = time.saturating_add(interval);
-        }
-
-        if missing_count > 0 {
-            let mut missing_keys = Vec::new();
-            let mut time = earliest;
-
-            for _ in 0..MAX_INTEGRITY_SCAN {
-                if time >= latest {
-                    break;
-                }
-                if !self.datapoints.contains_key(&time) {
-                    missing_keys.push(time);
-                }
-                time = time.saturating_add(interval);
-            }
-
-            log::debug!(
-                "Integrity check failed: missing {} klines",
-                missing_keys.len()
-            );
-            return Some(missing_keys);
-        }
-
-        None
-    }
-
-    pub fn check_kline_integrity(&self, earliest: UnixMs, latest: UnixMs) -> Option<Vec<UnixMs>> {
-        if self.datapoints.is_empty() {
-            return None;
-        }
-
-        let interval = self.interval.to_milliseconds();
-        if interval == 0 {
-            return None;
-        }
-
-        let (series_earliest, series_latest) = self.timerange();
-        let phase = UnixMs::new(series_earliest.as_u64() % interval);
-
-        let check_earliest =
-            Self::align_down_to_phase(earliest.max(series_earliest), phase, interval)
-                .max(series_earliest);
-        let check_latest = Self::align_down_to_phase(latest.min(series_latest), phase, interval)
-            .min(series_latest);
-
-        if check_earliest < check_latest {
-            self.check_kline_integrity_range(check_earliest, check_latest, interval)
-        } else {
-            None
-        }
-    }
 }
 
 impl TimeSeries<KlineDataPoint> {
@@ -237,63 +92,131 @@ impl TimeSeries<KlineDataPoint> {
         timeseries
     }
 
-    pub fn with_trades(&self, trades: &[Trade]) -> TimeSeries<KlineDataPoint> {
-        let mut new_series = Self {
-            datapoints: self.datapoints.clone(),
-            interval: self.interval,
-            tick_size: self.tick_size,
-        };
-
-        new_series.insert_trades_or_create_bucket(trades);
-        new_series
+    pub fn insert_klines(&mut self, klines: &[Kline]) {
+        let _ = self.insert_klines_inner(klines, false);
     }
 
-    pub fn insert_klines(&mut self, klines: &[Kline]) {
-        for kline in klines {
-            let entry = self
-                .datapoints
-                .entry(kline.time)
-                .or_insert_with(|| KlineDataPoint {
-                    kline: *kline,
-                    footprint: KlineTrades::new(),
-                });
+    pub(crate) fn insert_klines_report(&mut self, klines: &[Kline]) -> Option<KlineInsertReport> {
+        self.insert_klines_inner(klines, true)
+    }
 
-            entry.kline = *kline;
+    fn insert_klines_inner(
+        &mut self,
+        klines: &[Kline],
+        update_poc_status: bool,
+    ) -> Option<KlineInsertReport> {
+        if klines.is_empty() {
+            return None;
         }
 
-        self.update_poc_status();
+        let previous_latest = self.datapoints.keys().next_back().copied();
+        let mut inserted_timestamps = Vec::new();
+        let mut changed_existing = false;
+
+        for kline in klines {
+            let entry = self.datapoints.entry(kline.time);
+            match entry {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(KlineDataPoint {
+                        kline: *kline,
+                        footprint: KlineTrades::new(),
+                    });
+                    inserted_timestamps.push(kline.time);
+                }
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                    entry.get_mut().kline = *kline;
+                    changed_existing = true;
+                }
+            }
+        }
+
+        inserted_timestamps.sort_unstable();
+
+        if update_poc_status {
+            self.update_poc_status();
+        }
+
+        let ordered_change = if !changed_existing
+            && inserted_timestamps
+                .iter()
+                .all(|timestamp| previous_latest.is_none_or(|latest| *timestamp > latest))
+        {
+            OrderedChange::Tail {
+                from: inserted_timestamps
+                    .iter()
+                    .copied()
+                    .min()
+                    .unwrap_or_else(|| previous_latest.unwrap_or(UnixMs::ZERO)),
+            }
+        } else {
+            OrderedChange::Rebuild
+        };
+
+        Some(KlineInsertReport {
+            inserted_timestamps,
+            ordered_change,
+        })
     }
 
-    pub fn insert_trades_or_create_bucket(&mut self, buffer: &[Trade]) {
+    pub(crate) fn missing_kline_range(
+        &self,
+        earliest: UnixMs,
+        latest: UnixMs,
+    ) -> Option<(UnixMs, UnixMs)> {
+        if self.datapoints.is_empty() {
+            return None;
+        }
+
+        let interval = self.interval.to_milliseconds();
+        if interval == 0 {
+            return None;
+        }
+
+        let (series_earliest, series_latest) = self.timerange();
+        let phase = UnixMs::new(series_earliest.as_u64() % interval);
+        let check_earliest =
+            Self::align_down_to_phase(earliest.max(series_earliest), phase, interval)
+                .max(series_earliest);
+        let check_latest = Self::align_down_to_phase(latest.min(series_latest), phase, interval)
+            .min(series_latest);
+
+        if check_earliest >= check_latest {
+            return None;
+        }
+
+        let mut first_missing = None;
+        let mut last_missing = None;
+        let mut time = check_earliest;
+        const MAX_INTEGRITY_SCAN: u64 = 1_000_000;
+
+        for _ in 0..MAX_INTEGRITY_SCAN {
+            if time >= check_latest {
+                break;
+            }
+            if !self.datapoints.contains_key(&time) {
+                first_missing.get_or_insert(time);
+                last_missing = Some(time);
+            }
+            time = time.saturating_add(interval);
+        }
+
+        first_missing.zip(last_missing)
+    }
+
+    pub fn insert_trades_existing_buckets(&mut self, buffer: &[Trade]) {
         if buffer.is_empty() {
             return;
         }
-        let mut updated_times = Vec::new();
+        let mut updated_times = FxHashSet::default();
 
-        buffer.iter().for_each(|trade| {
+        for trade in buffer {
             let rounded_time = trade.time.floor_to(self.interval);
 
-            if !updated_times.contains(&rounded_time) {
-                updated_times.push(rounded_time);
+            if let Some(entry) = self.datapoints.get_mut(&rounded_time) {
+                updated_times.insert(rounded_time);
+                entry.add_trade(trade, self.tick_size);
             }
-
-            let entry = self
-                .datapoints
-                .entry(rounded_time)
-                .or_insert_with(|| KlineDataPoint {
-                    kline: Kline {
-                        time: rounded_time,
-                        open: trade.price,
-                        high: trade.price,
-                        low: trade.price,
-                        close: trade.price,
-                        volume: Volume::empty_buy_sell(),
-                    },
-                    footprint: KlineTrades::new(),
-                });
-
-            entry.add_trade(trade, self.tick_size);
-        });
+        }
 
         for time in updated_times {
             if let Some(data_point) = self.datapoints.get_mut(&time) {
@@ -302,19 +225,20 @@ impl TimeSeries<KlineDataPoint> {
         }
     }
 
-    pub fn insert_trades_existing_buckets(&mut self, buffer: &[Trade]) {
-        if buffer.is_empty() {
+    pub fn backfill_new_buckets(&mut self, trades: &[Trade], newborn: &[UnixMs]) {
+        if trades.is_empty() || newborn.is_empty() {
             return;
         }
-        let mut updated_times: Vec<UnixMs> = Vec::new();
 
-        for trade in buffer {
+        let newborn_times = newborn.iter().copied().collect::<FxHashSet<UnixMs>>();
+        let mut updated_times = FxHashSet::default();
+
+        for trade in trades {
             let rounded_time = trade.time.floor_to(self.interval);
-
-            if let Some(entry) = self.datapoints.get_mut(&rounded_time) {
-                if !updated_times.contains(&rounded_time) {
-                    updated_times.push(rounded_time);
-                }
+            if newborn_times.contains(&rounded_time)
+                && let Some(entry) = self.datapoints.get_mut(&rounded_time)
+            {
+                updated_times.insert(rounded_time);
                 entry.add_trade(trade, self.tick_size);
             }
         }
@@ -334,6 +258,8 @@ impl TimeSeries<KlineDataPoint> {
         if !raw_trades.is_empty() {
             self.insert_trades_existing_buckets(raw_trades);
         }
+
+        self.update_poc_status();
     }
 
     pub fn update_poc_status(&mut self) {
@@ -364,46 +290,6 @@ impl TimeSeries<KlineDataPoint> {
         }
     }
 
-    pub fn min_max_footprint_price_in_range(
-        &self,
-        earliest: UnixMs,
-        latest: UnixMs,
-    ) -> Option<(Price, Price)> {
-        if latest < earliest {
-            return None;
-        }
-
-        let mut min_price: Option<Price> = None;
-        let mut max_price: Option<Price> = None;
-
-        let mut track_price = |price: Price| {
-            min_price = Some(match min_price {
-                Some(current) => current.min(price),
-                None => price,
-            });
-            max_price = Some(match max_price {
-                Some(current) => current.max(price),
-                None => price,
-            });
-        };
-
-        self.datapoints
-            .range(earliest..=latest)
-            .for_each(|(_, dp)| {
-                track_price(dp.kline.low);
-                track_price(dp.kline.high);
-
-                for price in dp.footprint.trades.keys() {
-                    track_price(*price);
-                }
-            });
-
-        match (min_price, max_price) {
-            (Some(low), Some(high)) => Some((low, high)),
-            _ => None,
-        }
-    }
-
     pub fn suggest_trade_fetch_range(
         &self,
         visible_earliest: UnixMs,
@@ -422,31 +308,17 @@ impl TimeSeries<KlineDataPoint> {
 
                 let gap_start = last_t_before_gap.map_or(data_earliest, |t| t.saturating_add(1));
 
-                // Round down to the nearest kline boundary so the first
-                // bucket is fully covered.
                 let fetch_from = gap_start
                     .max(visible_earliest)
                     .floor_to(self.interval)
                     .max(gap_start);
 
-                // When we know where the next trade sits, fetch the entire
-                // gap in one shot instead of truncating at `visible_latest`
-                // - otherwise fast scrolling leaves a trailing gap that
-                // must be back-filled on the next scroll.  When there is no
-                // trade after the gap (`None`) we still stop at the visible
-                // edge to avoid an unbounded fetch.
                 let fetch_to = match first_t_after_gap {
                     Some(t) => t.saturating_sub(1),
                     None => data_latest.min(visible_latest),
                 };
 
                 if fetch_from < fetch_to {
-                    // When the gap originates before the visible window,
-                    // clamping `fetch_from` to `visible_earliest` can
-                    // collapse the range into a sub-interval sliver (e.g.
-                    // the first few seconds of a kline bucket that already
-                    // has trades).  Skip fetches that cover less than one
-                    // full interval.
                     if gap_start < visible_earliest {
                         let interval_ms = self.interval.to_milliseconds();
                         if fetch_to.as_u64().saturating_sub(fetch_from.as_u64()) < interval_ms {
@@ -519,64 +391,5 @@ impl TimeSeries<HeatmapDataPoint> {
             interval: timeframe,
             tick_size,
         }
-    }
-
-    pub fn max_trade_qty_and_aggr_volume(&self, earliest: UnixMs, latest: UnixMs) -> (Qty, Qty) {
-        let mut max_trade_qty = Qty::ZERO;
-        let mut max_aggr_volume = Qty::ZERO;
-
-        self.datapoints
-            .range(earliest..=latest)
-            .for_each(|(_, dp)| {
-                let (mut buy_volume, mut sell_volume) = (Qty::ZERO, Qty::ZERO);
-
-                dp.grouped_trades.iter().for_each(|trade| {
-                    let trade_qty = trade.qty;
-                    max_trade_qty = max_trade_qty.max(trade_qty);
-
-                    if trade.is_sell {
-                        sell_volume += trade_qty;
-                    } else {
-                        buy_volume += trade_qty;
-                    }
-                });
-
-                max_aggr_volume = max_aggr_volume.max(buy_volume + sell_volume);
-            });
-
-        (max_trade_qty, max_aggr_volume)
-    }
-
-    pub fn max_trade_qty_in_range(
-        &self,
-        earliest: UnixMs,
-        latest: UnixMs,
-        highest: Price,
-        lowest: Price,
-    ) -> Qty {
-        let mut max_trade_qty = Qty::default();
-
-        self.datapoints
-            .range(earliest..=latest)
-            .for_each(|(_, dp)| {
-                dp.grouped_trades.iter().for_each(|trade| {
-                    if trade.price >= lowest && trade.price <= highest {
-                        max_trade_qty = max_trade_qty.max(trade.qty);
-                    }
-                });
-            });
-
-        max_trade_qty
-    }
-}
-
-impl From<&TimeSeries<KlineDataPoint>> for BTreeMap<UnixMs, exchange::Volume> {
-    /// Converts datapoints into a map of timestamps and volume data
-    fn from(timeseries: &TimeSeries<KlineDataPoint>) -> Self {
-        timeseries
-            .datapoints
-            .iter()
-            .map(|(time, dp)| (*time, dp.kline.volume))
-            .collect()
     }
 }

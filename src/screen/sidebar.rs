@@ -19,7 +19,6 @@ use iced::{
 };
 use rustc_hash::FxHashMap;
 
-pub(crate) mod kline_indicators;
 pub(crate) mod pane_settings;
 pub(crate) mod tickers_table;
 
@@ -29,33 +28,7 @@ const INSPECTOR_SIDEBAR_HEADER_HEIGHT: f32 = 32.0;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InspectorMode {
     PaneSettings,
-    ChartSettings,
     Indicators,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) enum Inspector {
-    PaneSettings,
-    ChartSettings,
-    PaneIndicators,
-}
-
-impl Inspector {
-    fn from_mode(mode: InspectorMode) -> Self {
-        match mode {
-            InspectorMode::PaneSettings => Self::PaneSettings,
-            InspectorMode::ChartSettings => Self::ChartSettings,
-            InspectorMode::Indicators => Self::PaneIndicators,
-        }
-    }
-
-    fn mode(&self) -> InspectorMode {
-        match self {
-            Self::PaneSettings => InspectorMode::PaneSettings,
-            Self::ChartSettings => InspectorMode::ChartSettings,
-            Self::PaneIndicators => InspectorMode::Indicators,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -73,7 +46,7 @@ pub enum Message {
 pub struct Sidebar {
     pub state: data::Sidebar,
     pub tickers_table: TickersTable,
-    pub(crate) inspector: Option<Inspector>,
+    inspector: Option<InspectorMode>,
 }
 
 pub enum Action {
@@ -83,7 +56,6 @@ pub enum Action {
     ),
     ErrorOccurred(data::InternalError),
     MenuChanged(Option<sidebar::Menu>),
-    CloseInspector,
     PaneInspector {
         window: window::Id,
         message: pane::Message,
@@ -126,9 +98,7 @@ impl Sidebar {
                 self.state.position = position;
             }
             Message::CloseInspector => {
-                if self.close_inspector() {
-                    return (Task::none(), Some(Action::CloseInspector));
-                }
+                self.close_inspector();
             }
             Message::PaneInspector { window, message } => {
                 return (
@@ -179,15 +149,15 @@ impl Sidebar {
             return Task::none();
         }
 
-        let inspector = Inspector::from_mode(mode);
-        let focus_widget = matches!(inspector, Inspector::PaneIndicators)
-            .then(|| state.indicators_sidebar_focus_id())
-            .flatten();
-        self.inspector = Some(inspector);
+        self.inspector = Some(mode);
+        if mode == InspectorMode::Indicators {
+            return state
+                .indicators_sidebar_focus_id()
+                .map(iced::widget::operation::focus)
+                .unwrap_or_else(Task::none);
+        }
 
-        focus_widget
-            .map(iced::widget::operation::focus)
-            .unwrap_or_else(Task::none)
+        Task::none()
     }
 
     pub(crate) fn toggle_inspector(
@@ -196,11 +166,7 @@ impl Sidebar {
         dashboard: &Dashboard,
         main_window: window::Id,
     ) -> Task<Message> {
-        if self
-            .inspector
-            .as_ref()
-            .is_some_and(|inspector| inspector.mode() == mode)
-        {
+        if self.inspector == Some(mode) {
             self.inspector = None;
             return Task::none();
         }
@@ -209,18 +175,15 @@ impl Sidebar {
     }
 
     pub(crate) fn sync_inspector(&mut self, dashboard: &Dashboard, main_window: window::Id) {
-        let Some(inspector) = self.inspector.as_ref() else {
+        let Some(mode) = self.inspector else {
             return;
         };
 
-        let Some(state) = dashboard.focused_pane(main_window) else {
+        if dashboard
+            .focused_pane(main_window)
+            .is_none_or(|state| !state.supports_inspector(mode))
+        {
             self.inspector = None;
-            return;
-        };
-
-        let next_mode = state.inspector_mode_after_focus(inspector.mode());
-        if next_mode != Some(inspector.mode()) {
-            self.inspector = next_mode.map(Inspector::from_mode);
         }
     }
 
@@ -229,7 +192,7 @@ impl Sidebar {
     }
 
     pub(crate) fn inspector_mode(&self) -> Option<InspectorMode> {
-        self.inspector.as_ref().map(Inspector::mode)
+        self.inspector
     }
 
     pub(crate) fn inspector_view<'a>(
@@ -238,56 +201,40 @@ impl Sidebar {
         main_window: window::Id,
         theme_accents: ThemeAccents,
     ) -> Option<Element<'a, Message>> {
-        let inspector = self.inspector.as_ref()?;
+        let mode = self.inspector?;
         let (window, pane) = dashboard.focus?;
         let state = dashboard.get_pane(main_window, window, pane)?;
 
         let pane_title = state.content.kind().to_string();
 
-        let (content, footer): (Element<'a, Message>, Option<Element<'a, Message>>) =
-            match inspector {
-                Inspector::PaneSettings => {
-                    let pane_settings = state
-                        .pane_settings_content(pane, theme_accents)
-                        .map(|view| {
-                            view.map(move |message| Message::PaneInspector { window, message })
-                        })
-                        .unwrap_or_else(|| InspectorContent::new(vec![]));
+        let (content, footer): (Element<'a, Message>, Option<Element<'a, Message>>) = match mode {
+            InspectorMode::PaneSettings => {
+                let pane_settings = state
+                    .pane_settings_content(pane, theme_accents)
+                    .map(|view| view.map(move |message| Message::PaneInspector { window, message }))
+                    .unwrap_or_else(|| InspectorContent::new(vec![]));
 
-                    let (sections, footer) = pane_settings.into_parts();
-                    (
-                        InspectorBody::view(sections),
-                        footer.map(InspectorFooter::view),
-                    )
-                }
-                Inspector::ChartSettings => {
-                    let chart_settings = state
-                        .chart_settings_content(pane, theme_accents)
+                let (sections, footer) = pane_settings.into_parts();
+                (
+                    InspectorBody::view(sections),
+                    footer.map(InspectorFooter::view),
+                )
+            }
+            InspectorMode::Indicators => (
+                InspectorBody::view_without_scroll(
+                    state
+                        .indicators_sidebar_view(pane)
                         .map(|view| {
                             view.map(move |message| Message::PaneInspector { window, message })
                         })
-                        .unwrap_or_else(|| InspectorContent::new(vec![]));
-                    let (sections, footer) = chart_settings.into_parts();
-                    (
-                        InspectorBody::view(sections),
-                        footer.map(InspectorFooter::view),
-                    )
-                }
-                Inspector::PaneIndicators => (
-                    InspectorBody::view_without_scroll(
-                        state
-                            .indicators_sidebar_view(pane)
-                            .map(|view| {
-                                view.map(move |message| Message::PaneInspector { window, message })
-                            })
-                            .unwrap_or_else(|| column![].into()),
-                    ),
-                    None,
+                        .unwrap_or_else(|| column![].into()),
                 ),
-            };
+                None,
+            ),
+        };
 
         let close = button(crate::style::icon_text(crate::style::Icon::Close, 14))
-            .style(|theme, status| crate::style::button::cancel(theme, status, false))
+            .style(|theme, status| crate::style::button::transparent(theme, status, false))
             .padding([4, 8])
             .on_press(Message::CloseInspector);
         let header = row![

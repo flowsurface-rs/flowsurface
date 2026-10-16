@@ -82,24 +82,24 @@ impl ResolvedStream {
         }
     }
 
-    pub fn set_trade_stream(&mut self, ticker_info: exchange::TickerInfo, enabled: bool) -> bool {
+    pub fn canonicalize_kline_trade_streams(&mut self) -> bool {
         let ResolvedStream::Ready(streams) = self else {
             return false;
         };
-
-        let trade_stream = StreamKind::Trades { ticker_info };
-        if enabled {
-            if streams.contains(&trade_stream) {
-                return false;
-            }
-
-            streams.push(trade_stream);
-            true
-        } else {
-            let original_len = streams.len();
-            streams.retain(|stream| stream != &trade_stream);
-            streams.len() != original_len
-        }
+        let Some(base_ticker) = streams.iter().find_map(|stream| match stream {
+            StreamKind::Kline { ticker_info, .. } => Some(*ticker_info),
+            _ => None,
+        }) else {
+            return false;
+        };
+        let original_len = streams.len();
+        streams.retain(|stream| {
+            !matches!(
+                stream,
+                StreamKind::Trades { ticker_info } if *ticker_info != base_ticker
+            )
+        });
+        streams.len() != original_len
     }
 
     pub fn find_ready_map<F, T>(&self, f: F) -> Option<T>

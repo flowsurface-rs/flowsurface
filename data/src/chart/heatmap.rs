@@ -70,40 +70,6 @@ impl DataPoint for HeatmapDataPoint {
         self.grouped_trades = Box::new([]);
         self.buy_sell = (Qty::default(), Qty::default());
     }
-
-    fn last_trade_time(&self) -> Option<UnixMs> {
-        None
-    }
-
-    fn first_trade_time(&self) -> Option<UnixMs> {
-        None
-    }
-
-    fn kline(&self) -> Option<&exchange::Kline> {
-        None
-    }
-
-    fn last_price(&self) -> Price {
-        self.grouped_trades
-            .last()
-            .map_or(Price { units: 0 }, |t| t.price)
-    }
-
-    fn value_high(&self) -> Price {
-        self.grouped_trades
-            .iter()
-            .map(|t| t.price)
-            .max()
-            .unwrap_or(Price::from_units(0))
-    }
-
-    fn value_low(&self) -> Price {
-        self.grouped_trades
-            .iter()
-            .map(|t| t.price)
-            .min()
-            .unwrap_or(Price::from_units(0))
-    }
 }
 
 #[derive(Default, Debug, Clone, Copy, PartialEq)]
@@ -388,6 +354,15 @@ impl HistoricalDepth {
         let aggr_time = self.aggr_time;
 
         let step = self.tick_size;
+        let target_prices: Vec<Price> = price_tick_offsets
+            .iter()
+            .copied()
+            .filter_map(|offset| center_price.checked_add_steps(offset, step))
+            .collect();
+        let capacity = time_interval_offsets.len() * target_prices.len();
+        if target_prices.is_empty() {
+            return FxHashMap::with_capacity_and_hasher(capacity, FxBuildHasher);
+        }
 
         let query_earliest_time = time_interval_offsets
             .iter()
@@ -401,16 +376,8 @@ impl HistoricalDepth {
             .max()
             .map_or(center_time, |t| t.saturating_add(aggr_time_ms));
 
-        let query_lowest = price_tick_offsets
-            .iter()
-            .copied()
-            .min()
-            .map_or(center_price, |offset| center_price.add_steps(offset, step));
-        let query_highest = price_tick_offsets
-            .iter()
-            .copied()
-            .max()
-            .map_or(center_price, |offset| center_price.add_steps(offset, step));
+        let query_lowest = target_prices.iter().copied().min().unwrap_or(center_price);
+        let query_highest = target_prices.iter().copied().max().unwrap_or(center_price);
 
         let runs_in_vicinity: Vec<(Price, OrderRun)> = if let Some(ck) = coalesce_kind {
             self.coalesced_runs(
@@ -435,12 +402,9 @@ impl HistoricalDepth {
             .collect()
         };
 
-        let capacity = time_interval_offsets.len() * price_tick_offsets.len();
         let mut grid_quantities: FxHashMap<(UnixMs, Price), (Qty, bool)> =
             FxHashMap::with_capacity_and_hasher(capacity, FxBuildHasher);
-        for price_offset in price_tick_offsets {
-            let target_price_key = center_price.add_steps(*price_offset, step);
-
+        for target_price_key in target_prices {
             for time_offset in time_interval_offsets {
                 let target_time_val = center_time.offset_by_timeframe(aggr_time, *time_offset);
                 let current_grid_key = (target_time_val, target_price_key);

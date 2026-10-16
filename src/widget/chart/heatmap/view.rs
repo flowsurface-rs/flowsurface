@@ -665,8 +665,8 @@ impl ViewWindow {
         let min_steps = (-(y_max) / row_h).floor() as i64;
         let max_steps = (-(y_min) / row_h).ceil() as i64;
 
-        let lowest = input.base_price.add_steps(min_steps, input.step);
-        let highest = input.base_price.add_steps(max_steps, input.step);
+        let lowest = input.base_price.checked_add_steps(min_steps, input.step)?;
+        let highest = input.base_price.checked_add_steps(max_steps, input.step)?;
 
         // y-downsampling
         let px_per_step = row_h * cam_scale;
@@ -702,7 +702,7 @@ impl ViewWindow {
         step_units: i64,
         steps_per: i64,
     ) -> i64 {
-        let delta_units = price.units - anchor_price.units;
+        let delta_units = price.saturating_sub(anchor_price).units;
 
         let dy_steps: i64 = delta_units.div_euclid(step_units);
         dy_steps / steps_per

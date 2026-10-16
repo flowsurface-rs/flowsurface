@@ -1,25 +1,13 @@
+use super::composition::PanelPresentation;
+use super::helpers::PixelGeometry;
 use super::layout::{label_bounds_overlap, place_non_overlapping_labels};
 use super::*;
+use data::chart::kline::table_columns;
+use exchange::{Timeframe, unit::Price};
 
 const MIN_X_TICK_PX: f32 = 80.0;
 
-pub(super) fn horizontal_world_for_drag(
-    scene: &Scene,
-    initial_world: HorizontalWorld,
-    initial_right_unit: f32,
-    anchor_x: f32,
-    delta: f32,
-) -> HorizontalWorld {
-    let right_edge = scene.x_axis_plot_width().floor().max(1.0);
-    let anchor_x = (anchor_x - scene.layout.regions.plot.x).clamp(0.0, right_edge);
-
-    initial_world.zoom_around_screen(initial_right_unit, anchor_x, right_edge, delta)
-}
-
-impl<'a, S> KlineWidget<'a, S>
-where
-    S: KlineSeriesLike,
-{
+impl<'a> KlineWidget<'a> {
     pub(super) fn horizontal_world_for_cursor(
         &self,
         scene: &Scene,
@@ -27,7 +15,7 @@ where
         delta: f32,
         zoom_mode: HorizontalWheelZoomMode,
     ) -> HorizontalWorld {
-        let right_edge = scene.x_axis_plot_width().floor().max(1.0);
+        let right_edge = scene.x_axis_plot_width().max(1.0);
         let anchor_x = self.horizontal_zoom_anchor(scene, cursor_x, right_edge, zoom_mode);
         let right_unit = scene.effective_right_x_unit();
         self.horizontal_world
@@ -38,19 +26,19 @@ where
         &self,
         scene: &Scene,
         cursor_x: f32,
-        right_edge: f32,
+        plot_width: f32,
         zoom_mode: HorizontalWheelZoomMode,
     ) -> f32 {
-        let cursor_x = (cursor_x - scene.layout.regions.plot.x).clamp(0.0, right_edge);
+        let cursor_x = (cursor_x - scene.layout.regions.plot.x).clamp(0.0, plot_width);
         if matches!(zoom_mode, HorizontalWheelZoomMode::Cursor) {
             return cursor_x;
         }
 
         let latest_x = scene.map_x_plot(0);
-        if latest_x.is_finite() && (0.0..=right_edge).contains(&latest_x) {
+        if latest_x.is_finite() && (0.0..=plot_width).contains(&latest_x) {
             latest_x
         } else {
-            right_edge
+            plot_width
         }
     }
 
@@ -63,12 +51,13 @@ where
         let Some(base_series) = self.series.first() else {
             return;
         };
-        let Some(last_bar) = base_series.bars().last() else {
+        let Some(last_point) = base_series.latest_point() else {
             return;
         };
+        let last_bar = last_point.kline;
 
         let last_price = last_bar.close.to_f32_lossy();
-        let y = scene.map_primary_plot_with_anchor(
+        let y = scene.map_primary_plot_with_anchor_f32(
             last_price,
             scene
                 .primary
@@ -115,24 +104,29 @@ where
                 continue;
             };
 
-            if panel.kind == KlinePanelKind::Indicator && self.panel_value_id(panel_index).is_some()
+            if panel.kind == KlinePanelKind::Indicator
+                && self.indicator_panel_value_id(panel_index).is_some()
             {
                 continue;
             }
 
-            let value_id = self.panel_value_id(panel_index);
+            let value_id = self.indicator_panel_value_id(panel_index);
             let title_x = value_id.map_or(panel.plot.x + TOOLTIP_ROW_LEFT_PAD, |value_id| {
                 self.indicator_label_x(panel.plot.x, value_id)
             });
             let title_y = panel.plot.y + PANEL_TITLE_TOP_PAD + TICKER_LEGEND_ROW_H * 0.5;
 
             if let Some(value_id) = value_id
-                && self.indicator_is_unavailable(Some(value_id))
+                && let Some((marker, loading)) = self.indicator_marker(value_id)
             {
                 frame.fill_text(canvas::Text {
-                    content: "!".to_string(),
+                    content: marker.to_owned(),
                     position: Point::new(self.indicator_marker_x(panel.plot.x), title_y),
-                    color: palette.danger.base.color,
+                    color: if loading {
+                        palette.background.base.text.scale_alpha(0.72)
+                    } else {
+                        palette.danger.base.color
+                    },
                     size: TEXT_SIZE.into(),
                     align_x: iced::Alignment::Start.into(),
                     align_y: iced::Alignment::Center.into(),
@@ -169,7 +163,10 @@ where
 
                 let price_axis =
                     PriceAxis::new(ticker.min_ticksize.into(), Some(ticker.min_ticksize));
-                let (min_price_value, max_price_value) = scene.primary.domain.values;
+                let (min_price_value, max_price_value) = scene
+                    .primary
+                    .value_scale
+                    .values_f32(scene.primary.domain.active());
                 let min_price = min_price_value as f64;
                 let max_price = max_price_value as f64;
                 let labels_can_fit = labels_for_height(scene.primary_plot().height);
@@ -193,7 +190,10 @@ where
                     ));
                 }
             } else {
-                let (min_domain_value, max_domain_value) = scene.primary.domain.values;
+                let (min_domain_value, max_domain_value) = scene
+                    .primary
+                    .value_scale
+                    .values_f32(scene.primary.domain.active());
                 let min_value = min_domain_value as f64;
                 let max_value = max_domain_value as f64;
                 let y_ticks = YAxisScale::Linear.ticks(
@@ -278,20 +278,19 @@ where
                 continue;
             };
             let panel_precision = self.panel_value_precision(panel_index);
-            let min_value = indicator.min_value() as f64;
-            let max_value = indicator.max_value() as f64;
+            let min_value = indicator.min_value();
+            let max_value = indicator.max_value();
             let y_ticks = YAxisScale::Linear.ticks(
                 min_value,
                 max_value,
                 labels_for_height(panel.plot.height),
             );
-            let step_value = y_ticks.step.unwrap_or(1.0) as f32;
+            let step_value = y_ticks.step.unwrap_or(1.0);
 
             for tick in y_ticks.ticks {
                 let TickValue::Float(value) = tick.value else {
                     continue;
                 };
-                let value = value as f32;
                 let Some(y) = scene.map_indicator_plot(panel_index, value) else {
                     continue;
                 };
@@ -350,7 +349,11 @@ where
             .map(|(_, label, _)| label_width(&label))
             .fold(0.0, f32::max);
 
-        for value in [scene.primary.domain.values.0, scene.primary.domain.values.1] {
+        let (min_value, max_value) = scene
+            .primary
+            .value_scale
+            .values_f32(scene.primary.domain.active());
+        for value in [min_value, max_value] {
             widest_label = widest_label.max(label_width(&scene.format_primary_cursor_label(value)));
         }
 
@@ -473,16 +476,16 @@ where
         frame: &mut canvas::Frame,
         scene: &Scene,
         palette: &Extended,
+        pixels: PixelGeometry,
     ) {
-        let pixel_ratio = self.pixel_ratio_value();
         let plot_width = scene.x_axis_plot_width();
 
         if let XAxis::Time { timeframe, .. } = scene.x.axis
             && let Some((earliest, latest, earliest_unit, latest_unit)) = (|| {
-                let spacing = scene.logical_bar_spacing().max(1.0);
+                let spacing = scene.logical_bar_spacing();
                 let right_unit = scene.effective_right_x_unit();
                 let visible_units = plot_width / spacing;
-                let earliest_unit = (right_unit - visible_units).floor() as i64;
+                let earliest_unit = (right_unit - visible_units + 1.0).floor() as i64;
                 let latest_unit = right_unit.ceil() as i64;
 
                 Some((
@@ -523,7 +526,7 @@ where
                     };
                     let tick_unit = earliest_unit as f32
                         + (label.x_pos / plot_width) * (latest_unit - earliest_unit) as f32;
-                    let x = Self::snap_plot_x_to_cell(scene.map_x_plot_f32(tick_unit), pixel_ratio);
+                    let x = pixels.snap_x_to_cell(scene.map_x_plot_f32(tick_unit));
 
                     frame.fill_text(canvas::Text {
                         content: label.content,
@@ -557,7 +560,7 @@ where
                         return;
                     }
 
-                    let x = Self::snap_plot_x_to_cell(scene.map_x_plot(unit), pixel_ratio);
+                    let x = pixels.snap_x_to_cell(scene.map_x_plot(unit));
 
                     if last_x.is_some_and(|previous| (x - previous).abs() < target_spacing) {
                         return;
@@ -619,7 +622,7 @@ where
 
         frame.with_clip(clip_region, |frame| {
             for tick in ticks_with_bounds {
-                let x = Self::snap_plot_x_to_cell(scene.map_x_plot(tick), pixel_ratio);
+                let x = pixels.snap_x_to_cell(scene.map_x_plot(tick));
                 let label = self.format_x_label(scene.x.axis, tick, step_units);
 
                 frame.fill_text(canvas::Text {

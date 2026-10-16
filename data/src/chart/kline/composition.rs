@@ -1,6 +1,7 @@
 use super::YUnit;
+use super::indicators::IndicatorOutputRef;
 use exchange::TickerInfo;
-use exchange::unit::{Power10, Price, Qty};
+use exchange::unit::{Power10, Price, PriceStep, Qty};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
@@ -47,16 +48,55 @@ pub enum PanelPresentation {
     Table,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum LayerPurpose {
+    #[default]
+    Plot,
+    /// Internal output binding used to identify and populate a table panel.
+    TableBinding,
+}
+
+impl LayerPurpose {
+    pub const fn is_plot(self) -> bool {
+        matches!(self, Self::Plot)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MarkKind {
     Candle,
     Bar(BarMode),
     Line,
+    StepLine,
+    Area,
+    Point,
+    Cross,
+    Segment,
+    HorizontalLevel,
 }
 
 impl MarkKind {
     pub const fn supports_line_styling(self) -> bool {
-        matches!(self, Self::Line)
+        matches!(
+            self,
+            Self::Line | Self::StepLine | Self::Area | Self::Segment | Self::HorizontalLevel
+        )
+    }
+
+    pub const fn is_line_like(self) -> bool {
+        matches!(
+            self,
+            Self::Line | Self::StepLine | Self::Area | Self::Segment | Self::HorizontalLevel
+        )
+    }
+
+    /// Marks that consume a bar-anchored numeric series. Sparse outputs are
+    /// joined only across consecutive available samples by the renderer.
+    pub const fn is_series_line_like(self) -> bool {
+        matches!(
+            self,
+            Self::Line | Self::StepLine | Self::Area | Self::Segment | Self::HorizontalLevel
+        )
     }
 }
 
@@ -65,6 +105,7 @@ pub enum LayerDataKind {
     Ohlc,
     Scalar,
     Histogram,
+    Range,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,14 +123,14 @@ pub enum BarMode {
 pub const fn default_bar_mode_for_data_kind(data_kind: LayerDataKind) -> BarMode {
     match data_kind {
         LayerDataKind::Histogram => BarMode::Histogram(HistogramMode::Plain),
-        LayerDataKind::Ohlc | LayerDataKind::Scalar => BarMode::Regular,
+        LayerDataKind::Ohlc | LayerDataKind::Scalar | LayerDataKind::Range => BarMode::Regular,
     }
 }
 
 pub const fn default_mark_for_data_kind(data_kind: LayerDataKind) -> MarkKind {
     match data_kind {
         LayerDataKind::Ohlc => MarkKind::Candle,
-        LayerDataKind::Scalar => MarkKind::Line,
+        LayerDataKind::Scalar | LayerDataKind::Range => MarkKind::Line,
         LayerDataKind::Histogram => MarkKind::Bar(BarMode::Histogram(HistogramMode::Plain)),
     }
 }
@@ -97,30 +138,43 @@ pub const fn default_mark_for_data_kind(data_kind: LayerDataKind) -> MarkKind {
 const fn supports_mark(data_kind: LayerDataKind, mark: MarkKind) -> bool {
     match data_kind {
         LayerDataKind::Ohlc => matches!(mark, MarkKind::Line | MarkKind::Candle),
-        LayerDataKind::Scalar => matches!(mark, MarkKind::Line | MarkKind::Bar(_)),
-        LayerDataKind::Histogram => matches!(mark, MarkKind::Line | MarkKind::Bar(_)),
+        LayerDataKind::Scalar => matches!(
+            mark,
+            MarkKind::Line
+                | MarkKind::StepLine
+                | MarkKind::Area
+                | MarkKind::Point
+                | MarkKind::Cross
+                | MarkKind::Segment
+                | MarkKind::HorizontalLevel
+                | MarkKind::Bar(_)
+        ),
+        LayerDataKind::Range => matches!(mark, MarkKind::Line),
+        LayerDataKind::Histogram => matches!(
+            mark,
+            MarkKind::Line
+                | MarkKind::StepLine
+                | MarkKind::Area
+                | MarkKind::Point
+                | MarkKind::Cross
+                | MarkKind::Segment
+                | MarkKind::HorizontalLevel
+                | MarkKind::Bar(_)
+        ),
     }
 }
 
-const fn supports_bar_mode(
-    data_kind: LayerDataKind,
-    mode: BarMode,
-    signed_overlay_input: bool,
-) -> bool {
+const fn supports_bar_mode(data_kind: LayerDataKind, mode: BarMode) -> bool {
     match mode {
         BarMode::Regular => true,
         BarMode::Histogram(HistogramMode::Plain) => matches!(data_kind, LayerDataKind::Histogram),
         BarMode::Histogram(HistogramMode::SignedOverlay) => {
-            matches!(data_kind, LayerDataKind::Histogram) && signed_overlay_input
+            matches!(data_kind, LayerDataKind::Histogram)
         }
     }
 }
 
-pub fn resolve_mark_for_data_kind(
-    mark: MarkKind,
-    data_kind: LayerDataKind,
-    signed_overlay_input: bool,
-) -> MarkKind {
+pub fn resolve_mark_for_data_kind(mark: MarkKind, data_kind: LayerDataKind) -> MarkKind {
     let mut resolved = if supports_mark(data_kind, mark) {
         mark
     } else {
@@ -128,7 +182,7 @@ pub fn resolve_mark_for_data_kind(
     };
 
     if let MarkKind::Bar(mode) = resolved
-        && !supports_bar_mode(data_kind, mode, signed_overlay_input)
+        && !supports_bar_mode(data_kind, mode)
     {
         resolved = MarkKind::Bar(default_bar_mode_for_data_kind(data_kind));
     }
@@ -292,36 +346,74 @@ pub enum PanelValuePrecision {
     BaseTickerMinTick,
     BaseTickerMinQty,
     FixedPower10(Power10<-8, 8>),
-    FixedStep(f32),
+    FixedStep(f64),
 }
 
 impl PanelValuePrecision {
-    const MIN_STEP: f32 = 1e-8;
-    const DEFAULT_FALLBACK_STEP: f32 = 1e-4;
+    const MIN_STEP_F64: f64 = 1e-8;
+    const DEFAULT_FALLBACK_STEP_F64: f64 = 1e-4;
 
-    pub fn quantization_step(self, base_ticker: Option<TickerInfo>) -> Option<f32> {
+    pub fn quantization_step_f32(self, base_ticker: Option<TickerInfo>) -> Option<f32> {
+        self.quantization_step(base_ticker).map(|step| step as f32)
+    }
+
+    pub fn quantization_step(self, base_ticker: Option<TickerInfo>) -> Option<f64> {
         let step = match self {
-            Self::BaseTickerMinTick => base_ticker.map(|ticker| ticker.min_ticksize.as_f32()),
-            Self::BaseTickerMinQty => base_ticker.map(|ticker| ticker.min_qty.as_f32()),
-            Self::FixedPower10(step) => Some(step.as_f32()),
+            Self::BaseTickerMinTick => base_ticker.map(|ticker| ticker.min_ticksize.as_f64()),
+            Self::BaseTickerMinQty => base_ticker.map(|ticker| ticker.min_qty.as_f64()),
+            Self::FixedPower10(step) => Some(step.as_f64()),
             Self::FixedStep(step) => Some(step),
         }?;
 
-        Some(step.abs().max(Self::MIN_STEP))
+        Some(step.abs().max(Self::MIN_STEP_F64))
+    }
+
+    pub fn value_bounds(self, base_ticker: Option<TickerInfo>) -> Option<(f64, f64)> {
+        let bounds = match self {
+            Self::BaseTickerMinTick => {
+                let unit_size =
+                    base_ticker.map(|ticker| Price::min_tick_units(ticker.min_ticksize))?;
+                let min_units = i64::MIN.div_euclid(unit_size).saturating_mul(unit_size);
+                let max_units = i64::MAX.div_euclid(unit_size).saturating_mul(unit_size);
+                (
+                    Price::from_units(min_units).to_f64(),
+                    Price::from_units(max_units).to_f64(),
+                )
+            }
+            Self::BaseTickerMinQty => {
+                let unit_size = base_ticker.map(|ticker| Qty::min_qty_units(ticker.min_qty))?;
+                let min_units = i64::MIN.div_euclid(unit_size).saturating_mul(unit_size);
+                let max_units = i64::MAX.div_euclid(unit_size).saturating_mul(unit_size);
+                (
+                    Qty::from_units(min_units).to_f64(),
+                    Qty::from_units(max_units).to_f64(),
+                )
+            }
+            Self::FixedPower10(step) => {
+                let step = step.as_f64().abs().max(Self::MIN_STEP_F64);
+                (i64::MIN as f64 * step, i64::MAX as f64 * step)
+            }
+            Self::FixedStep(step) => {
+                let step = step.abs().max(Self::MIN_STEP_F64);
+                (i64::MIN as f64 * step, i64::MAX as f64 * step)
+            }
+        };
+
+        (bounds.0.is_finite() && bounds.1.is_finite() && bounds.0 < bounds.1).then_some(bounds)
     }
 
     fn decimals_from_power10(power: i8) -> usize {
         if power < 0 { (-power) as usize } else { 0 }
     }
 
-    pub fn decimals_for_step(step: f32) -> usize {
+    pub fn decimals_for_step(step: f64) -> usize {
         let step = step.abs();
         if !step.is_finite() || step <= 0.0 {
             return 4;
         }
 
         for decimals in 0..=8 {
-            let scaled = (step as f64) * 10_f64.powi(decimals as i32);
+            let scaled = step * 10_f64.powi(decimals as i32);
             let nearest = scaled.round();
             let tolerance = (scaled.abs() * 1e-9).max(1e-12);
 
@@ -346,26 +438,54 @@ impl PanelValuePrecision {
         }
     }
 
-    fn round_to_i64_saturating(value: f32) -> i64 {
-        if !value.is_finite() {
-            return 0;
-        }
+    pub fn value_to_unit_f32(
+        self,
+        value: f32,
+        base_ticker: Option<TickerInfo>,
+        fallback_step: f32,
+    ) -> YUnit {
+        self.value_to_unit(f64::from(value), base_ticker, f64::from(fallback_step))
+    }
 
-        let rounded = value.round();
-        if rounded > i64::MAX as f32 {
-            i64::MAX
-        } else if rounded < i64::MIN as f32 {
-            i64::MIN
-        } else {
-            rounded as i64
+    /// Convert an exact price to display units when the precision is price-native.
+    /// `None` means the precision uses another numeric domain or an arbitrary step.
+    pub fn price_to_unit(self, value: Price, base_ticker: Option<TickerInfo>) -> Option<YUnit> {
+        match self {
+            Self::BaseTickerMinTick => {
+                let ticker = base_ticker?;
+                let min_tick = ticker.min_ticksize;
+                let unit_size = Price::min_tick_units(min_tick);
+                Some(YUnit(
+                    value
+                        .round_to_min_tick(min_tick)
+                        .units
+                        .div_euclid(unit_size),
+                ))
+            }
+            Self::FixedPower10(step) => {
+                let step_value = step.as_f64();
+                let step_price = Price::from_f64(step_value);
+                if step_price.units <= 0 || step_price.to_f64() != step_value {
+                    return None;
+                }
+                Some(YUnit(
+                    value
+                        .round_to_step(PriceStep {
+                            units: step_price.units,
+                        })
+                        .units
+                        .div_euclid(step_price.units),
+                ))
+            }
+            Self::BaseTickerMinQty | Self::FixedStep(_) => None,
         }
     }
 
     pub fn value_to_unit(
         self,
-        value: f32,
+        value: f64,
         base_ticker: Option<TickerInfo>,
-        fallback_step: f32,
+        fallback_step: f64,
     ) -> YUnit {
         if !value.is_finite() {
             return YUnit(0);
@@ -376,7 +496,7 @@ impl PanelValuePrecision {
                 if let Some(ticker) = base_ticker {
                     let min_tick = ticker.min_ticksize;
                     let unit_size = Price::min_tick_units(min_tick);
-                    let price_units = Price::from_f32(value).round_to_min_tick(min_tick).units;
+                    let price_units = Price::from_f64(value).round_to_min_tick(min_tick).units;
                     return YUnit(price_units.div_euclid(unit_size));
                 }
             }
@@ -384,39 +504,48 @@ impl PanelValuePrecision {
                 if let Some(ticker) = base_ticker {
                     let min_qty = ticker.min_qty;
                     let unit_size = Qty::min_qty_units(min_qty);
-                    let qty_units = Qty::from_f64(value as f64).round_to_min_qty(min_qty).units;
+                    let qty_units = Qty::from_f64(value).round_to_min_qty(min_qty).units;
                     return YUnit(qty_units.div_euclid(unit_size));
                 }
             }
             Self::FixedPower10(step) => {
-                let step = step.as_f32().abs().max(Self::MIN_STEP);
+                let step = step.as_f64().abs().max(Self::MIN_STEP_F64);
                 return YUnit(Self::round_to_i64_saturating(value / step));
             }
             Self::FixedStep(step) => {
-                let step = step.abs().max(Self::MIN_STEP);
+                let step = step.abs().max(Self::MIN_STEP_F64);
                 return YUnit(Self::round_to_i64_saturating(value / step));
             }
         }
 
         let step = self
             .quantization_step(base_ticker)
-            .unwrap_or(fallback_step.abs().max(Self::MIN_STEP));
+            .unwrap_or(fallback_step.abs().max(Self::MIN_STEP_F64));
         YUnit(Self::round_to_i64_saturating(value / step))
+    }
+
+    pub fn unit_to_value_f32(
+        self,
+        y_unit: YUnit,
+        base_ticker: Option<TickerInfo>,
+        fallback_step: f32,
+    ) -> f32 {
+        self.unit_to_value(y_unit, base_ticker, f64::from(fallback_step)) as f32
     }
 
     pub fn unit_to_value(
         self,
         y_unit: YUnit,
         base_ticker: Option<TickerInfo>,
-        fallback_step: f32,
-    ) -> f32 {
+        fallback_step: f64,
+    ) -> f64 {
         match self {
             Self::BaseTickerMinTick => {
                 if let Some(ticker) = base_ticker {
                     let min_tick = ticker.min_ticksize;
                     let unit_size = Price::min_tick_units(min_tick);
                     let units = y_unit.0.saturating_mul(unit_size);
-                    return Price::from_units(units).to_f32_lossy();
+                    return Price::from_units(units).to_f64();
                 }
             }
             Self::BaseTickerMinQty => {
@@ -424,41 +553,41 @@ impl PanelValuePrecision {
                     let min_qty = ticker.min_qty;
                     let unit_size = Qty::min_qty_units(min_qty);
                     let units = y_unit.0.saturating_mul(unit_size);
-                    return Qty::from_units(units).to_f32_lossy();
+                    return Qty::from_units(units).to_f64();
                 }
             }
             Self::FixedPower10(step) => {
-                return (y_unit.0 as f32) * step.as_f32().abs().max(Self::MIN_STEP);
+                return (y_unit.0 as f64) * step.as_f64().abs().max(Self::MIN_STEP_F64);
             }
             Self::FixedStep(step) => {
-                return (y_unit.0 as f32) * step.abs().max(Self::MIN_STEP);
+                return (y_unit.0 as f64) * step.abs().max(Self::MIN_STEP_F64);
             }
         }
 
         let step = self
             .quantization_step(base_ticker)
-            .unwrap_or(fallback_step.abs().max(Self::MIN_STEP));
-        (y_unit.0 as f32) * step
+            .unwrap_or(fallback_step.abs().max(Self::MIN_STEP_F64));
+        (y_unit.0 as f64) * step
     }
 
     pub fn quantize_value(
         self,
-        value: f32,
+        value: f64,
         base_ticker: Option<TickerInfo>,
-        fallback_step: f32,
-    ) -> f32 {
+        fallback_step: f64,
+    ) -> f64 {
         let y_unit = self.value_to_unit(value, base_ticker, fallback_step);
         self.unit_to_value(y_unit, base_ticker, fallback_step)
     }
 
     pub fn format_compact(
         self,
-        value: f32,
-        fallback_step: f32,
+        value: f64,
+        fallback_step: f64,
         max_decimals: Option<u8>,
         base_ticker: Option<TickerInfo>,
     ) -> String {
-        let quantized = self.quantize_value(value, base_ticker, Self::DEFAULT_FALLBACK_STEP);
+        let quantized = self.quantize_value(value, base_ticker, Self::DEFAULT_FALLBACK_STEP_F64);
         let fallback = fallback_step.abs().max(1e-6);
         let step = self
             .quantization_step(base_ticker)
@@ -473,6 +602,28 @@ impl PanelValuePrecision {
             .unwrap_or(decimals);
         format!("{quantized:.decimals$}")
     }
+
+    fn round_to_i64_saturating(value: f64) -> i64 {
+        if value.is_nan() {
+            return 0;
+        }
+        if value.is_infinite() {
+            return if value.is_sign_negative() {
+                i64::MIN
+            } else {
+                i64::MAX
+            };
+        }
+
+        let rounded = value.round();
+        if rounded > i64::MAX as f64 {
+            i64::MAX
+        } else if rounded < i64::MIN as f64 {
+            i64::MIN
+        } else {
+            rounded as i64
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -485,13 +636,13 @@ pub enum PanelValueLabelMode {
 impl PanelValueLabelMode {
     pub fn format_value<FQ, FC>(self, quantized_value: FQ, compact_value: FC) -> String
     where
-        FQ: FnOnce() -> f32,
+        FQ: FnOnce() -> f64,
         FC: FnOnce() -> String,
     {
         match self {
             Self::Compact => compact_value(),
-            Self::Commas => crate::util::format_with_commas(quantized_value().into()),
-            Self::Abbreviated => crate::util::abbr_large_numbers(quantized_value().into()),
+            Self::Commas => crate::util::format_with_commas(quantized_value()),
+            Self::Abbreviated => crate::util::abbr_large_numbers(quantized_value()),
         }
     }
 }
@@ -516,7 +667,7 @@ impl Default for PanelValueLabelPolicy {
 impl PanelValueLabelPolicy {
     pub fn format_axis_value<FQ, FC>(self, quantized_value: FQ, compact_value: FC) -> String
     where
-        FQ: FnOnce() -> f32,
+        FQ: FnOnce() -> f64,
         FC: FnOnce() -> String,
     {
         self.axis_mode.format_value(quantized_value, compact_value)
@@ -524,7 +675,7 @@ impl PanelValueLabelPolicy {
 
     pub fn format_header_value<FQ, FC>(self, quantized_value: FQ, compact_value: FC) -> String
     where
-        FQ: FnOnce() -> f32,
+        FQ: FnOnce() -> f64,
         FC: FnOnce() -> String,
     {
         self.header_mode
@@ -552,9 +703,9 @@ pub enum LayerSource {
     RawKline {
         source: DataSourceId,
     },
-    RawIndicator {
+    IndicatorOutput {
         source: DataSourceId,
-        value_id: PanelValueId,
+        output: IndicatorOutputRef,
     },
 }
 
@@ -586,6 +737,7 @@ pub struct LayerSpec {
     pub name: String,
     pub source: LayerSource,
     pub data_kind: LayerDataKind,
+    pub purpose: LayerPurpose,
     pub mark: MarkKind,
     pub mark_override: Option<MarkKind>,
     pub axis: AxisBinding,
@@ -612,15 +764,21 @@ impl LayerSource {
     pub fn source_id(&self) -> Option<DataSourceId> {
         match self {
             Self::RawKline { source } => Some(*source),
-            Self::RawIndicator { source, .. } => Some(*source),
+            Self::IndicatorOutput { source, .. } => Some(*source),
         }
     }
 
-    pub fn indicator_value_id(&self) -> Option<PanelValueId> {
+    pub fn indicator_output(&self) -> Option<&IndicatorOutputRef> {
         match self {
-            Self::RawIndicator { value_id, .. } => Some(*value_id),
-            Self::RawKline { .. } => None,
+            Self::IndicatorOutput { output, .. } => Some(output),
+            _ => None,
         }
+    }
+
+    pub fn is_indicator_output(&self, instance_id: PanelValueId, channel_id: &str) -> bool {
+        self.indicator_output().is_some_and(|output| {
+            output.instance_id == instance_id && output.channel_id == channel_id
+        })
     }
 }
 
@@ -629,8 +787,8 @@ pub struct PanelSpec {
     pub id: PanelId,
     pub role: PanelRole,
     pub presentation: PanelPresentation,
+    pub named_pane: Option<u32>,
     pub title: Option<String>,
-    pub value_id: Option<PanelValueId>,
     pub value_precision: Option<PanelValuePrecision>,
     pub value_label_policy: PanelValueLabelPolicy,
     pub base_layer: Option<LayerId>,
@@ -719,6 +877,13 @@ pub struct ChartComposition {
 }
 
 impl ChartComposition {
+    pub fn indicator_outputs(&self) -> impl Iterator<Item = &IndicatorOutputRef> {
+        self.panels
+            .iter()
+            .flat_map(|panel| panel.layers.iter())
+            .filter_map(|layer| layer.source.indicator_output())
+    }
+
     pub fn prototype_kline() -> Self {
         let mut composition = Self {
             panels: Vec::new(),
@@ -742,8 +907,8 @@ impl ChartComposition {
             id: main_panel_id,
             role: PanelRole::Primary,
             presentation: PanelPresentation::Plot,
+            named_pane: None,
             title: None,
-            value_id: None,
             value_precision: Some(PanelValuePrecision::BaseTickerMinTick),
             value_label_policy: PanelValueLabelPolicy::default(),
             base_layer: Some(candle_layer.id),
@@ -826,11 +991,7 @@ impl ChartComposition {
             .or(Some(fallback))
     }
 
-    pub fn panel_effective_mark_with_runtime(
-        &self,
-        panel_id: PanelId,
-        signed_overlay_input: bool,
-    ) -> Option<MarkKind> {
+    pub fn panel_effective_mark(&self, panel_id: PanelId) -> Option<MarkKind> {
         let panel = self.panel(panel_id)?;
 
         let fallback = match panel.role {
@@ -842,7 +1003,7 @@ impl ChartComposition {
             .base_layer
             .or_else(|| panel.layers.first().map(|layer| layer.id));
 
-        self.resolved_panel_marks_with_runtime(panel_id, signed_overlay_input)
+        self.resolved_panel_marks(panel_id)
             .and_then(|resolved_marks| {
                 base_layer_id
                     .and_then(|base| {
@@ -854,10 +1015,6 @@ impl ChartComposition {
                     .or_else(|| resolved_marks.first().map(|(_, mark)| *mark))
             })
             .or(Some(fallback))
-    }
-
-    pub fn panel_value_id(&self, panel_id: PanelId) -> Option<PanelValueId> {
-        self.panel(panel_id).and_then(|panel| panel.value_id)
     }
 
     pub fn panel_value_precision(&self, panel_id: PanelId) -> Option<PanelValuePrecision> {
@@ -966,8 +1123,8 @@ impl ChartComposition {
             id: panel_id,
             role: PanelRole::Auxiliary,
             presentation,
+            named_pane: None,
             title: Some(title.into()),
-            value_id: None,
             value_precision,
             value_label_policy,
             base_layer,
@@ -986,13 +1143,14 @@ impl ChartComposition {
 
     pub fn add_table_panel(&mut self, title: impl Into<String>, source: DataSourceId) -> PanelId {
         let title = title.into();
-        let layer = self.new_layer(
+        let mut layer = self.new_layer(
             title.clone(),
             LayerSource::RawKline { source },
             LayerDataKind::Scalar,
             MarkKind::Line,
             AxisBinding::Secondary,
         );
+        layer.purpose = LayerPurpose::TableBinding;
 
         self.add_aux_panel(
             title,
@@ -1050,19 +1208,6 @@ impl ChartComposition {
         };
 
         panel.preferred_scale = scale;
-        true
-    }
-
-    pub fn set_panel_value_id(
-        &mut self,
-        panel_id: PanelId,
-        value_id: Option<PanelValueId>,
-    ) -> bool {
-        let Some(panel) = self.panel_mut(panel_id) else {
-            return false;
-        };
-
-        panel.value_id = value_id;
         true
     }
 
@@ -1163,11 +1308,7 @@ impl ChartComposition {
         true
     }
 
-    pub fn resolved_panel_marks_with_runtime(
-        &self,
-        panel_id: PanelId,
-        signed_overlay_input: bool,
-    ) -> Option<Vec<(LayerId, MarkKind)>> {
+    pub fn resolved_panel_marks(&self, panel_id: PanelId) -> Option<Vec<(LayerId, MarkKind)>> {
         let panel = self.panel(panel_id)?;
         let is_multi_source = panel.uses_multi_source();
 
@@ -1185,10 +1326,7 @@ impl ChartComposition {
                         mark = MarkKind::Line;
                     }
 
-                    (
-                        layer.id,
-                        resolve_mark_for_data_kind(mark, layer.data_kind, signed_overlay_input),
-                    )
+                    (layer.id, resolve_mark_for_data_kind(mark, layer.data_kind))
                 })
                 .collect(),
         )
@@ -1261,6 +1399,7 @@ impl ChartComposition {
             name: name.into(),
             source,
             data_kind,
+            purpose: LayerPurpose::Plot,
             mark,
             mark_override: None,
             axis,

@@ -3,6 +3,17 @@ use data::chart::kline as persisted;
 use super::{FLOATING_TOOLBAR_HEIGHT, FLOATING_TOOLBAR_MARGIN};
 
 #[derive(Debug, Clone, Copy)]
+pub enum FloatingToolbarEvent {
+    HandleMoved(iced::Point),
+    DragStarted,
+    DragMoved {
+        cursor: iced::Point,
+        overlay_size: iced::Size,
+    },
+    DragFinished,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub(super) struct FloatingToolbarState {
     pub(super) position: persisted::FloatingToolbarPosition,
     handle_cursor: iced::Point,
@@ -27,33 +38,37 @@ impl FloatingToolbarState {
         }
     }
 
-    pub(super) fn set_handle_cursor(&mut self, cursor: iced::Point) {
-        self.handle_cursor = cursor;
-    }
+    pub(super) fn update(&mut self, event: FloatingToolbarEvent) {
+        match event {
+            FloatingToolbarEvent::HandleMoved(cursor) => {
+                self.handle_cursor = cursor;
+            }
+            FloatingToolbarEvent::DragStarted => {
+                self.is_dragging = true;
+            }
+            FloatingToolbarEvent::DragMoved {
+                cursor,
+                overlay_size,
+            } => {
+                if !self.is_dragging {
+                    return;
+                }
 
-    pub(super) fn start_drag(&mut self) {
-        self.is_dragging = true;
-    }
-
-    pub(super) fn drag_to(&mut self, cursor: iced::Point, overlay_size: iced::Size) {
-        if !self.is_dragging {
-            return;
+                let position = iced::Point::new(
+                    (cursor.x - self.handle_cursor.x)
+                        .clamp(FLOATING_TOOLBAR_MARGIN, Self::max_x(overlay_size)),
+                    (cursor.y - self.handle_cursor.y)
+                        .clamp(FLOATING_TOOLBAR_MARGIN, Self::max_y(overlay_size)),
+                );
+                self.position = persisted::FloatingToolbarPosition {
+                    x_ratio: Self::ratio(position.x, overlay_size.width),
+                    y_ratio: Self::ratio(position.y, overlay_size.height),
+                };
+            }
+            FloatingToolbarEvent::DragFinished => {
+                self.is_dragging = false;
+            }
         }
-
-        let position = iced::Point::new(
-            (cursor.x - self.handle_cursor.x)
-                .clamp(FLOATING_TOOLBAR_MARGIN, Self::max_x(overlay_size)),
-            (cursor.y - self.handle_cursor.y)
-                .clamp(FLOATING_TOOLBAR_MARGIN, Self::max_y(overlay_size)),
-        );
-        self.position = persisted::FloatingToolbarPosition {
-            x_ratio: Self::ratio(position.x, overlay_size.width),
-            y_ratio: Self::ratio(position.y, overlay_size.height),
-        };
-    }
-
-    pub(super) fn finish_drag(&mut self) {
-        self.is_dragging = false;
     }
 
     pub(super) fn position_within(&self, overlay_size: iced::Size) -> iced::Point {

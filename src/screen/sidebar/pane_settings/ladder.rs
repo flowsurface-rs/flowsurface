@@ -10,9 +10,7 @@ use data::layout::pane::VisualConfig;
 use data::panel::ladder;
 use iced::{
     Alignment,
-    widget::{
-        button, checkbox, column, row, slider, space, text, tooltip::Position as TooltipPosition,
-    },
+    widget::{button, checkbox, column, row, space, text, tooltip::Position as TooltipPosition},
 };
 use std::time::Duration;
 
@@ -57,10 +55,12 @@ pub fn ladder_cfg_view<'a>(cfg: ladder::Config) -> InspectorContent<'a, Message>
         .spacing(8)
     };
 
-    let retention_slider = {
-        let retention_minutes = (cfg.trade_retention.as_secs_f32() / 60.0).max(1.0);
-
-        let slider_ui = slider(1.0..=60.0, retention_minutes, move |new_minutes| {
+    let retention_minutes = (cfg.trade_retention.as_secs_f32() / 60.0).max(1.0);
+    let retention_slider = classic_slider_row(
+        Some(text("Keep trades for")),
+        1.0..=60.0,
+        retention_minutes,
+        move |new_minutes| {
             let mins = new_minutes.round().max(1.0) as u64;
             Message::VisualConfigChanged {
                 config: VisualConfig::Ladder(ladder::Config {
@@ -69,18 +69,10 @@ pub fn ladder_cfg_view<'a>(cfg: ladder::Config) -> InspectorContent<'a, Message>
                 }),
                 sync_all: false,
             }
-        })
-        .step(1.0);
-
-        classic_slider_row(
-            text("Keep trades for"),
-            slider_ui.into(),
-            Some(crate::widget::text::emphasis(format!(
-                "≈ {} min",
-                retention_minutes.round() as u64
-            ))),
-        )
-    };
+        },
+        |value| format!("≈ {} min", value.round() as u64),
+        Some(1.0),
+    );
 
     let mut content = InspectorContent::new(vec![
         InspectorSection::titled("Display Options", display_options),

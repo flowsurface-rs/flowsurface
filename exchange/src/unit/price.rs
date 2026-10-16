@@ -192,12 +192,9 @@ impl Price {
         }
     }
 
-    pub fn add_steps(self, steps: i64, step: PriceStep) -> Self {
-        Self::from_units(
-            self.units
-                .checked_add(steps.saturating_mul(step.units))
-                .expect("add_steps overflowed"),
-        )
+    pub fn checked_add_steps(self, steps: i64, step: PriceStep) -> Option<Self> {
+        let delta = steps.checked_mul(step.units)?;
+        self.units.checked_add(delta).map(Self::from_units)
     }
 
     /// Number of step increments between low..=high (inclusive), or None if invalid.
