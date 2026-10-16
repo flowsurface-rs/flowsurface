@@ -1,0 +1,22 @@
+language(1)
+indicator("Money Flow Index", id = "catalog.mfi", sourceable = true, max_bars_back = 2)
+display(attachment = "panel", layer_name = "MFI")
+format(precision = "fixed_step:0.01", axis_labels = "compact", header_labels = "compact", max_decimals = 2)
+period = input.int(14, "Period", min = 1, max = 200)
+upper_band = input.float(80.0, "Overbought", min = 1.0, max = 99.0, step = 1.0)
+lower_band = input.float(20.0, "Oversold", min = 1.0, max = 99.0, step = 1.0)
+typical = (chart.high + chart.low + chart.close) / 3
+positive = select(typical > typical[1], typical * chart.volume, 0)
+negative = select(typical < typical[1], typical * chart.volume, 0)
+positive_average = ta.sma(positive, period)
+negative_average = ta.sma(negative, period)
+ratio = positive_average / negative_average
+value = select(negative_average == 0, 100, 100 - 100 / (1 + ratio))
+plot(value, id = "value", title = "MFI", precision = "decimals:2", color_slot = "main", width = 1.2)
+plot(upper_band, id = "upper", title = "Overbought", precision = "decimals:2", color_slot = "upper", layer_title = "OB", width = 0.9)
+plot(lower_band, id = "lower", title = "Oversold", precision = "decimals:2", color_slot = "lower", layer_title = "OS", width = 0.9)
+
+style("main", title = "MFI", role = "primary")
+style("upper", title = "Overbought", role = "success")
+style("lower", title = "Oversold", role = "danger")
+mark(title = "Line", source = "value", kind = "line", color_slot = "main")

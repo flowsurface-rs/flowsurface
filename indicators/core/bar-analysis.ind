@@ -1,0 +1,23 @@
+language(1)
+indicator("Bar Analysis", id = "core.bar-analysis", author = "Niketion", author_url = "https://github.com/niketion", sourceable = false, max_bars_back = 1)
+display(view = "table")
+has_trade_data = chart.trade.available
+buy = select(has_trade_data, chart.trade.buy_qty, na)
+sell = select(has_trade_data, chart.trade.sell_qty, na)
+total = buy + sell
+delta = buy - sell
+delta_pct = select(total == 0, 0, delta / total * 100)
+plot(delta, id = "value", title = "Delta", precision = "instrument", color_slot = "main", overlay = false, layer = false)
+plot(buy, id = "bar_analysis.buy", title = "Buy", precision = "instrument", color_slot = "positive", overlay = false, layer = false)
+plot(sell, id = "bar_analysis.sell", title = "Sell", precision = "instrument", color_slot = "negative", overlay = false, layer = false)
+plot(total, id = "bar_analysis.total", title = "Total", precision = "instrument", overlay = false, layer = false)
+plot(delta_pct, id = "bar_analysis.delta_pct", title = "Delta %", precision = "instrument", overlay = false, layer = false)
+
+style("positive", title = "Positive values", role = "success")
+style("negative", title = "Negative values", role = "danger")
+style("main", title = "Neutral values")
+column(title = "Buy", source = "bar_analysis.buy", color_slot = "positive")
+column(title = "Sell", source = "bar_analysis.sell", color_slot = "negative")
+column(title = "Total", source = "bar_analysis.total", color_slot = "main")
+column(title = "Delta", source = "value", color_mode = "signed", positive_color_slot = "positive", negative_color_slot = "negative")
+column(title = "Delta%", source = "bar_analysis.delta_pct", format = "percent", color_mode = "signed", positive_color_slot = "positive", negative_color_slot = "negative")

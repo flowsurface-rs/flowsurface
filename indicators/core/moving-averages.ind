@@ -1,0 +1,31 @@
+language(1)
+indicator("Moving Averages", id = "core.moving-averages", sourceable = true, max_bars_back = 1)
+display(view = "plot", attachment = "overlay")
+format(precision = "base_ticker_min_tick")
+method = input.string("Sma", "Average method", options = ["Sma", "Ema", "Vwma"])
+fast_period = input.int(50, "Fast period", min = 1, max = 500)
+medium_period = input.int(150, "Medium period", min = 1, max = 500)
+slow_period = input.int(250, "Slow period", min = 1, max = 500)
+source = input.source(chart.close, "Source")
+fast = switch method {
+    "Sma" => ta.sma(source, fast_period),
+    "Ema" => ta.ema(source, fast_period),
+    default => ta.vwma(source, chart.volume, fast_period)
+}
+medium = switch method {
+    "Sma" => ta.sma(source, medium_period),
+    "Ema" => ta.ema(source, medium_period),
+    default => ta.vwma(source, chart.volume, medium_period)
+}
+slow = switch method {
+    "Sma" => ta.sma(source, slow_period),
+    "Ema" => ta.ema(source, slow_period),
+    default => ta.vwma(source, chart.volume, slow_period)
+}
+plot(fast, id = "value", title = "Fast", precision = "instrument", color_slot = "fast", width = 1.1, pane = "main")
+plot(medium, id = "moving_averages.medium", title = "Medium", precision = "instrument", color_slot = "medium", pane = "main")
+plot(slow, id = "moving_averages.slow", title = "Slow", precision = "instrument", color_slot = "slow", pane = "main")
+
+style("fast", title = "Fast")
+style("medium", title = "Medium", role = "success")
+style("slow", title = "Slow", role = "danger")

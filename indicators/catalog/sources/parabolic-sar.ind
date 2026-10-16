@@ -1,0 +1,30 @@
+language(1)
+indicator("Parabolic SAR", id = "catalog.parabolic-sar", sourceable = true, max_bars_back = 3)
+display(view = "primary_overlay")
+af_start = input.float(0.02, "Initial acceleration", min = 0.001, max = 1.0, step = 0.001)
+af_step = input.float(0.02, "Acceleration step", min = 0.001, max = 1.0, step = 0.001)
+af_max = input.float(0.2, "Maximum acceleration", min = 0.001, max = 1.0, step = 0.001)
+state trend = true
+state sar = chart.low
+state extreme = chart.high
+state acceleration = af_start
+prior_low = coalesce(chart.low[1], chart.low)
+prior_low_2 = coalesce(chart.low[2], prior_low)
+prior_high = coalesce(chart.high[1], chart.high)
+prior_high_2 = coalesce(chart.high[2], prior_high)
+up_candidate = math.min(sar + acceleration * (extreme - sar), math.min(prior_low, prior_low_2))
+down_candidate = math.max(sar + acceleration * (extreme - sar), math.max(prior_high, prior_high_2))
+reversal = select(trend, chart.low <= up_candidate, chart.high >= down_candidate)
+new_extreme = select(trend, chart.high > extreme, chart.low < extreme)
+next_sar = select(reversal, extreme, select(trend, up_candidate, down_candidate))
+next_extreme = select(reversal, select(trend, chart.low, chart.high), select(trend, math.max(extreme, chart.high), math.min(extreme, chart.low)))
+trend := select(reversal, !trend, trend)
+sar := next_sar
+extreme := next_extreme
+acceleration := select(reversal, af_start, select(new_extreme, math.min(acceleration + af_step, af_max), acceleration))
+plot(sar, id = "sar", title = "SAR", precision = "instrument", color_slot = "bull", style_by = "trend", true_color_slot = "bull", false_color_slot = "bear", layer_title = "Parabolic SAR", mark = "point")
+plot(trend, id = "trend", title = "Uptrend", overlay = false, layer = false)
+
+style("bull", title = "Bull", role = "success")
+style("bear", title = "Bear", role = "danger")
+mark(title = "Points", source = "sar", kind = "point", color_slot = "bull", true_color_slot = "bull", false_color_slot = "bear")

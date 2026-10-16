@@ -1,0 +1,43 @@
+language(1)
+indicator("ZigZag", id = "catalog.zigzag", sourceable = false, max_bars_back = 200)
+display(view = "primary_overlay")
+depth = input.int(12, "Pivot depth", min = 2, max = 200)
+window = depth * 2 + 1
+candidate_high = coalesce(chart.high[depth] == ta.highest(chart.high, window), false)
+candidate_low = coalesce(chart.low[depth] == ta.lowest(chart.low, window), false)
+confirmed = candidate_high || candidate_low
+candidate_direction = candidate_high
+candidate_value = select(candidate_high, chart.high[depth], chart.low[depth])
+candidate_bar = bar_index - depth
+state direction = true
+state pivot = chart.close
+state pivot_bar = -1
+state previous_pivot = chart.close
+state previous_pivot_bar = -1
+higher_than_pivot = coalesce(candidate_value > pivot, false)
+lower_than_pivot = coalesce(candidate_value < pivot, false)
+replace = confirmed && pivot_bar >= 0 && candidate_direction == direction && select(candidate_direction, higher_than_pivot, lower_than_pivot)
+new_direction = candidate_direction != direction
+accept_candidate = select(pivot_bar < 0, true, select(new_direction, true, replace))
+accept = confirmed && accept_candidate
+reversal = accept && pivot_bar >= 0 && candidate_direction != direction
+
+segment(
+    start_value = previous_pivot,
+    end_value = pivot,
+    start_index = previous_pivot_bar,
+    end_index = pivot_bar,
+    id = "confirmed",
+    title = "ZigZag", color_slot = "confirmed", width = 1.2,
+    visible = reversal && previous_pivot_bar >= 0
+)
+
+previous_pivot := select(reversal, pivot, previous_pivot)
+previous_pivot_bar := select(reversal, pivot_bar, previous_pivot_bar)
+direction := select(accept, candidate_direction, direction)
+pivot := select(accept, candidate_value, pivot)
+pivot_bar := select(accept, candidate_bar, pivot_bar)
+plot(na, id = "value", title = "ZigZag", precision = "instrument", color_slot = "confirmed", layer_title = "ZigZag segments", mark = "point", overlay = false)
+plot(confirmed && candidate_direction, id = "high_pivot", title = "High pivot", overlay = false, layer = false)
+
+style("confirmed", title = "Confirmed", role = "primary")

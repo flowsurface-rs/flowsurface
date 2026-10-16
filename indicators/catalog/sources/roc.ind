@@ -1,0 +1,12 @@
+language(1)
+indicator("Rate of Change", id = "catalog.roc", sourceable = true, max_bars_back = 500)
+display(attachment = "panel", layer_name = "ROC")
+format(precision = "fixed_step:0.01", axis_labels = "compact", header_labels = "compact", max_decimals = 2)
+period = input.int(12, "Period", min = 1, max = 500)
+source = input.source(chart.close, "Source")
+past = source[period]
+value = 100 * (source / past - 1)
+plot(value, id = "value", title = "ROC", precision = "decimals:2", color_slot = "main", width = 1.2)
+
+style("main", title = "ROC", role = "primary")
+mark(title = "Line", source = "value", kind = "line", color_slot = "main")

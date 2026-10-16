@@ -1,0 +1,11 @@
+language(1)
+indicator("On-Balance Volume", id = "catalog.obv", sourceable = true, max_bars_back = 2)
+display(attachment = "panel", layer_name = "OBV")
+format(precision = "base_ticker_min_qty", axis_labels = "abbreviated", header_labels = "commas")
+source = input.source(chart.close, "Source")
+state total = 0
+total := total + select(source > source[1], chart.volume, select(source < source[1], -chart.volume, 0))
+plot(total, id = "value", title = "OBV", precision = "instrument", color_slot = "main", width = 1.2)
+
+style("main", title = "OBV", role = "primary")
+mark(title = "Line", source = "value", kind = "line", color_slot = "main")
