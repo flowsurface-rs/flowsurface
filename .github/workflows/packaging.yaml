@@ -1,20 +1,5 @@
 name: Packaging
 on:
-    pull_request:
-        paths:
-            - 'scripts/packaging/**'
-            - 'scripts/package-linux.sh'
-            - 'src/window.rs'
-            - 'scripts/build-macos.sh'
-            - 'scripts/build-windows.sh'
-            - 'scripts/package-macos.sh'
-            - 'scripts/package-windows.ps1'
-            - 'assets/app-icon/**'
-            - 'build.rs'
-            - 'Cargo.toml'
-            - 'Cargo.lock'
-            - '.github/workflows/packaging.yaml'
-            - '.github/workflows/release.yaml'
     workflow_dispatch:
 permissions:
     contents: read

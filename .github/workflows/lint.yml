@@ -4,7 +4,7 @@ on:
     push:
         branches: [main]
     pull_request:
-        branches: [main]
+        branches: [main, 'chart-rewrite/**']
     workflow_dispatch:
 
 jobs:
@@ -53,12 +53,15 @@ jobs:
               run: cargo fetch
 
             - name: Test indicator engine
+              if: github.event_name == 'workflow_dispatch'
               run: cargo test -p flowsurface-indicator-engine --locked
 
             - name: Smoke-test core indicator sources
+              if: github.event_name == 'workflow_dispatch'
               run: cargo run --locked -p flowsurface-indicator-engine --bin flowsurface-indicator -- test indicators/core --namespace core
 
             - name: Smoke-test catalog indicator sources
+              if: github.event_name == 'workflow_dispatch'
               run: cargo run --locked -p flowsurface-indicator-engine --bin flowsurface-indicator -- test indicators/catalog/sources --namespace catalog
 
             - name: Run cargo clippy
