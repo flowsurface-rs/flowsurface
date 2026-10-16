@@ -99,12 +99,11 @@ impl From<&Dashboard> for data::Dashboard {
 
         data::Dashboard {
             pane: from_layout(&dashboard.panes, main_window_layout),
-            popout: {
-                popouts_layout
-                    .iter()
-                    .map(|(pane, window_spec)| (pane.clone(), *window_spec))
-                    .collect()
-            },
+            popout: popouts_layout
+                .iter()
+                .map(|(pane, window_spec)| (pane.clone(), *window_spec))
+                .collect(),
+            chart_settings: dashboard.chart_settings,
         }
     }
 }
@@ -117,48 +116,17 @@ impl From<&pane::State> for data::Pane {
             pane::Content::Starter => data::Pane::Starter {
                 link_group: pane.link_group,
             },
-            pane::Content::Heatmap {
-                chart,
-                indicators,
-                studies,
-                layout,
-                ..
-            } => data::Pane::HeatmapChart {
-                layout: chart.as_ref().map_or(layout.clone(), |c| c.chart_layout()),
-                stream_type: streams,
-                settings: pane.settings.clone(),
-                indicators: indicators.clone(),
-                studies: chart
-                    .as_ref()
-                    .map_or(studies.clone(), |c| c.studies.clone()),
-                link_group: pane.link_group,
-            },
-            pane::Content::ShaderHeatmap {
-                indicators,
-                studies,
-                ..
-            } => data::Pane::ShaderHeatmap {
+            pane::Content::ShaderHeatmap { studies, .. } => data::Pane::ShaderHeatmap {
                 stream_type: streams,
                 studies: studies.clone(),
-                indicators: indicators.clone(),
                 settings: pane.settings.clone(),
                 link_group: pane.link_group,
             },
-            pane::Content::Kline {
-                chart,
-                indicators,
-                kind,
-                layout,
-                ..
-            } => data::Pane::KlineChart {
-                layout: chart.as_ref().map_or(layout.clone(), |c| c.chart_layout()),
-                kind: kind.clone(),
-                stream_type: streams,
-                settings: pane.settings.clone(),
-                indicators: indicators.clone(),
-                link_group: pane.link_group,
-            },
-            pane::Content::KlineV2 { .. } => data::Pane::KlineChartV2 {
+            pane::Content::Kline { chart, layout, .. } => data::Pane::KlineChart {
+                layout: chart
+                    .as_ref()
+                    .map(|chart| Box::new(chart.serializable_config()))
+                    .or_else(|| layout.clone()),
                 stream_type: streams,
                 settings: pane.settings.clone(),
                 link_group: pane.link_group,
@@ -173,20 +141,6 @@ impl From<&pane::State> for data::Pane {
                 settings: pane.settings.clone(),
                 link_group: pane.link_group,
             },
-            pane::Content::Comparison(chart) => {
-                let settings = data::layout::pane::Settings {
-                    visual_config: chart.as_ref().map(|c| {
-                        data::layout::pane::VisualConfig::Comparison(c.serializable_config())
-                    }),
-                    ..pane.settings.clone()
-                };
-
-                data::Pane::ComparisonChart {
-                    stream_type: streams,
-                    settings,
-                    link_group: pane.link_group,
-                }
-            }
         }
     }
 }
@@ -211,35 +165,11 @@ pub fn configuration(pane: data::Pane) -> Configuration<pane::State> {
         data::Pane::ShaderHeatmap {
             stream_type,
             settings,
-            indicators,
             studies,
             link_group,
         } => {
             let content = pane::Content::ShaderHeatmap {
                 chart: None,
-                indicators: indicators.clone(),
-                studies,
-            };
-
-            Configuration::Pane(pane::State::from_config(
-                content,
-                stream_type,
-                settings,
-                link_group,
-            ))
-        }
-        data::Pane::HeatmapChart {
-            layout,
-            studies,
-            stream_type,
-            settings,
-            indicators,
-            link_group,
-        } => {
-            let content = pane::Content::Heatmap {
-                chart: None,
-                indicators: indicators.clone(),
-                layout,
                 studies,
             };
 
@@ -252,46 +182,15 @@ pub fn configuration(pane: data::Pane) -> Configuration<pane::State> {
         }
         data::Pane::KlineChart {
             layout,
-            kind,
             stream_type,
             settings,
-            indicators,
             link_group,
         } => {
             let content = pane::Content::Kline {
                 chart: None,
-                indicators: indicators.clone(),
                 layout,
-                kind,
+                kline_indicators: Box::default(),
             };
-
-            Configuration::Pane(pane::State::from_config(
-                content,
-                stream_type,
-                settings,
-                link_group,
-            ))
-        }
-        data::Pane::KlineChartV2 {
-            stream_type,
-            settings,
-            link_group,
-        } => {
-            let content = pane::Content::KlineV2 { chart: None };
-
-            Configuration::Pane(pane::State::from_config(
-                content,
-                stream_type,
-                settings,
-                link_group,
-            ))
-        }
-        data::Pane::ComparisonChart {
-            stream_type,
-            settings,
-            link_group,
-        } => {
-            let content = pane::Content::Comparison(None);
 
             Configuration::Pane(pane::State::from_config(
                 content,
@@ -349,6 +248,7 @@ pub fn load_saved_state() -> SavedState {
                 let dashboard = Dashboard::from_config(
                     configuration(layout.dashboard.pane.clone()),
                     popout_windows,
+                    layout.dashboard.chart_settings,
                     layout_id,
                 );
 

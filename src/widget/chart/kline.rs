@@ -1,26 +1,57 @@
+mod axes;
 mod chrome;
-pub mod composition;
-pub mod coord;
-pub mod drawing;
+pub(crate) mod composition;
+pub(crate) mod drawing;
+mod footprint;
 mod helpers;
 mod layout;
+mod overlay;
+mod primary_render;
+mod scale;
 mod scene;
+mod scene_builder;
 
-use crate::style;
-use crate::widget::chart::kline::drawing::{
-    AxisBadgeFilter, DrawingDragTarget, DrawingId, DrawingSnapshot, DrawingTool,
-    KlineWidgetDrawingEvent,
-};
-use chrome::{IndicatorLegendHit, TickerLegendHit};
+use crate::{style, theme::ThemeAccents, window::PixelRatio};
+use axes::horizontal_world_for_drag;
+use chrome::{FootprintLegendHit, IndicatorLegendHit, StudyLegendHit, TickerLegendHit};
 use composition::{
     BarMode, ChartComposition, DEFAULT_MIN_PANEL_RATIO, HistogramMode, LayerDataKind, MarkKind,
-    PanelId, PanelScaleMode, PanelValueId,
+    PanelId, PanelPresentation, PanelScaleMode, PanelValueId,
 };
-use layout::{LayoutHitZone, PanelLayoutNode, PanelLayoutTree};
-use scene::{Scene, XAxis};
+use data::chart::kline::indicators::{
+    IndicatorCellValue, TableColumnColor, TableColumnFormat, TableColumnValue, table_columns,
+};
+use data::chart::kline::{
+    HorizontalWorld, IndicatorInstanceStore, LineStrokeStyle, MIN_LINE_WIDTH, SeriesColor,
+};
+pub use data::chart::kline::{
+    IndicatorOverlayChannelSpec as OverlayChannelSpec,
+    IndicatorOverlayColorRole as OverlayChannelColorRole,
+    IndicatorOverlaySource as OverlayChannelSource,
+};
+use drawing::{
+    AxisBadgeFilter, DrawingDragOperation, DrawingDragTarget, DrawingId, DrawingMeasure,
+    DrawingSnapshot, DrawingTool, KlineWidgetDrawingEvent,
+};
+use layout::{KlinePanelKind, LayoutHitZone, PanelLayoutNode, PanelLayoutTree};
+pub use scale::DEFAULT_BAR_SPACING_PX;
+pub use scale::HorizontalScale;
+use scale::{BarSpacingPx, HORIZONTAL_DRAG_SCALE_DELTA_PER_PX, normalized_scroll_delta};
+use scene::{Scene, SceneCache, TickIndex, XAxis};
 
 use data::UserTimezone;
 use data::chart::Basis;
+use data::chart::kline::series::{
+    AnchoredPriceLevelTradeDistribution, FootprintPocLine, PriceLevelTradeDistribution,
+};
+pub use data::chart::kline::values::IndicatorData;
+use data::chart::kline::{
+    CandlestickColorSlot, CandlestickConfig, FootprintConfig, FootprintPocColorSlot, KlineStudy,
+    KlineStudyId, VolumeProfileColorConfig, VolumeProfileColorSlot, VolumeProfileSchedule,
+};
+pub(crate) use data::chart::kline::{PanelYViewport, YUnit};
+use data::chart::kline_data::{KlineTrades, NPoc};
+
 use data::chart::ticks::{
     Y_LABEL_DENSITY,
     x::{TimeTickLabel, TimeTickTier},
@@ -28,282 +59,159 @@ use data::chart::ticks::{
     y::{TickValue, YAxisScale},
     y_labels_that_fit,
 };
-use exchange::{Kline, TickerInfo, Timeframe, UnixMs, unit::Price};
+use exchange::{
+    Kline, TickerInfo, Timeframe, UnixMs,
+    unit::{Price, PriceStep},
+};
 
 use iced::advanced::widget::tree::{self, Tree};
 use iced::advanced::{self, Clipboard, Layout, Shell, Widget, layout as iced_layout, renderer};
 use iced::theme::palette::Extended;
 use iced::widget::canvas;
 use iced::{
-    Element, Event, Length, Point, Rectangle, Renderer, Size, Theme, Vector, mouse, window,
+    Element, Event, Length, Point, Rectangle, Renderer, Size, Theme, Vector, keyboard, mouse,
+    window,
 };
 use iced_core::renderer::Quad;
+use std::time::{Duration, Instant};
 
 const Y_AXIS_GUTTER: f32 = 66.0;
 const X_AXIS_HEIGHT: f32 = 24.0;
+const MIN_FULL_CACHE_REFRESH_INTERVAL: Duration = Duration::from_micros(33_333);
 
-const MIN_X_TICK_PX: f32 = 80.0;
 const TEXT_SIZE: f32 = 12.0;
 const CHAR_W: f32 = TEXT_SIZE * 0.64;
 const Y_AXIS_LABEL_LEFT_INSET: f32 = 4.0;
 const PANEL_SPLITTER_HEIGHT: f32 = 1.0;
-const PANEL_SPLITTER_HIT_PX: f32 = 8.0;
-const PANEL_TITLE_LEFT_PAD: f32 = 6.0;
 const PANEL_TITLE_TOP_PAD: f32 = 4.0;
-const PANEL_TITLE_TO_CONTROLS_GAP: f32 = 8.0;
-const PANEL_CONTROL_BOX: f32 = TEXT_SIZE + 5.0;
-const PANEL_CONTROL_GAP: f32 = 4.0;
-const PANEL_CONTROL_ICON_SIZE: f32 = TEXT_SIZE - 1.0;
 const Y_AXIS_DRAG_SCALE_DELTA_PER_PX: f32 = 0.1;
 
 const TICKER_LEGEND_PADDING: f32 = 4.0;
 const TOOLTIP_ROW_LEFT_PAD: f32 = TICKER_LEGEND_PADDING * 2.0;
 const TICKER_LEGEND_ROW_H: f32 = TEXT_SIZE + 6.0;
-const TICKER_LEGEND_ICON_BOX: f32 = TEXT_SIZE + 8.0;
-const TICKER_LEGEND_ICON_GAP: f32 = 4.0;
-const TICKER_LEGEND_TOP_OFFSET: f32 = 0.0;
-const DRAWING_HIT_TOLERANCE_PX: f32 = 7.0;
-const DRAWING_HANDLE_RADIUS_PX: f32 = 4.0;
-const DRAWING_HANDLE_HIT_RADIUS_PX: f32 = 8.0;
 
-pub const DEFAULT_BAR_SPACING_PX: f32 = 5.0;
-pub const MIN_BAR_SPACING_PX: f32 = 2.0;
-pub const MAX_BAR_SPACING_PX: f32 = 48.0;
-const BAR_SPACING_SUBPIXEL_UNITS_PER_PX: i32 = 128;
-const BAR_SPACING_QUANTUM_PX: f32 = 1.0 / BAR_SPACING_SUBPIXEL_UNITS_PER_PX as f32;
-const HORIZONTAL_ZOOM_LINE_DELTA_MODE_ADJUSTMENT: f32 = 32.0;
-const HORIZONTAL_ZOOM_PIXEL_DELTA_MODE_ADJUSTMENT: f32 = 1.0;
-const HORIZONTAL_ZOOM_DELTA_NORMALIZATION: f32 = 100.0;
-const HORIZONTAL_DRAG_SCALE_DELTA_PER_PX: f32 = 0.2 / 9.0;
-const HORIZONTAL_ZOOM_MAX_ACCUMULATED_CHUNKS_PER_EVENT: usize = 8;
-const HORIZONTAL_ZOOM_MAX_ACCUMULATED_DELTA: f32 = 8.0;
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct HorizontalScale(pub f32);
-
-impl HorizontalScale {
-    pub fn pixels_per_bar(px: f32) -> Self {
-        Self(px)
-    }
-
-    pub fn as_pixels_per_bar(self) -> f32 {
-        self.0
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct PanelYViewport {
-    pub min_value: f32,
-    pub max_value: f32,
-}
-
-impl PanelYViewport {
-    pub fn normalized(min_value: f32, max_value: f32) -> Option<Self> {
-        if !min_value.is_finite() || !max_value.is_finite() {
-            return None;
-        }
-
-        let (mut min_value, mut max_value) = if min_value <= max_value {
-            (min_value, max_value)
-        } else {
-            (max_value, min_value)
-        };
-
-        if (max_value - min_value).abs() <= 1e-8 {
-            let pad = min_value.abs().max(1.0) * 0.01;
-            min_value -= pad;
-            max_value += pad;
-        }
-
-        Some(Self {
-            min_value,
-            max_value,
-        })
-    }
-
-    pub fn span(self) -> f32 {
-        (self.max_value - self.min_value).abs()
-    }
-
-    pub fn zoom_around_ratio(
-        self,
-        anchor_ratio: f32,
-        zoom_scale: f32,
-        zoom_in: bool,
-        min_span: f32,
-    ) -> Option<Self> {
-        let anchor_ratio = anchor_ratio.clamp(0.0, 1.0);
-        let span = self.span().max(1e-8);
-        let zoom_scale = zoom_scale.abs().max(1.0);
-        let min_span = min_span.abs().max(1e-8);
-
-        let new_span = if zoom_in {
-            span / zoom_scale
-        } else {
-            span * zoom_scale
-        }
-        .max(min_span);
-
-        let anchor_value = self.min_value + anchor_ratio * span;
-        let new_min = anchor_value - anchor_ratio * new_span;
-        let new_max = new_min + new_span;
-        Self::normalized(new_min, new_max)
-    }
-
-    pub fn pan_by_ratio(self, delta_ratio: f32) -> Option<Self> {
-        if !delta_ratio.is_finite() {
-            return None;
-        }
-
-        let span = self.span().max(1e-8);
-        let shift = delta_ratio * span;
-        Self::normalized(self.min_value + shift, self.max_value + shift)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct YUnit(pub i64);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct BarSpacingPx(i32);
-
-impl BarSpacingPx {
-    fn min_units() -> i32 {
-        ((MIN_BAR_SPACING_PX / BAR_SPACING_QUANTUM_PX).ceil() as i32).max(1)
-    }
-
-    fn max_units() -> i32 {
-        ((MAX_BAR_SPACING_PX / BAR_SPACING_QUANTUM_PX).floor() as i32).max(Self::min_units())
-    }
-
-    fn from_units(units: i32) -> Self {
-        Self(units.clamp(Self::min_units(), Self::max_units()))
-    }
-
-    fn from_logical(px: f32) -> Self {
-        let quantized_units = (px.clamp(MIN_BAR_SPACING_PX, MAX_BAR_SPACING_PX)
-            / BAR_SPACING_QUANTUM_PX)
-            .round() as i32;
-
-        Self::from_units(quantized_units)
-    }
-
-    fn as_f32(self) -> f32 {
-        self.0 as f32 * BAR_SPACING_QUANTUM_PX
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum IndicatorDataFieldKey {
-    SignedOverlay,
-    Custom(&'static str),
-}
-
-pub const BOLLINGER_UPPER_FIELD_KEY: IndicatorDataFieldKey =
-    IndicatorDataFieldKey::Custom("bollinger.upper");
-pub const BOLLINGER_LOWER_FIELD_KEY: IndicatorDataFieldKey =
-    IndicatorDataFieldKey::Custom("bollinger.lower");
-pub const RSI_SIGNAL_FIELD_KEY: IndicatorDataFieldKey = IndicatorDataFieldKey::Custom("rsi.signal");
-pub const RSI_UPPER_BAND_FIELD_KEY: IndicatorDataFieldKey =
-    IndicatorDataFieldKey::Custom("rsi.upper_band");
-pub const RSI_LOWER_BAND_FIELD_KEY: IndicatorDataFieldKey =
-    IndicatorDataFieldKey::Custom("rsi.lower_band");
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OverlayChannelColorRole {
-    Neutral,
-    Success,
-    Danger,
-    Primary,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct OverlayChannelSpec {
-    pub label: &'static str,
-    pub key: Option<IndicatorDataFieldKey>,
-    pub line_width: f32,
-    pub color_role: OverlayChannelColorRole,
-}
+const FOOTPRINT_TEXT_MIN_SIZE_PX: f32 = 6.0;
 
 const DEFAULT_OVERLAY_CHANNELS: [OverlayChannelSpec; 1] = [OverlayChannelSpec {
     label: "V",
-    key: None,
+    source: OverlayChannelSource::Primary,
     line_width: 1.1,
     color_role: OverlayChannelColorRole::Neutral,
+    color_slot: data::chart::kline::IndicatorColorSlot::Main,
 }];
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct IndicatorDataField {
-    pub key: IndicatorDataFieldKey,
-    pub value: f32,
+pub struct Regions {
+    pub plot: Rectangle,
+    pub x_axis: Rectangle,
+    pub y_axis: Rectangle,
 }
 
-const MAX_INDICATOR_EXTRA_FIELDS: usize = 6;
+impl Regions {
+    pub fn from_layout(root: iced_core::Layout<'_>) -> Self {
+        let root_bounds = root.bounds();
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct IndicatorData {
-    value: f32,
-    extra_fields: [Option<IndicatorDataField>; MAX_INDICATOR_EXTRA_FIELDS],
-}
+        let row = root.child(0);
+        let x_abs = root.child(1).bounds();
 
-impl IndicatorData {
-    pub fn scalar(value: f32) -> Self {
-        Self {
-            value,
-            extra_fields: [None; MAX_INDICATOR_EXTRA_FIELDS],
+        let plot_abs = row.child(0).bounds();
+        let y_abs = row.child(1).bounds();
+
+        let to_local = |r: Rectangle| Rectangle {
+            x: r.x - root_bounds.x,
+            y: r.y - root_bounds.y,
+            width: r.width,
+            height: r.height,
+        };
+
+        Regions {
+            plot: to_local(plot_abs),
+            y_axis: to_local(y_abs),
+            x_axis: to_local(x_abs),
         }
     }
 
-    pub fn value(self) -> f32 {
-        self.value
+    pub fn is_in_plot(&self, p: iced_core::Point) -> bool {
+        p.x >= self.plot.x
+            && p.x <= self.plot.x + self.plot.width
+            && p.y >= self.plot.y
+            && p.y <= self.plot.y + self.plot.height
     }
 
-    pub fn with_field(mut self, key: IndicatorDataFieldKey, value: f32) -> Self {
-        if let Some(slot) = self
-            .extra_fields
-            .iter_mut()
-            .find(|slot| slot.as_ref().map(|field| field.key == key).unwrap_or(false))
-        {
-            *slot = Some(IndicatorDataField { key, value });
-            return self;
-        }
-
-        if let Some(slot) = self.extra_fields.iter_mut().find(|slot| slot.is_none()) {
-            *slot = Some(IndicatorDataField { key, value });
-        } else {
-            debug_assert!(
-                false,
-                "IndicatorData extra field capacity exceeded ({MAX_INDICATOR_EXTRA_FIELDS})"
-            );
-        }
-
-        self
+    pub fn is_in_x_axis(&self, p: iced_core::Point) -> bool {
+        p.x >= self.x_axis.x
+            && p.x <= self.x_axis.x + self.x_axis.width
+            && p.y >= self.x_axis.y
+            && p.y <= self.x_axis.y + self.x_axis.height
     }
 
-    pub fn field(self, key: IndicatorDataFieldKey) -> Option<f32> {
-        self.extra_fields
-            .iter()
-            .flatten()
-            .find(|field| field.key == key)
-            .map(|field| field.value)
-    }
-
-    pub fn with_signed_overlay(self, signed_overlay: f32) -> Self {
-        self.with_field(IndicatorDataFieldKey::SignedOverlay, signed_overlay)
-    }
-
-    pub fn signed_overlay(self) -> Option<f32> {
-        self.field(IndicatorDataFieldKey::SignedOverlay)
+    pub fn is_in_y_axis(&self, p: iced_core::Point) -> bool {
+        p.x >= self.y_axis.x
+            && p.x <= self.y_axis.x + self.y_axis.width
+            && p.y >= self.y_axis.y
+            && p.y <= self.y_axis.y + self.y_axis.height
     }
 }
 
 pub trait KlineSeriesLike {
     fn ticker_info(&self) -> &TickerInfo;
+
+    fn series_color(&self) -> SeriesColor {
+        SeriesColor::default()
+    }
+
+    fn series_line_width(&self) -> u8 {
+        MIN_LINE_WIDTH
+    }
+
+    fn series_stroke_style(&self) -> LineStrokeStyle {
+        LineStrokeStyle::Solid
+    }
+
     fn bars(&self) -> &[Kline];
+
+    fn footprint_tick_size(&self) -> PriceStep {
+        self.ticker_info().min_ticksize.into()
+    }
+
     fn time_at_index(&self, index: usize) -> Option<UnixMs> {
         self.bars().get(index).map(|bar| bar.time)
     }
+
     fn indicator_value(&self, bar: &Kline) -> f32;
+
+    fn footprint_for_bar(&self, _bar: &Kline) -> Option<&KlineTrades> {
+        None
+    }
+
+    fn trade_price_distribution(
+        &self,
+        _earliest: UnixMs,
+        _latest: UnixMs,
+        _lowest: Price,
+        _highest: Price,
+        _tick_size: PriceStep,
+    ) -> Option<PriceLevelTradeDistribution> {
+        None
+    }
+
+    fn recurring_trade_price_distributions(
+        &self,
+        _interval: Timeframe,
+        _tick_size: PriceStep,
+        _earliest: UnixMs,
+        _latest: UnixMs,
+    ) -> Vec<AnchoredPriceLevelTradeDistribution> {
+        Vec::new()
+    }
+
+    fn footprint_poc_lines(&self, _earliest: UnixMs, _latest: UnixMs) -> Vec<FootprintPocLine> {
+        Vec::new()
+    }
+
+    fn footprint_tick_index_offset(&self) -> u64 {
+        0
+    }
 
     fn indicator_value_for_panel_value_opt(
         &self,
@@ -340,19 +248,148 @@ pub trait KlineSeriesLike {
         Some(data)
     }
 
-    fn indicator_overlay_channels_for_panel_value(
+    fn indicator_data_for_panel_value_at(
         &self,
-        panel_value: PanelValueId,
-    ) -> &'static [OverlayChannelSpec] {
-        let _ = panel_value;
-        &[]
+        panel_value: Option<PanelValueId>,
+        index: usize,
+    ) -> Option<IndicatorData> {
+        self.bars()
+            .get(index)
+            .and_then(|bar| self.indicator_data_for_panel_value_opt(panel_value, bar))
+    }
+
+    fn indicator_produces_signed_overlay(&self, value_id: PanelValueId) -> bool {
+        self.bars().iter().enumerate().any(|(index, _)| {
+            self.indicator_data_for_panel_value_at(Some(value_id), index)
+                .and_then(IndicatorData::signed_overlay)
+                .is_some()
+        })
     }
 }
 
+pub(super) enum DragMode {
+    None,
+    Split(usize),
+    YAxisScale {
+        panel_index: usize,
+        anchor_y: f32,
+    },
+    XAxisScale {
+        anchor_x: f32,
+        initial_world: HorizontalWorld,
+        initial_right_unit: f32,
+    },
+    Pan {
+        panel_index: usize,
+        anchor_x: f32,
+        initial_offset: f32,
+    },
+    DrawingMove {
+        id: DrawingId,
+        target: DrawingDragTarget,
+        panel_id: PanelId,
+    },
+    Marquee {
+        panel_index: usize,
+        start: Point,
+        current: Point,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum KlinePanelKind {
-    PrimaryChart,
-    Indicator,
+pub(super) enum HorizontalWheelZoomMode {
+    LiveEdge,
+    Cursor,
+}
+
+impl HorizontalWheelZoomMode {
+    fn from_modifiers(modifiers: keyboard::Modifiers) -> Self {
+        if modifiers.intersects(keyboard::Modifiers::COMMAND) {
+            Self::Cursor
+        } else {
+            Self::LiveEdge
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct GutterCacheKey {
+    version: u64,
+    width: f32,
+    height: f32,
+    panel_count: usize,
+}
+
+struct State {
+    plot_cache: canvas::Cache,
+    y_axis_cache: canvas::Cache,
+    x_axis_cache: canvas::Cache,
+    overlay_cache: canvas::Cache,
+    interaction_text_cache: canvas::Cache,
+    drawing_background_cache: canvas::Cache,
+    marquee_cache: canvas::Cache,
+    drag_mode: DragMode,
+    last_cursor: Option<Point>,
+    modifiers: keyboard::Modifiers,
+    y_axis_gutter_width: f32,
+    gutter_cache_key: Option<GutterCacheKey>,
+    last_cache_rev: u64,
+    last_cache_clear_at: Option<Instant>,
+    last_theme_generation: Option<u64>,
+    previous_click: Option<iced_core::mouse::Click>,
+    scene_cache: SceneCache,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            plot_cache: canvas::Cache::new(),
+            y_axis_cache: canvas::Cache::new(),
+            x_axis_cache: canvas::Cache::new(),
+            overlay_cache: canvas::Cache::new(),
+            interaction_text_cache: canvas::Cache::new(),
+            drawing_background_cache: canvas::Cache::new(),
+            marquee_cache: canvas::Cache::new(),
+            drag_mode: DragMode::None,
+            last_cursor: None,
+            modifiers: keyboard::Modifiers::empty(),
+            y_axis_gutter_width: Y_AXIS_GUTTER,
+            gutter_cache_key: None,
+            last_cache_rev: 0,
+            last_cache_clear_at: None,
+            last_theme_generation: None,
+            previous_click: None,
+            scene_cache: SceneCache::default(),
+        }
+    }
+}
+
+impl State {
+    fn clear_all_caches(&mut self) {
+        self.plot_cache.clear();
+        self.y_axis_cache.clear();
+        self.x_axis_cache.clear();
+        self.clear_overlay_caches();
+    }
+
+    fn cache_refresh_is_due(&self, version: u64, now: Instant, minimum_interval: Duration) -> bool {
+        self.last_cache_rev != version
+            && self.last_cache_clear_at.is_none_or(|last_clear| {
+                now.saturating_duration_since(last_clear) >= minimum_interval
+            })
+    }
+
+    fn mark_cache_refreshed(&mut self, version: u64, now: Instant) {
+        self.last_cache_rev = version;
+        self.last_cache_clear_at = Some(now);
+    }
+
+    fn clear_overlay_caches(&mut self) {
+        self.drawing_background_cache.clear();
+        self.overlay_cache.clear();
+        self.interaction_text_cache.clear();
+        self.marquee_cache.clear();
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -384,107 +421,64 @@ pub enum PanelInteraction {
 
 #[derive(Debug, Clone)]
 pub enum KlineWidgetEvent {
+    UndoRequested,
+    RedoRequested,
+    EscapePressed,
+    PrimaryScaleInversionRequested,
     HorizontalScaleChanged(HorizontalScale),
+    HorizontalWorldChanged {
+        cell_width: f32,
+        scaling: f32,
+        offset: f32,
+    },
     HorizontalOffsetChanged(f32),
+    PlotWidthChanged(f32),
+    PrimaryAutoscaleDisabled,
     PrimaryAutoscaleToggled,
     PrimaryScaleModeCycleRequested,
     PanelInteraction(PanelInteraction),
     TickerSettings(TickerInfo),
+    FootprintSettings,
     TickerRemove(TickerInfo),
+    CandlesticksVisibilityToggled,
+    FootprintsVisibilityToggled,
     IndicatorSettings(PanelValueId),
+    IndicatorVisibilityToggled(PanelValueId),
     IndicatorRemove(PanelValueId),
+    StudySettings(KlineStudyId),
+    StudyVisibilityToggled(KlineStudyId),
+    StudyRemove(KlineStudyId),
+    StudiesVisibilityToggled,
+    StudiesExpansionToggled,
+    StudiesRemove,
     XAxisDoubleClick,
+    DeletePressed,
     Drawing(KlineWidgetDrawingEvent),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum DragMode {
-    None,
-    Split(usize),
-    AxisScale {
-        panel_index: usize,
-        anchor_y: f32,
-    },
-    XAxisScale,
-    Pan {
-        panel_index: usize,
-    },
-    DrawingMove {
-        id: DrawingId,
-        target: DrawingDragTarget,
-        panel_id: PanelId,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct GutterCacheKey {
-    version: u64,
-    width: f32,
-    height: f32,
-    panel_count: usize,
-}
-
-struct State {
-    plot_cache: canvas::Cache,
-    y_axis_cache: canvas::Cache,
-    x_axis_cache: canvas::Cache,
-    overlay_cache: canvas::Cache,
-    interaction_text_cache: canvas::Cache,
-    horizontal_zoom_scroll_accum: f32,
-    drag_mode: DragMode,
-    last_cursor: Option<Point>,
-    y_axis_gutter_width: f32,
-    gutter_cache_key: Option<GutterCacheKey>,
-    last_cache_rev: u64,
-    previous_click: Option<iced_core::mouse::Click>,
-}
-
-impl Default for State {
-    fn default() -> Self {
-        Self {
-            plot_cache: canvas::Cache::new(),
-            y_axis_cache: canvas::Cache::new(),
-            x_axis_cache: canvas::Cache::new(),
-            overlay_cache: canvas::Cache::new(),
-            interaction_text_cache: canvas::Cache::new(),
-            horizontal_zoom_scroll_accum: 0.0,
-            drag_mode: DragMode::None,
-            last_cursor: None,
-            y_axis_gutter_width: Y_AXIS_GUTTER,
-            gutter_cache_key: None,
-            last_cache_rev: 0,
-            previous_click: None,
-        }
-    }
-}
-
-impl State {
-    fn clear_all_caches(&mut self) {
-        self.plot_cache.clear();
-        self.y_axis_cache.clear();
-        self.x_axis_cache.clear();
-        self.clear_overlay_caches();
-    }
-
-    fn clear_overlay_caches(&mut self) {
-        self.overlay_cache.clear();
-        self.interaction_text_cache.clear();
-    }
 }
 
 pub struct KlineWidget<'a, S> {
     series: &'a [S],
     composition: &'a ChartComposition,
+    indicator_instances: &'a IndicatorInstanceStore,
+    studies: &'a [KlineStudy],
+    studies_legend_expanded: bool,
+    candlestick: CandlestickConfig,
+    footprint: FootprintConfig,
+    footprints_enabled: bool,
     drawings: DrawingSnapshot<'a>,
     basis: Basis,
-    horizontal_scale: HorizontalScale,
-    horizontal_offset: f32,
-    horizontal_pixel_ratio: f32,
+    horizontal_world: HorizontalWorld,
+    known_plot_width: Option<f32>,
+    autoscale_plot_width_offset: f32,
+    pixel_ratio: PixelRatio,
     primary_autoscale: bool,
+    primary_scale_inverted: bool,
     panel_y_viewports: &'a [(PanelId, PanelYViewport)],
     unavailable_indicator_panels: Vec<UnavailableIndicator>,
     timezone: UserTimezone,
     version: u64,
+    theme_accents: ThemeAccents,
+    escape_enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -497,58 +491,106 @@ impl<'a, S> KlineWidget<'a, S>
 where
     S: KlineSeriesLike,
 {
-    pub fn new(series: &'a [S], timeframe: Timeframe, composition: &'a ChartComposition) -> Self {
+    pub(crate) fn new(
+        series: &'a [S],
+        basis: Basis,
+        composition: &'a ChartComposition,
+        indicator_instances: &'a IndicatorInstanceStore,
+        theme_accents: ThemeAccents,
+    ) -> Self {
         Self {
             series,
             composition,
-            drawings: DrawingSnapshot::new(DrawingTool::Cursor, &[], None, None),
-            basis: Basis::Time(timeframe),
-            horizontal_scale: HorizontalScale::pixels_per_bar(DEFAULT_BAR_SPACING_PX),
-            horizontal_offset: 0.0,
-            horizontal_pixel_ratio: 1.0,
+            indicator_instances,
+            studies: &[],
+            studies_legend_expanded: true,
+            candlestick: CandlestickConfig::default(),
+            footprint: FootprintConfig::default(),
+            footprints_enabled: false,
+            drawings: DrawingSnapshot::new(DrawingTool::Cursor, false, &[], &[], None, None),
+            basis,
+            horizontal_world: HorizontalWorld::new(DEFAULT_BAR_SPACING_PX, 1.0, 0.0),
+            known_plot_width: None,
+            autoscale_plot_width_offset: 0.0,
+            pixel_ratio: PixelRatio::default(),
             primary_autoscale: false,
+            primary_scale_inverted: false,
             panel_y_viewports: &[],
             unavailable_indicator_panels: Vec::new(),
             timezone: UserTimezone::Utc,
             version: 0,
+            theme_accents,
+            escape_enabled: false,
         }
     }
 
-    pub fn with_horizontal_scale(mut self, scale: HorizontalScale) -> Self {
-        self.horizontal_scale = scale;
+    pub fn with_studies(mut self, studies: &'a [KlineStudy]) -> Self {
+        self.studies = studies;
         self
     }
 
-    pub fn with_horizontal_offset(mut self, offset: f32) -> Self {
-        self.horizontal_offset = offset;
+    pub fn with_studies_legend_expanded(mut self, expanded: bool) -> Self {
+        self.studies_legend_expanded = expanded;
         self
     }
 
-    pub fn with_horizontal_pixel_ratio(mut self, ratio: f32) -> Self {
-        self.horizontal_pixel_ratio = if ratio.is_finite() && ratio > 0.0 {
-            ratio
+    pub fn with_candlestick_config(mut self, config: CandlestickConfig) -> Self {
+        self.candlestick = config;
+        self
+    }
+
+    pub fn with_footprint_config(mut self, config: FootprintConfig) -> Self {
+        self.footprint = config;
+        self
+    }
+
+    pub fn with_footprint_enabled(mut self, enabled: bool) -> Self {
+        self.footprints_enabled = enabled;
+        self
+    }
+
+    pub(crate) fn with_coordinate_state(
+        mut self,
+        horizontal_world: HorizontalWorld,
+        pixel_ratio: PixelRatio,
+        primary_autoscale: bool,
+    ) -> Self {
+        self.horizontal_world = horizontal_world;
+        self.pixel_ratio = pixel_ratio;
+        self.primary_autoscale = primary_autoscale;
+        self
+    }
+
+    pub fn with_primary_scale_inverted(mut self, inverted: bool) -> Self {
+        self.primary_scale_inverted = inverted;
+        self
+    }
+
+    pub fn with_known_plot_width(mut self, plot_width: Option<f32>) -> Self {
+        self.known_plot_width = plot_width;
+        self
+    }
+
+    pub fn with_autoscale_plot_width_offset(mut self, offset: f32) -> Self {
+        self.autoscale_plot_width_offset = if offset.is_finite() {
+            offset.max(0.0)
         } else {
-            1.0
+            0.0
         };
         self
     }
 
-    pub fn with_primary_autoscale(mut self, autoscale: bool) -> Self {
-        self.primary_autoscale = autoscale;
-        self
-    }
-
-    pub fn with_drawing_snapshot(mut self, snapshot: DrawingSnapshot<'a>) -> Self {
+    pub fn with_drawings(mut self, snapshot: DrawingSnapshot<'a>) -> Self {
         self.drawings = snapshot;
         self
     }
 
-    pub fn with_panel_y_viewports(mut self, viewports: &'a [(PanelId, PanelYViewport)]) -> Self {
+    pub fn with_panels(mut self, viewports: &'a [(PanelId, PanelYViewport)]) -> Self {
         self.panel_y_viewports = viewports;
         self
     }
 
-    pub fn with_unavailable_indicator_panels(mut self, panels: Vec<UnavailableIndicator>) -> Self {
+    pub fn with_indicator_availability(mut self, panels: Vec<UnavailableIndicator>) -> Self {
         self.unavailable_indicator_panels = panels;
         self
     }
@@ -591,1228 +633,23 @@ where
         row_x + TOOLTIP_ROW_LEFT_PAD
     }
 
-    pub fn version(mut self, rev: u64) -> Self {
+    pub fn with_version(mut self, rev: u64) -> Self {
         self.version = rev;
         self
     }
 
-    fn fill_main_geometry(
-        &self,
-        frame: &mut canvas::Frame,
-        scene: &Scene,
-        palette: &Extended,
-        plot_origin_in_window: Point,
-    ) {
-        let horizontal_pixel_ratio = self.resolved_horizontal_pixel_ratio();
-        let plot_origin_x_global = plot_origin_in_window.x;
-        let plot_origin_y_global = plot_origin_in_window.y;
-
-        let spacing = scene.bar_spacing_px();
-        let px_per_unit = spacing.as_f32();
-        let max_width_phys = ((px_per_unit * horizontal_pixel_ratio).floor() as i32).max(1);
-
-        let mut candle_body_width_phys =
-            Self::candlestick_width(px_per_unit, horizontal_pixel_ratio).clamp(1, max_width_phys);
-        let wick_width_phys = (horizontal_pixel_ratio.floor() as i32)
-            .max(1)
-            .min(candle_body_width_phys);
-
-        if candle_body_width_phys >= 2 && ((wick_width_phys ^ candle_body_width_phys) & 1) != 0 {
-            candle_body_width_phys -= 1;
-        }
-
-        let indicator_width_phys =
-            Self::primitive_width_for_spacing(px_per_unit, 0.8, horizontal_pixel_ratio)
-                .clamp(1, max_width_phys);
-        let indicator_width =
-            Self::logical_width_from_physical(indicator_width_phys, horizontal_pixel_ratio);
-        let candle_body_width =
-            Self::logical_width_from_physical(candle_body_width_phys, horizontal_pixel_ratio);
-        let wick_width = Self::logical_width_from_physical(wick_width_phys, horizontal_pixel_ratio);
-        let in_visible_range =
-            |x_unit: i64| x_unit >= scene.min_x_unit && x_unit <= scene.max_x_unit;
-
-        for indicator_panel in &scene.indicator_panels {
-            if self.indicator_is_unavailable(indicator_panel.value_id) {
-                continue;
-            }
-
-            if !matches!(indicator_panel.mark, MarkKind::Candle | MarkKind::Bar(_)) {
-                continue;
-            }
-
-            let Some(panel_plot) = scene
-                .layout
-                .panel(indicator_panel.panel_index)
-                .map(|panel| panel.plot)
-            else {
-                continue;
-            };
-
-            let Some(y_indicator_baseline) = scene
-                .map_indicator_plot(indicator_panel.panel_index, 0.0)
-                .or_else(|| scene.indicator_panel_bottom(indicator_panel.panel_index))
-            else {
-                continue;
-            };
-
-            frame.with_clip(panel_plot, |frame| {
-                self.for_each_bar_unit_index(scene.x_axis, |series_index, series, x_unit, bar| {
-                    if series_index != 0 || !in_visible_range(x_unit) {
-                        return;
-                    }
-
-                    let Some(indicator_data) =
-                        series.indicator_data_for_panel_value_opt(indicator_panel.value_id, bar)
-                    else {
-                        return;
-                    };
-
-                    let indicator_value = indicator_data.value();
-                    let Some(y_indicator_value) =
-                        scene.map_indicator_plot(indicator_panel.panel_index, indicator_value)
-                    else {
-                        return;
-                    };
-
-                    let x_plot = scene.map_x_plot(x_unit);
-                    let indicator_left = Self::centered_left_for_width_with_origin(
-                        x_plot,
-                        indicator_width_phys,
-                        horizontal_pixel_ratio,
-                        plot_origin_x_global,
-                    );
-                    let indicator_top = y_indicator_value.min(y_indicator_baseline);
-                    let indicator_height =
-                        (y_indicator_baseline - y_indicator_value).abs().max(1.0);
-
-                    if matches!(indicator_panel.data_kind, LayerDataKind::Histogram)
-                        && matches!(
-                            indicator_panel.mark,
-                            MarkKind::Bar(BarMode::Histogram(HistogramMode::SignedOverlay))
-                        )
-                    {
-                        if let Some(overlay) = indicator_data.signed_overlay() {
-                            let base_color = if overlay >= 0.0 {
-                                palette.success.base.color
-                            } else {
-                                palette.danger.base.color
-                            };
-
-                            frame.fill_rectangle(
-                                Point::new(indicator_left, indicator_top),
-                                Size::new(indicator_width, indicator_height),
-                                base_color.scale_alpha(0.3),
-                            );
-
-                            let overlay_abs = overlay.abs();
-                            if overlay_abs > 0.0
-                                && let Some(y_overlay) = scene
-                                    .map_indicator_plot(indicator_panel.panel_index, overlay_abs)
-                            {
-                                frame.fill_rectangle(
-                                    Point::new(indicator_left, y_overlay.min(y_indicator_baseline)),
-                                    Size::new(
-                                        indicator_width,
-                                        (y_indicator_baseline - y_overlay).abs().max(1.0),
-                                    ),
-                                    base_color,
-                                );
-                            }
-                        } else {
-                            frame.fill_rectangle(
-                                Point::new(indicator_left, indicator_top),
-                                Size::new(indicator_width, indicator_height),
-                                palette.secondary.strong.color,
-                            );
-                        }
-                    } else {
-                        frame.fill_rectangle(
-                            Point::new(indicator_left, indicator_top),
-                            Size::new(indicator_width, indicator_height),
-                            palette.secondary.strong.color.scale_alpha(0.5),
-                        );
-                    }
-                });
-            });
-        }
-
-        if let Some(primary_panel_id) = self.composition.primary_panel_id()
-            && let Some(primary_panel) = self.composition.panel(primary_panel_id)
-        {
-            let base_series_anchor = scene.series_percent_anchors.first().copied().flatten();
-            let primary_plot = *scene.primary_plot();
-
-            frame.with_clip(primary_plot, |frame| {
-                for layer in &primary_panel.layers {
-                    let Some(value_id) = layer.source.indicator_value_id() else {
-                        continue;
-                    };
-
-                    for channel in self
-                        .overlay_channels_for_panel_value(Some(value_id))
-                        .iter()
-                        .copied()
-                    {
-                        let (channel_line_width, channel_line_width_phys) =
-                            Self::quantized_stroke_width(
-                                channel.line_width,
-                                horizontal_pixel_ratio,
-                            );
-                        let mut point_count = 0usize;
-                        let path = canvas::Path::new(|builder| {
-                            self.for_each_bar_unit_index(
-                                scene.x_axis,
-                                |series_index, series, x_unit, bar| {
-                                    if series_index != 0 || !in_visible_range(x_unit) {
-                                        return;
-                                    }
-
-                                    let Some(data) = series
-                                        .indicator_data_for_panel_value_opt(Some(value_id), bar)
-                                    else {
-                                        return;
-                                    };
-
-                                    let Some(value) = Self::overlay_channel_value(data, channel)
-                                    else {
-                                        return;
-                                    };
-
-                                    let point = Point::new(
-                                        Self::snap_plot_x_for_stroke_with_origin(
-                                            scene.map_x_plot(x_unit),
-                                            horizontal_pixel_ratio,
-                                            plot_origin_x_global,
-                                            channel_line_width_phys,
-                                        ),
-                                        Self::snap_stroke_center_with_origin(
-                                            scene.map_primary_plot_with_anchor(
-                                                value,
-                                                base_series_anchor,
-                                            ),
-                                            horizontal_pixel_ratio,
-                                            plot_origin_y_global,
-                                            channel_line_width_phys,
-                                        ),
-                                    );
-
-                                    if point_count == 0 {
-                                        builder.move_to(point);
-                                    } else {
-                                        builder.line_to(point);
-                                    }
-                                    point_count += 1;
-                                },
-                            );
-                        });
-
-                        if point_count < 2 {
-                            continue;
-                        }
-
-                        frame.stroke(
-                            &path,
-                            canvas::Stroke::default()
-                                .with_width(channel_line_width)
-                                .with_color(Self::overlay_channel_color(channel, palette)),
-                        );
-                    }
-                }
-            });
-        }
-
-        if matches!(scene.primary_mark, MarkKind::Candle | MarkKind::Bar(_)) {
-            let primary_plot = *scene.primary_plot();
-            frame.with_clip(primary_plot, |frame| {
-                self.for_each_bar_unit_index(scene.x_axis, |series_index, _series, x_unit, bar| {
-                    if series_index != 0 || !in_visible_range(x_unit) {
-                        return;
-                    }
-
-                    let series_anchor = scene.series_percent_anchors.first().copied().flatten();
-                    let y_open =
-                        scene.map_primary_plot_with_anchor(bar.open.to_f32_lossy(), series_anchor);
-                    let y_high =
-                        scene.map_primary_plot_with_anchor(bar.high.to_f32_lossy(), series_anchor);
-                    let y_low =
-                        scene.map_primary_plot_with_anchor(bar.low.to_f32_lossy(), series_anchor);
-                    let y_close =
-                        scene.map_primary_plot_with_anchor(bar.close.to_f32_lossy(), series_anchor);
-
-                    let color = if bar.close >= bar.open {
-                        palette.success.base.color
-                    } else {
-                        palette.danger.base.color
-                    };
-
-                    let (body_top, body_h) = Self::snapped_span_with_origin(
-                        y_open,
-                        y_close,
-                        horizontal_pixel_ratio,
-                        plot_origin_y_global,
-                    );
-                    let (wick_top, wick_h) = Self::snapped_span_with_origin(
-                        y_high,
-                        y_low,
-                        horizontal_pixel_ratio,
-                        plot_origin_y_global,
-                    );
-
-                    let x_plot = scene.map_x_plot(x_unit);
-                    let candle_left = Self::centered_left_for_width_with_origin(
-                        x_plot,
-                        candle_body_width_phys,
-                        horizontal_pixel_ratio,
-                        plot_origin_x_global,
-                    );
-                    let wick_left = Self::centered_left_for_width_with_origin(
-                        x_plot,
-                        wick_width_phys,
-                        horizontal_pixel_ratio,
-                        plot_origin_x_global,
-                    );
-
-                    frame.fill_rectangle(
-                        Point::new(candle_left, body_top),
-                        Size::new(candle_body_width, body_h),
-                        color,
-                    );
-                    frame.fill_rectangle(
-                        Point::new(wick_left, wick_top),
-                        Size::new(wick_width, wick_h),
-                        color.scale_alpha(0.85),
-                    );
-                });
-            });
-        }
-
-        let primary_plot = *scene.primary_plot();
-        frame.with_clip(primary_plot, |frame| {
-            for series_index in 0..self.series.len() {
-                let is_base_series = series_index == 0;
-                let requested_line_width = if is_base_series { 1.5 } else { 1.3 };
-                let (line_width, line_width_phys) =
-                    Self::quantized_stroke_width(requested_line_width, horizontal_pixel_ratio);
-                let mut point_count = 0usize;
-
-                let path = canvas::Path::new(|builder| {
-                    self.for_each_bar_unit_index(
-                        scene.x_axis,
-                        |iter_series_index, _series, x_unit, bar| {
-                            if iter_series_index != series_index || !in_visible_range(x_unit) {
-                                return;
-                            }
-
-                            let is_base_series = iter_series_index == 0;
-                            if is_base_series && !matches!(scene.primary_mark, MarkKind::Line) {
-                                return;
-                            }
-
-                            let series_anchor = scene
-                                .series_percent_anchors
-                                .get(iter_series_index)
-                                .copied()
-                                .flatten();
-                            let point = Point::new(
-                                Self::snap_plot_x_for_stroke_with_origin(
-                                    scene.map_x_plot(x_unit),
-                                    horizontal_pixel_ratio,
-                                    plot_origin_x_global,
-                                    line_width_phys,
-                                ),
-                                Self::snap_stroke_center_with_origin(
-                                    scene.map_primary_plot_with_anchor(
-                                        bar.close.to_f32_lossy(),
-                                        series_anchor,
-                                    ),
-                                    horizontal_pixel_ratio,
-                                    plot_origin_y_global,
-                                    line_width_phys,
-                                ),
-                            );
-
-                            if point_count == 0 {
-                                builder.move_to(point);
-                            } else {
-                                builder.line_to(point);
-                            }
-                            point_count += 1;
-                        },
-                    );
-                });
-
-                if point_count < 2 {
-                    continue;
-                }
-
-                let line_color = if is_base_series {
-                    palette.background.base.text.scale_alpha(0.85)
-                } else {
-                    let ticker = self.series[series_index].ticker_info();
-                    Self::comparison_line_color(ticker).scale_alpha(0.96)
-                };
-
-                frame.stroke(
-                    &path,
-                    canvas::Stroke::default()
-                        .with_width(line_width)
-                        .with_color(line_color),
-                );
-            }
-        });
-
-        for indicator_panel in &scene.indicator_panels {
-            if self.indicator_is_unavailable(indicator_panel.value_id) {
-                continue;
-            }
-
-            if !matches!(indicator_panel.mark, MarkKind::Line) {
-                continue;
-            }
-
-            let Some(panel_plot) = scene
-                .layout
-                .panel(indicator_panel.panel_index)
-                .map(|panel| panel.plot)
-            else {
-                continue;
-            };
-
-            frame.with_clip(panel_plot, |frame| {
-                for channel in self
-                    .overlay_channels_for_panel_value(indicator_panel.value_id)
-                    .iter()
-                    .copied()
-                {
-                    let (channel_line_width, channel_line_width_phys) =
-                        Self::quantized_stroke_width(channel.line_width, horizontal_pixel_ratio);
-                    let mut point_count = 0usize;
-
-                    let path = canvas::Path::new(|builder| {
-                        self.for_each_bar_unit_index(
-                            scene.x_axis,
-                            |series_index, series, x_unit, bar| {
-                                if series_index != 0 || !in_visible_range(x_unit) {
-                                    return;
-                                }
-
-                                let Some(indicator_data) = series
-                                    .indicator_data_for_panel_value_opt(
-                                        indicator_panel.value_id,
-                                        bar,
-                                    )
-                                else {
-                                    return;
-                                };
-
-                                let Some(channel_value) =
-                                    Self::overlay_channel_value(indicator_data, channel)
-                                else {
-                                    return;
-                                };
-
-                                let Some(y_channel_value) = scene
-                                    .map_indicator_plot(indicator_panel.panel_index, channel_value)
-                                else {
-                                    return;
-                                };
-
-                                let point = Point::new(
-                                    Self::snap_plot_x_for_stroke_with_origin(
-                                        scene.map_x_plot(x_unit),
-                                        horizontal_pixel_ratio,
-                                        plot_origin_x_global,
-                                        channel_line_width_phys,
-                                    ),
-                                    Self::snap_stroke_center_with_origin(
-                                        y_channel_value,
-                                        horizontal_pixel_ratio,
-                                        plot_origin_y_global,
-                                        channel_line_width_phys,
-                                    ),
-                                );
-                                if point_count == 0 {
-                                    builder.move_to(point);
-                                } else {
-                                    builder.line_to(point);
-                                }
-                                point_count += 1;
-                            },
-                        );
-                    });
-
-                    if point_count < 2 {
-                        continue;
-                    }
-
-                    frame.stroke(
-                        &path,
-                        canvas::Stroke::default()
-                            .with_width(channel_line_width)
-                            .with_color(Self::overlay_channel_color(channel, palette)),
-                    );
-                }
-            });
-        }
-
-        self.fill_panel_titles(frame, scene, palette);
-        self.fill_last_price_line(frame, scene, palette);
+    pub fn with_escape_enabled(mut self, enabled: bool) -> Self {
+        self.escape_enabled = enabled;
+        self
     }
 
-    fn horizontal_offset_for_cursor_scale(
-        &self,
-        scene: &Scene,
-        cursor_x: f32,
-        new_scale: HorizontalScale,
-    ) -> f32 {
-        let right_edge = scene.x_axis_plot_width().floor().max(1.0);
-        let cursor_x = (cursor_x - scene.layout.regions.plot.x).clamp(0.0, right_edge);
-        let old_spacing = scene.bar_spacing_px().as_f32().max(1.0);
-        let new_spacing = self
-            .normalize_horizontal_scale(new_scale)
-            .as_pixels_per_bar()
-            .max(1.0);
-        let right_unit = scene.max_x_unit as f32;
-        let pixels_from_right = right_edge - cursor_x;
-        let new_right_unit =
-            right_unit + pixels_from_right * (1.0 / new_spacing - 1.0 / old_spacing);
-
-        self.horizontal_offset + (new_right_unit - right_unit)
+    fn is_command_modifier(modifiers: keyboard::Modifiers) -> bool {
+        modifiers.intersects(keyboard::Modifiers::COMMAND)
     }
 
-    fn fill_last_price_line(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
-        let Some(base_series) = self.series.first() else {
-            return;
-        };
-        let Some(last_bar) = base_series.bars().last() else {
-            return;
-        };
-
-        let last_price = last_bar.close.to_f32_lossy();
-        let y = scene.map_primary_plot_with_anchor(
-            last_price,
-            scene.series_percent_anchors.first().copied().flatten(),
-        );
-        let color = if last_bar.close >= last_bar.open {
-            palette.success.base.color
-        } else {
-            palette.danger.base.color
-        };
-        let stroke = canvas::Stroke {
-            width: 1.0,
-            line_dash: canvas::LineDash {
-                segments: &[2.0, 2.0],
-                offset: 4,
-            },
-            ..Default::default()
-        }
-        .with_color(color.scale_alpha(0.5));
-        let primary_plot = scene.primary_plot();
-
-        frame.with_clip(*primary_plot, |frame| {
-            frame.stroke(
-                &canvas::Path::line(
-                    Point::new(primary_plot.x, y),
-                    Point::new(primary_plot.x + primary_plot.width, y),
-                ),
-                stroke,
-            );
-        });
-    }
-
-    fn fill_panel_titles(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
-        for (panel_index, panel) in scene.layout.panels.iter().enumerate() {
-            let Some(title) = self.resolved_panel_title(panel_index, panel.kind) else {
-                continue;
-            };
-
-            let value_id = self.panel_value_id(panel_index);
-            let title_x = value_id.map_or(panel.plot.x + TOOLTIP_ROW_LEFT_PAD, |value_id| {
-                self.indicator_label_x(panel.plot.x, value_id)
-            });
-            let title_y = panel.plot.y + PANEL_TITLE_TOP_PAD + TICKER_LEGEND_ROW_H * 0.5;
-
-            if let Some(value_id) = value_id
-                && self.indicator_is_unavailable(Some(value_id))
-            {
-                frame.fill_text(canvas::Text {
-                    content: "!".to_string(),
-                    position: Point::new(self.indicator_marker_x(panel.plot.x), title_y),
-                    color: palette.danger.base.color,
-                    size: TEXT_SIZE.into(),
-                    align_x: iced::Alignment::Start.into(),
-                    align_y: iced::Alignment::Center.into(),
-                    font: style::AZERET_MONO,
-                    ..Default::default()
-                });
-            }
-
-            frame.fill_text(canvas::Text {
-                content: title.to_string(),
-                position: Point::new(title_x, title_y),
-                color: palette.background.base.text.scale_alpha(0.72),
-                size: TEXT_SIZE.into(),
-                align_x: iced::Alignment::Start.into(),
-                align_y: iced::Alignment::Center.into(),
-                font: style::AZERET_MONO,
-                ..Default::default()
-            });
-        }
-    }
-
-    fn y_axis_label_specs(&self, scene: &Scene) -> Vec<(usize, String, f32)> {
-        let labels_for_height =
-            |height: f32| y_labels_that_fit(height, TEXT_SIZE, Y_LABEL_DENSITY).max(2) as i32;
-        let mut labels = Vec::new();
-        let uses_display_space_ticks = matches!(
-            scene.primary_scale_mode,
-            PanelScaleMode::PercentFromBase | PanelScaleMode::Logarithmic
-        ) || scene.primary_domain_display_override.is_some();
-
-        if !uses_display_space_ticks {
-            if let Some(ticker) = self.base_ticker_info() {
-                use data::chart::ticks::y::PriceAxis;
-
-                let price_axis =
-                    PriceAxis::new(ticker.min_ticksize.into(), Some(ticker.min_ticksize));
-                let min_price = scene.primary_unit_to_value(scene.min_primary_unit) as f64;
-                let max_price = scene.primary_unit_to_value(scene.max_primary_unit) as f64;
-                let labels_can_fit = labels_for_height(scene.primary_plot().height);
-                let primary_precision = self.panel_value_precision(scene.primary_panel);
-                let y_ticks = price_axis.ticks(min_price, max_price, labels_can_fit);
-                let step_value = y_ticks.step.unwrap_or(1.0) as f32;
-
-                for tick in y_ticks.ticks {
-                    let TickValue::PriceUnits(units) = tick.value else {
-                        continue;
-                    };
-                    let price = Price::from_units(units).to_f32_lossy();
-                    let tick_unit = self.panel_value_to_unit(primary_precision, price);
-                    let value = scene.primary_unit_to_value(tick_unit);
-                    let y = scene.map_primary_plot_unit(tick_unit).clamp(
-                        scene.primary_plot().y,
-                        scene.primary_plot().y + scene.primary_plot().height,
-                    );
-                    labels.push((
-                        scene.primary_panel,
-                        scene.format_primary_axis_label(value, step_value),
-                        y,
-                    ));
-                }
-            } else {
-                let primary_precision = self.panel_value_precision(scene.primary_panel);
-                let min_value =
-                    self.panel_unit_to_value(primary_precision, scene.min_primary_unit) as f64;
-                let max_value =
-                    self.panel_unit_to_value(primary_precision, scene.max_primary_unit) as f64;
-                let y_ticks = YAxisScale::Linear.ticks(
-                    min_value,
-                    max_value,
-                    labels_for_height(scene.primary_plot().height),
-                );
-                let step_value = y_ticks.step.unwrap_or(1.0) as f32;
-
-                for tick in y_ticks.ticks {
-                    let TickValue::Float(value) = tick.value else {
-                        continue;
-                    };
-                    let tick_unit = self.panel_value_to_unit(primary_precision, value as f32);
-                    let value = self.panel_unit_to_value(primary_precision, tick_unit);
-                    let y = scene.map_primary_plot_unit(tick_unit).clamp(
-                        scene.primary_plot().y,
-                        scene.primary_plot().y + scene.primary_plot().height,
-                    );
-                    labels.push((
-                        scene.primary_panel,
-                        scene.format_primary_axis_label(value, step_value),
-                        y,
-                    ));
-                }
-            }
-        } else {
-            let (min_display, max_display) = scene.primary_domain_display_values();
-            let scale = if matches!(scene.primary_scale_mode, PanelScaleMode::PercentFromBase) {
-                YAxisScale::Percent
-            } else {
-                YAxisScale::Linear
-            };
-            let y_ticks = scale.ticks(
-                f64::from(min_display),
-                f64::from(max_display),
-                labels_for_height(scene.primary_plot().height),
-            );
-            let step = y_ticks.step.unwrap_or(1.0) as f32;
-
-            for tick in y_ticks.ticks {
-                let ratio = tick.ratio as f32;
-                let TickValue::Float(tick) = tick.value else {
-                    continue;
-                };
-                let y = scene.primary_plot().y + (1.0 - ratio) * scene.primary_plot().height;
-                labels.push((
-                    scene.primary_panel,
-                    scene.format_primary_axis_label(tick as f32, step),
-                    y,
-                ));
-            }
-        }
-
-        for indicator in &scene.indicator_panels {
-            if self.indicator_is_unavailable(indicator.value_id) {
-                continue;
-            }
-
-            let panel_index = indicator.panel_index;
-            let Some(panel) = scene.layout.panel(panel_index) else {
-                continue;
-            };
-            let panel_precision = self.panel_value_precision(panel_index);
-            let min_value = self.panel_unit_to_value(panel_precision, indicator.min_unit) as f64;
-            let max_value = self.panel_unit_to_value(panel_precision, indicator.max_unit) as f64;
-            let y_ticks = YAxisScale::Linear.ticks(
-                min_value,
-                max_value,
-                labels_for_height(panel.plot.height),
-            );
-            let step_value = y_ticks.step.unwrap_or(1.0) as f32;
-
-            for tick in y_ticks.ticks {
-                let TickValue::Float(value) = tick.value else {
-                    continue;
-                };
-                let value = value as f32;
-                let tick_unit = self.panel_value_to_unit(panel_precision, value);
-                let Some(y) = scene.map_indicator_plot_unit(panel_index, tick_unit) else {
-                    continue;
-                };
-                let y = y.clamp(panel.plot.y, panel.plot.y + panel.plot.height);
-                labels.push((
-                    panel_index,
-                    self.format_panel_axis_value(panel_index, panel_precision, value, step_value),
-                    y,
-                ));
-            }
-        }
-
-        labels
-    }
-
-    fn required_y_axis_gutter(&self, scene: &Scene) -> f32 {
-        let label_width = |label: &str| label.chars().count() as f32 * CHAR_W;
-        let mut widest_label = self
-            .y_axis_label_specs(scene)
-            .into_iter()
-            .map(|(_, label, _)| label_width(&label))
-            .fold(0.0, f32::max);
-
-        for unit in [scene.min_primary_unit, scene.max_primary_unit] {
-            let value = scene.primary_unit_to_value(unit);
-            widest_label = widest_label.max(label_width(&scene.format_primary_cursor_label(value)));
-        }
-
-        for indicator in &scene.indicator_panels {
-            if self.indicator_is_unavailable(indicator.value_id) {
-                continue;
-            }
-
-            let panel_precision = self.panel_value_precision(indicator.panel_index);
-            for unit in [indicator.min_unit, indicator.max_unit] {
-                let value = self.panel_unit_to_value(panel_precision, unit);
-                widest_label = widest_label.max(label_width(&self.format_panel_axis_value(
-                    indicator.panel_index,
-                    panel_precision,
-                    value,
-                    0.01,
-                )));
-            }
-        }
-
-        (widest_label + Y_AXIS_LABEL_LEFT_INSET * 2.0).max(Y_AXIS_GUTTER)
-    }
-
-    fn fill_y_axis_labels(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
-        for (panel_index, text, y) in self.y_axis_label_specs(scene) {
-            let Some(axis) = scene.layout.panel(panel_index) else {
-                continue;
-            };
-
-            self.draw_y_axis_label(frame, axis, text, y, palette.background.base.text);
-        }
-    }
-
-    fn fill_unavailable_indicator_messages(
-        &self,
-        frame: &mut canvas::Frame,
-        scene: &Scene,
-        palette: &Extended,
-    ) {
-        for indicator in &scene.indicator_panels {
-            if !self.indicator_is_unavailable(indicator.value_id) {
-                continue;
-            }
-
-            let Some(panel) = scene.layout.panel(indicator.panel_index) else {
-                continue;
-            };
-            let Some(content) = self
-                .indicator_unavailable_message(indicator.value_id)
-                .map(str::to_owned)
-            else {
-                continue;
-            };
-            let position = Point::new(
-                panel.plot.x + panel.plot.width * 0.5,
-                panel.plot.y + panel.plot.height * 0.5,
-            );
-
-            frame.with_clip(panel.plot, |frame| {
-                frame.fill_text(canvas::Text {
-                    content,
-                    position,
-                    color: palette.background.base.text.scale_alpha(0.72),
-                    size: TEXT_SIZE.into(),
-                    align_x: iced::Alignment::Center.into(),
-                    align_y: iced::Alignment::Center.into(),
-                    font: style::AZERET_MONO,
-                    ..Default::default()
-                });
-            });
-        }
-    }
-
-    fn draw_y_axis_label(
-        &self,
-        frame: &mut canvas::Frame,
-        axis: &PanelLayoutNode,
-        content: String,
-        y: f32,
-        color: iced::Color,
-    ) {
-        let y = axis.y_axis_label_y(y, TEXT_SIZE);
-        frame.with_clip(axis.y_axis, |frame| {
-            frame.fill_text(canvas::Text {
-                content,
-                position: Point::new(Y_AXIS_LABEL_LEFT_INSET, y),
-                color,
-                size: TEXT_SIZE.into(),
-                align_x: iced::Alignment::Start.into(),
-                align_y: iced::Alignment::Center.into(),
-                font: style::AZERET_MONO,
-                ..Default::default()
-            });
-        });
-    }
-
-    fn fill_x_axis_labels(&self, frame: &mut canvas::Frame, scene: &Scene, palette: &Extended) {
-        let horizontal_pixel_ratio = self.resolved_horizontal_pixel_ratio();
-        let plot_width = scene.x_axis_plot_width();
-
-        if let XAxis::Time { timeframe, .. } = scene.x_axis
-            && let (Some(earliest), Some(latest)) = (
-                scene.time_for_x_unit(scene.min_x_unit),
-                scene.time_for_x_unit(scene.max_x_unit),
-            )
-        {
-            let span_ms = latest
-                .as_u64()
-                .saturating_sub(earliest.as_u64())
-                .max(timeframe.to_milliseconds());
-            let labels = TimeTickLabel::for_range(
-                earliest,
-                latest,
-                span_ms,
-                plot_width,
-                CHAR_W,
-                x_labels_that_fit(plot_width, CHAR_W) as i32,
-                timeframe,
-                self.timezone,
-            );
-
-            let clip_region = Rectangle {
-                x: 0.0,
-                y: 0.0,
-                width: plot_width,
-                height: scene.layout.regions.x_axis.height,
-            };
-
-            frame.with_clip(clip_region, |frame| {
-                for label in labels {
-                    let color = match label.tier {
-                        TimeTickTier::Secondary => palette.background.strongest.text,
-                        TimeTickTier::Main => palette.background.base.text,
-                    };
-                    let x = Self::snap_plot_x_to_cell(label.x_pos, horizontal_pixel_ratio);
-
-                    frame.fill_text(canvas::Text {
-                        content: label.content,
-                        position: Point::new(x, scene.layout.regions.x_axis.height / 2.0),
-                        color,
-                        size: TEXT_SIZE.into(),
-                        align_x: iced::Alignment::Center.into(),
-                        align_y: iced::Alignment::Center.into(),
-                        font: style::AZERET_MONO,
-                        ..Default::default()
-                    });
-                }
-            });
-            return;
-        }
-
-        if matches!(scene.x_axis, XAxis::Tick { .. }) {
-            let target_spacing = data::chart::ticks::x_label_spacing_px(TEXT_SIZE);
-            let clip_region = Rectangle {
-                x: 0.0,
-                y: 0.0,
-                width: plot_width,
-                height: scene.layout.regions.x_axis.height,
-            };
-
-            frame.with_clip(clip_region, |frame| {
-                let mut last_x: Option<f32> = None;
-
-                if let Some(base_series) = self.series.first() {
-                    for index in 0..base_series.bars().len() {
-                        let Some(unit) = self.tick_unit_for_index(scene.x_axis, index) else {
-                            continue;
-                        };
-                        let x = Self::snap_plot_x_to_cell(
-                            scene.map_x_plot(unit),
-                            horizontal_pixel_ratio,
-                        );
-
-                        if last_x.is_some_and(|previous| (x - previous).abs() < target_spacing) {
-                            continue;
-                        }
-
-                        let Some(time) = self.tick_time_for_unit(scene.x_axis, unit) else {
-                            continue;
-                        };
-                        let Some(content) = self.timezone.format_with_kind(
-                            time.as_u64() as i64,
-                            data::config::timezone::TimeLabelKind::Axis {
-                                timeframe: Timeframe::MS100,
-                            },
-                        ) else {
-                            continue;
-                        };
-
-                        frame.fill_text(canvas::Text {
-                            content,
-                            position: Point::new(x, scene.layout.regions.x_axis.height / 2.0),
-                            color: palette.background.base.text,
-                            size: TEXT_SIZE.into(),
-                            align_x: iced::Alignment::Center.into(),
-                            align_y: iced::Alignment::Center.into(),
-                            font: style::AZERET_MONO,
-                            ..Default::default()
-                        });
-                        last_x = Some(x);
-                    }
-                }
-            });
-            return;
-        }
-
-        let (ticks, step_units) = super::unit_ticks(
-            scene.min_x_unit,
-            scene.max_x_unit,
-            plot_width,
-            MIN_X_TICK_PX.max(40.0),
-        );
-
-        let mut ticks_with_bounds = Vec::with_capacity(ticks.len().saturating_add(2));
-
-        if let Some(first) = ticks.first().copied() {
-            ticks_with_bounds.push(first.saturating_sub(step_units));
-        }
-
-        ticks_with_bounds.extend(ticks);
-
-        if let Some(last) = ticks_with_bounds.last().copied() {
-            ticks_with_bounds.push(last.saturating_add(step_units));
-        }
-
-        let clip_region = Rectangle {
-            x: 0.0,
-            y: 0.0,
-            width: plot_width,
-            height: scene.layout.regions.x_axis.height,
-        };
-
-        frame.with_clip(clip_region, |frame| {
-            for tick in ticks_with_bounds {
-                let x = Self::snap_plot_x_to_cell(scene.map_x_plot(tick), horizontal_pixel_ratio);
-                let label = self.format_x_label(scene.x_axis, tick, step_units);
-
-                frame.fill_text(canvas::Text {
-                    content: label,
-                    position: Point::new(x, scene.layout.regions.x_axis.height / 2.0),
-                    color: palette.background.base.text,
-                    size: TEXT_SIZE.into(),
-                    align_x: iced::Alignment::Center.into(),
-                    align_y: iced::Alignment::Center.into(),
-                    font: style::AZERET_MONO,
-                    ..Default::default()
-                });
-            }
-        });
-    }
-
-    fn fill_overlay(
-        &self,
-        frame: &mut canvas::Frame,
-        scene: &Scene,
-        palette: &Extended,
-        overlay_origin_in_window: Point,
-    ) {
-        let horizontal_pixel_ratio = self.resolved_horizontal_pixel_ratio();
-        self.fill_corner_controls(frame, scene, palette);
-        self.fill_panel_controls(frame, scene, palette);
-        self.fill_primary_ticker_legend(frame, scene, palette);
-        self.fill_indicator_legend(frame, scene, palette);
-        self.fill_unavailable_indicator_messages(frame, scene, palette);
-
-        if !scene.hovering_ticker_legend {
-            let show_primary_panel_values = scene.ticker_legend.is_none();
-            self.fill_panel_header_values(frame, scene, palette, show_primary_panel_values);
-        }
-
-        if self.drawings.has_state() {
-            self.fill_drawings(
-                frame,
-                scene,
-                palette,
-                overlay_origin_in_window,
-                horizontal_pixel_ratio,
-            );
-        }
-
-        if scene.hovered_control.is_some()
-            || scene.hovered_corner_control.is_some()
-            || scene.hovering_ticker_legend
-            || scene.hovering_indicator_legend
-        {
-            return;
-        }
-
-        let Some(cursor) = scene.cursor else {
-            return;
-        };
-
-        let line_color = palette.background.base.text.scale_alpha(0.35);
-        let (crosshair_width, crosshair_width_phys) =
-            Self::quantized_stroke_width(1.0, horizontal_pixel_ratio);
-
-        let plot_origin_x_global = overlay_origin_in_window.x + scene.layout.regions.plot.x;
-        let gx = scene.layout.regions.plot.x
-            + Self::snap_plot_x_for_stroke_with_origin(
-                cursor.x_plot,
-                horizontal_pixel_ratio,
-                plot_origin_x_global,
-                crosshair_width_phys,
-            );
-        let panel_plot = scene
-            .layout
-            .panel(cursor.panel_index)
-            .map(|panel| panel.plot)
-            .unwrap_or(*scene.primary_plot());
-        let panel_bounds = (
-            scene.layout.regions.plot.y + panel_plot.y,
-            scene.layout.regions.plot.y + panel_plot.y + panel_plot.height,
-        );
-        let gy = Self::snap_stroke_center_with_origin(
-            scene.layout.regions.plot.y + cursor.y_plot,
-            horizontal_pixel_ratio,
-            overlay_origin_in_window.y,
-            crosshair_width_phys,
-        )
-        .clamp(panel_bounds.0, panel_bounds.1);
-
-        let stroke = style::dashed_line_from_palette(palette)
-            .with_color(line_color)
-            .with_width(crosshair_width);
-
-        frame.stroke(
-            &canvas::Path::line(
-                Point::new(gx, scene.layout.regions.plot.y),
-                Point::new(
-                    gx,
-                    scene.layout.regions.plot.y + scene.layout.regions.plot.height,
-                ),
-            ),
-            stroke,
-        );
-
-        if cursor.y_primary_unit.is_some() || cursor.y_indicator_unit.is_some() {
-            frame.stroke(
-                &canvas::Path::line(
-                    Point::new(scene.layout.regions.plot.x, gy),
-                    Point::new(
-                        scene.layout.regions.plot.x + scene.layout.regions.plot.width,
-                        gy,
-                    ),
-                ),
-                stroke,
-            );
-        }
-    }
-
-    fn fill_overlay_interaction_text(
-        &self,
-        frame: &mut canvas::Frame,
-        scene: &Scene,
-        palette: &Extended,
-    ) {
-        let mut badge_filter = AxisBadgeFilter::default();
-
-        if scene.hovered_control.is_some()
-            || scene.hovered_corner_control.is_some()
-            || scene.hovering_ticker_legend
-            || scene.hovering_indicator_legend
-        {
-            self.fill_last_price_axis_badge(frame, scene, palette, &mut badge_filter);
-            return;
-        }
-
-        if let Some(cursor) = scene.cursor {
-            let gy = scene.layout.regions.plot.y + cursor.y_plot;
-
-            if let Some(y_text) = cursor
-                .y_primary_unit
-                .map(|primary_unit| {
-                    let panel_precision = self.panel_value_precision(cursor.panel_index);
-                    let primary_value = self.panel_unit_to_value(panel_precision, primary_unit);
-                    scene.format_primary_cursor_label(primary_value)
-                })
-                .or_else(|| {
-                    cursor.y_indicator_unit.map(|indicator_unit| {
-                        let panel_precision = self.panel_value_precision(cursor.panel_index);
-                        let indicator_value =
-                            self.panel_unit_to_value(panel_precision, indicator_unit);
-                        self.format_panel_axis_value(
-                            cursor.panel_index,
-                            panel_precision,
-                            indicator_value,
-                            0.01,
-                        )
-                    })
-                })
-            {
-                let y_badge_bounds = self
-                    .panel_plot_bounds_in_overlay(scene, cursor.panel_index)
-                    .unwrap_or_else(|| self.plot_bounds_in_overlay(scene));
-                self.draw_y_axis_badge(
-                    frame,
-                    scene,
-                    palette,
-                    gy,
-                    &y_text,
-                    y_badge_bounds,
-                    &mut badge_filter,
-                );
-            }
-
-            let x_text = self.format_x_crosshair_label(scene.x_axis, cursor.x_unit);
-            let horizontal_pixel_ratio = self.resolved_horizontal_pixel_ratio();
-            self.draw_x_axis_badge(
-                frame,
-                scene,
-                palette,
-                scene.layout.regions.plot.x
-                    + Self::snap_plot_x_to_cell(cursor.x_plot, horizontal_pixel_ratio),
-                &x_text,
-                &mut badge_filter,
-            );
-        }
-
-        self.fill_last_price_axis_badge(frame, scene, palette, &mut badge_filter);
-        self.fill_active_drawing_axis_labels(frame, scene, palette, &mut badge_filter);
-    }
-
-    fn fill_last_price_axis_badge(
-        &self,
-        frame: &mut canvas::Frame,
-        scene: &Scene,
-        palette: &Extended,
-        filter: &mut AxisBadgeFilter,
-    ) {
-        let Some(base_series) = self.series.first() else {
-            return;
-        };
-        let Some(last_bar) = base_series.bars().last() else {
-            return;
-        };
-        let Some(panel_bounds) = self.panel_plot_bounds_in_overlay(scene, scene.primary_panel)
-        else {
-            return;
-        };
-
-        let last_price = last_bar.close.to_f32_lossy();
-        let y = scene.layout.regions.plot.y
-            + scene.map_primary_plot_with_anchor(
-                last_price,
-                scene.series_percent_anchors.first().copied().flatten(),
-            );
-        let color = if last_bar.close >= last_bar.open {
-            palette.success.base.color
-        } else {
-            palette.danger.base.color
-        };
-        let text = scene.format_primary_cursor_label(last_price);
-        let timer_text = self.candle_close_countdown();
-        let value_text_color = if timer_text.is_some() {
-            if palette.is_dark {
-                iced::Color::BLACK
-            } else {
-                iced::Color::WHITE
-            }
-        } else {
-            palette.primary.strong.text
-        };
-        let timer_text_color = if palette.is_dark {
-            iced::Color::BLACK.scale_alpha(0.8)
-        } else {
-            iced::Color::WHITE.scale_alpha(0.8)
-        };
-
-        self.draw_y_axis_badge_with_timer(
-            frame,
-            scene,
-            y,
-            &text,
-            timer_text.as_deref(),
-            panel_bounds,
-            color,
-            value_text_color,
-            timer_text_color,
-            filter,
-        );
-    }
-
-    fn candle_close_countdown(&self) -> Option<String> {
-        let Basis::Time(timeframe) = self.basis else {
-            return None;
-        };
-
-        let interval = timeframe.to_milliseconds();
-        let current_time = chrono::Utc::now().timestamp_millis() as u64;
-        let next_kline_open = (current_time / interval + 1) * interval;
-        let remaining_seconds = (next_kline_open - current_time) / 1000;
-
-        if remaining_seconds == 0 {
-            return None;
-        }
-
-        let hours = remaining_seconds / 3600;
-        let minutes = (remaining_seconds % 3600) / 60;
-        let seconds = remaining_seconds % 60;
-
-        Some(if hours > 0 {
-            format!("{hours:02}:{minutes:02}:{seconds:02}")
-        } else {
-            format!("{minutes:02}:{seconds:02}")
-        })
+    fn drawing_magnet_enabled(&self, modifiers: keyboard::Modifiers) -> bool {
+        self.drawings.active_tool.supports_magnet()
+            && (self.drawings.magnet_enabled || Self::is_command_modifier(modifiers))
     }
 }
 
@@ -1947,7 +784,7 @@ where
             for _ in 0..2 {
                 let required = {
                     let provisional_layout = iced_layout::Layout::new(&node);
-                    self.compute_scene(provisional_layout, mouse::Cursor::Unavailable)
+                    self.compute_scene_uncached(provisional_layout, mouse::Cursor::Unavailable)
                         .map(|scene| self.required_y_axis_gutter(&scene))
                 };
 
@@ -1968,7 +805,9 @@ where
             gutter
         };
 
-        build_layout(y_axis_gutter)
+        let node = build_layout(y_axis_gutter);
+        self.ensure_scene_base(state, iced_layout::Layout::new(&node));
+        node
     }
 
     fn update(
@@ -1986,7 +825,84 @@ where
             return;
         }
 
+        {
+            let state = tree.state.downcast_mut::<State>();
+            self.ensure_scene_base(state, layout);
+        }
+
         match event {
+            Event::Keyboard(keyboard::Event::KeyPressed {
+                key,
+                physical_key,
+                modifiers,
+                ..
+            }) => {
+                let state = tree.state.downcast_mut::<State>();
+                state.modifiers = *modifiers;
+                state.clear_overlay_caches();
+
+                if self.escape_enabled
+                    && cursor.is_over(layout.bounds())
+                    && matches!(key, keyboard::Key::Named(keyboard::key::Named::Escape))
+                {
+                    shell.publish(M::from(KlineWidgetEvent::EscapePressed));
+                    shell.capture_event();
+                    return;
+                }
+
+                if cursor.is_over(layout.bounds())
+                    && let Some(event) = history_shortcut(key.as_ref(), *modifiers)
+                {
+                    shell.publish(M::from(event));
+                    shell.capture_event();
+                    return;
+                }
+
+                if cursor.is_over(layout.bounds())
+                    && primary_scale_inversion_shortcut(*physical_key, *modifiers)
+                {
+                    shell.publish(M::from(KlineWidgetEvent::PrimaryScaleInversionRequested));
+                    shell.capture_event();
+                    return;
+                }
+
+                shell.publish(M::from(KlineWidgetEvent::Drawing(
+                    KlineWidgetDrawingEvent::MagnetModifierChanged(Self::is_command_modifier(
+                        *modifiers,
+                    )),
+                )));
+
+                match key.as_ref() {
+                    keyboard::Key::Named(keyboard::key::Named::Backspace)
+                    | keyboard::Key::Named(keyboard::key::Named::Delete)
+                        if cursor.is_over(layout.bounds()) =>
+                    {
+                        shell.publish(M::from(KlineWidgetEvent::DeletePressed));
+                        shell.capture_event();
+                    }
+                    _ => {}
+                }
+            }
+            Event::Keyboard(keyboard::Event::KeyReleased { modifiers, .. }) => {
+                let state = tree.state.downcast_mut::<State>();
+                state.modifiers = *modifiers;
+                state.clear_overlay_caches();
+                shell.publish(M::from(KlineWidgetEvent::Drawing(
+                    KlineWidgetDrawingEvent::MagnetModifierChanged(Self::is_command_modifier(
+                        *modifiers,
+                    )),
+                )));
+            }
+            Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
+                let state = tree.state.downcast_mut::<State>();
+                state.modifiers = *modifiers;
+                state.clear_overlay_caches();
+                shell.publish(M::from(KlineWidgetEvent::Drawing(
+                    KlineWidgetDrawingEvent::MagnetModifierChanged(Self::is_command_modifier(
+                        *modifiers,
+                    )),
+                )));
+            }
             Event::Mouse(mouse_event) => {
                 let state = tree.state.downcast_mut::<State>();
                 let bounds = layout.bounds();
@@ -1996,31 +912,43 @@ where
                     return;
                 };
 
+                if matches!(
+                    mouse_event,
+                    mouse::Event::ButtonReleased(mouse::Button::Left)
+                ) && cursor.position_in(bounds).is_none()
+                {
+                    let was_dragging = !matches!(state.drag_mode, DragMode::None);
+                    if let DragMode::DrawingMove { id, .. } = state.drag_mode {
+                        shell.publish(M::from(KlineWidgetEvent::Drawing(
+                            KlineWidgetDrawingEvent::DragFinished { id },
+                        )));
+                    }
+                    state.drag_mode = DragMode::None;
+                    state.last_cursor = None;
+                    state.clear_overlay_caches();
+                    state.clear_all_caches();
+                    if was_dragging {
+                        shell.capture_event();
+                    }
+                    return;
+                }
+
                 let cursor_pos = if let Some(local) = cursor.position_in(bounds) {
                     local
                 } else if matches!(
                     state.drag_mode,
-                    DragMode::DrawingMove { .. } | DragMode::XAxisScale
+                    DragMode::DrawingMove { .. }
+                        | DragMode::YAxisScale { .. }
+                        | DragMode::XAxisScale { .. }
+                        | DragMode::Marquee { .. }
                 ) {
                     if let Some(global) = cursor.position() {
                         Point::new(global.x - bounds.x, global.y - bounds.y)
                     } else {
-                        if let DragMode::DrawingMove { id, .. } = state.drag_mode {
-                            shell.publish(M::from(KlineWidgetEvent::Drawing(
-                                KlineWidgetDrawingEvent::DragFinished { id },
-                            )));
-                        }
-
-                        state.drag_mode = DragMode::None;
-                        state.last_cursor = None;
                         state.clear_overlay_caches();
                         return;
                     }
                 } else {
-                    if !matches!(state.drag_mode, DragMode::None) {
-                        state.drag_mode = DragMode::None;
-                        state.last_cursor = None;
-                    }
                     state.clear_overlay_caches();
                     return;
                 };
@@ -2054,10 +982,36 @@ where
                     });
                 }
 
+                let footprint_legend = self
+                    .cached_scene(state, layout, cursor)
+                    .and_then(|scene| scene.chrome.footprint_legend);
+                let footprint_legend_hit = footprint_legend.as_ref().and_then(|legend| {
+                    Self::hit_footprint_legend(&layout_tree, legend, cursor_pos)
+                });
+
+                let study_legend = self.build_study_legend_layout(
+                    &layout_tree,
+                    primary_panel,
+                    self.tooltip_rows_before_studies(
+                        ticker_legend.as_ref(),
+                        footprint_legend.as_ref(),
+                        show_legend_values,
+                    ),
+                    self.studies_legend_expanded,
+                );
+                let study_legend_hit = study_legend
+                    .as_ref()
+                    .and_then(|legend| Self::hit_study_legend(&layout_tree, legend, cursor_pos));
+
                 let mut indicator_legend = self.build_indicator_legend_layout(
                     &layout_tree,
                     primary_panel,
-                    self.tooltip_rows_before_indicators(ticker_legend.as_ref(), show_legend_values),
+                    self.tooltip_rows_before_indicators(
+                        ticker_legend.as_ref(),
+                        footprint_legend.as_ref(),
+                        study_legend.as_ref(),
+                        show_legend_values,
+                    ),
                 );
                 let mut indicator_legend_hit = indicator_legend.as_ref().and_then(|legend| {
                     Self::hit_indicator_legend(&layout_tree, legend, cursor_pos)
@@ -2069,6 +1023,8 @@ where
                         primary_panel,
                         self.tooltip_rows_before_indicators(
                             ticker_legend.as_ref(),
+                            footprint_legend.as_ref(),
+                            study_legend.as_ref(),
                             show_legend_values,
                         ),
                     );
@@ -2079,17 +1035,10 @@ where
 
                 match mouse_event {
                     mouse::Event::WheelScrolled { delta } => {
-                        let scroll_y = match delta {
-                            mouse::ScrollDelta::Lines { y, .. }
-                            | mouse::ScrollDelta::Pixels { y, .. } => *y,
-                        };
+                        let scroll_y = normalized_scroll_delta(delta);
 
                         if scroll_y.abs() <= f32::EPSILON {
                             return;
-                        }
-
-                        if !matches!(zone, LayoutHitZone::PanelPlot(_)) {
-                            state.horizontal_zoom_scroll_accum = 0.0;
                         }
 
                         match zone {
@@ -2104,7 +1053,6 @@ where
                                     )
                                     .is_some()
                                 {
-                                    state.horizontal_zoom_scroll_accum = 0.0;
                                     return;
                                 }
 
@@ -2112,145 +1060,74 @@ where
                                     && Self::hit_corner_control(&corner_controls, cursor_pos)
                                         .is_some()
                                 {
-                                    state.horizontal_zoom_scroll_accum = 0.0;
                                     return;
                                 }
 
                                 if matches!(zone, LayoutHitZone::PanelPlot(_))
                                     && ticker_legend_hit.is_some()
                                 {
-                                    state.horizontal_zoom_scroll_accum = 0.0;
+                                    return;
+                                }
+
+                                if matches!(zone, LayoutHitZone::PanelPlot(_))
+                                    && footprint_legend_hit.is_some()
+                                {
                                     return;
                                 }
 
                                 if matches!(zone, LayoutHitZone::PanelPlot(_))
                                     && indicator_legend_hit.is_some()
                                 {
-                                    state.horizontal_zoom_scroll_accum = 0.0;
                                     return;
                                 }
 
-                                let adjustment = match delta {
-                                    mouse::ScrollDelta::Lines { .. } => {
-                                        HORIZONTAL_ZOOM_LINE_DELTA_MODE_ADJUSTMENT
-                                    }
-                                    mouse::ScrollDelta::Pixels { .. } => {
-                                        #[cfg(target_os = "windows")]
-                                        {
-                                            HORIZONTAL_ZOOM_PIXEL_DELTA_MODE_ADJUSTMENT
-                                                / self.resolved_horizontal_pixel_ratio().max(1.0)
-                                        }
-
-                                        #[cfg(not(target_os = "windows"))]
-                                        {
-                                            HORIZONTAL_ZOOM_PIXEL_DELTA_MODE_ADJUSTMENT
-                                        }
-                                    }
-                                };
-
-                                let normalized_zoom_delta =
-                                    (scroll_y * adjustment) / HORIZONTAL_ZOOM_DELTA_NORMALIZATION;
-
-                                if normalized_zoom_delta.abs() <= f32::EPSILON {
+                                if matches!(zone, LayoutHitZone::PanelPlot(_))
+                                    && study_legend_hit.is_some()
+                                {
                                     return;
                                 }
 
-                                let is_pixel_delta =
-                                    matches!(delta, mouse::ScrollDelta::Pixels { .. });
+                                let horizontal_zoom_mode =
+                                    HorizontalWheelZoomMode::from_modifiers(state.modifiers);
+                                let horizontal_zoom_delta = scroll_y / 2.0;
 
-                                if !is_pixel_delta {
-                                    state.horizontal_zoom_scroll_accum = 0.0;
+                                if horizontal_zoom_delta.abs() <= f32::EPSILON {
+                                    return;
                                 }
 
-                                let mut remaining_zoom_delta = if is_pixel_delta {
-                                    state.horizontal_zoom_scroll_accum + normalized_zoom_delta
-                                } else {
-                                    normalized_zoom_delta
+                                let scene = match zone {
+                                    LayoutHitZone::PanelPlot(_)
+                                    | LayoutHitZone::PanelXAxis(_)
+                                    | LayoutHitZone::BottomXAxis => {
+                                        self.cached_scene(state, layout, cursor)
+                                    }
+                                    _ => None,
                                 };
+                                let horizontal_world = scene.as_ref().map(|scene| {
+                                    self.horizontal_world_for_cursor(
+                                        scene,
+                                        cursor_pos.x,
+                                        horizontal_zoom_delta,
+                                        horizontal_zoom_mode,
+                                    )
+                                });
+                                let new_world = horizontal_world.unwrap_or(self.horizontal_world);
+                                let horizontal_changed = new_world != self.horizontal_world;
 
-                                let current_scale =
-                                    self.normalize_horizontal_scale(self.horizontal_scale);
-                                let mut new_scale = current_scale;
-                                let mut applied_chunks = 0usize;
-
-                                while remaining_zoom_delta.abs() > f32::EPSILON
-                                    && applied_chunks
-                                        < HORIZONTAL_ZOOM_MAX_ACCUMULATED_CHUNKS_PER_EVENT
-                                {
-                                    let zoom_scale = remaining_zoom_delta.clamp(-1.0, 1.0);
-                                    let stepped =
-                                        self.step_horizontal_scale_percent(new_scale, zoom_scale);
-
-                                    if (stepped.as_pixels_per_bar() - new_scale.as_pixels_per_bar())
-                                        .abs()
-                                        <= f32::EPSILON
-                                    {
-                                        remaining_zoom_delta = 0.0;
-                                        break;
-                                    }
-
-                                    new_scale = stepped;
-                                    applied_chunks = applied_chunks.saturating_add(1);
-
-                                    if is_pixel_delta {
-                                        remaining_zoom_delta -= zoom_scale;
-
-                                        // Keep partial pixel delta for the next wheel event.
-                                        if remaining_zoom_delta.abs() < 1.0 {
-                                            break;
-                                        }
-                                    } else {
-                                        remaining_zoom_delta = 0.0;
-                                    }
-                                }
-
-                                if is_pixel_delta {
-                                    state.horizontal_zoom_scroll_accum = remaining_zoom_delta
-                                        .clamp(
-                                            -HORIZONTAL_ZOOM_MAX_ACCUMULATED_DELTA,
-                                            HORIZONTAL_ZOOM_MAX_ACCUMULATED_DELTA,
-                                        );
-                                } else {
-                                    state.horizontal_zoom_scroll_accum = 0.0;
-                                }
-
-                                if (new_scale.as_pixels_per_bar()
-                                    - current_scale.as_pixels_per_bar())
-                                .abs()
-                                    > f32::EPSILON
-                                {
-                                    let new_offset = if matches!(
-                                        zone,
-                                        LayoutHitZone::PanelXAxis(_) | LayoutHitZone::BottomXAxis
-                                    ) {
-                                        self.compute_scene(layout, cursor)
-                                            .map(|scene| {
-                                                self.horizontal_offset_for_cursor_scale(
-                                                    &scene,
-                                                    cursor_pos.x,
-                                                    new_scale,
-                                                )
-                                            })
-                                            .unwrap_or(self.horizontal_offset)
-                                    } else {
-                                        self.horizontal_offset
-                                    };
-
+                                if horizontal_changed {
                                     shell.publish(M::from(
-                                        KlineWidgetEvent::HorizontalScaleChanged(new_scale),
+                                        KlineWidgetEvent::HorizontalWorldChanged {
+                                            cell_width: new_world.cell_width(),
+                                            scaling: new_world.scaling(),
+                                            offset: new_world.offset(),
+                                        },
                                     ));
-                                    if (new_offset - self.horizontal_offset).abs() > f32::EPSILON {
-                                        shell.publish(M::from(
-                                            KlineWidgetEvent::HorizontalOffsetChanged(new_offset),
-                                        ));
-                                    }
-
                                     state.clear_all_caches();
                                     shell.capture_event();
                                 }
                             }
                             LayoutHitZone::YAxis(panel_index) => {
-                                let Some(scene) = self.compute_scene(layout, cursor) else {
+                                let Some(scene) = self.cached_scene(state, layout, cursor) else {
                                     return;
                                 };
 
@@ -2329,6 +1206,36 @@ where
                             return;
                         }
 
+                        if let Some(FootprintLegendHit::Icon(icon_kind)) = footprint_legend_hit {
+                            shell.publish(M::from(icon_kind.into_event()));
+                            state.drag_mode = DragMode::None;
+                            state.last_cursor = None;
+                            state.clear_all_caches();
+                            shell.capture_event();
+                            return;
+                        }
+
+                        if let Some(StudyLegendHit::CategoryIcon(icon_kind)) = study_legend_hit {
+                            shell.publish(M::from(icon_kind.into_event()));
+                            state.drag_mode = DragMode::None;
+                            state.last_cursor = None;
+                            state.clear_all_caches();
+                            shell.capture_event();
+                            return;
+                        }
+
+                        if let (Some(legend), Some(StudyLegendHit::StudyIcon(row_index, icon_kind))) =
+                            (&study_legend, study_legend_hit)
+                            && let Some(row) = legend.rows.get(row_index)
+                        {
+                            shell.publish(M::from(icon_kind.into_event(row.study_id)));
+                            state.drag_mode = DragMode::None;
+                            state.last_cursor = None;
+                            state.clear_all_caches();
+                            shell.capture_event();
+                            return;
+                        }
+
                         if let (Some(legend), Some(IndicatorLegendHit::Icon(row_index, icon_kind))) =
                             (&indicator_legend, indicator_legend_hit)
                             && let Some(row) = legend.rows.get(row_index)
@@ -2358,6 +1265,18 @@ where
                             return;
                         }
 
+                        if footprint_legend_hit.is_some() {
+                            state.drag_mode = DragMode::None;
+                            state.last_cursor = None;
+                            return;
+                        }
+
+                        if study_legend_hit.is_some() {
+                            state.drag_mode = DragMode::None;
+                            state.last_cursor = None;
+                            return;
+                        }
+
                         if indicator_legend_hit.is_some() {
                             state.drag_mode = DragMode::None;
                             state.last_cursor = None;
@@ -2379,9 +1298,33 @@ where
                             return;
                         }
 
+                        if (self.drawings.measure.is_some()
+                            || state.modifiers.intersects(keyboard::Modifiers::SHIFT)
+                            || self.drawings.active_tool == DrawingTool::Measure)
+                            && let LayoutHitZone::PanelPlot(panel_index) = zone
+                        {
+                            let measure_panel = self.drawings.measure.map(|m| m.state().panel_id);
+                            let panel_id = measure_panel.or_else(|| self.panel_id(panel_index));
+
+                            if let Some(panel_id) = panel_id
+                                && let Some(scene) = self.cached_scene(state, layout, cursor)
+                                && let Some(anchor) = self
+                                    .drawing_anchor_from_scene_point(&scene, panel_id, cursor_pos)
+                            {
+                                shell.publish(M::from(KlineWidgetEvent::Drawing(
+                                    KlineWidgetDrawingEvent::MeasureClick(anchor),
+                                )));
+                                state.drag_mode = DragMode::None;
+                                state.last_cursor = None;
+                                state.clear_all_caches();
+                                shell.capture_event();
+                                return;
+                            }
+                        }
+
                         if self.drawings.allows_panning()
                             && matches!(zone, LayoutHitZone::PanelPlot(_))
-                            && let Some(scene) = self.compute_scene(layout, cursor)
+                            && let Some(scene) = self.cached_scene(state, layout, cursor)
                         {
                             if Self::hit_corner_control(&corner_controls, cursor_pos).is_some() {
                                 state.drag_mode = DragMode::None;
@@ -2389,14 +1332,20 @@ where
                                 return;
                             }
 
-                            if let Some((id, handle_kind)) =
-                                self.hit_test_selected_drawing_handle(&scene, cursor_pos)
+                            if !Self::is_command_modifier(state.modifiers)
+                                && let Some((id, handle_kind)) =
+                                    self.hit_test_selected_drawing_handle(&scene, cursor_pos)
                                 && let Some(anchor) = self.drawing_anchor_from_scene_cursor(&scene)
                             {
                                 let target = DrawingDragTarget::Handle(handle_kind);
 
                                 shell.publish(M::from(KlineWidgetEvent::Drawing(
-                                    KlineWidgetDrawingEvent::DragStarted { id, target, anchor },
+                                    KlineWidgetDrawingEvent::DragStarted {
+                                        id,
+                                        target,
+                                        operation: DrawingDragOperation::Move,
+                                        anchor,
+                                    },
                                 )));
                                 state.drag_mode = DragMode::DrawingMove {
                                     id,
@@ -2413,26 +1362,30 @@ where
                             let hit_drawing = self.hit_test_drawings(&scene, cursor_pos);
 
                             if let Some(id) = hit_drawing {
-                                let was_selected = self.drawings.selected_drawing == Some(id);
+                                let was_selected = self.drawings.selected_drawings.contains(&id);
 
                                 if !was_selected {
                                     shell.publish(M::from(KlineWidgetEvent::Drawing(
                                         KlineWidgetDrawingEvent::Selected(Some(id)),
                                     )));
-                                    state.drag_mode = DragMode::None;
-                                    state.last_cursor = None;
-                                    state.clear_overlay_caches();
-                                    state.clear_all_caches();
-                                    shell.capture_event();
-                                    return;
                                 }
 
                                 if let Some(anchor) = self.drawing_anchor_from_scene_cursor(&scene)
                                 {
                                     let target = DrawingDragTarget::Translate;
+                                    let operation = if Self::is_command_modifier(state.modifiers) {
+                                        DrawingDragOperation::Copy
+                                    } else {
+                                        DrawingDragOperation::Move
+                                    };
 
                                     shell.publish(M::from(KlineWidgetEvent::Drawing(
-                                        KlineWidgetDrawingEvent::DragStarted { id, target, anchor },
+                                        KlineWidgetDrawingEvent::DragStarted {
+                                            id,
+                                            target,
+                                            operation,
+                                            anchor,
+                                        },
                                     )));
                                     state.drag_mode = DragMode::DrawingMove {
                                         id,
@@ -2454,17 +1407,29 @@ where
                                 return;
                             }
 
-                            if self.drawings.selected_drawing.is_some() {
+                            if !Self::is_command_modifier(state.modifiers)
+                                && !self.drawings.selected_drawings.is_empty()
+                            {
                                 shell.publish(M::from(KlineWidgetEvent::Drawing(
                                     KlineWidgetDrawingEvent::Selected(None),
                                 )));
-                                state.drag_mode = DragMode::None;
-                                state.last_cursor = None;
-                                state.clear_overlay_caches();
                                 state.clear_all_caches();
-                                shell.capture_event();
-                                return;
                             }
+                        }
+
+                        if self.drawings.allows_panning()
+                            && Self::is_command_modifier(state.modifiers)
+                            && let LayoutHitZone::PanelPlot(panel_index) = zone
+                        {
+                            state.drag_mode = DragMode::Marquee {
+                                panel_index,
+                                start: cursor_pos,
+                                current: cursor_pos,
+                            };
+                            state.last_cursor = Some(cursor_pos);
+                            state.clear_overlay_caches();
+                            shell.capture_event();
+                            return;
                         }
 
                         if let LayoutHitZone::Splitter(split_index) = zone {
@@ -2472,9 +1437,25 @@ where
                             state.last_cursor = Some(cursor_pos);
                             shell.capture_event();
                         } else if let LayoutHitZone::YAxis(panel_index) = zone {
-                            state.drag_mode = DragMode::AxisScale {
+                            let primary_panel_id = self.composition.primary_panel_id();
+                            let is_primary_axis = self.panel_id(panel_index) == primary_panel_id;
+                            let allows_primary_manual_zoom = primary_panel_id.is_some_and(|id| {
+                                !matches!(
+                                    self.composition.panel_effective_scale_mode(id),
+                                    Some(PanelScaleMode::PercentFromBase)
+                                )
+                            });
+                            if is_primary_axis && allows_primary_manual_zoom {
+                                shell.publish(M::from(KlineWidgetEvent::PrimaryAutoscaleDisabled));
+                            }
+                            let anchor_y = layout_tree
+                                .panel(panel_index)
+                                .map_or(cursor_pos.y, |panel| {
+                                    layout_tree.regions.plot.y + panel.plot.center().y
+                                });
+                            state.drag_mode = DragMode::YAxisScale {
                                 panel_index,
-                                anchor_y: cursor_pos.y,
+                                anchor_y,
                             };
                             state.last_cursor = Some(cursor_pos);
                             shell.capture_event();
@@ -2482,23 +1463,33 @@ where
                             zone,
                             LayoutHitZone::PanelXAxis(_) | LayoutHitZone::BottomXAxis
                         ) {
-                            state.drag_mode = DragMode::XAxisScale;
-                            state.last_cursor = Some(cursor_pos);
-                            shell.capture_event();
+                            if let Some(scene) = self.cached_scene(state, layout, cursor) {
+                                state.drag_mode = DragMode::XAxisScale {
+                                    anchor_x: cursor_pos.x,
+                                    initial_world: self.horizontal_world,
+                                    initial_right_unit: scene.effective_right_x_unit(),
+                                };
+                                state.last_cursor = None;
+                                shell.capture_event();
+                            } else {
+                                state.drag_mode = DragMode::None;
+                                state.last_cursor = None;
+                            }
                         } else if !self.drawings.allows_panning() {
+                            let magnetic = self.drawing_magnet_enabled(state.modifiers);
                             let anchor = if let Some(panel_id) = self.drawings.draft_panel_id() {
-                                self.compute_scene(layout, cursor).and_then(|scene| {
-                                    self.drawing_anchor_from_scene_point(
-                                        &scene, panel_id, cursor_pos,
+                                self.cached_scene(state, layout, cursor).and_then(|scene| {
+                                    self.drawing_draft_anchor_from_scene_point(
+                                        &scene, panel_id, cursor_pos, magnetic,
                                     )
                                 })
                             } else if let LayoutHitZone::PanelPlot(panel_index) = zone {
                                 let panel_id = self.panel_id(panel_index);
 
                                 panel_id.and_then(|panel_id| {
-                                    self.compute_scene(layout, cursor).and_then(|scene| {
-                                        self.drawing_anchor_from_scene_point(
-                                            &scene, panel_id, cursor_pos,
+                                    self.cached_scene(state, layout, cursor).and_then(|scene| {
+                                        self.drawing_draft_anchor_from_scene_point(
+                                            &scene, panel_id, cursor_pos, magnetic,
                                         )
                                     })
                                 })
@@ -2522,7 +1513,11 @@ where
                         } else if self.drawings.allows_panning()
                             && let LayoutHitZone::PanelPlot(panel_index) = zone
                         {
-                            state.drag_mode = DragMode::Pan { panel_index };
+                            state.drag_mode = DragMode::Pan {
+                                panel_index,
+                                anchor_x: cursor.position().map_or(cursor_pos.x, |pos| pos.x),
+                                initial_offset: self.horizontal_world.offset(),
+                            };
                             state.last_cursor = Some(cursor_pos);
                         } else {
                             state.drag_mode = DragMode::None;
@@ -2551,33 +1546,80 @@ where
                             shell.capture_event();
                         }
 
+                        if let DragMode::Marquee {
+                            panel_index,
+                            start,
+                            current,
+                        } = state.drag_mode
+                        {
+                            if let Some(scene) = self.cached_scene(state, layout, cursor)
+                                && self
+                                    .clipped_marquee_rect(&scene, panel_index, start, current)
+                                    .is_some()
+                            {
+                                let selected = self.marquee_selected_drawings(
+                                    &scene,
+                                    panel_index,
+                                    start,
+                                    current,
+                                );
+                                shell.publish(M::from(KlineWidgetEvent::Drawing(
+                                    KlineWidgetDrawingEvent::MarqueeSelected(selected),
+                                )));
+                            }
+                            state.clear_overlay_caches();
+                            state.clear_all_caches();
+                            shell.capture_event();
+                        }
+
                         state.drag_mode = DragMode::None;
                         state.last_cursor = None;
                     }
                     mouse::Event::CursorMoved { .. } => {
                         state.clear_overlay_caches();
 
-                        if matches!(state.drag_mode, DragMode::XAxisScale) {
-                            let previous = state.last_cursor.unwrap_or(cursor_pos);
-                            let delta =
-                                (previous.x - cursor_pos.x) * HORIZONTAL_DRAG_SCALE_DELTA_PER_PX;
-                            let current_scale =
-                                self.normalize_horizontal_scale(self.horizontal_scale);
-                            let new_scale =
-                                self.step_horizontal_scale_percent(current_scale, delta);
+                        if let Some(DrawingMeasure::Pending(measure_state)) = self.drawings.measure
+                            && let Some(scene) = self.cached_scene(state, layout, cursor)
+                            && let Some(anchor) = self.drawing_anchor_from_scene_point(
+                                &scene,
+                                measure_state.panel_id,
+                                cursor_pos,
+                            )
+                        {
+                            shell.publish(M::from(KlineWidgetEvent::Drawing(
+                                KlineWidgetDrawingEvent::MeasureMove(anchor),
+                            )));
+                        }
 
-                            if (new_scale.as_pixels_per_bar() - current_scale.as_pixels_per_bar())
-                                .abs()
-                                > f32::EPSILON
-                            {
-                                shell.publish(M::from(KlineWidgetEvent::HorizontalScaleChanged(
-                                    new_scale,
-                                )));
-                                state.clear_all_caches();
-                                shell.capture_event();
+                        if let DragMode::XAxisScale {
+                            anchor_x,
+                            initial_world,
+                            initial_right_unit,
+                        } = state.drag_mode
+                        {
+                            let total_delta =
+                                (anchor_x - cursor_pos.x) * HORIZONTAL_DRAG_SCALE_DELTA_PER_PX;
+                            if let Some(scene) = self.cached_scene(state, layout, cursor) {
+                                let world = horizontal_world_for_drag(
+                                    &scene,
+                                    initial_world,
+                                    initial_right_unit,
+                                    anchor_x,
+                                    total_delta,
+                                );
+
+                                if world != self.horizontal_world {
+                                    shell.publish(M::from(
+                                        KlineWidgetEvent::HorizontalWorldChanged {
+                                            cell_width: world.cell_width(),
+                                            scaling: world.scaling(),
+                                            offset: world.offset(),
+                                        },
+                                    ));
+                                    state.clear_all_caches();
+                                    shell.capture_event();
+                                }
                             }
-
-                            state.last_cursor = Some(cursor_pos);
                         } else if let DragMode::Split(split_index) = state.drag_mode {
                             if let Some(split) = self.split_ratio_from_cursor(
                                 cursor_pos.y,
@@ -2596,7 +1638,7 @@ where
                                 state.clear_all_caches();
                                 shell.capture_event();
                             }
-                        } else if let DragMode::AxisScale {
+                        } else if let DragMode::YAxisScale {
                             panel_index,
                             anchor_y,
                         } = state.drag_mode
@@ -2606,7 +1648,7 @@ where
                             let scale_delta = (-dy_px) * Y_AXIS_DRAG_SCALE_DELTA_PER_PX;
 
                             if scale_delta.abs() > f32::EPSILON
-                                && let Some(scene) = self.compute_scene(layout, cursor)
+                                && let Some(scene) = self.cached_scene(state, layout, cursor)
                                 && let Some(panel_id) = self.panel_id(panel_index)
                                 && let Some(viewport) = self.panel_viewport_after_y_zoom(
                                     &scene,
@@ -2632,7 +1674,7 @@ where
                             panel_id,
                         } = state.drag_mode
                         {
-                            if let Some(scene) = self.compute_scene(layout, cursor)
+                            if let Some(scene) = self.cached_scene(state, layout, cursor)
                                 && let Some(new_anchor) = self
                                     .drawing_anchor_from_scene_point(&scene, panel_id, cursor_pos)
                             {
@@ -2648,16 +1690,29 @@ where
                                 state.clear_all_caches();
                                 shell.capture_event();
                             }
+                        } else if let DragMode::Marquee {
+                            panel_index, start, ..
+                        } = state.drag_mode
+                        {
+                            state.drag_mode = DragMode::Marquee {
+                                panel_index,
+                                start,
+                                current: cursor_pos,
+                            };
+                            state.last_cursor = Some(cursor_pos);
+                            state.clear_overlay_caches();
+                            shell.capture_event();
                         } else if let Some(draft_panel_id) = self.drawings.draft_panel_id()
                             && Self::hit_panel_control(&layout_tree, &panel_controls, cursor_pos)
                                 .is_none()
                             && Self::hit_corner_control(&corner_controls, cursor_pos).is_none()
                             && ticker_legend_hit.is_none()
-                            && let Some(scene) = self.compute_scene(layout, cursor)
-                            && let Some(anchor) = self.drawing_anchor_from_scene_point(
+                            && let Some(scene) = self.cached_scene(state, layout, cursor)
+                            && let Some(anchor) = self.drawing_draft_anchor_from_scene_point(
                                 &scene,
                                 draft_panel_id,
                                 cursor_pos,
+                                self.drawing_magnet_enabled(state.modifiers),
                             )
                         {
                             shell.publish(M::from(KlineWidgetEvent::Drawing(
@@ -2666,32 +1721,32 @@ where
                             state.last_cursor = Some(cursor_pos);
                             state.clear_overlay_caches();
                             shell.capture_event();
-                        } else if let DragMode::Pan { panel_index } = state.drag_mode {
+                        } else if let DragMode::Pan {
+                            panel_index,
+                            anchor_x,
+                            initial_offset,
+                        } = state.drag_mode
+                        {
                             if Self::hit_corner_control(&corner_controls, cursor_pos).is_some() {
                                 state.last_cursor = Some(cursor_pos);
                                 return;
                             }
 
-                            let prev = state.last_cursor.unwrap_or(cursor_pos);
-                            let dx_px = cursor_pos.x - prev.x;
-                            let dy_px = cursor_pos.y - prev.y;
+                            let prev_y = state.last_cursor.map_or(cursor_pos.y, |prev| prev.y);
+                            let dy_px = cursor_pos.y - prev_y;
+                            let spacing = self.horizontal_world.effective_spacing();
+                            let cursor_x = cursor.position().map_or(cursor_pos.x, |pos| pos.x);
+                            let offset = initial_offset + (anchor_x - cursor_x) / spacing;
 
-                            if dx_px.abs() > f32::EPSILON {
-                                let spacing = BarSpacingPx::from_logical(
-                                    self.normalize_horizontal_scale(self.horizontal_scale)
-                                        .as_pixels_per_bar(),
-                                )
-                                .as_f32();
-                                let dx_units = -(dx_px) / spacing;
-
+                            if (offset - self.horizontal_world.offset()).abs() > f32::EPSILON {
                                 shell.publish(M::from(KlineWidgetEvent::HorizontalOffsetChanged(
-                                    self.horizontal_offset + dx_units,
+                                    offset,
                                 )));
                                 state.clear_all_caches();
                             }
 
                             if dy_px.abs() > f32::EPSILON
-                                && let Some(scene) = self.compute_scene(layout, cursor)
+                                && let Some(scene) = self.cached_scene(state, layout, cursor)
                                 && let Some(panel_id) = self.panel_id(panel_index)
                                 && let Some(viewport) = self.panel_viewport_after_primary_y_pan(
                                     &scene,
@@ -2714,11 +1769,24 @@ where
                     _ => {}
                 }
             }
-            Event::Window(window::Event::RedrawRequested(_)) => {
+            Event::Window(window::Event::RedrawRequested(now)) => {
                 let state = tree.state.downcast_mut::<State>();
-                if state.last_cache_rev != self.version {
+                if state.last_theme_generation != Some(self.theme_accents.generation()) {
                     state.clear_all_caches();
-                    state.last_cache_rev = self.version;
+                    state.last_theme_generation = Some(self.theme_accents.generation());
+                }
+
+                if state.cache_refresh_is_due(self.version, *now, MIN_FULL_CACHE_REFRESH_INTERVAL) {
+                    state.clear_all_caches();
+                    state.mark_cache_refreshed(self.version, *now);
+                }
+
+                if let Some(plot_width) =
+                    PanelLayoutTree::from_layout(layout, &self.composition.panels)
+                        .and_then(|layout| layout.primary_plot_width())
+                    && self.known_plot_width != Some(plot_width)
+                {
+                    shell.publish(M::from(KlineWidgetEvent::PlotWidthChanged(plot_width)));
                 }
             }
             _ => {}
@@ -2738,20 +1806,43 @@ where
         use advanced::Renderer as _;
 
         let state = tree.state.downcast_ref::<State>();
-        let Some(scene) = self.compute_scene(layout, cursor) else {
+        let Some(scene) = self.cached_scene(state, layout, cursor) else {
             return;
         };
 
         let bounds = layout.bounds();
         let palette = theme.extended_palette();
+        let generated_accents = self.theme_accents.as_array();
 
         renderer.with_translation(Vector::new(bounds.x, bounds.y), |r| {
             let plot_rect = scene.plot_rect();
             let plot_origin_in_window = Point::new(bounds.x + plot_rect.x, bounds.y + plot_rect.y);
             let overlay_origin_in_window = Point::new(bounds.x, bounds.y);
 
+            let drawing_background_geom =
+                state
+                    .drawing_background_cache
+                    .draw(r, bounds.size(), |frame| {
+                        if self.drawings.has_state() {
+                            self.fill_drawing_objects(
+                                frame,
+                                &scene,
+                                palette,
+                                generated_accents,
+                                overlay_origin_in_window,
+                                self.pixel_ratio_value(),
+                            );
+                        }
+                    });
+
             let plot_geom = state.plot_cache.draw(r, plot_rect.size(), |frame| {
-                self.fill_main_geometry(frame, &scene, palette, plot_origin_in_window);
+                self.fill_main_geometry(
+                    frame,
+                    &scene,
+                    palette,
+                    generated_accents,
+                    plot_origin_in_window,
+                );
             });
 
             let splitter_color = palette.background.strong.color.scale_alpha(0.25);
@@ -2810,30 +1901,36 @@ where
                 self.fill_x_axis_labels(frame, &scene, palette);
             });
 
+            let drawing_magnet = self.drawing_magnet_enabled(state.modifiers);
             let overlay_geom = state.overlay_cache.draw(r, bounds.size(), |frame| {
-                self.fill_overlay(frame, &scene, palette, overlay_origin_in_window);
+                self.fill_overlay(
+                    frame,
+                    &scene,
+                    palette,
+                    generated_accents,
+                    overlay_origin_in_window,
+                    drawing_magnet,
+                );
             });
 
             let interaction_text_geom =
                 state
                     .interaction_text_cache
                     .draw(r, bounds.size(), |frame| {
-                        self.fill_overlay_interaction_text(frame, &scene, palette);
+                        self.fill_overlay_interaction_text(frame, &scene, palette, drawing_magnet);
                     });
 
-            r.with_translation(Vector::new(plot_rect.x, plot_rect.y), |r| {
-                use iced::advanced::graphics::geometry::Renderer as _;
-                r.draw_geometry(plot_geom);
-            });
-
-            r.with_translation(Vector::new(y_rect.x, y_rect.y), |r| {
-                use iced::advanced::graphics::geometry::Renderer as _;
-                r.draw_geometry(y_geom);
-            });
-
-            r.with_translation(Vector::new(x_rect.x, x_rect.y), |r| {
-                use iced::advanced::graphics::geometry::Renderer as _;
-                r.draw_geometry(x_geom);
+            let marquee_geom = state.marquee_cache.draw(r, bounds.size(), |frame| {
+                if let DragMode::Marquee {
+                    panel_index,
+                    start,
+                    current,
+                } = &state.drag_mode
+                    && let Some(rect) =
+                        self.clipped_marquee_rect(&scene, *panel_index, *start, *current)
+                {
+                    self.fill_marquee_rectangle(frame, rect, palette);
+                }
             });
 
             let layer_bounds = Rectangle {
@@ -2843,14 +1940,31 @@ where
                 height: bounds.height,
             };
 
+            use iced::advanced::graphics::geometry::Renderer as _;
+            r.draw_geometry(drawing_background_geom);
+
+            r.with_translation(Vector::new(plot_rect.x, plot_rect.y), |r| {
+                r.draw_geometry(plot_geom);
+            });
+
+            r.with_translation(Vector::new(y_rect.x, y_rect.y), |r| {
+                r.draw_geometry(y_geom);
+            });
+
+            r.with_translation(Vector::new(x_rect.x, x_rect.y), |r| {
+                r.draw_geometry(x_geom);
+            });
+
             r.with_layer(layer_bounds, |r| {
-                use iced::advanced::graphics::geometry::Renderer as _;
                 r.draw_geometry(overlay_geom);
             });
 
             r.with_layer(layer_bounds, |r| {
-                use iced::advanced::graphics::geometry::Renderer as _;
                 r.draw_geometry(interaction_text_geom);
+            });
+
+            r.with_layer(layer_bounds, |r| {
+                r.draw_geometry(marquee_geom);
             });
         });
     }
@@ -2875,12 +1989,12 @@ where
 
         if matches!(
             state.drag_mode,
-            DragMode::Split(_) | DragMode::AxisScale { .. }
+            DragMode::Split(_) | DragMode::YAxisScale { .. }
         ) {
             return advanced::mouse::Interaction::ResizingVertically;
         }
 
-        if matches!(state.drag_mode, DragMode::XAxisScale) {
+        if matches!(state.drag_mode, DragMode::XAxisScale { .. }) {
             return advanced::mouse::Interaction::ResizingHorizontally;
         }
 
@@ -2916,20 +2030,55 @@ where
                 .and_then(|legend| Self::hit_ticker_legend(&layout_tree, legend, cursor_local));
         }
 
-        if ticker_legend_hit.is_some() {
+        if matches!(ticker_legend_hit, Some(TickerLegendHit::Icon(_, _))) {
+            return advanced::mouse::Interaction::Pointer;
+        }
+
+        let scene = self.cached_scene(state, layout, cursor);
+        let footprint_legend = scene
+            .as_ref()
+            .and_then(|scene| scene.chrome.footprint_legend);
+        let footprint_legend_hit = footprint_legend
+            .as_ref()
+            .and_then(|legend| Self::hit_footprint_legend(&layout_tree, legend, cursor_local));
+        if matches!(footprint_legend_hit, Some(FootprintLegendHit::Icon(_))) {
+            return advanced::mouse::Interaction::Pointer;
+        }
+
+        let study_legend = self.build_study_legend_layout(
+            &layout_tree,
+            primary_panel,
+            self.tooltip_rows_before_studies(
+                ticker_legend.as_ref(),
+                footprint_legend.as_ref(),
+                show_legend_values,
+            ),
+            self.studies_legend_expanded,
+        );
+        let study_legend_hit = study_legend
+            .as_ref()
+            .and_then(|legend| Self::hit_study_legend(&layout_tree, legend, cursor_local));
+        if matches!(
+            study_legend_hit,
+            Some(StudyLegendHit::CategoryIcon(_)) | Some(StudyLegendHit::StudyIcon(_, _))
+        ) {
             return advanced::mouse::Interaction::Pointer;
         }
 
         let indicator_legend = self.build_indicator_legend_layout(
             &layout_tree,
             primary_panel,
-            self.tooltip_rows_before_indicators(ticker_legend.as_ref(), show_legend_values),
+            self.tooltip_rows_before_indicators(
+                ticker_legend.as_ref(),
+                footprint_legend.as_ref(),
+                study_legend.as_ref(),
+                show_legend_values,
+            ),
         );
-        if indicator_legend
+        let indicator_legend_hit = indicator_legend
             .as_ref()
-            .and_then(|legend| Self::hit_indicator_legend(&layout_tree, legend, cursor_local))
-            .is_some()
-        {
+            .and_then(|legend| Self::hit_indicator_legend(&layout_tree, legend, cursor_local));
+        if matches!(indicator_legend_hit, Some(IndicatorLegendHit::Icon(_, _))) {
             return advanced::mouse::Interaction::Pointer;
         }
 
@@ -2943,9 +2092,9 @@ where
 
         if self.drawings.allows_panning()
             && matches!(zone, LayoutHitZone::PanelPlot(_))
-            && let Some(scene) = self.compute_scene(layout, cursor)
+            && let Some(scene) = scene.as_ref()
             && self
-                .hit_test_selected_drawing_handle(&scene, cursor_local)
+                .hit_test_selected_drawing_handle(scene, cursor_local)
                 .is_some()
         {
             return advanced::mouse::Interaction::Grab;
@@ -2953,10 +2102,10 @@ where
 
         if self.drawings.allows_panning()
             && matches!(zone, LayoutHitZone::PanelPlot(_))
-            && let Some(scene) = self.compute_scene(layout, cursor)
-            && let Some(hit_id) = self.hit_test_drawings(&scene, cursor_local)
+            && let Some(scene) = scene.as_ref()
+            && let Some(hit_id) = self.hit_test_drawings(scene, cursor_local)
         {
-            if self.drawings.selected_drawing == Some(hit_id) {
+            if self.drawings.selected_drawings.contains(&hit_id) {
                 return advanced::mouse::Interaction::Grab;
             }
 
@@ -2973,6 +2122,31 @@ where
             LayoutHitZone::Outside => advanced::mouse::Interaction::default(),
         }
     }
+}
+
+fn history_shortcut(
+    key: keyboard::Key<&str>,
+    modifiers: keyboard::Modifiers,
+) -> Option<KlineWidgetEvent> {
+    let keyboard::Key::Character(character) = key else {
+        return None;
+    };
+    if !character.eq_ignore_ascii_case("z") || !modifiers.contains(keyboard::Modifiers::COMMAND) {
+        return None;
+    }
+
+    Some(if modifiers.shift() {
+        KlineWidgetEvent::RedoRequested
+    } else {
+        KlineWidgetEvent::UndoRequested
+    })
+}
+
+fn primary_scale_inversion_shortcut(
+    physical_key: keyboard::key::Physical,
+    modifiers: keyboard::Modifiers,
+) -> bool {
+    modifiers.alt() && physical_key == keyboard::key::Code::KeyI
 }
 
 impl<'a, S, M> From<KlineWidget<'a, S>> for Element<'a, M, Theme, Renderer>

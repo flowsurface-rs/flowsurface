@@ -1,5 +1,6 @@
-use super::{AxisInteraction, Message};
+use super::AxisInteraction;
 use crate::widget::chart::heatmap::{
+    Message,
     scene::camera::Camera,
     ui::{AXIS_TEXT_SIZE, AxisZoomAnchor},
 };

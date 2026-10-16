@@ -1,0 +1,499 @@
+use self::tickers_table::TickersTable;
+use super::dashboard::{Dashboard, pane};
+use crate::{
+    TooltipPosition,
+    style::{Icon, icon_text},
+    theme::ThemeAccents,
+    widget::{
+        button_with_tooltip,
+        inspector::{InspectorBody, InspectorContent, InspectorFooter},
+    },
+    window,
+};
+use data::sidebar;
+
+use iced::{
+    Alignment, Element, Length, Subscription, Task,
+    widget::responsive,
+    widget::{button, column, container, row, rule, space},
+};
+use rustc_hash::FxHashMap;
+
+pub(crate) mod kline_indicators;
+pub(crate) mod pane_settings;
+pub(crate) mod tickers_table;
+
+const INSPECTOR_SIDEBAR_WIDTH: f32 = 240.0;
+const INSPECTOR_SIDEBAR_HEADER_HEIGHT: f32 = 32.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InspectorMode {
+    PaneSettings,
+    ChartSettings,
+    Indicators,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Inspector {
+    PaneSettings,
+    ChartSettings,
+    PaneIndicators,
+}
+
+impl Inspector {
+    fn from_mode(mode: InspectorMode) -> Self {
+        match mode {
+            InspectorMode::PaneSettings => Self::PaneSettings,
+            InspectorMode::ChartSettings => Self::ChartSettings,
+            InspectorMode::Indicators => Self::PaneIndicators,
+        }
+    }
+
+    fn mode(&self) -> InspectorMode {
+        match self {
+            Self::PaneSettings => InspectorMode::PaneSettings,
+            Self::ChartSettings => InspectorMode::ChartSettings,
+            Self::PaneIndicators => InspectorMode::Indicators,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum Message {
+    ToggleSidebarMenu(Option<sidebar::Menu>),
+    SetSidebarPosition(sidebar::Position),
+    TickersTable(self::tickers_table::Message),
+    CloseInspector,
+    PaneInspector {
+        window: window::Id,
+        message: pane::Message,
+    },
+}
+
+pub struct Sidebar {
+    pub state: data::Sidebar,
+    pub tickers_table: TickersTable,
+    pub(crate) inspector: Option<Inspector>,
+}
+
+pub enum Action {
+    TickerSelected(
+        exchange::TickerInfo,
+        Option<data::layout::pane::ContentKind>,
+    ),
+    ErrorOccurred(data::InternalError),
+    MenuChanged(Option<sidebar::Menu>),
+    CloseInspector,
+    PaneInspector {
+        window: window::Id,
+        message: pane::Message,
+    },
+}
+
+impl Sidebar {
+    pub fn new(
+        sidebar_state: &data::Sidebar,
+        cache_market_metadata: bool,
+        handles: exchange::adapter::AdapterHandles,
+    ) -> (Self, Task<Message>) {
+        let metadata = data::MarketMetadata::with_cache_enabled(cache_market_metadata);
+
+        let (tickers_table, initial_fetch) =
+            if let Some(settings) = sidebar_state.tickers_table.as_ref() {
+                TickersTable::new_with_settings(settings, handles.clone(), metadata)
+            } else {
+                TickersTable::new(handles, metadata)
+            };
+
+        (
+            Self {
+                state: sidebar_state.clone(),
+                tickers_table,
+                inspector: None,
+            },
+            initial_fetch.map(Message::TickersTable),
+        )
+    }
+
+    pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Action>) {
+        match message {
+            Message::ToggleSidebarMenu(menu) => {
+                let new_menu = menu.filter(|&m| !self.is_menu_active(m));
+                self.set_menu(new_menu);
+                return (Task::none(), Some(Action::MenuChanged(new_menu)));
+            }
+            Message::SetSidebarPosition(position) => {
+                self.state.position = position;
+            }
+            Message::CloseInspector => {
+                if self.close_inspector() {
+                    return (Task::none(), Some(Action::CloseInspector));
+                }
+            }
+            Message::PaneInspector { window, message } => {
+                return (
+                    Task::none(),
+                    Some(Action::PaneInspector { window, message }),
+                );
+            }
+            Message::TickersTable(msg) => {
+                let action = self.tickers_table.update(msg);
+
+                match action {
+                    Some(tickers_table::Action::TickerSelected(ticker_info, content)) => {
+                        return (
+                            Task::none(),
+                            Some(Action::TickerSelected(ticker_info, content)),
+                        );
+                    }
+                    Some(tickers_table::Action::Fetch(task)) => {
+                        return (task.map(Message::TickersTable), None);
+                    }
+                    Some(tickers_table::Action::ErrorOccurred(error)) => {
+                        return (Task::none(), Some(Action::ErrorOccurred(error)));
+                    }
+                    Some(tickers_table::Action::FocusWidget(id)) => {
+                        return (iced::widget::operation::focus(id), None);
+                    }
+                    None => {}
+                }
+            }
+        }
+
+        (Task::none(), None)
+    }
+
+    pub(crate) fn open_inspector(
+        &mut self,
+        mode: InspectorMode,
+        dashboard: &Dashboard,
+        main_window: window::Id,
+    ) -> Task<Message> {
+        let Some(state) = dashboard.focused_pane(main_window) else {
+            self.inspector = None;
+            return Task::none();
+        };
+
+        if !state.supports_inspector(mode) {
+            self.inspector = None;
+            return Task::none();
+        }
+
+        let inspector = Inspector::from_mode(mode);
+        let focus_widget = matches!(inspector, Inspector::PaneIndicators)
+            .then(|| state.indicators_sidebar_focus_id())
+            .flatten();
+        self.inspector = Some(inspector);
+
+        focus_widget
+            .map(iced::widget::operation::focus)
+            .unwrap_or_else(Task::none)
+    }
+
+    pub(crate) fn toggle_inspector(
+        &mut self,
+        mode: InspectorMode,
+        dashboard: &Dashboard,
+        main_window: window::Id,
+    ) -> Task<Message> {
+        if self
+            .inspector
+            .as_ref()
+            .is_some_and(|inspector| inspector.mode() == mode)
+        {
+            self.inspector = None;
+            return Task::none();
+        }
+
+        self.open_inspector(mode, dashboard, main_window)
+    }
+
+    pub(crate) fn sync_inspector(&mut self, dashboard: &Dashboard, main_window: window::Id) {
+        let Some(inspector) = self.inspector.as_ref() else {
+            return;
+        };
+
+        let Some(state) = dashboard.focused_pane(main_window) else {
+            self.inspector = None;
+            return;
+        };
+
+        let next_mode = state.inspector_mode_after_focus(inspector.mode());
+        if next_mode != Some(inspector.mode()) {
+            self.inspector = next_mode.map(Inspector::from_mode);
+        }
+    }
+
+    pub(crate) fn close_inspector(&mut self) -> bool {
+        self.inspector.take().is_some()
+    }
+
+    pub(crate) fn inspector_mode(&self) -> Option<InspectorMode> {
+        self.inspector.as_ref().map(Inspector::mode)
+    }
+
+    pub(crate) fn inspector_view<'a>(
+        &'a self,
+        dashboard: &'a Dashboard,
+        main_window: window::Id,
+        theme_accents: ThemeAccents,
+    ) -> Option<Element<'a, Message>> {
+        let inspector = self.inspector.as_ref()?;
+        let (window, pane) = dashboard.focus?;
+        let state = dashboard.get_pane(main_window, window, pane)?;
+
+        let pane_title = state.content.kind().to_string();
+
+        let (content, footer): (Element<'a, Message>, Option<Element<'a, Message>>) =
+            match inspector {
+                Inspector::PaneSettings => {
+                    let pane_settings = state
+                        .pane_settings_content(pane, theme_accents)
+                        .map(|view| {
+                            view.map(move |message| Message::PaneInspector { window, message })
+                        })
+                        .unwrap_or_else(|| InspectorContent::new(vec![]));
+
+                    let (sections, footer) = pane_settings.into_parts();
+                    (
+                        InspectorBody::view(sections),
+                        footer.map(InspectorFooter::view),
+                    )
+                }
+                Inspector::ChartSettings => {
+                    let chart_settings = state
+                        .chart_settings_content(pane, theme_accents)
+                        .map(|view| {
+                            view.map(move |message| Message::PaneInspector { window, message })
+                        })
+                        .unwrap_or_else(|| InspectorContent::new(vec![]));
+                    let (sections, footer) = chart_settings.into_parts();
+                    (
+                        InspectorBody::view(sections),
+                        footer.map(InspectorFooter::view),
+                    )
+                }
+                Inspector::PaneIndicators => (
+                    InspectorBody::view_without_scroll(
+                        state
+                            .indicators_sidebar_view(pane)
+                            .map(|view| {
+                                view.map(move |message| Message::PaneInspector { window, message })
+                            })
+                            .unwrap_or_else(|| column![].into()),
+                    ),
+                    None,
+                ),
+            };
+
+        let close = button(crate::style::icon_text(crate::style::Icon::Close, 14))
+            .style(|theme, status| crate::style::button::cancel(theme, status, false))
+            .padding([4, 8])
+            .on_press(Message::CloseInspector);
+        let header = row![
+            crate::widget::text::title(pane_title),
+            space::horizontal(),
+            close,
+        ]
+        .align_y(Alignment::Center)
+        .height(Length::Fixed(INSPECTOR_SIDEBAR_HEADER_HEIGHT))
+        .spacing(8);
+
+        let inspector_content = column![
+            header,
+            rule::horizontal(1.0),
+            content,
+            footer.unwrap_or_else(|| column![].into()),
+        ];
+
+        Some(
+            container(inspector_content)
+                .width(Length::Fixed(INSPECTOR_SIDEBAR_WIDTH))
+                .height(Length::Fill)
+                .padding([4, 8])
+                .style(crate::style::chart_sidebar_container)
+                .into(),
+        )
+    }
+
+    pub fn view(&self, audio_volume: Option<f32>) -> Element<'_, Message> {
+        let state = &self.state;
+
+        let tooltip_position = if state.position == sidebar::Position::Left {
+            TooltipPosition::Right
+        } else {
+            TooltipPosition::Left
+        };
+
+        let is_table_open = self.tickers_table.is_shown;
+
+        let nav_buttons = self.nav_buttons(is_table_open, audio_volume, tooltip_position);
+
+        let tickers_table = if is_table_open {
+            column![responsive(move |size| self
+                .tickers_table
+                .view(size)
+                .map(Message::TickersTable))]
+            .width(200)
+        } else {
+            column![]
+        };
+
+        match state.position {
+            sidebar::Position::Left => row![nav_buttons, tickers_table],
+            sidebar::Position::Right => row![tickers_table, nav_buttons],
+        }
+        .spacing(if is_table_open { 8 } else { 4 })
+        .into()
+    }
+
+    pub fn subscription(&self) -> Subscription<Message> {
+        self.tickers_table.subscription().map(Message::TickersTable)
+    }
+
+    fn nav_buttons(
+        &self,
+        is_table_open: bool,
+        audio_volume: Option<f32>,
+        tooltip_position: TooltipPosition,
+    ) -> iced::widget::Column<'_, Message> {
+        let settings_modal_button = {
+            let is_active = self.is_menu_active(sidebar::Menu::Settings)
+                || self.is_menu_active(sidebar::Menu::ThemeEditor)
+                || self.is_menu_active(sidebar::Menu::Network);
+
+            button_with_tooltip(
+                icon_text(Icon::Cog, 14)
+                    .width(24)
+                    .align_x(Alignment::Center),
+                Message::ToggleSidebarMenu(Some(sidebar::Menu::Settings)),
+                None,
+                tooltip_position,
+                move |theme, status| crate::style::button::transparent(theme, status, is_active),
+            )
+        };
+
+        let layout_modal_button = {
+            let is_active = self.is_menu_active(sidebar::Menu::Layout);
+
+            button_with_tooltip(
+                icon_text(Icon::Layout, 14)
+                    .width(24)
+                    .align_x(Alignment::Center),
+                Message::ToggleSidebarMenu(Some(sidebar::Menu::Layout)),
+                None,
+                tooltip_position,
+                move |theme, status| crate::style::button::transparent(theme, status, is_active),
+            )
+        };
+
+        let ticker_search_button = {
+            button_with_tooltip(
+                icon_text(Icon::Search, 14)
+                    .width(24)
+                    .align_x(Alignment::Center),
+                Message::TickersTable(self::tickers_table::Message::ToggleTable),
+                None,
+                tooltip_position,
+                move |theme, status| {
+                    crate::style::button::transparent(theme, status, is_table_open)
+                },
+            )
+        };
+
+        let audio_btn = {
+            let is_active = self.is_menu_active(sidebar::Menu::Audio);
+
+            let icon = match audio_volume.unwrap_or(0.0) {
+                v if v >= 40.0 => Icon::SpeakerHigh,
+                v if v > 0.0 => Icon::SpeakerLow,
+                _ => Icon::SpeakerOff,
+            };
+
+            button_with_tooltip(
+                icon_text(icon, 14).width(24).align_x(Alignment::Center),
+                Message::ToggleSidebarMenu(Some(sidebar::Menu::Audio)),
+                None,
+                tooltip_position,
+                move |theme, status| crate::style::button::transparent(theme, status, is_active),
+            )
+        };
+
+        column![
+            ticker_search_button,
+            layout_modal_button,
+            audio_btn,
+            space::vertical(),
+            settings_modal_button,
+        ]
+        .width(32)
+        .spacing(8)
+    }
+
+    pub fn hide_tickers_table(&mut self) -> bool {
+        let table = &mut self.tickers_table;
+
+        if table.expand_ticker_card.is_some() {
+            table.expand_ticker_card = None;
+            return true;
+        } else if table.is_shown {
+            table.is_shown = false;
+            return true;
+        }
+
+        false
+    }
+
+    pub fn is_menu_active(&self, menu: sidebar::Menu) -> bool {
+        self.state.active_menu == Some(menu)
+    }
+
+    pub fn active_menu(&self) -> Option<sidebar::Menu> {
+        self.state.active_menu
+    }
+
+    pub fn position(&self) -> sidebar::Position {
+        self.state.position
+    }
+
+    pub fn set_menu(&mut self, menu: Option<sidebar::Menu>) {
+        self.state.active_menu = menu;
+    }
+
+    pub fn sync_tickers_table_settings(&mut self) {
+        let settings = &self.tickers_table.settings();
+        self.state.tickers_table = Some(settings.clone());
+    }
+
+    pub fn tickers_info(&self) -> &FxHashMap<exchange::Ticker, Option<exchange::TickerInfo>> {
+        self.tickers_table.metadata.tickers()
+    }
+
+    pub fn cache_enabled(&self) -> bool {
+        self.tickers_table.metadata.cache_enabled()
+    }
+
+    pub fn set_cache_enabled(&mut self, enabled: bool) {
+        self.tickers_table.metadata.set_cache_enabled(enabled);
+    }
+
+    pub fn force_refresh_metadata(&mut self) -> Option<Task<Message>> {
+        self.tickers_table
+            .force_refresh_metadata()
+            .map(|task| task.map(Message::TickersTable))
+    }
+
+    pub fn persist_metadata_cache(&self) {
+        if self.tickers_table.metadata.cache_enabled() {
+            self.tickers_table.metadata.save_to_file();
+        }
+    }
+
+    pub fn last_metadata_update(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.tickers_table.last_metadata_update()
+    }
+
+    pub fn is_metadata_loading(&self) -> bool {
+        self.tickers_table.is_metadata_loading()
+    }
+}

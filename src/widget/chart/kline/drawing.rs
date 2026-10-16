@@ -1,17 +1,21 @@
 use super::composition::PanelScaleMode;
+use super::composition::{MarkKind, PanelId};
 use super::scene::Scene;
 use super::{
-    DRAWING_HANDLE_HIT_RADIUS_PX, DRAWING_HANDLE_RADIUS_PX, DRAWING_HIT_TOLERANCE_PX,
-    KlinePanelKind, KlineSeriesLike, KlineWidget, TEXT_SIZE, Y_AXIS_LABEL_LEFT_INSET,
+    KlinePanelKind, KlineSeriesLike, KlineWidget, TEXT_SIZE, Y_AXIS_LABEL_LEFT_INSET, YUnit,
 };
 use crate::style;
-use crate::widget::chart::kline::{YUnit, composition::PanelId};
 
+use data::config::theme::{ThemeColor, ThemeColorRole};
 use exchange::UnixMs;
 
 use iced::theme::palette::Extended;
 use iced::widget::canvas;
 use iced::{Point, Rectangle, Size};
+
+const DRAWING_HIT_TOLERANCE_PX: f32 = 7.0;
+const DRAWING_HANDLE_RADIUS_PX: f32 = 4.0;
+const DRAWING_HANDLE_HIT_RADIUS_PX: f32 = 8.0;
 
 #[derive(Default)]
 pub(super) struct AxisBadgeFilter {
@@ -33,540 +37,130 @@ impl AxisBadgeFilter {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct DrawingId(pub u64);
+pub use data::chart::kline::drawing::{
+    AxisLabelAnchor, DrawingAnchor, DrawingColor, DrawingDraft, DrawingDragOperation,
+    DrawingDragTarget, DrawingEntity, DrawingHandleKind, DrawingId, DrawingMeasure, DrawingObject,
+    DrawingSnapshot, DrawingStyle, DrawingTool, DrawingX, KlineWidgetDrawingEvent,
+    MAX_DRAWING_STROKE_WIDTH, MIN_DRAWING_STROKE_WIDTH, MeasureState,
+};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum DrawingTool {
-    #[default]
-    Cursor,
-    Trendline,
-    Box,
-    HorizontalLine,
-    VerticalLine,
-}
-
-impl DrawingTool {
-    pub fn allows_panning(self) -> bool {
-        matches!(self, Self::Cursor)
-    }
-
-    pub const fn all() -> &'static [Self] {
-        &[
-            Self::Cursor,
-            Self::Trendline,
-            Self::Box,
-            Self::HorizontalLine,
-            Self::VerticalLine,
-        ]
-    }
-
-    pub const fn short_label(self) -> &'static str {
-        match self {
-            Self::Cursor => "C",
-            Self::HorizontalLine => "H",
-            Self::VerticalLine => "V",
-            Self::Trendline => "TL",
-            Self::Box => "B",
-        }
-    }
-
-    pub fn default_style(self) -> DrawingStyle {
-        let mut style = DrawingStyle::default();
-
-        match self {
-            Self::Cursor => {}
-            Self::Trendline => {
-                style.stroke_color = iced::Color::from_rgb(0.78, 0.86, 0.98);
-                style.stroke_width = 1.2;
-            }
-            Self::Box => {
-                style.stroke_color = iced::Color::from_rgb(0.72, 0.84, 0.98);
-                style.stroke_width = 1.2;
-                style.fill_color = Some(iced::Color::from_rgba(0.50, 0.66, 0.98, 0.16));
-            }
-            Self::HorizontalLine => {
-                style.stroke_color = iced::Color::from_rgb(0.96, 0.80, 0.40);
-                style.stroke_width = 1.0;
-            }
-            Self::VerticalLine => {
-                style.stroke_color = iced::Color::from_rgb(0.74, 0.90, 0.74);
-                style.stroke_width = 1.0;
-            }
-        }
-
-        style
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct DrawingAnchor {
-    pub panel_id: PanelId,
-    pub time: UnixMs,
-    pub y_unit: YUnit,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum KlineWidgetDrawingEvent {
-    Selected(Option<DrawingId>),
-    AnchorPressed(DrawingAnchor),
-    AnchorMoved(DrawingAnchor),
-    DragStarted {
-        id: DrawingId,
-        target: DrawingDragTarget,
-        anchor: DrawingAnchor,
-    },
-    DragMoved {
-        id: DrawingId,
-        target: DrawingDragTarget,
-        anchor: DrawingAnchor,
-    },
-    DragFinished {
-        id: DrawingId,
-    },
-    DraftCanceled,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct DrawingSnapshot<'a> {
-    pub active_tool: DrawingTool,
-    pub entities: &'a [DrawingEntity],
-    pub selected_drawing: Option<DrawingId>,
-    pub drawing_draft: Option<&'a DrawingDraft>,
-}
-
-impl<'a> DrawingSnapshot<'a> {
-    pub const fn new(
-        active_tool: DrawingTool,
-        entities: &'a [DrawingEntity],
-        selected_drawing: Option<DrawingId>,
-        drawing_draft: Option<&'a DrawingDraft>,
-    ) -> Self {
-        Self {
-            active_tool,
-            entities,
-            selected_drawing,
-            drawing_draft,
-        }
-    }
-
-    pub fn allows_panning(&self) -> bool {
-        self.active_tool.allows_panning()
-    }
-
-    pub fn has_state(&self) -> bool {
-        !self.entities.is_empty() || self.selected_drawing.is_some() || self.drawing_draft.is_some()
-    }
-
-    pub fn draft_panel_id(&self) -> Option<PanelId> {
-        self.drawing_draft.map(DrawingDraft::panel_id)
-    }
-
-    pub fn selected_visible_drawing(&self) -> Option<&'a DrawingEntity> {
-        let selected = self.selected_drawing?;
-
-        self.entities
-            .iter()
-            .find(|drawing| drawing.id == selected && drawing.visible)
-    }
-
-    pub fn active_axis_labeled_object(&self) -> Option<DrawingObject> {
-        if let Some(draft) = self.drawing_draft {
-            return Some(draft.preview_object());
-        }
-
-        self.selected_visible_drawing()
-            .map(|drawing| drawing.object.clone())
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct DrawingStyle {
-    pub stroke_color: iced::Color,
-    pub stroke_width: f32,
-    pub fill_color: Option<iced::Color>,
-}
-
-impl Default for DrawingStyle {
-    fn default() -> Self {
-        Self {
-            stroke_color: iced::Color::from_rgb(0.82, 0.84, 0.90),
-            stroke_width: 1.2,
-            fill_color: None,
+fn iced_color(
+    color: DrawingColor,
+    palette: &Extended,
+    generated_accents: &[iced::Color; 6],
+) -> iced::Color {
+    match color {
+        DrawingColor::Accent {
+            accent,
+            shade,
+            alpha,
+        } => crate::widget::resolve_theme_color(
+            ThemeColor::with_accent(ThemeColorRole::Primary, Some(accent), shade),
+            palette,
+            generated_accents,
+        )
+        .scale_alpha(alpha),
+        DrawingColor::Custom(color) => {
+            iced::Color::from_rgba(color.red, color.green, color.blue, color.alpha)
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum DrawingObject {
-    Trendline {
-        start: DrawingAnchor,
-        end: DrawingAnchor,
-    },
-    Box {
-        start: DrawingAnchor,
-        end: DrawingAnchor,
-    },
-    HorizontalLine {
-        panel_id: PanelId,
-        y_unit: YUnit,
-    },
-    VerticalLine {
-        time: UnixMs,
-    },
+fn intersect_bounds(a: Rectangle, b: Rectangle) -> Option<Rectangle> {
+    let left = a.x.max(b.x);
+    let right = (a.x + a.width).min(b.x + b.width);
+    let top = a.y.max(b.y);
+    let bottom = (a.y + a.height).min(b.y + b.height);
+
+    if right <= left || bottom <= top {
+        return None;
+    }
+
+    Some(Rectangle {
+        x: left,
+        y: top,
+        width: right - left,
+        height: bottom - top,
+    })
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct DrawingEntity {
-    pub id: DrawingId,
-    pub object: DrawingObject,
-    pub style: DrawingStyle,
-    pub locked: bool,
-    pub visible: bool,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum DrawingDraft {
-    Trendline {
-        start: DrawingAnchor,
-        current: DrawingAnchor,
-        style: DrawingStyle,
-    },
-    Box {
-        start: DrawingAnchor,
-        current: DrawingAnchor,
-        style: DrawingStyle,
-    },
-}
-
-impl DrawingDraft {
-    pub fn tool(&self) -> DrawingTool {
-        match self {
-            Self::Trendline { .. } => DrawingTool::Trendline,
-            Self::Box { .. } => DrawingTool::Box,
-        }
-    }
-
-    pub fn style(&self) -> DrawingStyle {
-        match self {
-            Self::Trendline { style, .. } | Self::Box { style, .. } => *style,
-        }
-    }
-
-    pub fn preview_object(&self) -> DrawingObject {
-        match self {
-            Self::Trendline { start, current, .. } => DrawingObject::Trendline {
-                start: *start,
-                end: *current,
-            },
-            Self::Box { start, current, .. } => DrawingObject::Box {
-                start: *start,
-                end: *current,
-            },
-        }
-    }
-
-    pub fn panel_id(&self) -> PanelId {
-        match self {
-            Self::Trendline { start, .. } | Self::Box { start, .. } => start.panel_id,
-        }
-    }
-
-    pub fn belongs_to_panel(&self, panel_id: PanelId) -> bool {
-        match self {
-            Self::Trendline { start, current, .. } | Self::Box { start, current, .. } => {
-                start.panel_id == panel_id || current.panel_id == panel_id
-            }
-        }
-    }
-
-    pub fn try_commit(self, end: DrawingAnchor) -> Option<(DrawingObject, DrawingStyle)> {
-        match self {
-            Self::Trendline { start, style, .. } => {
-                if end.panel_id != start.panel_id {
-                    return None;
-                }
-
-                Some((DrawingObject::Trendline { start, end }, style))
-            }
-            Self::Box { start, style, .. } => {
-                if end.panel_id != start.panel_id {
-                    return None;
-                }
-
-                Some((DrawingObject::Box { start, end }, style))
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DrawingHandleKind {
-    TrendlineStart,
-    TrendlineEnd,
-    BoxTopLeft,
-    BoxTopRight,
-    BoxBottomRight,
-    BoxBottomLeft,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DrawingDragTarget {
-    Translate,
-    Handle(DrawingHandleKind),
-}
-
-impl DrawingObject {
-    pub fn title(&self) -> &'static str {
-        match self {
-            Self::Box { .. } => "Box",
-            Self::Trendline { .. } => "Trendline",
-            Self::HorizontalLine { .. } => "Horizontal Line",
-            Self::VerticalLine { .. } => "Vertical Line",
-        }
-    }
-
-    pub fn panel_id(&self) -> Option<PanelId> {
-        match self {
-            Self::Trendline { start, .. } | Self::Box { start, .. } => Some(start.panel_id),
-            Self::HorizontalLine { panel_id, .. } => Some(*panel_id),
-            Self::VerticalLine { .. } => None,
-        }
-    }
-
-    pub fn handle_panel_id(&self) -> Option<PanelId> {
-        match self {
-            Self::Trendline { start, end } | Self::Box { start, end } => {
-                (start.panel_id == end.panel_id).then_some(start.panel_id)
-            }
-            Self::HorizontalLine { .. } | Self::VerticalLine { .. } => None,
-        }
-    }
-
-    pub fn axis_label_anchors(&self) -> Option<(DrawingAnchor, DrawingAnchor)> {
-        match self {
-            Self::Trendline { start, end } | Self::Box { start, end } => Some((*start, *end)),
-            Self::HorizontalLine { .. } | Self::VerticalLine { .. } => None,
-        }
-    }
-
-    pub fn belongs_to_panel(&self, panel_id: PanelId) -> bool {
-        match self {
-            Self::Trendline { start, end } | Self::Box { start, end } => {
-                start.panel_id == panel_id || end.panel_id == panel_id
-            }
-            Self::HorizontalLine {
-                panel_id: drawing_panel,
-                ..
-            } => *drawing_panel == panel_id,
-            Self::VerticalLine { .. } => false,
-        }
-    }
-
-    pub fn translated(&self, origin_anchor: DrawingAnchor, current_anchor: DrawingAnchor) -> Self {
-        let (delta_ms, forward_in_time) = Self::time_delta(origin_anchor.time, current_anchor.time);
-        let delta_y = current_anchor
-            .y_unit
-            .0
-            .saturating_sub(origin_anchor.y_unit.0);
-
-        match self {
-            Self::Trendline { start, end } => Self::Trendline {
-                start: Self::shift_anchor_by_delta(*start, delta_ms, forward_in_time, delta_y),
-                end: Self::shift_anchor_by_delta(*end, delta_ms, forward_in_time, delta_y),
-            },
-            Self::Box { start, end } => Self::Box {
-                start: Self::shift_anchor_by_delta(*start, delta_ms, forward_in_time, delta_y),
-                end: Self::shift_anchor_by_delta(*end, delta_ms, forward_in_time, delta_y),
-            },
-            Self::HorizontalLine { panel_id, y_unit } => Self::HorizontalLine {
-                panel_id: *panel_id,
-                y_unit: Self::shift_y_by_delta(*y_unit, delta_y),
-            },
-            Self::VerticalLine { time } => Self::VerticalLine {
-                time: Self::shift_time_by_delta_ms(*time, delta_ms, forward_in_time),
-            },
-        }
-    }
-
-    pub fn handle_dragged(&self, handle: DrawingHandleKind, anchor: DrawingAnchor) -> Option<Self> {
-        match (self, handle) {
-            (Self::Trendline { start, end }, DrawingHandleKind::TrendlineStart) => {
-                Some(Self::Trendline {
-                    start: DrawingAnchor {
-                        panel_id: start.panel_id,
-                        ..anchor
-                    },
-                    end: *end,
-                })
-            }
-            (Self::Trendline { start, end }, DrawingHandleKind::TrendlineEnd) => {
-                Some(Self::Trendline {
-                    start: *start,
-                    end: DrawingAnchor {
-                        panel_id: end.panel_id,
-                        ..anchor
-                    },
-                })
-            }
-            (Self::Box { start, end }, corner) => Self::resized_box(*start, *end, corner, anchor),
-            _ => None,
-        }
-    }
-
-    fn resized_box(
-        start: DrawingAnchor,
-        end: DrawingAnchor,
-        corner: DrawingHandleKind,
-        anchor: DrawingAnchor,
-    ) -> Option<Self> {
-        if start.panel_id != end.panel_id {
-            return None;
-        }
-
-        let panel_id = start.panel_id;
-        if anchor.panel_id != panel_id {
-            return None;
-        }
-
-        let mut left = if start.time <= end.time {
-            start.time
-        } else {
-            end.time
-        };
-        let mut right = if start.time <= end.time {
-            end.time
-        } else {
-            start.time
-        };
-
-        let mut top = start.y_unit.0.max(end.y_unit.0);
-        let mut bottom = start.y_unit.0.min(end.y_unit.0);
-
-        match corner {
-            DrawingHandleKind::BoxTopLeft => {
-                left = anchor.time;
-                top = anchor.y_unit.0;
-            }
-            DrawingHandleKind::BoxTopRight => {
-                right = anchor.time;
-                top = anchor.y_unit.0;
-            }
-            DrawingHandleKind::BoxBottomRight => {
-                right = anchor.time;
-                bottom = anchor.y_unit.0;
-            }
-            DrawingHandleKind::BoxBottomLeft => {
-                left = anchor.time;
-                bottom = anchor.y_unit.0;
-            }
-            DrawingHandleKind::TrendlineStart | DrawingHandleKind::TrendlineEnd => {
-                return None;
-            }
-        }
-
-        Some(Self::Box {
-            start: DrawingAnchor {
-                panel_id,
-                time: left,
-                y_unit: YUnit(top),
-            },
-            end: DrawingAnchor {
-                panel_id,
-                time: right,
-                y_unit: YUnit(bottom),
-            },
-        })
-    }
-
-    fn shift_anchor_by_delta(
-        anchor: DrawingAnchor,
-        delta_ms: u64,
-        forward_in_time: bool,
-        delta_y: i64,
-    ) -> DrawingAnchor {
-        DrawingAnchor {
-            panel_id: anchor.panel_id,
-            time: Self::shift_time_by_delta_ms(anchor.time, delta_ms, forward_in_time),
-            y_unit: Self::shift_y_by_delta(anchor.y_unit, delta_y),
-        }
-    }
-
-    fn shift_y_by_delta(y_unit: YUnit, delta_y: i64) -> YUnit {
-        YUnit(y_unit.0.saturating_add(delta_y))
-    }
-
-    fn shift_time_by_delta_ms(time: UnixMs, delta_ms: u64, forward_in_time: bool) -> UnixMs {
-        if forward_in_time {
-            time.saturating_add(delta_ms)
-        } else {
-            time.saturating_sub(delta_ms)
-        }
-    }
-
-    fn time_delta(origin: UnixMs, current: UnixMs) -> (u64, bool) {
-        if current >= origin {
-            (current.saturating_diff(origin), true)
-        } else {
-            (origin.saturating_diff(current), false)
-        }
-    }
-}
-
-impl DrawingEntity {
-    pub fn belongs_to_panel(&self, panel_id: PanelId) -> bool {
-        self.object.belongs_to_panel(panel_id)
-    }
+fn nearest_y_unit(target: YUnit, candidates: impl IntoIterator<Item = YUnit>) -> Option<YUnit> {
+    candidates
+        .into_iter()
+        .min_by_key(|candidate| candidate.0.abs_diff(target.0))
 }
 
 impl<'a, S> KlineWidget<'a, S>
 where
     S: KlineSeriesLike,
 {
-    fn x_unit_for_anchor_time(&self, scene: &Scene, time: UnixMs) -> Option<i64> {
-        if let Some(unit) = scene.x_unit_for_time(time) {
-            return Some(unit);
+    fn x_unit_for_anchor(&self, scene: &Scene, x: DrawingX) -> Option<f64> {
+        match (self.basis, x) {
+            (data::chart::Basis::Time(_), DrawingX::Time(time)) => {
+                scene.x_unit_for_time(time).map(|unit| unit as f64)
+            }
+            (data::chart::Basis::Tick(interval), DrawingX::Tick(_)) => {
+                let count = self.series.first()?.bars().len();
+                let super::scene::XAxis::Tick { anchor } = scene.x.axis else {
+                    return None;
+                };
+                if count == 0 {
+                    return None;
+                }
+                Some(
+                    x.tick_bar_position(interval.0 as u64)? - (count - 1) as f64
+                        + anchor.as_u64() as f64,
+                )
+            }
+            _ => None,
         }
-
-        let mut best: Option<(u64, i64)> = None;
-
-        self.for_each_bar_unit_index(scene.x_axis, |series_index, _, x_unit, bar| {
-            if series_index != 0 {
-                return;
-            }
-
-            let delta = bar.time.as_u64().abs_diff(time.as_u64());
-
-            if best
-                .map(|(best_delta, _)| delta < best_delta)
-                .unwrap_or(true)
-            {
-                best = Some((delta, x_unit));
-            }
-        });
-
-        best.map(|(_, unit)| unit)
     }
 
-    fn anchor_time_for_cursor_unit(&self, scene: &Scene, x_unit: i64) -> Option<UnixMs> {
-        if let Some(time) = scene.time_for_x_unit(x_unit) {
-            return Some(time);
+    fn anchor_x_for_cursor_unit(&self, scene: &Scene, x_unit: i64) -> Option<DrawingX> {
+        match self.basis {
+            data::chart::Basis::Time(_) => scene.time_for_x_unit(x_unit).map(DrawingX::Time),
+            data::chart::Basis::Tick(interval) => {
+                let count = self.series.first()?.bars().len();
+                let super::scene::XAxis::Tick { anchor } = scene.x.axis else {
+                    return None;
+                };
+                if count == 0 {
+                    return None;
+                }
+                let index = x_unit as f64 + (count - 1) as f64 - anchor.as_u64() as f64;
+                let x = DrawingX::Tick(index * interval.0 as f64);
+                x.is_valid().then_some(x)
+            }
         }
+    }
 
-        let series = self.series.first()?;
-        self.bar_at_or_before_unit(series, scene.x_axis, x_unit)
-            .map(|bar| bar.time)
+    fn drawing_timestamp(&self, x: DrawingX) -> Option<UnixMs> {
+        match (self.basis, x) {
+            (data::chart::Basis::Time(_), DrawingX::Time(time)) => Some(time),
+            (data::chart::Basis::Tick(interval), DrawingX::Tick(_)) => {
+                let index = x.tick_bar_position(interval.0 as u64)?;
+                let series = self.series.first()?;
+                if index < 0.0 || index >= series.bars().len() as f64 {
+                    return None;
+                }
+                series
+                    .bars()
+                    .get(index.floor() as usize)
+                    .map(|point| point.time)
+            }
+            _ => None,
+        }
     }
 
     pub(super) fn drawing_anchor_from_scene_cursor(&self, scene: &Scene) -> Option<DrawingAnchor> {
-        let cursor = scene.cursor?;
+        let cursor = scene.interaction.cursor?;
         let panel_id = self.panel_id(cursor.panel_index)?;
-        let time = self.anchor_time_for_cursor_unit(scene, cursor.x_unit)?;
+        let x = self.anchor_x_for_cursor_unit(scene, cursor.x_unit)?;
         let y_unit = cursor.y_primary_unit.or(cursor.y_indicator_unit)?;
 
         Some(DrawingAnchor {
             panel_id,
-            time,
+            x,
             y_unit,
         })
     }
@@ -581,35 +175,31 @@ where
         let panel = scene.layout.panel(panel_index)?;
 
         let x_plot = cursor_local.x - scene.layout.regions.plot.x;
-        let right_edge_px = scene.x_axis_plot_width().floor().max(1.0);
-        let spacing_px = scene.bar_spacing_px().as_f32().max(1.0);
-        let steps_from_right = ((right_edge_px - x_plot) / spacing_px).round() as i64;
-        let x_unit = scene.max_x_unit.saturating_sub(steps_from_right);
-        let time = self.anchor_time_for_cursor_unit(scene, x_unit)?;
+        let x_unit = scene.unit_from_plot_x(x_plot);
+        let x = self.anchor_x_for_cursor_unit(scene, x_unit)?;
 
         let panel_h = panel.plot.height.max(1.0);
         let y_in_panel = cursor_local.y - scene.layout.regions.plot.y - panel.plot.y;
-        let ratio = 1.0 - (y_in_panel / panel_h);
+        let ratio = (1.0 - (y_in_panel / panel_h)).clamp(0.0, 1.0);
         let panel_precision = self.panel_value_precision(panel_index);
 
         let y_unit = match panel.kind {
             KlinePanelKind::PrimaryChart => {
+                let primary_ratio = scene.primary_value_ratio_at_plot_y(y_in_panel);
                 let uses_display_space = matches!(
-                    scene.primary_scale_mode,
+                    scene.primary.mode,
                     PanelScaleMode::PercentFromBase | PanelScaleMode::Logarithmic
-                ) || scene.primary_domain_display_override.is_some();
+                ) || scene.primary.display_domain_override.is_some();
 
                 if uses_display_space {
                     let (min_display, max_display) = scene.primary_domain_display_values();
-                    let display_value = min_display + (max_display - min_display) * ratio;
+                    let display_value = min_display + (max_display - min_display) * primary_ratio;
                     let value = scene.primary_display_to_value(display_value);
                     self.panel_value_to_unit(panel_precision, value)
                 } else {
-                    let min_value =
-                        self.panel_unit_to_value(panel_precision, scene.min_primary_unit);
-                    let max_value =
-                        self.panel_unit_to_value(panel_precision, scene.max_primary_unit);
-                    let value = min_value + (max_value - min_value) * ratio;
+                    let min_value = scene.primary.domain.values.0;
+                    let max_value = scene.primary.domain.values.1;
+                    let value = min_value + (max_value - min_value) * primary_ratio;
                     self.panel_value_to_unit(panel_precision, value)
                 }
             }
@@ -618,8 +208,8 @@ where
                     .indicator_panels
                     .iter()
                     .find(|indicator| indicator.panel_index == panel_index)?;
-                let min_value = self.panel_unit_to_value(panel_precision, indicator.min_unit);
-                let max_value = self.panel_unit_to_value(panel_precision, indicator.max_unit);
+                let min_value = indicator.min_value();
+                let max_value = indicator.max_value();
                 let value = min_value + (max_value - min_value) * ratio;
                 self.panel_value_to_unit(panel_precision, value)
             }
@@ -627,9 +217,74 @@ where
 
         Some(DrawingAnchor {
             panel_id,
-            time,
+            x,
             y_unit,
         })
+    }
+
+    pub(super) fn drawing_draft_anchor_from_scene_point(
+        &self,
+        scene: &Scene,
+        panel_id: PanelId,
+        cursor_local: Point,
+        magnetic: bool,
+    ) -> Option<DrawingAnchor> {
+        let anchor = self.drawing_anchor_from_scene_point(scene, panel_id, cursor_local)?;
+
+        if !magnetic {
+            return Some(anchor);
+        }
+
+        let x_plot = cursor_local.x - scene.layout.regions.plot.x;
+        let x_unit = scene.unit_from_plot_x(x_plot);
+        Some(
+            self.primary_magnetic_drawing_anchor(scene, x_unit, anchor)
+                .unwrap_or(anchor),
+        )
+    }
+
+    pub(super) fn primary_magnetic_drawing_anchor_at_cursor(
+        &self,
+        scene: &Scene,
+    ) -> Option<DrawingAnchor> {
+        let cursor = scene.interaction.cursor?;
+        let anchor = self.drawing_anchor_from_scene_cursor(scene)?;
+        self.primary_magnetic_drawing_anchor(scene, cursor.x_unit, anchor)
+    }
+
+    fn primary_magnetic_drawing_anchor(
+        &self,
+        scene: &Scene,
+        x_unit: i64,
+        mut anchor: DrawingAnchor,
+    ) -> Option<DrawingAnchor> {
+        if self.panel_index_for_id(anchor.panel_id) != Some(scene.primary.panel_index) {
+            return None;
+        }
+
+        let series = self.series.first()?;
+        let bar = scene.x.axis.bar_at_unit(series.bars(), x_unit)?;
+        let precision = self.panel_value_precision(scene.primary.panel_index);
+        let line_values = [bar.close.to_f32_lossy()];
+        let ohlc_values = [
+            bar.open.to_f32_lossy(),
+            bar.high.to_f32_lossy(),
+            bar.low.to_f32_lossy(),
+            bar.close.to_f32_lossy(),
+        ];
+        let values = if matches!(scene.primary.mark, MarkKind::Line) {
+            &line_values[..]
+        } else {
+            &ohlc_values[..]
+        };
+
+        anchor.y_unit = nearest_y_unit(
+            anchor.y_unit,
+            values
+                .iter()
+                .map(|value| self.panel_value_to_unit(precision, *value)),
+        )?;
+        Some(anchor)
     }
 
     pub(super) fn panel_plot_bounds_in_overlay(
@@ -715,45 +370,40 @@ where
         ))
     }
 
-    fn intersect_bounds(a: Rectangle, b: Rectangle) -> Option<Rectangle> {
-        let left = a.x.max(b.x);
-        let right = (a.x + a.width).min(b.x + b.width);
-        let top = a.y.max(b.y);
-        let bottom = (a.y + a.height).min(b.y + b.height);
-
-        if right <= left || bottom <= top {
-            return None;
-        }
-
-        Some(Rectangle {
-            x: left,
-            y: top,
-            width: right - left,
-            height: bottom - top,
-        })
+    fn x_overlay_for_anchor(&self, scene: &Scene, x: DrawingX) -> Option<f32> {
+        let x_unit = self.x_unit_for_anchor(scene, x)?;
+        let x_plot = Self::snap_plot_x_to_cell(
+            scene.map_x_plot_f32(x_unit as f32),
+            self.pixel_ratio_value(),
+        );
+        Some(scene.layout.regions.plot.x + x_plot)
     }
 
-    fn anchor_to_overlay_point(&self, scene: &Scene, anchor: DrawingAnchor) -> Option<Point> {
-        let panel_index = self.panel_index_for_id(anchor.panel_id)?;
+    pub(super) fn y_overlay_for_value(
+        &self,
+        scene: &Scene,
+        panel_id: PanelId,
+        y_unit: YUnit,
+    ) -> Option<f32> {
+        let panel_index = self.panel_index_for_id(panel_id)?;
         let panel = scene.layout.panel(panel_index)?;
         let panel_precision = self.panel_value_precision(panel_index);
-        let value = self.panel_unit_to_value(panel_precision, anchor.y_unit);
-        let x_unit = self.x_unit_for_anchor_time(scene, anchor.time)?;
-        let x_plot = Self::snap_plot_x_to_cell(
-            scene.map_x_plot(x_unit),
-            self.resolved_horizontal_pixel_ratio(),
-        );
+        let value = self.panel_unit_to_value(panel_precision, y_unit);
         let y_plot = match panel.kind {
             KlinePanelKind::PrimaryChart => {
-                scene.map_primary_plot_with_anchor(value, scene.primary_scale_anchor)
+                scene.map_primary_plot_with_anchor(value, scene.primary.anchor)
             }
             KlinePanelKind::Indicator => scene.map_indicator_plot(panel_index, value)?,
         };
 
-        Some(Point::new(
-            scene.layout.regions.plot.x + x_plot,
-            scene.layout.regions.plot.y + y_plot,
-        ))
+        Some(scene.layout.regions.plot.y + y_plot)
+    }
+
+    fn anchor_to_overlay_point(&self, scene: &Scene, anchor: DrawingAnchor) -> Option<Point> {
+        let x = self.x_overlay_for_anchor(scene, anchor.x)?;
+        let y = self.y_overlay_for_value(scene, anchor.panel_id, anchor.y_unit)?;
+
+        Some(Point::new(x, y))
     }
 
     fn drawing_trendline_geometry(
@@ -786,6 +436,7 @@ where
         scene: &Scene,
         start: DrawingAnchor,
         end: DrawingAnchor,
+        extend_right: bool,
     ) -> Option<(Point, Size, Rectangle, Rectangle)> {
         if start.panel_id != end.panel_id {
             return None;
@@ -796,7 +447,11 @@ where
         let end_point = self.anchor_to_overlay_point(scene, end)?;
 
         let left = start_point.x.min(end_point.x);
-        let right = start_point.x.max(end_point.x);
+        let right = if extend_right {
+            clip_bounds.x + clip_bounds.width
+        } else {
+            start_point.x.max(end_point.x)
+        };
         let top = start_point.y.min(end_point.y);
         let bottom = start_point.y.max(end_point.y);
 
@@ -808,7 +463,7 @@ where
             width: size.width,
             height: size.height,
         };
-        let visible_bounds = Self::intersect_bounds(object_bounds, clip_bounds)?;
+        let visible_bounds = intersect_bounds(object_bounds, clip_bounds)?;
 
         Some((origin, size, clip_bounds, visible_bounds))
     }
@@ -818,7 +473,9 @@ where
         scene: &Scene,
         panel_id: PanelId,
         y_unit: YUnit,
-    ) -> Option<(Rectangle, f32)> {
+        x: DrawingX,
+        ray: bool,
+    ) -> Option<(Rectangle, f32, f32)> {
         let panel_index = self.panel_index_for_id(panel_id)?;
         let panel = scene.layout.panel(panel_index)?;
         let clip_bounds = self.panel_plot_bounds_in_overlay(scene, panel_index)?;
@@ -827,7 +484,7 @@ where
 
         let y_plot = match panel.kind {
             KlinePanelKind::PrimaryChart => {
-                scene.map_primary_plot_with_anchor(value, scene.primary_scale_anchor)
+                scene.map_primary_plot_with_anchor(value, scene.primary.anchor)
             }
             KlinePanelKind::Indicator => scene.map_indicator_plot(panel_index, value)?,
         };
@@ -838,20 +495,32 @@ where
             return None;
         }
 
-        Some((clip_bounds, scene.layout.regions.plot.y + y_plot))
+        let start_x = if ray {
+            let x_unit = self.x_unit_for_anchor(scene, x)?;
+            let x = scene.layout.regions.plot.x
+                + Self::snap_plot_x_to_cell(
+                    scene.map_x_plot_f32(x_unit as f32),
+                    self.pixel_ratio_value(),
+                );
+            x.max(clip_bounds.x)
+        } else {
+            clip_bounds.x
+        };
+
+        Some((clip_bounds, scene.layout.regions.plot.y + y_plot, start_x))
     }
 
     fn drawing_vertical_line_geometry(
         &self,
         scene: &Scene,
-        time: UnixMs,
+        x: DrawingX,
     ) -> Option<(Rectangle, f32)> {
-        let x_unit = self.x_unit_for_anchor_time(scene, time)?;
+        let x_unit = self.x_unit_for_anchor(scene, x)?;
         let clip_bounds = self.plot_bounds_in_overlay(scene);
         let x = scene.layout.regions.plot.x
             + Self::snap_plot_x_to_cell(
-                scene.map_x_plot(x_unit),
-                self.resolved_horizontal_pixel_ratio(),
+                scene.map_x_plot_f32(x_unit as f32),
+                self.pixel_ratio_value(),
             );
 
         if x < clip_bounds.x || x > (clip_bounds.x + clip_bounds.width) {
@@ -867,19 +536,21 @@ where
         scene: &Scene,
         object: &DrawingObject,
         style: DrawingStyle,
+        palette: &Extended,
+        generated_accents: &[iced::Color; 6],
         selected: bool,
         overlay_origin_in_window: Point,
-        horizontal_pixel_ratio: f32,
+        pixel_ratio: f32,
     ) {
         let raw_stroke_width = if selected {
-            (style.stroke_width + 0.6).max(1.0)
+            style.normalized_stroke_width() + 0.6
         } else {
-            style.stroke_width.max(1.0)
+            style.normalized_stroke_width()
         };
         let (stroke_width, stroke_width_phys) =
-            Self::quantized_stroke_width(raw_stroke_width, horizontal_pixel_ratio);
+            Self::quantized_stroke_width(raw_stroke_width, pixel_ratio);
         let stroke = canvas::Stroke::default()
-            .with_color(style.stroke_color)
+            .with_color(iced_color(style.stroke_color, palette, generated_accents))
             .with_width(stroke_width);
 
         match object {
@@ -891,13 +562,13 @@ where
                 };
                 let start = Self::snap_point_for_stroke_with_origin(
                     start,
-                    horizontal_pixel_ratio,
+                    pixel_ratio,
                     overlay_origin_in_window,
                     stroke_width_phys,
                 );
                 let end = Self::snap_point_for_stroke_with_origin(
                     end,
-                    horizontal_pixel_ratio,
+                    pixel_ratio,
                     overlay_origin_in_window,
                     stroke_width_phys,
                 );
@@ -906,9 +577,13 @@ where
                     frame.stroke(&canvas::Path::line(start, end), stroke);
                 });
             }
-            DrawingObject::Box { start, end } => {
+            DrawingObject::Box {
+                start,
+                end,
+                extend_right,
+            } => {
                 let Some((origin, size, bounds, _)) =
-                    self.drawing_box_geometry(scene, *start, *end)
+                    self.drawing_box_geometry(scene, *start, *end, *extend_right)
                 else {
                     return;
                 };
@@ -921,37 +596,37 @@ where
                 let (fill_left, fill_width) = Self::snapped_span_with_origin(
                     left,
                     right,
-                    horizontal_pixel_ratio,
+                    pixel_ratio,
                     overlay_origin_in_window.x,
                 );
                 let (fill_top, fill_height) = Self::snapped_span_with_origin(
                     top,
                     bottom,
-                    horizontal_pixel_ratio,
+                    pixel_ratio,
                     overlay_origin_in_window.y,
                 );
 
                 let left_stroke = Self::snap_stroke_center_with_origin(
                     left,
-                    horizontal_pixel_ratio,
+                    pixel_ratio,
                     overlay_origin_in_window.x,
                     stroke_width_phys,
                 );
                 let right_stroke = Self::snap_stroke_center_with_origin(
                     right,
-                    horizontal_pixel_ratio,
+                    pixel_ratio,
                     overlay_origin_in_window.x,
                     stroke_width_phys,
                 );
                 let top_stroke = Self::snap_stroke_center_with_origin(
                     top,
-                    horizontal_pixel_ratio,
+                    pixel_ratio,
                     overlay_origin_in_window.y,
                     stroke_width_phys,
                 );
                 let bottom_stroke = Self::snap_stroke_center_with_origin(
                     bottom,
-                    horizontal_pixel_ratio,
+                    pixel_ratio,
                     overlay_origin_in_window.y,
                     stroke_width_phys,
                 );
@@ -961,7 +636,7 @@ where
                         frame.fill_rectangle(
                             Point::new(fill_left, fill_top),
                             Size::new(fill_width, fill_height),
-                            fill,
+                            iced_color(fill, palette, generated_accents),
                         );
                     }
 
@@ -995,38 +670,49 @@ where
                     );
                 });
             }
-            DrawingObject::HorizontalLine { panel_id, y_unit } => {
-                let Some((bounds, y)) =
-                    self.drawing_horizontal_line_geometry(scene, *panel_id, *y_unit)
+            DrawingObject::HorizontalLine {
+                panel_id,
+                y_unit,
+                x,
+                ray,
+            } => {
+                let Some((bounds, y, start_x)) =
+                    self.drawing_horizontal_line_geometry(scene, *panel_id, *y_unit, *x, *ray)
                 else {
                     return;
                 };
 
                 let y = Self::snap_stroke_center_with_origin(
                     y,
-                    horizontal_pixel_ratio,
+                    pixel_ratio,
                     overlay_origin_in_window.y,
+                    stroke_width_phys,
+                );
+                let start_x = Self::snap_stroke_center_with_origin(
+                    start_x,
+                    pixel_ratio,
+                    overlay_origin_in_window.x,
                     stroke_width_phys,
                 );
 
                 frame.with_clip(bounds, |frame| {
                     frame.stroke(
                         &canvas::Path::line(
-                            Point::new(bounds.x, y),
+                            Point::new(start_x, y),
                             Point::new(bounds.x + bounds.width, y),
                         ),
                         stroke,
                     );
                 });
             }
-            DrawingObject::VerticalLine { time } => {
-                let Some((plot, x)) = self.drawing_vertical_line_geometry(scene, *time) else {
+            DrawingObject::VerticalLine { x } => {
+                let Some((plot, x)) = self.drawing_vertical_line_geometry(scene, *x) else {
                     return;
                 };
 
                 let x = Self::snap_stroke_center_with_origin(
                     x,
-                    horizontal_pixel_ratio,
+                    pixel_ratio,
                     overlay_origin_in_window.x,
                     stroke_width_phys,
                 );
@@ -1042,6 +728,26 @@ where
                 });
             }
         }
+    }
+
+    pub(super) fn fill_marquee_rectangle(
+        &self,
+        frame: &mut canvas::Frame,
+        bounds: Rectangle,
+        palette: &Extended,
+    ) {
+        frame.fill_rectangle(
+            Point::new(bounds.x, bounds.y),
+            Size::new(bounds.width, bounds.height),
+            palette.primary.base.color.scale_alpha(0.08),
+        );
+        frame.stroke_rectangle(
+            Point::new(bounds.x, bounds.y),
+            Size::new(bounds.width, bounds.height),
+            canvas::Stroke::default()
+                .with_color(palette.primary.base.color.scale_alpha(0.6))
+                .with_width(1.0),
+        );
     }
 
     fn drawing_handle_points(
@@ -1063,7 +769,11 @@ where
 
                 points
             }
-            DrawingObject::Box { start, end } => {
+            DrawingObject::Box {
+                start,
+                end,
+                extend_right,
+            } => {
                 if start.panel_id != end.panel_id {
                     return Vec::new();
                 }
@@ -1080,6 +790,13 @@ where
                 let top = start_point.y.min(end_point.y);
                 let bottom = start_point.y.max(end_point.y);
 
+                if *extend_right {
+                    return vec![
+                        (DrawingHandleKind::BoxTopLeft, Point::new(left, top)),
+                        (DrawingHandleKind::BoxBottomLeft, Point::new(left, bottom)),
+                    ];
+                }
+
                 vec![
                     (DrawingHandleKind::BoxTopLeft, Point::new(left, top)),
                     (DrawingHandleKind::BoxTopRight, Point::new(right, top)),
@@ -1087,6 +804,23 @@ where
                     (DrawingHandleKind::BoxBottomLeft, Point::new(left, bottom)),
                 ]
             }
+            DrawingObject::HorizontalLine {
+                panel_id,
+                y_unit,
+                x,
+                ray: true,
+            } => self
+                .anchor_to_overlay_point(
+                    scene,
+                    DrawingAnchor {
+                        panel_id: *panel_id,
+                        x: *x,
+                        y_unit: *y_unit,
+                    },
+                )
+                .into_iter()
+                .map(|point| (DrawingHandleKind::HorizontalLineStart, point))
+                .collect(),
             DrawingObject::HorizontalLine { .. } | DrawingObject::VerticalLine { .. } => Vec::new(),
         }
     }
@@ -1107,21 +841,21 @@ where
         frame: &mut canvas::Frame,
         scene: &Scene,
         palette: &Extended,
-        horizontal_pixel_ratio: f32,
-        drawing: &DrawingEntity,
+        pixel_ratio: f32,
+        object: &DrawingObject,
     ) {
-        let handles = self.drawing_handle_points(scene, &drawing.object);
+        let handles = self.drawing_handle_points(scene, object);
         if handles.is_empty() {
             return;
         }
 
-        let Some(clip_bounds) = self.drawing_handle_clip_bounds(scene, &drawing.object) else {
+        let Some(clip_bounds) = self.drawing_handle_clip_bounds(scene, object) else {
             return;
         };
 
         let fill_color = palette.background.strongest.color;
         let stroke_color = palette.primary.base.color.scale_alpha(0.92);
-        let (handle_stroke_width, _) = Self::quantized_stroke_width(1.2, horizontal_pixel_ratio);
+        let (handle_stroke_width, _) = Self::quantized_stroke_width(1.2, pixel_ratio);
 
         frame.with_clip(clip_bounds, |frame| {
             for (_, point) in handles {
@@ -1143,41 +877,43 @@ where
         scene: &Scene,
         point: Point,
     ) -> Option<(DrawingId, DrawingHandleKind)> {
-        let drawing = self.drawings.selected_visible_drawing()?;
-        if drawing.locked {
-            return None;
-        }
-
         let hit_radius_sq = DRAWING_HANDLE_HIT_RADIUS_PX * DRAWING_HANDLE_HIT_RADIUS_PX;
-        let mut best: Option<(f32, DrawingHandleKind)> = None;
+        let mut best: Option<(f32, DrawingId, DrawingHandleKind)> = None;
 
-        for (kind, handle_point) in self.drawing_handle_points(scene, &drawing.object) {
-            let dx = point.x - handle_point.x;
-            let dy = point.y - handle_point.y;
-            let dist_sq = dx * dx + dy * dy;
-
-            if dist_sq > hit_radius_sq {
+        for drawing in self.drawings.selected_visible_drawings() {
+            if drawing.locked {
                 continue;
             }
 
-            if best
-                .map(|(best_dist_sq, _)| dist_sq < best_dist_sq)
-                .unwrap_or(true)
-            {
-                best = Some((dist_sq, kind));
+            for (kind, handle_point) in self.drawing_handle_points(scene, &drawing.object) {
+                let dx = point.x - handle_point.x;
+                let dy = point.y - handle_point.y;
+                let dist_sq = dx * dx + dy * dy;
+
+                if dist_sq > hit_radius_sq {
+                    continue;
+                }
+
+                if best
+                    .map(|(best_dist_sq, _, _)| dist_sq < best_dist_sq)
+                    .unwrap_or(true)
+                {
+                    best = Some((dist_sq, drawing.id, kind));
+                }
             }
         }
 
-        best.map(|(_, kind)| (drawing.id, kind))
+        best.map(|(_, id, kind)| (id, kind))
     }
 
-    pub(super) fn fill_drawings(
+    pub(super) fn fill_drawing_objects(
         &self,
         frame: &mut canvas::Frame,
         scene: &Scene,
         palette: &Extended,
+        generated_accents: &[iced::Color; 6],
         overlay_origin_in_window: Point,
-        horizontal_pixel_ratio: f32,
+        pixel_ratio: f32,
     ) {
         let drawing_state = &self.drawings;
 
@@ -1186,25 +922,39 @@ where
             .iter()
             .filter(|drawing| drawing.visible)
         {
-            let selected = drawing_state.selected_drawing == Some(drawing.id);
+            let selected = drawing_state.selected_drawings.contains(&drawing.id);
             self.draw_drawing_object(
                 frame,
                 scene,
                 &drawing.object,
                 drawing.style,
+                palette,
+                generated_accents,
                 selected,
                 overlay_origin_in_window,
-                horizontal_pixel_ratio,
+                pixel_ratio,
             );
         }
+    }
 
-        if let Some(selected_drawing) = drawing_state.selected_visible_drawing() {
+    pub(super) fn fill_drawing_interaction(
+        &self,
+        frame: &mut canvas::Frame,
+        scene: &Scene,
+        palette: &Extended,
+        generated_accents: &[iced::Color; 6],
+        overlay_origin_in_window: Point,
+        pixel_ratio: f32,
+    ) {
+        let drawing_state = &self.drawings;
+
+        for selected_drawing in drawing_state.selected_visible_drawings() {
             self.draw_selected_drawing_handles(
                 frame,
                 scene,
                 palette,
-                horizontal_pixel_ratio,
-                selected_drawing,
+                pixel_ratio,
+                &selected_drawing.object,
             );
         }
 
@@ -1215,15 +965,197 @@ where
                 style.fill_color = Some(fill.scale_alpha(0.5));
             }
 
+            let preview = draft.preview_object();
             self.draw_drawing_object(
                 frame,
                 scene,
-                &draft.preview_object(),
+                &preview,
                 style,
+                palette,
+                generated_accents,
                 false,
                 overlay_origin_in_window,
-                horizontal_pixel_ratio,
+                pixel_ratio,
             );
+            self.draw_selected_drawing_handles(frame, scene, palette, pixel_ratio, &preview);
+        }
+
+        if let Some(measure) = drawing_state.measure {
+            self.fill_measure(
+                frame,
+                scene,
+                palette,
+                measure,
+                overlay_origin_in_window,
+                pixel_ratio,
+            );
+        }
+    }
+
+    fn fill_measure(
+        &self,
+        frame: &mut canvas::Frame,
+        scene: &Scene,
+        palette: &Extended,
+        measure: DrawingMeasure,
+        overlay_origin_in_window: Point,
+        pixel_ratio: f32,
+    ) {
+        let state = measure.state();
+        let Some(start_point) = self.anchor_to_overlay_point(scene, state.start) else {
+            return;
+        };
+        let Some(end_point) = self.anchor_to_overlay_point(scene, state.end) else {
+            return;
+        };
+        let Some(panel_index) = self.panel_index_for_id(state.panel_id) else {
+            return;
+        };
+        let Some(clip_bounds) = self.panel_plot_bounds_in_overlay(scene, panel_index) else {
+            return;
+        };
+        let panel_precision = self.panel_value_precision(panel_index);
+
+        let start_value = self.panel_unit_to_value(panel_precision, state.start.y_unit);
+        let end_value = self.panel_unit_to_value(panel_precision, state.end.y_unit);
+        let delta = end_value - start_value;
+        let pct = if start_value.abs() > 1e-12 {
+            (delta / start_value.abs()) * 100.0
+        } else {
+            0.0
+        };
+
+        let color = if delta > 1e-9 {
+            palette.success.base.color
+        } else if delta < -1e-9 {
+            palette.danger.base.color
+        } else {
+            palette.background.base.text
+        };
+
+        let span_ms = self
+            .drawing_timestamp(state.start.x)
+            .zip(self.drawing_timestamp(state.end.x))
+            .map(|(start, end)| start.as_u64().abs_diff(end.as_u64()));
+        let bars = self
+            .x_unit_for_anchor(scene, state.start.x)
+            .zip(self.x_unit_for_anchor(scene, state.end.x))
+            .map_or(0.0, |(start, end)| (start - end).abs());
+
+        let sign = if delta > 1e-9 {
+            "+"
+        } else if delta < -1e-9 {
+            "-"
+        } else {
+            ""
+        };
+        let delta_label =
+            self.format_panel_axis_value(panel_index, panel_precision, delta.abs(), 0.01);
+        let text1 = format!("{sign}{delta_label} ({sign}{:.2}%)", pct.abs());
+        let text2 = match span_ms {
+            Some(span_ms) => format!("{} ({bars}b)", data::util::format_duration_ms(span_ms)),
+            None => format!("{bars}b"),
+        };
+
+        let (_, stroke_width_phys) = Self::quantized_stroke_width(1.25, pixel_ratio);
+        let start = Self::snap_point_for_stroke_with_origin(
+            start_point,
+            pixel_ratio,
+            overlay_origin_in_window,
+            stroke_width_phys,
+        );
+        let end = Self::snap_point_for_stroke_with_origin(
+            end_point,
+            pixel_ratio,
+            overlay_origin_in_window,
+            stroke_width_phys,
+        );
+        let stroke = canvas::Stroke::default().with_color(color).with_width(1.25);
+
+        frame.with_clip(clip_bounds, |frame| {
+            let left = start.x.min(end.x);
+            let right = start.x.max(end.x);
+            let top = start.y.min(end.y);
+            let bottom = start.y.max(end.y);
+
+            frame.fill_rectangle(
+                Point::new(left, top),
+                Size::new((right - left).max(1.0), (bottom - top).max(1.0)),
+                color.scale_alpha(0.08),
+            );
+
+            frame.stroke(&canvas::Path::line(start, end), stroke);
+
+            for point in [start, end] {
+                let dot = canvas::Path::circle(point, 2.5);
+                frame.fill(&dot, color);
+            }
+
+            self.fill_measure_bubble(
+                frame,
+                palette,
+                clip_bounds,
+                color,
+                &text1,
+                &text2,
+                start,
+                end,
+            );
+        });
+    }
+
+    fn fill_measure_bubble(
+        &self,
+        frame: &mut canvas::Frame,
+        palette: &Extended,
+        bounds: Rectangle,
+        color: iced::Color,
+        text1: &str,
+        text2: &str,
+        start: Point,
+        end: Point,
+    ) {
+        let mid_x = (start.x + end.x) / 2.0;
+        let mid_y = (start.y + end.y) / 2.0;
+
+        let text_width = |text: &str| text.chars().count() as f32 * TEXT_SIZE * 0.6 + 16.0;
+        let bubble_width = text_width(text1).max(text_width(text2));
+        let bubble_height = TEXT_SIZE * 2.0 + 8.0;
+
+        let bubble_x = (mid_x - bubble_width / 2.0).clamp(
+            bounds.x + 4.0,
+            (bounds.x + bounds.width - bubble_width - 4.0).max(bounds.x + 4.0),
+        );
+        let mut bubble_y = mid_y - bubble_height - 8.0;
+        if bubble_y < bounds.y + 4.0 {
+            bubble_y = mid_y + 8.0;
+        }
+
+        frame.fill_rectangle(
+            Point::new(bubble_x, bubble_y),
+            Size::new(bubble_width, bubble_height),
+            palette.background.strong.color,
+        );
+        frame.stroke_rectangle(
+            Point::new(bubble_x, bubble_y),
+            Size::new(bubble_width, bubble_height),
+            canvas::Stroke::default().with_color(color).with_width(1.0),
+        );
+
+        for (index, line) in [text1, text2].into_iter().enumerate() {
+            frame.fill_text(canvas::Text {
+                content: line.to_string(),
+                position: Point::new(
+                    bubble_x + bubble_width / 2.0,
+                    bubble_y + TEXT_SIZE / 2.0 + TEXT_SIZE * index as f32 + 1.0,
+                ),
+                color: palette.background.strong.text,
+                size: TEXT_SIZE.into(),
+                align_x: iced::Alignment::Center.into(),
+                align_y: iced::Alignment::Center.into(),
+                font: style::AZERET_MONO,
+                ..Default::default()
+            });
         }
     }
 
@@ -1264,9 +1196,13 @@ where
 
                 Self::point_segment_distance(point, visible_start, visible_end) <= tolerance
             }
-            DrawingObject::Box { start, end } => {
+            DrawingObject::Box {
+                start,
+                end,
+                extend_right,
+            } => {
                 let Some((origin, size, bounds, visible_bounds)) =
-                    self.drawing_box_geometry(scene, *start, *end)
+                    self.drawing_box_geometry(scene, *start, *end, *extend_right)
                 else {
                     return false;
                 };
@@ -1312,19 +1248,24 @@ where
 
                 near_edge || inside_visible_fill
             }
-            DrawingObject::HorizontalLine { panel_id, y_unit } => {
-                let Some((bounds, y)) =
-                    self.drawing_horizontal_line_geometry(scene, *panel_id, *y_unit)
+            DrawingObject::HorizontalLine {
+                panel_id,
+                y_unit,
+                x,
+                ray,
+            } => {
+                let Some((bounds, y, start_x)) =
+                    self.drawing_horizontal_line_geometry(scene, *panel_id, *y_unit, *x, *ray)
                 else {
                     return false;
                 };
 
-                point.x >= (bounds.x - tolerance)
+                point.x >= (start_x - tolerance)
                     && point.x <= (bounds.x + bounds.width + tolerance)
                     && (point.y - y).abs() <= tolerance
             }
-            DrawingObject::VerticalLine { time } => {
-                let Some((plot, x)) = self.drawing_vertical_line_geometry(scene, *time) else {
+            DrawingObject::VerticalLine { x } => {
+                let Some((plot, x)) = self.drawing_vertical_line_geometry(scene, *x) else {
                     return false;
                 };
 
@@ -1347,11 +1288,122 @@ where
             .map(|drawing| drawing.id)
     }
 
-    fn format_anchor_y_label(&self, scene: &Scene, anchor: DrawingAnchor) -> Option<String> {
-        let panel_index = self.panel_index_for_id(anchor.panel_id)?;
+    pub(super) fn clipped_marquee_rect(
+        &self,
+        scene: &Scene,
+        panel_index: usize,
+        start: Point,
+        current: Point,
+    ) -> Option<Rectangle> {
+        let rect = Rectangle {
+            x: start.x.min(current.x),
+            y: start.y.min(current.y),
+            width: (current.x - start.x).abs(),
+            height: (current.y - start.y).abs(),
+        };
+        let panel_bounds = self.panel_plot_bounds_in_overlay(scene, panel_index)?;
+        intersect_bounds(rect, panel_bounds)
+    }
+
+    pub(super) fn marquee_selected_drawings(
+        &self,
+        scene: &Scene,
+        panel_index: usize,
+        start: Point,
+        current: Point,
+    ) -> Vec<DrawingId> {
+        let Some(rect) = self.clipped_marquee_rect(scene, panel_index, start, current) else {
+            return Vec::new();
+        };
+
+        self.drawings
+            .entities
+            .iter()
+            .filter(|drawing| drawing.visible)
+            .filter(|drawing| {
+                self.drawing_selection_corners(scene, &drawing.object)
+                    .iter()
+                    .any(|corner| {
+                        corner.x >= rect.x
+                            && corner.x <= rect.x + rect.width
+                            && corner.y >= rect.y
+                            && corner.y <= rect.y + rect.height
+                    })
+            })
+            .map(|drawing| drawing.id)
+            .collect()
+    }
+
+    fn drawing_selection_corners(&self, scene: &Scene, object: &DrawingObject) -> Vec<Point> {
+        match object {
+            DrawingObject::Trendline { start, end } => {
+                let mut corners = Vec::with_capacity(2);
+                if let Some(point) = self.anchor_to_overlay_point(scene, *start) {
+                    corners.push(point);
+                }
+                if let Some(point) = self.anchor_to_overlay_point(scene, *end) {
+                    corners.push(point);
+                }
+                corners
+            }
+            DrawingObject::Box {
+                start,
+                end,
+                extend_right,
+            } => {
+                if start.panel_id != end.panel_id {
+                    return Vec::new();
+                }
+                let Some(start_point) = self.anchor_to_overlay_point(scene, *start) else {
+                    return Vec::new();
+                };
+                let Some(end_point) = self.anchor_to_overlay_point(scene, *end) else {
+                    return Vec::new();
+                };
+                let left = start_point.x.min(end_point.x);
+                let right = start_point.x.max(end_point.x);
+                let top = start_point.y.min(end_point.y);
+                let bottom = start_point.y.max(end_point.y);
+                if *extend_right {
+                    vec![Point::new(left, top), Point::new(left, bottom)]
+                } else {
+                    vec![
+                        Point::new(left, top),
+                        Point::new(right, top),
+                        Point::new(right, bottom),
+                        Point::new(left, bottom),
+                    ]
+                }
+            }
+            DrawingObject::HorizontalLine {
+                panel_id,
+                y_unit,
+                x,
+                ray,
+            } => {
+                if !*ray {
+                    return Vec::new();
+                }
+                self.anchor_to_overlay_point(
+                    scene,
+                    DrawingAnchor {
+                        panel_id: *panel_id,
+                        x: *x,
+                        y_unit: *y_unit,
+                    },
+                )
+                .into_iter()
+                .collect()
+            }
+            DrawingObject::VerticalLine { .. } => Vec::new(),
+        }
+    }
+
+    fn format_y_label(&self, scene: &Scene, panel_id: PanelId, y_unit: YUnit) -> Option<String> {
+        let panel_index = self.panel_index_for_id(panel_id)?;
         let panel = scene.layout.panel(panel_index)?;
         let panel_precision = self.panel_value_precision(panel_index);
-        let value = self.panel_unit_to_value(panel_precision, anchor.y_unit);
+        let value = self.panel_unit_to_value(panel_precision, y_unit);
 
         match panel.kind {
             KlinePanelKind::PrimaryChart => Some(scene.format_primary_cursor_label(value)),
@@ -1560,38 +1612,41 @@ where
         let Some(object) = self.drawings.active_axis_labeled_object() else {
             return;
         };
-        let Some((start, end)) = object.axis_label_anchors() else {
-            return;
-        };
 
-        for anchor in [start, end] {
-            let Some(point) = self.anchor_to_overlay_point(scene, anchor) else {
-                continue;
-            };
+        for anchor in object.axis_label_anchors() {
+            match anchor {
+                AxisLabelAnchor::X { x } => {
+                    let Some(screen_x) = self.x_overlay_for_anchor(scene, x) else {
+                        continue;
+                    };
+                    let Some(x_unit) = self.x_unit_for_anchor(scene, x) else {
+                        continue;
+                    };
+                    let x_text = match (self.basis, x) {
+                        (data::chart::Basis::Tick(interval), DrawingX::Tick(_)) => {
+                            format!("{}b", x.tick_bar_position(interval.0 as u64).unwrap())
+                        }
+                        _ => self.format_x_label(scene.x.axis, x_unit as i64, 1),
+                    };
+                    self.draw_x_axis_badge(frame, scene, palette, screen_x, &x_text, filter);
+                }
+                AxisLabelAnchor::Y { panel_id, y_unit } => {
+                    let Some(y) = self.y_overlay_for_value(scene, panel_id, y_unit) else {
+                        continue;
+                    };
+                    let Some(y_text) = self.format_y_label(scene, panel_id, y_unit) else {
+                        continue;
+                    };
+                    let Some(panel_index) = self.panel_index_for_id(panel_id) else {
+                        continue;
+                    };
+                    let Some(panel_bounds) = self.panel_plot_bounds_in_overlay(scene, panel_index)
+                    else {
+                        continue;
+                    };
 
-            if let Some(x_unit) = self.x_unit_for_anchor_time(scene, anchor.time) {
-                let x_text = self.format_x_label(scene.x_axis, x_unit, 1);
-                self.draw_x_axis_badge(frame, scene, palette, point.x, &x_text, filter);
-            }
-
-            if let Some(y_text) = self.format_anchor_y_label(scene, anchor) {
-                let Some(panel_index) = self.panel_index_for_id(anchor.panel_id) else {
-                    continue;
-                };
-                let Some(panel_bounds) = self.panel_plot_bounds_in_overlay(scene, panel_index)
-                else {
-                    continue;
-                };
-
-                self.draw_y_axis_badge(
-                    frame,
-                    scene,
-                    palette,
-                    point.y,
-                    &y_text,
-                    panel_bounds,
-                    filter,
-                );
+                    self.draw_y_axis_badge(frame, scene, palette, y, &y_text, panel_bounds, filter);
+                }
             }
         }
     }

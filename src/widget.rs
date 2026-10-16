@@ -2,20 +2,29 @@ use super::Element;
 use crate::{
     screen::ConfirmDialog,
     style::{self, Icon, icon_text, modal_container},
+    theme::ThemeAccents,
 };
+use data::config::theme::{ThemeColorRole, ThemeColorShade, darken, lighten, mix_color};
+use data::{chart::kline::ThemeAccent, config::theme::ThemeColor};
 use iced::{
     Alignment::{self, Center},
     Color,
     Length::Fill,
     Theme, border, padding,
-    widget::{button, column, container, row, scrollable, slider, space, text, tooltip::Position},
+    widget::{
+        button, column, container, row, scrollable, slider, space, text as iced_text,
+        tooltip::Position,
+    },
 };
 
 pub mod chart;
 pub mod color_picker;
 pub mod column_drag;
 pub mod decorate;
+pub mod inspector;
 pub mod multi_split;
+pub mod series_editor;
+pub mod study_configurator;
 pub mod toast;
 
 pub const PANE_CONTROL_BTN_HEIGHT: f32 = 26.0;
@@ -40,12 +49,66 @@ pub fn tooltip_with_delay<'a, Message: 'a>(
     match tooltip {
         Some(tooltip) => iced::widget::tooltip(
             content,
-            container(text(tooltip)).style(style::tooltip).padding(8),
+            container(iced_text(tooltip))
+                .style(style::tooltip)
+                .padding(8),
             position,
         )
         .delay(delay)
         .into(),
         None => content.into(),
+    }
+}
+
+pub mod text {
+    use iced::{Renderer, Theme};
+
+    pub fn title<'a>(
+        content: impl iced::widget::text::IntoFragment<'a>,
+    ) -> iced::widget::Text<'a, Theme, Renderer> {
+        iced::widget::text(content)
+            .size(crate::style::text_size::TITLE)
+            .style(crate::style::text_color::title)
+    }
+
+    pub fn section<'a>(
+        content: impl iced::widget::text::IntoFragment<'a>,
+    ) -> iced::widget::Text<'a, Theme, Renderer> {
+        iced::widget::text(content)
+            .size(crate::style::text_size::SECTION)
+            .style(crate::style::text_color::section)
+    }
+
+    pub fn emphasis<'a>(
+        content: impl iced::widget::text::IntoFragment<'a>,
+    ) -> iced::widget::Text<'a, Theme, Renderer> {
+        iced::widget::text(content)
+            .size(crate::style::text_size::EMPHASIS)
+            .style(crate::style::text_color::body)
+    }
+
+    pub fn body<'a>(
+        content: impl iced::widget::text::IntoFragment<'a>,
+    ) -> iced::widget::Text<'a, Theme, Renderer> {
+        iced::widget::text(content)
+            .size(crate::style::text_size::BODY)
+            .style(crate::style::text_color::body)
+    }
+
+    pub fn small<'a>(
+        content: impl iced::widget::text::IntoFragment<'a>,
+    ) -> iced::widget::Text<'a, Theme, Renderer> {
+        iced::widget::text(content)
+            .size(crate::style::text_size::SMALL)
+            .style(crate::style::text_color::body)
+    }
+
+    pub fn muted<'a>(
+        content: impl iced::widget::text::IntoFragment<'a>,
+    ) -> iced::widget::Text<'a, Theme, Renderer> {
+        iced::widget::text(content)
+            .size(crate::style::text_size::SMALL)
+            .style(crate::style::text_color::muted)
     }
 }
 
@@ -69,12 +132,13 @@ pub fn confirm_dialog_container<'a, Message: 'a + Clone>(
 
     container(
         column![
-            text(dialog).size(crate::style::text_size::SECTION),
+            iced_text(dialog).size(crate::style::text_size::SECTION),
             row![
-                button(text("Cancel"))
+                button(iced_text("Cancel"))
                     .style(|theme, status| style::button::transparent(theme, status, false))
                     .on_press(on_cancel),
-                button(text(on_confirm_msg.unwrap_or("Confirm".to_string()))).on_press(on_confirm),
+                button(iced_text(on_confirm_msg.unwrap_or("Confirm".to_string())))
+                    .on_press(on_confirm),
             ]
             .spacing(8),
         ]
@@ -128,6 +192,28 @@ pub fn button_with_tooltip<'a, M: Clone + 'a>(
     }
 }
 
+/// Creates a tooltip button that dispatches on mouse-down.
+///
+/// Use this when the action must run before a parent widget handles the click.
+pub fn press_button_with_tooltip<'a, M: Clone + 'a>(
+    content: impl Into<Element<'a, M>>,
+    message: M,
+    tooltip_text: Option<&'a str>,
+    tooltip_pos: crate::TooltipPosition,
+    style_fn: impl Fn(&Theme, button::Status) -> button::Style + 'static,
+) -> Element<'a, M> {
+    let button = button(content).style(style_fn).on_press(message.clone());
+    let press_area =
+        iced::widget::mouse_area(container(space::horizontal()).width(Fill).height(Fill))
+            .on_press(message);
+
+    tooltip(
+        iced::widget::stack([button.into(), press_area.into()]),
+        tooltip_text,
+        tooltip_pos,
+    )
+}
+
 pub fn dragger_row<'a, Message>(
     content: Element<'a, Message>,
     is_enabled: bool,
@@ -152,7 +238,7 @@ where
 }
 
 pub fn labeled_slider<'a, T, Message: Clone + 'static>(
-    label: impl text::IntoFragment<'a>,
+    label: impl iced_text::IntoFragment<'a>,
     range: std::ops::RangeInclusive<T>,
     current: T,
     on_change: impl Fn(T) -> Message + 'a,
@@ -201,12 +287,131 @@ where
 
     iced::widget::stack![
         container(slider).style(modal_container),
-        row![text(label), space::horizontal(), text(to_string(&current))]
-            .padding([0, 10])
-            .height(Fill)
-            .align_y(Center),
+        row![
+            iced_text(label),
+            space::horizontal(),
+            iced_text(to_string(&current))
+        ]
+        .padding([0, 10])
+        .height(Fill)
+        .align_y(Center),
     ]
     .into()
+}
+
+pub fn theme_color_control<'a, Message>(
+    selected: ThemeColor,
+    theme_accents: ThemeAccents,
+    on_change: impl Fn(Option<ThemeAccent>) -> Message + Clone + 'a,
+) -> Element<'a, Message>
+where
+    Message: Clone + 'a + 'static,
+{
+    let color_at_shade = move |theme: &Theme, accent: Option<ThemeAccent>| {
+        let palette = theme.extended_palette();
+        resolve_theme_color(
+            ThemeColor::with_accent(selected.role, accent, selected.shade),
+            palette,
+            theme_accents.as_array(),
+        )
+    };
+
+    let default_color = color_swatch_button(
+        move |theme: &Theme| color_at_shade(theme, None),
+        selected.accent.is_none(),
+        on_change.clone()(None),
+    );
+    let color_choices =
+        std::iter::once(default_color).chain(ThemeAccent::ALL.into_iter().map(|accent| {
+            color_swatch_button(
+                move |theme: &Theme| color_at_shade(theme, Some(accent)),
+                selected.accent == Some(accent),
+                on_change.clone()(Some(accent)),
+            )
+        }));
+
+    row(color_choices).spacing(4).into()
+}
+
+pub fn resolve_theme_color(
+    color: ThemeColor,
+    palette: &iced::theme::palette::Extended,
+    generated_accents: &[Color; 6],
+) -> Color {
+    let base = color.accent.map_or_else(
+        || match color.role {
+            ThemeColorRole::Neutral => palette.background.base.text,
+            ThemeColorRole::Secondary => palette.secondary.strong.color,
+            ThemeColorRole::Primary => palette.primary.base.color,
+            ThemeColorRole::Success => palette.success.base.color,
+            ThemeColorRole::Danger => palette.danger.base.color,
+            ThemeColorRole::Warning => palette.warning.base.color,
+        },
+        |accent| generated_accents[accent.index()],
+    );
+    let background = palette.background.base.color;
+
+    match color.shade {
+        ThemeColorShade::Faint => mix_color(base, background, 0.3),
+        ThemeColorShade::Soft => mix_color(base, background, 0.65),
+        ThemeColorShade::Base => base,
+        ThemeColorShade::Strong => {
+            if palette.is_dark {
+                lighten(base, 0.1)
+            } else {
+                darken(base, 0.1)
+            }
+        }
+        ThemeColorShade::Vivid => {
+            if palette.is_dark {
+                lighten(base, 0.18)
+            } else {
+                darken(base, 0.18)
+            }
+        }
+    }
+}
+
+pub fn color_swatch_button<'a, Message, ColorResolver>(
+    resolve_color: ColorResolver,
+    selected: bool,
+    message: Message,
+) -> Element<'a, Message>
+where
+    Message: Clone + 'a + 'static,
+    ColorResolver: Fn(&Theme) -> Color + Copy + 'static,
+{
+    let swatch = container("")
+        .width(16)
+        .height(16)
+        .style(move |theme: &Theme| {
+            let palette = theme.extended_palette();
+            let color = resolve_color(theme);
+            iced::widget::container::Style {
+                background: Some(color.into()),
+                border: iced::Border {
+                    width: 2.0,
+                    color: palette.background.weak.color,
+                    radius: 3.0.into(),
+                },
+                shadow: if selected {
+                    iced::Shadow {
+                        color,
+                        offset: iced::Vector { x: 0.0, y: 0.0 },
+                        blur_radius: 2.0,
+                    }
+                } else {
+                    iced::Shadow::default()
+                },
+                ..Default::default()
+            }
+        });
+
+    button(swatch)
+        .style(|theme, status| style::button::transparent(theme, status, false))
+        .padding(2)
+        .on_press(message)
+        .into()
 }
 
 pub fn numeric_input_box<'a, F, Message: Clone + 'static>(
@@ -226,7 +431,7 @@ where
         .align_x(iced::Alignment::Center)
         .style(move |theme, status| style::validated_text_input(theme, status, is_input_valid));
 
-    row![text(label), text_input_widget]
+    row![iced_text(label), text_input_widget]
         .padding(padding::right(20).left(20))
         .spacing(4)
         .align_y(iced::Alignment::Center)
@@ -245,9 +450,9 @@ where
     let is_active = link_group.is_some();
 
     let icon = if let Some(group) = link_group {
-        text(group.to_string())
+        iced_text(group.to_string())
     } else {
-        text("-")
+        iced_text("-")
     };
 
     button(

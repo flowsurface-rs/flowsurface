@@ -1,5 +1,5 @@
-use super::{AxisInteraction, Message};
-use crate::widget::chart::heatmap::{scene::camera::Camera, ui::AXIS_TEXT_SIZE};
+use super::AxisInteraction;
+use crate::widget::chart::heatmap::{Message, scene::camera::Camera, ui::AXIS_TEXT_SIZE};
 use data::chart::ticks::y::{PriceAxis, TickValue};
 use exchange::unit::{MinTicksize, Price, PriceStep};
 use iced::{Rectangle, Renderer, Theme, widget::canvas};

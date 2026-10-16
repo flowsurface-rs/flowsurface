@@ -30,6 +30,31 @@ pub mod text_size {
     pub const EMPHASIS: f32 = BODY + 1.0;
 }
 
+pub mod text_color {
+    use iced::widget::text::Style;
+    use iced::{Color, Theme};
+
+    fn from_color(color: Color) -> Style {
+        Style { color: Some(color) }
+    }
+
+    pub fn title(theme: &Theme) -> Style {
+        from_color(theme.extended_palette().background.strong.text)
+    }
+
+    pub fn section(theme: &Theme) -> Style {
+        from_color(theme.extended_palette().background.base.text)
+    }
+
+    pub fn body(theme: &Theme) -> Style {
+        from_color(theme.extended_palette().background.weak.text)
+    }
+
+    pub fn muted(theme: &Theme) -> Style {
+        from_color(theme.extended_palette().background.weaker.text)
+    }
+}
+
 /// Icon glyph code points for the `icons` font (`assets/fonts/icons.ttf`).
 /// Values represent each glyph's `code` in `assets/fonts/fontello.json`.
 /// Enum variant names may differ from Fontello CSS names.
@@ -233,6 +258,39 @@ pub mod button {
         }
     }
 
+    pub fn magnet(theme: &Theme, status: Status, enabled: bool, active: bool) -> Style {
+        let palette = theme.extended_palette();
+        let enabled_color = palette.secondary.strong.color;
+
+        Style {
+            text_color: if enabled && !active {
+                enabled_color
+            } else {
+                palette.background.base.text
+            },
+            border: Border {
+                radius: 3.0.into(),
+                width: if enabled && !active { 1.0 } else { 0.0 },
+                color: enabled_color.scale_alpha(0.75),
+            },
+            background: match status {
+                Status::Active => {
+                    if active {
+                        Some(palette.background.weak.color.into())
+                    } else if enabled {
+                        Some(enabled_color.scale_alpha(0.14).into())
+                    } else {
+                        None
+                    }
+                }
+                Status::Pressed => Some(palette.background.weak.color.into()),
+                Status::Hovered => Some(palette.background.strong.color.into()),
+                Status::Disabled => Some(palette.background.strong.color.into()),
+            },
+            ..Default::default()
+        }
+    }
+
     pub fn modifier(theme: &Theme, status: Status, is_clicked: bool) -> Style {
         let palette = theme.extended_palette();
 
@@ -292,6 +350,48 @@ pub mod button {
                         Some(palette.background.base.color.into())
                     } else {
                         Some(palette.background.weakest.color.into())
+                    }
+                }
+                iced::widget::button::Status::Pressed => {
+                    Some(palette.background.weakest.color.into())
+                }
+                iced::widget::button::Status::Hovered => Some(palette.background.weak.color.into()),
+                iced::widget::button::Status::Disabled => {
+                    Some(palette.background.weakest.color.into())
+                }
+            },
+            ..Default::default()
+        }
+    }
+
+    pub fn indicator_row(theme: &Theme, status: Status, is_active: bool) -> Style {
+        let palette = theme.extended_palette();
+
+        iced::widget::button::Style {
+            text_color: {
+                if status == Status::Disabled {
+                    palette.background.strongest.color
+                } else if is_active {
+                    palette.background.strongest.text
+                } else {
+                    palette.background.base.text
+                }
+            },
+            border: iced::Border {
+                radius: if is_active { 4.0.into() } else { 2.0.into() },
+                width: if is_active { 2.0 } else { 1.0 },
+                color: if is_active {
+                    palette.background.strong.color
+                } else {
+                    palette.background.weak.color
+                },
+            },
+            background: match status {
+                iced::widget::button::Status::Active => {
+                    if is_active {
+                        Some(palette.background.weakest.color.into())
+                    } else {
+                        Some(palette.background.base.color.into())
                     }
                 }
                 iced::widget::button::Status::Pressed => {
@@ -572,21 +672,6 @@ pub fn modal_container(theme: &Theme) -> Style {
     }
 }
 
-pub fn colored_circle_container(theme: &Theme, color: iced::Color) -> Style {
-    let palette = theme.extended_palette();
-
-    Style {
-        background: Some(color.into()),
-        border: Border {
-            width: 1.0,
-            color: palette.background.weak.color,
-            radius: 16.0.into(),
-        },
-        snap: true,
-        ..Default::default()
-    }
-}
-
 pub fn chart_sidebar_container(theme: &Theme) -> Style {
     let palette = theme.extended_palette();
 
@@ -600,6 +685,26 @@ pub fn chart_sidebar_container(theme: &Theme) -> Style {
         },
         snap: true,
         ..Default::default()
+    }
+}
+
+pub fn chart_toolbar_container(theme: &Theme) -> Style {
+    let palette = theme.extended_palette();
+
+    Style {
+        text_color: Some(palette.background.base.text),
+        background: Some(palette.background.base.color.into()),
+        border: Border {
+            width: 1.0,
+            color: palette.background.strong.color,
+            radius: 4.0.into(),
+        },
+        shadow: Shadow {
+            offset: iced::Vector { x: 0.0, y: 0.0 },
+            blur_radius: 8.0,
+            color: Color::BLACK.scale_alpha(if palette.is_dark { 0.8 } else { 0.2 }),
+        },
+        snap: true,
     }
 }
 

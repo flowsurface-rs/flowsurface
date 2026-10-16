@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use crate::chart::Basis;
 use crate::chart::heatmap::HeatmapDataPoint;
-use crate::chart::kline::{ClusterKind, KlineDataPoint, KlineTrades, NPoc};
+use crate::chart::kline_data::{ClusterKind, KlineDataPoint, KlineTrades, NPoc};
 
 use exchange::unit::{Price, PriceStep, Qty};
 use exchange::{Kline, Timeframe, Trade, UnixMs, Volume};

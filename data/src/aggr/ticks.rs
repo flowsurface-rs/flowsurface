@@ -1,5 +1,5 @@
 use crate::aggr;
-use crate::chart::kline::{ClusterKind, KlineTrades, NPoc};
+use crate::chart::kline_data::{ClusterKind, KlineTrades, NPoc};
 use exchange::unit::Qty;
 use exchange::unit::price::{Price, PriceStep};
 use exchange::{Kline, Trade, Volume};
@@ -132,7 +132,7 @@ impl TickAggr {
         self.into()
     }
 
-    pub fn insert_trades(&mut self, buffer: &[Trade]) {
+    pub fn insert_trades(&mut self, buffer: &[Trade]) -> Option<usize> {
         let mut updated_indices = Vec::new();
 
         for trade in buffer {
@@ -156,13 +156,15 @@ impl TickAggr {
             }
         }
 
+        let first_updated = updated_indices.iter().copied().min();
+
         for idx in updated_indices {
             if idx < self.datapoints.len() {
                 self.datapoints[idx].calculate_poc();
             }
         }
 
-        self.update_poc_status();
+        first_updated
     }
 
     pub fn update_poc_status(&mut self) {

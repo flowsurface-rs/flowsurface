@@ -1,11 +1,98 @@
+use super::Regions;
 use super::composition::{PanelRole, PanelSpec};
-use super::{
-    KlinePanelKind, KlineSeriesLike, KlineWidget, PANEL_SPLITTER_HEIGHT, PANEL_SPLITTER_HIT_PX,
-};
-use crate::chart::ticks::AXIS_DRAG_EDGE_GUARD;
-use crate::widget::chart::Regions;
+use super::{KlineSeriesLike, KlineWidget, PANEL_SPLITTER_HEIGHT};
 use iced::advanced::Layout;
 use iced::{Point, Rectangle};
+
+/// Guard area on the edges of the axis
+/// to prevent conflicts with pane state interactions
+///
+/// (e.g. pane split dragging when trying to interact with labels)
+const AXIS_DRAG_EDGE_GUARD: f32 = 4.0;
+
+const PANEL_SPLITTER_HIT_PX: f32 = 8.0;
+
+pub(super) fn place_non_overlapping_labels(
+    desired_centers: &[f32],
+    min_y: f32,
+    max_y: f32,
+    label_height: f32,
+    gap: f32,
+) -> Vec<Option<f32>> {
+    if desired_centers.is_empty() {
+        return Vec::new();
+    }
+
+    let label_height = label_height.max(1.0);
+    let min_center = min_y + label_height * 0.5;
+    let max_center = (max_y - label_height * 0.5).max(min_center);
+    let spacing = (label_height + gap.max(0.0)).max(label_height);
+    let capacity = ((max_center - min_center) / spacing).floor() as usize + 1;
+    let visible_count = desired_centers.len().min(capacity.max(1));
+
+    let mut candidates: Vec<(usize, f32)> = desired_centers.iter().copied().enumerate().collect();
+    candidates.sort_by(|(_, left), (_, right)| left.total_cmp(right));
+
+    let selected = if visible_count == candidates.len() {
+        candidates
+    } else {
+        (0..visible_count)
+            .map(|slot| {
+                let source_index = if visible_count == 1 {
+                    candidates.len() / 2
+                } else {
+                    slot * (candidates.len() - 1) / (visible_count - 1)
+                };
+                candidates[source_index]
+            })
+            .collect()
+    };
+
+    let mut centers: Vec<f32> = selected
+        .iter()
+        .map(|(_, center)| center.clamp(min_center, max_center))
+        .collect();
+
+    if centers.len() > 1 {
+        centers[0] = centers[0].max(min_center);
+
+        for index in 1..centers.len() {
+            centers[index] = centers[index].max(centers[index - 1] + spacing);
+        }
+
+        if centers[centers.len() - 1] > max_center {
+            let last = centers.len() - 1;
+            centers[last] = max_center;
+
+            for index in (0..last).rev() {
+                centers[index] = centers[index].min(centers[index + 1] - spacing);
+            }
+        }
+    }
+
+    let mut placements = vec![None; desired_centers.len()];
+    for ((source_index, _), center) in selected.into_iter().zip(centers) {
+        placements[source_index] = Some(center);
+    }
+
+    placements
+}
+
+pub(super) fn label_bounds_overlap(
+    first_center: f32,
+    first_height: f32,
+    second_center: f32,
+    second_height: f32,
+    gap: f32,
+) -> bool {
+    (first_center - second_center).abs() < (first_height + second_height) * 0.5 + gap.max(0.0)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum KlinePanelKind {
+    PrimaryChart,
+    Indicator,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum LayoutHitZone {
@@ -17,7 +104,7 @@ pub(super) enum LayoutHitZone {
     Outside,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct PanelLayoutNode {
     pub(super) kind: KlinePanelKind,
     pub(super) plot: Rectangle,
@@ -35,7 +122,7 @@ impl PanelLayoutNode {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) struct PanelLayoutTree {
     pub(super) regions: Regions,
     pub(super) panels: Vec<PanelLayoutNode>,
@@ -109,6 +196,20 @@ impl PanelLayoutTree {
 
     pub(super) fn panel(&self, index: usize) -> Option<&PanelLayoutNode> {
         self.panels.get(index)
+    }
+
+    pub(super) fn primary_plot_width(&self) -> Option<f32> {
+        let primary_panel = self
+            .panels
+            .iter()
+            .position(|panel| panel.kind == KlinePanelKind::PrimaryChart)?;
+        let primary_plot_width = self.panel(primary_panel)?.plot.width.max(1.0);
+
+        Some(
+            (self.regions.x_axis.width - self.regions.y_axis.width)
+                .max(1.0)
+                .min(primary_plot_width),
+        )
     }
 
     pub(super) fn contains(rect: Rectangle, p: Point) -> bool {
