@@ -30,6 +30,12 @@ impl Default for Config {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct SettingsSnapshot {
+    pub config: Option<Config>,
+    pub studies: Vec<HeatmapStudy>,
+}
+
 #[derive(Default)]
 pub struct HeatmapDataPoint {
     pub grouped_trades: Box<[GroupedTrade]>,
@@ -593,13 +599,6 @@ impl CoalescingRun {
             is_bid: self.is_bid,
         }
     }
-}
-
-#[derive(Default)]
-pub struct QtyScale {
-    pub max_trade_qty: Qty,
-    pub max_aggr_volume: Qty,
-    pub max_depth_qty: Qty,
 }
 
 #[derive(Debug, Clone)]

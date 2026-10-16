@@ -44,7 +44,7 @@ pub fn ladder_cfg_view<'a>(cfg: ladder::Config) -> InspectorContent<'a, Message>
                     tooltip(
                         button("i").style(style::button::info),
                         Some("Highlights consecutive best-price moves and fades when momentum stalls.\nCalculated using raw ungrouped data."),
-                        TooltipPosition::Top,
+                        TooltipPosition::Left,
                     )
                 ]
                 .align_y(Alignment::Center)
@@ -75,8 +75,8 @@ pub fn ladder_cfg_view<'a>(cfg: ladder::Config) -> InspectorContent<'a, Message>
     );
 
     let mut content = InspectorContent::new(vec![
-        InspectorSection::titled("Display Options", display_options),
-        InspectorSection::titled("History", retention_slider),
+        InspectorSection::titled("Display Options", display_options).with_modal_container(),
+        InspectorSection::titled("History", retention_slider).with_modal_container(),
     ]);
     content.set_footer(row![
         space::horizontal(),

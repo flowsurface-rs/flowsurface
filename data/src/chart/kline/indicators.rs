@@ -11,14 +11,28 @@ use super::composition::{
 };
 use crate::chart::Basis;
 use crate::config::theme::{ThemeColor, ThemeColorRole, ThemeColorShade};
-use exchange::adapter::MarketKind;
-use exchange::{TickerInfo, Timeframe, UnixMs};
+use exchange::{TickerInfo, UnixMs};
 use indicator_engine::IndicatorFrame;
 use indicator_engine::PaneTarget;
 pub use indicator_engine::{BaseSeriesSource, IndicatorAuthor};
 use std::fmt::{Display, Formatter};
 use std::ops::Range;
 use std::sync::Arc;
+
+pub use core::input::{IndicatorInputRequirement, IndicatorInputSource, OpenInterestSeries};
+pub use core::output::{IndicatorOutputRef, OutputChannelSpec, OutputValue, OutputValueType};
+pub use core::runtime::IndicatorHost;
+
+pub use loader::{
+    IndicatorCatalogPaths, initialize_indicator_catalog, initialize_indicator_catalog_with_paths,
+};
+pub(crate) use registry::install_catalog_with_bundled_diagnostics;
+pub use registry::{
+    CatalogInstallError, IndicatorCatalog, IndicatorConfig, IndicatorConfigError, IndicatorId,
+    IndicatorIdError, IndicatorRegistration, all_indicators, availability, catalog,
+    declared_input_requirements, display_name, indicator_definition, panel_recipe,
+    requires_trade_data, table_columns, unsupported_reason,
+};
 
 pub(crate) fn region_intersects_source_range(
     region: &indicator_engine::RegionOutput,
@@ -30,14 +44,11 @@ pub(crate) fn region_intersects_source_range(
     if region.extend_right {
         return region.left_index < source_range.end;
     }
+
     let left = region.left_index.min(region.right_index);
     let right = region.left_index.max(region.right_index);
     left < source_range.end && right >= source_range.start
 }
-
-pub use core::input::{IndicatorInputRequirement, IndicatorInputSource, OpenInterestSeries};
-pub use core::output::{IndicatorOutputRef, OutputChannelSpec, OutputValue, OutputValueType};
-pub use core::runtime::IndicatorHost;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct IndicatorInputAvailability {
@@ -167,22 +178,6 @@ impl IndicatorInputCoverage {
             .is_some_and(|availability| availability.contains(source))
     }
 }
-pub use loader::{
-    IndicatorCatalogPaths, initialize_indicator_catalog, initialize_indicator_catalog_with_paths,
-};
-pub(crate) use registry::install_catalog_with_bundled_diagnostics;
-pub use registry::{
-    CatalogInstallError, IndicatorCatalog, IndicatorConfig, IndicatorConfigError, IndicatorId,
-    IndicatorIdError, IndicatorRegistration, all_indicators, availability, catalog,
-    declared_input_requirements, display_name, indicator_definition, is_supported_for_market,
-    panel_recipe, requires_trade_data, table_columns, unsupported_reason,
-};
-
-/// Shared Open Interest capability used by both indicator availability and
-/// the connector fetch planner.
-pub fn supports_open_interest(ticker_info: TickerInfo, timeframe: Timeframe) -> bool {
-    super::feed_capabilities::supports_open_interest(ticker_info, timeframe)
-}
 
 /// Declarative metadata shared by startup-loaded indicator sources.
 ///
@@ -220,9 +215,7 @@ pub struct IndicatorDefinition {
     pub segment_specs: Vec<IndicatorSegmentSpec>,
     pub overlay_channels: Vec<IndicatorOverlayChannelSpec>,
     pub fill_specs: Vec<IndicatorFillSpec>,
-    pub supported_markets: Vec<MarketKind>,
     pub panel_recipe: IndicatorPanelRecipe,
-    pub availability: fn(AvailabilityContext) -> IndicatorAvailability,
 }
 
 /// One output channel bound to a layer in an indicator's default view.
@@ -297,9 +290,7 @@ impl IndicatorDefinition {
             segment_specs: Vec::new(),
             overlay_channels: Vec::new(),
             fill_specs: Vec::new(),
-            supported_markets: Vec::new(),
             panel_recipe,
-            availability: default_availability,
         }
     }
 
@@ -366,24 +357,11 @@ impl IndicatorDefinition {
         Self { ..self }
     }
 
-    pub fn with_supported_markets(mut self, supported_markets: impl Into<Vec<MarketKind>>) -> Self {
-        self.supported_markets = supported_markets.into();
-        Self { ..self }
-    }
-
-    pub fn with_availability(
-        mut self,
-        availability: fn(AvailabilityContext) -> IndicatorAvailability,
-    ) -> Self {
-        self.availability = availability;
-        Self { ..self }
-    }
-
     pub fn output(&self, id: &str) -> Option<&OutputChannelSpec> {
         self.outputs.iter().find(|output| output.id == id)
     }
 
-    pub fn numeric_plot_output(&self, id: &str) -> Option<&OutputChannelSpec> {
+    fn numeric_plot_output(&self, id: &str) -> Option<&OutputChannelSpec> {
         let output = self.output(id)?;
         (output.value_type == OutputValueType::Number
             && self
@@ -431,10 +409,6 @@ impl IndicatorDefinition {
         self.inputs
             .iter()
             .any(|requirement| requirement.source == source)
-    }
-
-    pub fn availability(&self, context: AvailabilityContext) -> IndicatorAvailability {
-        (self.availability)(context)
     }
 
     pub fn validate(&self) -> Result<(), IndicatorDefinitionError> {
@@ -514,15 +488,13 @@ impl IndicatorDefinition {
         for style_slot in &self.region_style_slots {
             validate_style_slot(style_slot)?;
         }
-        let validate_source = |source: &IndicatorOverlaySource| match source {
-            IndicatorOverlaySource::Channel(channel) => self
-                .output(channel)
+        let validate_source = |channel: &str| {
+            self.output(channel)
                 .map(|_| ())
-                .ok_or(IndicatorDefinitionError::UnknownViewOutput),
+                .ok_or(IndicatorDefinitionError::UnknownViewOutput)
         };
-        let validate_numeric_source = |source: &IndicatorOverlaySource| {
-            validate_source(source)?;
-            let IndicatorOverlaySource::Channel(channel) = source;
+        let validate_numeric_source = |channel: &str| {
+            validate_source(channel)?;
             if self
                 .output(channel)
                 .is_some_and(|output| output.value_type == OutputValueType::Number)
@@ -723,13 +695,9 @@ impl IndicatorDefinition {
                             validate_style_slot(negative_slot)?;
                         }
                     }
-                    let output = match &column.value {
-                        TableColumnValue::Channel(channel) => {
-                            validate_source(&IndicatorOverlaySource::Channel(channel.clone()))?;
-                            self.output(channel)
-                        }
-                    }
-                    .ok_or(IndicatorDefinitionError::UnknownViewOutput)?;
+                    let output = self
+                        .output(&column.value)
+                        .ok_or(IndicatorDefinitionError::UnknownViewOutput)?;
                     let expected_type = match column.format {
                         TableColumnFormat::Boolean => OutputValueType::Boolean,
                         TableColumnFormat::Quantity
@@ -758,21 +726,19 @@ impl IndicatorDefinition {
     }
 }
 
-fn default_availability(_context: AvailabilityContext) -> IndicatorAvailability {
-    IndicatorAvailability::Available
-}
-
 #[derive(Debug, Clone, Copy, Default)]
 pub struct IndicatorHistoryRequirement {
     history_start: Option<UnixMs>,
     history_bars: u64,
+    warmup_bars: u64,
 }
 
 impl IndicatorHistoryRequirement {
-    pub fn new(history_start: Option<UnixMs>, history_bars: u64) -> Self {
+    pub fn new(history_start: Option<UnixMs>, history_bars: u64, warmup_bars: u64) -> Self {
         Self {
             history_start,
             history_bars,
+            warmup_bars,
         }
     }
 
@@ -784,6 +750,10 @@ impl IndicatorHistoryRequirement {
         self.history_bars
     }
 
+    pub fn warmup_bars(self) -> u64 {
+        self.warmup_bars
+    }
+
     pub(crate) fn merge(self, other: Self) -> Self {
         Self {
             history_start: match (self.history_start, other.history_start) {
@@ -792,6 +762,7 @@ impl IndicatorHistoryRequirement {
                 (None, None) => None,
             },
             history_bars: self.history_bars.max(other.history_bars),
+            warmup_bars: self.warmup_bars.max(other.warmup_bars),
         }
     }
 }
@@ -833,14 +804,9 @@ pub struct IndicatorSegmentSpec {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum IndicatorOverlaySource {
-    Channel(String),
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct IndicatorOverlayChannelSpec {
     pub label: String,
-    pub source: IndicatorOverlaySource,
+    pub source: String,
     pub line_width: f32,
     pub color_role: ThemeColorRole,
     pub color_slot: String,
@@ -865,7 +831,7 @@ impl IndicatorReadoutScope {
 #[derive(Debug, Clone, PartialEq)]
 pub struct IndicatorReadoutSpec {
     pub label: String,
-    pub source: IndicatorOverlaySource,
+    pub source: String,
     pub color_role: ThemeColorRole,
     pub color_slot: String,
     pub scope: IndicatorReadoutScope,
@@ -879,8 +845,8 @@ pub enum IndicatorFillGeometry {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct IndicatorFillSpec {
-    pub upper: IndicatorOverlaySource,
-    pub lower: IndicatorOverlaySource,
+    pub upper: String,
+    pub lower: String,
     pub upper_offset_bars: i32,
     pub lower_offset_bars: i32,
     pub style_by: Option<String>,
@@ -889,11 +855,6 @@ pub struct IndicatorFillSpec {
     pub true_color_slot: Option<String>,
     pub false_color_slot: Option<String>,
     pub opacity: f32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TableColumnValue {
-    Channel(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -918,7 +879,7 @@ pub enum TableColumnColor {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableColumnSpec {
     pub label: String,
-    pub value: TableColumnValue,
+    pub value: String,
     pub format: TableColumnFormat,
     pub color: TableColumnColor,
 }
@@ -958,7 +919,6 @@ pub enum IndicatorUnsupportedReason {
     ResolutionNotSupported,
     InsufficientData { available: usize, required: usize },
     MissingRequiredInput { source: IndicatorInputSource },
-    MissingDirectionalVolume,
 }
 
 impl IndicatorUnsupportedReason {
@@ -986,9 +946,6 @@ impl IndicatorUnsupportedReason {
                 IndicatorInputSource::Trades => "Enable trade data to use this indicator",
                 IndicatorInputSource::OpenInterest => "Requires open-interest data",
             },
-            IndicatorUnsupportedReason::MissingDirectionalVolume => {
-                "Requires directional volume from candles or trade data"
-            }
         }
     }
 }

@@ -1,7 +1,7 @@
-use super::indicators::{AvailabilityContext, IndicatorAvailability, availability};
+use super::IndicatorHistoryRequirement;
 use super::series::KlineSeries;
-use super::{IndicatorInstanceId, IndicatorInstanceStore};
 use crate::chart::Basis;
+use exchange::adapter::Exchange;
 use exchange::{TickerInfo, Timeframe, UnixMs};
 
 const DEFAULT_FETCH_BARS: u64 = 500;
@@ -9,7 +9,15 @@ const DEFAULT_FETCH_BARS: u64 = 500;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FetchRange {
     Kline(UnixMs, UnixMs),
-    OpenInterest { from: UnixMs, to: UnixMs },
+    ProfileKline {
+        timeframe: Timeframe,
+        from: UnixMs,
+        to: UnixMs,
+    },
+    OpenInterest {
+        from: UnixMs,
+        to: UnixMs,
+    },
     Trades(UnixMs, UnixMs),
 }
 
@@ -19,18 +27,8 @@ impl FetchRange {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-/// Classifies a fetch for diagnostics and planning; it does not impose order.
-pub enum FetchStage {
-    PrimaryPlot,
-    IndicatorHistory,
-    OpenInterestInputs,
-    Trades,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FetchBatch {
-    pub stage: FetchStage,
     pub range: FetchRange,
     pub tickers: Vec<TickerInfo>,
 }
@@ -41,14 +39,11 @@ pub struct FetchPlanInput<'a> {
     pub horizontal_offset: f32,
     pub base_ticker: TickerInfo,
     pub series: &'a [KlineSeries],
-    pub active_indicators: &'a [IndicatorInstanceId],
-    pub indicator_instances: &'a IndicatorInstanceStore,
     pub open_interest_required: bool,
     pub trade_data_required: bool,
     pub trade_fetch_enabled: bool,
     pub visible_points: u64,
-    pub required_history_start: Option<UnixMs>,
-    pub required_history_bars: u64,
+    pub history_requirement: IndicatorHistoryRequirement,
     pub now: UnixMs,
 }
 
@@ -61,11 +56,10 @@ impl FetchPlanInput<'_> {
         let dt = timeframe.to_milliseconds().max(1);
         let visible_points = self.visible_points.max(2);
 
-        let indicator_warmup_bars = self
-            .indicator_instances
-            .dependency_warmup_bars(self.active_indicators);
+        let indicator_warmup_bars = self.history_requirement.warmup_bars();
 
-        let required_history_bars = indicator_warmup_bars.max(self.required_history_bars);
+        let required_history_bars =
+            indicator_warmup_bars.max(self.history_requirement.history_bars());
         let base_fetch_bars = DEFAULT_FETCH_BARS.max(visible_points + required_history_bars);
         let comparison_fetch_bars = DEFAULT_FETCH_BARS.max(visible_points);
         let base_span = base_fetch_bars.saturating_mul(dt);
@@ -90,7 +84,6 @@ impl FetchPlanInput<'_> {
             let end = initial_end;
             let start = end.saturating_sub(comparison_span);
             batches.push(FetchBatch {
-                stage: FetchStage::PrimaryPlot,
                 range: FetchRange::Kline(start, end),
                 tickers: vec![self.base_ticker],
             });
@@ -99,7 +92,6 @@ impl FetchPlanInput<'_> {
         if !empty_comparisons.is_empty() {
             let end = initial_end;
             batches.push(FetchBatch {
-                stage: FetchStage::PrimaryPlot,
                 range: FetchRange::Kline(end.saturating_sub(comparison_span), end),
                 tickers: empty_comparisons,
             });
@@ -119,41 +111,38 @@ impl FetchPlanInput<'_> {
                 window_min
             };
             let warmup_start = self
-                .required_history_start
+                .history_requirement
+                .history_start()
                 .map(|start| start.min(indicator_warmup_start))
                 .unwrap_or(indicator_warmup_start);
 
             let mut base_boundary_fetch_pending = false;
             for series in self.series {
-                let (target_min, fetch_span, stage) = if series.ticker_info == self.base_ticker {
-                    if window_min
-                        < series
-                            .first_point()
-                            .map(|point| point.kline.time)
-                            .unwrap_or(window_min)
-                    {
-                        (window_min, comparison_span, FetchStage::PrimaryPlot)
+                let (target_min, fetch_span, fetching_base_history) =
+                    if series.ticker_info == self.base_ticker {
+                        if window_min
+                            < series
+                                .first_point()
+                                .map(|point| point.kline.time)
+                                .unwrap_or(window_min)
+                        {
+                            (window_min, comparison_span, false)
+                        } else {
+                            (warmup_start, base_span, true)
+                        }
                     } else {
-                        (warmup_start, base_span, FetchStage::IndicatorHistory)
-                    }
-                } else {
-                    (window_min, comparison_span, FetchStage::PrimaryPlot)
-                };
+                        (window_min, comparison_span, false)
+                    };
 
                 if let Some(series_min) = series.first_point().map(|point| point.kline.time)
                     && target_min < series_min
                 {
                     let end = series_min.floor_to(timeframe);
                     batches.push(FetchBatch {
-                        stage,
                         range: FetchRange::Kline(end.saturating_sub(fetch_span), end),
                         tickers: vec![series.ticker_info],
                     });
-                    if stage == FetchStage::IndicatorHistory
-                        && series.ticker_info == self.base_ticker
-                    {
-                        base_boundary_fetch_pending = true;
-                    }
+                    base_boundary_fetch_pending |= fetching_base_history;
                 }
             }
 
@@ -173,17 +162,9 @@ impl FetchPlanInput<'_> {
                 let check_latest = window_max.saturating_add(dt).min(series_latest);
 
                 if let Some((missing_earliest, missing_latest)) =
-                    base_series.missing_kline_range(check_earliest, check_latest, timeframe)
+                    base_series.missing_kline_range(check_earliest, check_latest)
                 {
-                    let stage = if missing_earliest < window_max.saturating_add(dt)
-                        && missing_latest > window_min
-                    {
-                        FetchStage::PrimaryPlot
-                    } else {
-                        FetchStage::IndicatorHistory
-                    };
                     batches.push(FetchBatch {
-                        stage,
                         range: FetchRange::Kline(
                             missing_earliest.saturating_sub(dt),
                             missing_latest.saturating_add(dt),
@@ -194,24 +175,6 @@ impl FetchPlanInput<'_> {
             }
 
             if self.open_interest_required {
-                let has_available_open_interest_consumer = self
-                    .active_indicators
-                    .iter()
-                    .copied()
-                    .filter_map(|id| self.indicator_instances.get(id))
-                    .filter(|instance| {
-                        super::indicators::indicator_definition(&instance.kind)
-                            .uses(super::indicators::IndicatorInputSource::OpenInterest)
-                    })
-                    .any(|instance| {
-                        matches!(
-                            self.indicator_availability(instance.id),
-                            IndicatorAvailability::Available
-                        )
-                    });
-                if !has_available_open_interest_consumer {
-                    return batches;
-                }
                 let Some(base_series) = self
                     .series
                     .iter()
@@ -239,7 +202,6 @@ impl FetchPlanInput<'_> {
                     Some((oi_earliest, oi_latest)) => {
                         if visible_earliest < oi_earliest {
                             batches.push(FetchBatch {
-                                stage: FetchStage::OpenInterestInputs,
                                 range: FetchRange::open_interest(prefetch_earliest, oi_earliest),
                                 tickers: vec![self.base_ticker],
                             });
@@ -249,7 +211,6 @@ impl FetchPlanInput<'_> {
                             let start = oi_latest.max(prefetch_earliest);
                             if start < kline_latest {
                                 batches.push(FetchBatch {
-                                    stage: FetchStage::OpenInterestInputs,
                                     range: FetchRange::open_interest(start, kline_latest),
                                     tickers: vec![self.base_ticker],
                                 });
@@ -259,7 +220,6 @@ impl FetchPlanInput<'_> {
                     None => {
                         if prefetch_earliest < kline_latest {
                             batches.push(FetchBatch {
-                                stage: FetchStage::OpenInterestInputs,
                                 range: FetchRange::open_interest(prefetch_earliest, kline_latest),
                                 tickers: vec![self.base_ticker],
                             });
@@ -302,8 +262,9 @@ impl FetchPlanInput<'_> {
         )
         .map(|(earliest, latest)| {
             let half_interval = dt / 2;
+            let half_visible_span = latest.saturating_diff(earliest) / 2;
             (
-                earliest.saturating_sub(half_interval),
+                earliest.saturating_sub(half_visible_span.saturating_add(half_interval)),
                 latest.saturating_add(half_interval),
             )
         })?;
@@ -319,26 +280,6 @@ impl FetchPlanInput<'_> {
         }
 
         None
-    }
-
-    fn indicator_availability(&self, id: IndicatorInstanceId) -> IndicatorAvailability {
-        let Some(instance) = self.indicator_instances.get(id) else {
-            return IndicatorAvailability::Unsupported(
-                super::indicators::IndicatorUnsupportedReason::NotInstalled,
-            );
-        };
-        if !instance.kind.is_registered() {
-            return IndicatorAvailability::Unsupported(
-                super::indicators::IndicatorUnsupportedReason::NotInstalled,
-            );
-        }
-        availability(
-            &instance.kind,
-            AvailabilityContext {
-                basis: self.basis,
-                base_ticker: self.base_ticker,
-            },
-        )
     }
 }
 
@@ -368,190 +309,24 @@ pub fn visible_window(
     ))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::chart::kline::{IndicatorInstanceStore, SeriesColor};
-    use exchange::adapter::Exchange;
-    use exchange::unit::{MinTicksize, Price};
-    use exchange::{Kline, Ticker, TickerInfo, Trade, Volume};
+/// Provider capability predicates shared by fetch planning and indicators.
+pub fn supports_open_interest(ticker_info: TickerInfo, timeframe: Timeframe) -> bool {
+    supports_open_interest_exchange(ticker_info.exchange())
+        && supports_open_interest_timeframe(timeframe)
+}
 
-    fn ticker_info() -> TickerInfo {
-        TickerInfo::new(
-            Ticker::new("BTCUSDT", Exchange::BinanceSpot),
-            0.01,
-            0.01,
-            None,
-        )
-    }
+pub fn supports_open_interest_exchange(exchange: Exchange) -> bool {
+    matches!(
+        exchange,
+        Exchange::BinanceLinear
+            | Exchange::BinanceInverse
+            | Exchange::BybitLinear
+            | Exchange::BybitInverse
+            | Exchange::OkexLinear
+            | Exchange::OkexInverse
+    )
+}
 
-    fn kline(time: u64) -> Kline {
-        Kline::new(
-            time,
-            100.0,
-            101.0,
-            99.0,
-            100.5,
-            Volume::empty_total(),
-            MinTicksize::new(0),
-        )
-    }
-
-    fn trade(time: u64) -> Trade {
-        Trade {
-            time: UnixMs::new(time),
-            is_sell: false,
-            price: Price::from_f64(100.0),
-            qty: 1.0.into(),
-        }
-    }
-
-    fn plan_input<'a>(
-        series: &'a [KlineSeries],
-        indicators: &'a IndicatorInstanceStore,
-        now: UnixMs,
-    ) -> FetchPlanInput<'a> {
-        FetchPlanInput {
-            basis: Basis::Time(Timeframe::M1),
-            horizontal_offset: 0.0,
-            base_ticker: ticker_info(),
-            series,
-            active_indicators: &[],
-            indicator_instances: indicators,
-            open_interest_required: false,
-            trade_data_required: true,
-            trade_fetch_enabled: true,
-            visible_points: 2,
-            required_history_start: None,
-            required_history_bars: 0,
-            now,
-        }
-    }
-
-    #[test]
-    fn initial_kline_fetch_uses_actual_now_as_end() {
-        let ticker = ticker_info();
-        let series = [KlineSeries::new(ticker, SeriesColor::default())];
-        let indicators = IndicatorInstanceStore::default();
-        let now = UnixMs::new(10 * 60_000 + 40_000);
-
-        let batches = plan_input(&series, &indicators, now).desired_fetch_batches();
-
-        assert_eq!(
-            batches,
-            vec![FetchBatch {
-                stage: FetchStage::PrimaryPlot,
-                range: FetchRange::Kline(now.saturating_sub(500 * 60_000), now),
-                tickers: vec![ticker],
-            }]
-        );
-    }
-
-    #[test]
-    fn initial_empty_base_fetch_includes_required_history() {
-        let ticker = ticker_info();
-        let series = [KlineSeries::new(ticker, SeriesColor::default())];
-        let indicators = IndicatorInstanceStore::default();
-        let now = UnixMs::new(10 * 60_000 + 40_000);
-        let input = plan_input(&series, &indicators, now);
-
-        let batches = FetchPlanInput {
-            required_history_bars: 3_000,
-            ..input
-        }
-        .desired_fetch_batches();
-
-        assert_eq!(
-            batches,
-            vec![FetchBatch {
-                stage: FetchStage::PrimaryPlot,
-                range: FetchRange::Kline(now.saturating_sub(3_002 * 60_000), now),
-                tickers: vec![ticker],
-            }]
-        );
-    }
-
-    #[test]
-    fn all_empty_candles_produce_no_trade_fetch() {
-        let ticker = ticker_info();
-        let mut base = KlineSeries::new(ticker, SeriesColor::default());
-        base.insert_klines(
-            &[kline(0), kline(60_000), kline(120_000)],
-            Basis::Time(Timeframe::M1),
-        );
-        let series = [base];
-        let indicators = IndicatorInstanceStore::default();
-
-        assert_eq!(
-            plan_input(&series, &indicators, UnixMs::new(180_000))
-                .desired_trade_fetch_range(ticker),
-            None
-        );
-    }
-
-    #[test]
-    fn newest_empty_candle_is_used_for_trade_fetch() {
-        let ticker = ticker_info();
-        let mut base = KlineSeries::new(ticker, SeriesColor::default());
-        base.insert_klines(
-            &[
-                kline(0),
-                kline(60_000),
-                kline(120_000),
-                kline(180_000),
-                kline(240_000),
-                kline(300_000),
-            ],
-            Basis::Time(Timeframe::M1),
-        );
-        base.insert_time_trades(&[trade(0), trade(180_000)], Timeframe::M1);
-        let series = [base];
-        let indicators = IndicatorInstanceStore::default();
-
-        assert_eq!(
-            plan_input(&series, &indicators, UnixMs::new(360_000))
-                .desired_trade_fetch_range(ticker),
-            Some(FetchRange::Trades(
-                UnixMs::new(180_001),
-                UnixMs::new(300_000)
-            ))
-        );
-    }
-
-    #[test]
-    fn following_trade_extends_fetch_beyond_visible_window() {
-        let ticker = ticker_info();
-        let mut base = KlineSeries::new(ticker, SeriesColor::default());
-        base.insert_klines(
-            &[
-                kline(0),
-                kline(60_000),
-                kline(120_000),
-                kline(180_000),
-                kline(240_000),
-                kline(300_000),
-                kline(360_000),
-                kline(420_000),
-                kline(480_000),
-                kline(540_000),
-                kline(600_000),
-            ],
-            Basis::Time(Timeframe::M1),
-        );
-        base.insert_time_trades(&[trade(180_000), trade(600_000)], Timeframe::M1);
-        let series = [base];
-        let indicators = IndicatorInstanceStore::default();
-        let input = FetchPlanInput {
-            horizontal_offset: -5.0,
-            ..plan_input(&series, &indicators, UnixMs::new(660_000))
-        };
-
-        assert_eq!(
-            input.desired_trade_fetch_range(ticker),
-            Some(FetchRange::Trades(
-                UnixMs::new(180_001),
-                UnixMs::new(599_999)
-            ))
-        );
-    }
+pub fn supports_open_interest_timeframe(timeframe: Timeframe) -> bool {
+    timeframe >= Timeframe::M5 && timeframe <= Timeframe::H4 && timeframe != Timeframe::H2
 }

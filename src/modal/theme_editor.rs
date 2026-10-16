@@ -67,6 +67,11 @@ impl ThemeEditor {
         }
     }
 
+    pub fn reset_input(&mut self) {
+        self.hex_input = None;
+        self.editing = None;
+    }
+
     fn focused_color(&self, theme: &iced_core::Theme) -> iced_core::Color {
         let palette = theme.palette();
         match self.component {

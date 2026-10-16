@@ -69,7 +69,6 @@ pub struct HeatmapShader {
     qty_scale: f32,
     rebuild_policy: view::RebuildPolicy,
     pub studies: Vec<HeatmapStudy>,
-    pub study_configurator: study::Configurator<HeatmapStudy>,
 }
 
 impl HeatmapShader {
@@ -116,7 +115,6 @@ impl HeatmapShader {
             anchor: view::Anchor::default(),
             config: config.unwrap_or_default(),
             studies,
-            study_configurator: study::Configurator::new(),
         }
     }
 
@@ -462,16 +460,12 @@ impl HeatmapShader {
         self.config
     }
 
-    pub fn study_configurator(&self) -> &study::Configurator<HeatmapStudy> {
-        &self.study_configurator
-    }
-
     pub fn update_study_configurator(&mut self, message: study::Message<HeatmapStudy>) {
         let studies = &mut self.studies;
         let mut studies_changed = false;
 
-        match self.study_configurator.update(message) {
-            Some(study::Action::ToggleStudy(study, is_selected)) => {
+        match message {
+            study::Message::StudyToggled(study, is_selected) => {
                 if is_selected {
                     let already_exists = studies.iter().any(|s| s.is_same_type(&study));
                     if !already_exists {
@@ -484,13 +478,12 @@ impl HeatmapShader {
                     studies_changed = studies.len() != before;
                 }
             }
-            Some(study::Action::ConfigureStudy(study)) => {
+            study::Message::StudyValueChanged(study) => {
                 if let Some(existing_study) = studies.iter_mut().find(|s| s.is_same_type(&study)) {
                     *existing_study = study;
                     studies_changed = true;
                 }
             }
-            None => {}
         }
 
         if !studies_changed {

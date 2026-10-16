@@ -1,65 +1,87 @@
-use exchange::Ticker;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::collections::{BTreeMap, BTreeSet};
-
-use crate::chart::Basis;
-use crate::chart::kline_data::{ClusterKind, ClusterScaling};
-use crate::config::theme::ThemeColor;
-use crate::config::theme::ThemeColorRole;
-use crate::config::theme::ThemeColorShade;
-
-use composition::{
-    LayerSource as DomainLayerSource, LayerSpec, PanelSpec,
-    PanelValuePrecision as DomainPanelValuePrecision,
-};
-
-pub use crate::config::theme::ThemeAccent;
-
+pub mod bar;
 pub mod chart_data;
 pub mod composition;
 pub mod drawing;
-pub mod feed_capabilities;
 pub mod fetch_plan;
-pub mod indicator_layout;
+pub mod footprint;
 pub mod indicators;
+pub mod poc;
 pub mod series;
 pub mod studies;
 pub mod viewport;
 
-pub use series::{KlineIndexChange, KlineSeriesPoint, KlineSeriesPoints, KlineUpdate, SeriesColor};
+use self::footprint::{ClusterKind, ClusterScaling};
+use crate::chart::Basis;
+pub use crate::config::theme::ThemeAccent;
+use crate::config::theme::ThemeColor;
+use crate::config::theme::ThemeColorRole;
+use crate::config::theme::ThemeColorShade;
 
-pub use chart_data::{
-    HistoricalOpenInterestUpdate, KlineData, KlineDataChange, LiveIndicatorUpdate,
+pub use chart_data::{HistoricalInputUpdate, KlineData, LiveIndicatorUpdate};
+use composition::{
+    LayerSource as DomainLayerSource, LayerSpec, PanelSpec,
+    PanelValuePrecision as DomainPanelValuePrecision,
 };
-pub use fetch_plan::{FetchBatch, FetchPlanInput, FetchRange, FetchStage, visible_window};
-pub use indicator_layout::IndicatorLayout;
+pub use fetch_plan::{FetchBatch, FetchPlanInput, FetchRange, visible_window};
 pub use indicators::{
     BaseSeriesSource, CatalogInstallError, IndicatorAuthor, IndicatorCatalog, IndicatorColorSpec,
     IndicatorConfigError, IndicatorDefinition, IndicatorDefinitionError, IndicatorFillGeometry,
     IndicatorFillSpec, IndicatorHistoryRequirement, IndicatorHost, IndicatorInputAvailability,
     IndicatorInputCoverage, IndicatorInputCoverageState, IndicatorInputRequirement,
     IndicatorInputSource, IndicatorMarkSpec, IndicatorOutputLayerSpec, IndicatorOutputRef,
-    IndicatorOverlayChannelSpec, IndicatorOverlaySource, IndicatorPanelRecipe,
-    IndicatorReadoutScope, IndicatorReadoutSpec, IndicatorSegmentSpec, IndicatorSetting,
-    IndicatorSettingChoice, IndicatorSettingControl, IndicatorSettingValue,
-    IndicatorSettingsContext, IndicatorSourceInput, IndicatorUnsupportedReason, OpenInterestSeries,
-    OutputChannelSpec, OutputValue, OutputValueType, TableColumnColor, TableColumnFormat,
-    TableColumnSpec, TableColumnValue, availability, declared_input_requirements,
-    indicator_definition, table_columns, unsupported_reason,
+    IndicatorOverlayChannelSpec, IndicatorPanelRecipe, IndicatorReadoutScope, IndicatorReadoutSpec,
+    IndicatorSegmentSpec, IndicatorSetting, IndicatorSettingChoice, IndicatorSettingControl,
+    IndicatorSettingValue, IndicatorSettingsContext, IndicatorSourceInput,
+    IndicatorUnsupportedReason, OpenInterestSeries, OutputChannelSpec, OutputValue,
+    OutputValueType, TableColumnColor, TableColumnFormat, TableColumnSpec, availability,
+    declared_input_requirements, indicator_definition, table_columns, unsupported_reason,
 };
 pub use indicators::{IndicatorConfig, IndicatorId};
+pub use series::{KlineIndexChange, KlineSeriesPoint, KlineSeriesPoints, KlineUpdate, SeriesColor};
+pub use studies::tpo::{
+    TPO_TRADE_COVERAGE_TIMEFRAME, TpoAnchor, TpoBoundaryEdits, TpoCalculationError, TpoProfile,
+    TpoProfileSettings, TpoProfileStatus, TpoRow, TradeTpoCache,
+    build_tpo_profile_with_source_timeframe, build_tpo_profiles_with_source_timeframe,
+};
+pub use studies::volume_profile::{
+    AnchoredProfileDistribution, ProfileDistribution, ProfileLevel, RecurringKlineProfileIndex,
+    kline_volume_profile, recurring_kline_volume_profiles,
+};
 pub use studies::{
-    DEFAULT_RECURRING_VOLUME_PROFILE_INTERVAL, DEFAULT_RECURRING_VOLUME_PROFILE_OPACITY_PERCENT,
-    DEFAULT_VISIBLE_VOLUME_PROFILE_OPACITY_PERCENT, DEFAULT_VOLUME_PROFILE_WIDTH_PERCENT,
-    KlineStudy, KlineStudyId, MAX_VOLUME_PROFILE_OPACITY_PERCENT, MAX_VOLUME_PROFILE_WIDTH_PERCENT,
-    MIN_VOLUME_PROFILE_OPACITY_PERCENT, MIN_VOLUME_PROFILE_WIDTH_PERCENT, VolumeProfileColorConfig,
-    VolumeProfileColorSlot, VolumeProfileColorSpec, VolumeProfileSchedule,
+    BigTradesConfig, DEFAULT_BIG_TRADES_THRESHOLD, DEFAULT_RECURRING_VOLUME_PROFILE_INTERVAL,
+    DEFAULT_RECURRING_VOLUME_PROFILE_OPACITY_PERCENT, DEFAULT_TPO_LETTER_PERIOD,
+    DEFAULT_TPO_VALUE_AREA_PERCENT, DEFAULT_VISIBLE_VOLUME_PROFILE_OPACITY_PERCENT,
+    DEFAULT_VOLUME_PROFILE_WIDTH_PERCENT, KlineStudy, KlineStudyId, MAX_BIG_TRADES_THRESHOLD,
+    MAX_TPO_VALUE_AREA_PERCENT, MAX_VOLUME_PROFILE_OPACITY_PERCENT,
+    MAX_VOLUME_PROFILE_WIDTH_PERCENT, MIN_BIG_TRADES_THRESHOLD, MIN_TPO_VALUE_AREA_PERCENT,
+    MIN_VOLUME_PROFILE_OPACITY_PERCENT, MIN_VOLUME_PROFILE_WIDTH_PERCENT, SourceConstraint,
+    StudyDataSource, TpoColorConfig, VolumeProfileColorConfig, VolumeProfileColorSlot,
+    VolumeProfileColorSpec, VolumeProfileSchedule, big_trades_step_count,
+    big_trades_step_for_threshold, big_trades_threshold_at_step, big_trades_threshold_label, tpo,
+    volume_profile,
 };
 pub use viewport::{
     ChartCoord, ChartStepMs, DEFAULT_HORIZONTAL_SPACING_PX, HorizontalWorld,
     MAX_HORIZONTAL_SPACING_PX, MIN_HORIZONTAL_SPACING_PX, PanelYValueRange, WorldAxis, YUnit,
     YUnitRange, ZOOM_SENSITIVITY,
 };
+
+use rustc_hash::FxHashSet;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::collections::{BTreeMap, BTreeSet};
+
+pub const MIN_CANDLESTICK_OPACITY_PERCENT: u8 = 5;
+pub const MAX_CANDLESTICK_OPACITY_PERCENT: u8 = 100;
+pub const MIN_LINE_WIDTH: u8 = 1;
+pub const MAX_LINE_WIDTH: u8 = 4;
+
+const DEFAULT_FOOTPRINT_IMBALANCE_THRESHOLD_PERCENT: usize = 200;
+const DEFAULT_FOOTPRINT_IMBALANCE_IGNORE_ZEROS: bool = true;
+const DEFAULT_FOOTPRINT_IMBALANCE_COLOR: ThemeColor =
+    ThemeColor::new(ThemeColorRole::Warning, ThemeColorShade::Strong);
+const DEFAULT_CANDLESTICK_OPACITY_PERCENT: u8 = 100;
+
+const DEFAULT_INDICATOR_INSTANCE_ID_BASE: u64 = 1 << 63;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FootprintPocColorSlot {
@@ -83,27 +105,6 @@ const FOOTPRINT_POC_COLOR_SPECS: [FootprintPocColorSpec; 2] = [
         slot: FootprintPocColorSlot::Npoc,
     },
 ];
-
-const fn default_show_footprint_imbalance() -> bool {
-    false
-}
-
-pub const DEFAULT_FOOTPRINT_IMBALANCE_THRESHOLD_PERCENT: usize = 200;
-pub const DEFAULT_FOOTPRINT_IMBALANCE_IGNORE_ZEROS: bool = true;
-pub const DEFAULT_FOOTPRINT_IMBALANCE_COLOR: ThemeColor =
-    ThemeColor::new(ThemeColorRole::Warning, ThemeColorShade::Strong);
-
-const fn default_footprint_imbalance_threshold_percent() -> usize {
-    DEFAULT_FOOTPRINT_IMBALANCE_THRESHOLD_PERCENT
-}
-
-const fn default_footprint_imbalance_ignore_zeros() -> bool {
-    DEFAULT_FOOTPRINT_IMBALANCE_IGNORE_ZEROS
-}
-
-const fn default_footprint_imbalance_color() -> ThemeColor {
-    DEFAULT_FOOTPRINT_IMBALANCE_COLOR
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FootprintPocColorConfig {
@@ -170,24 +171,21 @@ impl FootprintPocConfig {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct FootprintImbalanceConfig {
-    #[serde(default = "default_show_footprint_imbalance")]
     pub show: bool,
-    #[serde(default = "default_footprint_imbalance_threshold_percent")]
     pub threshold_percent: usize,
-    #[serde(default = "default_footprint_imbalance_ignore_zeros")]
     pub ignore_zeros: bool,
-    #[serde(default = "default_footprint_imbalance_color")]
     pub color: ThemeColor,
 }
 
 impl Default for FootprintImbalanceConfig {
     fn default() -> Self {
         Self {
-            show: default_show_footprint_imbalance(),
-            threshold_percent: default_footprint_imbalance_threshold_percent(),
-            ignore_zeros: default_footprint_imbalance_ignore_zeros(),
-            color: default_footprint_imbalance_color(),
+            show: false,
+            threshold_percent: DEFAULT_FOOTPRINT_IMBALANCE_THRESHOLD_PERCENT,
+            ignore_zeros: DEFAULT_FOOTPRINT_IMBALANCE_IGNORE_ZEROS,
+            color: DEFAULT_FOOTPRINT_IMBALANCE_COLOR,
         }
     }
 }
@@ -216,30 +214,14 @@ impl FootprintImbalanceConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct FootprintConfig {
-    #[serde(default = "default_footprints_visible")]
     pub visible: bool,
-    #[serde(default)]
     pub cluster_kind: ClusterKind,
-    #[serde(default)]
     pub cluster_scaling: ClusterScaling,
-    #[serde(default)]
     pub imbalance: FootprintImbalanceConfig,
-    #[serde(default)]
     pub poc: FootprintPocConfig,
-}
-
-impl Default for FootprintConfig {
-    fn default() -> Self {
-        Self {
-            visible: default_footprints_visible(),
-            cluster_kind: ClusterKind::default(),
-            cluster_scaling: ClusterScaling::default(),
-            imbalance: FootprintImbalanceConfig::default(),
-            poc: FootprintPocConfig::default(),
-        }
-    }
 }
 
 impl FootprintConfig {
@@ -275,21 +257,7 @@ impl FootprintConfig {
             ..Self::default()
         }
     }
-
-    pub const fn poc_enabled(self) -> bool {
-        self.visible && (self.poc.show_poc || self.poc.show_npoc)
-    }
 }
-
-pub const DEFAULT_CANDLESTICK_OPACITY_PERCENT: u8 = 100;
-pub const MIN_CANDLESTICK_OPACITY_PERCENT: u8 = 5;
-pub const MAX_CANDLESTICK_OPACITY_PERCENT: u8 = 100;
-pub const MIN_LINE_WIDTH: u8 = 1;
-pub const MAX_LINE_WIDTH: u8 = 4;
-
-const DEFAULT_INDICATOR_INSTANCE_ID_BASE: u64 = 1 << 63;
-
-pub const INDICATOR_REFRESH_MS: u64 = 250;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct IndicatorInstanceId(u64);
@@ -331,13 +299,6 @@ pub enum IndicatorUpdateScope {
 impl IndicatorUpdateScope {
     pub fn is_full(self) -> bool {
         matches!(self, Self::Full)
-    }
-
-    pub fn first_index(self) -> usize {
-        match self {
-            Self::Full => 0,
-            Self::From(index) => index,
-        }
     }
 
     pub fn merge(self, other: Self) -> Self {
@@ -396,31 +357,17 @@ impl CandlestickColorConfig {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct CandlestickConfig {
-    #[serde(default = "default_candlesticks_visible")]
     pub visible: bool,
-    #[serde(default)]
     pub colors: CandlestickColorConfig,
-    #[serde(default = "default_candlestick_opacity_percent")]
     pub opacity_percent: u8,
-}
-
-fn default_candlestick_opacity_percent() -> u8 {
-    DEFAULT_CANDLESTICK_OPACITY_PERCENT
-}
-
-fn default_footprints_visible() -> bool {
-    false
-}
-
-fn default_candlesticks_visible() -> bool {
-    true
 }
 
 impl Default for CandlestickConfig {
     fn default() -> Self {
         Self {
-            visible: default_candlesticks_visible(),
+            visible: true,
             colors: CandlestickColorConfig::defaults(),
             opacity_percent: DEFAULT_CANDLESTICK_OPACITY_PERCENT,
         }
@@ -487,7 +434,6 @@ impl std::fmt::Display for LineStrokeStyle {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct IndicatorStyleOverrides {
-    #[serde(default = "default_fill_visible")]
     pub fill_visible: bool,
     #[serde(default)]
     colors: BTreeMap<String, ThemeColor>,
@@ -495,10 +441,6 @@ pub struct IndicatorStyleOverrides {
     line_widths: BTreeMap<String, u8>,
     #[serde(default)]
     stroke_styles: BTreeMap<String, LineStrokeStyle>,
-}
-
-fn default_fill_visible() -> bool {
-    true
 }
 
 impl Default for IndicatorStyleOverrides {
@@ -572,7 +514,7 @@ impl IndicatorStyleOverrides {
         self
     }
 
-    pub fn normalized_for_slots(self, slots: &[indicators::IndicatorColorSpec]) -> Self {
+    fn normalized_for_slots(self, slots: &[indicators::IndicatorColorSpec]) -> Self {
         let mut normalized = self.normalized();
         normalized
             .colors
@@ -614,6 +556,72 @@ pub struct IndicatorInstance {
 }
 
 impl IndicatorInstance {
+    pub fn update_source_binding(
+        &mut self,
+        input_id: impl Into<String>,
+        output: Option<IndicatorOutputRef>,
+    ) -> bool {
+        let input_id = input_id.into();
+        if !self
+            .kind
+            .definition()
+            .source_inputs
+            .iter()
+            .any(|input| input.id == input_id)
+        {
+            return false;
+        }
+        match output {
+            Some(output) => {
+                let binding_changed = self.source_bindings.get(&input_id) != Some(&output);
+                let base_selection_removed = self.base_source_selections.remove(&input_id);
+                self.source_bindings.insert(input_id, output);
+                binding_changed || base_selection_removed.is_some()
+            }
+            None => self.source_bindings.remove(&input_id).is_some(),
+        }
+    }
+
+    pub fn update_base_source(
+        &mut self,
+        input_id: impl Into<String>,
+        source: Option<BaseSeriesSource>,
+    ) -> bool {
+        let input_id = input_id.into();
+        if !self
+            .kind
+            .definition()
+            .source_inputs
+            .iter()
+            .any(|input| input.id == input_id)
+        {
+            return false;
+        }
+        if self.source_bindings.contains_key(&input_id) {
+            return false;
+        }
+        match source {
+            Some(source) => {
+                if self.base_source_selections.get(&input_id) == Some(&source) {
+                    return false;
+                }
+                self.base_source_selections.insert(input_id, source);
+                true
+            }
+            None => self.base_source_selections.remove(&input_id).is_some(),
+        }
+    }
+
+    pub fn configured_color(&self, slot: &str) -> Option<ThemeColor> {
+        self.style_overrides.color(slot).or_else(|| {
+            self.kind
+                .color_specs()
+                .iter()
+                .find(|spec| spec.id == slot)
+                .map(|spec| spec.default_color())
+        })
+    }
+
     pub fn new(id: IndicatorInstanceId, kind: IndicatorId) -> Self {
         let config = IndicatorConfig::default_for(&kind);
         Self {
@@ -626,8 +634,8 @@ impl IndicatorInstance {
         }
     }
 
-    pub fn normalized_for_basis(mut self, basis: Basis) -> Self {
-        self.config = self.config.clone().normalized_for_basis(&self.kind, basis);
+    pub fn normalized(mut self) -> Self {
+        self.config = self.config.normalized_for(&self.kind);
         self.style_overrides = if self.kind.is_registered() {
             self.style_overrides
                 .normalized_for_slots(&self.kind.definition().style_slots)
@@ -655,13 +663,105 @@ impl PartialEq for IndicatorInstanceStore {
 }
 
 impl IndicatorInstanceStore {
-    pub fn from_instances(instances: Vec<IndicatorInstance>, basis: Basis) -> Self {
+    pub fn validate_source_binding(
+        &self,
+        active: &[IndicatorInstanceId],
+        id: IndicatorInstanceId,
+        input_id: &str,
+    ) -> Result<(), String> {
+        let active = active
+            .iter()
+            .copied()
+            .collect::<BTreeSet<IndicatorInstanceId>>();
+        let Some(instance) = self.get(id) else {
+            return Err(format!(
+                "source binding references missing indicator instance {id:?}"
+            ));
+        };
+        if !active.contains(&id) {
+            return Err("source binding target is not active".to_owned());
+        }
+        if !instance.kind.definition().has_numeric_plot_layers() {
+            return Err("attached indicator has no numeric plot layer".to_owned());
+        }
+        let Some(target) = self
+            .dependency_target(instance, input_id, &active)
+            .map_err(|problem| problem.to_string())?
+        else {
+            return Ok(());
+        };
+
+        let edges = self.dependency_edges(&active, Some((id, input_id)));
+        let mut pending = vec![target.id];
+        let mut visited = FxHashSet::default();
+        while let Some(current) = pending.pop() {
+            if current == id {
+                return Err("indicator dependency cycle".to_owned());
+            }
+            if visited.insert(current) {
+                pending.extend(edges.get(&current).into_iter().flatten().copied());
+            }
+        }
+        Ok(())
+    }
+
+    pub fn source_offsets(&self) -> Vec<i64> {
+        let mut offsets = vec![0];
+        for instance in self.instances() {
+            let kind = &instance.kind;
+            offsets.extend(
+                kind.output_channels()
+                    .iter()
+                    .map(|output| i64::from(output.offset_bars)),
+            );
+
+            for fill in kind.fill_specs() {
+                let channel_offset = |channel: &str| {
+                    kind.output_channels()
+                        .iter()
+                        .find(|output| output.id == channel)
+                        .map(|output| i64::from(output.offset_bars))
+                        .unwrap_or_default()
+                };
+                offsets.push(if fill.upper_offset_bars == 0 {
+                    channel_offset(&fill.upper)
+                } else {
+                    i64::from(fill.upper_offset_bars)
+                });
+                offsets.push(if fill.lower_offset_bars == 0 {
+                    channel_offset(&fill.lower)
+                } else {
+                    i64::from(fill.lower_offset_bars)
+                });
+            }
+        }
+        offsets
+    }
+
+    pub fn max_positive_output_offset(&self) -> i64 {
+        self.instances()
+            .iter()
+            .filter_map(|instance| {
+                instance
+                    .kind
+                    .output_channels()
+                    .iter()
+                    .map(|output| output.offset_bars)
+                    .filter(|offset| *offset > 0)
+                    .max()
+            })
+            .map(i64::from)
+            .max()
+            .unwrap_or_default()
+    }
+
+    pub fn from_instances(instances: Vec<IndicatorInstance>) -> Self {
         let mut store = Self::default();
         for instance in instances {
             if !instance.kind.is_registered() {
                 continue;
             }
-            let instance = instance.normalized_for_basis(basis);
+            let instance = instance.normalized();
             if !instance.config.is_valid_for(&instance.kind) {
                 continue;
             }
@@ -690,7 +790,7 @@ impl IndicatorInstanceStore {
         self.instances.iter().find(|instance| instance.id == id)
     }
 
-    pub(crate) fn warmup_bars(&self, id: IndicatorInstanceId) -> Option<u64> {
+    pub fn warmup_bars(&self, id: IndicatorInstanceId) -> Option<u64> {
         self.warmup_bars_by_id.get(&id).copied().unwrap_or_else(|| {
             self.get(id)
                 .and_then(|instance| instance.kind.warmup_bars(&instance.config))
@@ -744,28 +844,10 @@ impl IndicatorInstanceStore {
         input_id: impl Into<String>,
         output: Option<IndicatorOutputRef>,
     ) -> bool {
-        let Some(instance) = self.instances.iter_mut().find(|instance| instance.id == id) else {
-            return false;
-        };
-        let input_id = input_id.into();
-        if !instance
-            .kind
-            .definition()
-            .source_inputs
-            .iter()
-            .any(|input| input.id == input_id)
-        {
-            return false;
-        }
-        match output {
-            Some(output) => {
-                let binding_changed = instance.source_bindings.get(&input_id) != Some(&output);
-                let base_selection_removed = instance.base_source_selections.remove(&input_id);
-                instance.source_bindings.insert(input_id, output);
-                binding_changed || base_selection_removed.is_some()
-            }
-            None => instance.source_bindings.remove(&input_id).is_some(),
-        }
+        self.instances
+            .iter_mut()
+            .find(|instance| instance.id == id)
+            .is_some_and(|instance| instance.update_source_binding(input_id, output))
     }
 
     pub fn update_base_source(
@@ -774,32 +856,10 @@ impl IndicatorInstanceStore {
         input_id: impl Into<String>,
         source: Option<BaseSeriesSource>,
     ) -> bool {
-        let Some(instance) = self.instances.iter_mut().find(|instance| instance.id == id) else {
-            return false;
-        };
-        let input_id = input_id.into();
-        if !instance
-            .kind
-            .definition()
-            .source_inputs
-            .iter()
-            .any(|input| input.id == input_id)
-        {
-            return false;
-        }
-        if instance.source_bindings.contains_key(&input_id) {
-            return false;
-        }
-        match source {
-            Some(source) => {
-                if instance.base_source_selections.get(&input_id) == Some(&source) {
-                    return false;
-                }
-                instance.base_source_selections.insert(input_id, source);
-                true
-            }
-            None => instance.base_source_selections.remove(&input_id).is_some(),
-        }
+        self.instances
+            .iter_mut()
+            .find(|instance| instance.id == id)
+            .is_some_and(|instance| instance.update_base_source(input_id, source))
     }
 
     pub fn update_color(
@@ -897,49 +957,6 @@ impl IndicatorInstanceStore {
                 )
             })
             .fold(Default::default(), IndicatorHistoryRequirement::merge)
-    }
-
-    pub fn dependency_warmup_bars(&self, active: &[IndicatorInstanceId]) -> u64 {
-        let active_set = active
-            .iter()
-            .copied()
-            .filter(|id| self.get(*id).is_some())
-            .collect::<BTreeSet<_>>();
-        let mut memo = BTreeMap::new();
-        active
-            .iter()
-            .filter_map(|id| {
-                dependency_warmup_for_instance(
-                    *id,
-                    self,
-                    &active_set,
-                    &mut memo,
-                    &mut BTreeSet::new(),
-                )
-            })
-            .max()
-            .unwrap_or(0)
-    }
-
-    pub fn normalized_for_basis(&self, basis: Basis) -> Self {
-        let mut normalized = Self {
-            instances: self
-                .instances
-                .iter()
-                .cloned()
-                .map(|instance| instance.normalized_for_basis(basis))
-                .collect(),
-            next_id: self.next_id,
-            warmup_bars_by_id: BTreeMap::new(),
-        };
-        normalized.rebuild_warmup_cache();
-        normalized
-    }
-
-    pub fn restore_snapshot(&mut self, snapshot: Self) {
-        self.instances = snapshot.instances;
-        self.next_id = self.next_id.max(snapshot.next_id);
-        self.rebuild_warmup_cache();
     }
 
     fn rebuild_warmup_cache(&mut self) {
@@ -1077,43 +1094,6 @@ impl IndicatorInstanceStore {
     }
 }
 
-fn dependency_warmup_for_instance(
-    id: IndicatorInstanceId,
-    store: &IndicatorInstanceStore,
-    active: &BTreeSet<IndicatorInstanceId>,
-    memo: &mut BTreeMap<IndicatorInstanceId, u64>,
-    visiting: &mut BTreeSet<IndicatorInstanceId>,
-) -> Option<u64> {
-    if let Some(warmup) = memo.get(&id) {
-        return Some(*warmup);
-    }
-    if !visiting.insert(id) {
-        return Some(0);
-    }
-    let instance = store.get(id)?;
-    let own = store.warmup_bars(id).unwrap_or_default();
-    let dependency = instance
-        .source_bindings
-        .keys()
-        .filter_map(|source_id| {
-            store
-                .dependency_target(instance, source_id, active)
-                .ok()
-                .flatten()
-                .and_then(|target| {
-                    dependency_warmup_for_instance(target.id, store, active, memo, visiting)
-                })
-        })
-        .max()
-        .unwrap_or(0);
-    visiting.remove(&id);
-    let warmup = own
-        .saturating_add(dependency)
-        .min(MAX_INDICATOR_HISTORY_BARS);
-    memo.insert(id, warmup);
-    Some(warmup)
-}
-
 fn history_requirement_for_instance(
     id: IndicatorInstanceId,
     store: &IndicatorInstanceStore,
@@ -1130,11 +1110,12 @@ fn history_requirement_for_instance(
         return Some(IndicatorHistoryRequirement::default());
     }
     let instance = store.get(id)?;
+    let own_warmup = store.warmup_bars(id);
     let own = instance.kind.history_requirement_with_warmup(
         instance.config.clone(),
         basis,
         reference_time,
-        store.warmup_bars(id),
+        own_warmup,
     );
     let dependency = instance
         .source_bindings
@@ -1168,6 +1149,10 @@ fn history_requirement_for_instance(
         own.history_bars()
             .saturating_add(dependency.history_bars())
             .min(MAX_INDICATOR_HISTORY_BARS),
+        own_warmup
+            .unwrap_or_default()
+            .saturating_add(dependency.warmup_bars())
+            .min(MAX_INDICATOR_HISTORY_BARS),
     );
     memo.insert(id, requirement);
     Some(requirement)
@@ -1191,18 +1176,18 @@ impl Default for FloatingToolbarPosition {
 
 impl FloatingToolbarPosition {
     pub fn clamped(self) -> Self {
+        let clamp_ratio = |ratio: f32| {
+            if ratio.is_finite() {
+                ratio.clamp(0.0, 1.0)
+            } else {
+                0.0
+            }
+        };
+
         Self {
             x_ratio: clamp_ratio(self.x_ratio),
             y_ratio: clamp_ratio(self.y_ratio),
         }
-    }
-}
-
-fn clamp_ratio(ratio: f32) -> f32 {
-    if ratio.is_finite() {
-        ratio.clamp(0.0, 1.0)
-    } else {
-        0.0
     }
 }
 
@@ -1243,63 +1228,61 @@ impl std::fmt::Display for LegendVisibility {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    pub primary_scale_inverted: bool,
-    pub trade_data_enabled: bool,
-    #[serde(default)]
-    pub legend_visibility: LegendVisibility,
-    pub candlestick: CandlestickConfig,
-    pub footprint: FootprintConfig,
-    pub panels: Vec<PanelConfig>,
-    pub splits: Vec<f32>,
+    pub settings: SettingsSnapshot,
     pub drawings: Vec<DrawingConfig>,
     pub active_drawing_tool: DrawingTool,
     pub floating_toolbar_position: FloatingToolbarPosition,
     pub drawing_sidebar_visible: bool,
-    pub studies: Vec<KlineStudy>,
-    pub study_configs: Vec<KlineStudy>,
-    pub indicator_instances: Vec<IndicatorInstance>,
     pub series: Vec<SeriesConfig>,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            primary_scale_inverted: false,
-            trade_data_enabled: false,
-            legend_visibility: LegendVisibility::default(),
-            candlestick: CandlestickConfig::default(),
-            footprint: FootprintConfig::default(),
-            panels: Vec::new(),
-            splits: Vec::new(),
+            settings: SettingsSnapshot::default(),
             drawings: Vec::new(),
             active_drawing_tool: DrawingTool::Cursor,
             floating_toolbar_position: FloatingToolbarPosition::default(),
-            drawing_sidebar_visible: default_drawing_sidebar_visible(),
-            studies: Vec::new(),
-            study_configs: Vec::new(),
-            indicator_instances: Vec::new(),
+            drawing_sidebar_visible: true,
             series: Vec::new(),
         }
     }
 }
 
-fn default_drawing_sidebar_visible() -> bool {
-    true
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct SettingsSnapshot {
-    pub primary_scale_inverted: bool,
-    pub trade_data_enabled: bool,
-    #[serde(default)]
+pub struct ChartOptions {
+    #[serde(rename = "trade_data_enabled")]
+    pub trade_data_requested: bool,
     pub legend_visibility: LegendVisibility,
     pub candlestick: CandlestickConfig,
     pub footprint: FootprintConfig,
+}
+
+impl ChartOptions {
+    pub fn set_trade_data_requested(&mut self, enabled: bool, basis: Basis) -> bool {
+        let mut changed = self.trade_data_requested != enabled;
+        self.trade_data_requested = enabled;
+        if !matches!(basis, Basis::Tick(_)) {
+            changed |= self.footprint.visible != enabled;
+            self.footprint = self.footprint.with_visible(enabled);
+        }
+        changed
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SettingsSnapshot {
+    pub primary_scale_inverted: bool,
+    #[serde(flatten)]
+    pub options: ChartOptions,
     pub panels: Vec<PanelConfig>,
     pub splits: Vec<f32>,
-    pub studies: Vec<KlineStudy>,
+    pub active_studies: Vec<KlineStudyId>,
     pub study_configs: Vec<KlineStudy>,
+    #[serde(default)]
+    pub tpo_profile_edits: TpoBoundaryEdits,
     pub indicator_instances: Vec<IndicatorInstance>,
 }
 
@@ -1308,55 +1291,22 @@ pub struct ChartSettings {
     pub drawing: drawing::DrawingSettings,
 }
 
-impl Default for SettingsSnapshot {
-    fn default() -> Self {
-        Config::default().settings_snapshot()
-    }
-}
-
-impl Config {
-    pub fn settings_snapshot(&self) -> SettingsSnapshot {
-        SettingsSnapshot {
-            primary_scale_inverted: self.primary_scale_inverted,
-            trade_data_enabled: self.trade_data_enabled,
-            legend_visibility: self.legend_visibility,
-            candlestick: self.candlestick,
-            footprint: self.footprint,
-            panels: self.panels.clone(),
-            splits: self.splits.clone(),
-            studies: self.studies.clone(),
-            study_configs: self.study_configs.clone(),
-            indicator_instances: self.indicator_instances.clone(),
-        }
-    }
-
-    pub fn indicator_instances_for(&self, basis: Basis) -> IndicatorInstanceStore {
-        indicator_instances_for(&self.indicator_instances, basis)
-    }
-}
-
 impl SettingsSnapshot {
-    pub fn indicator_instances_for(&self, basis: Basis) -> IndicatorInstanceStore {
-        indicator_instances_for(&self.indicator_instances, basis)
+    pub fn indicator_instance_store(&self) -> IndicatorInstanceStore {
+        indicator_instance_store(&self.indicator_instances)
     }
 }
 
-fn indicator_instances_for(
-    instances: &[IndicatorInstance],
-    basis: Basis,
-) -> IndicatorInstanceStore {
+fn indicator_instance_store(instances: &[IndicatorInstance]) -> IndicatorInstanceStore {
     if !instances.is_empty() {
-        return IndicatorInstanceStore::from_instances(instances.to_vec(), basis);
+        return IndicatorInstanceStore::from_instances(instances.to_vec());
     }
 
     let kind = IndicatorId::parse("core.volume").expect("static ID is valid");
-    IndicatorInstanceStore::from_instances(
-        vec![IndicatorInstance::new(
-            IndicatorInstanceId::default_for(&kind),
-            kind,
-        )],
-        basis,
-    )
+    IndicatorInstanceStore::from_instances(vec![IndicatorInstance::new(
+        IndicatorInstanceId::default_for(&kind),
+        kind,
+    )])
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1434,13 +1384,12 @@ pub use composition::{
 };
 pub type ComparisonPolicy = composition::PanelComparisonPolicy;
 pub type ValueLabelPolicy = composition::PanelValueLabelPolicy;
-pub type ValueLabelMode = composition::PanelValueLabelMode;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum LayerSource {
     #[default]
     Primary,
-    Comparison,
+    Comparison(exchange::Ticker),
     IndicatorOutput(indicators::IndicatorOutputRef),
 }
 
@@ -1454,12 +1403,12 @@ pub enum ValuePrecision {
 
 pub use drawing::{
     DrawingAnchor, DrawingColor, DrawingEntity, DrawingObject, DrawingSettings, DrawingStyle,
-    DrawingStyleDefaults, DrawingTool, Rgba,
+    DrawingStyleDefaults, DrawingTool,
 };
 pub type DrawingConfig = DrawingEntity;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SeriesConfig {
-    pub ticker: Ticker,
+    pub ticker: exchange::Ticker,
     #[serde(default)]
     pub color: Option<iced_core::Color>,
     #[serde(default)]
@@ -1492,7 +1441,7 @@ pub fn panel_config_from_spec(panel: &PanelSpec) -> PanelConfig {
     }
 }
 
-pub fn layer_config_from_spec(layer: &LayerSpec) -> LayerConfig {
+fn layer_config_from_spec(layer: &LayerSpec) -> LayerConfig {
     LayerConfig {
         id: layer.id.0,
         name: layer.name.clone(),
@@ -1523,7 +1472,7 @@ pub fn panel_spec_from_config(panel: &PanelConfig) -> PanelSpec {
     }
 }
 
-pub fn layer_spec_from_config(layer: &LayerConfig) -> LayerSpec {
+fn layer_spec_from_config(layer: &LayerConfig) -> LayerSpec {
     let source = layer_source_into_domain(layer.source.clone());
     LayerSpec {
         id: composition::LayerId(layer.id),
@@ -1544,8 +1493,8 @@ pub fn layer_spec_from_config(layer: &LayerConfig) -> LayerSpec {
 fn layer_source_from_domain(source: &DomainLayerSource) -> LayerSource {
     match source {
         DomainLayerSource::RawKline {
-            source: composition::DataSourceId::Synthetic("Comparison"),
-        } => LayerSource::Comparison,
+            source: composition::DataSourceId::Comparison(ticker),
+        } => LayerSource::Comparison(*ticker),
         DomainLayerSource::RawKline { .. } => LayerSource::Primary,
         DomainLayerSource::IndicatorOutput { output, .. } => {
             LayerSource::IndicatorOutput(output.clone())
@@ -1558,8 +1507,8 @@ fn layer_source_into_domain(source: LayerSource) -> DomainLayerSource {
         LayerSource::Primary => DomainLayerSource::RawKline {
             source: composition::DataSourceId::Primary,
         },
-        LayerSource::Comparison => DomainLayerSource::RawKline {
-            source: composition::DataSourceId::Synthetic("Comparison"),
+        LayerSource::Comparison(ticker) => DomainLayerSource::RawKline {
+            source: composition::DataSourceId::Comparison(ticker),
         },
         LayerSource::IndicatorOutput(output) => DomainLayerSource::IndicatorOutput {
             source: composition::DataSourceId::Primary,

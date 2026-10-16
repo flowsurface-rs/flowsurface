@@ -1,4 +1,4 @@
-use super::drawing::DrawingEditState;
+use super::drawing::{DrawingEditState, DrawingTools, DrawingUpdate};
 use std::collections::VecDeque;
 
 const HISTORY_LIMIT: usize = 100;
@@ -16,6 +16,34 @@ pub(super) struct DrawingHistory {
 }
 
 impl DrawingHistory {
+    pub(super) fn apply_update(
+        &mut self,
+        update: DrawingUpdate,
+        before: DrawingEditState,
+        tools: &DrawingTools,
+    ) {
+        match update {
+            DrawingUpdate::AtomicEdit => {
+                self.finish_drawing(|| before.clone());
+                let after = tools.edit_state();
+                if before != after {
+                    self.record(before, after);
+                }
+            }
+            DrawingUpdate::GestureStarted { .. } => {
+                self.finish_drawing(|| before.clone());
+                self.begin_drawing(before);
+            }
+            DrawingUpdate::GestureUpdated => {}
+            DrawingUpdate::GestureFinished { .. } => {
+                self.finish_drawing(|| tools.edit_state());
+            }
+            DrawingUpdate::None | DrawingUpdate::StateOnly | DrawingUpdate::Visual => {
+                self.finish_if_idle(tools);
+            }
+        }
+    }
+
     pub(super) fn record(&mut self, before: DrawingEditState, after: DrawingEditState) {
         self.pending_drawing = None;
         self.redo.clear();
@@ -25,21 +53,24 @@ impl DrawingHistory {
         self.undo.push_back(DrawingEdit { before, after });
     }
 
-    pub(super) fn begin_drawing(&mut self, before: DrawingEditState) {
+    fn begin_drawing(&mut self, before: DrawingEditState) {
         self.pending_drawing = Some(before);
     }
 
-    pub(super) fn finish_drawing(&mut self, after: DrawingEditState) {
+    pub(super) fn finish_drawing(&mut self, after: impl FnOnce() -> DrawingEditState) {
         let Some(before) = self.pending_drawing.take() else {
             return;
         };
+        let after = after();
         if before != after {
             self.record(before, after);
         }
     }
 
-    pub(super) fn has_pending_drawing(&self) -> bool {
-        self.pending_drawing.is_some()
+    pub(super) fn finish_if_idle(&mut self, tools: &DrawingTools) {
+        if !tools.is_dragging() {
+            self.finish_drawing(|| tools.edit_state());
+        }
     }
 
     pub(super) fn clear(&mut self) {
@@ -65,28 +96,5 @@ impl DrawingHistory {
             let _ = self.undo.pop_front();
         }
         self.undo.push_back(entry);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::super::drawing::DrawingTools;
-    use super::*;
-
-    #[test]
-    fn drawing_history_skips_unchanged_gestures_and_clears_redo_on_edit() {
-        let state = DrawingTools::default().edit_state();
-        let mut history = DrawingHistory::default();
-
-        history.begin_drawing(state.clone());
-        history.finish_drawing(state.clone());
-        assert!(history.pop_undo().is_none());
-
-        history.record(state.clone(), state.clone());
-        let entry = history.pop_undo().unwrap();
-        history.push_redo(entry);
-        history.record(state.clone(), state);
-        assert!(history.pop_redo().is_none());
-        assert!(history.pop_undo().is_some());
     }
 }

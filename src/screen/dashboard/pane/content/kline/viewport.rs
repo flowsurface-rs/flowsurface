@@ -1,6 +1,9 @@
 use super::{DEFAULT_HORIZONTAL_OFFSET_UNITS, DEFAULT_HORIZONTAL_SPACING_PX};
-use crate::widget::chart::kline::{PrimaryViewportState, YUnitRange};
-use data::chart::kline::{HorizontalWorld, composition::PanelId};
+use data::chart::kline::viewport::{PrimaryViewportState, YUnitRange};
+use data::chart::kline::{
+    HorizontalWorld,
+    composition::{ChartComposition, PanelId, PanelScaleMode},
+};
 
 pub(super) struct ViewportState {
     pub(super) horizontal_world: HorizontalWorld,
@@ -11,6 +14,43 @@ pub(super) struct ViewportState {
 }
 
 impl ViewportState {
+    pub(super) fn set_panel_range(
+        &mut self,
+        composition: &ChartComposition,
+        panel_id: PanelId,
+        range: YUnitRange,
+    ) -> bool {
+        if !allows_panel_range(composition, panel_id) {
+            return false;
+        }
+        if composition.primary_panel_id() == Some(panel_id) {
+            self.primary.set_range(range)
+        } else {
+            self.indicator_y_ranges.set(panel_id, range)
+        }
+    }
+
+    pub(super) fn reset_panel_range(
+        &mut self,
+        composition: &ChartComposition,
+        panel_id: PanelId,
+    ) -> bool {
+        if !allows_panel_range(composition, panel_id) {
+            return false;
+        }
+        if composition.primary_panel_id() == Some(panel_id) {
+            self.primary.reset()
+        } else {
+            self.indicator_y_ranges.reset(panel_id)
+        }
+    }
+
+    pub(super) fn toggle_primary_autoscale(&mut self, composition: &ChartComposition) -> bool {
+        composition.primary_panel_id().is_some_and(|panel_id| {
+            allows_panel_range(composition, panel_id) && self.primary.toggle()
+        })
+    }
+
     pub(super) fn reset_autoscale(&mut self) {
         self.primary.reset();
         self.indicator_y_ranges = PanelViewportStore::default();
@@ -76,4 +116,9 @@ impl PanelViewportStore {
     pub(super) fn retain(&mut self, mut should_retain: impl FnMut(PanelId) -> bool) {
         self.values.retain(|(panel_id, _)| should_retain(*panel_id));
     }
+}
+
+pub(super) fn allows_panel_range(composition: &ChartComposition, panel_id: PanelId) -> bool {
+    composition.primary_panel_id() != Some(panel_id)
+        || composition.panel_effective_scale_mode(panel_id) != Some(PanelScaleMode::PercentFromBase)
 }

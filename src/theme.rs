@@ -15,30 +15,30 @@ impl ThemeAccents {
         }
     }
 
-    pub(crate) fn as_array(&self) -> &[Color; ACCENT_COUNT] {
+    pub fn as_array(&self) -> &[Color; ACCENT_COUNT] {
         &self.colors
     }
 
-    pub(crate) const fn generation(self) -> u64 {
+    pub const fn generation(self) -> u64 {
         self.generation
     }
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ThemeState {
+pub struct ThemeState {
     theme: data::Theme,
     accents: ThemeAccents,
 }
 
 impl ThemeState {
-    pub(crate) fn new(theme: data::Theme) -> Self {
+    pub fn new(theme: data::Theme) -> Self {
         Self {
             accents: ThemeAccents::from_theme(&theme.0, 0),
             theme,
         }
     }
 
-    pub(crate) fn replace(&mut self, theme: Theme) -> bool {
+    pub fn replace(&mut self, theme: Theme) -> bool {
         if self.theme.0 == theme {
             return false;
         }
@@ -51,15 +51,15 @@ impl ThemeState {
         true
     }
 
-    pub(crate) fn current(&self) -> &Theme {
+    pub fn current(&self) -> &Theme {
         &self.theme.0
     }
 
-    pub(crate) fn data_theme(&self) -> data::Theme {
+    pub fn data_theme(&self) -> data::Theme {
         self.theme.clone()
     }
 
-    pub(crate) fn accents(&self) -> ThemeAccents {
+    pub fn accents(&self) -> ThemeAccents {
         self.accents
     }
 }

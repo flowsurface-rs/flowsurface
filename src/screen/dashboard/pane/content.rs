@@ -3,27 +3,32 @@ pub(super) mod kline;
 pub(super) mod ladder;
 pub(super) mod timesales;
 
-use super::state::{Event, Message};
+use super::{
+    ChartAction,
+    state::{Event, Message},
+};
 use crate::{
-    screen::sidebar::pane_settings::{
+    screen::dashboard::pane::settings::{
         self, heatmap_shader_cfg_view, ladder_cfg_view, timesales_cfg_view,
     },
     theme::ThemeAccents,
-    widget::inspector::{InspectorContent, InspectorSection},
+    widget::inspector::InspectorContent,
 };
 use data::{
-    chart::Basis,
+    PaneSettingsSnapshot, PaneSettingsTransfer,
+    chart::{Basis, kline::OpenInterestSeries},
     layout::pane::{ContentKind, Settings, VisualConfig},
 };
-use exchange::{TickerInfo, Timeframe};
+use exchange::{Kline, TickerInfo, Timeframe, Trade, UnixMs, adapter::StreamKind, depth::Depth};
 use iced::{
     Alignment,
+    task::Handle,
     widget::{button, pane_grid, row, space},
 };
 use std::time::Instant;
 
 use heatmap::HeatmapShader;
-use kline::{Action as KlineAction, ChartCommand, KlineChart};
+use kline::{Action as KlineAction, ChartCommand, DataUpdate, FetchUpdate, KlineChart};
 use ladder::Ladder;
 use timesales::TimeAndSales;
 
@@ -69,11 +74,11 @@ impl Content {
         };
 
         let mut chart = saved_layout.as_ref().map_or_else(
-            || KlineChart::new_with_tickers(basis, tickers),
-            |layout| KlineChart::new_with_tickers_and_config(basis, tickers, layout),
+            || KlineChart::new(basis, tickers),
+            |layout| KlineChart::new_with_config(basis, tickers, layout),
         );
         if let Some(multiplier) = settings.tick_multiply {
-            let _ = chart.apply_command(ChartCommand::SetFootprintTickMultiplier { multiplier });
+            let _ = chart.apply_command(ChartCommand::SetTickMultiplier { multiplier });
         }
         if let Content::Kline {
             chart: Some(previous),
@@ -107,34 +112,157 @@ impl Content {
         }
     }
 
-    pub fn settings_snapshot(&self) -> Option<data::chart::kline::SettingsSnapshot> {
-        match self {
-            Content::Kline {
-                chart: Some(chart), ..
-            } => Some(chart.settings_snapshot()),
+    pub fn settings_snapshot(
+        &self,
+        transfer: PaneSettingsTransfer,
+    ) -> Option<PaneSettingsSnapshot> {
+        match (transfer, self) {
+            (PaneSettingsTransfer::Visual(config), Content::ShaderHeatmap { studies, .. }) => Some(
+                PaneSettingsSnapshot::Heatmap(data::chart::heatmap::SettingsSnapshot {
+                    config: config.as_ref().and_then(VisualConfig::heatmap),
+                    studies: studies.clone(),
+                }),
+            ),
+            (PaneSettingsTransfer::Visual(config), Content::TimeAndSales(_)) => {
+                Some(PaneSettingsSnapshot::TimeAndSales(
+                    config.as_ref().and_then(VisualConfig::time_and_sales),
+                ))
+            }
+            (PaneSettingsTransfer::Visual(config), Content::Ladder(_)) => Some(
+                PaneSettingsSnapshot::Ladder(config.as_ref().and_then(VisualConfig::ladder)),
+            ),
+            (
+                PaneSettingsTransfer::Kline,
+                Content::Kline {
+                    chart: Some(chart), ..
+                },
+            ) => Some(PaneSettingsSnapshot::Kline(chart.settings_snapshot())),
             _ => None,
         }
     }
 
+    pub fn can_apply_settings_snapshot(&self, snapshot: &PaneSettingsSnapshot) -> bool {
+        matches!(
+            (self, snapshot),
+            (
+                Content::ShaderHeatmap { .. },
+                PaneSettingsSnapshot::Heatmap(_)
+            ) | (
+                Content::Kline { chart: Some(_), .. },
+                PaneSettingsSnapshot::Kline(_)
+            ) | (
+                Content::TimeAndSales(_),
+                PaneSettingsSnapshot::TimeAndSales(_)
+            ) | (Content::Ladder(_), PaneSettingsSnapshot::Ladder(_))
+        )
+    }
+
     pub fn apply_settings_snapshot(
         &mut self,
-        snapshot: &data::chart::kline::SettingsSnapshot,
+        snapshot: &PaneSettingsSnapshot,
     ) -> Option<KlineAction> {
-        match self {
-            Content::Kline {
-                chart: Some(chart), ..
-            } => chart.apply_settings_snapshot(snapshot),
+        match (self, snapshot) {
+            (
+                Content::ShaderHeatmap {
+                    chart,
+                    studies: previous,
+                },
+                PaneSettingsSnapshot::Heatmap(snapshot),
+            ) => {
+                *previous = snapshot.studies.clone();
+                if let Some(chart) = chart {
+                    chart.studies = snapshot.studies.clone();
+                }
+                None
+            }
+            (
+                Content::Kline {
+                    chart: Some(chart), ..
+                },
+                PaneSettingsSnapshot::Kline(snapshot),
+            ) => chart.apply_settings_snapshot(snapshot),
             _ => None,
         }
     }
 
     pub fn last_tick(&self) -> Option<Instant> {
         match self {
-            Content::Kline { chart, .. } => Some(chart.as_ref()?.last_update()),
+            Content::Kline { chart, .. } => Some(chart.as_ref()?.last_maintenance_at()),
             Content::TimeAndSales(panel) => Some(panel.as_ref()?.last_update()),
             Content::Ladder(panel) => Some(panel.as_ref()?.last_update()),
             Content::Starter => None,
             Content::ShaderHeatmap { chart, .. } => Some(chart.as_ref()?.last_tick?),
+        }
+    }
+
+    fn update_interval(&self) -> Option<u64> {
+        match self {
+            Content::Kline { .. } => Some(250),
+            Content::Ladder(_) | Content::TimeAndSales(_) => Some(100),
+            Content::ShaderHeatmap { .. } | Content::Starter => None,
+        }
+    }
+
+    pub(super) fn invalidate(&mut self, now: Instant) -> Option<ChartAction> {
+        match self {
+            Content::Starter => None,
+            Content::Kline { chart, .. } => {
+                chart.as_mut().and_then(|chart| chart.invalidate(Some(now)))
+            }
+            Content::TimeAndSales(panel) => {
+                if let Some(panel) = panel {
+                    panel.invalidate(Some(now));
+                }
+                None
+            }
+            Content::Ladder(panel) => {
+                if let Some(panel) = panel {
+                    panel.invalidate(Some(now));
+                }
+                None
+            }
+            Content::ShaderHeatmap { chart, .. } => {
+                chart.as_mut().and_then(|chart| chart.invalidate(Some(now)))
+            }
+        }
+    }
+
+    pub(super) fn tick(&mut self, now: Instant) -> Option<ChartAction> {
+        let invalidate_interval = self.update_interval();
+        let last_tick = self.last_tick();
+
+        self.redraw_data_if_due(now);
+
+        match (invalidate_interval, last_tick) {
+            (Some(interval_ms), Some(previous_tick_time))
+                if interval_ms > 0
+                    && now.duration_since(previous_tick_time)
+                        >= std::time::Duration::from_millis(interval_ms) =>
+            {
+                return self.invalidate(now);
+            }
+            (Some(interval_ms), None) if interval_ms > 0 => return self.invalidate(now),
+            (None, _) => return self.invalidate(now),
+            _ => {}
+        }
+
+        None
+    }
+
+    pub(super) fn background_task(&mut self) -> Option<iced::Task<Event>> {
+        match self {
+            Content::Kline {
+                chart: Some(chart), ..
+            } => chart
+                .rebuild_indicators()
+                .map(|task| task.map(Event::KlineInteraction)),
+            _ => None,
+        }
+    }
+
+    pub(super) fn park(&mut self) {
+        if let Content::ShaderHeatmap { chart, .. } = self {
+            *chart = None;
         }
     }
 
@@ -144,6 +272,207 @@ impl Content {
         } = self
         {
             chart.redraw_data_if_due(now);
+        }
+    }
+
+    pub fn ingest_live_kline(&mut self, stream: &StreamKind, kline: &Kline) {
+        if let Self::Kline {
+            chart: Some(chart), ..
+        } = self
+            && let StreamKind::Kline {
+                timeframe,
+                ticker_info,
+            } = stream
+        {
+            chart.apply_data(DataUpdate::LiveKline {
+                timeframe: *timeframe,
+                ticker_info,
+                kline,
+            });
+        }
+    }
+
+    pub fn ingest_live_trades(&mut self, stream: &StreamKind, trades: &[Trade], update_t: UnixMs) {
+        match self {
+            Self::ShaderHeatmap { chart, .. } => {
+                if let Some(chart) = chart {
+                    chart.insert_trades(trades, update_t);
+                }
+            }
+            Self::Kline {
+                chart: Some(chart), ..
+            } => {
+                let ticker_info = stream.ticker_info();
+                chart.apply_data(DataUpdate::LiveTrades {
+                    ticker_info: &ticker_info,
+                    trades,
+                });
+            }
+            Self::TimeAndSales(panel) => {
+                if let Some(panel) = panel {
+                    panel.insert_buffer(trades);
+                }
+            }
+            Self::Ladder(panel) => {
+                if let Some(panel) = panel {
+                    panel.insert_trades(trades);
+                }
+            }
+            _ => log::error!("No chart found for the stream: {stream:?}"),
+        }
+    }
+
+    pub fn ingest_live_depth(&mut self, stream: &StreamKind, depth: &Depth, update_t: UnixMs) {
+        match self {
+            Self::ShaderHeatmap { chart, .. } => {
+                if let Some(chart) = chart {
+                    chart.insert_depth(depth, update_t);
+                }
+            }
+            Self::Ladder(panel) => {
+                if let Some(panel) = panel {
+                    panel.insert_depth(depth, update_t);
+                }
+            }
+            _ => log::error!("No chart found for the stream: {stream:?}"),
+        }
+    }
+
+    pub fn insert_historical_trades(
+        &mut self,
+        ticker_info: TickerInfo,
+        trades: &[Trade],
+        is_batches_done: bool,
+        req_id: Option<uuid::Uuid>,
+    ) -> Result<(), &'static str> {
+        match self {
+            Self::Kline {
+                chart: Some(chart), ..
+            } => {
+                chart.apply_data(DataUpdate::HistoricalTrades {
+                    ticker_info,
+                    trades,
+                    is_batches_done,
+                    req_id,
+                });
+                Ok(())
+            }
+            Self::Kline { chart: None, .. } if req_id.is_some() => Ok(()),
+            Self::Kline { chart: None, .. } => Err("fetched trades but no chart found"),
+            _ if req_id.is_some() => Ok(()),
+            _ => Err("No matching chart found for fetched trades"),
+        }
+    }
+
+    pub(super) fn insert_historical_klines(
+        &mut self,
+        tickers: impl IntoIterator<Item = TickerInfo>,
+        req_id: Option<uuid::Uuid>,
+        timeframe: Timeframe,
+        ticker_info: TickerInfo,
+        klines: &[Kline],
+        is_batches_done: bool,
+        has_data: bool,
+    ) {
+        let Self::Kline { chart, .. } = self else {
+            if req_id.is_none() {
+                log::error!("pane content not candlestick");
+            }
+            return;
+        };
+
+        if chart.is_none() {
+            if req_id.is_some() {
+                return;
+            }
+
+            let mut initial_tickers = Vec::new();
+            for ticker in tickers {
+                if !initial_tickers.contains(&ticker) {
+                    initial_tickers.push(ticker);
+                }
+            }
+            if initial_tickers.is_empty() {
+                initial_tickers.push(ticker_info);
+            }
+
+            *chart = Some(Box::new(KlineChart::new(
+                Basis::Time(timeframe),
+                &initial_tickers,
+            )));
+        }
+
+        if let Some(chart) = chart.as_mut() {
+            chart.apply_data(DataUpdate::HistoricalKlines {
+                req_id,
+                timeframe,
+                ticker_info,
+                klines,
+                is_batches_done,
+                has_data,
+            });
+        }
+    }
+
+    pub(super) fn insert_historical_open_interest(
+        &mut self,
+        req_id: Option<uuid::Uuid>,
+        ticker_info: TickerInfo,
+        series: &OpenInterestSeries,
+    ) {
+        let Self::Kline { chart, .. } = self else {
+            if req_id.is_none() {
+                log::error!("pane content not candlestick");
+            }
+            return;
+        };
+
+        if let Some(chart) = chart.as_mut() {
+            chart.apply_data(DataUpdate::HistoricalOpenInterest {
+                req_id,
+                ticker_info,
+                series,
+            });
+        }
+    }
+
+    pub fn apply_fetch_failure(&mut self, req_id: uuid::Uuid) -> bool {
+        if let Self::Kline {
+            chart: Some(chart), ..
+        } = self
+        {
+            chart.apply_fetch_update(FetchUpdate::Failed(req_id))
+        } else {
+            false
+        }
+    }
+
+    pub fn apply_trade_fetch_no_data(
+        &mut self,
+        ticker_info: TickerInfo,
+        req_id: uuid::Uuid,
+    ) -> bool {
+        if let Self::Kline {
+            chart: Some(chart), ..
+        } = self
+        {
+            chart.apply_fetch_update(FetchUpdate::TradeFetchNoData {
+                ticker_info,
+                req_id,
+            })
+        } else {
+            false
+        }
+    }
+
+    pub(super) fn apply_fetch_handle(&mut self, req_id: uuid::Uuid, handle: Handle) -> bool {
+        if let Self::Kline {
+            chart: Some(chart), ..
+        } = self
+        {
+            chart.apply_fetch_update(FetchUpdate::FetchHandle { req_id, handle })
+        } else {
+            false
         }
     }
 
@@ -159,36 +488,6 @@ impl Content {
                 panel.config = cfg;
             }
             _ => {}
-        }
-    }
-
-    pub fn studies(&self) -> Option<data::chart::Study> {
-        match &self {
-            Content::ShaderHeatmap { studies, .. } => {
-                Some(data::chart::Study::Heatmap(studies.clone()))
-            }
-            Content::TimeAndSales(_)
-            | Content::Ladder(_)
-            | Content::Starter
-            | Content::Kline { .. } => None,
-        }
-    }
-
-    pub fn update_studies(&mut self, studies: data::chart::Study) {
-        if let (
-            Content::ShaderHeatmap {
-                chart,
-                studies: previous,
-                ..
-            },
-            data::chart::Study::Heatmap(studies),
-        ) = (self, studies)
-        {
-            chart
-                .as_mut()
-                .expect("shader heatmap chart not initialized")
-                .studies = studies.clone();
-            *previous = studies;
         }
     }
 
@@ -229,16 +528,17 @@ impl Content {
             Self::Kline {
                 chart: Some(chart), ..
             } => {
-                let mut content = InspectorContent::new(vec![InspectorSection::titled(
-                    "Data",
-                    chart.pane_settings_view().map(move |message| {
-                        Message::PaneEvent(pane, Event::KlineInteraction(message))
-                    }),
-                )]);
+                let mut content = chart
+                    .pane_settings_view()
+                    .map(move |message| Message::PaneEvent(pane, Event::KlineInteraction(message)));
                 content.set_footer(
                     row![
                         space::horizontal(),
-                        button("Sync all").on_press(Message::SyncKlineSettings(pane)),
+                        crate::tooltip(
+                            button("Sync all").on_press(Message::SyncKlineSettings(pane)),
+                            Some("Apply configuration to similar panes"),
+                            iced::widget::tooltip::Position::Left,
+                        ),
                     ]
                     .align_y(Alignment::Center),
                 );
@@ -252,14 +552,8 @@ impl Content {
                 let basis = selected_basis.unwrap_or(Basis::default_heatmap_time(ticker_info));
 
                 Some(
-                    heatmap_shader_cfg_view(
-                        chart.visual_config(),
-                        chart.study_configurator(),
-                        studies,
-                        basis,
-                        theme_accents,
-                    )
-                    .map(move |message| settings_message(pane, message)),
+                    heatmap_shader_cfg_view(chart.visual_config(), studies, basis, theme_accents)
+                        .map(move |message| settings_message(pane, message)),
                 )
             }
             Self::TimeAndSales(Some(panel)) => Some(
@@ -297,9 +591,9 @@ impl PartialEq for Content {
     }
 }
 
-fn settings_message(pane: pane_grid::Pane, message: pane_settings::Message) -> Message {
+fn settings_message(pane: pane_grid::Pane, message: settings::Message) -> Message {
     match message {
-        pane_settings::Message::VisualConfigChanged { config, sync_all } => {
+        settings::Message::VisualConfigChanged { config, sync_all } => {
             Message::VisualConfigChanged(pane, config, sync_all)
         }
         message => Message::PaneEvent(pane, Event::Settings(message)),

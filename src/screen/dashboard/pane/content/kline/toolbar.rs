@@ -1,6 +1,8 @@
 use data::chart::kline as persisted;
 
-use super::{FLOATING_TOOLBAR_HEIGHT, FLOATING_TOOLBAR_MARGIN};
+use super::{FLOATING_TOOLBAR_HANDLE_WIDTH, FLOATING_TOOLBAR_HEIGHT, FLOATING_TOOLBAR_MARGIN};
+use crate::style;
+use iced::{Element, Length};
 
 #[derive(Debug, Clone, Copy)]
 pub enum FloatingToolbarEvent {
@@ -103,4 +105,69 @@ impl FloatingToolbarState {
 
         (position / extent).clamp(0.0, 1.0)
     }
+
+    pub(super) fn content<'a, M: Clone + 'a>(
+        &'a self,
+        controls: Element<'a, M>,
+        overlay_size: iced::Size,
+        map_event: impl Fn(FloatingToolbarEvent) -> M + Copy + 'a,
+    ) -> Element<'a, M> {
+        let drag_handle = iced::widget::mouse_area(
+            iced::widget::container(style::icon_text(style::Icon::DragHandle, 12))
+                .width(FLOATING_TOOLBAR_HANDLE_WIDTH)
+                .height(Length::Fill)
+                .align_x(iced::alignment::Horizontal::Center)
+                .align_y(iced::alignment::Vertical::Center),
+        )
+        .on_move(move |cursor| map_event(FloatingToolbarEvent::HandleMoved(cursor)))
+        .on_press(map_event(FloatingToolbarEvent::DragStarted))
+        .interaction(iced::mouse::Interaction::Grab);
+
+        let scrollable_controls = iced::widget::scrollable::Scrollable::with_direction(
+            controls,
+            iced::widget::scrollable::Direction::Horizontal(
+                iced::widget::scrollable::Scrollbar::new()
+                    .width(6)
+                    .scroller_width(6),
+            ),
+        )
+        .anchor_left()
+        .width(Length::Shrink)
+        .height(Length::Fill)
+        .style(style::scroll_bar);
+        let toolbar = iced::widget::opaque(
+            iced::widget::container(iced::widget::row![drag_handle, scrollable_controls])
+                .style(style::chart_toolbar)
+                .width(Length::Shrink)
+                .height(FLOATING_TOOLBAR_HEIGHT),
+        );
+        let position = self.position_within(overlay_size);
+
+        iced::widget::container(
+            iced::widget::column![
+                iced::widget::space::vertical().height(position.y),
+                iced::widget::row![iced::widget::space::horizontal().width(position.x), toolbar,],
+            ]
+            .width(Length::Fill)
+            .height(Length::Fill),
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+    }
+}
+
+pub(super) fn drag_capture<'a>(overlay_size: iced::Size) -> Element<'a, FloatingToolbarEvent> {
+    iced::widget::mouse_area(
+        iced::widget::space::horizontal()
+            .width(Length::Fill)
+            .height(Length::Fill),
+    )
+    .on_move(move |cursor| FloatingToolbarEvent::DragMoved {
+        cursor,
+        overlay_size,
+    })
+    .on_release(FloatingToolbarEvent::DragFinished)
+    .interaction(iced::mouse::Interaction::Grabbing)
+    .into()
 }

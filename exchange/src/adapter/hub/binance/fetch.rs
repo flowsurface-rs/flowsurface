@@ -12,10 +12,13 @@ use super::{
     THIRTY_DAYS_MS, exchange_from_market_type, raw_qty_unit_from_market_type,
 };
 use crate::adapter::hub::AdapterError;
+use crate::adapter::{KlinePage, kline_page_end};
 use csv::ReaderBuilder;
 use serde::Deserialize;
 use serde_json::Value;
 use std::{collections::HashMap, io::BufReader, path::PathBuf, time::UNIX_EPOCH};
+
+const MAX_KLINE_BARS: u64 = 1_000;
 
 #[derive(Deserialize, Debug, Clone)]
 struct FetchedKline(
@@ -365,12 +368,12 @@ pub(super) async fn fetch_klines(
         let start = start.as_u64();
         let end = end.as_u64();
         let interval_ms = timeframe.to_milliseconds();
-        let num_intervals = ((end - start) / interval_ms).min(1000);
+        let num_intervals = ((end - start) / interval_ms + 1).min(MAX_KLINE_BARS);
 
         if num_intervals < 3 {
-            let new_start = start - (interval_ms * 5);
-            let new_end = end + (interval_ms * 5);
-            let num_intervals = ((new_end - new_start) / interval_ms).min(1000);
+            let new_start = start.saturating_sub(interval_ms * 5);
+            let new_end = end.saturating_add(interval_ms * 5);
+            let num_intervals = ((new_end - new_start) / interval_ms + 1).min(MAX_KLINE_BARS);
 
             url.push_str(&format!(
                 "&startTime={new_start}&endTime={new_end}&limit={num_intervals}"
@@ -451,6 +454,24 @@ pub(super) async fn fetch_klines(
         .collect();
 
     Ok(klines)
+}
+
+pub(super) async fn fetch_klines_page(
+    hub: &mut HttpHub<BinanceLimiter>,
+    ticker_info: TickerInfo,
+    timeframe: Timeframe,
+    from: UnixMs,
+    to: UnixMs,
+) -> Result<KlinePage, AdapterError> {
+    let page_to = kline_page_end(from, to, timeframe, MAX_KLINE_BARS)?;
+    let data = fetch_klines(
+        hub,
+        ticker_info,
+        timeframe,
+        Some((from, page_to.saturating_sub(1))),
+    )
+    .await?;
+    Ok(KlinePage::new(data, from, page_to))
 }
 
 pub(super) async fn fetch_historical_oi(
@@ -661,12 +682,12 @@ async fn get_hist_trades_with_client(
 
         trades.extend(csv_reader.records().filter_map(|record| {
             record.ok().and_then(|record| {
-                let time = record[5].parse::<u64>().ok()?;
-                let is_sell = record[6].parse::<bool>().ok()?;
-                let price_f64 = record[1].parse::<f64>().ok()?;
+                let time = record.get(5)?.parse::<u64>().ok()?;
+                let is_sell = record.get(6)?.parse::<bool>().ok()?;
+                let price_f64 = record.get(1)?.parse::<f64>().ok()?;
 
                 let price = Price::from_f64(price_f64).round_to_min_tick(ticker_info.min_ticksize);
-                let qty = qty_norm.normalize_qty(record[2].parse::<f64>().ok()?, price_f64);
+                let qty = qty_norm.normalize_qty(record.get(2)?.parse::<f64>().ok()?, price_f64);
 
                 Some(Trade {
                     time: time.into(),

@@ -11,9 +11,14 @@ use super::{
     mexc_perps_market_from_symbol, raw_qty_unit_from_market_type,
 };
 use crate::adapter::hub::AdapterError;
+use crate::adapter::{KlinePage, kline_page_end};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
+
+// Spot responses are capped at 500 even with a larger requested limit.
+const MAX_SPOT_KLINE_BARS: u64 = 500;
+const MAX_PERP_KLINE_BARS: u64 = 2_000;
 
 #[allow(dead_code)]
 #[derive(Deserialize, Debug)]
@@ -369,6 +374,16 @@ pub(super) async fn fetch_klines(
     timeframe: Timeframe,
     range: Option<(UnixMs, UnixMs)>,
 ) -> Result<Vec<Kline>, AdapterError> {
+    fetch_klines_with_limit(hub, ticker_info, timeframe, range, None).await
+}
+
+async fn fetch_klines_with_limit(
+    hub: &mut HttpHub<MexcLimiter>,
+    ticker_info: TickerInfo,
+    timeframe: Timeframe,
+    range: Option<(UnixMs, UnixMs)>,
+    limit: Option<u64>,
+) -> Result<Vec<Kline>, AdapterError> {
     let ticker = ticker_info.ticker;
 
     let (symbol_str, market_type) = ticker.to_full_symbol_and_type();
@@ -398,6 +413,12 @@ pub(super) async fn fetch_klines(
         ),
     };
 
+    if market_type == MarketKind::Spot
+        && let Some(limit) = limit
+    {
+        url.push_str(&format!("&limit={limit}"));
+    }
+
     if let Some((start_ms, end_ms)) = range {
         let start_ms = start_ms.as_u64();
         let end_ms = end_ms.as_u64();
@@ -424,7 +445,7 @@ pub(super) async fn fetch_klines(
                 .map(|kline| {
                     let volume = qty_norm.normalize_qty(kline.vol, kline.close);
                     Ok(Kline::new(
-                        kline.close_ts,
+                        kline.open_ts,
                         kline.open,
                         kline.high,
                         kline.low,
@@ -438,6 +459,13 @@ pub(super) async fn fetch_klines(
         MarketKind::LinearPerps | MarketKind::InversePerps => {
             let parsed_response: FuturesApiResponse = sonic_rs::from_str(&response_text)
                 .map_err(|e| AdapterError::ParseError(e.to_string()))?;
+
+            if !parsed_response.success || parsed_response.code != 0 {
+                return Err(AdapterError::ParseError(format!(
+                    "MEXC kline request failed: code {}",
+                    parsed_response.code
+                )));
+            }
 
             let data = &parsed_response.data;
             let times = data["time"]
@@ -461,6 +489,15 @@ pub(super) async fn fetch_klines(
             let volumes = data["vol"]
                 .as_array()
                 .ok_or_else(|| AdapterError::ParseError("Vol array not found".to_string()))?;
+
+            if [opens, highs, lows, closes, amounts, volumes]
+                .iter()
+                .any(|values| values.len() != times.len())
+            {
+                return Err(AdapterError::ParseError(
+                    "MEXC kline arrays have mismatched lengths".to_string(),
+                ));
+            }
 
             (0..times.len())
                 .map(|i| {
@@ -504,4 +541,28 @@ pub(super) async fn fetch_klines(
     };
 
     klines_result
+}
+
+pub(super) async fn fetch_klines_page(
+    hub: &mut HttpHub<MexcLimiter>,
+    ticker_info: TickerInfo,
+    timeframe: Timeframe,
+    from: UnixMs,
+    to: UnixMs,
+) -> Result<KlinePage, AdapterError> {
+    let max_bars = match ticker_info.market_type() {
+        MarketKind::Spot => MAX_SPOT_KLINE_BARS,
+        MarketKind::LinearPerps | MarketKind::InversePerps => MAX_PERP_KLINE_BARS,
+    };
+    let page_to = kline_page_end(from, to, timeframe, max_bars)?;
+    let limit = (ticker_info.market_type() == MarketKind::Spot).then_some(max_bars);
+    let data = fetch_klines_with_limit(
+        hub,
+        ticker_info,
+        timeframe,
+        Some((from, page_to.saturating_sub(1))),
+        limit,
+    )
+    .await?;
+    Ok(KlinePage::new(data, from, page_to))
 }

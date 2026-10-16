@@ -11,7 +11,7 @@ An open-source native desktop charting application for crypto markets. Supports 
 
 <div align="center">
   <img
-    src="https://github.com/user-attachments/assets/baddc444-e079-48e5-82b2-4f97094eba07"
+    src="assets/screenshot.png"
     alt="Flowsurface screenshot"
     style="max-width: 100%; height: auto;"
   />
@@ -19,13 +19,14 @@ An open-source native desktop charting application for crypto markets. Supports 
 
 ### Key Features
 
-- Multiple chart/panel types:
-    - **Heatmap (Historical DOM):** Uses live trades and L2 orderbook to create a time-series heatmap chart. Supports customizable price grouping, different time aggregations, fixed or visible range volume profile.
-    - **Candlestick:** Traditional kline chart supporting both time-based and custom tick-based intervals.
-    - **Footprint:** Price grouped and interval aggregated views for trades on top of a candlestick chart. Supports different clustering methods, configurable imbalance and naked-POC studies.
+- Multiple chart/pane types:
     - **Time & Sales:** Scrollable list of live trades.
     - **DOM (Depth of Market) / Ladder:** Displays current L2 orderbook alongside recent trade volumes on grouped price levels.
-    - **Comparison:** Line graph for comparing multiple data sources, normalized by kline `close` prices on a percentage scale
+    - **Heatmap (Historical DOM):** Uses live trades and orderbook to display a time-series heatmap chart. Supports customizable price grouping, different time aggregations, fixed or visible range volume profile.
+    - **Candlestick:** Includes footprints, profiles, indicators with time-based or custom tick-based intervals.
+        - **Order flow:** Footprints with bid/ask, volume, delta, and table views; configurable price grouping, imbalance highlighting, POC and naked-POC levels, and large-trade markers.
+        - **Profiles:** Visible-range and recurring volume profiles, plus daily, weekly, or monthly TPO profiles with value areas, initial balance, single prints, and interactive splitting and merging.
+        - **Scriptable indicators:** Use bundled indicators, install more from the catalog, or write your own with the `.ind` DSL. Display overlays or separate panels, resize and reorder panels, and feed compatible indicator outputs into other indicators. See [Indicators](#indicators) to get started.
 - Real-time sound effects driven by trade streams
 - [\*](#platform-notes)Multi window/monitor support on macOS and Linux.
 - Pane linking for quickly switching tickers across multiple panes.
@@ -36,7 +37,7 @@ An open-source native desktop charting application for crypto markets. Supports 
 By default, Flowsurface captures and plots live trades in real time via WebSocket.
 
 To backfill the visible time range on footprint charts, enable **trade fetching**
-in Settings → Network. Three modes are available:
+in Settings → Network, apply the settings, then restart Flowsurface. Three modes are available:
 
 - **Exchange**: Fetches directly from Binance's public REST API and bulk data
   mirrors ([data.binance.vision](https://data.binance.vision/)). Fast for
@@ -50,6 +51,10 @@ in Settings → Network. Three modes are available:
     - Schema (columns matched by name, order not significant):
 
         `ts (int64)`, `price (float64)`, `qty (float64)`, `is_sell (bool)`
+
+        Use Unix milliseconds for `ts`, `from`, and `to`. Quantities are in base
+        units for spot/linear markets and quote notional for inverse markets.
+        Return the oldest matching trades first, in ascending timestamp order.
 
     - Query parameters:
       `venue`, `market`, `symbol`, `from` (inclusive), `to` (inclusive), `limit`
@@ -69,6 +74,29 @@ in Settings → Network. Three modes are available:
 ##### Historical klines, open interest, and ticker metadata/stats are always fetched from exchange REST APIs.
 
 ##### Live trades, orderbook and kline updates are streamed from exchange WebSocket feeds.
+
+## Indicators
+
+Candlestick/footprint charts include [bundled indicators](data/indicators/README.md).
+Add more from the optional [catalog](indicators/sources/) or write your own `.ind` files;
+installing indicators does not require rebuilding the app.
+
+To install, go to **Settings → Open data folder** and copy the desired catalog
+`.ind` files into `indicators/` subfolder there. Restart the app, then add them
+through the chart pane's **Indicators** sidebar. The data directory is `$FLOWSURFACE_DATA_PATH`
+when set, otherwise your platform's data directory under `flowsurface/`.
+See [installation details](indicators/README.md#install-and-run) for path overrides
+and loading behavior.
+
+From a source checkout, you can load the catalog directly:
+
+```sh
+FLOWSURFACE_INDICATORS_PATH="$PWD/indicators/sources" cargo run
+```
+
+To create an indicator, see the [language reference and examples](indicator-engine/LANGUAGE.md)
+and the [CLI workflow](indicator-engine/README.md#cli) for scaffolding, checking,
+and testing sources.
 
 ## Installation
 
@@ -133,13 +161,6 @@ cargo run --release
 
 </details>
 
-## Indicator sources
-
-Flowsurface includes an app-managed core indicator collection and supports optional
-filesystem-installed sources. See [`indicators/README.md`](./indicators/README.md)
-for the repository layout and installation directory. Source files use the
-final segment of their DSL ID as the filename, and duplicate names fail startup.
-
 ## Community
 
 Discord: https://discord.gg/RN2XAF7ZuR
@@ -153,4 +174,14 @@ Discord: https://discord.gg/RN2XAF7ZuR
 
 ## License
 
-Flowsurface is released under the [GPLv3](./LICENSE) license. Contributions to the project are shared under the same license.
+Flowsurface is released under [GPL-3.0-or-later](LICENSE).
+Some components use separate licenses:
+
+| Component                                                                    | License                                |
+| ---------------------------------------------------------------------------- | -------------------------------------- |
+| Application, data crate, and [bundled indicators](data/indicators/README.md) | [GPL-3.0-or-later](LICENSE)            |
+| Indicator engine and CLI                                                     | [Apache-2.0](indicator-engine/LICENSE) |
+| Indicator catalog and its documentation                                      | [Apache-2.0](indicators/LICENSE)       |
+| Exchange adapters (`flowsurface-exchange`)                                   | [MIT](exchange/LICENSE)                |
+
+Contributions follow the license of the component being changed; see the [catalog contribution guidelines](indicators/CONTRIBUTING.md) for indicator submissions.

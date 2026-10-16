@@ -1,81 +1,12 @@
-use crate::aggr::time::DataPoint;
+use super::poc::{NPoc, PointOfControl};
 use exchange::{
-    Kline, Trade, UnixMs,
+    Trade, UnixMs,
     unit::price::{Price, PriceStep},
     unit::qty::Qty,
 };
 
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
-
-#[derive(Clone)]
-pub struct KlineDataPoint {
-    pub kline: Kline,
-    pub footprint: KlineTrades,
-}
-
-impl KlineDataPoint {
-    pub fn max_cluster_qty(&self, cluster_kind: ClusterKind, highest: Price, lowest: Price) -> Qty {
-        self.footprint
-            .max_cluster_qty(cluster_kind, highest, lowest)
-    }
-
-    pub fn add_trade(&mut self, trade: &Trade, step: PriceStep) {
-        self.footprint.add_trade_to_nearest_bin(trade, step);
-    }
-
-    pub fn poc_price(&self) -> Option<Price> {
-        self.footprint.poc_price()
-    }
-
-    pub fn set_poc_status(&mut self, status: NPoc) {
-        self.footprint.set_poc_status(status);
-    }
-
-    pub fn clear_trades(&mut self) {
-        self.footprint.clear();
-    }
-
-    pub fn calculate_poc(&mut self) {
-        self.footprint.calculate_poc();
-    }
-
-    pub fn last_trade_time(&self) -> Option<UnixMs> {
-        self.footprint.last_trade_t()
-    }
-
-    pub fn first_trade_time(&self) -> Option<UnixMs> {
-        self.footprint.first_trade_t()
-    }
-
-    pub fn volume_delta(&self) -> Qty {
-        if self.kline.volume.is_directional() {
-            self.kline.volume.delta()
-        } else if !self.footprint.trades.is_empty() {
-            self.footprint
-                .trades
-                .values()
-                .fold(Qty::ZERO, |acc, group| acc + group.delta_qty())
-        } else {
-            Qty::ZERO
-        }
-    }
-
-    /// Whether this datapoint has directional (buy vs sell) data.
-    pub fn is_directional(&self) -> bool {
-        !self.footprint.trades.is_empty() || self.kline.volume.is_directional()
-    }
-}
-
-impl DataPoint for KlineDataPoint {
-    fn add_trade(&mut self, trade: &Trade, step: PriceStep) {
-        self.add_trade(trade, step);
-    }
-
-    fn clear_trades(&mut self) {
-        self.clear_trades();
-    }
-}
 
 #[derive(Debug, Clone, Default)]
 pub struct GroupedTrades {
@@ -115,7 +46,17 @@ impl GroupedTrades {
             self.buy_qty += trade.qty;
             self.buy_count += 1;
         }
-        self.last_time = trade.time;
+        self.first_time = self.first_time.min(trade.time);
+        self.last_time = self.last_time.max(trade.time);
+    }
+
+    pub fn merge(&mut self, other: &Self) {
+        self.buy_qty += other.buy_qty;
+        self.sell_qty += other.sell_qty;
+        self.buy_count += other.buy_count;
+        self.sell_count += other.sell_count;
+        self.first_time = self.first_time.min(other.first_time);
+        self.last_time = self.last_time.max(other.last_time);
     }
 
     pub fn total_qty(&self) -> Qty {
@@ -138,6 +79,7 @@ impl GroupedTrades {
 #[derive(Debug, Clone, Default)]
 pub struct KlineTrades {
     pub trades: FxHashMap<Price, GroupedTrades>,
+    exact_trades: FxHashMap<Price, GroupedTrades>,
     pub poc: Option<PointOfControl>,
 }
 
@@ -157,6 +99,7 @@ impl KlineTrades {
     pub fn new() -> Self {
         Self {
             trades: FxHashMap::default(),
+            exact_trades: FxHashMap::default(),
             poc: None,
         }
     }
@@ -201,6 +144,10 @@ impl KlineTrades {
     /// Ties (exactly half a step) round up to the higher multiple.
     /// Intended for footprint/OHLC trade aggregation
     pub fn add_trade_to_nearest_bin(&mut self, trade: &Trade, step: PriceStep) {
+        self.exact_trades
+            .entry(trade.price)
+            .and_modify(|group| group.add_trade(trade))
+            .or_insert_with(|| GroupedTrades::new(trade));
         let price = trade.price.round_to_step(step);
 
         self.trades
@@ -209,8 +156,21 @@ impl KlineTrades {
             .or_insert_with(|| GroupedTrades::new(trade));
     }
 
+    /// Rebins retained exact-price trades without replaying individual trades.
+    pub fn regroup(&mut self, step: PriceStep) {
+        self.trades.clear();
+        self.poc = None;
+        for (&price, group) in &self.exact_trades {
+            self.trades
+                .entry(price.round_to_step(step))
+                .and_modify(|current| current.merge(group))
+                .or_insert_with(|| group.clone());
+        }
+        self.calculate_poc();
+    }
+
     /// Max of some extracted qty across price levels within [`lowest`, `highest`].
-    pub fn max_qty_by<F>(&self, highest: Price, lowest: Price, f: F) -> Qty
+    fn max_qty_by<F>(&self, highest: Price, lowest: Price, f: F) -> Qty
     where
         F: Fn(&GroupedTrades) -> Qty,
     {
@@ -240,6 +200,8 @@ impl KlineTrades {
             .unwrap_or_default()
     }
 
+    /// Selects the highest-volume row and resets its fill status.
+    /// For equal positive volumes, chooses the highest price.
     pub fn calculate_poc(&mut self) {
         if self.trades.is_empty() {
             return;
@@ -250,7 +212,9 @@ impl KlineTrades {
 
         for (price, group) in &self.trades {
             let total_volume = group.total_qty();
-            if total_volume > max_volume {
+            if total_volume > max_volume
+                || (total_volume == max_volume && !total_volume.is_zero() && *price > poc_price)
+            {
                 max_volume = total_volume;
                 poc_price = *price;
             }
@@ -275,52 +239,8 @@ impl KlineTrades {
 
     pub fn clear(&mut self) {
         self.trades.clear();
+        self.exact_trades.clear();
         self.poc = None;
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct FootprintSummary {
-    pub buy: Qty,
-    pub sell: Qty,
-    pub total: Qty,
-    pub delta: Qty,
-    pub delta_pct: f64,
-}
-
-impl FootprintSummary {
-    pub fn new(buy: Qty, sell: Qty) -> Self {
-        let total = buy + sell;
-        let delta = buy - sell;
-        let total_f = total.to_f64();
-        let delta_pct = if total_f > 0.0 {
-            (delta.to_f64() / total_f) * 100.0
-        } else {
-            0.0
-        };
-
-        Self {
-            buy,
-            sell,
-            total,
-            delta,
-            delta_pct,
-        }
-    }
-
-    pub fn from_trades(footprint: &KlineTrades) -> Option<Self> {
-        if footprint.trades.is_empty() {
-            return None;
-        }
-
-        let (buy, sell) = footprint
-            .trades
-            .values()
-            .fold((Qty::ZERO, Qty::ZERO), |(buy, sell), group| {
-                (buy + group.buy_qty, sell + group.sell_qty)
-            });
-
-        Some(Self::new(buy, sell))
     }
 }
 
@@ -340,15 +260,6 @@ impl ClusterKind {
         ClusterKind::DeltaProfile,
         ClusterKind::Table,
     ];
-
-    /// Minimum footprint cell width (in unscaled pixels) for the cluster rendering mode.
-    pub fn min_footprint_width(self) -> f32 {
-        match self {
-            ClusterKind::VolumeProfile | ClusterKind::DeltaProfile => 80.0,
-            ClusterKind::BidAsk => 120.0,
-            ClusterKind::Table => 100.0,
-        }
-    }
 }
 
 impl std::fmt::Display for ClusterKind {
@@ -406,40 +317,3 @@ impl std::fmt::Display for ClusterScaling {
 }
 
 impl std::cmp::Eq for ClusterScaling {}
-
-#[derive(Debug, Clone, Copy)]
-pub struct PointOfControl {
-    pub price: Price,
-    pub volume: Qty,
-    pub status: NPoc,
-}
-
-impl Default for PointOfControl {
-    fn default() -> Self {
-        Self {
-            price: Price::from_f32(0.0),
-            volume: Qty::ZERO,
-            status: NPoc::default(),
-        }
-    }
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum NPoc {
-    #[default]
-    None,
-    Naked,
-    Filled {
-        at: u64,
-    },
-}
-
-impl NPoc {
-    pub fn filled(&mut self, at: u64) {
-        *self = NPoc::Filled { at };
-    }
-
-    pub fn unfilled(&mut self) {
-        *self = NPoc::Naked;
-    }
-}

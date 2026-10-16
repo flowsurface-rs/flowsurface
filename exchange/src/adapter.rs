@@ -550,3 +550,35 @@ impl<I> StreamConfig<I> {
         }
     }
 }
+
+#[derive(Debug, Clone)]
+pub struct KlinePage {
+    pub data: Vec<Kline>,
+    pub next_from: UnixMs,
+}
+
+impl KlinePage {
+    pub(crate) fn new(mut data: Vec<Kline>, from: UnixMs, next_from: UnixMs) -> Self {
+        data.retain(|kline| kline.time >= from && kline.time < next_from);
+        data.sort_unstable_by_key(|kline| kline.time);
+        data.dedup_by_key(|kline| kline.time);
+        Self { data, next_from }
+    }
+}
+
+fn kline_page_end(
+    from: UnixMs,
+    to: UnixMs,
+    timeframe: Timeframe,
+    max_bars: u64,
+) -> Result<UnixMs, AdapterError> {
+    if from >= to || max_bars == 0 {
+        return Err(AdapterError::InvalidRequest(
+            "Invalid kline page range".to_string(),
+        ));
+    }
+
+    Ok(from
+        .saturating_add(timeframe.to_milliseconds().max(1).saturating_mul(max_bars))
+        .min(to))
+}

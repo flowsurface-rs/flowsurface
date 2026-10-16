@@ -1,10 +1,9 @@
 mod instance;
-pub(crate) mod scene;
-pub(crate) mod ui;
-pub(crate) mod view;
-mod widget;
+pub mod scene;
+pub mod ui;
+pub mod view;
 
-pub(crate) use instance::InstanceBuilder;
+pub use instance::InstanceBuilder;
 
 use crate::widget::chart::heatmap::scene::{InteractionKind, Scene};
 use crate::widget::chart::heatmap::ui::AxisInteraction;

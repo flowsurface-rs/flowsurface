@@ -1,33 +1,15 @@
 use super::YUnit;
-use super::indicators::IndicatorOutputRef;
-use exchange::TickerInfo;
+use super::indicators::{IndicatorAttachmentMode, IndicatorPanelRecipe};
+use super::{IndicatorId, IndicatorInstanceId, IndicatorInstanceStore, IndicatorOutputRef};
 use exchange::unit::{Power10, Price, PriceStep, Qty};
+use exchange::{Ticker, TickerInfo};
+use indicator_engine::PaneTarget;
+use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
-use std::collections::BTreeSet;
-
-fn format_pct(value: f32, step: f32, show_decimals: bool) -> String {
-    let precision = if show_decimals || step.fract() != 0.0 {
-        if step >= 1.0 {
-            1
-        } else if step >= 0.1 {
-            2
-        } else {
-            3
-        }
-    } else if step >= 1.0 {
-        0
-    } else if step >= 0.1 {
-        1
-    } else {
-        2
-    };
-
-    format!("{value:+.*}%", precision)
-}
 
 pub const DEFAULT_MIN_PANEL_RATIO: f32 = 0.08;
-pub const DEFAULT_AUXILIARY_PANEL_RATIO: f32 = 0.15;
+const DEFAULT_AUXILIARY_PANEL_RATIO: f32 = 0.15;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PanelId(pub u32);
@@ -77,10 +59,7 @@ pub enum MarkKind {
 
 impl MarkKind {
     pub const fn supports_line_styling(self) -> bool {
-        matches!(
-            self,
-            Self::Line | Self::StepLine | Self::Area | Self::Segment | Self::HorizontalLevel
-        )
+        self.is_line_like()
     }
 
     pub const fn is_line_like(self) -> bool {
@@ -93,10 +72,7 @@ impl MarkKind {
     /// Marks that consume a bar-anchored numeric series. Sparse outputs are
     /// joined only across consecutive available samples by the renderer.
     pub const fn is_series_line_like(self) -> bool {
-        matches!(
-            self,
-            Self::Line | Self::StepLine | Self::Area | Self::Segment | Self::HorizontalLevel
-        )
+        self.is_line_like()
     }
 }
 
@@ -120,7 +96,7 @@ pub enum BarMode {
     Histogram(HistogramMode),
 }
 
-pub const fn default_bar_mode_for_data_kind(data_kind: LayerDataKind) -> BarMode {
+const fn default_bar_mode_for_data_kind(data_kind: LayerDataKind) -> BarMode {
     match data_kind {
         LayerDataKind::Histogram => BarMode::Histogram(HistogramMode::Plain),
         LayerDataKind::Ohlc | LayerDataKind::Scalar | LayerDataKind::Range => BarMode::Regular,
@@ -196,11 +172,10 @@ pub enum AxisBinding {
     Secondary,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DataSourceId {
     Primary,
-    Symbol(&'static str),
-    Synthetic(&'static str),
+    Comparison(Ticker),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -254,6 +229,26 @@ impl PanelScaleMode {
         if !self.uses_percent_base() {
             return None;
         }
+
+        let format_pct = |value: f32, step: f32, show_decimals: bool| {
+            let precision = if show_decimals || step.fract() != 0.0 {
+                if step >= 1.0 {
+                    1
+                } else if step >= 0.1 {
+                    2
+                } else {
+                    3
+                }
+            } else if step >= 1.0 {
+                0
+            } else if step >= 0.1 {
+                1
+            } else {
+                2
+            };
+
+            format!("{value:+.*}%", precision)
+        };
 
         Some(format_pct(display_value, display_step, show_decimals))
     }
@@ -570,7 +565,7 @@ impl PanelValuePrecision {
         (y_unit.0 as f64) * step
     }
 
-    pub fn quantize_value(
+    fn quantize_value(
         self,
         value: f64,
         base_ticker: Option<TickerInfo>,
@@ -731,7 +726,7 @@ impl Default for LayerStyle {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LayerSpec {
     pub id: LayerId,
     pub name: String,
@@ -750,7 +745,7 @@ impl LayerSpec {
         self.mark_override.unwrap_or(self.mark)
     }
 
-    pub fn is_histogram_like(&self) -> bool {
+    fn is_histogram_like(&self) -> bool {
         matches!(self.axis, AxisBinding::Secondary)
             || matches!(self.data_kind, LayerDataKind::Histogram)
     }
@@ -774,15 +769,9 @@ impl LayerSource {
             _ => None,
         }
     }
-
-    pub fn is_indicator_output(&self, instance_id: PanelValueId, channel_id: &str) -> bool {
-        self.indicator_output().is_some_and(|output| {
-            output.instance_id == instance_id && output.channel_id == channel_id
-        })
-    }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PanelSpec {
     pub id: PanelId,
     pub role: PanelRole,
@@ -798,7 +787,101 @@ pub struct PanelSpec {
 }
 
 impl PanelSpec {
-    pub fn data_hint(&self) -> PanelDataHint {
+    pub fn effective_data_kind(&self) -> LayerDataKind {
+        let fallback = match self.role {
+            PanelRole::Primary => LayerDataKind::Ohlc,
+            PanelRole::Auxiliary => LayerDataKind::Scalar,
+        };
+
+        self.base_layer
+            .and_then(|base| self.layers.iter().find(|layer| layer.id == base))
+            .or_else(|| self.layers.first())
+            .map(|layer| layer.data_kind)
+            .unwrap_or(fallback)
+    }
+
+    pub fn effective_mark(&self) -> MarkKind {
+        let fallback = match self.role {
+            PanelRole::Primary => default_mark_for_data_kind(LayerDataKind::Ohlc),
+            PanelRole::Auxiliary => MarkKind::Bar(BarMode::Histogram(HistogramMode::Plain)),
+        };
+
+        let base_layer_id = self
+            .base_layer
+            .or_else(|| self.layers.first().map(|layer| layer.id));
+
+        let resolved_marks = self.resolved_marks();
+
+        base_layer_id
+            .and_then(|base| {
+                resolved_marks
+                    .iter()
+                    .find(|(layer_id, _)| *layer_id == base)
+                    .map(|(_, mark)| *mark)
+            })
+            .or_else(|| resolved_marks.first().map(|(_, mark)| *mark))
+            .unwrap_or(fallback)
+    }
+
+    pub fn resolved_marks(&self) -> Vec<(LayerId, MarkKind)> {
+        let is_multi_source = self.uses_multi_source();
+
+        self.layers
+            .iter()
+            .map(|layer| {
+                let mut mark = layer.effective_mark();
+
+                if self.comparison_policy.force_line_for_non_base_sources
+                    && is_multi_source
+                    && self.base_layer != Some(layer.id)
+                {
+                    mark = MarkKind::Line;
+                }
+
+                (layer.id, resolve_mark_for_data_kind(mark, layer.data_kind))
+            })
+            .collect()
+    }
+
+    fn add_layer(&mut self, layer: LayerSpec) -> bool {
+        let layer_id = layer.id;
+        self.layers.push(layer);
+        if self.base_layer.is_none() {
+            self.base_layer = Some(layer_id);
+        }
+        self.enforce_comparison_mark_policy();
+
+        true
+    }
+
+    fn remove_layer(&mut self, layer_id: LayerId) -> bool {
+        let Some(index) = self.layers.iter().position(|layer| layer.id == layer_id) else {
+            return false;
+        };
+
+        self.layers.remove(index);
+
+        if self.base_layer == Some(layer_id) {
+            self.base_layer = self.layers.first().map(|layer| layer.id);
+        }
+
+        self.enforce_comparison_mark_policy();
+        true
+    }
+
+    pub fn indicator_visible(&self, id: PanelValueId) -> bool {
+        self.layers.iter().any(|layer| {
+            layer.visible
+                && (!matches!(self.presentation, PanelPresentation::Table)
+                    || layer.purpose == LayerPurpose::TableBinding)
+                && layer
+                    .source
+                    .indicator_output()
+                    .is_some_and(|output| output.instance_id == id)
+        })
+    }
+
+    fn data_hint(&self) -> PanelDataHint {
         if matches!(self.presentation, PanelPresentation::Table) {
             return PanelDataHint::TableLike;
         }
@@ -810,11 +893,11 @@ impl PanelSpec {
         }
     }
 
-    pub fn source_count(&self) -> usize {
+    fn source_count(&self) -> usize {
         self.layers
             .iter()
             .filter_map(LayerSpec::source_id)
-            .collect::<BTreeSet<DataSourceId>>()
+            .collect::<FxHashSet<DataSourceId>>()
             .len()
     }
 
@@ -822,7 +905,7 @@ impl PanelSpec {
         self.source_count() > 1
     }
 
-    pub fn effective_scale_mode(&self) -> PanelScaleMode {
+    fn effective_scale_mode(&self) -> PanelScaleMode {
         if self.comparison_policy.force_percent_scale_on_multi_source && self.uses_multi_source() {
             PanelScaleMode::PercentFromBase
         } else {
@@ -830,17 +913,7 @@ impl PanelSpec {
         }
     }
 
-    pub fn set_base_layer(&mut self, layer_id: LayerId) -> bool {
-        if self.layers.iter().any(|layer| layer.id == layer_id) {
-            self.base_layer = Some(layer_id);
-            self.enforce_comparison_mark_policy();
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn set_layer_mark(&mut self, layer_id: LayerId, mark: MarkKind) -> bool {
+    fn set_layer_mark(&mut self, layer_id: LayerId, mark: MarkKind) -> bool {
         let is_multi_source = self.uses_multi_source();
         let force_line = self.comparison_policy.force_line_for_non_base_sources
             && is_multi_source
@@ -854,7 +927,7 @@ impl PanelSpec {
         true
     }
 
-    pub fn enforce_comparison_mark_policy(&mut self) {
+    fn enforce_comparison_mark_policy(&mut self) {
         if !(self.comparison_policy.force_line_for_non_base_sources && self.uses_multi_source()) {
             return;
         }
@@ -867,6 +940,15 @@ impl PanelSpec {
     }
 }
 
+/// Chart panels and their cumulative height ratios.
+///
+/// Adding an auxiliary panel takes height from the primary; removing one
+/// returns its height to the primary. Surviving auxiliary panels retain
+/// their ratios, subject to minimum-height normalization. Reordering
+/// carries each panel's ratio with it. Heights are proportional, not pixels.
+///
+/// New auxiliary panels receive up to 15%, reduced to an 8% minimum when
+/// space is limited. The primary must retain at least 8%.
 #[derive(Debug, Clone)]
 pub struct ChartComposition {
     pub panels: Vec<PanelSpec>,
@@ -877,11 +959,27 @@ pub struct ChartComposition {
 }
 
 impl ChartComposition {
-    pub fn indicator_outputs(&self) -> impl Iterator<Item = &IndicatorOutputRef> {
-        self.panels
-            .iter()
-            .flat_map(|panel| panel.layers.iter())
-            .filter_map(|layer| layer.source.indicator_output())
+    pub fn comparison_layer(&self, ticker: TickerInfo) -> Option<&LayerSpec> {
+        let panel = self.panel(self.primary_panel_id()?)?;
+        panel.layers.iter().find(|layer| {
+            matches!(
+                layer.source,
+                LayerSource::RawKline {
+                    source: DataSourceId::Comparison(source)
+                } if source == ticker.ticker
+            )
+        })
+    }
+
+    pub fn toggle_comparison_visibility(&mut self, ticker: TickerInfo) -> bool {
+        let Some(panel_id) = self.primary_panel_id() else {
+            return false;
+        };
+        let Some(layer) = self.comparison_layer(ticker) else {
+            return false;
+        };
+        let (layer_id, visible) = (layer.id, !layer.visible);
+        self.set_panel_layer_visibility(panel_id, layer_id, visible)
     }
 
     pub fn prototype_kline() -> Self {
@@ -967,7 +1065,7 @@ impl ChartComposition {
         self.panels.iter().find(|panel| panel.id == panel_id)
     }
 
-    pub fn panel_mut(&mut self, panel_id: PanelId) -> Option<&mut PanelSpec> {
+    fn panel_mut(&mut self, panel_id: PanelId) -> Option<&mut PanelSpec> {
         self.panels.iter_mut().find(|panel| panel.id == panel_id)
     }
 
@@ -975,46 +1073,12 @@ impl ChartComposition {
         self.panel(panel_id).map(PanelSpec::effective_scale_mode)
     }
 
-    pub fn panel_effective_data_kind(&self, panel_id: PanelId) -> Option<LayerDataKind> {
-        let panel = self.panel(panel_id)?;
-
-        let fallback = match panel.role {
-            PanelRole::Primary => LayerDataKind::Ohlc,
-            PanelRole::Auxiliary => LayerDataKind::Scalar,
-        };
-
-        panel
-            .base_layer
-            .and_then(|base| panel.layers.iter().find(|layer| layer.id == base))
-            .or_else(|| panel.layers.first())
-            .map(|layer| layer.data_kind)
-            .or(Some(fallback))
+    pub fn panel_effective_mark(&self, panel_id: PanelId) -> Option<MarkKind> {
+        self.panel(panel_id).map(PanelSpec::effective_mark)
     }
 
-    pub fn panel_effective_mark(&self, panel_id: PanelId) -> Option<MarkKind> {
-        let panel = self.panel(panel_id)?;
-
-        let fallback = match panel.role {
-            PanelRole::Primary => default_mark_for_data_kind(LayerDataKind::Ohlc),
-            PanelRole::Auxiliary => MarkKind::Bar(BarMode::Histogram(HistogramMode::Plain)),
-        };
-
-        let base_layer_id = panel
-            .base_layer
-            .or_else(|| panel.layers.first().map(|layer| layer.id));
-
-        self.resolved_panel_marks(panel_id)
-            .and_then(|resolved_marks| {
-                base_layer_id
-                    .and_then(|base| {
-                        resolved_marks
-                            .iter()
-                            .find(|(layer_id, _)| *layer_id == base)
-                            .map(|(_, mark)| *mark)
-                    })
-                    .or_else(|| resolved_marks.first().map(|(_, mark)| *mark))
-            })
-            .or(Some(fallback))
+    pub fn resolved_panel_marks(&self, panel_id: PanelId) -> Option<Vec<(LayerId, MarkKind)>> {
+        self.panel(panel_id).map(PanelSpec::resolved_marks)
     }
 
     pub fn panel_value_precision(&self, panel_id: PanelId) -> Option<PanelValuePrecision> {
@@ -1108,15 +1172,32 @@ impl ChartComposition {
         true
     }
 
-    pub fn add_aux_panel(
+    /// Returns `None` if no primary panel exists or it cannot supply the
+    /// minimum auxiliary height while retaining its own minimum height.
+    fn add_aux_panel(
         &mut self,
         title: impl Into<String>,
         layers: Vec<LayerSpec>,
         value_precision: Option<PanelValuePrecision>,
         value_label_policy: PanelValueLabelPolicy,
         presentation: PanelPresentation,
-    ) -> PanelId {
-        let use_default_auxiliary_ratio = self.panels.len() == 1 && self.splits.is_empty();
+    ) -> Option<PanelId> {
+        let mut heights = self.normalized_panel_heights(DEFAULT_MIN_PANEL_RATIO);
+        let primary_index = self
+            .panels
+            .iter()
+            .position(|panel| panel.role == PanelRole::Primary)?;
+        let available_height = heights[primary_index] - DEFAULT_MIN_PANEL_RATIO;
+        if available_height + f32::EPSILON < DEFAULT_MIN_PANEL_RATIO {
+            return None;
+        }
+        let preferred_height = self
+            .panels
+            .last()
+            .filter(|panel| panel.role == PanelRole::Auxiliary)
+            .and_then(|_| heights.last().copied())
+            .unwrap_or(DEFAULT_AUXILIARY_PANEL_RATIO);
+        let auxiliary_height = preferred_height.min(available_height.max(DEFAULT_MIN_PANEL_RATIO));
         let panel_id = self.new_panel_id();
         let base_layer = layers.first().map(|layer| layer.id);
         self.panels.push(PanelSpec {
@@ -1133,18 +1214,28 @@ impl ChartComposition {
             layers,
         });
 
-        self.ensure_split_count();
-        if use_default_auxiliary_ratio {
-            self.splits[0] = 1.0 - DEFAULT_AUXILIARY_PANEL_RATIO;
-        }
+        heights[primary_index] -= auxiliary_height;
+        heights.push(auxiliary_height);
+        self.splits = Self::splits_from_heights(&heights);
         self.splits = self.normalized_splits(DEFAULT_MIN_PANEL_RATIO);
-        panel_id
+        Some(panel_id)
     }
 
-    pub fn add_table_panel(&mut self, title: impl Into<String>, source: DataSourceId) -> PanelId {
+    fn add_table_panel(
+        &mut self,
+        title: impl Into<String>,
+        source: DataSourceId,
+    ) -> Option<PanelId> {
         let title = title.into();
-        let mut layer = self.new_layer(
+        let panel_id = self.add_aux_panel(
             title.clone(),
+            Vec::new(),
+            None,
+            PanelValueLabelPolicy::default(),
+            PanelPresentation::Table,
+        )?;
+        let mut layer = self.new_layer(
+            title,
             LayerSource::RawKline { source },
             LayerDataKind::Scalar,
             MarkKind::Line,
@@ -1152,31 +1243,21 @@ impl ChartComposition {
         );
         layer.purpose = LayerPurpose::TableBinding;
 
-        self.add_aux_panel(
-            title,
-            vec![layer],
-            None,
-            PanelValueLabelPolicy::default(),
-            PanelPresentation::Table,
-        )
+        self.add_layer_to_panel(panel_id, layer);
+        Some(panel_id)
     }
 
-    pub fn add_layer_to_panel(&mut self, panel_id: PanelId, layer: LayerSpec) -> bool {
-        let Some(panel) = self.panel_mut(panel_id) else {
-            return false;
-        };
-
-        let layer_id = layer.id;
-        panel.layers.push(layer);
-        if panel.base_layer.is_none() {
-            panel.base_layer = Some(layer_id);
-        }
-        panel.enforce_comparison_mark_policy();
-
-        true
+    fn add_layer_to_panel(&mut self, panel_id: PanelId, layer: LayerSpec) -> bool {
+        self.panel_mut(panel_id)
+            .is_some_and(|panel| panel.add_layer(layer))
     }
 
-    pub fn add_comparison_source_to_panel(
+    fn remove_layer_from_panel(&mut self, panel_id: PanelId, layer_id: LayerId) -> bool {
+        self.panel_mut(panel_id)
+            .is_some_and(|panel| panel.remove_layer(layer_id))
+    }
+
+    fn add_comparison_source_to_panel(
         &mut self,
         panel_id: PanelId,
         source: DataSourceId,
@@ -1211,20 +1292,7 @@ impl ChartComposition {
         true
     }
 
-    pub fn set_panel_value_precision(
-        &mut self,
-        panel_id: PanelId,
-        value_precision: Option<PanelValuePrecision>,
-    ) -> bool {
-        let Some(panel) = self.panel_mut(panel_id) else {
-            return false;
-        };
-
-        panel.value_precision = value_precision;
-        true
-    }
-
-    pub fn set_panel_layer_mark(
+    fn set_panel_layer_mark(
         &mut self,
         panel_id: PanelId,
         layer_id: LayerId,
@@ -1237,7 +1305,7 @@ impl ChartComposition {
         panel.set_layer_mark(layer_id, mark)
     }
 
-    pub fn set_panel_layer_visibility(
+    fn set_panel_layer_visibility(
         &mut self,
         panel_id: PanelId,
         layer_id: LayerId,
@@ -1258,7 +1326,7 @@ impl ChartComposition {
         true
     }
 
-    pub fn clear_panel_layer_mark(&mut self, panel_id: PanelId, layer_id: LayerId) -> bool {
+    fn clear_panel_layer_mark(&mut self, panel_id: PanelId, layer_id: LayerId) -> bool {
         let Some(panel) = self.panel_mut(panel_id) else {
             return false;
         };
@@ -1266,89 +1334,6 @@ impl ChartComposition {
             return false;
         };
         layer.mark_override.take().is_some()
-    }
-
-    pub fn set_panel_layer_data_kind(
-        &mut self,
-        panel_id: PanelId,
-        layer_id: LayerId,
-        data_kind: LayerDataKind,
-    ) -> bool {
-        let Some(panel) = self.panel_mut(panel_id) else {
-            return false;
-        };
-
-        let Some(layer) = panel.layers.iter_mut().find(|layer| layer.id == layer_id) else {
-            return false;
-        };
-
-        layer.data_kind = data_kind;
-        if matches!(layer.effective_mark(), MarkKind::Bar(_)) {
-            layer.mark_override = Some(MarkKind::Bar(default_bar_mode_for_data_kind(data_kind)));
-        }
-        true
-    }
-
-    pub fn set_panel_layer_bar_mode(
-        &mut self,
-        panel_id: PanelId,
-        layer_id: LayerId,
-        mode: BarMode,
-    ) -> bool {
-        let Some(panel) = self.panel_mut(panel_id) else {
-            return false;
-        };
-
-        let Some(layer) = panel.layers.iter_mut().find(|layer| layer.id == layer_id) else {
-            return false;
-        };
-
-        layer.mark_override = Some(MarkKind::Bar(mode));
-        panel.enforce_comparison_mark_policy();
-        true
-    }
-
-    pub fn resolved_panel_marks(&self, panel_id: PanelId) -> Option<Vec<(LayerId, MarkKind)>> {
-        let panel = self.panel(panel_id)?;
-        let is_multi_source = panel.uses_multi_source();
-
-        Some(
-            panel
-                .layers
-                .iter()
-                .map(|layer| {
-                    let mut mark = layer.effective_mark();
-
-                    if panel.comparison_policy.force_line_for_non_base_sources
-                        && is_multi_source
-                        && panel.base_layer != Some(layer.id)
-                    {
-                        mark = MarkKind::Line;
-                    }
-
-                    (layer.id, resolve_mark_for_data_kind(mark, layer.data_kind))
-                })
-                .collect(),
-        )
-    }
-
-    pub fn remove_layer_from_panel(&mut self, panel_id: PanelId, layer_id: LayerId) -> bool {
-        let Some(panel) = self.panel_mut(panel_id) else {
-            return false;
-        };
-
-        let Some(index) = panel.layers.iter().position(|layer| layer.id == layer_id) else {
-            return false;
-        };
-
-        panel.layers.remove(index);
-
-        if panel.base_layer == Some(layer_id) {
-            panel.base_layer = panel.layers.first().map(|layer| layer.id);
-        }
-
-        panel.enforce_comparison_mark_policy();
-        true
     }
 
     pub fn remove_panel(&mut self, panel_id: PanelId) -> bool {
@@ -1360,8 +1345,19 @@ impl ChartComposition {
             return false;
         }
 
+        let mut heights = self.normalized_panel_heights(DEFAULT_MIN_PANEL_RATIO);
+        let removed_height = heights.remove(index);
         self.panels.remove(index);
-        self.ensure_split_count();
+        if let Some(primary_index) = self
+            .panels
+            .iter()
+            .position(|panel| panel.role == PanelRole::Primary)
+        {
+            heights[primary_index] += removed_height;
+            self.splits = Self::splits_from_heights(&heights);
+        } else {
+            self.ensure_split_count();
+        }
         self.splits = self.normalized_splits(DEFAULT_MIN_PANEL_RATIO);
         true
     }
@@ -1386,7 +1382,7 @@ impl ChartComposition {
         true
     }
 
-    pub fn new_layer(
+    fn new_layer(
         &mut self,
         name: impl Into<String>,
         source: LayerSource,
@@ -1406,6 +1402,869 @@ impl ChartComposition {
             visible: true,
             style: LayerStyle::default(),
         }
+    }
+
+    pub fn sync_comparison_sources(
+        &mut self,
+        base_ticker: TickerInfo,
+        selected_tickers: &[TickerInfo],
+    ) {
+        self.rebuild_comparison_bindings(selected_tickers, Some(base_ticker));
+    }
+
+    pub fn primary_uses_multi_source(&self) -> bool {
+        self.primary_panel_id()
+            .and_then(|panel_id| self.panel(panel_id))
+            .is_some_and(PanelSpec::uses_multi_source)
+    }
+
+    pub fn restore_primary_scale_after_comparisons(&mut self) -> bool {
+        let Some(panel_id) = self.primary_panel_id() else {
+            return false;
+        };
+        let Some(panel) = self.panel(panel_id) else {
+            return false;
+        };
+        if panel.uses_multi_source() || panel.preferred_scale != PanelScaleMode::PercentFromBase {
+            return false;
+        }
+
+        self.set_panel_preferred_scale(panel_id, PanelScaleMode::Absolute)
+    }
+
+    pub fn selected_indicators(&self) -> Vec<IndicatorInstanceId> {
+        let mut indicators = Vec::new();
+        for panel in &self.panels {
+            for layer in &panel.layers {
+                if let Some(value_id) = layer
+                    .source
+                    .indicator_output()
+                    .map(|output| output.instance_id)
+                    && !indicators.contains(&value_id)
+                {
+                    indicators.push(value_id);
+                }
+            }
+        }
+        indicators
+    }
+
+    pub fn add_indicator_on_source(
+        &mut self,
+        id: IndicatorInstanceId,
+        indicator: IndicatorId,
+        source: &crate::chart::kline::IndicatorOutputRef,
+    ) -> bool {
+        if self.selected_indicators().contains(&id)
+            || !matches!(indicator.default_view(), IndicatorPanelRecipe::Plot { .. })
+            || !indicator.definition().has_numeric_plot_layers()
+        {
+            return false;
+        }
+
+        let Some(panel_id) = self.indicator_output_panel_id(source) else {
+            return false;
+        };
+        if self
+            .panel(panel_id)
+            .is_none_or(|panel| panel.presentation != PanelPresentation::Plot)
+        {
+            return false;
+        }
+
+        let IndicatorPanelRecipe::Plot { layers, .. } = indicator.default_view().clone() else {
+            return false;
+        };
+        match indicator.definition().attachment_mode {
+            IndicatorAttachmentMode::Overlay => {
+                self.add_indicator_layers_to_panel(id, layers, panel_id)
+            }
+            IndicatorAttachmentMode::Panel => self.add_indicator(id, indicator),
+        }
+    }
+
+    fn set_panel_mark(&mut self, panel_index: usize, mark: MarkKind) -> bool {
+        let Some((panel_id, layer_id)) = self.panel_base_layer_ids(panel_index) else {
+            return false;
+        };
+        self.set_panel_layer_mark(panel_id, layer_id, mark)
+    }
+
+    pub fn primary_mark(&self) -> Option<MarkKind> {
+        let panel_id = self.primary_panel_id()?;
+        self.panel_effective_mark(panel_id)
+    }
+
+    pub fn set_primary_mark(&mut self, mark: MarkKind) -> bool {
+        let Some(primary_panel_index) = self
+            .panels
+            .iter()
+            .position(|panel| matches!(panel.role, PanelRole::Primary))
+        else {
+            return false;
+        };
+
+        self.set_panel_mark(primary_panel_index, mark)
+    }
+
+    pub fn reset_primary_mark(&mut self) -> bool {
+        let Some(panel_id) = self.primary_panel_id() else {
+            return false;
+        };
+        let Some(layer_id) = self.panel(panel_id).and_then(|panel| {
+            panel
+                .base_layer
+                .or_else(|| panel.layers.first().map(|layer| layer.id))
+        }) else {
+            return false;
+        };
+
+        self.clear_panel_layer_mark(panel_id, layer_id)
+    }
+
+    fn indicator_layer_binding(&self, id: IndicatorInstanceId) -> Option<(PanelId, LayerId)> {
+        for panel in &self.panels {
+            if let Some(layer) = panel.layers.iter().find(|layer| {
+                layer
+                    .source
+                    .indicator_output()
+                    .is_some_and(|output| output.instance_id == id)
+            }) {
+                return Some((panel.id, layer.id));
+            }
+        }
+        None
+    }
+
+    fn indicator_mark_layer_ids(
+        &self,
+        id: IndicatorInstanceId,
+        kind: Option<&IndicatorId>,
+        mark: Option<MarkKind>,
+    ) -> Option<(PanelId, Vec<LayerId>)> {
+        let (panel_id, _) = self.indicator_layer_binding(id)?;
+        let panel = self.panel(panel_id)?;
+        let output_layers = panel
+            .layers
+            .iter()
+            .filter(|layer| {
+                layer
+                    .source
+                    .indicator_output()
+                    .is_some_and(|output| output.instance_id == id)
+            })
+            .collect::<Vec<_>>();
+        if output_layers.is_empty() {
+            return None;
+        }
+
+        if kind.is_none() {
+            return Some((
+                panel_id,
+                output_layers.iter().map(|layer| layer.id).collect(),
+            ));
+        }
+
+        let source_channel = mark
+            .and_then(|mark| kind.and_then(|kind| kind.mark_source_channel(mark)))
+            .or_else(|| {
+                kind.and_then(|kind| {
+                    output_layers.iter().find_map(|layer| {
+                        let channel = layer.source.indicator_output()?.channel_id.as_str();
+                        kind.mark_specs()
+                            .iter()
+                            .any(|spec| spec.source_channel == channel)
+                            .then_some(channel)
+                    })
+                })
+            });
+        let matching_layers = source_channel.and_then(|source_channel| {
+            let matching = output_layers
+                .iter()
+                .filter(|layer| {
+                    layer
+                        .source
+                        .indicator_output()
+                        .is_some_and(|output| output.channel_id == source_channel)
+                })
+                .map(|layer| layer.id)
+                .collect::<Vec<_>>();
+            (!matching.is_empty()).then_some(matching)
+        });
+        let layer_ids = matching_layers.unwrap_or_else(|| {
+            if output_layers.len() == 1 {
+                output_layers.iter().map(|layer| layer.id).collect()
+            } else {
+                output_layers
+                    .first()
+                    .map(|layer| vec![layer.id])
+                    .unwrap_or_default()
+            }
+        });
+        Some((panel_id, layer_ids))
+    }
+
+    pub fn indicator_mark(
+        &self,
+        id: IndicatorInstanceId,
+        kind: Option<&IndicatorId>,
+    ) -> Option<MarkKind> {
+        let (panel_id, layer_ids) = self.indicator_mark_layer_ids(id, kind, None)?;
+
+        self.resolved_panel_marks(panel_id)?
+            .into_iter()
+            .find(|(candidate_layer_id, _)| layer_ids.contains(candidate_layer_id))
+            .map(|(_, mark)| mark)
+    }
+
+    pub fn indicator_mark_target_layer_ids(
+        &self,
+        id: IndicatorInstanceId,
+        kind: &IndicatorId,
+        mark: MarkKind,
+    ) -> Option<(PanelId, Vec<LayerId>)> {
+        self.indicator_mark_layer_ids(id, Some(kind), Some(mark))
+    }
+
+    pub fn set_indicator_mark(
+        &mut self,
+        id: IndicatorInstanceId,
+        mark: MarkKind,
+        kind: Option<&IndicatorId>,
+    ) -> bool {
+        let Some((panel_id, layer_ids)) = self.indicator_mark_layer_ids(id, kind, Some(mark))
+        else {
+            return false;
+        };
+
+        let Some(panel) = self.panel_mut(panel_id) else {
+            return false;
+        };
+        let mut changed = false;
+        for layer in &mut panel.layers {
+            if layer_ids.contains(&layer.id) && layer.mark_override != Some(mark) {
+                layer.mark_override = Some(mark);
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    pub fn reset_indicator_mark(&mut self, id: IndicatorInstanceId) -> bool {
+        let Some((panel_id, layer_id)) = self.indicator_layer_binding(id) else {
+            return false;
+        };
+
+        let Some(panel) = self.panel_mut(panel_id) else {
+            return false;
+        };
+        let has_output_layers = panel.layers.iter().any(|layer| {
+            layer
+                .source
+                .indicator_output()
+                .is_some_and(|output| output.instance_id == id)
+        });
+        if !has_output_layers {
+            return panel
+                .layers
+                .iter_mut()
+                .find(|layer| layer.id == layer_id)
+                .map(|layer| layer.mark_override.take().is_some())
+                .unwrap_or(false);
+        }
+
+        let mut changed = false;
+        for layer in &mut panel.layers {
+            if layer
+                .source
+                .indicator_output()
+                .is_some_and(|output| output.instance_id == id)
+            {
+                changed |= layer.mark_override.take().is_some();
+            }
+        }
+        changed
+    }
+
+    pub fn toggle_indicator_visibility(&mut self, id: IndicatorInstanceId) -> bool {
+        let Some((panel_id, _)) = self.indicator_layer_binding(id) else {
+            return false;
+        };
+        let Some(panel) = self.panel_mut(panel_id) else {
+            return false;
+        };
+        let visible = !panel.indicator_visible(id);
+        let mut changed = false;
+        for layer in &mut panel.layers {
+            if layer
+                .source
+                .indicator_output()
+                .is_some_and(|output| output.instance_id == id)
+                && layer.visible != visible
+            {
+                layer.visible = visible;
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    pub fn add_indicator(&mut self, id: IndicatorInstanceId, indicator: IndicatorId) -> bool {
+        if self.selected_indicators().contains(&id) {
+            return false;
+        }
+
+        let definition = indicator.definition();
+        match definition.panel_recipe.clone() {
+            IndicatorPanelRecipe::Plot {
+                panel_title,
+                value_precision,
+                value_label_policy,
+                preferred_scale,
+                layers: declared_layers,
+                ..
+            } => {
+                if declared_layers.is_empty() {
+                    return false;
+                }
+                let pane = declared_layers
+                    .first()
+                    .map(|layer| layer.pane)
+                    .unwrap_or(PaneTarget::Indicator);
+                match pane {
+                    PaneTarget::Main => {
+                        let Some(panel_id) = self.primary_panel_id() else {
+                            return false;
+                        };
+                        if !self.add_indicator_layers_to_panel(id, declared_layers, panel_id) {
+                            return false;
+                        }
+                    }
+                    PaneTarget::Indicator => {
+                        let layers = self.new_indicator_layers(id, declared_layers);
+                        let Some(panel_id) = self.add_aux_panel(
+                            panel_title,
+                            layers,
+                            Some(value_precision),
+                            value_label_policy,
+                            PanelPresentation::Plot,
+                        ) else {
+                            return false;
+                        };
+                        let _ = self.set_panel_preferred_scale(panel_id, preferred_scale);
+                    }
+                    PaneTarget::Named(named_pane) => {
+                        let panel_id = self
+                            .panels
+                            .iter()
+                            .find(|panel| {
+                                panel.role == PanelRole::Auxiliary
+                                    && panel.presentation == PanelPresentation::Plot
+                                    && panel.named_pane == Some(named_pane)
+                            })
+                            .map(|panel| panel.id);
+                        let panel_id = panel_id.or_else(|| {
+                            let panel_id = self.add_aux_panel(
+                                panel_title.clone(),
+                                Vec::new(),
+                                Some(value_precision),
+                                value_label_policy,
+                                PanelPresentation::Plot,
+                            )?;
+                            if let Some(panel) = self.panel_mut(panel_id) {
+                                panel.named_pane = Some(named_pane);
+                                panel.preferred_scale = preferred_scale;
+                            }
+                            Some(panel_id)
+                        });
+                        let Some(panel_id) = panel_id else {
+                            return false;
+                        };
+                        if !self.add_indicator_layers_to_panel(id, declared_layers, panel_id) {
+                            return false;
+                        }
+                    }
+                }
+            }
+            IndicatorPanelRecipe::Table {
+                panel_title,
+                columns,
+            } => {
+                let Some(channel_id) = columns.first().map(|column| column.value.clone()) else {
+                    return false;
+                };
+                let Some(panel_id) = self.add_table_panel(panel_title, DataSourceId::Primary)
+                else {
+                    return false;
+                };
+                if let Some(panel) = self.panel_mut(panel_id)
+                    && let Some(layer) = panel.layers.first_mut()
+                {
+                    layer.source = LayerSource::IndicatorOutput {
+                        source: DataSourceId::Primary,
+                        output: crate::chart::kline::IndicatorOutputRef::new(id, channel_id),
+                    };
+                }
+            }
+            IndicatorPanelRecipe::PrimaryOverlay {
+                layers: declared_layers,
+                ..
+            } => {
+                let Some(primary_panel_id) = self.primary_panel_id() else {
+                    return false;
+                };
+                if declared_layers.is_empty() {
+                    return false;
+                }
+                for spec in declared_layers.iter().cloned() {
+                    let layer = self.new_layer(
+                        spec.layer_name,
+                        LayerSource::IndicatorOutput {
+                            source: DataSourceId::Primary,
+                            output: crate::chart::kline::IndicatorOutputRef::new(
+                                id,
+                                spec.channel_id,
+                            ),
+                        },
+                        spec.data_kind,
+                        spec.mark,
+                        spec.axis,
+                    );
+                    if !self.add_layer_to_panel(primary_panel_id, layer) {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    fn new_indicator_layers(
+        &mut self,
+        id: IndicatorInstanceId,
+        declared_layers: Vec<crate::chart::kline::IndicatorOutputLayerSpec>,
+    ) -> Vec<crate::chart::kline::composition::LayerSpec> {
+        declared_layers
+            .into_iter()
+            .map(|spec| {
+                self.new_layer(
+                    spec.layer_name,
+                    LayerSource::IndicatorOutput {
+                        source: DataSourceId::Primary,
+                        output: crate::chart::kline::IndicatorOutputRef::new(id, spec.channel_id),
+                    },
+                    spec.data_kind,
+                    spec.mark,
+                    spec.axis,
+                )
+            })
+            .collect()
+    }
+
+    fn add_indicator_layers_to_panel(
+        &mut self,
+        id: IndicatorInstanceId,
+        declared_layers: Vec<crate::chart::kline::IndicatorOutputLayerSpec>,
+        panel_id: PanelId,
+    ) -> bool {
+        self.new_indicator_layers(id, declared_layers)
+            .into_iter()
+            .all(|layer| self.add_layer_to_panel(panel_id, layer))
+    }
+
+    pub fn indicator_panel_id(&self, id: IndicatorInstanceId) -> Option<PanelId> {
+        self.panels.iter().find_map(|panel| {
+            panel
+                .layers
+                .iter()
+                .any(|layer| {
+                    layer
+                        .source
+                        .indicator_output()
+                        .is_some_and(|output| output.instance_id == id)
+                })
+                .then_some(panel.id)
+        })
+    }
+
+    pub fn indicator_output_panel_id(&self, output: &IndicatorOutputRef) -> Option<PanelId> {
+        self.panels.iter().find_map(|panel| {
+            panel
+                .layers
+                .iter()
+                .any(|layer| {
+                    layer
+                        .source
+                        .indicator_output()
+                        .is_some_and(|candidate| candidate == output)
+                })
+                .then_some(panel.id)
+        })
+    }
+
+    pub fn reconcile_attached_indicator_placements(
+        &mut self,
+        instances: &IndicatorInstanceStore,
+    ) -> bool {
+        let attached_ids = instances
+            .instances()
+            .iter()
+            .filter(|instance| !instance.source_bindings.is_empty())
+            .map(|instance| instance.id)
+            .collect::<Vec<_>>();
+        let mut changed = false;
+
+        for id in attached_ids {
+            let Some(instance) = instances.get(id) else {
+                continue;
+            };
+            let overlay = matches!(
+                instance.kind.definition().attachment_mode,
+                IndicatorAttachmentMode::Overlay
+            );
+            let mut source_panel = None;
+            let mut valid = instance.kind.definition().has_numeric_plot_layers()
+                && matches!(
+                    instance.kind.default_view(),
+                    IndicatorPanelRecipe::Plot { .. }
+                );
+            for (input_id, source) in &instance.source_bindings {
+                if !instance
+                    .kind
+                    .definition()
+                    .source_inputs
+                    .iter()
+                    .any(|input| input.id == *input_id && input.allow_indicator)
+                    || source.instance_id == id
+                    || instances
+                        .get(source.instance_id)
+                        .is_none_or(|source_instance| {
+                            source_instance
+                                .kind
+                                .definition()
+                                .sourceable_numeric_output(&source.channel_id)
+                                .is_none()
+                        })
+                {
+                    valid = false;
+                    break;
+                }
+
+                let Some(panel_id) = self.indicator_output_panel_id(source) else {
+                    valid = false;
+                    break;
+                };
+                if self
+                    .panel(panel_id)
+                    .is_none_or(|panel| panel.presentation != PanelPresentation::Plot)
+                    || (overlay && source_panel.is_some_and(|target| target != panel_id))
+                {
+                    valid = false;
+                    break;
+                }
+                source_panel = Some(panel_id);
+            }
+
+            if !valid {
+                continue;
+            }
+            let Some(target_panel) = (if overlay {
+                source_panel
+            } else {
+                self.standalone_indicator_panel(id, &instance.kind, instances)
+            }) else {
+                continue;
+            };
+            changed |= self.ensure_indicator_layers_to_panel(id, &instance.kind, target_panel);
+        }
+
+        changed
+    }
+
+    fn standalone_indicator_panel(
+        &mut self,
+        id: IndicatorInstanceId,
+        indicator: &IndicatorId,
+        instances: &IndicatorInstanceStore,
+    ) -> Option<PanelId> {
+        let IndicatorPanelRecipe::Plot {
+            panel_title,
+            value_precision,
+            value_label_policy,
+            preferred_scale,
+            layers,
+            ..
+        } = indicator.default_view().clone()
+        else {
+            return None;
+        };
+        let pane = layers.first()?.pane;
+
+        match pane {
+            PaneTarget::Main => self.primary_panel_id(),
+            PaneTarget::Named(named_pane) => self
+                .panels
+                .iter()
+                .find(|panel| {
+                    panel.role == PanelRole::Auxiliary
+                        && panel.presentation == PanelPresentation::Plot
+                        && panel.named_pane == Some(named_pane)
+                })
+                .map(|panel| panel.id)
+                .or_else(|| {
+                    let panel_id = self.add_aux_panel(
+                        panel_title,
+                        Vec::new(),
+                        Some(value_precision),
+                        value_label_policy,
+                        PanelPresentation::Plot,
+                    )?;
+                    if let Some(panel) = self.panel_mut(panel_id) {
+                        panel.named_pane = Some(named_pane);
+                        panel.preferred_scale = preferred_scale;
+                    }
+                    Some(panel_id)
+                }),
+            PaneTarget::Indicator => {
+                let source_instances = instances
+                    .get(id)
+                    .into_iter()
+                    .flat_map(|instance| instance.source_bindings.values())
+                    .map(|source| source.instance_id)
+                    .collect::<FxHashSet<_>>();
+                self.panels
+                    .iter()
+                    .find(|panel| {
+                        panel.role == PanelRole::Auxiliary
+                            && panel.presentation == PanelPresentation::Plot
+                            && panel.layers.iter().any(|layer| {
+                                layer
+                                    .source
+                                    .indicator_output()
+                                    .is_some_and(|output| output.instance_id == id)
+                            })
+                            && panel
+                                .layers
+                                .iter()
+                                .filter_map(|layer| layer.source.indicator_output())
+                                .all(|output| {
+                                    output.instance_id == id
+                                        || !source_instances.contains(&output.instance_id)
+                                })
+                    })
+                    .map(|panel| panel.id)
+                    .or_else(|| {
+                        let panel_id = self.add_aux_panel(
+                            panel_title,
+                            Vec::new(),
+                            Some(value_precision),
+                            value_label_policy,
+                            PanelPresentation::Plot,
+                        )?;
+                        let _ = self.set_panel_preferred_scale(panel_id, preferred_scale);
+                        Some(panel_id)
+                    })
+            }
+        }
+    }
+
+    fn ensure_indicator_layers_to_panel(
+        &mut self,
+        id: IndicatorInstanceId,
+        indicator: &IndicatorId,
+        target_panel: PanelId,
+    ) -> bool {
+        let IndicatorPanelRecipe::Plot { layers, .. } = indicator.default_view().clone() else {
+            return false;
+        };
+        let mut existing_channels = self
+            .panels
+            .iter()
+            .flat_map(|panel| panel.layers.iter())
+            .filter_map(|layer| layer.source.indicator_output())
+            .filter(|output| output.instance_id == id)
+            .map(|output| output.channel_id.clone())
+            .collect::<FxHashSet<_>>();
+        let mut changed = false;
+
+        for spec in layers {
+            if !existing_channels.insert(spec.channel_id.clone()) {
+                continue;
+            }
+            let layer = self.new_layer(
+                spec.layer_name,
+                LayerSource::IndicatorOutput {
+                    source: DataSourceId::Primary,
+                    output: crate::chart::kline::IndicatorOutputRef::new(id, spec.channel_id),
+                },
+                spec.data_kind,
+                spec.mark,
+                spec.axis,
+            );
+            changed |= self.add_layer_to_panel(target_panel, layer);
+        }
+
+        changed | self.move_indicator_layers_to_panel(id, target_panel)
+    }
+
+    fn move_indicator_layers_to_panel(
+        &mut self,
+        id: IndicatorInstanceId,
+        target_panel: PanelId,
+    ) -> bool {
+        let locations = self
+            .panels
+            .iter()
+            .flat_map(|panel| {
+                panel.layers.iter().filter_map(|layer| {
+                    layer
+                        .source
+                        .indicator_output()
+                        .filter(|output| output.instance_id == id)
+                        .map(|_| (panel.id, layer.id))
+                })
+            })
+            .collect::<Vec<_>>();
+        if locations.is_empty()
+            || locations
+                .iter()
+                .all(|(panel_id, _)| *panel_id == target_panel)
+        {
+            return false;
+        }
+
+        let layers = locations
+            .iter()
+            .filter_map(|(panel_id, layer_id)| {
+                self.panel(*panel_id)
+                    .and_then(|panel| panel.layers.iter().find(|layer| layer.id == *layer_id))
+                    .cloned()
+            })
+            .collect::<Vec<_>>();
+        for (panel_id, layer_id) in &locations {
+            let _ = self.remove_layer_from_panel(*panel_id, *layer_id);
+        }
+        for layer in layers {
+            let _ = self.add_layer_to_panel(target_panel, layer);
+        }
+
+        let touched_panels = locations
+            .iter()
+            .map(|(panel_id, _)| *panel_id)
+            .collect::<FxHashSet<_>>();
+        for panel_id in touched_panels {
+            if self
+                .panel(panel_id)
+                .is_some_and(|panel| panel.role != PanelRole::Primary && panel.layers.is_empty())
+            {
+                let _ = self.remove_panel(panel_id);
+            }
+        }
+        true
+    }
+
+    pub fn remove_indicator(&mut self, id: IndicatorInstanceId) -> bool {
+        let layer_ids = self
+            .panels
+            .iter()
+            .flat_map(|panel| {
+                panel.layers.iter().filter_map(|layer| {
+                    layer
+                        .source
+                        .indicator_output()
+                        .filter(|output| output.instance_id == id)
+                        .map(|_| (panel.id, layer.id))
+                })
+            })
+            .collect::<Vec<_>>();
+        if layer_ids.is_empty() {
+            return false;
+        }
+        let touched_panels = layer_ids
+            .iter()
+            .map(|(panel_id, _)| *panel_id)
+            .collect::<FxHashSet<_>>();
+        let mut removed = false;
+        for (panel_id, layer_id) in layer_ids {
+            removed |= self.remove_layer_from_panel(panel_id, layer_id);
+        }
+        let empty_panels = self
+            .panels
+            .iter()
+            .filter(|panel| {
+                touched_panels.contains(&panel.id)
+                    && panel.role != PanelRole::Primary
+                    && panel.layers.is_empty()
+            })
+            .map(|panel| panel.id)
+            .collect::<Vec<_>>();
+        for panel_id in empty_panels {
+            removed |= self.remove_panel(panel_id);
+        }
+        removed
+    }
+
+    fn rebuild_comparison_bindings(
+        &mut self,
+        selected_tickers: &[TickerInfo],
+        base_ticker: Option<TickerInfo>,
+    ) {
+        let Some(primary_panel_id) = self.primary_panel_id() else {
+            return;
+        };
+        let Some(primary_panel) = self.panel(primary_panel_id) else {
+            return;
+        };
+
+        let stale_layer_ids: Vec<LayerId> = primary_panel
+            .layers
+            .iter()
+            .filter_map(|layer| {
+                let LayerSource::RawKline {
+                    source: DataSourceId::Comparison(source),
+                } = layer.source
+                else {
+                    return None;
+                };
+                let is_selected_comparison = base_ticker.is_some_and(|base| {
+                    selected_tickers
+                        .iter()
+                        .any(|ticker| *ticker != base && ticker.ticker == source)
+                });
+                (!is_selected_comparison).then_some(layer.id)
+            })
+            .collect();
+
+        for layer_id in stale_layer_ids {
+            let _ = self.remove_layer_from_panel(primary_panel_id, layer_id);
+        }
+
+        let Some(base_ticker) = base_ticker else {
+            return;
+        };
+
+        for &ticker in selected_tickers
+            .iter()
+            .filter(|ticker| **ticker != base_ticker)
+        {
+            if self.comparison_layer(ticker).is_some() {
+                continue;
+            }
+            let name = ticker.ticker.symbol_and_exchange_string();
+            let _ = self.add_comparison_source_to_panel(
+                primary_panel_id,
+                DataSourceId::Comparison(ticker.ticker),
+                name,
+            );
+        }
+    }
+
+    fn panel_base_layer_ids(&self, panel_index: usize) -> Option<(PanelId, LayerId)> {
+        let panel = self.panels.get(panel_index)?;
+        let layer_id = panel
+            .base_layer
+            .or_else(|| panel.layers.first().map(|layer| layer.id))?;
+        Some((panel.id, layer_id))
     }
 
     fn ensure_split_count(&mut self) {

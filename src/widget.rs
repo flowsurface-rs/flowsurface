@@ -31,6 +31,45 @@ pub const PANE_CONTROL_BTN_HEIGHT: f32 = 26.0;
 #[allow(dead_code)]
 pub const DEFAULT_TOOLTIP_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
+#[derive(Debug, Clone, Copy, Default)]
+pub enum BannerKind {
+    #[default]
+    Normal,
+    Warning,
+    Error,
+}
+
+pub fn banner<'a, Message: 'a>(
+    message: impl iced::widget::text::IntoFragment<'a>,
+    kind: BannerKind,
+) -> Element<'a, Message> {
+    container(
+        row![
+            container(iced_text("!").size(style::text_size::SECTION)).padding([0, 8]),
+            iced_text(message)
+                .wrapping(iced::widget::text::Wrapping::Word)
+                .size(style::text_size::SMALL)
+                .width(Fill),
+        ]
+        .spacing(4)
+        .align_y(Alignment::Center),
+    )
+    .padding(6)
+    .width(Fill)
+    .style(move |theme: &Theme| {
+        let palette = theme.palette();
+        iced::widget::container::Style {
+            text_color: Some(match kind {
+                BannerKind::Normal => palette.text,
+                BannerKind::Warning => palette.warning,
+                BannerKind::Error => palette.danger,
+            }),
+            ..style::modal_container(theme)
+        }
+    })
+    .into()
+}
+
 pub fn tooltip<'a, Message: 'a>(
     content: impl Into<Element<'a, Message>>,
     tooltip: Option<&'a str>,
@@ -94,14 +133,6 @@ pub mod text {
             .style(crate::style::text_color::body)
     }
 
-    pub fn small<'a>(
-        content: impl iced::widget::text::IntoFragment<'a>,
-    ) -> iced::widget::Text<'a, Theme, Renderer> {
-        iced::widget::text(content)
-            .size(crate::style::text_size::SMALL)
-            .style(crate::style::text_color::body)
-    }
-
     pub fn muted<'a>(
         content: impl iced::widget::text::IntoFragment<'a>,
     ) -> iced::widget::Text<'a, Theme, Renderer> {
@@ -133,21 +164,30 @@ where
     T: 'static + Copy + PartialOrd + Into<f64> + From<u8> + num_traits::FromPrimitive,
     Message: Clone + 'a,
 {
-    let mut slider = iced::widget::slider(range, current, on_change).width(Fill);
+    let mut slider = iced::widget::slider(range, current, on_change)
+        .width(Fill)
+        .style(style::inspector_slider);
 
     if let Some(step) = step {
         slider = slider.step(step);
     }
 
-    let slider = column![slider, text::emphasis(format_value(&current))]
-        .width(Length::Fill)
-        .spacing(2)
-        .align_x(Alignment::Center);
+    let slider = column![
+        slider,
+        iced_text(format_value(&current)).size(style::text_size::EMPHASIS),
+    ]
+    .width(Length::Fill)
+    .spacing(2)
+    .align_x(Alignment::Center);
     let content = match label {
         Some(label) => row![
-            container(label.wrapping(iced::widget::text::Wrapping::Word),)
-                .width(Length::Shrink)
-                .max_width(80.0),
+            container(
+                label
+                    .style(iced::widget::text::default)
+                    .wrapping(iced::widget::text::Wrapping::Word),
+            )
+            .width(Length::Shrink)
+            .max_width(80.0),
             slider,
         ]
         .spacing(8),
@@ -155,7 +195,7 @@ where
     };
 
     container(content.align_y(Alignment::Center).padding(8))
-        .style(style::modal_container)
+        .style(style::inspector_slider_container)
         .into()
 }
 

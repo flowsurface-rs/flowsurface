@@ -1,41 +1,11 @@
 use super::YUnit;
-use super::composition::PanelId;
+use super::composition::{ChartComposition, PanelId};
 use crate::config::theme::{ThemeAccent, ThemeColorShade};
 use exchange::UnixMs;
 use serde::{Deserialize, Serialize};
 
 pub const MIN_DRAWING_STROKE_WIDTH: f32 = 0.5;
 pub const MAX_DRAWING_STROKE_WIDTH: f32 = 4.0;
-
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct Rgba {
-    pub red: f32,
-    pub green: f32,
-    pub blue: f32,
-    pub alpha: f32,
-}
-
-impl Rgba {
-    pub const fn from_rgb(red: f32, green: f32, blue: f32) -> Self {
-        Self::from_rgba(red, green, blue, 1.0)
-    }
-
-    pub const fn from_rgba(red: f32, green: f32, blue: f32, alpha: f32) -> Self {
-        Self {
-            red,
-            green,
-            blue,
-            alpha,
-        }
-    }
-
-    pub fn scale_alpha(self, factor: f32) -> Self {
-        Self {
-            alpha: self.alpha * factor,
-            ..self
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct DrawingId(pub u64);
@@ -45,9 +15,9 @@ pub enum DrawingTool {
     #[default]
     Cursor,
     Trendline,
-    Box,
     HorizontalLine,
     VerticalLine,
+    Box,
     Measure,
 }
 
@@ -67,22 +37,11 @@ impl DrawingTool {
         &[
             Self::Cursor,
             Self::Trendline,
-            Self::Box,
             Self::HorizontalLine,
             Self::VerticalLine,
+            Self::Box,
             Self::Measure,
         ]
-    }
-
-    pub const fn short_label(self) -> &'static str {
-        match self {
-            Self::Cursor => "C",
-            Self::HorizontalLine => "H",
-            Self::VerticalLine => "V",
-            Self::Trendline => "TL",
-            Self::Box => "B",
-            Self::Measure => "M",
-        }
     }
 
     pub const fn label(self) -> &'static str {
@@ -125,15 +84,11 @@ impl DrawingTool {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum DrawingColor {
-    Accent {
-        accent: ThemeAccent,
-        #[serde(default)]
-        shade: ThemeColorShade,
-        alpha: f32,
-    },
-    Custom(Rgba),
+pub struct DrawingColor {
+    pub accent: ThemeAccent,
+    #[serde(default)]
+    pub shade: ThemeColorShade,
+    pub alpha: f32,
 }
 
 impl DrawingColor {
@@ -142,60 +97,25 @@ impl DrawingColor {
     }
 
     pub const fn themed(accent: ThemeAccent, shade: ThemeColorShade, alpha: f32) -> Self {
-        Self::Accent {
+        Self {
             accent,
             shade,
             alpha,
         }
     }
 
-    pub fn accent_value(self) -> Option<ThemeAccent> {
-        match self {
-            Self::Accent { accent, .. } => Some(accent),
-            Self::Custom(_) => None,
-        }
-    }
-
-    pub fn shade_value(self) -> ThemeColorShade {
-        match self {
-            Self::Accent { shade, .. } => shade,
-            Self::Custom(_) => ThemeColorShade::Base,
-        }
-    }
-
     pub fn with_accent(self, accent: ThemeAccent, alpha: f32) -> Self {
-        Self::themed(accent, self.shade_value(), alpha)
-    }
-
-    pub fn set_shade(&mut self, shade: ThemeColorShade) -> bool {
-        let Self::Accent {
-            shade: current_shade,
-            ..
-        } = self
-        else {
-            return false;
-        };
-
-        if *current_shade == shade {
-            return false;
+        Self {
+            accent,
+            alpha,
+            ..self
         }
-
-        *current_shade = shade;
-        true
     }
 
     pub fn scale_alpha(self, factor: f32) -> Self {
-        match self {
-            Self::Accent {
-                accent,
-                shade,
-                alpha,
-            } => Self::Accent {
-                accent,
-                shade,
-                alpha: alpha * factor,
-            },
-            Self::Custom(color) => Self::Custom(color.scale_alpha(factor)),
+        Self {
+            alpha: self.alpha * factor,
+            ..self
         }
     }
 }
@@ -396,7 +316,7 @@ impl<'a> DrawingSnapshot<'a> {
             .filter(|drawing| drawing.visible && self.selected_drawings.contains(&drawing.id))
     }
 
-    pub fn selected_visible_drawing(&self) -> Option<&'a DrawingEntity> {
+    fn selected_visible_drawing(&self) -> Option<&'a DrawingEntity> {
         if self.selected_drawings.len() == 1 {
             self.selected_visible_drawings().next()
         } else {
@@ -565,6 +485,21 @@ pub enum DrawingDraft {
 }
 
 impl DrawingDraft {
+    pub fn update_anchor(&mut self, anchor: DrawingAnchor) -> bool {
+        match self {
+            DrawingDraft::Trendline { start, current, .. }
+            | DrawingDraft::Box { start, current, .. } => {
+                if anchor.panel_id != start.panel_id {
+                    return false;
+                }
+
+                *current = anchor;
+            }
+        }
+
+        true
+    }
+
     pub fn tool(&self) -> DrawingTool {
         match self {
             Self::Trendline { .. } => DrawingTool::Trendline,
@@ -665,7 +600,19 @@ pub enum AxisLabelAnchor {
 }
 
 impl DrawingObject {
-    pub fn normalized_box(
+    pub fn panels_exist(&self, composition: &ChartComposition) -> bool {
+        let panel_exists = |panel_id: PanelId| composition.panel(panel_id).is_some();
+
+        match self {
+            DrawingObject::Trendline { start, end } | DrawingObject::Box { start, end, .. } => {
+                panel_exists(start.panel_id) && panel_exists(end.panel_id)
+            }
+            DrawingObject::HorizontalLine { panel_id, .. } => panel_exists(*panel_id),
+            DrawingObject::VerticalLine { .. } => true,
+        }
+    }
+
+    fn normalized_box(
         mut start: DrawingAnchor,
         mut end: DrawingAnchor,
         extend_right: bool,

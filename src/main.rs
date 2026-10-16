@@ -245,12 +245,17 @@ impl Flowsurface {
                         log::info!("a stream disconnected from WS: {reason:?}");
                     }
                     exchange::Event::DepthReceived(stream, update_t, depth) => {
-                        let task = dashboard.ingest_depth(&stream, update_t, depth, main_window_id);
+                        let task =
+                            dashboard.ingest_live_depth(&stream, update_t, depth, main_window_id);
                         return self.map_dashboard_task(task, None);
                     }
                     exchange::Event::TradesReceived(stream, update_t, buffer) => {
-                        let task =
-                            dashboard.ingest_trades(&stream, &buffer, update_t, main_window_id);
+                        let task = dashboard.ingest_live_trades(
+                            &stream,
+                            &buffer,
+                            update_t,
+                            main_window_id,
+                        );
 
                         if let Some(msg) = self.audio_stream.try_play_sound(&stream, &buffer) {
                             self.notifications.push(Toast::error(msg));
@@ -259,7 +264,7 @@ impl Flowsurface {
                         return self.map_dashboard_task(task, None);
                     }
                     exchange::Event::KlineReceived(stream, kline) => {
-                        let task = dashboard.update_latest_klines(&stream, &kline, main_window_id);
+                        let task = dashboard.ingest_live_kline(&stream, &kline, main_window_id);
                         return self.map_dashboard_task(task, None);
                     }
                 }
@@ -296,9 +301,7 @@ impl Flowsurface {
                 if self.sidebar.active_menu().is_some() {
                     self.sidebar.set_menu(None);
                 } else {
-                    if self.active_dashboard_mut().go_back(main_window)
-                        | self.sidebar.close_inspector()
-                    {
+                    if self.active_dashboard_mut().go_back(main_window) {
                         return Task::none();
                     } else if self.active_dashboard().focus.is_some() {
                         self.active_dashboard_mut().clear_focus();
@@ -308,6 +311,7 @@ impl Flowsurface {
                 }
             }
             Message::ThemeSelected(theme) => {
+                self.theme_editor.reset_input();
                 self.replace_theme(theme);
             }
             Message::Dashboard {
@@ -333,24 +337,6 @@ impl Flowsurface {
                 };
 
                 let additional_task = match event {
-                    Some(dashboard::Event::OpenInspector(mode)) => self
-                        .layout_manager
-                        .get(layout_id)
-                        .map(|layout| {
-                            self.sidebar
-                                .open_inspector(mode, &layout.dashboard, main_window.id)
-                                .map(Message::Sidebar)
-                        })
-                        .unwrap_or_else(Task::none),
-                    Some(dashboard::Event::ToggleInspector(mode)) => self
-                        .layout_manager
-                        .get(layout_id)
-                        .map(|layout| {
-                            self.sidebar
-                                .toggle_inspector(mode, &layout.dashboard, main_window.id)
-                                .map(Message::Sidebar)
-                        })
-                        .unwrap_or_else(Task::none),
                     Some(dashboard::Event::OpenUrlRequested(url)) => {
                         Task::done(Message::OpenUrlRequested(Cow::Owned(url)))
                     }
@@ -433,6 +419,13 @@ impl Flowsurface {
                             }
                         }
                     }
+                    Some(dashboard::Event::OpenNetworkSettings) => {
+                        return self.update(Message::Sidebar(
+                            screen::sidebar::Message::ToggleSidebarMenu(Some(
+                                sidebar::Menu::Network,
+                            )),
+                        ));
+                    }
                     Some(dashboard::Event::RequestPalette) => {
                         let theme = self.theme.current().clone();
 
@@ -444,13 +437,6 @@ impl Flowsurface {
                     }
                     None => Task::none(),
                 };
-
-                if layout_id == active_layout_id
-                    && let Some(layout) = self.layout_manager.get(layout_id)
-                {
-                    self.sidebar
-                        .sync_inspector(&layout.dashboard, main_window.id);
-                }
 
                 return self
                     .map_dashboard_task(main_task, Some(layout_id))
@@ -685,22 +671,10 @@ impl Flowsurface {
                             }
                         };
 
-                        self.sync_sidebar_inspector();
-
                         return self.map_dashboard_task(dashboard_task, None);
                     }
                     Some(screen::sidebar::Action::ErrorOccurred(err)) => {
                         self.notifications.push(Toast::error(err.to_string()));
-                    }
-                    Some(screen::sidebar::Action::PaneInspector { window, message }) => {
-                        if self.layout_manager.active_layout_id().is_none() {
-                            return task.map(Message::Sidebar);
-                        }
-
-                        return task.map(Message::Sidebar).chain(self.map_dashboard_task(
-                            Task::done(dashboard::Message::Pane(window, message)),
-                            None,
-                        ));
                     }
                     None => {}
                 }
@@ -748,19 +722,13 @@ impl Flowsurface {
                 .sidebar
                 .view(self.audio_stream.volume())
                 .map(Message::Sidebar);
-            let inspector_view = self
-                .sidebar
-                .inspector_view(dashboard, self.main_window.id, self.theme.accents())
-                .map(|view| view.map(Message::Sidebar));
-
             let dashboard_view = dashboard
                 .view(
                     &self.main_window,
                     tickers_table,
                     self.timezone,
                     pixel_ratio,
-                    self.sidebar.inspector_mode(),
-                    self.theme.accents(),
+                    &self.theme,
                 )
                 .map(move |msg| Message::Dashboard {
                     layout_id: None,
@@ -790,20 +758,8 @@ impl Flowsurface {
             };
 
             let dashboard_row = match sidebar_pos {
-                sidebar::Position::Left => {
-                    let mut row = row![sidebar_view, dashboard_view];
-                    if let Some(inspector_view) = inspector_view {
-                        row = row.push(inspector_view);
-                    }
-                    row
-                }
-                sidebar::Position::Right => {
-                    if let Some(inspector_view) = inspector_view {
-                        row![inspector_view, dashboard_view, sidebar_view]
-                    } else {
-                        row![dashboard_view, sidebar_view]
-                    }
-                }
+                sidebar::Position::Left => row![sidebar_view, dashboard_view],
+                sidebar::Position::Right => row![dashboard_view, sidebar_view],
             };
 
             let base = column![header_title, dashboard_row.spacing(4).padding(8),];
@@ -822,8 +778,7 @@ impl Flowsurface {
                         tickers_table,
                         self.timezone,
                         pixel_ratio,
-                        self.sidebar.inspector_mode(),
-                        self.theme.accents(),
+                        &self.theme,
                     )
                     .map(move |msg| Message::Dashboard {
                         layout_id: None,
@@ -933,21 +888,6 @@ impl Flowsurface {
         })
     }
 
-    fn sync_sidebar_inspector(&mut self) {
-        let main_window = self.main_window.id;
-        let active_layout = self
-            .layout_manager
-            .active_layout_id()
-            .map(|layout| layout.unique);
-        let (layout_manager, sidebar) = (&self.layout_manager, &mut self.sidebar);
-
-        if let Some(active_layout) = active_layout
-            && let Some(layout) = layout_manager.get(active_layout)
-        {
-            sidebar.sync_inspector(&layout.dashboard, main_window);
-        }
-    }
-
     fn replace_theme(&mut self, theme: iced_core::Theme) {
         if !self.theme.replace(theme.clone()) {
             return;
@@ -978,7 +918,6 @@ impl Flowsurface {
                 if window_id != main_window {
                     self.window_scale_factors.remove(window_id);
                     self.active_dashboard_mut().popout.remove(&window_id);
-                    self.sync_sidebar_inspector();
                     return window::close(window_id);
                 }
 
@@ -997,8 +936,6 @@ impl Flowsurface {
     }
 
     fn load_layout(&mut self, layout_uid: uuid::Uuid, main_window: window::Id) -> Task<Message> {
-        self.sidebar.close_inspector();
-
         if let Err(err) = self.layout_manager.set_active_layout(layout_uid) {
             log::error!("Failed to set active layout: {}", err);
             return Task::none();

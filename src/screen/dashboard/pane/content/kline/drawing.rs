@@ -1,5 +1,5 @@
-use super::toolbar::{FloatingToolbarEvent, FloatingToolbarState};
-use super::{FLOATING_TOOLBAR_HANDLE_WIDTH, FLOATING_TOOLBAR_HEIGHT};
+use super::history::DrawingHistory;
+use super::toolbar::{self, FloatingToolbarEvent, FloatingToolbarState};
 use crate::style;
 use crate::theme::ThemeAccents;
 use crate::widget::chart::kline::drawing::{
@@ -18,7 +18,7 @@ use iced::{Element, Length};
 
 const SIDEBAR_WIDTH: f32 = 36.0;
 const OBJECT_LIST_SIDEBAR_WIDTH: f32 = 196.0;
-pub(super) const DRAWING_SIDEBAR_PADDING: f32 = 4.0;
+const DRAWING_SIDEBAR_PADDING: f32 = 4.0;
 const DRAWING_STROKE_WIDTH_STEP: f32 = 0.5;
 const DRAWING_FILL_ALPHA: f32 = 0.16;
 const DRAWING_TOOLBAR_SHADE_WIDTH: f32 = 76.0;
@@ -44,10 +44,7 @@ where
     Message: Clone + 'a + 'static,
     SelectColor: Fn(ThemeAccent) -> DrawingMessage + Copy + 'a,
 {
-    let selected_accent = selected
-        .uniform()
-        .flatten()
-        .and_then(|color| color.accent_value());
+    let selected_accent = selected.uniform().flatten().map(|color| color.accent);
     let shade = shade.representative().unwrap_or_default();
     let colors = ThemeAccent::ALL.into_iter().map(|accent| {
         color_swatch_button(
@@ -235,7 +232,7 @@ pub enum DrawingUpdate {
 }
 
 impl DrawingUpdate {
-    pub fn should_bump(self) -> bool {
+    pub(super) fn should_bump(self) -> bool {
         matches!(
             self,
             Self::Visual
@@ -253,6 +250,7 @@ impl DrawingUpdate {
 
 #[derive(Default)]
 pub(super) struct DrawingState {
+    history: DrawingHistory,
     pub(super) tools: DrawingTools,
     pub(super) floating_toolbar: FloatingToolbarState,
 }
@@ -265,20 +263,118 @@ pub enum Event {
 
 impl DrawingState {
     pub(super) fn update(&mut self, event: Event, settings: &mut DrawingSettings) -> DrawingUpdate {
-        match event {
-            Event::Tools(message) => self.tools.update(message, settings),
+        let update = match event {
+            Event::Tools(
+                message @ (DrawingMessage::SetSelectedDrawingStrokeColor(_)
+                | DrawingMessage::SetSelectedDrawingStrokeShade(_)
+                | DrawingMessage::SetSelectedDrawingFillColor(_)
+                | DrawingMessage::SetSelectedDrawingFillShade(_)
+                | DrawingMessage::SetSelectedDrawingStrokeWidth(_)
+                | DrawingMessage::SetHorizontalLineRay(_)
+                | DrawingMessage::SetBoxExtendRight(_)
+                | DrawingMessage::DeleteSelectedDrawing
+                | DrawingMessage::DeleteDrawing(_)
+                | DrawingMessage::DeleteAllDrawings),
+            ) => {
+                let before = self.tools.edit_state();
+                let update = self.tools.update(message, settings);
+                return self.record_update(update, before);
+            }
+            Event::Tools(
+                message @ (DrawingMessage::SelectTool(_)
+                | DrawingMessage::ToggleMagnet
+                | DrawingMessage::ShowToolsPage
+                | DrawingMessage::ShowObjectListPage
+                | DrawingMessage::ClearSelection
+                | DrawingMessage::OpenDrawingToolbar(_)
+                | DrawingMessage::SelectBoxBorderStyle
+                | DrawingMessage::SelectBoxFillStyle),
+            ) => self.tools.update(message, settings),
             Event::FloatingToolbar(event) => {
                 self.floating_toolbar.update(event);
                 DrawingUpdate::None
             }
-        }
+        };
+        self.history.finish_if_idle(&self.tools);
+        update
+    }
+
+    fn record_update(&mut self, update: DrawingUpdate, before: DrawingEditState) -> DrawingUpdate {
+        self.history.apply_update(update, before, &self.tools);
+        update
+    }
+
+    pub(super) fn handle_widget_drawing_event(
+        &mut self,
+        event: KlineWidgetDrawingEvent,
+        settings: &DrawingSettings,
+    ) -> DrawingUpdate {
+        let update = match event {
+            KlineWidgetDrawingEvent::AnchorPressed(_)
+            | KlineWidgetDrawingEvent::DragStarted { .. } => {
+                let before = self.tools.edit_state();
+                let update = self.tools.handle_widget_drawing_event(event, settings);
+                return self.record_update(update, before);
+            }
+            KlineWidgetDrawingEvent::MagnetModifierChanged(_)
+            | KlineWidgetDrawingEvent::Selected(_)
+            | KlineWidgetDrawingEvent::MarqueeSelected(_)
+            | KlineWidgetDrawingEvent::AnchorMoved(_)
+            | KlineWidgetDrawingEvent::DragMoved { .. }
+            | KlineWidgetDrawingEvent::DragFinished { .. }
+            | KlineWidgetDrawingEvent::MeasureClick(_)
+            | KlineWidgetDrawingEvent::MeasureMove(_)
+            | KlineWidgetDrawingEvent::MeasureCanceled
+            | KlineWidgetDrawingEvent::DraftCanceled => {
+                self.tools.handle_widget_drawing_event(event, settings)
+            }
+        };
+        self.history.finish_if_idle(&self.tools);
+        update
+    }
+
+    pub(super) fn handle_escape(&mut self) -> DrawingUpdate {
+        let update = self.tools.handle_escape();
+        self.history.finish_if_idle(&self.tools);
+        update
+    }
+
+    pub(super) fn finish_pending_edit(&mut self) {
+        self.history.finish_drawing(|| self.tools.edit_state());
+    }
+
+    pub(super) fn clear_history(&mut self) {
+        self.history.clear();
+    }
+
+    pub(super) fn undo(&mut self) -> bool {
+        self.finish_pending_edit();
+        let Some(entry) = self.history.pop_undo() else {
+            return false;
+        };
+        self.tools.restore_edit_state(entry.before.clone());
+        self.history.push_redo(entry);
+        true
+    }
+
+    pub(super) fn redo(&mut self) -> bool {
+        self.finish_pending_edit();
+        let Some(entry) = self.history.pop_redo() else {
+            return false;
+        };
+        self.tools.restore_edit_state(entry.after.clone());
+        self.history.push_undo(entry);
+        true
     }
 
     pub(super) fn view<'a>(&'a self, theme_accents: ThemeAccents) -> iced::Element<'a, Event> {
         let floating_toolbar = iced::widget::responsive(move |overlay_size| {
             self.tools
                 .selected_toolbar_view(theme_accents, Event::Tools)
-                .map(|controls| self.floating_toolbar_content(controls, overlay_size))
+                .map(|controls| {
+                    self.floating_toolbar
+                        .content(controls, overlay_size, Event::FloatingToolbar)
+                })
                 .unwrap_or_else(|| self.empty_floating_toolbar_content())
         });
 
@@ -289,7 +385,7 @@ impl DrawingState {
 
         if self.floating_toolbar.is_dragging {
             overlay = overlay.push(iced::widget::responsive(move |overlay_size| {
-                self.floating_toolbar_drag_capture(overlay_size)
+                toolbar::drag_capture(overlay_size).map(Event::FloatingToolbar)
             }));
         }
 
@@ -311,76 +407,6 @@ impl DrawingState {
             .width(Length::Fill)
             .height(Length::Fill)
             .into()
-    }
-
-    fn floating_toolbar_content<'a>(
-        &'a self,
-        controls: iced::Element<'a, Event>,
-        overlay_size: iced::Size,
-    ) -> iced::Element<'a, Event> {
-        let drag_handle = iced::widget::mouse_area(
-            iced::widget::container(style::icon_text(style::Icon::DragHandle, 12))
-                .width(FLOATING_TOOLBAR_HANDLE_WIDTH)
-                .height(Length::Fill)
-                .align_x(iced::alignment::Horizontal::Center)
-                .align_y(iced::alignment::Vertical::Center),
-        )
-        .on_move(|cursor| Event::FloatingToolbar(FloatingToolbarEvent::HandleMoved(cursor)))
-        .on_press(Event::FloatingToolbar(FloatingToolbarEvent::DragStarted))
-        .interaction(iced::mouse::Interaction::Grab);
-
-        let scrollable_controls = iced::widget::scrollable::Scrollable::with_direction(
-            controls,
-            iced::widget::scrollable::Direction::Horizontal(
-                iced::widget::scrollable::Scrollbar::new()
-                    .width(6)
-                    .scroller_width(6),
-            ),
-        )
-        .anchor_left()
-        .width(Length::Shrink)
-        .height(Length::Fill)
-        .style(style::scroll_bar);
-        let toolbar = iced::widget::mouse_area(
-            iced::widget::container(iced::widget::row![drag_handle, scrollable_controls])
-                .style(style::chart_toolbar)
-                .width(Length::Shrink)
-                .height(FLOATING_TOOLBAR_HEIGHT),
-        )
-        .interaction(iced::mouse::Interaction::Idle);
-        let position = self.floating_toolbar.position_within(overlay_size);
-
-        iced::widget::container(
-            iced::widget::column![
-                iced::widget::space::vertical().height(position.y),
-                iced::widget::row![iced::widget::space::horizontal().width(position.x), toolbar,],
-            ]
-            .width(Length::Fill)
-            .height(Length::Fill),
-        )
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
-    }
-
-    fn floating_toolbar_drag_capture<'a>(
-        &'a self,
-        overlay_size: iced::Size,
-    ) -> iced::Element<'a, Event> {
-        iced::widget::mouse_area(
-            iced::widget::space::horizontal()
-                .width(Length::Fill)
-                .height(Length::Fill),
-        )
-        .on_move(move |cursor| {
-            Event::FloatingToolbar(FloatingToolbarEvent::DragMoved {
-                cursor,
-                overlay_size,
-            })
-        })
-        .on_release(Event::FloatingToolbar(FloatingToolbarEvent::DragFinished))
-        .interaction(iced::mouse::Interaction::Grabbing)
-        .into()
     }
 }
 
@@ -512,18 +538,18 @@ impl DrawingStyleChange {
                 style.stroke_color = style.stroke_color.with_accent(color, 1.0);
             }
             Self::StrokeShade(shade) => {
-                style.stroke_color.set_shade(shade);
+                style.stroke_color.shade = shade;
             }
             Self::FillColor(color) => {
                 let shade = style
                     .fill_color
-                    .map(DrawingColor::shade_value)
+                    .map(|color| color.shade)
                     .unwrap_or_default();
                 style.fill_color = Some(DrawingColor::themed(color, shade, DRAWING_FILL_ALPHA));
             }
             Self::FillShade(shade) => {
                 if let Some(color) = &mut style.fill_color {
-                    color.set_shade(shade);
+                    color.shade = shade;
                 }
             }
             Self::StrokeWidth(width) => {
@@ -711,7 +737,7 @@ impl DrawingTools {
         self.active_tool.supports_magnet() && (self.magnet_enabled || self.magnet_modifier_active)
     }
 
-    pub fn time_drawings(&self) -> &[DrawingEntity] {
+    pub(super) fn time_drawings(&self) -> &[DrawingEntity] {
         if self.tick_mode {
             &self.inactive_drawings
         } else {
@@ -719,7 +745,7 @@ impl DrawingTools {
         }
     }
 
-    pub fn set_basis(&mut self, basis: data::chart::Basis) {
+    pub(super) fn set_basis(&mut self, basis: data::chart::Basis) {
         let tick_mode = !basis.is_time();
         if tick_mode != self.tick_mode {
             std::mem::swap(&mut self.drawings, &mut self.inactive_drawings);
@@ -729,7 +755,7 @@ impl DrawingTools {
         self.clear_interaction();
     }
 
-    pub fn sync_tick_sequence(&mut self, sequence_id: Option<uuid::Uuid>) -> bool {
+    pub(super) fn sync_tick_sequence(&mut self, sequence_id: Option<uuid::Uuid>) -> bool {
         if self.tick_sequence_id == sequence_id {
             return false;
         }
@@ -821,7 +847,7 @@ impl DrawingTools {
         let stroke_shade = shared_value(
             editable
                 .iter()
-                .map(|drawing| drawing.style.stroke_color.shade_value()),
+                .map(|drawing| drawing.style.stroke_color.shade),
         );
         let stroke_width = shared_value(
             editable
@@ -833,7 +859,7 @@ impl DrawingTools {
             drawing
                 .style
                 .fill_color
-                .map(DrawingColor::shade_value)
+                .map(|color| color.shade)
                 .unwrap_or_default()
         }));
         let box_extend_right =
@@ -1020,7 +1046,7 @@ impl DrawingTools {
         }
     }
 
-    pub fn selected_toolbar_view<'a, Message>(
+    fn selected_toolbar_view<'a, Message>(
         &'a self,
         theme_accents: ThemeAccents,
         on_sidebar_message: fn(DrawingMessage) -> Message,
@@ -1285,10 +1311,17 @@ impl DrawingTools {
 
         for tool in DrawingTool::all().iter().copied() {
             let selected = self.active_tool == tool;
-            let label = tool.short_label().to_string();
+            let icon = match tool {
+                DrawingTool::Cursor => style::Icon::Crosshair,
+                DrawingTool::Trendline => style::Icon::Trendline,
+                DrawingTool::Box => style::Icon::DrawingBox,
+                DrawingTool::HorizontalLine => style::Icon::HorizontalLine,
+                DrawingTool::VerticalLine => style::Icon::VerticalLine,
+                DrawingTool::Measure => style::Icon::Ruler,
+            };
 
             let btn =
-                iced::widget::button(iced::widget::text(label).align_x(iced::Alignment::Center))
+                iced::widget::button(style::icon_text(icon, 16).align_x(iced::Alignment::Center))
                     .style(move |theme, status| style::button::transparent(theme, status, selected))
                     .width(iced::Length::Fill);
 
@@ -1304,24 +1337,26 @@ impl DrawingTools {
 
         let magnet_enabled = self.magnet_enabled;
         let magnet_active = self.magnet_active();
-        let magnet_button =
-            iced::widget::button(iced::widget::text("M").align_x(iced::Alignment::Center))
-                .style(move |theme, status| {
-                    style::button::magnet(theme, status, magnet_enabled, magnet_active)
-                })
-                .width(iced::Length::Fill)
-                .on_press(on_sidebar_message(DrawingMessage::ToggleMagnet));
+        let magnet_button = iced::widget::button(
+            style::icon_text(style::Icon::Magnet, 16).align_x(iced::Alignment::Center),
+        )
+        .style(move |theme, status| {
+            style::button::magnet(theme, status, magnet_enabled, magnet_active)
+        })
+        .width(iced::Length::Fill)
+        .on_press(on_sidebar_message(DrawingMessage::ToggleMagnet));
         tools = tools.push(tooltip(
             magnet_button,
             Some("Magnet"),
             TooltipPosition::Right,
         ));
 
-        let objects_button =
-            iced::widget::button(iced::widget::text("O").align_x(iced::Alignment::Center))
-                .style(|theme, status| style::button::transparent(theme, status, false))
-                .width(iced::Length::Fill)
-                .on_press(on_sidebar_message(DrawingMessage::ShowObjectListPage));
+        let objects_button = iced::widget::button(
+            style::icon_text(style::Icon::Layers, 16).align_x(iced::Alignment::Center),
+        )
+        .style(|theme, status| style::button::transparent(theme, status, false))
+        .width(iced::Length::Fill)
+        .on_press(on_sidebar_message(DrawingMessage::ShowObjectListPage));
         tools = tools.push(tooltip(
             objects_button,
             Some("Drawings"),
@@ -1346,7 +1381,7 @@ impl DrawingTools {
         )
     }
 
-    pub fn handle_widget_drawing_event(
+    pub(super) fn handle_widget_drawing_event(
         &mut self,
         event: KlineWidgetDrawingEvent,
         settings: &DrawingSettings,
@@ -1505,12 +1540,12 @@ impl DrawingTools {
         }
     }
 
-    pub fn select_drawing(&mut self, selected: Option<DrawingId>) -> bool {
+    fn select_drawing(&mut self, selected: Option<DrawingId>) -> bool {
         let ids = selected.into_iter().collect::<Vec<_>>();
         self.select_drawings(ids)
     }
 
-    pub fn select_drawings(&mut self, selected: Vec<DrawingId>) -> bool {
+    fn select_drawings(&mut self, selected: Vec<DrawingId>) -> bool {
         if selected
             .iter()
             .any(|id| !self.drawings.iter().any(|drawing| drawing.id == *id))
@@ -1527,7 +1562,7 @@ impl DrawingTools {
         true
     }
 
-    pub fn remove_selected_drawing(&mut self) -> bool {
+    fn remove_selected_drawing(&mut self) -> bool {
         let ids = self.selected_drawings.clone();
         if ids.is_empty() {
             return false;
@@ -1645,7 +1680,7 @@ impl DrawingTools {
         object_changed || default_changed
     }
 
-    pub fn remove_drawing(&mut self, id: DrawingId) -> bool {
+    fn remove_drawing(&mut self, id: DrawingId) -> bool {
         let Some(index) = self.drawings.iter().position(|drawing| drawing.id == id) else {
             return false;
         };
@@ -1666,7 +1701,7 @@ impl DrawingTools {
         true
     }
 
-    pub fn remove_all_drawings(&mut self) -> bool {
+    fn remove_all_drawings(&mut self) -> bool {
         if self.drawings.is_empty()
             && matches!(self.interaction, DrawingInteraction::Idle)
             && self.selected_drawings.is_empty()
@@ -1680,7 +1715,7 @@ impl DrawingTools {
         true
     }
 
-    pub fn start_drawing_from_anchor(
+    fn start_drawing_from_anchor(
         &mut self,
         anchor: DrawingAnchor,
         settings: &DrawingSettings,
@@ -1735,7 +1770,7 @@ impl DrawingTools {
         }
     }
 
-    pub fn update_drawing_draft_anchor(&mut self, anchor: DrawingAnchor) -> bool {
+    fn update_drawing_draft_anchor(&mut self, anchor: DrawingAnchor) -> bool {
         if !self.accepts_anchor(anchor) {
             return false;
         }
@@ -1743,21 +1778,10 @@ impl DrawingTools {
             return false;
         };
 
-        match draft {
-            DrawingDraft::Trendline { start, current, .. }
-            | DrawingDraft::Box { start, current, .. } => {
-                if anchor.panel_id != start.panel_id {
-                    return false;
-                }
-
-                *current = anchor;
-            }
-        }
-
-        true
+        draft.update_anchor(anchor)
     }
 
-    pub fn commit_drawing_draft(&mut self, end: DrawingAnchor) -> Option<DrawingId> {
+    fn commit_drawing_draft(&mut self, end: DrawingAnchor) -> Option<DrawingId> {
         if !self.accepts_anchor(end) {
             return None;
         }
@@ -1767,7 +1791,7 @@ impl DrawingTools {
         Some(self.push_drawing(object, style))
     }
 
-    pub fn cancel_drawing_draft(&mut self) -> bool {
+    fn cancel_drawing_draft(&mut self) -> bool {
         if !matches!(self.interaction, DrawingInteraction::Drafting(_)) {
             return false;
         }
@@ -1776,7 +1800,7 @@ impl DrawingTools {
         true
     }
 
-    pub fn prune_panel_drawings(&mut self, panel_id: PanelId) -> bool {
+    pub(super) fn prune_panel_drawings(&mut self, panel_id: PanelId) -> bool {
         let before = self.drawings.len() + self.inactive_drawings.len();
         self.drawings
             .retain(|drawing| !drawing.belongs_to_panel(panel_id));
@@ -2174,18 +2198,6 @@ impl DrawingTools {
         match self.sidebar_page {
             SidebarPage::Tools => SIDEBAR_WIDTH,
             SidebarPage::ObjectList => OBJECT_LIST_SIDEBAR_WIDTH,
-        }
-    }
-
-    pub fn drawing_panels_exist(composition: &ChartComposition, object: &DrawingObject) -> bool {
-        let panel_exists = |panel_id: PanelId| composition.panel(panel_id).is_some();
-
-        match object {
-            DrawingObject::Trendline { start, end } | DrawingObject::Box { start, end, .. } => {
-                panel_exists(start.panel_id) && panel_exists(end.panel_id)
-            }
-            DrawingObject::HorizontalLine { panel_id, .. } => panel_exists(*panel_id),
-            DrawingObject::VerticalLine { .. } => true,
         }
     }
 }

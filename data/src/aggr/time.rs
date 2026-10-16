@@ -4,7 +4,8 @@ use rustc_hash::FxHashSet;
 
 use crate::chart::Basis;
 use crate::chart::heatmap::HeatmapDataPoint;
-use crate::chart::kline_data::{ClusterKind, KlineDataPoint, KlineTrades, NPoc};
+use crate::chart::kline::bar::KlineDataPoint;
+use crate::chart::kline::footprint::{ClusterKind, KlineTrades};
 
 use exchange::unit::{Price, PriceStep, Qty};
 use exchange::{Kline, Timeframe, Trade, UnixMs};
@@ -31,6 +32,11 @@ pub(crate) enum OrderedChange {
 pub(crate) struct KlineInsertReport {
     pub inserted_timestamps: Vec<UnixMs>,
     pub ordered_change: OrderedChange,
+}
+
+pub(crate) struct TradeInsertReport {
+    pub earliest_updated: UnixMs,
+    pub previous_poc_prices: BTreeMap<UnixMs, Option<Price>>,
 }
 
 impl<D: DataPoint> TimeSeries<D> {
@@ -93,18 +99,10 @@ impl TimeSeries<KlineDataPoint> {
     }
 
     pub fn insert_klines(&mut self, klines: &[Kline]) {
-        let _ = self.insert_klines_inner(klines, false);
+        let _ = self.insert_klines_report(klines);
     }
 
     pub(crate) fn insert_klines_report(&mut self, klines: &[Kline]) -> Option<KlineInsertReport> {
-        self.insert_klines_inner(klines, true)
-    }
-
-    fn insert_klines_inner(
-        &mut self,
-        klines: &[Kline],
-        update_poc_status: bool,
-    ) -> Option<KlineInsertReport> {
         if klines.is_empty() {
             return None;
         }
@@ -131,10 +129,6 @@ impl TimeSeries<KlineDataPoint> {
         }
 
         inserted_timestamps.sort_unstable();
-
-        if update_poc_status {
-            self.update_poc_status();
-        }
 
         let ordered_change = if !changed_existing
             && inserted_timestamps
@@ -203,30 +197,55 @@ impl TimeSeries<KlineDataPoint> {
         first_missing.zip(last_missing)
     }
 
-    pub fn insert_trades_existing_buckets(&mut self, buffer: &[Trade]) {
+    pub(crate) fn insert_trades_existing_buckets_report(
+        &mut self,
+        buffer: &[Trade],
+    ) -> Option<TradeInsertReport> {
         if buffer.is_empty() {
-            return;
+            return None;
         }
         let mut updated_times = FxHashSet::default();
 
-        for trade in buffer {
-            let rounded_time = trade.time.floor_to(self.interval);
-
+        for run in buffer.chunk_by(|left, right| {
+            left.time.floor_to(self.interval) == right.time.floor_to(self.interval)
+        }) {
+            let rounded_time = run[0].time.floor_to(self.interval);
             if let Some(entry) = self.datapoints.get_mut(&rounded_time) {
                 updated_times.insert(rounded_time);
-                entry.add_trade(trade, self.tick_size);
+                for trade in run {
+                    entry.add_trade(trade, self.tick_size);
+                }
             }
         }
 
+        let earliest_updated = updated_times.iter().copied().min()?;
+        let mut previous_poc_prices = BTreeMap::new();
         for time in updated_times {
             if let Some(data_point) = self.datapoints.get_mut(&time) {
+                let previous = data_point.footprint.poc;
                 data_point.calculate_poc();
+                let previous_price = previous.map(|poc| poc.price);
+                if previous_price == data_point.poc_price() {
+                    if let Some(previous) = previous {
+                        data_point.set_poc_status(previous.status);
+                    }
+                } else {
+                    previous_poc_prices.insert(time, previous_price);
+                }
             }
         }
+        Some(TradeInsertReport {
+            earliest_updated,
+            previous_poc_prices,
+        })
     }
 
-    pub fn backfill_new_buckets(&mut self, trades: &[Trade], newborn: &[UnixMs]) {
-        if trades.is_empty() || newborn.is_empty() {
+    pub fn backfill_new_buckets<'a>(
+        &mut self,
+        trades: impl IntoIterator<Item = &'a Trade>,
+        newborn: &[UnixMs],
+    ) {
+        if newborn.is_empty() {
             return;
         }
 
@@ -250,43 +269,10 @@ impl TimeSeries<KlineDataPoint> {
         }
     }
 
-    pub fn change_tick_size(&mut self, tick_size: PriceStep, raw_trades: &[Trade]) {
+    pub fn change_tick_size(&mut self, tick_size: PriceStep) {
         self.tick_size = tick_size;
-
-        self.clear_trades();
-
-        if !raw_trades.is_empty() {
-            self.insert_trades_existing_buckets(raw_trades);
-        }
-
-        self.update_poc_status();
-    }
-
-    pub fn update_poc_status(&mut self) {
-        let updates = self
-            .datapoints
-            .iter()
-            .filter_map(|(&time, dp)| dp.poc_price().map(|price| (time, price)))
-            .collect::<Vec<_>>();
-
-        for (current_time, poc_price) in updates {
-            let mut npoc = NPoc::default();
-
-            for (&next_time, next_dp) in self.datapoints.range(current_time.saturating_add(1)..) {
-                let next_dp_low = next_dp.kline.low.round_to_side_step(true, self.tick_size);
-                let next_dp_high = next_dp.kline.high.round_to_side_step(false, self.tick_size);
-
-                if next_dp_low <= poc_price && next_dp_high >= poc_price {
-                    npoc.filled(next_time.as_u64());
-                    break;
-                } else {
-                    npoc.unfilled();
-                }
-            }
-
-            if let Some(data_point) = self.datapoints.get_mut(&current_time) {
-                data_point.set_poc_status(npoc);
-            }
+        for point in self.datapoints.values_mut() {
+            point.footprint.regroup(tick_size);
         }
     }
 

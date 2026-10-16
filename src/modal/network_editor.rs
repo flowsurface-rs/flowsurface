@@ -1,7 +1,7 @@
 use crate::{
     connector::fetcher,
     style::{self, icon_text},
-    widget::tooltip,
+    widget::{BannerKind, banner, tooltip},
 };
 use exchange::proxy::{Proxy, ProxyScheme};
 
@@ -144,41 +144,15 @@ impl NetworkEditor {
         let mut content = column![modal_header, fetch_settings, proxy_settings].spacing(12);
 
         if self.pending_apply.is_some() {
-            let banner = container(
-                text("Restart required.\nChanges will take effect after restart")
-                    .size(crate::style::text_size::SMALL)
-                    .style(|theme: &iced::Theme| {
-                        let palette = theme.palette();
-                        iced::widget::text::Style {
-                            color: Some(palette.primary),
-                        }
-                    }),
-            )
-            .padding(6)
-            .width(iced::Length::Fill)
-            .align_x(iced::Alignment::Center)
-            .style(style::modal_container);
-            content = content.push(banner);
+            content = content.push(banner(
+                "Restart required.\nChanges will take effect after restart.",
+                BannerKind::Warning,
+            ));
         }
 
-        let content = if let Some(err) = &self.error {
-            let error_line =
-                text(err)
-                    .size(crate::style::text_size::BODY)
-                    .style(|theme: &iced::Theme| {
-                        let palette = theme.palette();
-                        iced::widget::text::Style {
-                            color: Some(palette.danger),
-                        }
-                    });
-            content.push(
-                container(error_line)
-                    .align_x(iced::Alignment::Center)
-                    .width(iced::Length::Fill),
-            )
-        } else {
-            content
-        };
+        if let Some(err) = &self.error {
+            content = content.push(banner(err, BannerKind::Error));
+        }
 
         container(content)
             .max_width(320)
@@ -608,7 +582,7 @@ impl FetchForm {
         };
 
         let fetch_checkbox = checkbox(self.draft_active)
-            .label("Fetch trades")
+            .label("Fetch historical trades")
             .on_toggle(FetchMsg::ToggleFetchTrades);
 
         let mut fetch_section = column![tooltip(
@@ -780,13 +754,13 @@ impl FetchForm {
                     let url = self.trimmed_url();
                     if url.is_none() || url.as_deref().is_none_or(|u| u.trim().is_empty()) {
                         *error =
-                            Some("Server URL is required when mode is set to Server".to_string());
+                            Some("Server URL is required when mode is set to Server.".to_string());
                         return None;
                     }
                     if let Some(ref u) = url
                         && url::Url::parse(u).is_err()
                     {
-                        *error = Some("Server URL is not a valid URL".to_string());
+                        *error = Some("Server URL is not a valid URL.".to_string());
                         return None;
                     }
                 }

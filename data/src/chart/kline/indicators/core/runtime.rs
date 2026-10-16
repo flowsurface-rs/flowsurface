@@ -5,11 +5,13 @@ use super::{
     BaseSeriesSource, IndicatorConfig, IndicatorConfigError, IndicatorId, IndicatorOutputRef,
     OutputValue,
 };
-use crate::chart::kline::{IndicatorInstance, IndicatorInstanceId, IndicatorInstanceStore};
+use crate::chart::kline::{
+    IndicatorInstance, IndicatorInstanceId, IndicatorInstanceStore, SourceBindingProblem,
+};
 use indicator_engine::{IndicatorFrame, SeriesInputValue};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::{BTreeMap, BTreeSet};
-use std::ops::Range;
+use std::ops::{ControlFlow, Range};
 
 struct IndicatorRuntimeEntry {
     id: IndicatorInstanceId,
@@ -90,7 +92,25 @@ impl IndicatorRuntimeEntry {
     }
 }
 
-/// Owns every active indicator instance and its pane-indexed output stores.
+enum IndicatorGraphDiagnostic {
+    AttachedHasNoNumericPlotLayer,
+    InvalidSourceBinding(SourceBindingProblem),
+    DependencyCycle,
+}
+
+impl std::fmt::Display for IndicatorGraphDiagnostic {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AttachedHasNoNumericPlotLayer => {
+                formatter.write_str("attached indicator has no numeric plot layer")
+            }
+            Self::InvalidSourceBinding(problem) => write!(formatter, "{problem}"),
+            Self::DependencyCycle => formatter.write_str("indicator dependency cycle"),
+        }
+    }
+}
+
+/// Owns active indicator runtimes, output stores, and the selected dependency graph.
 #[derive(Default)]
 pub struct IndicatorHost {
     entries: Vec<IndicatorRuntimeEntry>,
@@ -98,8 +118,8 @@ pub struct IndicatorHost {
     execution_order: Vec<IndicatorInstanceId>,
     dependencies: FxHashMap<IndicatorInstanceId, Vec<IndicatorInstanceId>>,
     dependents: FxHashMap<IndicatorInstanceId, Vec<IndicatorInstanceId>>,
-    graph_diagnostics: FxHashMap<IndicatorInstanceId, String>,
-    runtime_diagnostics: FxHashMap<IndicatorInstanceId, String>,
+    graph_diagnostics: FxHashMap<IndicatorInstanceId, IndicatorGraphDiagnostic>,
+    runtime_diagnostics: FxHashMap<IndicatorInstanceId, IndicatorConfigError>,
     blocked_nodes: FxHashSet<IndicatorInstanceId>,
 }
 
@@ -107,20 +127,14 @@ impl IndicatorHost {
     fn record_runtime_diagnostic(
         &mut self,
         instance: &IndicatorInstance,
-        phase: &str,
-        error: impl std::fmt::Display,
+        error: IndicatorConfigError,
     ) {
-        let diagnostic = format!("{phase}: {error}");
         log::error!(
-            "indicator {} (instance {:?}) runtime failure: {diagnostic}",
+            "indicator {} (instance {:?}) runtime rebuild failure: {error}",
             instance.kind.id(),
             instance.id
         );
-        self.runtime_diagnostics.insert(instance.id, diagnostic);
-    }
-
-    fn clear_runtime_diagnostic(&mut self, id: IndicatorInstanceId) {
-        self.runtime_diagnostics.remove(&id);
+        self.runtime_diagnostics.insert(instance.id, error);
     }
 
     pub fn remap_outputs(&mut self, previous_indices: &[Option<usize>]) {
@@ -159,6 +173,19 @@ impl IndicatorHost {
 
     pub fn has_entries(&self, ids: &[IndicatorInstanceId]) -> bool {
         ids.iter().all(|id| self.entry_indices.contains_key(id))
+    }
+
+    pub fn can_append_from(&self, ids: &[IndicatorInstanceId], start: usize) -> bool {
+        ids.iter().all(|id| {
+            self.entry_indices.get(id).is_some_and(|index| {
+                let entry = &self.entries[*index];
+                entry.output_indices.is_none()
+                    && entry
+                        .runtime
+                        .committed_index()
+                        .map_or(start == 0, |index| index.checked_add(1) == Some(start))
+            })
+        })
     }
 
     pub fn dependent_ids(&self, roots: &[IndicatorInstanceId]) -> Vec<IndicatorInstanceId> {
@@ -235,99 +262,48 @@ impl IndicatorHost {
                 .unwrap_or(usize::MAX)
         });
         self.rebuild_entry_indices();
-        self.rebuild_graph(instances);
+        self.rebuild_graph(active, instances);
     }
 
-    pub fn recalculate(
+    pub fn recalculate_interruptible(
         &mut self,
         active: &[IndicatorInstanceId],
         instances: &IndicatorInstanceStore,
         frames: &[IndicatorFrame],
-    ) {
+        mut control: impl FnMut() -> ControlFlow<()>,
+    ) -> ControlFlow<()> {
         let mut rebuilt = Self::default();
         for instance in active.iter().filter_map(|id| instances.get(*id)) {
+            control()?;
             match IndicatorRuntimeEntry::new(instance) {
                 Ok(Some(entry)) => rebuilt.entries.push(entry),
                 Ok(None) => {}
-                Err(error) => rebuilt.record_runtime_diagnostic(instance, "rebuild", error),
+                Err(error) => rebuilt.record_runtime_diagnostic(instance, error),
             };
         }
         rebuilt.rebuild_entry_indices();
-        rebuilt.rebuild_graph(instances);
-        for frame in frames {
-            rebuilt.evaluate_closed(frame);
-        }
+        rebuilt.rebuild_graph(active, instances);
+        rebuilt.replay_closed_interruptible(frames, control)?;
         *self = rebuilt;
+        ControlFlow::Continue(())
     }
 
-    pub fn recalculate_selected(
+    pub fn replay_closed_interruptible(
         &mut self,
-        dirty: &[IndicatorInstanceId],
-        instances: &IndicatorInstanceStore,
         frames: &[IndicatorFrame],
-    ) {
-        let affected = self.dependent_ids(dirty);
-        let affected_set = affected.iter().copied().collect::<FxHashSet<_>>();
-        let mut active = self
-            .entries
-            .iter()
-            .map(|entry| entry.id)
-            .collect::<Vec<_>>();
-        for id in dirty {
-            if !active.contains(id) {
-                active.push(*id);
-            }
-        }
-
-        if self
-            .entries
-            .iter()
-            .all(|entry| affected_set.contains(&entry.id))
-        {
-            self.recalculate(&active, instances, frames);
-            return;
-        }
-
-        let mut replacements = FxHashMap::default();
-        for id in &affected {
-            let Some(instance) = instances.get(*id) else {
-                replacements.insert(*id, None);
-                continue;
-            };
-            match IndicatorRuntimeEntry::new(instance) {
-                Ok(Some(entry)) => {
-                    self.clear_runtime_diagnostic(*id);
-                    replacements.insert(*id, Some(entry));
-                }
-                Ok(None) => {
-                    self.clear_runtime_diagnostic(*id);
-                    replacements.insert(*id, None);
-                }
-                Err(error) => {
-                    self.record_runtime_diagnostic(instance, "rebuild", error);
-                    replacements.insert(*id, None);
+        mut control: impl FnMut() -> ControlFlow<()>,
+    ) -> ControlFlow<()> {
+        for chunk in frames.chunks(64) {
+            for frame in chunk {
+                control()?;
+                for id in self.execution_order.clone() {
+                    control()?;
+                    self.evaluate_entry(id, frame, false);
                 }
             }
+            std::thread::yield_now();
         }
-
-        let entries = std::mem::take(&mut self.entries);
-        self.entries = entries
-            .into_iter()
-            .filter_map(|entry| match replacements.remove(&entry.id) {
-                Some(replacement) => replacement,
-                None => Some(entry),
-            })
-            .collect();
-        for id in affected {
-            if let Some(Some(entry)) = replacements.remove(&id) {
-                self.entries.push(entry);
-            }
-        }
-        self.rebuild_entry_indices();
-        self.rebuild_graph(instances);
-        for frame in frames {
-            self.evaluate_nodes(&affected_set, frame, false);
-        }
+        ControlFlow::Continue(())
     }
 
     pub fn set_active(
@@ -335,117 +311,28 @@ impl IndicatorHost {
         active: &[IndicatorInstanceId],
         instances: &IndicatorInstanceStore,
     ) -> Vec<IndicatorInstanceId> {
-        let previous = self
-            .entries
-            .iter()
-            .map(|entry| {
-                (
-                    entry.id,
-                    (
-                        entry.kind.clone(),
-                        entry.config.clone(),
-                        entry.source_bindings.clone(),
-                        entry.base_source_selections.clone(),
-                    ),
-                )
-            })
-            .collect::<FxHashMap<_, _>>();
         let changed = active
             .iter()
             .copied()
-            .filter_map(|id| {
-                let instance = instances.get(id)?;
-                instance.kind.is_registered().then_some((id, instance))
+            .filter(|id| {
+                instances.get(*id).is_some_and(|instance| {
+                    instance.kind.is_registered()
+                        && self.entry_indices.get(id).is_none_or(|index| {
+                            let entry = &self.entries[*index];
+                            entry.kind != instance.kind
+                                || entry.config != instance.config
+                                || entry.source_bindings != instance.source_bindings
+                                || entry.base_source_selections != instance.base_source_selections
+                        })
+                })
             })
-            .filter(|(id, instance)| {
-                previous.get(id)
-                    != Some(&(
-                        instance.kind.clone(),
-                        instance.config.clone(),
-                        instance.source_bindings.clone(),
-                        instance.base_source_selections.clone(),
-                    ))
-            })
-            .map(|(id, _)| id)
             .collect::<Vec<_>>();
-        self.runtime_diagnostics.retain(|id, _| {
-            active.contains(id)
-                && instances
-                    .get(*id)
-                    .is_some_and(|instance| instance.kind.is_registered())
-        });
         self.entries.retain(|entry| {
             active.contains(&entry.id)
+                && !changed.contains(&entry.id)
                 && instances
                     .get(entry.id)
                     .is_some_and(|instance| instance.kind.is_registered())
-        });
-        for id in active {
-            let Some(instance) = instances.get(*id) else {
-                continue;
-            };
-            if !instance.kind.is_registered() {
-                continue;
-            }
-
-            if let Some(entry_index) = self.entries.iter().position(|entry| entry.id == *id) {
-                if self.entries[entry_index].kind != instance.kind {
-                    match IndicatorRuntimeEntry::new(instance) {
-                        Ok(Some(replacement)) => {
-                            self.entries[entry_index] = replacement;
-                            self.clear_runtime_diagnostic(instance.id);
-                        }
-                        Ok(None) => {
-                            self.entries.remove(entry_index);
-                            self.clear_runtime_diagnostic(instance.id);
-                        }
-                        Err(error) => {
-                            self.entries.remove(entry_index);
-                            self.record_runtime_diagnostic(instance, "creation", error);
-                        }
-                    }
-                } else {
-                    let config_changed = self.entries[entry_index].config != instance.config;
-                    if config_changed {
-                        let result = self.entries[entry_index]
-                            .runtime
-                            .set_config(&instance.config);
-                        match result {
-                            Ok(true) => {
-                                self.entries[entry_index].config = instance.config.clone();
-                                self.clear_runtime_diagnostic(instance.id);
-                            }
-                            Ok(false) => {}
-                            Err(error) => {
-                                self.entries.remove(entry_index);
-                                self.record_runtime_diagnostic(instance, "reconfiguration", error);
-                            }
-                        }
-                    }
-                    if let Some(entry) = self
-                        .entries
-                        .get_mut(entry_index)
-                        .filter(|entry| entry.id == *id)
-                    {
-                        entry.source_bindings = instance.source_bindings.clone();
-                        entry.base_source_selections = instance.base_source_selections.clone();
-                    }
-                }
-            } else {
-                match IndicatorRuntimeEntry::new(instance) {
-                    Ok(Some(entry)) => {
-                        self.entries.push(entry);
-                        self.clear_runtime_diagnostic(instance.id);
-                    }
-                    Ok(None) => self.clear_runtime_diagnostic(instance.id),
-                    Err(error) => self.record_runtime_diagnostic(instance, "creation", error),
-                }
-            }
-        }
-        self.entries.retain(|entry| {
-            instances
-                .get(entry.id)
-                .is_some_and(|instance| instance.kind == entry.kind)
         });
         self.runtime_diagnostics.retain(|id, _| {
             active.contains(id)
@@ -460,131 +347,8 @@ impl IndicatorHost {
                 .unwrap_or(usize::MAX)
         });
         self.rebuild_entry_indices();
-        self.rebuild_graph(instances);
+        self.rebuild_graph(active, instances);
         changed
-    }
-
-    pub fn validate_bindings(
-        &self,
-        active: &[IndicatorInstanceId],
-        instances: &IndicatorInstanceStore,
-    ) -> Result<(), String> {
-        let mut candidate = Self::default();
-        for id in active {
-            let Some(instance) = instances.get(*id) else {
-                continue;
-            };
-            if !instance.kind.is_registered() {
-                continue;
-            }
-            let Some(entry) =
-                IndicatorRuntimeEntry::new(instance).map_err(|error| error.to_string())?
-            else {
-                continue;
-            };
-            candidate.entries.push(entry);
-        }
-        candidate.rebuild_entry_indices();
-        candidate.rebuild_graph(instances);
-        candidate
-            .graph_diagnostics
-            .values()
-            .next()
-            .cloned()
-            .map_or(Ok(()), Err)
-    }
-
-    pub fn validate_source_binding(
-        &self,
-        active: &[IndicatorInstanceId],
-        instances: &IndicatorInstanceStore,
-        id: IndicatorInstanceId,
-        input_id: &str,
-    ) -> Result<(), String> {
-        let active = active
-            .iter()
-            .copied()
-            .collect::<BTreeSet<IndicatorInstanceId>>();
-        let Some(instance) = instances.get(id) else {
-            return Err(format!(
-                "source binding references missing indicator instance {id:?}"
-            ));
-        };
-        if !active.contains(&id) {
-            return Err("source binding target is not active".to_owned());
-        }
-        if !instance.kind.definition().has_numeric_plot_layers() {
-            return Err("attached indicator has no numeric plot layer".to_owned());
-        }
-        let Some(target) = instances
-            .dependency_target(instance, input_id, &active)
-            .map_err(|problem| problem.to_string())?
-        else {
-            return Ok(());
-        };
-
-        let edges = instances.dependency_edges(&active, Some((id, input_id)));
-        let mut pending = vec![target.id];
-        let mut visited = FxHashSet::default();
-        while let Some(current) = pending.pop() {
-            if current == id {
-                return Err("indicator dependency cycle".to_owned());
-            }
-            if visited.insert(current) {
-                pending.extend(edges.get(&current).into_iter().flatten().copied());
-            }
-        }
-        Ok(())
-    }
-
-    pub fn reconfigure(
-        &mut self,
-        instance: &IndicatorInstance,
-        instances: &IndicatorInstanceStore,
-    ) {
-        if !instance.kind.is_registered() {
-            self.entries.retain(|entry| entry.id != instance.id);
-            self.clear_runtime_diagnostic(instance.id);
-            self.rebuild_entry_indices();
-            self.rebuild_graph(instances);
-            return;
-        }
-        let Some(entry_index) = self.entry_indices.get(&instance.id).copied() else {
-            if !self.runtime_diagnostics.contains_key(&instance.id) {
-                return;
-            }
-            match IndicatorRuntimeEntry::new(instance) {
-                Ok(Some(entry)) => {
-                    self.entries.push(entry);
-                    self.clear_runtime_diagnostic(instance.id);
-                }
-                Ok(None) => self.clear_runtime_diagnostic(instance.id),
-                Err(error) => self.record_runtime_diagnostic(instance, "reconfiguration", error),
-            }
-            self.rebuild_entry_indices();
-            self.rebuild_graph(instances);
-            return;
-        };
-        let Some(entry) = self.entries.get_mut(entry_index) else {
-            return;
-        };
-        if entry.kind != instance.kind || entry.config == instance.config {
-            return;
-        }
-        let result = entry.runtime.set_config(&instance.config);
-        match result {
-            Ok(true) => {
-                entry.config = instance.config.clone();
-                self.clear_runtime_diagnostic(instance.id);
-            }
-            Ok(false) => {}
-            Err(error) => {
-                self.entries.retain(|entry| entry.id != instance.id);
-                self.rebuild_entry_indices();
-                self.rebuild_graph(instances);
-                self.record_runtime_diagnostic(instance, "reconfiguration", error);
-            }
-        }
     }
 
     pub fn evaluate_closed(&mut self, frame: &IndicatorFrame) {
@@ -603,32 +367,9 @@ impl IndicatorHost {
         self.evaluate_nodes(&selected, frame, false);
     }
 
-    pub fn evaluate_closed_for(&mut self, ids: &[IndicatorInstanceId], frame: &IndicatorFrame) {
-        let affected = self
-            .dependent_ids(ids)
-            .into_iter()
-            .collect::<FxHashSet<_>>();
-        self.evaluate_nodes(&affected, frame, false);
-    }
-
-    pub fn preview_open(&mut self, frame: &IndicatorFrame) {
-        let order = self.execution_order.clone();
-        for id in order {
-            self.evaluate_entry(id, frame, true);
-        }
-    }
-
     pub fn preview_open_selected(&mut self, ids: &[IndicatorInstanceId], frame: &IndicatorFrame) {
         let selected = ids.iter().copied().collect::<FxHashSet<_>>();
         self.evaluate_nodes(&selected, frame, true);
-    }
-
-    pub fn preview_open_for(&mut self, id: IndicatorInstanceId, frame: &IndicatorFrame) {
-        let affected = self
-            .dependent_ids(&[id])
-            .into_iter()
-            .collect::<FxHashSet<_>>();
-        self.evaluate_nodes(&affected, frame, true);
     }
 
     fn evaluate_nodes(
@@ -722,34 +463,36 @@ impl IndicatorHost {
         frame
     }
 
-    fn rebuild_graph(&mut self, instances: &IndicatorInstanceStore) {
+    fn rebuild_graph(
+        &mut self,
+        active_ids: &[IndicatorInstanceId],
+        instances: &IndicatorInstanceStore,
+    ) {
         self.execution_order.clear();
         self.dependencies.clear();
         self.dependents.clear();
         self.graph_diagnostics.clear();
         self.blocked_nodes.clear();
-        let ids = self
-            .entries
+        let ids = active_ids
             .iter()
-            .map(|entry| entry.id)
-            .collect::<Vec<_>>();
-        let active = self
-            .entry_indices
-            .keys()
             .copied()
-            .collect::<BTreeSet<IndicatorInstanceId>>();
-        for entry in &self.entries {
-            let Some(instance) = instances.get(entry.id) else {
+            .filter(|id| {
+                instances
+                    .get(*id)
+                    .is_some_and(|instance| instance.kind.is_registered())
+            })
+            .collect::<Vec<_>>();
+        let active = ids.iter().copied().collect::<BTreeSet<_>>();
+        for id in &ids {
+            let Some(instance) = instances.get(*id) else {
                 continue;
             };
             if !instance.source_bindings.is_empty()
-                && !entry.kind.definition().has_numeric_plot_layers()
+                && !instance.kind.definition().has_numeric_plot_layers()
             {
-                self.graph_diagnostics.insert(
-                    entry.id,
-                    "attached indicator has no numeric plot layer".to_owned(),
-                );
-                self.blocked_nodes.insert(entry.id);
+                self.graph_diagnostics
+                    .insert(*id, IndicatorGraphDiagnostic::AttachedHasNoNumericPlotLayer);
+                self.blocked_nodes.insert(*id);
                 continue;
             }
             for source_id in instance.source_bindings.keys() {
@@ -758,15 +501,15 @@ impl IndicatorHost {
                     Ok(None) => continue,
                     Err(problem) => {
                         self.graph_diagnostics
-                            .entry(entry.id)
-                            .or_insert_with(|| problem.to_string());
+                            .entry(*id)
+                            .or_insert(IndicatorGraphDiagnostic::InvalidSourceBinding(problem));
                         continue;
                     }
                 };
-                let dependencies = self.dependencies.entry(entry.id).or_default();
+                let dependencies = self.dependencies.entry(*id).or_default();
                 if !dependencies.contains(&target.id) {
                     dependencies.push(target.id);
-                    self.dependents.entry(target.id).or_default().push(entry.id);
+                    self.dependents.entry(target.id).or_default().push(*id);
                 }
             }
         }
@@ -795,15 +538,21 @@ impl IndicatorHost {
             self.blocked_nodes.insert(id);
             self.graph_diagnostics
                 .entry(id)
-                .or_insert_with(|| "indicator dependency cycle".to_owned());
+                .or_insert(IndicatorGraphDiagnostic::DependencyCycle);
             self.execution_order.push(id);
         }
     }
 
-    pub fn has_input_consumer(&self, source: IndicatorInputSource) -> bool {
-        self.entries
-            .iter()
-            .any(|entry| entry.kind.definition().uses(source))
+    pub fn has_input_consumer(
+        &self,
+        source: IndicatorInputSource,
+        instances: &IndicatorInstanceStore,
+    ) -> bool {
+        self.execution_order.iter().any(|id| {
+            instances
+                .get(*id)
+                .is_some_and(|instance| instance.kind.definition().uses(source))
+        })
     }
 
     pub fn output_value_for(
@@ -879,7 +628,7 @@ impl IndicatorHost {
                     Some(indices) => indices.get(&index).copied(),
                     None => entry.current_index(index),
                 };
-                // shortcut: scan borrowed segments; add an interval index if selection becomes costly.
+
                 entry
                     .runtime
                     .segment_outputs()
@@ -945,13 +694,6 @@ impl IndicatorHost {
             })
     }
 
-    pub fn region_outputs_for(
-        &self,
-        id: IndicatorInstanceId,
-    ) -> Vec<indicator_engine::RegionOutput> {
-        self.region_outputs_for_range(id, None)
-    }
-
     pub fn region_outputs_for_range(
         &self,
         id: IndicatorInstanceId,
@@ -986,36 +728,18 @@ impl IndicatorHost {
             .unwrap_or_default()
     }
 
-    pub fn diagnostic_for(&self, id: IndicatorInstanceId) -> Option<&str> {
+    pub fn diagnostic_for(&self, id: IndicatorInstanceId) -> Option<String> {
         if let Some(diagnostic) = self.graph_diagnostics.get(&id) {
-            return Some(diagnostic.as_str());
+            return Some(diagnostic.to_string());
         }
         if let Some(diagnostic) = self.runtime_diagnostics.get(&id) {
-            return Some(diagnostic.as_str());
+            return Some(format!("rebuild: {diagnostic}"));
         }
 
         self.entry_indices
             .get(&id)
             .and_then(|entry_index| self.entries.get(*entry_index))
-            .and_then(|entry| entry.runtime.diagnostic())
-    }
-
-    pub fn diagnostics(&self) -> Vec<(IndicatorInstanceId, String)> {
-        let mut diagnostics = BTreeMap::new();
-        for (id, diagnostic) in &self.graph_diagnostics {
-            diagnostics.insert(*id, diagnostic.clone());
-        }
-        for (id, diagnostic) in &self.runtime_diagnostics {
-            diagnostics.entry(*id).or_insert_with(|| diagnostic.clone());
-        }
-        for entry in &self.entries {
-            if let Some(diagnostic) = entry.runtime.diagnostic() {
-                diagnostics
-                    .entry(entry.id)
-                    .or_insert_with(|| diagnostic.to_owned());
-            }
-        }
-        diagnostics.into_iter().collect()
+            .and_then(|entry| entry.runtime.diagnostic().map(str::to_owned))
     }
 
     fn rebuild_entry_indices(&mut self) {
@@ -1073,5 +797,68 @@ mod tests {
         assert!(region_intersects_source_range(&extending(0), &visible));
         assert!(region_intersects_source_range(&extending(9), &visible));
         assert!(!region_intersects_source_range(&extending(10), &visible));
+    }
+
+    #[test]
+    fn interrupted_replay_preserves_the_previous_host() {
+        let id = IndicatorInstanceId::default_for(&IndicatorId::parse("core.volume").unwrap());
+        let mut host = IndicatorHost {
+            execution_order: vec![id],
+            ..IndicatorHost::default()
+        };
+        let frames = (0..130)
+            .map(|index| IndicatorFrame {
+                index,
+                time: index as i64,
+                basis: indicator_engine::TimeOrTick::Tick,
+                instrument: indicator_engine::InstrumentContext::default(),
+                chart: indicator_engine::ChartFrame {
+                    open: Some(1.0),
+                    high: Some(1.0),
+                    low: Some(1.0),
+                    close: Some(1.0),
+                    volume: Some(1.0),
+                    directional_volume_available: false,
+                    buy_qty: 0.0,
+                    sell_qty: 0.0,
+                    trade: None,
+                },
+                open_interest: None,
+                series_inputs: std::sync::Arc::from([]),
+            })
+            .collect::<Vec<_>>();
+        let mut checks = 0;
+        assert!(
+            host.replay_closed_interruptible(&frames, || {
+                checks += 1;
+                if checks == 5 {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                }
+            })
+            .is_break()
+        );
+        assert_eq!(checks, 5);
+        assert!(
+            host.recalculate_interruptible(
+                &[],
+                &IndicatorInstanceStore::default(),
+                &frames,
+                || ControlFlow::Break(())
+            )
+            .is_break()
+        );
+        assert_eq!(host.execution_order, vec![id]);
+        assert!(
+            host.recalculate_interruptible(
+                &[],
+                &IndicatorInstanceStore::default(),
+                &frames,
+                || ControlFlow::Continue(())
+            )
+            .is_continue()
+        );
+        assert!(host.execution_order.is_empty());
     }
 }

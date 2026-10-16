@@ -1,4 +1,4 @@
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 
 use crate::tickers_table;
 
@@ -38,13 +38,6 @@ impl Default for Sidebar {
             tickers_table: None,
         }
     }
-}
-
-pub fn deserialize_sidebar_fallback<'de, D>(deserializer: D) -> Result<Sidebar, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    Sidebar::deserialize(deserializer).or(Ok(Sidebar::default()))
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Copy, Deserialize, Serialize)]

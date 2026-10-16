@@ -43,10 +43,6 @@ impl IndicatorId {
         self.id()
     }
 
-    pub fn supports_market(&self, market: exchange::adapter::MarketKind) -> bool {
-        is_supported_for_market(self, market)
-    }
-
     pub fn default_instance_slot(&self) -> u64 {
         self.id()
             .bytes()
@@ -75,19 +71,11 @@ impl IndicatorId {
             .unwrap_or_default()
     }
 
-    pub fn normalized_config(&self, config: IndicatorConfig) -> IndicatorConfig {
+    fn normalized_config(&self, config: IndicatorConfig) -> IndicatorConfig {
         catalog()
             .get(self)
             .map(|registration| registration.normalize_config(config.clone()))
             .unwrap_or(config)
-    }
-
-    pub fn normalized_config_for_basis(
-        &self,
-        config: IndicatorConfig,
-        _basis: Basis,
-    ) -> IndicatorConfig {
-        self.normalized_config(config)
     }
 
     pub fn settings(
@@ -157,14 +145,6 @@ impl IndicatorId {
         let Some(registration) = catalog().get(self) else {
             return Some(IndicatorUnsupportedReason::NotInstalled);
         };
-        if !registration.definition.supported_markets.is_empty()
-            && !registration
-                .definition
-                .supported_markets
-                .contains(&context.base_ticker.market_type())
-        {
-            return Some(IndicatorUnsupportedReason::SourceNotSupported);
-        }
         registration.unsupported_reason(context)
     }
 
@@ -172,7 +152,7 @@ impl IndicatorId {
         if let Some(reason) = self.unsupported_reason(context) {
             return IndicatorAvailability::Unsupported(reason);
         }
-        self.definition().availability(context)
+        IndicatorAvailability::Available
     }
 
     pub fn declared_input_requirements(&self) -> Vec<IndicatorInputRequirement> {
@@ -188,16 +168,6 @@ impl IndicatorId {
 
     pub fn default_view(&self) -> &'static super::IndicatorPanelRecipe {
         self.definition().default_view()
-    }
-
-    pub fn for_market(market: exchange::adapter::MarketKind) -> Vec<Self> {
-        all_indicators()
-            .into_iter()
-            .filter(|indicator| {
-                indicator.definition().supported_markets.is_empty()
-                    || indicator.definition().supported_markets.contains(&market)
-            })
-            .collect()
     }
 
     pub fn requires_trade_data(&self) -> bool {
@@ -374,10 +344,6 @@ impl IndicatorConfig {
 
     pub fn normalized_for(self, indicator: &IndicatorId) -> Self {
         indicator.normalized_config(self)
-    }
-
-    pub fn normalized_for_basis(self, indicator: &IndicatorId, basis: Basis) -> Self {
-        indicator.normalized_config_for_basis(self, basis)
     }
 
     pub fn settings_for(
@@ -563,11 +529,11 @@ pub struct IndicatorCatalog {
 
 impl IndicatorCatalog {
     /// Build an isolated catalog for validation or integration tests.
-    pub(crate) fn from_registrations(registrations: Vec<IndicatorRegistration>) -> Self {
+    fn from_registrations(registrations: Vec<IndicatorRegistration>) -> Self {
         Self::from_registrations_with_diagnostics(registrations, Vec::new())
     }
 
-    pub(crate) fn from_registrations_with_diagnostics(
+    fn from_registrations_with_diagnostics(
         mut registrations: Vec<IndicatorRegistration>,
         mut diagnostics: Vec<String>,
     ) -> Self {
@@ -637,14 +603,6 @@ pub fn all_indicators() -> Vec<IndicatorId> {
 
 pub fn indicator_definition(indicator: &IndicatorId) -> &'static IndicatorDefinition {
     indicator.definition()
-}
-
-pub fn is_supported_for_market(
-    indicator: &IndicatorId,
-    market: exchange::adapter::MarketKind,
-) -> bool {
-    indicator.definition().supported_markets.is_empty()
-        || indicator.definition().supported_markets.contains(&market)
 }
 
 pub fn declared_input_requirements(indicator: &IndicatorId) -> Vec<IndicatorInputRequirement> {

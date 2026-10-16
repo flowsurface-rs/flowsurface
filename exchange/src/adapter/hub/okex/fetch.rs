@@ -9,8 +9,11 @@ use super::{
     raw_qty_unit_from_market_type, timeframe_to_okx_bar,
 };
 use crate::adapter::hub::AdapterError;
+use crate::adapter::{KlinePage, kline_page_end};
 use serde_json::Value;
 use std::collections::HashMap;
+
+const MAX_KLINE_BARS: u64 = 300;
 
 pub(super) async fn fetch_ticker_metadata(
     hub: &mut HttpHub<OkexLimiter>,
@@ -277,21 +280,30 @@ pub(super) async fn fetch_klines(
         bar,
         match range {
             Some((start, end)) => {
-                ((end.as_u64() - start.as_u64()) / timeframe.to_milliseconds()).clamp(1, 300)
+                (end.as_u64() - start.as_u64())
+                    .div_ceil(timeframe.to_milliseconds())
+                    .clamp(1, MAX_KLINE_BARS)
             }
-            None => 300,
+            None => MAX_KLINE_BARS,
         }
     );
 
     if let Some((start, end)) = range {
         url.push_str(&format!(
             "&before={}&after={}",
-            start.as_u64(),
+            start.as_u64().saturating_sub(1),
             end.as_u64()
         ));
     }
 
     let doc: Value = hub.http_json_with_limiter(&url, 1, None, None).await?;
+
+    if doc["code"].as_str() != Some("0") {
+        return Err(AdapterError::ParseError(format!(
+            "OKX kline request failed: {} ({})",
+            doc["msg"], doc["code"]
+        )));
+    }
 
     let list = doc["data"]
         .as_array()
@@ -339,6 +351,18 @@ pub(super) async fn fetch_klines(
 
     klines.sort_by_key(|k| k.time);
     Ok(klines)
+}
+
+pub(super) async fn fetch_klines_page(
+    hub: &mut HttpHub<OkexLimiter>,
+    ticker_info: TickerInfo,
+    timeframe: Timeframe,
+    from: UnixMs,
+    to: UnixMs,
+) -> Result<KlinePage, AdapterError> {
+    let page_to = kline_page_end(from, to, timeframe, MAX_KLINE_BARS)?;
+    let data = fetch_klines(hub, ticker_info, timeframe, Some((from, page_to))).await?;
+    Ok(KlinePage::new(data, from, page_to))
 }
 
 pub(super) async fn fetch_historical_oi(

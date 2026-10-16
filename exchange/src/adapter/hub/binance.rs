@@ -1,6 +1,6 @@
 use crate::{
     Event, Kline, OpenInterest, PushFrequency, Ticker, TickerInfo, Timeframe, Trade, UnixMs,
-    adapter::{Exchange, MarketKind, StreamTicksize, limiter::DynamicRateLimiterConfig},
+    adapter::{Exchange, KlinePage, MarketKind, StreamTicksize, limiter::DynamicRateLimiterConfig},
     depth::DepthPayload,
     unit::{ContractSize, qty::RawQtyUnit},
 };
@@ -163,6 +163,24 @@ impl BinanceHandle {
             .await
     }
 
+    pub async fn fetch_klines_page(
+        &self,
+        ticker: TickerInfo,
+        timeframe: Timeframe,
+        from: UnixMs,
+        to: UnixMs,
+    ) -> Result<KlinePage, AdapterError> {
+        self.request_port
+            .request(move |reply| BinanceCommand::KlinePage {
+                ticker,
+                timeframe,
+                from,
+                to,
+                reply,
+            })
+            .await
+    }
+
     pub async fn fetch_open_interest(
         &self,
         ticker: TickerInfo,
@@ -302,6 +320,26 @@ impl super::FetchCommandHandler<BinanceMarketScope> for Worker {
         let market = ticker_info.market_type();
         Box::pin(async move {
             fetch::fetch_klines(self.hub_for_market(market), ticker_info, timeframe, range).await
+        })
+    }
+
+    fn fetch_klines_page(
+        &mut self,
+        ticker_info: TickerInfo,
+        timeframe: Timeframe,
+        from: UnixMs,
+        to: UnixMs,
+    ) -> futures::future::BoxFuture<'_, Result<KlinePage, AdapterError>> {
+        let market = ticker_info.market_type();
+        Box::pin(async move {
+            fetch::fetch_klines_page(
+                self.hub_for_market(market),
+                ticker_info,
+                timeframe,
+                from,
+                to,
+            )
+            .await
         })
     }
 

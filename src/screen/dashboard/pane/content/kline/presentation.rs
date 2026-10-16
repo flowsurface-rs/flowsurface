@@ -5,11 +5,51 @@ use crate::widget::chart::kline::{
 };
 use data::chart::Basis;
 use data::chart::kline::composition::resolve_mark_for_data_kind;
+use data::chart::kline::composition::{MarkKind, PanelSpec};
+use data::chart::kline::indicators::{AvailabilityContext, IndicatorAvailability};
 use data::chart::kline::{
     self as persisted, IndicatorId, IndicatorInputSource, IndicatorInstanceId,
     IndicatorUnsupportedReason, KlineData,
 };
-use rustc_hash::FxHashSet;
+use std::sync::Arc;
+
+#[derive(PartialEq)]
+struct IndicatorPresentationState {
+    value_id: IndicatorInstanceId,
+    kind: IndicatorId,
+    selected_mark: Option<MarkKind>,
+    effective_mark: Option<MarkKind>,
+    status: IndicatorPresentationStatus,
+}
+
+#[derive(Default)]
+pub(super) struct IndicatorPresentationCache {
+    panels: Vec<PanelSpec>,
+    states: Vec<IndicatorPresentationState>,
+    presentations: Arc<[ResolvedIndicatorPresentation]>,
+}
+
+impl IndicatorPresentationCache {
+    pub(super) fn refreshed(&self, resolver: IndicatorPresentationResolver<'_>) -> Option<Self> {
+        let states = resolver.states();
+        let panels = &resolver.indicators.composition.panels;
+        if self.panels == *panels && self.states == states {
+            return None;
+        }
+        Some(Self {
+            panels: panels.clone(),
+            presentations: states.iter().map(|state| resolver.resolve(state)).collect(),
+            states,
+        })
+    }
+
+    pub(super) fn context(&self, indicators: &IndicatorState) -> IndicatorPresentationContext {
+        IndicatorPresentationContext::new(
+            indicators.input_coverage.clone(),
+            Arc::clone(&self.presentations),
+        )
+    }
+}
 
 pub(super) struct IndicatorPresentationResolver<'a> {
     indicators: &'a IndicatorState,
@@ -33,11 +73,9 @@ impl<'a> IndicatorPresentationResolver<'a> {
         }
     }
 
-    pub(super) fn context(&self) -> IndicatorPresentationContext {
-        let input_coverage = self.indicators.input_coverage().clone();
-        let unavailable = self.unavailable_indicator_panels(&input_coverage);
-        let presentations = self
-            .indicators
+    fn states(&self) -> Vec<IndicatorPresentationState> {
+        let input_coverage = &self.indicators.input_coverage;
+        self.indicators
             .selected_indicators()
             .into_iter()
             .filter_map(|value_id| {
@@ -45,117 +83,135 @@ impl<'a> IndicatorPresentationResolver<'a> {
                 let kind = &instance.kind;
                 let selected_mark = self
                     .indicators
-                    .layout()
+                    .composition
                     .indicator_mark(value_id, Some(kind));
-                let panel = self.indicators.composition().panels.iter().find(|panel| {
-                    panel.layers.iter().any(|layer| {
-                        layer
-                            .source
-                            .indicator_output()
-                            .is_some_and(|output| output.instance_id == value_id)
-                    })
-                });
-                let base_layer_id = panel.and_then(|panel| {
-                    panel
-                        .base_layer
-                        .or_else(|| panel.layers.first().map(|layer| layer.id))
-                });
                 let required_input = selected_mark
                     .and_then(|mark| kind.mark_spec(mark))
                     .and_then(|spec| spec.required_input);
                 let fallback_mark = selected_mark.and_then(|mark| kind.fallback_mark_for(mark));
-                let base_message =
-                    self.data
-                        .indicator_host()
-                        .diagnostic_for(value_id)
-                        .or_else(|| {
-                            unavailable
-                                .iter()
-                                .find(|(entry_id, _)| *entry_id == value_id)
-                                .map(|(_, message)| message.as_str())
-                        });
+                let host_diagnostic = self.data.indicator_host().diagnostic_for(value_id);
+                let unavailable_message = self.panel_unavailable_reason(value_id).map(|reason| {
+                    unavailable_indicator_message(
+                        kind.clone(),
+                        reason,
+                        self.basis,
+                        self.data.base_ticker(),
+                    )
+                });
+                let base_message = host_diagnostic
+                    .as_deref()
+                    .or(unavailable_message.as_deref());
+
                 let (effective_mark, status) =
                     if self.indicators.hides_rebuild_output(value_id) && base_message.is_none() {
                         (selected_mark, IndicatorPresentationStatus::Loading)
                     } else {
                         resolve_indicator_presentation_status(
                             base_message,
-                            &input_coverage,
+                            input_coverage,
                             selected_mark,
                             required_input,
                             fallback_mark,
-                            |source| missing_presentation_input_message(kind, source),
+                            |source| {
+                                missing_input_message(
+                                    data::chart::kline::indicators::display_name(kind),
+                                    source,
+                                )
+                            },
                         )
                     };
-                let selected_layer_ids = effective_mark
-                    .and_then(|mark| {
-                        self.indicators
-                            .layout()
-                            .indicator_mark_target_layer_ids(value_id, kind, mark)
-                    })
-                    .map(|(_, layer_ids)| layer_ids)
-                    .unwrap_or_else(|| base_layer_id.into_iter().collect());
-                let resolved_marks = panel
-                    .and_then(|panel| self.indicators.composition().resolved_panel_marks(panel.id))
-                    .unwrap_or_default();
-                let resolved_layers = panel
-                    .into_iter()
-                    .flat_map(|panel| panel.layers.iter())
-                    .filter_map(|layer| {
-                        let base_output = layer.source.indicator_output()?.clone();
-                        if base_output.instance_id != value_id {
-                            return None;
-                        }
-                        let layer_mark = resolved_marks
-                            .iter()
-                            .find(|(layer_id, _)| *layer_id == layer.id)
-                            .map(|(_, mark)| *mark)
-                            .unwrap_or_else(|| {
-                                resolve_mark_for_data_kind(layer.effective_mark(), layer.data_kind)
-                            });
-                        let selected_layer = selected_layer_ids.contains(&layer.id);
-                        let mark = effective_mark
-                            .filter(|_| selected_layer)
-                            .unwrap_or(layer_mark);
-                        let channel_id = if selected_layer {
-                            kind.mark_source_channel(mark)
-                                .unwrap_or(base_output.channel_id.as_str())
-                        } else {
-                            base_output.channel_id.as_str()
-                        };
-                        Some(ResolvedIndicatorLayer {
-                            base_output: base_output.clone(),
-                            presentation_output: data::chart::kline::IndicatorOutputRef::new(
-                                value_id, channel_id,
-                            ),
-                            data_kind: layer.data_kind,
-                            purpose: layer.purpose,
-                            mark,
-                            required_input: kind
-                                .mark_spec(mark)
-                                .and_then(|spec| spec.required_input),
-                            visible: layer.visible,
-                        })
-                    })
-                    .collect::<Vec<_>>();
-                let active_readouts = kind
-                    .readout_specs()
-                    .iter()
-                    .filter(|readout| effective_mark.is_none_or(|mark| readout.scope.matches(mark)))
-                    .cloned()
-                    .collect::<Vec<_>>();
 
-                Some(ResolvedIndicatorPresentation {
+                Some(IndicatorPresentationState {
                     value_id,
+                    kind: kind.clone(),
+                    selected_mark,
                     effective_mark,
                     status,
-                    resolved_layers,
-                    active_readouts,
                 })
             })
-            .collect();
+            .collect()
+    }
 
-        IndicatorPresentationContext::new(input_coverage, presentations)
+    fn resolve(&self, state: &IndicatorPresentationState) -> ResolvedIndicatorPresentation {
+        let value_id = state.value_id;
+        let kind = &state.kind;
+        let effective_mark = state.effective_mark;
+        let panel = self.indicators.composition.panels.iter().find(|panel| {
+            panel.layers.iter().any(|layer| {
+                layer
+                    .source
+                    .indicator_output()
+                    .is_some_and(|output| output.instance_id == value_id)
+            })
+        });
+        let base_layer_id = panel.and_then(|panel| {
+            panel
+                .base_layer
+                .or_else(|| panel.layers.first().map(|layer| layer.id))
+        });
+        let selected_layer_ids = effective_mark
+            .and_then(|mark| {
+                self.indicators
+                    .composition
+                    .indicator_mark_target_layer_ids(value_id, kind, mark)
+            })
+            .map(|(_, layer_ids)| layer_ids)
+            .unwrap_or_else(|| base_layer_id.into_iter().collect());
+        let resolved_marks = panel
+            .and_then(|panel| self.indicators.composition.resolved_panel_marks(panel.id))
+            .unwrap_or_default();
+        let resolved_layers = panel
+            .into_iter()
+            .flat_map(|panel| panel.layers.iter())
+            .filter_map(|layer| {
+                let base_output = layer.source.indicator_output()?.clone();
+                if base_output.instance_id != value_id {
+                    return None;
+                }
+                let layer_mark = resolved_marks
+                    .iter()
+                    .find(|(layer_id, _)| *layer_id == layer.id)
+                    .map(|(_, mark)| *mark)
+                    .unwrap_or_else(|| {
+                        resolve_mark_for_data_kind(layer.effective_mark(), layer.data_kind)
+                    });
+                let selected_layer = selected_layer_ids.contains(&layer.id);
+                let mark = effective_mark
+                    .filter(|_| selected_layer)
+                    .unwrap_or(layer_mark);
+                let channel_id = if selected_layer {
+                    kind.mark_source_channel(mark)
+                        .unwrap_or(base_output.channel_id.as_str())
+                } else {
+                    base_output.channel_id.as_str()
+                };
+                Some(ResolvedIndicatorLayer {
+                    base_output: base_output.clone(),
+                    presentation_output: data::chart::kline::IndicatorOutputRef::new(
+                        value_id, channel_id,
+                    ),
+                    data_kind: layer.data_kind,
+                    purpose: layer.purpose,
+                    mark,
+                    required_input: kind.mark_spec(mark).and_then(|spec| spec.required_input),
+                    visible: layer.visible,
+                })
+            })
+            .collect::<Vec<_>>();
+        let active_readouts = kind
+            .readout_specs()
+            .iter()
+            .filter(|readout| effective_mark.is_none_or(|mark| readout.scope.matches(mark)))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        ResolvedIndicatorPresentation {
+            value_id,
+            effective_mark,
+            status: state.status.clone(),
+            resolved_layers,
+            active_readouts,
+        }
     }
 
     pub(super) fn unavailable_reason(
@@ -192,57 +248,64 @@ impl<'a> IndicatorPresentationResolver<'a> {
         if matches!(source, IndicatorInputSource::OpenInterest) {
             return None;
         }
-        Some(match source {
-            IndicatorInputSource::DirectionalVolume => {
-                persisted::IndicatorUnsupportedReason::MissingDirectionalVolume
-            }
-            source => persisted::IndicatorUnsupportedReason::MissingRequiredInput { source },
-        })
+        Some(persisted::IndicatorUnsupportedReason::MissingRequiredInput { source })
     }
 
-    fn unavailable_indicator_panels(
-        &self,
-        input_coverage: &data::chart::kline::IndicatorInputCoverage,
-    ) -> Vec<(IndicatorInstanceId, String)> {
-        let trade_data_disabled = self.indicators.layout().trade_data_unavailable_indicators(
-            self.trade_data_enabled,
-            self.indicators.instances(),
+    fn indicator_availability(&self, id: IndicatorInstanceId) -> IndicatorAvailability {
+        let Some(instance) = self.indicators.instances.get(id) else {
+            return IndicatorAvailability::Unsupported(IndicatorUnsupportedReason::NotInstalled);
+        };
+        let indicator = &instance.kind;
+        let availability = data::chart::kline::indicators::availability(
+            indicator,
+            AvailabilityContext {
+                basis: self.basis,
+                base_ticker: self.data.base_ticker(),
+            },
         );
-        let required_input_coverage_unavailable = self
-            .indicators
-            .layout()
-            .required_input_coverage_unavailable_indicators(
-                input_coverage,
-                self.indicators.instances(),
-            );
-        let mut seen = FxHashSet::default();
-        self.indicators
-            .layout()
-            .unavailable_indicators(
-                self.basis,
-                self.data.base_ticker(),
-                self.data.base_series(),
-                self.indicators.instances(),
-            )
-            .into_iter()
-            .chain(trade_data_disabled)
-            .chain(required_input_coverage_unavailable)
-            .filter_map(|(id, reason)| {
-                if !seen.insert(id) {
-                    return None;
-                }
-                let kind = self.indicators.indicator(id)?.kind.clone();
-                Some((
-                    id,
-                    unavailable_indicator_message(
-                        kind,
-                        reason,
-                        self.basis,
-                        self.data.base_ticker(),
-                    ),
-                ))
+
+        if !matches!(availability, IndicatorAvailability::Available) {
+            return availability;
+        }
+
+        let Some(required) = self.indicators.instances.warmup_bars(id) else {
+            return availability;
+        };
+
+        let available = self
+            .data
+            .base_series()
+            .map(|series| series.point_count())
+            .unwrap_or(0);
+        let required = required as usize;
+        if available < required {
+            IndicatorAvailability::Unsupported(IndicatorUnsupportedReason::InsufficientData {
+                available,
+                required,
             })
-            .collect()
+        } else {
+            availability
+        }
+    }
+
+    fn panel_unavailable_reason(
+        &self,
+        id: IndicatorInstanceId,
+    ) -> Option<IndicatorUnsupportedReason> {
+        if let IndicatorAvailability::Unsupported(reason) = self.indicator_availability(id) {
+            return Some(reason);
+        }
+        let instance = self.indicators.indicator(id)?;
+        if !self.trade_data_enabled
+            && data::chart::kline::indicators::requires_trade_data(&instance.kind)
+        {
+            return Some(IndicatorUnsupportedReason::MissingRequiredInput {
+                source: IndicatorInputSource::Trades,
+            });
+        }
+        self.indicators
+            .missing_required_input(&instance.kind, self.basis, self.data.base_ticker())
+            .map(|source| IndicatorUnsupportedReason::MissingRequiredInput { source })
     }
 }
 
@@ -277,16 +340,8 @@ fn unavailable_indicator_message(
         } => {
             format!("{name} needs {required} candles; only {available} available.")
         }
-        IndicatorUnsupportedReason::MissingRequiredInput { source } => match source {
-            IndicatorInputSource::Klines => format!("{name} requires candle data."),
-            IndicatorInputSource::DirectionalVolume => {
-                format!("{name} requires directional volume from candles or enabled trade data.")
-            }
-            IndicatorInputSource::Trades => format!("{name} requires trade data."),
-            IndicatorInputSource::OpenInterest => format!("{name} requires open-interest data."),
-        },
-        IndicatorUnsupportedReason::MissingDirectionalVolume => {
-            format!("{name} requires directional volume from candles or enabled trade data.")
+        IndicatorUnsupportedReason::MissingRequiredInput { source } => {
+            missing_input_message(name, source)
         }
         IndicatorUnsupportedReason::NotInstalled => {
             format!("Indicator unavailable in this build: {}.", indicator.id())
@@ -294,11 +349,7 @@ fn unavailable_indicator_message(
     }
 }
 
-fn missing_presentation_input_message(
-    indicator: &IndicatorId,
-    source: IndicatorInputSource,
-) -> String {
-    let name = data::chart::kline::indicators::display_name(indicator);
+fn missing_input_message(name: &str, source: IndicatorInputSource) -> String {
     match source {
         IndicatorInputSource::Klines => format!("{name} requires candle data."),
         IndicatorInputSource::DirectionalVolume => {

@@ -3,12 +3,13 @@ use iced::{
     widget::{button, column, container, row, rule},
 };
 
-const BODY_VERTICAL_PADDING: f32 = 4.0;
+const BODY_VERTICAL_PADDING: f32 = 8.0;
 const SECTION_TITLE_SPACING: f32 = 8.0;
-pub(crate) const SECTION_SPACING: f32 = 16.0;
-pub(crate) const MODAL_SECTION_SPACING: f32 = 8.0;
+pub const SECTION_SPACING: f32 = 16.0;
+pub const MODAL_SECTION_SPACING: f32 = 8.0;
 const SECTION_PADDING: f32 = 8.0;
 const FOOTER_SPACING: f32 = 4.0;
+const FOOTER_VERTICAL_PADDING: f32 = 4.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InspectorTab {
@@ -17,17 +18,17 @@ pub enum InspectorTab {
     Source,
 }
 
-pub(crate) fn modal_container<'a, Message: 'a>(
+pub fn modal_container<'a, Message: 'a>(
     content: impl Into<Element<'a, Message>>,
 ) -> Element<'a, Message> {
     container(content)
         .width(Length::Fill)
         .padding(SECTION_PADDING)
-        .style(crate::style::modal_container)
+        .style(crate::style::inspector_section)
         .into()
 }
 
-pub(crate) fn setting_section<'a, Message>(
+pub fn setting_section<'a, Message>(
     label: impl iced::widget::text::IntoFragment<'a>,
     control: impl Into<Element<'a, Message>>,
 ) -> InspectorSection<'a, Message>
@@ -40,10 +41,10 @@ where
     )
 }
 
-pub(crate) fn tabs<'a, Message>(
+fn tabs<'a, Message>(
     selected_tab: InspectorTab,
+    available_tabs: &[InspectorTab],
     on_select: impl Fn(InspectorTab) -> Message + Copy + 'a,
-    show_source: bool,
 ) -> Element<'a, Message>
 where
     Message: Clone + 'a,
@@ -89,24 +90,55 @@ where
     };
 
     let mut tab_buttons = row![];
-    if show_source {
-        tab_buttons = tab_buttons.push(tab_button("i", InspectorTab::Source, Length::Shrink));
+    for tab in available_tabs {
+        let (label, width) = match tab {
+            InspectorTab::Source => ("i", Length::Shrink),
+            InspectorTab::Inputs => ("Inputs", Length::FillPortion(1)),
+            InspectorTab::Style => ("Style", Length::FillPortion(1)),
+        };
+        tab_buttons = tab_buttons.push(tab_button(label, *tab, width));
     }
-    tab_buttons = tab_buttons
-        .push(tab_button(
-            "Inputs",
-            InspectorTab::Inputs,
-            Length::FillPortion(1),
-        ))
-        .push(tab_button(
-            "Style",
-            InspectorTab::Style,
-            Length::FillPortion(1),
-        ));
 
     column![container(tab_buttons).center_x(Length::Fill)]
         .spacing(4)
         .into()
+}
+
+pub fn tabbed_content<'a, Message>(
+    selected_tab: InspectorTab,
+    on_select: impl Fn(InspectorTab) -> Message + Copy + 'a,
+    contents: impl IntoIterator<Item = (InspectorTab, Option<Element<'a, Message>>)>,
+) -> (InspectorTab, Element<'a, Message>)
+where
+    Message: Clone + 'a,
+{
+    let mut contents = contents
+        .into_iter()
+        .filter_map(|(tab, content)| content.map(|content| (tab, content)))
+        .collect::<Vec<_>>();
+    contents.sort_by_key(|(tab, _)| match tab {
+        InspectorTab::Source => 0,
+        InspectorTab::Inputs => 1,
+        InspectorTab::Style => 2,
+    });
+    let Some((first_tab, _)) = contents.first() else {
+        return (selected_tab, column![].into());
+    };
+    let selected_tab = if contents.iter().any(|(tab, _)| *tab == selected_tab) {
+        selected_tab
+    } else {
+        *first_tab
+    };
+    let available_tabs = contents.iter().map(|(tab, _)| *tab).collect::<Vec<_>>();
+    let tabs = tabs(selected_tab, &available_tabs, on_select);
+    let Some((_, content)) = contents.into_iter().find(|(tab, _)| *tab == selected_tab) else {
+        return (selected_tab, column![].into());
+    };
+
+    (
+        selected_tab,
+        column![tabs, content].spacing(MODAL_SECTION_SPACING).into(),
+    )
 }
 
 pub struct InspectorSection<'a, Message> {
@@ -140,7 +172,7 @@ impl<'a, Message: 'a> InspectorSection<'a, Message> {
         }
     }
 
-    pub(crate) fn map<Next>(
+    pub fn map<Next>(
         self,
         mapper: impl Fn(Message) -> Next + Copy + 'a,
     ) -> InspectorSection<'a, Next>
@@ -220,8 +252,16 @@ impl<'a, Message: 'a> InspectorContent<'a, Message> {
 pub struct InspectorBody;
 
 impl InspectorBody {
-    pub fn view<'a, Message: 'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
-        Self::container(crate::widget::scrollable_content(content))
+    pub fn view<'a, Message: 'a>(
+        content: impl Into<Element<'a, Message>>,
+        max_height: f32,
+    ) -> Element<'a, Message> {
+        container(crate::widget::scrollable_content(content))
+            .width(Length::Fill)
+            .height(Length::Shrink)
+            .max_height(max_height)
+            .padding([BODY_VERTICAL_PADDING, 0.0])
+            .into()
     }
 
     pub fn view_without_scroll<'a, Message: 'a>(
@@ -244,14 +284,20 @@ impl InspectorBody {
 pub struct InspectorFooter;
 
 impl InspectorFooter {
-    pub fn view<'a, Message: 'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    pub const HEIGHT: f32 = 40.0;
+
+    pub fn view<'a, Message: 'a>(
+        content: impl Into<Element<'a, Message>>,
+        height: f32,
+    ) -> Element<'a, Message> {
         column![
             rule::horizontal(1.0).style(crate::style::split_ruler),
             container(content)
                 .width(Length::Fill)
-                .padding([BODY_VERTICAL_PADDING, 0.0]),
+                .padding([FOOTER_VERTICAL_PADDING, 0.0]),
         ]
         .spacing(FOOTER_SPACING)
+        .height(height)
         .into()
     }
 }

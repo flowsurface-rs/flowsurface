@@ -10,9 +10,12 @@ use super::{
     raw_qty_unit_from_market_type,
 };
 use crate::adapter::hub::AdapterError;
+use crate::adapter::{KlinePage, kline_page_end};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashMap;
+
+const MAX_KLINE_BARS: u64 = 1_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -215,12 +218,19 @@ pub(super) async fn fetch_klines(
         let start = start.as_u64();
         let end = end.as_u64();
         let interval_ms = timeframe.to_milliseconds();
-        let num_intervals = ((end - start) / interval_ms).min(1000);
+        let num_intervals = ((end - start) / interval_ms + 1).min(MAX_KLINE_BARS);
 
         url.push_str(&format!("&start={start}&end={end}&limit={num_intervals}"));
     }
 
     let response: ApiResponse = hub.http_json_with_limiter(&url, 1, None, None).await?;
+
+    if response.ret_code != 0 {
+        return Err(AdapterError::ParseError(format!(
+            "Bybit kline request failed: {} ({})",
+            response.ret_msg, response.ret_code
+        )));
+    }
 
     let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
     let qty_norm = QtyNormalization::with_raw_qty_unit(
@@ -234,6 +244,12 @@ pub(super) async fn fetch_klines(
         .list
         .iter()
         .map(|kline| {
+            if kline.len() < 6 {
+                return Err(AdapterError::ParseError(
+                    "Bybit kline row has fewer than six fields".to_string(),
+                ));
+            }
+
             let time = parse_kline_field::<u64>(kline[0].as_str())?;
 
             let open = parse_kline_field::<f64>(kline[1].as_str())?;
@@ -259,6 +275,24 @@ pub(super) async fn fetch_klines(
         .collect();
 
     klines
+}
+
+pub(super) async fn fetch_klines_page(
+    hub: &mut HttpHub<BybitLimiter>,
+    ticker_info: TickerInfo,
+    timeframe: Timeframe,
+    from: UnixMs,
+    to: UnixMs,
+) -> Result<KlinePage, AdapterError> {
+    let page_to = kline_page_end(from, to, timeframe, MAX_KLINE_BARS)?;
+    let data = fetch_klines(
+        hub,
+        ticker_info,
+        timeframe,
+        Some((from, page_to.saturating_sub(1))),
+    )
+    .await?;
+    Ok(KlinePage::new(data, from, page_to))
 }
 
 pub(super) async fn fetch_historical_oi(

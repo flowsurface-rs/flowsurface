@@ -77,7 +77,7 @@ impl LayoutManager {
         }
     }
 
-    pub(crate) fn ensure_layout(&mut self) {
+    pub fn ensure_layout(&mut self) {
         if !self.layouts.is_empty() {
             return;
         }
@@ -141,7 +141,7 @@ impl LayoutManager {
         self.get_mut(id).map(|e| &mut e.dashboard)
     }
 
-    pub(crate) fn update_dashboard(
+    pub fn update_dashboard(
         &mut self,
         message: dashboard::Message,
         main_window: &crate::window::Window,

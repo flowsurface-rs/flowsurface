@@ -59,7 +59,7 @@ pub fn timesales_cfg_view<'a>(cfg: timesales::Config) -> InspectorContent<'a, Me
         tooltip(
             button("i").style(style::button::info),
             Some("Affects the stacked bar, colors and how much you can scroll down"),
-            TooltipPosition::Top,
+            TooltipPosition::Left,
         )
     ]
     .spacing(4)
@@ -145,9 +145,9 @@ pub fn timesales_cfg_view<'a>(cfg: timesales::Config) -> InspectorContent<'a, Me
     };
 
     let mut content = InspectorContent::new(vec![
-        InspectorSection::titled("Size filter", trade_size_slider),
-        InspectorSection::new(history_title, retention_slider),
-        InspectorSection::titled("Stacked bar", stacked_bar),
+        InspectorSection::titled("Size filter", trade_size_slider).with_modal_container(),
+        InspectorSection::new(history_title, retention_slider).with_modal_container(),
+        InspectorSection::titled("Stacked bar", stacked_bar).with_modal_container(),
     ]);
     content.set_footer(row![
         space::horizontal(),

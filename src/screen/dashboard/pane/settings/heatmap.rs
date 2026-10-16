@@ -1,4 +1,5 @@
 use super::{Message, sync_all_button};
+use crate::style;
 use crate::theme::ThemeAccents;
 use crate::widget::study_configurator as study;
 use crate::widget::{
@@ -9,11 +10,13 @@ use data::chart::heatmap;
 use data::chart::heatmap::HeatmapStudy;
 use data::layout::pane::VisualConfig;
 use data::util::format_with_commas;
-use iced::widget::{checkbox, column, row, space, text};
+use iced::{
+    Length,
+    widget::{checkbox, column, container, row, space, text},
+};
 
 pub fn heatmap_shader_cfg_view<'a>(
     cfg: heatmap::Config,
-    study_config: &'a study::Configurator<HeatmapStudy>,
     studies: &'a [HeatmapStudy],
     basis: data::chart::Basis,
     theme_accents: ThemeAccents,
@@ -84,21 +87,26 @@ pub fn heatmap_shader_cfg_view<'a>(
                 sync_all: false,
             });
 
-        let mut col = column![dyn_checkbox].spacing(8);
+        let checkbox_row = row![dyn_checkbox]
+            .height(36)
+            .align_y(iced::Alignment::Center)
+            .padding([0, 8]);
+        let mut col = column![checkbox_row];
         if let Some(slider) = circle_scaling_slider {
-            col = col.push(slider);
+            col = col.push(container(slider).padding(8));
         }
-        col
+        container(col)
+            .width(Length::Fill)
+            .style(style::inspector_control)
     };
 
-    let study_cfg = study_config
-        .view(studies, basis, None, None, theme_accents)
+    let study_cfg = study::view(studies, basis, theme_accents)
         .map(move |msg| Message::Study(study::StudyMessage::Heatmap(msg)));
 
     let mut content = InspectorContent::new(vec![
-        InspectorSection::titled("Size filter", size_filters),
-        InspectorSection::titled("Trade visualization", trade_viz_column),
-        InspectorSection::titled("Studies", study_cfg),
+        InspectorSection::titled("Size filter", size_filters).with_modal_container(),
+        InspectorSection::titled("Trade visualization", trade_viz_column).with_modal_container(),
+        InspectorSection::titled("Studies", study_cfg).with_modal_container(),
     ]);
     content.set_footer(row![
         space::horizontal(),

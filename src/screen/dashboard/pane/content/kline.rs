@@ -4,116 +4,85 @@ mod history;
 mod indicator_browser;
 mod layout;
 mod presentation;
+mod profile;
+mod rebuild;
 mod settings;
 mod studies;
 mod toolbar;
 mod updates;
 mod viewport;
 
-pub use data::chart::kline::IndicatorId;
-use data::chart::kline::LegendVisibility;
-pub use data::chart::kline::series::KlineSeries;
-pub use fetch::FetchUpdate;
-pub use layout::{IndicatorCommand, IndicatorInputCommand, IndicatorStyleCommand};
-pub use studies::StudyCommand;
-pub use updates::DataUpdate;
-
-use data::chart::kline::KlineData;
-use data::chart::kline::indicators::IndicatorHost;
-use drawing::{DrawingEditState, DrawingMessage, DrawingState, DrawingTools, DrawingUpdate};
-use fetch::FetchCoordinator;
-use history::DrawingHistory;
-use layout::{IndicatorChange, IndicatorRebuildReason, IndicatorState};
-use presentation::IndicatorPresentationResolver;
-use settings::{ChartOptions, InspectorEffect, InspectorState, SettingsContext};
-use studies::StudyState;
-use updates::DataUpdateEffect;
-use viewport::ViewportState;
-
 use crate::connector::fetcher::FetchSpec;
 use crate::screen::dashboard::pane::ChartAction;
 use crate::style;
-use crate::theme::ThemeAccents;
+use crate::theme::{ThemeAccents, ThemeState};
+use crate::widget::chart::kline::studies::StudyObjectEvent;
 use crate::widget::chart::kline::{
     IndicatorPresentationContext, KlineWidget, KlineWidgetEvent, MIN_FULL_CACHE_REFRESH_INTERVAL,
     PanelInteraction,
 };
-use crate::widget::inspector::{InspectorBody, InspectorFooter};
-use crate::widget::series_editor::{self, SeriesStyleEntry};
-use crate::widget::study_configurator as study;
+use crate::widget::inspector::{InspectorBody, InspectorContent, InspectorFooter};
+use crate::widget::series_editor;
 use crate::window::PixelRatio;
-use data::chart::kline::composition::{
-    DEFAULT_MIN_PANEL_RATIO, MarkKind, PanelRole, PanelScaleMode,
-};
+
+use drawing::{DrawingMessage, DrawingState, DrawingTools, DrawingUpdate};
+use fetch::FetchCoordinator;
+use layout::{IndicatorRebuildReason, IndicatorState};
+use settings::{InspectorEffect, InspectorState, SettingsContext};
+use studies::{StudyChange, StudyCommand, StudyState};
+use updates::DataUpdateEffect;
+use viewport::ViewportState;
+
+pub use fetch::FetchUpdate;
+pub use layout::{IndicatorCommand, IndicatorInputCommand, IndicatorStyleCommand};
+pub use settings::Message as SettingsMessage;
+pub use updates::DataUpdate;
 
 use data::chart::Basis;
-use data::chart::kline::{
-    self as persisted, CandlestickConfig, ChartSettings, DEFAULT_HORIZONTAL_SPACING_PX, FetchBatch,
-    FetchPlanInput, FetchStage, FootprintImbalanceConfig, FootprintPocConfig, HorizontalWorld,
-    IndicatorInputSource, IndicatorInstanceId, IndicatorInstanceStore, IndicatorLayout,
-    IndicatorOutputRef, KlineStudy, LineStrokeStyle, SeriesColor, SettingsSnapshot, visible_window,
+use data::chart::kline::composition::{
+    ChartComposition, DEFAULT_MIN_PANEL_RATIO, MarkKind, PanelRole, PanelScaleMode,
 };
-use data::chart::kline_data::{ClusterKind, ClusterScaling};
+use data::chart::kline::footprint::{ClusterKind, ClusterScaling};
+use data::chart::kline::series::KlineSeries;
+use data::chart::kline::viewport::XAxis;
+use data::chart::kline::{
+    self as persisted, CandlestickConfig, ChartOptions, ChartSettings,
+    DEFAULT_HORIZONTAL_SPACING_PX, FetchBatch, FetchPlanInput, FootprintImbalanceConfig,
+    FootprintPocConfig, HorizontalWorld, IndicatorId, IndicatorInputSource, IndicatorInstanceId,
+    IndicatorInstanceStore, IndicatorOutputRef, KlineData, KlineStudy, LegendVisibility,
+    LineStrokeStyle, SeriesColor, SettingsSnapshot, visible_window,
+};
+
 use exchange::adapter::StreamKind;
 use exchange::{TickMultiplier, TickerInfo, UnixMs};
-use indicator_engine::IndicatorFrame;
 
-use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::oneshot;
 
 const DEFAULT_HORIZONTAL_OFFSET_UNITS: f32 = 8.0;
-
-const DEFAULT_FOOTPRINT_TICK_MULTIPLIER: TickMultiplier = TickMultiplier(25);
-
+const DEFAULT_TICK_MULTIPLIER: TickMultiplier = TickMultiplier(25);
 const FLOATING_TOOLBAR_MARGIN: f32 = 8.0;
 const FLOATING_TOOLBAR_HANDLE_WIDTH: f32 = 28.0;
 const FLOATING_TOOLBAR_HEIGHT: f32 = 36.0;
-const SIDEBAR_WIDTH: f32 = 228.0;
-const SIDEBAR_RETURN_BUTTON_WIDTH: f32 = 32.0;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-enum Sidebar {
-    #[default]
-    Drawings,
-    Settings,
-}
-
-struct IndicatorRebuildState {
-    job_id: u64,
-    frame_revision: u64,
-    dirty_epochs: Vec<(IndicatorInstanceId, u64)>,
-    dirty_ids: Vec<IndicatorInstanceId>,
-    replay_ids: Vec<IndicatorInstanceId>,
-    active_ids: Vec<IndicatorInstanceId>,
-    frames: Arc<[IndicatorFrame]>,
-    result: oneshot::Receiver<Result<IndicatorHost, String>>,
-}
+const SETTINGS_SIDEBAR_WIDTH: f32 = 240.0;
 
 pub enum Action {
     RemoveSeries(TickerInfo),
     RequestFetch(Vec<FetchSpec>),
     OpenUrl(String),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct KlineDataRequirements {
-    pub klines: bool,
-    pub directional_volume: bool,
-    pub trades: bool,
-    pub open_interest: bool,
+    OpenNetworkSettings,
 }
 
 #[derive(Debug, Clone)]
 pub enum Message {
     Chart(KlineWidgetEvent),
-    IndicatorRebuildCompleted { job_id: u64 },
     Drawing(drawing::Event),
     ToggleDrawingSidebar,
-    ShowDrawingsPage,
-    IndicatorBrowser(indicator_browser::Message),
-    Settings(settings::Message),
+    CloseContextualSettings,
     SeriesEditor(series_editor::Message),
+    IndicatorBrowser(indicator_browser::Message),
+    IndicatorRebuildCompleted { job_id: u64 },
+    Settings(SettingsMessage),
+    OpenNetworkSettings,
 }
 
 pub struct KlineChart {
@@ -123,141 +92,40 @@ pub struct KlineChart {
     data: KlineData,
     indicators: IndicatorState,
     fetch: FetchCoordinator,
-    history: DrawingHistory,
     drawings: DrawingState,
     studies: StudyState,
     inspector: InspectorState,
     indicator_browser: indicator_browser::State,
-    sidebar: Sidebar,
     drawing_sidebar_visible: bool,
-    last_tick: Instant,
-    cache_rev: u64,
-    last_revision_at: Instant,
-    data_redraw_pending: bool,
-    frame_revision: u64,
-    next_indicator_rebuild_job: u64,
-    indicator_rebuild: Option<IndicatorRebuildState>,
-}
-
-pub enum ChartCommand {
-    SetBasis(Basis),
-    SetTradeDataEnabled(bool),
-    SetLegendVisibility(LegendVisibility),
-
-    SetCandlestickConfig {
-        config: CandlestickConfig,
-    },
-    ResetCandlestickSettings,
-    SetCandlestickMark {
-        mark: MarkKind,
-    },
-    SetCandlestickVisible {
-        visible: bool,
-    },
-
-    SetFootprintVisible {
-        visible: bool,
-    },
-    SetFootprintClusterKind {
-        kind: ClusterKind,
-    },
-    SetFootprintClusterScaling {
-        scaling: ClusterScaling,
-    },
-    SetFootprintImbalanceConfig {
-        config: FootprintImbalanceConfig,
-    },
-    SetFootprintPocConfig {
-        config: FootprintPocConfig,
-    },
-    ResetFootprintSettings,
-    SetFootprintTickMultiplier {
-        multiplier: TickMultiplier,
-    },
-
-    AddIndicator(IndicatorId),
-    AddIndicatorOnSource {
-        kind: IndicatorId,
-        input_id: String,
-        source: IndicatorOutputRef,
-    },
-    RemoveIndicator(IndicatorInstanceId),
-    Indicator(IndicatorCommand),
-    Study(StudyCommand),
-
-    SetSeriesColor {
-        ticker_info: TickerInfo,
-        color: SeriesColor,
-    },
-    SetSeriesLineWidth {
-        ticker_info: TickerInfo,
-        width: u8,
-    },
-    SetSeriesStrokeStyle {
-        ticker_info: TickerInfo,
-        stroke_style: LineStrokeStyle,
-    },
-    ResetSeriesSettings {
-        ticker_info: TickerInfo,
-    },
-    AddTicker {
-        ticker_info: TickerInfo,
-    },
-    RemoveTicker {
-        ticker_info: TickerInfo,
-    },
-}
-
-impl ChartCommand {
-    fn indicator_input(command: IndicatorInputCommand) -> Self {
-        Self::Indicator(IndicatorCommand::InputChanged(command))
-    }
-
-    fn indicator_style(command: IndicatorStyleCommand) -> Self {
-        Self::Indicator(IndicatorCommand::StyleChanged(command))
-    }
-
-    fn reset_indicator_settings(id: IndicatorInstanceId) -> Self {
-        Self::Indicator(IndicatorCommand::ResetSettings(id))
-    }
-}
-
-pub enum CommandResult {
-    None,
-    Changed(bool),
-    Action(Option<crate::screen::dashboard::pane::ChartAction>),
+    settings_reconfigure_pending: bool,
+    render_invalidation: RenderInvalidation,
+    last_maintenance_at: Instant,
 }
 
 impl KlineChart {
-    pub fn new_with_tickers(basis: Basis, tickers: &[TickerInfo]) -> Self {
+    pub fn new(basis: Basis, tickers: &[TickerInfo]) -> Self {
         let base_ticker = tickers
             .first()
             .copied()
             .expect("Kline chart requires a base ticker");
-        let footprint_tick_multiplier = DEFAULT_FOOTPRINT_TICK_MULTIPLIER;
-        let indicators = IndicatorState::new(basis);
+        let tick_multiplier = DEFAULT_TICK_MULTIPLIER;
+        let indicators = IndicatorState::new();
 
         let mut chart = Self {
             basis,
             viewport: ViewportState::default(),
             options: ChartOptions::default(),
-            data: KlineData::new(base_ticker, footprint_tick_multiplier),
+            data: KlineData::new(base_ticker, tick_multiplier),
             indicators,
             fetch: FetchCoordinator::new(&[]),
-            history: DrawingHistory::default(),
             drawings: DrawingState::default(),
             studies: StudyState::default(),
             inspector: InspectorState::default(),
             indicator_browser: indicator_browser::State::default(),
-            sidebar: Sidebar::Drawings,
             drawing_sidebar_visible: true,
-            last_tick: Instant::now(),
-            cache_rev: 0,
-            last_revision_at: Instant::now(),
-            data_redraw_pending: false,
-            frame_revision: 0,
-            next_indicator_rebuild_job: 0,
-            indicator_rebuild: None,
+            last_maintenance_at: Instant::now(),
+            render_invalidation: RenderInvalidation::new(),
+            settings_reconfigure_pending: false,
         };
 
         let _ = chart.data.add_ticker(base_ticker, chart.basis);
@@ -267,23 +135,25 @@ impl KlineChart {
             }
         }
 
-        chart.fetch.rebuild_handlers(chart.data.selected_tickers());
+        let selected_tickers = chart.data.selected_tickers();
+        chart.fetch.rebuild_handlers(&selected_tickers);
         chart.data.configure_series_for_basis(chart.basis);
         chart.drawings.tools.set_basis(basis);
         chart.sync_tick_drawing_sequence();
         chart
             .indicators
-            .layout_mut()
-            .sync_comparison_sources(chart.data.base_ticker(), chart.data.selected_tickers());
+            .composition
+            .sync_comparison_sources(chart.data.base_ticker(), &selected_tickers);
+        chart.refresh_indicator_presentation();
         chart
     }
 
-    pub fn new_with_tickers_and_config(
+    pub fn new_with_config(
         basis: Basis,
         tickers: &[TickerInfo],
         config: &persisted::Config,
     ) -> Self {
-        let mut chart = Self::new_with_tickers(basis, tickers);
+        let mut chart = Self::new(basis, tickers);
         chart.apply_persisted_config(config);
         chart.viewport.reset_autoscale();
         chart
@@ -299,15 +169,13 @@ impl KlineChart {
                 self.complete_indicator_rebuild(job_id);
             }
             Message::ToggleDrawingSidebar => {
-                if self.sidebar != Sidebar::Drawings {
-                    self.show_sidebar(Sidebar::Drawings);
-                } else {
+                if !self.close_contextual_settings() {
                     self.drawing_sidebar_visible = !self.drawing_sidebar_visible;
-                    self.bump_rev();
+                    self.render_invalidation.invalidate();
                 }
             }
-            Message::ShowDrawingsPage => {
-                self.show_sidebar(Sidebar::Drawings);
+            Message::CloseContextualSettings => {
+                self.close_contextual_settings();
             }
             Message::IndicatorBrowser(message) => match message {
                 indicator_browser::Message::SearchChanged(query) => {
@@ -321,230 +189,40 @@ impl KlineChart {
                         .apply_browser_action(ChartCommand::Study(StudyCommand::Toggle(study)));
                 }
             },
+            Message::OpenNetworkSettings => return Some(Action::OpenNetworkSettings),
             Message::Settings(message) => {
                 let effect = self
                     .with_settings_context(|inspector, context| inspector.update(message, context));
                 let action = self.apply_inspector_effect(effect);
-                self.reconcile_local_sidebar();
+                self.reconcile_settings_target();
                 return action;
             }
             Message::SeriesEditor(message) => {
                 let effect = self.with_settings_context(|inspector, context| {
-                    inspector.update(settings::Message::SeriesEditor(message), context)
+                    inspector.update(SettingsMessage::SeriesEditor(message), context)
                 });
                 let action = self.apply_inspector_effect(effect);
-                self.reconcile_local_sidebar();
+                self.reconcile_settings_target();
                 return action;
             }
             Message::Drawing(message) => {
-                let before = self.drawings.tools.edit_state();
                 let update = self.drawings.update(message, &mut chart_settings.drawing);
-                self.apply_drawing_update(update, before);
+                self.apply_drawing_update(update);
             }
             Message::Chart(event) => {
                 match event {
-                    KlineWidgetEvent::UndoRequested => return self.undo_edit(),
-                    KlineWidgetEvent::RedoRequested => return self.redo_edit(),
-                    KlineWidgetEvent::EscapePressed => {
-                        let _ = self.handle_escape();
-                    }
-                    KlineWidgetEvent::PrimaryScaleInversionRequested => {
-                        self.finish_pending_drawing_edit();
-                        self.viewport.primary_scale_inverted =
-                            !self.viewport.primary_scale_inverted;
-                        self.bump_rev();
-                    }
                     KlineWidgetEvent::Drawing(event) => {
-                        let before = self.drawings.tools.edit_state();
                         let update = self
                             .drawings
-                            .tools
                             .handle_widget_drawing_event(event, &chart_settings.drawing);
-                        self.apply_drawing_update(update, before);
+                        self.apply_drawing_update(update);
                     }
-                    KlineWidgetEvent::PanelInteraction(interaction) => match interaction {
-                        PanelInteraction::YViewportChanged { panel_id, range } => {
-                            if let Some(primary_id) =
-                                self.indicators.composition().primary_panel_id()
-                                && primary_id == panel_id
-                            {
-                                if matches!(
-                                    self.indicators
-                                        .composition()
-                                        .panel_effective_scale_mode(primary_id),
-                                    Some(PanelScaleMode::PercentFromBase)
-                                ) {
-                                    return None;
-                                }
-
-                                if self.viewport.primary.set_range(range) {
-                                    self.bump_rev();
-                                }
-                            } else if self.viewport.indicator_y_ranges.set(panel_id, range) {
-                                self.bump_rev();
-                            }
-                        }
-                        PanelInteraction::YViewportReset { panel_id } => {
-                            if let Some(primary_id) =
-                                self.indicators.composition().primary_panel_id()
-                                && primary_id == panel_id
-                            {
-                                if matches!(
-                                    self.indicators
-                                        .composition()
-                                        .panel_effective_scale_mode(primary_id),
-                                    Some(PanelScaleMode::PercentFromBase)
-                                ) {
-                                    return None;
-                                }
-
-                                if self.viewport.primary.reset() {
-                                    self.bump_rev();
-                                }
-                            } else if self.viewport.indicator_y_ranges.reset(panel_id) {
-                                self.bump_rev();
-                            }
-                        }
-                        PanelInteraction::SplitChanged { index, split } => {
-                            self.finish_pending_drawing_edit();
-                            if self.indicators.composition_mut().set_split(
-                                index,
-                                split,
-                                DEFAULT_MIN_PANEL_RATIO,
-                            ) {
-                                self.history.clear();
-                                self.bump_rev();
-                            }
-                        }
-                        PanelInteraction::MoveUp { index } => {
-                            self.finish_pending_drawing_edit();
-                            if index > 0
-                                && self
-                                    .indicators
-                                    .composition_mut()
-                                    .move_panel(index, index - 1)
-                            {
-                                self.bump_rev();
-                            }
-                        }
-                        PanelInteraction::MoveDown { index } => {
-                            self.finish_pending_drawing_edit();
-                            let target = index.saturating_add(1);
-                            if target < self.indicators.composition().panels.len()
-                                && self.indicators.composition_mut().move_panel(index, target)
-                            {
-                                self.bump_rev();
-                            }
-                        }
-                        PanelInteraction::Close { index } => {
-                            self.close_panel_at_index(index);
-                        }
-                    },
-                    KlineWidgetEvent::HorizontalWorldChanged(world) => {
-                        self.viewport.horizontal_world = world;
-                        self.bump_rev();
-                    }
-                    KlineWidgetEvent::HorizontalOffsetChanged(offset) => {
-                        self.viewport.horizontal_world =
-                            self.viewport.horizontal_world.with_offset(offset);
-                        self.bump_rev();
-                    }
-                    KlineWidgetEvent::PlotWidthChanged(plot_width) => {
-                        if self.viewport.plot_width == Some(plot_width) {
-                            return None;
-                        }
-
-                        self.viewport.plot_width = Some(plot_width);
-                        self.bump_rev();
-                    }
-                    KlineWidgetEvent::PrimaryAutoscaleDisabled => {
-                        if self.viewport.primary.disable() {
-                            self.bump_rev();
-                        }
-                    }
-                    KlineWidgetEvent::PrimaryAutoscaleToggled => {
-                        let primary_panel_id = self.indicators.composition().primary_panel_id()?;
-
-                        let effective_scale = self
-                            .indicators
-                            .composition()
-                            .panel_effective_scale_mode(primary_panel_id)
-                            .unwrap_or(PanelScaleMode::Absolute);
-
-                        if !matches!(effective_scale, PanelScaleMode::PercentFromBase)
-                            && self.viewport.primary.toggle()
-                        {
-                            self.bump_rev();
-                        }
-                    }
-                    KlineWidgetEvent::PrimaryScaleModeCycleRequested => {
-                        self.finish_pending_drawing_edit();
-                        let primary_panel_id = self.indicators.composition().primary_panel_id()?;
-                        let panel = self.indicators.composition().panel(primary_panel_id)?;
-
-                        if panel.uses_multi_source() {
-                            // Multi-source primary scale is forced to percent.
-                            return None;
-                        }
-
-                        let next_scale = match panel.preferred_scale {
-                            PanelScaleMode::Absolute => PanelScaleMode::Logarithmic,
-                            PanelScaleMode::Logarithmic => PanelScaleMode::PercentFromBase,
-                            PanelScaleMode::PercentFromBase => PanelScaleMode::Absolute,
-                            PanelScaleMode::FitVisible | PanelScaleMode::FitVisibleIncludeZero => {
-                                PanelScaleMode::Absolute
-                            }
-                        };
-
-                        if self
-                            .indicators
-                            .composition_mut()
-                            .set_panel_preferred_scale(primary_panel_id, next_scale)
-                        {
-                            self.viewport.primary.reset();
-
-                            self.bump_rev();
-                        }
-                    }
-                    KlineWidgetEvent::TickerSettings(ticker) => {
-                        self.open_series_editor_for(ticker);
-
-                        if ticker == self.data.base_ticker() {
-                            self.inspector.open_candlestick();
-                        } else {
-                            self.inspector.open_series(ticker);
-                        }
-                        self.show_sidebar(Sidebar::Settings);
-                    }
-                    KlineWidgetEvent::FootprintSettings => {
-                        self.inspector.open_footprint();
-                        self.show_sidebar(Sidebar::Settings);
-                    }
-                    KlineWidgetEvent::CandlesticksVisibilityToggled => {
-                        let _ = self.apply_command(ChartCommand::SetCandlestickVisible {
-                            visible: !self.options.candlestick.visible,
-                        });
-                    }
-                    KlineWidgetEvent::FootprintsVisibilityToggled => {
-                        let _ = self.apply_command(ChartCommand::SetFootprintVisible {
-                            visible: !self.options.footprint.visible,
-                        });
-                    }
-                    KlineWidgetEvent::IndicatorSettings(id) => {
-                        if let Some(indicator) = self.indicator_kind(id) {
-                            self.inspector.open_indicator(id, indicator);
-                            self.show_sidebar(Sidebar::Settings);
-                        }
-                    }
-                    KlineWidgetEvent::IndicatorVisibilityToggled(id) => {
-                        let _ = self.apply_command(ChartCommand::indicator_style(
-                            IndicatorStyleCommand::ToggleVisibility(id),
-                        ));
+                    KlineWidgetEvent::Study(event) => {
+                        let _ = self.apply_command(ChartCommand::StudyInteraction(event));
                     }
                     KlineWidgetEvent::StudySettings(id) => {
                         if self.studies.study(id).is_some() {
-                            self.inspector.open_study(id);
-                            self.show_sidebar(Sidebar::Settings);
+                            self.change_settings_target(|inspector| inspector.open_study(id));
                         }
                     }
                     KlineWidgetEvent::StudyVisibilityToggled(id) => {
@@ -565,6 +243,164 @@ impl KlineChart {
                     KlineWidgetEvent::StudiesRemove => {
                         let _ = self.apply_command(ChartCommand::Study(StudyCommand::RemoveAll));
                     }
+                    KlineWidgetEvent::UndoRequested => return self.undo_edit(),
+                    KlineWidgetEvent::RedoRequested => return self.redo_edit(),
+                    KlineWidgetEvent::EscapePressed => {
+                        let _ = self.handle_escape();
+                    }
+                    KlineWidgetEvent::PrimaryScaleInversionRequested => {
+                        self.drawings.finish_pending_edit();
+                        self.viewport.primary_scale_inverted =
+                            !self.viewport.primary_scale_inverted;
+                        self.render_invalidation.invalidate();
+                    }
+                    KlineWidgetEvent::PanelInteraction(interaction) => match interaction {
+                        PanelInteraction::YViewportChanged { panel_id, range } => {
+                            let composition = &self.indicators.composition;
+                            if self.viewport.set_panel_range(composition, panel_id, range) {
+                                self.render_invalidation.invalidate();
+                            }
+                        }
+                        PanelInteraction::YViewportReset { panel_id } => {
+                            let composition = &self.indicators.composition;
+                            if self.viewport.reset_panel_range(composition, panel_id) {
+                                self.render_invalidation.invalidate();
+                            }
+                        }
+                        PanelInteraction::SplitChanged { index, split } => {
+                            self.drawings.finish_pending_edit();
+                            if self.indicators.composition.set_split(
+                                index,
+                                split,
+                                DEFAULT_MIN_PANEL_RATIO,
+                            ) {
+                                self.drawings.clear_history();
+                                self.render_invalidation.invalidate();
+                            }
+                        }
+                        PanelInteraction::MoveUp { index } => {
+                            self.drawings.finish_pending_edit();
+                            if index > 0 && self.indicators.composition.move_panel(index, index - 1)
+                            {
+                                self.refresh_indicator_presentation();
+                                self.render_invalidation.invalidate();
+                            }
+                        }
+                        PanelInteraction::MoveDown { index } => {
+                            self.drawings.finish_pending_edit();
+                            let target = index.saturating_add(1);
+                            if target < self.indicators.composition.panels.len()
+                                && self.indicators.composition.move_panel(index, target)
+                            {
+                                self.refresh_indicator_presentation();
+                                self.render_invalidation.invalidate();
+                            }
+                        }
+                        PanelInteraction::Close { index } => {
+                            self.close_panel_at_index(index);
+                        }
+                    },
+                    KlineWidgetEvent::HorizontalWorldChanged(world) => {
+                        self.viewport.horizontal_world = world;
+                        self.render_invalidation.invalidate();
+                    }
+                    KlineWidgetEvent::HorizontalOffsetChanged(offset) => {
+                        self.viewport.horizontal_world =
+                            self.viewport.horizontal_world.with_offset(offset);
+                        self.render_invalidation.invalidate();
+                    }
+                    KlineWidgetEvent::PlotWidthChanged(plot_width) => {
+                        if self.viewport.plot_width == Some(plot_width) {
+                            return None;
+                        }
+
+                        self.viewport.plot_width = Some(plot_width);
+                        self.render_invalidation.invalidate();
+                    }
+                    KlineWidgetEvent::PrimaryAutoscaleDisabled => {
+                        if self.viewport.primary.disable() {
+                            self.render_invalidation.invalidate();
+                        }
+                    }
+                    KlineWidgetEvent::PrimaryAutoscaleToggled => {
+                        self.indicators.composition.primary_panel_id()?;
+                        if self
+                            .viewport
+                            .toggle_primary_autoscale(&self.indicators.composition)
+                        {
+                            self.render_invalidation.invalidate();
+                        }
+                    }
+                    KlineWidgetEvent::PrimaryScaleModeCycleRequested => {
+                        self.drawings.finish_pending_edit();
+                        let primary_panel_id = self.indicators.composition.primary_panel_id()?;
+                        let panel = self.indicators.composition.panel(primary_panel_id)?;
+
+                        if panel.uses_multi_source() {
+                            // Multi-source primary scale is forced to percent.
+                            return None;
+                        }
+
+                        let next_scale = match panel.preferred_scale {
+                            PanelScaleMode::Absolute => PanelScaleMode::Logarithmic,
+                            PanelScaleMode::Logarithmic => PanelScaleMode::PercentFromBase,
+                            PanelScaleMode::PercentFromBase => PanelScaleMode::Absolute,
+                            PanelScaleMode::FitVisible | PanelScaleMode::FitVisibleIncludeZero => {
+                                PanelScaleMode::Absolute
+                            }
+                        };
+
+                        if self
+                            .indicators
+                            .composition
+                            .set_panel_preferred_scale(primary_panel_id, next_scale)
+                        {
+                            self.viewport.primary.reset();
+
+                            self.refresh_indicator_presentation();
+                            self.render_invalidation.invalidate();
+                        }
+                    }
+                    KlineWidgetEvent::TickerSettings(ticker) => {
+                        let is_base_ticker = ticker == self.data.base_ticker();
+                        self.change_settings_target(|inspector| {
+                            if is_base_ticker {
+                                inspector.open_candlestick();
+                            } else {
+                                inspector.open_series(ticker);
+                            }
+                        });
+                    }
+                    KlineWidgetEvent::FootprintSettings => {
+                        self.change_settings_target(InspectorState::open_footprint);
+                    }
+                    KlineWidgetEvent::TickerVisibilityToggled(ticker_info) => {
+                        let command = if ticker_info == self.data.base_ticker() {
+                            ChartCommand::SetCandlestickVisible {
+                                visible: !self.options.candlestick.visible,
+                            }
+                        } else {
+                            ChartCommand::ToggleComparisonVisibility { ticker_info }
+                        };
+                        let _ = self.apply_command(command);
+                    }
+                    KlineWidgetEvent::FootprintsVisibilityToggled => {
+                        let _ = self.apply_command(ChartCommand::SetFootprintVisible {
+                            visible: !self.options.footprint.visible,
+                        });
+                    }
+                    KlineWidgetEvent::IndicatorSettings(id) => {
+                        if let Some(indicator) = self.indicator_kind(id) {
+                            self.change_settings_target(|inspector| {
+                                inspector.open_indicator(id, indicator);
+                            });
+                        }
+                    }
+                    KlineWidgetEvent::IndicatorVisibilityToggled(id) => {
+                        let _ = self.apply_command(ChartCommand::indicator_style(
+                            IndicatorStyleCommand::ToggleVisibility(id),
+                        ));
+                    }
                     KlineWidgetEvent::IndicatorRemove(id) => {
                         let _ = self.apply_command(ChartCommand::RemoveIndicator(id));
                     }
@@ -578,200 +414,84 @@ impl KlineChart {
                             DEFAULT_HORIZONTAL_OFFSET_UNITS,
                         );
                         self.viewport.horizontal_world = world;
-                        self.bump_rev();
+                        self.render_invalidation.invalidate();
                     }
                     KlineWidgetEvent::DeletePressed => {
-                        let before = self.drawings.tools.edit_state();
-                        let update = self.drawings.tools.update(
-                            DrawingMessage::DeleteSelectedDrawing,
+                        let update = self.drawings.update(
+                            drawing::Event::Tools(DrawingMessage::DeleteSelectedDrawing),
                             &mut chart_settings.drawing,
                         );
-                        self.apply_drawing_update(update, before);
+                        self.apply_drawing_update(update);
                     }
                 }
-                self.reconcile_local_sidebar();
+                self.reconcile_settings_target();
             }
         }
+        self.prepare_visible_trade_profile();
         None
     }
 
-    pub fn invalidate(&mut self, now: Option<Instant>) -> Option<ChartAction> {
-        if let Some(ts) = now {
-            self.last_tick = ts;
-
-            let action = self
-                .request_fetch_action(true)
-                .map(ChartAction::RequestFetch);
-            self.recalculate_indicators();
-            self.preview_clean_indicators();
-            self.redraw_data_if_due(ts);
-            return action;
-        }
-
-        self.bump_rev();
-        None
-    }
-
-    pub(crate) fn rebuild_indicators(&mut self) -> Option<iced::Task<Message>> {
-        if let Some(job_id) = self
-            .indicator_rebuild
-            .as_ref()
-            .map(|pending| pending.job_id)
-        {
-            self.complete_indicator_rebuild(job_id);
-        }
-        if self.indicator_rebuild.is_some() {
-            return None;
-        }
-
-        let plan = self.indicators.full_rebuild_plan(&self.data, &self.fetch)?;
-        let active_ids = self.indicators.selected_indicators();
-        let trade_data_enabled = self.trade_data_enabled();
-        let frames = self.data.committed_indicator_frames(trade_data_enabled);
-        let instances = self.indicators.instances().clone();
-        let frame_revision = self.frame_revision;
-        let job_id = self.next_indicator_rebuild_job.wrapping_add(1);
-        self.next_indicator_rebuild_job = job_id;
-
-        let (result_tx, result_rx) = oneshot::channel();
-        let worker_replay_ids = plan.replay_ids.clone();
-        let worker_frames = Arc::clone(&frames);
-        let worker = async move {
-            let result = tokio::task::spawn_blocking(move || {
-                let mut host = IndicatorHost::default();
-                host.recalculate(&worker_replay_ids, &instances, &worker_frames);
-                host
-            })
-            .await
-            .map_err(|error| format!("indicator rebuild worker failed: {error}"));
-            let _ = result_tx.send(result);
-        };
-
-        self.indicator_rebuild = Some(IndicatorRebuildState {
-            job_id,
-            frame_revision,
-            dirty_epochs: plan.dirty_epochs,
-            dirty_ids: plan.dirty_ids,
-            replay_ids: plan.replay_ids,
-            active_ids,
-            frames,
-            result: result_rx,
-        });
-        self.bump_rev();
-        Some(iced::Task::perform(worker, move |_| {
-            Message::IndicatorRebuildCompleted { job_id }
-        }))
-    }
-
-    fn complete_indicator_rebuild(&mut self, job_id: u64) {
-        let Some(pending) = self.indicator_rebuild.as_mut() else {
-            return;
-        };
-        if pending.job_id != job_id {
-            return;
-        }
-
-        let result = match pending.result.try_recv() {
-            Ok(result) => result,
-            Err(oneshot::error::TryRecvError::Empty) => return,
-            Err(oneshot::error::TryRecvError::Closed) => {
-                self.indicator_rebuild = None;
-                log::error!("indicator rebuild result channel closed for job {job_id}");
-                return;
-            }
-        };
-        let pending = self
-            .indicator_rebuild
-            .take()
-            .expect("indicator rebuild state exists");
-
-        let host = match result {
-            Ok(host) => host,
-            Err(error) => {
-                log::error!("indicator rebuild job {job_id} failed: {error}");
-                return;
-            }
-        };
-
-        if !(pending.frame_revision == self.frame_revision
-            && self.indicators.dirty_epochs_match(&pending.dirty_epochs)
-            && pending.active_ids == self.indicators.selected_indicators())
-        {
-            return;
-        }
-
-        let trade_data_enabled = self.trade_data_enabled();
-        self.indicators.accept_full_rebuild(
-            &mut self.data,
-            host,
-            &pending.frames,
-            &pending.dirty_ids,
-            &pending.replay_ids,
-            trade_data_enabled,
-        );
-        self.data
-            .preview_indicator_open_for(&pending.replay_ids, trade_data_enabled);
-        self.bump_rev();
-    }
-
-    fn bump_rev(&mut self) {
-        self.sync_tick_drawing_sequence();
-        self.prune_stale_indicator_y_ranges();
-        self.cache_rev = self.cache_rev.wrapping_add(1);
-        self.last_revision_at = Instant::now();
-        self.data_redraw_pending = false;
-    }
-
-    pub(crate) fn view(
-        &self,
+    pub fn view<'a>(
+        &'a self,
         timezone: data::UserTimezone,
         pixel_ratio: PixelRatio,
-        theme_accents: ThemeAccents,
-    ) -> iced::Element<'_, Message> {
+        theme: &'a ThemeState,
+        inspector_open: bool,
+    ) -> iced::Element<'a, Message> {
+        let theme_accents = theme.accents();
         let chart: iced::Element<'_, Message> =
             if self.data.series().iter().all(KlineSeries::is_empty) {
                 iced::widget::center(iced::widget::text("Waiting for data...").size(16)).into()
             } else {
                 let indicator_presentation = self
                     .indicator_presentation_context()
-                    .with_rebuild_in_flight_ids(
-                        self.indicator_rebuild
-                            .as_ref()
-                            .map_or_else(Vec::new, |pending| pending.replay_ids.clone()),
-                    )
+                    .with_rebuild_in_flight_ids(self.indicators.rebuild_in_flight_ids())
                     .with_pending_input_ids(
                         self.indicators.pending_input_ids(&self.data, &self.fetch),
                     );
+                let trade_data_enabled = self.trade_data_enabled();
+                let drawing_snapshot = self.drawings.tools.snapshot();
                 let chart = KlineWidget::new(
                     self.data.series(),
                     self.data.indicator_host(),
                     self.basis,
-                    self.indicators.composition(),
-                    self.indicators.instances(),
-                    theme_accents,
+                    &self.indicators.composition,
+                    &self.indicators.instances,
+                    indicator_presentation,
+                    theme,
                 )
+                .with_drawing_snapshot(drawing_snapshot)
                 .with_candlestick_config(self.options.candlestick)
                 .with_footprint_config(self.options.footprint)
-                .with_trade_data_enabled(self.trade_data_enabled())
-                .with_legend_visibility(self.legend_visibility());
+                .with_trade_data_enabled(trade_data_enabled);
+                let chart = self
+                    .studies
+                    .configure_widget(
+                        chart,
+                        self.basis,
+                        &self.data,
+                        trade_data_enabled,
+                        self.render_invalidation.revision(),
+                    )
+                    .with_legend_visibility(self.options.legend_visibility);
 
-                let chart: iced::Element<_> = chart
-                    .with_studies(self.studies.active())
-                    .with_studies_legend_expanded(self.studies.legend_expanded())
+                let chart: iced::Element<'_, Message> = chart
                     .with_coordinate_state(self.viewport.horizontal_world, pixel_ratio)
                     .with_primary_viewport(self.viewport.primary)
                     .with_primary_scale_inverted(self.viewport.primary_scale_inverted)
                     .with_known_plot_width(self.viewport.plot_width)
                     .with_autoscale_plot_width_offset(self.autoscale_plot_width_offset())
                     .with_indicator_ranges(self.viewport.indicator_y_ranges.as_slice())
-                    .with_indicator_presentation(indicator_presentation)
-                    .with_drawings(self.drawings.tools.snapshot())
                     .with_timezone(timezone)
-                    .with_version(self.cache_rev)
-                    .with_escape_enabled(self.can_handle_escape())
+                    .with_version(
+                        self.render_invalidation
+                            .revision()
+                            .wrapping_add(self.studies.runtime_revision()),
+                    )
+                    .with_should_capture_escape(inspector_open || self.can_handle_escape())
                     .into();
 
-                iced::widget::container(chart.map(Message::Chart))
+                iced::widget::container(chart)
                     .width(iced::Length::Fill)
                     .height(iced::Length::Fill)
                     .padding(1)
@@ -826,35 +546,19 @@ impl KlineChart {
             chart_stack.clip(true).into()
         };
 
-        let is_sidebar_visible = self.sidebar != Sidebar::Drawings || self.drawing_sidebar_visible;
-        if !is_sidebar_visible {
+        let sidebar = if self.has_settings_target() {
+            self.contextual_settings_sidebar(theme_accents)
+        } else if self.drawing_sidebar_visible {
+            Some(
+                self.drawings
+                    .sidebar_view(&self.indicators.composition)
+                    .map(Message::Drawing),
+            )
+        } else {
+            None
+        };
+        let Some(sidebar) = sidebar else {
             return chart;
-        }
-
-        let sidebar = match self.sidebar {
-            Sidebar::Drawings => self
-                .drawings
-                .sidebar_view(self.indicators.composition())
-                .map(Message::Drawing),
-            Sidebar::Settings => {
-                let Some((title, settings)) = self.contextual_settings_content(theme_accents)
-                else {
-                    return chart;
-                };
-
-                let header = sidebar_header(title);
-
-                let footer = {
-                    let context = self.settings_view_context();
-                    self.inspector.settings().footer_view(context)
-                };
-
-                sidebar_panel(
-                    header,
-                    InspectorBody::view(settings),
-                    footer.map(InspectorFooter::view),
-                )
-            }
         };
 
         iced::widget::row![
@@ -867,99 +571,396 @@ impl KlineChart {
         .into()
     }
 
-    pub(crate) fn pane_settings_view(&self) -> iced::Element<'static, Message> {
-        settings::data_settings_content(
-            self.trade_data_enabled(),
-            self.legend_visibility(),
-            self.basis(),
-            self.trade_data_setting_locked(),
-        )
-        .map(Message::Settings)
-    }
+    pub fn invalidate(&mut self, now: Option<Instant>) -> Option<ChartAction> {
+        if let Some(ts) = now {
+            self.last_maintenance_at = ts;
 
-    fn autoscale_plot_width_offset(&self) -> f32 {
-        let sidebar_width = match self.sidebar {
-            Sidebar::Drawings if self.drawing_sidebar_visible => {
-                self.drawings.tools.sidebar_width()
+            if self.flush_settings_update() {
+                self.render_invalidation.invalidate();
             }
-            Sidebar::Drawings => return 0.0,
-            Sidebar::Settings => SIDEBAR_WIDTH,
-        };
 
-        (sidebar_width - DrawingTools::compact_sidebar_width()).max(0.0)
+            if self.studies.rebuild(self.basis, &self.data, UnixMs::now()) {
+                self.render_invalidation.invalidate();
+            }
+
+            let action = self
+                .request_fetch_action(true)
+                .map(ChartAction::RequestFetch);
+            self.recalculate_indicators();
+            self.preview_clean_indicators();
+            self.redraw_data_if_due(ts);
+            self.prepare_visible_trade_profile();
+            return action;
+        }
+
+        self.render_invalidation.invalidate();
+        self.prepare_visible_trade_profile();
+        None
     }
 
-    fn contextual_settings_content(
-        &self,
-        theme_accents: ThemeAccents,
-    ) -> Option<(String, iced::Element<'_, Message>)> {
-        let context = self.settings_view_context();
-        self.inspector
-            .settings()
-            .contextual_content(context, theme_accents)
+    pub fn rebuild_indicators(&mut self) -> Option<iced::Task<Message>> {
+        if let Some(job_id) = self.indicators.pending_rebuild_job() {
+            self.complete_indicator_rebuild(job_id);
+        }
+        if self.settings_reconfigure_pending {
+            return None;
+        }
+
+        let trade_data_enabled = self.trade_data_enabled();
+        let worker =
+            self.indicators
+                .begin_full_rebuild(&self.data, &self.fetch, trade_data_enabled)?;
+        self.refresh_indicator_presentation();
+        self.render_invalidation.invalidate();
+        Some(iced::Task::perform(worker, |job_id| {
+            Message::IndicatorRebuildCompleted { job_id }
+        }))
     }
 
-    pub(crate) fn indicator_browser_view(&self) -> iced::Element<'_, Message> {
+    fn complete_indicator_rebuild(&mut self, job_id: u64) {
+        let trade_data_enabled = self.trade_data_enabled();
+        if self
+            .indicators
+            .complete_full_rebuild(&mut self.data, job_id, trade_data_enabled)
+        {
+            self.render_invalidation.invalidate();
+        }
+        self.refresh_indicator_presentation();
+    }
+
+    fn request_settings_update(&mut self, policy: UpdatePolicy) {
+        match policy {
+            UpdatePolicy::Redraw => self.render_invalidation.invalidate(),
+            UpdatePolicy::DeferredReconfigure => self.settings_reconfigure_pending = true,
+            UpdatePolicy::ImmediateReconfigure => {
+                self.settings_reconfigure_pending = true;
+                self.flush_settings_update();
+                self.render_invalidation.invalidate();
+            }
+        }
+    }
+
+    fn flush_settings_update(&mut self) -> bool {
+        if !std::mem::take(&mut self.settings_reconfigure_pending) {
+            return false;
+        }
+
+        self.data.configure_series_for_basis(self.basis);
+        self.reconcile_indicator_layout(false);
+        self.sync_tick_drawing_sequence();
+        self.prune_stale_indicator_y_ranges();
+        self.refresh_indicator_presentation();
+        true
+    }
+
+    pub fn pane_settings_view(&self) -> InspectorContent<'static, Message> {
+        super::settings::kline_cfg_view(
+            self.trade_data_enabled(),
+            self.options.legend_visibility,
+            self.trade_data_setting_lock_reason(),
+        )
+    }
+
+    pub fn indicator_browser_view(&self) -> iced::Element<'_, Message> {
         indicator_browser::view(self, &self.indicator_browser)
     }
 
-    pub(crate) fn indicator_browser_focus_id(&self) -> iced::widget::Id {
+    pub fn indicator_browser_focus_id(&self) -> iced::widget::Id {
         self.indicator_browser.search_box_id()
+    }
+
+    pub fn indicator_kind(&self, id: IndicatorInstanceId) -> Option<IndicatorId> {
+        self.indicators.indicator_kind(id)
     }
 
     pub(super) fn preserve_indicator_browser_state_from(&mut self, source: &Self) {
         self.indicator_browser = source.indicator_browser.clone();
     }
 
+    fn autoscale_plot_width_offset(&self) -> f32 {
+        let width = if self.has_settings_target() {
+            SETTINGS_SIDEBAR_WIDTH
+        } else if self.drawing_sidebar_visible {
+            self.drawings.tools.sidebar_width()
+        } else {
+            return 0.0;
+        };
+        (width - DrawingTools::compact_sidebar_width()).max(0.0)
+    }
+
+    fn has_settings_target(&self) -> bool {
+        self.inspector.has_contextual_target()
+    }
+
+    pub fn base_ticker_info(&self) -> TickerInfo {
+        self.data.base_ticker()
+    }
+
+    pub fn series(&self) -> &[KlineSeries] {
+        self.data.series()
+    }
+
+    pub fn studies(&self) -> impl Iterator<Item = KlineStudy> + Clone + '_ {
+        self.studies.active()
+    }
+
+    pub fn basis(&self) -> Basis {
+        self.basis
+    }
+
+    pub fn selected_indicators(&self) -> Vec<IndicatorInstanceId> {
+        self.indicators.selected_indicators()
+    }
+
+    pub fn last_maintenance_at(&self) -> Instant {
+        self.last_maintenance_at
+    }
+
+    pub fn tick_multiplier(&self) -> TickMultiplier {
+        self.data.tick_multiplier()
+    }
+
+    fn contextual_settings_sidebar(
+        &self,
+        theme_accents: ThemeAccents,
+    ) -> Option<iced::Element<'_, Message>> {
+        let title = self
+            .inspector
+            .contextual_title(self.settings_view_context())?;
+
+        let back = iced::widget::button(style::icon_text(style::Icon::Return, 14))
+            .on_press(Message::CloseContextualSettings)
+            .style(|theme, status| style::button::transparent(theme, status, false));
+
+        let header = iced::widget::row![
+            crate::widget::text::section(title)
+                .wrapping(iced::widget::text::Wrapping::Word)
+                .width(iced::Length::Fill),
+            back,
+        ]
+        .align_y(iced::Alignment::Center)
+        .spacing(8);
+
+        Some(
+            iced::widget::container(iced::widget::column![
+                header,
+                iced::widget::rule::horizontal(1.0).style(style::split_ruler),
+                iced::widget::responsive(move |size| {
+                    let Some((tab, body)) = self
+                        .inspector
+                        .contextual_content(self.settings_view_context(), theme_accents)
+                    else {
+                        return iced::widget::column![].into();
+                    };
+                    let footer = self
+                        .inspector
+                        .footer_view(self.settings_view_context(), tab);
+                    let footer_height = footer.as_ref().map_or(0.0, |(height, _)| *height);
+                    let mut content = iced::widget::column![InspectorBody::view(
+                        body,
+                        (size.height - footer_height).max(0.0),
+                    )];
+                    if let Some((height, footer)) = footer {
+                        content = content.push(InspectorFooter::view(footer, height));
+                    }
+                    content.into()
+                }),
+            ])
+            .width(SETTINGS_SIDEBAR_WIDTH)
+            .height(iced::Length::Fill)
+            .padding([4, 8])
+            .style(style::chart_sidebar_container)
+            .into(),
+        )
+    }
+
     fn can_handle_escape(&self) -> bool {
-        self.inspector.is_confirming_reset()
-            || self.sidebar != Sidebar::Drawings
+        self.has_settings_target()
+            || self.inspector.is_confirming_reset()
             || self.drawings.tools.can_handle_escape()
     }
 
-    fn show_sidebar(&mut self, page: Sidebar) {
-        if self.sidebar == page {
-            return;
-        }
-
-        self.sidebar = page;
-        self.bump_rev();
+    fn change_settings_target(&mut self, change: impl FnOnce(&mut InspectorState)) {
+        self.flush_settings_update();
+        change(&mut self.inspector);
+        self.render_invalidation.invalidate();
     }
 
-    fn reconcile_local_sidebar(&mut self) {
-        let settings_sidebar_open = self.sidebar == Sidebar::Settings;
-        let settings_target_missing = self.with_settings_context(|inspector, context| {
-            inspector.reconcile_missing_target(context);
-            settings_sidebar_open && !inspector.has_contextual_target(context)
+    fn close_contextual_settings(&mut self) -> bool {
+        if !self.has_settings_target() {
+            return false;
+        }
+        self.change_settings_target(InspectorState::close_contextual_settings);
+        true
+    }
+
+    pub fn go_back(&mut self) -> bool {
+        self.inspector.dismiss_reset_confirmation() || self.close_contextual_settings()
+    }
+
+    pub fn left_sidebar_visible(&self) -> bool {
+        self.has_settings_target() || self.drawing_sidebar_visible
+    }
+
+    fn remove_ticker(&mut self, ticker_info: TickerInfo) -> bool {
+        if ticker_info == self.data.base_ticker() || !self.data.remove_ticker(ticker_info) {
+            return false;
+        }
+
+        let was_multi_source = self.indicators.composition.primary_uses_multi_source();
+        self.fetch.remove_ticker(ticker_info);
+        let selected_tickers = self.data.selected_tickers();
+        self.indicators
+            .composition
+            .sync_comparison_sources(self.data.base_ticker(), &selected_tickers);
+        if was_multi_source
+            && !self.indicators.composition.primary_uses_multi_source()
+            && self
+                .indicators
+                .composition
+                .restore_primary_scale_after_comparisons()
+        {
+            self.viewport.primary.reset();
+        }
+
+        self.indicators.mark_for_candle_ticker(
+            &self.data,
+            ticker_info,
+            IndicatorRebuildReason::IndicatorStructureChanged,
+        );
+        true
+    }
+
+    fn replace_indicator_configuration(
+        &mut self,
+        instances: IndicatorInstanceStore,
+        panels: &[persisted::PanelConfig],
+        splits: &[f32],
+    ) {
+        self.indicators.instances = instances;
+
+        if !panels.is_empty() {
+            let panels = panels
+                .iter()
+                .map(persisted::panel_spec_from_config)
+                .collect();
+            self.indicators.composition = ChartComposition::from_parts(panels, splits.to_vec());
+        } else if let Some(volume_id) = self
+            .indicators
+            .instances
+            .instances()
+            .iter()
+            .find(|instance| {
+                instance.kind == IndicatorId::parse("core.volume").expect("static ID is valid")
+            })
+            .map(|instance| instance.id)
+        {
+            let mut composition = ChartComposition::prototype_kline();
+            let volume = IndicatorId::parse("core.volume").expect("static ID is valid");
+            let _ = composition.add_indicator(volume_id, volume);
+            self.indicators.composition = composition;
+        } else {
+            self.indicators.composition = ChartComposition::prototype_kline();
+        }
+    }
+
+    fn indicator_presentation_context(&self) -> IndicatorPresentationContext {
+        self.indicators.presentation_context()
+    }
+
+    fn indicator_history_requirement(
+        &self,
+        active_indicators: &[IndicatorInstanceId],
+        visible_points: u64,
+    ) -> persisted::IndicatorHistoryRequirement {
+        let reference_time = match self.basis {
+            Basis::Time(timeframe) => visible_window(
+                self.data.series(),
+                self.viewport.horizontal_world.offset(),
+                timeframe,
+                visible_points,
+            )
+            .map(|(start, _)| start)
+            .unwrap_or_else(UnixMs::now),
+            Basis::Tick(_) => UnixMs::now(),
+        };
+        self.indicators
+            .history_requirement(active_indicators, self.basis, reference_time)
+    }
+
+    fn recalculate_indicators(&mut self) -> bool {
+        let trade_data_enabled = self.trade_data_enabled();
+        let changed = self
+            .indicators
+            .recalculate(&mut self.data, &self.fetch, trade_data_enabled);
+        if changed {
+            self.refresh_indicator_presentation();
+            self.render_invalidation.invalidate();
+        }
+        changed
+    }
+
+    fn preview_clean_indicators(&mut self) -> bool {
+        let trade_data_enabled = self.trade_data_enabled();
+        let changed = self
+            .indicators
+            .preview_clean(&mut self.data, trade_data_enabled);
+        if changed {
+            self.refresh_indicator_presentation();
+            self.render_invalidation.invalidate();
+        }
+        changed
+    }
+
+    fn reconcile_indicator_layout(&mut self, rebuild_all: bool) {
+        let selected_tickers = self.data.selected_tickers();
+        self.indicators
+            .composition
+            .sync_comparison_sources(self.data.base_ticker(), &selected_tickers);
+        let _ = self.indicators.reconcile_attached_indicator_placements();
+        let active_indicators = self.indicators.selected_indicators();
+        self.configure_indicator_runtimes(&active_indicators, rebuild_all);
+        self.studies
+            .configure_caches(self.basis, &mut self.data, &mut self.fetch);
+    }
+
+    fn configure_indicator_runtimes(
+        &mut self,
+        active_indicators: &[IndicatorInstanceId],
+        rebuild_all: bool,
+    ) {
+        let changed_indicator_ids = self
+            .data
+            .configure_indicators(&self.indicators.instances, active_indicators);
+        self.indicators.retain_dirty_for(active_indicators);
+        if rebuild_all {
+            self.indicators
+                .mark_rebuild_pending(IndicatorRebuildReason::IndicatorStructureChanged);
+        }
+        for id in changed_indicator_ids {
+            let reason = self
+                .indicators
+                .rebuild_reason(id)
+                .unwrap_or(IndicatorRebuildReason::IndicatorStructureChanged);
+            self.indicators
+                .mark_with_dependents(&self.data, &[id], reason);
+        }
+    }
+
+    fn refresh_indicator_presentation(&mut self) {
+        let trade_data_enabled = self.trade_data_enabled();
+        self.indicators
+            .refresh_presentation(&self.data, self.basis, trade_data_enabled);
+    }
+
+    fn reconcile_settings_target(&mut self) {
+        let was_open = self.has_settings_target();
+        self.with_settings_context(|inspector, context| {
+            inspector.reconcile_missing_target(context)
         });
-        if settings_target_missing {
-            self.show_sidebar(Sidebar::Drawings);
-        }
-    }
-
-    fn apply_browser_action(&mut self, command: ChartCommand) -> Option<Action> {
-        match self.apply_command(command) {
-            CommandResult::Action(Some(ChartAction::RequestFetch(fetch))) => {
-                Some(Action::RequestFetch(fetch))
-            }
-            _ => None,
-        }
-    }
-
-    fn apply_inspector_effect(&mut self, effect: InspectorEffect) -> Option<Action> {
-        match effect {
-            InspectorEffect::None => None,
-            InspectorEffect::Command(command) => match self.apply_settings_action(command) {
-                CommandResult::Action(Some(ChartAction::RequestFetch(fetch))) => {
-                    Some(Action::RequestFetch(fetch))
-                }
-                _ => None,
-            },
-            InspectorEffect::StudyConfigurator(message) => {
-                self.update_study_configurator(message);
-                None
-            }
-            InspectorEffect::OpenUrl(url) => Some(Action::OpenUrl(url)),
+        if was_open && !self.has_settings_target() {
+            self.flush_settings_update();
+            self.render_invalidation.invalidate();
         }
     }
 
@@ -970,7 +971,6 @@ impl KlineChart {
             data: &self.data,
             indicators: &self.indicators,
             studies: &self.studies,
-            series_editor: Some(self.inspector.series_editor()),
             trade_data_enabled: self.trade_data_enabled(),
         }
     }
@@ -991,91 +991,21 @@ impl KlineChart {
         update(&mut self.inspector, &context)
     }
 
-    fn open_series_editor_for(&mut self, ticker: TickerInfo) {
-        let series_style_entry = self
-            .data
-            .series()
-            .iter()
-            .find(|series| series.ticker_info == ticker)
-            .map(|series| SeriesStyleEntry {
-                ticker: series.ticker_info,
-                color: series.color(),
-                line_width: series.line_width(),
-                stroke_style: series.stroke_style(),
-            });
-
-        let Some(series) = series_style_entry else {
-            self.inspector.series_editor_mut().close();
-            return;
-        };
-
-        self.inspector.series_editor_mut().open_for(
-            series.ticker,
-            series.color,
-            series.line_width,
-            series.stroke_style,
-        );
-    }
-
-    fn refresh_open_series_editor(&mut self, ticker: TickerInfo) {
-        if self.inspector.series_editor().is_open_for(ticker) {
-            self.open_series_editor_for(ticker);
-        }
-    }
-
-    pub fn update_study_configurator(&mut self, message: study::Message<KlineStudy>) {
-        let Some(command) =
-            self.studies
-                .update_configurator(message, self.basis, self.trade_data_enabled())
-        else {
-            return;
-        };
-        let _ = self.apply_settings_action(ChartCommand::Study(command));
-    }
-
-    fn handle_escape(&mut self) -> bool {
-        if self.inspector.dismiss_reset_confirmation() {
+    pub fn handle_escape(&mut self) -> bool {
+        if self.go_back() {
             return true;
         }
 
-        if self.sidebar != Sidebar::Drawings {
-            self.show_sidebar(Sidebar::Drawings);
-            return true;
-        }
-
-        let before = self.drawings.tools.edit_state();
-        let update = self.drawings.tools.handle_escape();
+        let update = self.drawings.handle_escape();
         if matches!(update, DrawingUpdate::None) {
             return false;
         }
 
-        self.apply_drawing_update(update, before);
+        self.apply_drawing_update(update);
         true
     }
 
-    pub(crate) fn go_back(&mut self) -> bool {
-        if self.inspector.dismiss_reset_confirmation() {
-            return true;
-        }
-
-        if self.sidebar != Sidebar::Drawings {
-            self.show_sidebar(Sidebar::Drawings);
-            return true;
-        }
-
-        false
-    }
-
-    fn mark_indicators_with_dependents(
-        &mut self,
-        roots: &[IndicatorInstanceId],
-        reason: IndicatorRebuildReason,
-    ) {
-        self.indicators
-            .mark_with_dependents(&self.data, roots, reason);
-    }
-
-    fn reconcile_data_requirements(&mut self, previous: KlineDataRequirements) {
+    fn reconcile_data_requirements(&mut self, previous: DataRequirements) {
         let current = self.data_requirements();
         if previous.trades != current.trades {
             self.indicators.mark_for_inputs(
@@ -1084,43 +1014,15 @@ impl KlineChart {
                     IndicatorInputSource::Trades,
                     IndicatorInputSource::DirectionalVolume,
                 ],
-                IndicatorRebuildReason::InputConfigurationChanged,
+                IndicatorRebuildReason::TradeDataModeChanged,
             );
+        }
+        if previous.trades && !current.trades {
+            self.fetch.clear_pending_trade_requests();
         }
         if !current.open_interest {
             self.fetch.clear_open_interest_requests();
         }
-    }
-
-    fn mark_indicators_for_candle_ticker(
-        &mut self,
-        ticker: TickerInfo,
-        reason: IndicatorRebuildReason,
-    ) {
-        self.indicators
-            .mark_for_candle_ticker(&self.data, ticker, reason);
-    }
-
-    fn recalculate_indicators(&mut self) -> bool {
-        let trade_data_enabled = self.trade_data_enabled();
-        let changed = self
-            .indicators
-            .recalculate(&mut self.data, &self.fetch, trade_data_enabled);
-        if changed {
-            self.bump_rev();
-        }
-        changed
-    }
-
-    fn preview_clean_indicators(&mut self) -> bool {
-        let trade_data_enabled = self.trade_data_enabled();
-        let changed = self
-            .indicators
-            .preview_clean(&mut self.data, trade_data_enabled);
-        if changed {
-            self.bump_rev();
-        }
-        changed
     }
 
     fn sync_tick_drawing_sequence(&mut self) {
@@ -1132,16 +1034,46 @@ impl KlineChart {
                 .map(|series| series.trade_sequence_id())
         };
         if self.drawings.tools.sync_tick_sequence(sequence_id) {
-            self.history.clear();
+            self.drawings.clear_history();
         }
     }
 
     pub(super) fn redraw_data_if_due(&mut self, now: Instant) {
-        if self.data_redraw_pending
-            && now.saturating_duration_since(self.last_revision_at)
-                >= MIN_FULL_CACHE_REFRESH_INTERVAL
+        let revision = self.render_invalidation.revision();
+        self.render_invalidation.flush_data_redraw_if_due(now);
+        if self.render_invalidation.revision() != revision {
+            self.prepare_visible_trade_profile();
+        }
+    }
+
+    fn prepare_visible_trade_profile(&mut self) {
+        if !self.studies.active().any(|study| {
+            study.visible()
+                && study.source() == data::chart::kline::StudyDataSource::Trades
+                && study.volume_profile_schedule()
+                    == Some(data::chart::kline::VolumeProfileSchedule::VisibleRange)
+        }) {
+            return;
+        }
+        let (Basis::Time(_), Some(width)) = (self.basis, self.viewport.plot_width) else {
+            return;
+        };
+        let Some(axis) = XAxis::for_series(self.basis, self.data.series()) else {
+            return;
+        };
+        let Some(data_bounds) = axis.data_bounds(self.data.series()) else {
+            return;
+        };
+        let (left, right, _) = axis.visible_window(
+            data_bounds,
+            self.indicators.instances.max_positive_output_offset(),
+            self.viewport.horizontal_world,
+            width,
+        );
+        if let (Some(earliest), Some(latest)) =
+            (axis.time_from_unit(left), axis.time_from_unit(right))
         {
-            self.bump_rev();
+            self.data.prepare_trade_price_distribution(earliest, latest);
         }
     }
 
@@ -1151,7 +1083,7 @@ impl KlineChart {
         let active_indicators = self.selected_indicators();
         let data_requirements = self.data_requirements();
 
-        let (required_history_start, required_history_bars) =
+        let history_requirement =
             self.indicator_history_requirement(&active_indicators, visible_points);
         let base_ticker = self.data.base_ticker();
 
@@ -1160,14 +1092,11 @@ impl KlineChart {
             horizontal_offset,
             base_ticker,
             series: self.data.series(),
-            active_indicators: &active_indicators,
-            indicator_instances: self.indicators.instances(),
             open_interest_required: data_requirements.open_interest,
-            trade_data_required: self.trade_data_required(),
+            trade_data_required: data_requirements.trades,
             trade_fetch_enabled: crate::connector::fetcher::is_trade_fetch_enabled(),
             visible_points,
-            required_history_start,
-            required_history_bars,
+            history_requirement,
             now: UnixMs::now(),
         };
 
@@ -1175,18 +1104,37 @@ impl KlineChart {
 
         if allow_trade && let Some(range) = input.desired_trade_fetch_range(base_ticker) {
             batches.push(FetchBatch {
-                stage: FetchStage::Trades,
                 range,
                 tickers: vec![base_ticker],
             });
         }
 
-        let requests = self.fetch.collect_requests(
+        let window = match self.basis {
+            Basis::Time(timeframe) => visible_window(
+                self.data.series(),
+                horizontal_offset,
+                timeframe,
+                visible_points,
+            ),
+            Basis::Tick(_) => None,
+        };
+        let study_ranges = self.studies.fetch_ranges(
+            self.basis,
+            &self.data,
+            window,
+            UnixMs::now(),
+            &mut self.fetch,
+            &mut batches,
+        );
+
+        let mut requests = self.fetch.collect_requests(
             batches
                 .into_iter()
                 .map(|batch| (batch.range, batch.tickers)),
             self.basis,
         );
+
+        requests.extend(self.fetch.collect_requests(study_ranges, self.basis));
 
         if requests.is_empty() {
             return None;
@@ -1205,79 +1153,19 @@ impl KlineChart {
         visible_units.saturating_add(1).max(2)
     }
 
-    fn indicator_history_requirement(
-        &self,
-        active_indicators: &[IndicatorInstanceId],
-        visible_points: u64,
-    ) -> (Option<UnixMs>, u64) {
-        let reference_time = match self.basis {
-            Basis::Time(timeframe) => visible_window(
-                self.data.series(),
-                self.viewport.horizontal_world.offset(),
-                timeframe,
-                visible_points,
-            )
-            .map(|(start, _)| start)
-            .unwrap_or_else(UnixMs::now),
-            Basis::Tick(_) => UnixMs::now(),
-        };
-        let requirement =
-            self.indicators
-                .history_requirement(active_indicators, self.basis, reference_time);
-        (requirement.history_start(), requirement.history_bars())
-    }
-
-    pub fn apply_data(&mut self, update: DataUpdate<'_>) {
-        let trade_data_enabled = self.trade_data_enabled();
-        match updates::apply(
-            update,
-            self.basis,
-            &mut self.data,
-            &mut self.fetch,
-            &mut self.indicators,
-            trade_data_enabled,
-        ) {
-            DataUpdateEffect::Unchanged => {}
-            DataUpdateEffect::HistoricalChanged => {
-                self.bump_rev();
-            }
-            DataUpdateEffect::LiveChanged { committed_bar } => {
-                if committed_bar {
-                    self.frame_revision = self.frame_revision.wrapping_add(1);
-                }
-                self.data_redraw_pending = true;
-                self.redraw_data_if_due(Instant::now());
-            }
-        }
-    }
-
-    pub fn apply_fetch_update(&mut self, update: FetchUpdate) -> bool {
-        match update {
-            FetchUpdate::Failed(req_id) => self.fetch.mark_failed(req_id),
-            FetchUpdate::TradeFetchNoData {
-                ticker_info,
-                req_id,
-            } => self.fetch.mark_no_data(ticker_info, req_id),
-            FetchUpdate::FetchHandle { req_id, handle } => self.fetch.set_handle(req_id, handle),
-        }
-    }
-
     fn prune_stale_indicator_y_ranges(&mut self) {
-        let layout = self.indicators.layout();
+        let composition = &self.indicators.composition;
         self.viewport
             .indicator_y_ranges
-            .retain(|panel_id| layout.composition().panel(panel_id).is_some());
+            .retain(|panel_id| composition.panel(panel_id).is_some());
     }
 
-    fn configure_profile_caches(&mut self) {
-        self.data
-            .configure_profile_caches(self.studies.active(), self.basis);
-    }
-
-    fn set_basis(&mut self, basis: Basis) -> Option<ChartAction> {
-        self.finish_pending_drawing_edit();
-        if self.basis != basis {
-            self.history.clear();
+    fn set_basis(&mut self, basis: Basis) {
+        self.drawings.finish_pending_edit();
+        let previous_basis = self.basis;
+        let basis_changed = previous_basis != basis;
+        if basis_changed {
+            self.drawings.clear_history();
         }
         self.drawings.tools.set_basis(basis);
         if matches!(basis, Basis::Tick(_)) {
@@ -1285,8 +1173,7 @@ impl KlineChart {
             let secondary_tickers = self
                 .data
                 .selected_tickers()
-                .iter()
-                .copied()
+                .into_iter()
                 .filter(|ticker| *ticker != base_ticker)
                 .collect::<Vec<_>>();
             for ticker in secondary_tickers {
@@ -1294,348 +1181,43 @@ impl KlineChart {
             }
         }
         let preserve_raw_trades = matches!(
-            (self.basis, basis),
+            (previous_basis, basis),
             (Basis::Time(_), Basis::Time(_)) | (Basis::Tick(_), Basis::Tick(_))
         );
         self.basis = basis;
-        self.indicators.normalize_for_basis(basis);
-        self.studies.normalize_for_basis(basis);
+        self.studies.set_basis(basis);
 
         self.data.reset_for_basis(self.basis, preserve_raw_trades);
         self.sync_tick_drawing_sequence();
-        self.frame_revision = self.frame_revision.wrapping_add(1);
         self.indicators
             .mark_rebuild_pending(IndicatorRebuildReason::BasisChanged);
-        self.configure_profile_caches();
-
-        self.fetch.rebuild_handlers(self.data.selected_tickers());
-
-        // The next chart tick builds the plan from the settled basis and
-        // launches all stages together. Old requests have already been
-        // aborted and their request IDs invalidated above.
-        None
-    }
-
-    fn reconcile_indicator_layout(&mut self, rebuild_all: bool) {
-        self.indicators
-            .sync_comparison_sources(self.data.base_ticker(), self.data.selected_tickers());
-        let _ = self.indicators.reconcile_attached_indicator_placements();
-        let active_indicators = self.indicators.selected_indicators();
-        self.configure_indicator_runtimes(&active_indicators, rebuild_all);
-        self.configure_profile_caches();
-    }
-
-    fn configure_indicator_runtimes(
-        &mut self,
-        active_indicators: &[IndicatorInstanceId],
-        rebuild_all: bool,
-    ) {
-        let changed_indicator_ids = self
-            .data
-            .configure_indicators(self.indicators.instances(), active_indicators);
-        self.indicators.retain_dirty_for(active_indicators);
-        if rebuild_all {
-            self.indicators
-                .mark_rebuild_pending(IndicatorRebuildReason::IndicatorConfigurationChanged);
+        if basis_changed {
+            self.fetch.reset_for_basis_change();
+        } else {
+            let selected_tickers = self.data.selected_tickers();
+            self.fetch.rebuild_handlers(&selected_tickers);
         }
-        if !changed_indicator_ids.is_empty() {
-            self.mark_indicators_with_dependents(
-                &changed_indicator_ids,
-                IndicatorRebuildReason::IndicatorConfigurationChanged,
-            );
-        }
-    }
-
-    fn apply_drawing_update(&mut self, update: DrawingUpdate, before: DrawingEditState) {
-        let after = self.drawings.tools.edit_state();
-
-        match update {
-            DrawingUpdate::AtomicEdit => {
-                self.history.finish_drawing(before.clone());
-                if before != after {
-                    self.history.record(before, after);
-                }
-            }
-            DrawingUpdate::GestureStarted { .. } => {
-                self.history.finish_drawing(before.clone());
-                self.history.begin_drawing(before);
-            }
-            DrawingUpdate::GestureUpdated => {}
-            DrawingUpdate::GestureFinished { .. } => {
-                self.history.finish_drawing(after);
-            }
-            DrawingUpdate::None | DrawingUpdate::StateOnly | DrawingUpdate::Visual => {
-                if self.history.has_pending_drawing() && !self.drawings.tools.is_dragging() {
-                    self.history.finish_drawing(after);
-                }
-            }
-        }
-
-        if update.should_bump() {
-            self.bump_rev();
-        }
-    }
-
-    fn finish_pending_drawing_edit(&mut self) {
-        self.history
-            .finish_drawing(self.drawings.tools.edit_state());
     }
 
     fn undo_edit(&mut self) -> Option<Action> {
-        self.finish_pending_drawing_edit();
-        let entry = self.history.pop_undo()?;
-        self.drawings.tools.restore_edit_state(entry.before.clone());
-        self.history.push_redo(entry);
-        self.bump_rev();
+        if self.drawings.undo() {
+            self.render_invalidation.invalidate();
+        }
         None
     }
 
     fn redo_edit(&mut self) -> Option<Action> {
-        self.finish_pending_drawing_edit();
-        let entry = self.history.pop_redo()?;
-        self.drawings.tools.restore_edit_state(entry.after.clone());
-        self.history.push_undo(entry);
-        self.bump_rev();
+        if self.drawings.redo() {
+            self.render_invalidation.invalidate();
+        }
         None
     }
 
-    pub fn apply_command(&mut self, command: ChartCommand) -> CommandResult {
-        let result = self.apply_command_inner(command);
-        self.reconcile_local_sidebar();
-        result
-    }
-
-    fn apply_settings_action(&mut self, command: ChartCommand) -> CommandResult {
-        self.apply_command_inner(command)
-    }
-
-    fn apply_command_inner(&mut self, command: ChartCommand) -> CommandResult {
-        let previous_requirements = self.data_requirements();
-        let previous_panels = self
-            .indicators
-            .composition()
-            .panels
-            .iter()
-            .map(|panel| panel.id)
-            .collect::<Vec<_>>();
-        let mut dirty = false;
-
-        let result = match command {
-            ChartCommand::SetBasis(basis) => {
-                dirty = true;
-                CommandResult::Action(self.set_basis(basis))
-            }
-            ChartCommand::SetTradeDataEnabled(enabled) => {
-                self.apply_trade_data_enabled(enabled, &mut dirty)
-            }
-            ChartCommand::SetLegendVisibility(visibility) => {
-                self.apply_legend_visibility(visibility, &mut dirty)
-            }
-            ChartCommand::SetCandlestickConfig { config } => {
-                let changed = self.options.candlestick != config;
-                if changed {
-                    self.options.candlestick = config;
-                    dirty = true;
-                }
-                CommandResult::Changed(changed)
-            }
-            ChartCommand::ResetCandlestickSettings => {
-                let default_style = self.options.candlestick.with_default_style();
-                let config_changed = self.options.candlestick != default_style;
-                let mark_changed = self.indicators.layout_mut().reset_primary_mark();
-                let ticker_info = self.data.base_ticker();
-                let series_changed = self.data.reset_series_style(ticker_info);
-                self.refresh_open_series_editor(ticker_info);
-                if config_changed {
-                    self.options.candlestick = default_style;
-                }
-                if config_changed || mark_changed || series_changed {
-                    dirty = true;
-                }
-                CommandResult::Changed(config_changed || mark_changed || series_changed)
-            }
-            ChartCommand::SetCandlestickMark { mark } => {
-                let changed = self.indicators.layout_mut().set_primary_mark(mark);
-                if changed {
-                    dirty = true;
-                }
-                CommandResult::Changed(changed)
-            }
-            ChartCommand::SetCandlestickVisible { visible } => {
-                let changed = self.options.candlestick.visible != visible;
-                if changed {
-                    self.options.candlestick = self.options.candlestick.with_visible(visible);
-                    dirty = true;
-                }
-                CommandResult::Changed(changed)
-            }
-            ChartCommand::SetFootprintVisible { visible } => {
-                let changed = self.options.footprint.visible != visible;
-                if changed {
-                    self.options.footprint = self.options.footprint.with_visible(visible);
-                    self.configure_profile_caches();
-                    dirty = true;
-                }
-                CommandResult::Changed(changed)
-            }
-            ChartCommand::SetFootprintClusterKind { kind } => {
-                let changed = self.options.footprint.cluster_kind != kind;
-                if changed {
-                    self.options.footprint = self.options.footprint.with_cluster_kind(kind);
-                    dirty = true;
-                }
-                CommandResult::Changed(changed)
-            }
-            ChartCommand::SetFootprintClusterScaling { scaling } => {
-                let changed = self.options.footprint.cluster_scaling != scaling;
-                if changed {
-                    self.options.footprint = self.options.footprint.with_cluster_scaling(scaling);
-                    dirty = true;
-                }
-                CommandResult::Changed(changed)
-            }
-            ChartCommand::SetFootprintImbalanceConfig { config } => {
-                let changed = self.options.footprint.imbalance != config;
-                if changed {
-                    self.options.footprint = self.options.footprint.with_imbalance(config);
-                    dirty = true;
-                }
-                CommandResult::Changed(changed)
-            }
-            ChartCommand::SetFootprintPocConfig { config } => {
-                let changed = self.options.footprint.poc != config;
-                if changed {
-                    self.options.footprint = self.options.footprint.with_poc(config);
-                    self.configure_profile_caches();
-                    dirty = true;
-                }
-                CommandResult::Changed(changed)
-            }
-            ChartCommand::ResetFootprintSettings => {
-                let default_options = self.options.footprint.with_default_options();
-                let poc_changed = self.options.footprint.poc != default_options.poc;
-                let changed = self.options.footprint != default_options;
-                if changed {
-                    self.options.footprint = default_options;
-                    if poc_changed {
-                        self.configure_profile_caches();
-                    }
-                    dirty = true;
-                }
-                CommandResult::Changed(changed)
-            }
-            ChartCommand::SetFootprintTickMultiplier { multiplier } => {
-                if self.data.set_footprint_tick_multiplier(multiplier) {
-                    self.data.configure_series_for_basis(self.basis);
-                    self.configure_profile_caches();
-                    dirty = true;
-                }
-                CommandResult::None
-            }
-            ChartCommand::AddIndicator(kind) => {
-                let change = self.indicators.add_indicator(kind, self.basis, &self.data);
-                self.apply_indicator_change(change, &mut dirty)
-            }
-            ChartCommand::AddIndicatorOnSource {
-                kind,
-                input_id,
-                source,
-            } => {
-                let change = self
-                    .indicators
-                    .add_indicator_on_source(kind, input_id, source, self.basis, &self.data);
-                self.apply_indicator_change(change, &mut dirty)
-            }
-            ChartCommand::RemoveIndicator(id) => {
-                let change = self.indicators.remove_indicator(id);
-                self.apply_indicator_change(change, &mut dirty)
-            }
-            ChartCommand::Indicator(command) => self.apply_indicator_command(command, &mut dirty),
-            ChartCommand::Study(command) => self.apply_study_command(command, &mut dirty),
-            ChartCommand::SetSeriesColor { ticker_info, color } => {
-                let changed = self.data.set_series_color(ticker_info, color);
-                if changed {
-                    dirty = true;
-                }
-                CommandResult::Changed(changed)
-            }
-            ChartCommand::SetSeriesLineWidth { ticker_info, width } => {
-                let changed = self.data.set_series_line_width(ticker_info, width);
-                if changed {
-                    dirty = true;
-                }
-                CommandResult::Changed(changed)
-            }
-            ChartCommand::SetSeriesStrokeStyle {
-                ticker_info,
-                stroke_style,
-            } => {
-                let changed = self.data.set_series_stroke_style(ticker_info, stroke_style);
-                if changed {
-                    dirty = true;
-                }
-                CommandResult::Changed(changed)
-            }
-            ChartCommand::ResetSeriesSettings { ticker_info } => {
-                let changed = self.data.reset_series_style(ticker_info);
-                self.refresh_open_series_editor(ticker_info);
-                if changed {
-                    dirty = true;
-                }
-                CommandResult::Changed(changed)
-            }
-            ChartCommand::AddTicker { ticker_info } => {
-                let changed = if ticker_info != self.data.base_ticker()
-                    && self.data.add_ticker(ticker_info, self.basis)
-                {
-                    self.fetch.add_ticker(ticker_info);
-                    self.indicators.sync_comparison_sources(
-                        self.data.base_ticker(),
-                        self.data.selected_tickers(),
-                    );
-                    let active_indicators = self.selected_indicators();
-                    self.configure_indicator_runtimes(&active_indicators, false);
-                    self.mark_indicators_for_candle_ticker(
-                        ticker_info,
-                        IndicatorRebuildReason::IndicatorConfigurationChanged,
-                    );
-                    true
-                } else {
-                    false
-                };
-                if changed {
-                    dirty = true;
-                }
-                CommandResult::Changed(changed)
-            }
-            ChartCommand::RemoveTicker { ticker_info } => {
-                let changed = self.remove_ticker(ticker_info);
-                if changed {
-                    dirty = true;
-                }
-                CommandResult::Changed(changed)
-            }
-        };
-
-        self.reconcile_data_requirements(previous_requirements);
-        if previous_panels
-            .iter()
-            .any(|panel_id| self.indicators.composition().panel(*panel_id).is_none())
-        {
-            self.history.clear();
-        }
-
-        if dirty {
-            self.bump_rev();
-        }
-        result
-    }
-
     fn close_panel_at_index(&mut self, index: usize) -> bool {
-        self.finish_pending_drawing_edit();
+        self.drawings.finish_pending_edit();
         let previous_requirements = self.data_requirements();
 
-        let Some(panel) = self.indicators.composition().panels.get(index) else {
+        let Some(panel) = self.indicators.composition.panels.get(index) else {
             return false;
         };
         if matches!(panel.role, PanelRole::Primary) {
@@ -1662,8 +1244,8 @@ impl KlineChart {
         for id in indicator_ids {
             indicator_removed |= self.indicators.remove_indicator_instance(id);
         }
-        let panel_removed = self.indicators.composition().panel(panel_id).is_some()
-            && self.indicators.layout_mut().close_panel(panel_id);
+        let panel_removed = self.indicators.composition.panel(panel_id).is_some()
+            && self.indicators.composition.remove_panel(panel_id);
         let changed = indicator_removed || panel_removed;
 
         if !changed {
@@ -1671,208 +1253,408 @@ impl KlineChart {
             return false;
         }
 
-        if indicator_removed {
-            self.reconcile_indicator_layout(false);
-        }
         self.reconcile_data_requirements(previous_requirements);
         let _ = self.viewport.indicator_y_ranges.reset(panel_id);
-        self.history.clear();
-        self.bump_rev();
+        self.drawings.clear_history();
+        self.request_settings_update(UpdatePolicy::ImmediateReconfigure);
         true
     }
 
-    fn apply_trade_data_enabled(&mut self, enabled: bool, dirty: &mut bool) -> CommandResult {
-        if !enabled && self.trade_data_setting_locked() {
-            return CommandResult::Changed(false);
+    fn apply_browser_action(&mut self, command: ChartCommand) -> Option<Action> {
+        match self.apply_command(command) {
+            Some(ChartAction::RequestFetch(fetch)) => Some(Action::RequestFetch(fetch)),
+            _ => None,
         }
-        if !self.options.set_trade_data_requested(enabled, self.basis) {
-            return CommandResult::Changed(false);
-        }
-        self.configure_profile_caches();
-        *dirty = true;
-        CommandResult::Changed(true)
     }
 
-    fn apply_legend_visibility(
-        &mut self,
-        visibility: LegendVisibility,
-        dirty: &mut bool,
-    ) -> CommandResult {
-        if self.options.legend_visibility == visibility {
-            return CommandResult::Changed(false);
+    fn apply_inspector_effect(&mut self, effect: InspectorEffect) -> Option<Action> {
+        match effect {
+            InspectorEffect::None => None,
+            InspectorEffect::Command(command) => match self.apply_command_inner(command) {
+                Some(ChartAction::RequestFetch(fetch)) => Some(Action::RequestFetch(fetch)),
+                _ => None,
+            },
+            InspectorEffect::StudyConfigurator(message) => {
+                let command = self.studies.update_configurator(
+                    message,
+                    self.basis,
+                    self.trade_data_enabled(),
+                )?;
+                let _ = self.apply_command_inner(ChartCommand::Study(command));
+                None
+            }
+            InspectorEffect::OpenUrl(url) => Some(Action::OpenUrl(url)),
         }
+    }
+
+    pub fn apply_fetch_update(&mut self, update: FetchUpdate) -> bool {
+        match update {
+            FetchUpdate::Failed(req_id) => self.fetch.mark_failed(req_id),
+            FetchUpdate::TradeFetchNoData {
+                ticker_info,
+                req_id,
+            } => self.fetch.mark_no_data(ticker_info, req_id),
+            FetchUpdate::FetchHandle { req_id, handle } => self.fetch.set_handle(req_id, handle),
+        }
+    }
+
+    pub fn apply_data(&mut self, update: DataUpdate<'_>) {
+        if let Some(timeframe) = update.kline_timeframe()
+            && self.basis != Basis::Time(timeframe)
+        {
+            self.apply_study_kline_update(&update);
+            return;
+        }
+
+        let trade_data_enabled = self.trade_data_enabled();
+        let effect = update.apply(
+            self.basis,
+            &mut self.data,
+            &mut self.fetch,
+            &mut self.indicators,
+            trade_data_enabled,
+        );
+        self.sync_tick_drawing_sequence();
+        match effect {
+            DataUpdateEffect::Unchanged => {}
+            DataUpdateEffect::HistoricalChanged => {
+                self.render_invalidation.invalidate();
+            }
+            DataUpdateEffect::LiveChanged => {
+                self.render_invalidation.request_data_redraw();
+                self.redraw_data_if_due(Instant::now());
+            }
+        }
+        self.studies
+            .apply_data_update(&update, &effect, self.data.base_ticker());
+        if !matches!(effect, DataUpdateEffect::Unchanged) {
+            self.refresh_indicator_presentation();
+            if !self.render_invalidation.data_redraw_pending {
+                self.prepare_visible_trade_profile();
+            }
+        }
+    }
+
+    fn apply_study_kline_update(&mut self, update: &DataUpdate<'_>) {
+        let applied = match update {
+            DataUpdate::LiveKline {
+                timeframe,
+                ticker_info,
+                kline,
+            } => self.studies.apply_live_kline(
+                self.basis,
+                &self.data,
+                *timeframe,
+                **ticker_info,
+                kline,
+            ),
+            DataUpdate::HistoricalKlines {
+                req_id,
+                timeframe,
+                ticker_info,
+                klines,
+                is_batches_done,
+                has_data,
+            } => {
+                let is_study_request =
+                    req_id.is_some_and(|req_id| self.fetch.is_profile_request(req_id));
+                let applied = is_study_request
+                    && self.studies.insert_historical_klines(
+                        self.basis,
+                        &self.data,
+                        &mut self.fetch,
+                        *req_id,
+                        *timeframe,
+                        *ticker_info,
+                        klines,
+                        *is_batches_done,
+                        *has_data,
+                    );
+                if !applied {
+                    log::warn!(
+                        "Ignoring stale kline fetch for timeframe {:?}; chart basis = {:?}",
+                        timeframe,
+                        self.basis
+                    );
+                }
+                applied
+            }
+            _ => false,
+        };
+        if applied {
+            self.render_invalidation.request_data_redraw();
+        }
+    }
+
+    pub fn apply_command(&mut self, command: ChartCommand) -> Option<ChartAction> {
+        let action = self.apply_command_inner(command);
+        self.reconcile_settings_target();
+        self.prepare_visible_trade_profile();
+        action
+    }
+
+    fn apply_command_inner(&mut self, command: ChartCommand) -> Option<ChartAction> {
+        let mut request_fetch = false;
+        let previous_requirements = self.data_requirements();
+        let previous_panels = self
+            .indicators
+            .composition
+            .panels
+            .iter()
+            .map(|panel| panel.id)
+            .collect::<Vec<_>>();
+
+        let policy = match command {
+            ChartCommand::SetBasis(basis) => {
+                self.set_basis(basis);
+                Some(UpdatePolicy::ImmediateReconfigure)
+            }
+            ChartCommand::SetTradeDataEnabled(enabled) => self
+                .apply_trade_data_enabled(enabled)
+                .then_some(UpdatePolicy::ImmediateReconfigure),
+            ChartCommand::SetLegendVisibility(visibility) => self
+                .apply_legend_visibility(visibility)
+                .then_some(UpdatePolicy::Redraw),
+            ChartCommand::SetCandlestickConfig { config } => {
+                let changed = self.options.candlestick != config;
+                self.options.candlestick = config;
+                changed.then_some(UpdatePolicy::Redraw)
+            }
+            ChartCommand::ResetCandlestickSettings => {
+                let default_style = self.options.candlestick.with_default_style();
+                let config_changed = self.options.candlestick != default_style;
+                let mark_changed = self.indicators.composition.reset_primary_mark();
+                let ticker_info = self.data.base_ticker();
+                let series_changed = self.data.reset_series_style(ticker_info);
+                self.options.candlestick = default_style;
+                (config_changed || mark_changed || series_changed).then_some(UpdatePolicy::Redraw)
+            }
+            ChartCommand::SetCandlestickMark { mark } => self
+                .indicators
+                .composition
+                .set_primary_mark(mark)
+                .then_some(UpdatePolicy::Redraw),
+            ChartCommand::SetCandlestickVisible { visible } => {
+                let changed = self.options.candlestick.visible != visible;
+                self.options.candlestick = self.options.candlestick.with_visible(visible);
+                changed.then_some(UpdatePolicy::Redraw)
+            }
+            ChartCommand::SetFootprintVisible { visible } => {
+                let changed = self.options.footprint.visible != visible;
+                self.options.footprint = self.options.footprint.with_visible(visible);
+                changed.then_some(UpdatePolicy::DeferredReconfigure)
+            }
+            ChartCommand::SetFootprintClusterKind { kind } => {
+                let changed = self.options.footprint.cluster_kind != kind;
+                self.options.footprint = self.options.footprint.with_cluster_kind(kind);
+                changed.then_some(UpdatePolicy::Redraw)
+            }
+            ChartCommand::SetFootprintClusterScaling { scaling } => {
+                let changed = self.options.footprint.cluster_scaling != scaling;
+                self.options.footprint = self.options.footprint.with_cluster_scaling(scaling);
+                changed.then_some(UpdatePolicy::Redraw)
+            }
+            ChartCommand::SetFootprintImbalanceConfig { config } => {
+                let changed = self.options.footprint.imbalance != config;
+                self.options.footprint = self.options.footprint.with_imbalance(config);
+                changed.then_some(UpdatePolicy::Redraw)
+            }
+            ChartCommand::SetFootprintPocConfig { config } => {
+                let changed = self.options.footprint.poc != config;
+                self.options.footprint = self.options.footprint.with_poc(config);
+                changed.then_some(UpdatePolicy::Redraw)
+            }
+            ChartCommand::ResetFootprintSettings => {
+                let default_options = self.options.footprint.with_default_options();
+                let changed = self.options.footprint != default_options;
+                self.options.footprint = default_options;
+                changed.then_some(UpdatePolicy::Redraw)
+            }
+            ChartCommand::SetTickMultiplier { multiplier } => self
+                .data
+                .set_tick_multiplier(multiplier)
+                .then_some(UpdatePolicy::ImmediateReconfigure),
+            ChartCommand::AddIndicator(kind) => {
+                let change = self.indicators.add_indicator(kind, self.basis, &self.data);
+                let (policy, fetch) = change.apply(&mut self.indicators, &self.data);
+                request_fetch = fetch;
+                policy
+            }
+            ChartCommand::AddIndicatorOnSource {
+                kind,
+                input_id,
+                source,
+            } => {
+                let change = self
+                    .indicators
+                    .add_indicator_on_source(kind, input_id, source, self.basis, &self.data);
+                let (policy, fetch) = change.apply(&mut self.indicators, &self.data);
+                request_fetch = fetch;
+                policy
+            }
+            ChartCommand::RemoveIndicator(id) => {
+                let change = self.indicators.remove_indicator(id);
+                let (policy, fetch) = change.apply(&mut self.indicators, &self.data);
+                request_fetch = fetch;
+                policy
+            }
+            ChartCommand::Indicator(command) => {
+                let change = self.indicators.apply(command);
+                let (policy, fetch) = change.apply(&mut self.indicators, &self.data);
+                request_fetch = fetch;
+                policy
+            }
+            ChartCommand::Study(command) => self.apply_study_command(command),
+            ChartCommand::StudyInteraction(event) => {
+                self.studies
+                    .apply_interaction(event, self.basis, &self.data);
+                Some(UpdatePolicy::Redraw)
+            }
+            ChartCommand::ToggleComparisonVisibility { ticker_info } => self
+                .indicators
+                .composition
+                .toggle_comparison_visibility(ticker_info)
+                .then_some(UpdatePolicy::Redraw),
+            ChartCommand::SetSeriesColor { ticker_info, color } => self
+                .data
+                .set_series_color(ticker_info, color)
+                .then_some(UpdatePolicy::Redraw),
+            ChartCommand::SetSeriesLineWidth { ticker_info, width } => self
+                .data
+                .set_series_line_width(ticker_info, width)
+                .then_some(UpdatePolicy::Redraw),
+            ChartCommand::SetSeriesStrokeStyle {
+                ticker_info,
+                stroke_style,
+            } => self
+                .data
+                .set_series_stroke_style(ticker_info, stroke_style)
+                .then_some(UpdatePolicy::Redraw),
+            ChartCommand::ResetSeriesSettings { ticker_info } => self
+                .data
+                .reset_series_style(ticker_info)
+                .then_some(UpdatePolicy::Redraw),
+            ChartCommand::AddTicker { ticker_info } => {
+                let changed = ticker_info != self.data.base_ticker()
+                    && self.data.add_ticker(ticker_info, self.basis);
+                if changed {
+                    self.fetch.add_ticker(ticker_info);
+                    let selected_tickers = self.data.selected_tickers();
+                    self.indicators
+                        .composition
+                        .sync_comparison_sources(self.data.base_ticker(), &selected_tickers);
+                    self.indicators.mark_for_candle_ticker(
+                        &self.data,
+                        ticker_info,
+                        IndicatorRebuildReason::IndicatorStructureChanged,
+                    );
+                }
+                changed.then_some(UpdatePolicy::ImmediateReconfigure)
+            }
+            ChartCommand::RemoveTicker { ticker_info } => self
+                .remove_ticker(ticker_info)
+                .then_some(UpdatePolicy::ImmediateReconfigure),
+        };
+
+        self.reconcile_data_requirements(previous_requirements);
+        if previous_panels
+            .iter()
+            .any(|panel_id| self.indicators.composition.panel(*panel_id).is_none())
+        {
+            self.drawings.clear_history();
+        }
+
+        if let Some(policy) = policy {
+            self.request_settings_update(policy);
+            if policy != UpdatePolicy::ImmediateReconfigure {
+                self.refresh_indicator_presentation();
+            }
+            if request_fetch && policy == UpdatePolicy::ImmediateReconfigure {
+                return self
+                    .request_fetch_action(false)
+                    .map(ChartAction::RequestFetch);
+            }
+        }
+        None
+    }
+
+    fn apply_drawing_update(&mut self, update: DrawingUpdate) {
+        if update.should_bump() {
+            self.render_invalidation.invalidate();
+        }
+    }
+
+    fn apply_trade_data_enabled(&mut self, enabled: bool) -> bool {
+        if !enabled && self.trade_data_setting_lock_reason().is_some() {
+            return false;
+        }
+        self.options.set_trade_data_requested(enabled, self.basis)
+    }
+
+    fn apply_legend_visibility(&mut self, visibility: LegendVisibility) -> bool {
+        let changed = self.options.legend_visibility != visibility;
         self.options.legend_visibility = visibility;
-        *dirty = true;
-        CommandResult::Changed(true)
+        changed
     }
 
-    fn apply_indicator_command(
-        &mut self,
-        command: IndicatorCommand,
-        dirty: &mut bool,
-    ) -> CommandResult {
-        let change = self.indicators.apply(command, self.basis, &self.data);
-        self.apply_indicator_change(change, dirty)
-    }
-
-    fn apply_indicator_change(
-        &mut self,
-        change: IndicatorChange,
-        dirty: &mut bool,
-    ) -> CommandResult {
-        match change {
-            IndicatorChange::Unchanged => CommandResult::Changed(false),
-            IndicatorChange::Visual => {
-                *dirty = true;
-                CommandResult::Changed(true)
-            }
-            IndicatorChange::Reconfigure { id, request_fetch } => {
-                self.data
-                    .reconfigure_indicator(id, self.indicators.instances());
-                self.mark_indicators_with_dependents(
-                    &[id],
-                    IndicatorRebuildReason::IndicatorConfigurationChanged,
-                );
-                *dirty = true;
-                if request_fetch {
-                    CommandResult::Action(
-                        self.request_fetch_action(false)
-                            .map(ChartAction::RequestFetch),
-                    )
-                } else {
-                    CommandResult::Changed(true)
-                }
-            }
-            IndicatorChange::Reconcile { request_fetch } => {
-                self.reconcile_indicator_layout(false);
-                *dirty = true;
-                if request_fetch {
-                    CommandResult::Action(
-                        self.request_fetch_action(false)
-                            .map(ChartAction::RequestFetch),
-                    )
-                } else {
-                    CommandResult::Changed(true)
-                }
-            }
-        }
-    }
-
-    fn apply_study_command(&mut self, command: StudyCommand, dirty: &mut bool) -> CommandResult {
+    fn apply_study_command(&mut self, command: StudyCommand) -> Option<UpdatePolicy> {
+        let previous_ids = self
+            .studies
+            .active()
+            .map(|study| study.id())
+            .collect::<Vec<_>>();
         let change = self
             .studies
             .apply(command, self.basis, self.trade_data_enabled());
-        self.apply_study_change(change, dirty)
-    }
-
-    fn apply_study_change(
-        &mut self,
-        change: studies::StudyChange,
-        dirty: &mut bool,
-    ) -> CommandResult {
-        if change.profile_data_changed {
-            self.configure_profile_caches();
-        }
-        if change.changed {
-            *dirty = true;
-        }
-        CommandResult::Changed(change.changed)
-    }
-
-    fn remove_ticker(&mut self, ticker_info: TickerInfo) -> bool {
-        if ticker_info == self.data.base_ticker() || !self.data.remove_ticker(ticker_info) {
-            return false;
-        }
-
-        let was_multi_source = self.indicators.layout().primary_uses_multi_source();
-        if self.inspector.series_editor().show_config_for == Some(ticker_info) {
-            self.inspector.series_editor_mut().close();
-        }
-        self.fetch.remove_ticker(ticker_info);
-        self.indicators
-            .sync_comparison_sources(self.data.base_ticker(), self.data.selected_tickers());
-        if was_multi_source
-            && !self.indicators.layout().primary_uses_multi_source()
-            && self.indicators.restore_primary_scale_after_comparisons()
-        {
-            self.viewport.primary.reset();
-        }
-        let active_indicators = self.selected_indicators();
-        self.configure_indicator_runtimes(&active_indicators, false);
-        self.mark_indicators_for_candle_ticker(
-            ticker_info,
-            IndicatorRebuildReason::IndicatorConfigurationChanged,
-        );
-        true
-    }
-
-    fn replace_indicator_configuration(
-        &mut self,
-        instances: IndicatorInstanceStore,
-        panels: &[persisted::PanelConfig],
-        splits: &[f32],
-    ) {
-        self.indicators.replace_instances(instances);
-        if !panels.is_empty() {
-            let panels = panels
-                .iter()
-                .map(persisted::panel_spec_from_config)
-                .collect();
-            self.indicators
-                .layout_mut()
-                .replace_composition(panels, splits.to_vec());
-        } else if let Some(volume_id) = self
-            .indicators
-            .instances()
-            .instances()
-            .iter()
-            .find(|instance| {
-                instance.kind == IndicatorId::parse("core.volume").expect("static ID is valid")
-            })
-            .map(|instance| instance.id)
-        {
-            self.indicators
-                .replace_layout(IndicatorLayout::new(volume_id));
-        } else {
-            self.indicators.replace_layout(IndicatorLayout::empty());
-        }
+        let policy = match change {
+            StudyChange::Unchanged => return None,
+            StudyChange::Visual => UpdatePolicy::Redraw,
+            StudyChange::Reconfigure => UpdatePolicy::DeferredReconfigure,
+        };
+        Some(
+            if previous_ids
+                .into_iter()
+                .eq(self.studies.active().map(|study| study.id()))
+            {
+                policy
+            } else {
+                UpdatePolicy::ImmediateReconfigure
+            },
+        )
     }
 
     fn apply_shared_settings(&mut self, snapshot: &SettingsSnapshot) {
+        self.settings_reconfigure_pending = false;
         let previous_requirements = self.data_requirements();
         self.replace_indicator_configuration(
-            snapshot.indicator_instances_for(self.basis),
+            snapshot.indicator_instance_store(),
             &snapshot.panels,
             &snapshot.splits,
         );
+
         self.viewport.primary_scale_inverted = snapshot.primary_scale_inverted;
-        self.options.trade_data_requested = snapshot.trade_data_enabled;
-        self.options.legend_visibility = snapshot.legend_visibility;
-        self.options.candlestick = snapshot.candlestick;
-        self.options.footprint = snapshot.footprint;
-        self.studies.restore(studies::StudySnapshot::new(
-            snapshot.studies.clone(),
-            snapshot.study_configs.clone(),
-        ));
-        self.studies.normalize_for_basis(self.basis);
+
+        self.options = snapshot.options;
+
+        self.studies.restore_settings(snapshot, self.basis);
+
         self.reconcile_indicator_layout(true);
+        self.sync_tick_drawing_sequence();
+        self.prune_stale_indicator_y_ranges();
         self.reconcile_data_requirements(previous_requirements);
     }
 
     fn apply_persisted_config(&mut self, config: &persisted::Config) {
-        let snapshot = config.settings_snapshot();
-        self.history.clear();
-        self.apply_shared_settings(&snapshot);
+        self.drawings.clear_history();
+        self.apply_shared_settings(&config.settings);
+
         self.drawing_sidebar_visible = config.drawing_sidebar_visible;
-        self.sidebar = Sidebar::Drawings;
         self.drawings.floating_toolbar =
             toolbar::FloatingToolbarState::from_position(config.floating_toolbar_position);
         let drawings = config
             .drawings
             .iter()
-            .filter(|drawing| {
-                DrawingTools::drawing_panels_exist(self.indicators.composition(), &drawing.object)
-            })
+            .filter(|drawing| drawing.object.panels_exist(&self.indicators.composition))
             .cloned()
             .collect();
         self.drawings.tools = DrawingTools::from_parts(config.active_drawing_tool, drawings);
@@ -1901,6 +1683,7 @@ impl KlineChart {
             else {
                 continue;
             };
+
             let _ = self.data.set_series_color(ticker_info, series_color);
             let _ = self
                 .data
@@ -1911,141 +1694,88 @@ impl KlineChart {
         }
 
         self.indicators.allow_partial_rebuilds();
-        self.bump_rev();
-    }
-
-    pub fn settings_snapshot(&self) -> SettingsSnapshot {
-        self.serializable_config().settings_snapshot()
+        self.refresh_indicator_presentation();
+        self.render_invalidation.invalidate();
     }
 
     pub fn apply_settings_snapshot(&mut self, snapshot: &SettingsSnapshot) -> Option<Action> {
         self.apply_shared_settings(snapshot);
-        self.fetch.rebuild_handlers(self.data.selected_tickers());
-        self.reconcile_local_sidebar();
-        self.bump_rev();
+        let selected_tickers = self.data.selected_tickers();
+        self.fetch.rebuild_handlers(&selected_tickers);
+        self.refresh_indicator_presentation();
+        self.reconcile_settings_target();
+        self.render_invalidation.invalidate();
 
         self.request_fetch_action(false).map(Action::RequestFetch)
-    }
-
-    pub fn studies(&self) -> &[KlineStudy] {
-        self.studies.active()
     }
 
     pub fn trade_data_enabled(&self) -> bool {
         self.data_requirements().trades
     }
 
-    fn legend_visibility(&self) -> LegendVisibility {
-        self.options.legend_visibility
+    fn trade_data_setting_lock_reason(&self) -> Option<&'static str> {
+        if matches!(self.basis, Basis::Tick(_)) {
+            return Some("Trade data is required for tick-based charts");
+        }
+
+        self.consumer_data_requirements()
+            .trades
+            .then_some("Trade data is required by an active indicator or study")
     }
 
-    fn trade_data_setting_locked(&self) -> bool {
-        matches!(self.basis, Basis::Tick(_))
-            || self.indicators.selected_indicators().iter().any(|id| {
-                self.indicators.indicator(*id).is_some_and(|instance| {
-                    instance.kind.is_registered()
-                        && self.indicator_requires_trade_data(&instance.kind)
-                })
-            })
-    }
-
-    pub fn drawing_sidebar_visible(&self) -> bool {
-        self.sidebar == Sidebar::Drawings && self.drawing_sidebar_visible
-    }
-
-    fn indicator_requires_trade_data(&self, indicator: &IndicatorId) -> bool {
-        self.indicators
-            .requires_trade_data(indicator, self.basis, self.data.base_ticker())
-    }
-
-    pub fn basis(&self) -> Basis {
-        self.basis
-    }
-
-    pub fn selected_indicators(&self) -> Vec<IndicatorInstanceId> {
-        self.indicators.selected_indicators()
-    }
-
-    pub fn data_requirements(&self) -> KlineDataRequirements {
-        let mut requirements = KlineDataRequirements {
-            klines: !self.data.selected_tickers().is_empty(),
-            trades: self.options.trade_data_requested || matches!(self.basis, Basis::Tick(_)),
-            ..KlineDataRequirements::default()
-        };
-
-        let indicator_requirements = self
+    fn consumer_data_requirements(&self) -> DataRequirements {
+        let mut requirements = self
             .indicators
             .data_requirements(self.basis, self.data.base_ticker());
-        requirements.klines |= indicator_requirements.klines;
-        requirements.directional_volume |= indicator_requirements.directional_volume;
-        requirements.trades |= indicator_requirements.trades;
-        requirements.open_interest |= indicator_requirements.open_interest;
-
-        if self.options.footprint.visible
-            || self
-                .studies
-                .active()
-                .iter()
-                .any(|study| study.requires_trade_data())
-        {
-            requirements.trades = true;
-        }
+        requirements.trades |=
+            matches!(self.basis, Basis::Tick(_)) || self.studies.requires_trade_data();
         requirements
     }
 
-    pub fn indicator_kind(&self, id: IndicatorInstanceId) -> Option<IndicatorId> {
-        self.indicators.indicator_kind(id)
+    fn data_requirements(&self) -> DataRequirements {
+        let mut requirements = self.consumer_data_requirements();
+        requirements.trades |= self.options.trade_data_requested || self.options.footprint.visible;
+        requirements
     }
 
-    pub fn ticker_info(&self) -> TickerInfo {
-        self.data.base_ticker()
+    pub fn settings_snapshot(&self) -> SettingsSnapshot {
+        let studies = self.studies.snapshot();
+        SettingsSnapshot {
+            primary_scale_inverted: self.viewport.primary_scale_inverted,
+            options: self.options,
+            panels: self
+                .indicators
+                .composition
+                .panels
+                .iter()
+                .map(persisted::panel_config_from_spec)
+                .collect(),
+            splits: self.indicators.composition.splits.clone(),
+            active_studies: studies.active,
+            study_configs: studies.configs,
+            tpo_profile_edits: studies.edits,
+            indicator_instances: self.indicators.instances.instances().to_vec(),
+        }
     }
 
-    pub fn selected_tickers(&self) -> &[TickerInfo] {
-        self.data.selected_tickers()
-    }
-
-    pub fn last_update(&self) -> Instant {
-        self.last_tick
-    }
-
-    pub fn footprint_tick_multiplier(&self) -> TickMultiplier {
-        self.data.footprint_tick_multiplier()
-    }
-
-    fn indicator_presentation_context(&self) -> IndicatorPresentationContext {
-        IndicatorPresentationResolver::new(
-            &self.indicators,
-            &self.data,
-            self.basis,
-            self.trade_data_enabled(),
-        )
-        .context()
-    }
-
-    fn trade_data_required(&self) -> bool {
-        self.data_requirements().trades
-    }
-
-    pub(crate) fn desired_streams(&self) -> Vec<StreamKind> {
+    pub fn desired_streams(&self) -> Vec<StreamKind> {
         match self.basis {
             Basis::Time(timeframe) => {
                 let mut streams = Vec::new();
-                if self.trade_data_required() {
+
+                if self.data_requirements().trades {
                     streams.push(StreamKind::Trades {
                         ticker_info: self.data.base_ticker(),
                     });
                 }
-                streams.extend(
-                    self.data
-                        .selected_tickers()
-                        .iter()
-                        .copied()
-                        .map(|ticker_info| StreamKind::Kline {
-                            ticker_info,
-                            timeframe,
-                        }),
-                );
+                streams.extend(self.data.selected_tickers().into_iter().map(|ticker_info| {
+                    StreamKind::Kline {
+                        ticker_info,
+                        timeframe,
+                    }
+                }));
+
+                streams.extend(self.studies.additional_streams(self.basis, &self.data));
                 streams
             }
             Basis::Tick(_) => vec![StreamKind::Trades {
@@ -2056,26 +1786,11 @@ impl KlineChart {
 
     pub fn serializable_config(&self) -> persisted::Config {
         persisted::Config {
-            primary_scale_inverted: self.viewport.primary_scale_inverted,
-            trade_data_enabled: self.options.trade_data_requested,
-            legend_visibility: self.options.legend_visibility,
-            candlestick: self.options.candlestick,
-            footprint: self.options.footprint,
-            panels: self
-                .indicators
-                .composition()
-                .panels
-                .iter()
-                .map(persisted::panel_config_from_spec)
-                .collect(),
-            splits: self.indicators.composition().splits.clone(),
+            settings: self.settings_snapshot(),
             drawings: self.drawings.tools.time_drawings().to_vec(),
             active_drawing_tool: self.drawings.tools.active_tool(),
             floating_toolbar_position: self.drawings.floating_toolbar.position,
             drawing_sidebar_visible: self.drawing_sidebar_visible,
-            studies: self.studies.active_snapshot(),
-            study_configs: self.studies.configs_snapshot(),
-            indicator_instances: self.indicators.instances().instances().to_vec(),
             series: self
                 .data
                 .series()
@@ -2108,42 +1823,143 @@ impl KlineChart {
     }
 }
 
-fn sidebar_header<'a>(title: String) -> iced::Element<'a, Message> {
-    let title = iced::widget::container(
-        crate::widget::text::emphasis(title).wrapping(iced::widget::text::Wrapping::Glyph),
-    )
-    .width(iced::Length::Fill)
-    .height(iced::Length::Fill)
-    .align_y(iced::Alignment::Center)
-    .clip(true);
-
-    let return_button = iced::widget::button(style::icon_text(style::Icon::Return, 12))
-        .style(|theme, status| style::button::transparent(theme, status, false))
-        .on_press(Message::ShowDrawingsPage)
-        .width(iced::Length::Fixed(SIDEBAR_RETURN_BUTTON_WIDTH));
-
-    iced::widget::row![title, return_button]
-        .width(iced::Length::Fill)
-        .align_y(iced::Alignment::Center)
-        .height(iced::Length::Fixed(32.0))
-        .spacing(8)
-        .into()
+impl From<KlineWidgetEvent> for Message {
+    fn from(event: KlineWidgetEvent) -> Self {
+        Self::Chart(event)
+    }
 }
 
-fn sidebar_panel<'a>(
-    header: iced::Element<'a, Message>,
-    body: iced::Element<'a, Message>,
-    footer: Option<iced::Element<'a, Message>>,
-) -> iced::Element<'a, Message> {
-    iced::widget::container(iced::widget::column![
-        header,
-        iced::widget::rule::horizontal(1.0),
-        body,
-        footer.unwrap_or_else(|| iced::widget::column![].into()),
-    ])
-    .width(iced::Length::Fixed(SIDEBAR_WIDTH))
-    .height(iced::Length::Fill)
-    .padding([4, 8])
-    .style(style::chart_sidebar_container)
-    .into()
+struct RenderInvalidation {
+    revision: u64,
+    last_invalidated_at: Instant,
+    data_redraw_pending: bool,
+}
+
+impl RenderInvalidation {
+    fn new() -> Self {
+        Self {
+            revision: 0,
+            last_invalidated_at: Instant::now(),
+            data_redraw_pending: false,
+        }
+    }
+
+    fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    fn invalidate(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
+        self.last_invalidated_at = Instant::now();
+        self.data_redraw_pending = false;
+    }
+
+    fn request_data_redraw(&mut self) {
+        self.data_redraw_pending = true;
+    }
+
+    fn flush_data_redraw_if_due(&mut self, now: Instant) {
+        if self.data_redraw_pending
+            && now.saturating_duration_since(self.last_invalidated_at)
+                >= MIN_FULL_CACHE_REFRESH_INTERVAL
+        {
+            self.invalidate();
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct DataRequirements {
+    trades: bool,
+    open_interest: bool,
+}
+
+pub enum ChartCommand {
+    SetBasis(Basis),
+    SetTradeDataEnabled(bool),
+    SetLegendVisibility(LegendVisibility),
+
+    SetCandlestickConfig {
+        config: CandlestickConfig,
+    },
+    ResetCandlestickSettings,
+    SetCandlestickMark {
+        mark: MarkKind,
+    },
+    SetCandlestickVisible {
+        visible: bool,
+    },
+
+    SetFootprintVisible {
+        visible: bool,
+    },
+    SetFootprintClusterKind {
+        kind: ClusterKind,
+    },
+    SetFootprintClusterScaling {
+        scaling: ClusterScaling,
+    },
+    SetFootprintImbalanceConfig {
+        config: FootprintImbalanceConfig,
+    },
+    SetFootprintPocConfig {
+        config: FootprintPocConfig,
+    },
+    ResetFootprintSettings,
+    SetTickMultiplier {
+        multiplier: TickMultiplier,
+    },
+
+    AddIndicator(IndicatorId),
+    AddIndicatorOnSource {
+        kind: IndicatorId,
+        input_id: String,
+        source: IndicatorOutputRef,
+    },
+    RemoveIndicator(IndicatorInstanceId),
+    Indicator(IndicatorCommand),
+    Study(StudyCommand),
+    StudyInteraction(StudyObjectEvent),
+
+    ToggleComparisonVisibility {
+        ticker_info: TickerInfo,
+    },
+    SetSeriesColor {
+        ticker_info: TickerInfo,
+        color: SeriesColor,
+    },
+    SetSeriesLineWidth {
+        ticker_info: TickerInfo,
+        width: u8,
+    },
+    SetSeriesStrokeStyle {
+        ticker_info: TickerInfo,
+        stroke_style: LineStrokeStyle,
+    },
+    ResetSeriesSettings {
+        ticker_info: TickerInfo,
+    },
+    AddTicker {
+        ticker_info: TickerInfo,
+    },
+    RemoveTicker {
+        ticker_info: TickerInfo,
+    },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UpdatePolicy {
+    Redraw,
+    DeferredReconfigure,
+    ImmediateReconfigure,
+}
+
+impl ChartCommand {
+    fn indicator_input(command: IndicatorInputCommand) -> Self {
+        Self::Indicator(IndicatorCommand::InputChanged(command))
+    }
+
+    fn indicator_style(command: IndicatorStyleCommand) -> Self {
+        Self::Indicator(IndicatorCommand::StyleChanged(command))
+    }
 }
