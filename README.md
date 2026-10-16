@@ -78,20 +78,20 @@ in Settings → Network, apply the settings, then restart Flowsurface. Three mod
 ## Indicators
 
 Candlestick/footprint charts include [bundled indicators](data/indicators/README.md).
-Add more from the optional [catalog](indicators/sources/) or write your own `.ind` files;
+Add more from the optional [catalog](https://github.com/flowsurface-rs/indicators/tree/main/sources) or write your own `.ind` files;
 installing indicators does not require rebuilding the app.
 
 To install, go to **Settings → Open data folder** and copy the desired catalog
 `.ind` files into `indicators/` subfolder there. Restart the app, then add them
 through the chart pane's **Indicators** sidebar. The data directory is `$FLOWSURFACE_DATA_PATH`
 when set, otherwise your platform's data directory under `flowsurface/`.
-See [installation details](indicators/README.md#install-and-run) for path overrides
+See [installation details](https://github.com/flowsurface-rs/indicators#install-and-run) for path overrides
 and loading behavior.
 
-From a source checkout, you can load the catalog directly:
+From an application source checkout, you can load a separate catalog checkout:
 
 ```sh
-FLOWSURFACE_INDICATORS_PATH="$PWD/indicators/sources" cargo run
+FLOWSURFACE_INDICATORS_PATH="/path/to/indicators/sources" cargo run
 ```
 
 To create an indicator, see the [language reference and examples](indicator-engine/LANGUAGE.md)
@@ -181,7 +181,7 @@ Some components use separate licenses:
 | ---------------------------------------------------------------------------- | -------------------------------------- |
 | Application, data crate, and [bundled indicators](data/indicators/README.md) | [GPL-3.0-or-later](LICENSE)            |
 | Indicator engine and CLI                                                     | [Apache-2.0](indicator-engine/LICENSE) |
-| Indicator catalog and its documentation                                      | [Apache-2.0](indicators/LICENSE)       |
+| [Optional indicator catalog](https://github.com/flowsurface-rs/indicators) and its documentation | [Apache-2.0](https://github.com/flowsurface-rs/indicators/blob/main/LICENSE) |
 | Exchange adapters (`flowsurface-exchange`)                                   | [MIT](exchange/LICENSE)                |
 
-Contributions follow the license of the component being changed; see the [catalog contribution guidelines](indicators/CONTRIBUTING.md) for indicator submissions.
+Contributions follow the license of the component being changed; submit catalog indicators to the [indicators repository](https://github.com/flowsurface-rs/indicators/blob/main/CONTRIBUTING.md).

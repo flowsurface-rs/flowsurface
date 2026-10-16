@@ -1,7 +1,7 @@
 # Indicator language
 
 A `.ind` file defines an indicator's inputs, calculations, and presentation.
-See [installation](../indicators/README.md) and the [CLI](README.md#cli) for
+See [installation](https://github.com/flowsurface-rs/indicators#install-and-run) and the [CLI](README.md#cli) for
 file naming, collections, and validation.
 
 ## Contents
@@ -467,7 +467,7 @@ window's result `na` until it leaves the window.
   true event, then stores the current value if the condition is true.
 
 For working formulas and presentation combinations, browse the
-[bundled sources](../data/indicators/sources/) and [catalog](../indicators/sources/).
+[bundled sources](../data/indicators/sources/) and [catalog](https://github.com/flowsurface-rs/indicators/tree/main/sources).
 
 ## Built-in reference
 

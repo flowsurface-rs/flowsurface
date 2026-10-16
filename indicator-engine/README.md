@@ -2,7 +2,7 @@
 
 The Rust library and `flowsurface-indicator` CLI compile and run `.ind` chart
 indicators. See [LANGUAGE.md](LANGUAGE.md) for authoring and
-[indicator sources](../indicators/README.md) for installation.
+[indicator catalog](https://github.com/flowsurface-rs/indicators#install-and-run) for installation.
 
 ## CLI
 

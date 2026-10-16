@@ -7,7 +7,7 @@ Use `core.<name>` IDs and `<name>.ind` filenames. After editing a source,
 rebuild and restart the app.
 
 See the [language reference](../../indicator-engine/LANGUAGE.md) for authoring
-and [installation](../../indicators/README.md#install-and-run) for adding
+and [installation](https://github.com/flowsurface-rs/indicators#install-and-run) for adding
 indicators without rebuilding.
 
 Validate the bundled collection from the repository root:
