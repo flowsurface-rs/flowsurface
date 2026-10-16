@@ -5,7 +5,11 @@ use crate::widget::chart::Zoom;
 use crate::widget::chart::domain;
 
 use data::UserTimezone;
-use data::chart::ticks::{Y_LABEL_DENSITY, x_labels_that_fit, y_labels_that_fit};
+use data::chart::ticks::{
+    Y_LABEL_DENSITY, x_labels_that_fit,
+    y::{TickValue, YAxisScale},
+    y_labels_that_fit,
+};
 use exchange::{TickerInfo, Timeframe, UnixMs};
 
 use iced::advanced::widget::tree::{self, Tree};
@@ -250,9 +254,16 @@ where
         };
 
         let total_ticks = y_labels_that_fit(plot.height, TEXT_SIZE, Y_LABEL_DENSITY);
-        let (all_ticks, step) = super::ticks(min_pct, max_pct, total_ticks);
-        let mut ticks: Vec<f32> = all_ticks
+        let y_ticks =
+            YAxisScale::Percent.ticks(f64::from(min_pct), f64::from(max_pct), total_ticks as i32);
+        let step = y_ticks.step.unwrap_or(1.0) as f32;
+        let mut ticks: Vec<f32> = y_ticks
+            .ticks
             .into_iter()
+            .filter_map(|tick| match tick.value {
+                TickValue::Float(value) => Some(value as f32),
+                TickValue::PriceUnits(_) => None,
+            })
             .filter(|t| (*t >= min_pct - f32::EPSILON) && (*t <= max_pct + f32::EPSILON))
             .collect();
         if ticks.is_empty() {

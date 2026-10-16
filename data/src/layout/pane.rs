@@ -68,6 +68,14 @@ pub enum Pane {
         #[serde(deserialize_with = "ok_or_default", default)]
         link_group: Option<LinkGroup>,
     },
+    KlineChartV2 {
+        #[serde(deserialize_with = "ok_or_default", default)]
+        stream_type: Vec<PersistStreamKind>,
+        #[serde(deserialize_with = "ok_or_default")]
+        settings: Settings,
+        #[serde(deserialize_with = "ok_or_default", default)]
+        link_group: Option<LinkGroup>,
+    },
     ComparisonChart {
         stream_type: Vec<PersistStreamKind>,
         #[serde(deserialize_with = "ok_or_default")]
@@ -201,18 +209,20 @@ pub enum ContentKind {
     ShaderHeatmap,
     FootprintChart,
     CandlestickChart,
+    CandlestickChartV2,
     ComparisonChart,
     TimeAndSales,
     Ladder,
 }
 
 impl ContentKind {
-    pub const ALL: [ContentKind; 8] = [
+    pub const ALL: [ContentKind; 9] = [
         ContentKind::Starter,
         ContentKind::HeatmapChart,
         ContentKind::ShaderHeatmap,
         ContentKind::FootprintChart,
         ContentKind::CandlestickChart,
+        ContentKind::CandlestickChartV2,
         ContentKind::ComparisonChart,
         ContentKind::TimeAndSales,
         ContentKind::Ladder,
@@ -227,6 +237,7 @@ impl std::fmt::Display for ContentKind {
             ContentKind::ShaderHeatmap => "Heatmap Chart",
             ContentKind::FootprintChart => "Footprint Chart",
             ContentKind::CandlestickChart => "Candlestick Chart",
+            ContentKind::CandlestickChartV2 => "Candlestick Chart (V2)",
             ContentKind::ComparisonChart => "Comparison Chart",
             ContentKind::TimeAndSales => "Time&Sales",
             ContentKind::Ladder => "DOM/Ladder",
@@ -262,7 +273,7 @@ impl PaneSetup {
 
         let basis =
             match content_kind {
-                ContentKind::HeatmapChart | ContentKind::ShaderHeatmap => {
+                ContentKind::HeatmapChart => {
                     let current = current_basis.and_then(|b| match b {
                         Basis::Time(tf) if exchange.supports_heatmap_timeframe(tf) => Some(b),
                         _ => None,
@@ -271,6 +282,9 @@ impl PaneSetup {
                     Some(current.unwrap_or_else(|| Basis::default_heatmap_time(Some(base_ticker))))
                 }
                 ContentKind::Ladder => Some(
+                    current_basis.unwrap_or_else(|| Basis::default_heatmap_time(Some(base_ticker))),
+                ),
+                ContentKind::ShaderHeatmap => Some(
                     current_basis.unwrap_or_else(|| Basis::default_heatmap_time(Some(base_ticker))),
                 ),
                 ContentKind::FootprintChart => {
@@ -284,7 +298,9 @@ impl PaneSetup {
                         Basis::default_kline_time(Some(base_ticker), Timeframe::M5)
                     }))
                 }
-                ContentKind::CandlestickChart | ContentKind::ComparisonChart => {
+                ContentKind::CandlestickChart
+                | ContentKind::CandlestickChartV2
+                | ContentKind::ComparisonChart => {
                     let current = current_basis.and_then(|b| match b {
                         Basis::Time(tf) if exchange.supports_kline_timeframe(tf) => Some(b),
                         _ => None,
@@ -314,6 +330,7 @@ impl PaneSetup {
                 Some(current_tick_multiplier.unwrap_or(TickMultiplier(50)))
             }
             ContentKind::CandlestickChart
+            | ContentKind::CandlestickChartV2
             | ContentKind::ComparisonChart
             | ContentKind::TimeAndSales
             | ContentKind::Starter => current_tick_multiplier,

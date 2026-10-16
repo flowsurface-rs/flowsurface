@@ -1,0 +1,260 @@
+use super::composition::{PanelRole, PanelSpec};
+use super::{
+    KlinePanelKind, KlineSeriesLike, KlineWidget, PANEL_SPLITTER_HEIGHT, PANEL_SPLITTER_HIT_PX,
+};
+use crate::chart::ticks::AXIS_DRAG_EDGE_GUARD;
+use crate::widget::chart::Regions;
+use iced::advanced::Layout;
+use iced::{Point, Rectangle};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum LayoutHitZone {
+    PanelPlot(usize),
+    PanelXAxis(usize),
+    BottomXAxis,
+    YAxis(usize),
+    Splitter(usize),
+    Outside,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct PanelLayoutNode {
+    pub(super) kind: KlinePanelKind,
+    pub(super) plot: Rectangle,
+    pub(super) y_axis: Rectangle,
+    pub(super) x_axis: Rectangle,
+}
+
+impl PanelLayoutNode {
+    pub(super) fn y_axis_label_y(&self, y: f32, text_size: f32) -> f32 {
+        let inset = (text_size * 0.6).min(self.y_axis.height / 2.0);
+        y.clamp(
+            self.y_axis.y + inset,
+            self.y_axis.y + self.y_axis.height - inset,
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct PanelLayoutTree {
+    pub(super) regions: Regions,
+    pub(super) panels: Vec<PanelLayoutNode>,
+    pub(super) splitters: Vec<Rectangle>,
+}
+
+impl PanelLayoutTree {
+    fn child_at(layout: Layout<'_>, index: usize) -> Option<Layout<'_>> {
+        (index < layout.children().len()).then(|| layout.child(index))
+    }
+
+    pub(super) fn from_layout(root: Layout<'_>, panels_spec: &[PanelSpec]) -> Option<Self> {
+        let panel_count = panels_spec.len().max(1);
+
+        let regions = Regions::from_layout(root);
+
+        let row = Self::child_at(root, 0)?;
+        let panels = Self::child_at(row, 0)?;
+
+        let panels_bounds = panels.bounds();
+        let to_plot_local = |r: Rectangle| Rectangle {
+            x: r.x - panels_bounds.x,
+            y: r.y - panels_bounds.y,
+            width: r.width,
+            height: r.height,
+        };
+
+        let panel_kind_for_index =
+            |index: usize| match panels_spec.get(index).map(|panel| panel.role) {
+                Some(PanelRole::Primary) => KlinePanelKind::PrimaryChart,
+                Some(PanelRole::Auxiliary) => KlinePanelKind::Indicator,
+                None if index == 0 => KlinePanelKind::PrimaryChart,
+                None => KlinePanelKind::Indicator,
+            };
+
+        let mut cursor = 0usize;
+        let mut panel_nodes = Vec::with_capacity(panel_count);
+        let mut splitters = Vec::with_capacity(panel_count.saturating_sub(1));
+
+        for index in 0..panel_count {
+            let plot = to_plot_local(Self::child_at(panels, cursor)?.bounds());
+            cursor += 1;
+
+            let x_axis = to_plot_local(Self::child_at(panels, cursor)?.bounds());
+            cursor += 1;
+
+            panel_nodes.push(PanelLayoutNode {
+                kind: panel_kind_for_index(index),
+                plot,
+                y_axis: Rectangle {
+                    x: 0.0,
+                    y: plot.y,
+                    width: regions.y_axis.width,
+                    height: plot.height,
+                },
+                x_axis,
+            });
+
+            if index + 1 < panel_count {
+                splitters.push(to_plot_local(Self::child_at(panels, cursor)?.bounds()));
+                cursor += 1;
+            }
+        }
+
+        Some(Self {
+            regions,
+            panels: panel_nodes,
+            splitters,
+        })
+    }
+
+    pub(super) fn panel(&self, index: usize) -> Option<&PanelLayoutNode> {
+        self.panels.get(index)
+    }
+
+    pub(super) fn contains(rect: Rectangle, p: Point) -> bool {
+        p.x >= rect.x && p.x <= rect.x + rect.width && p.y >= rect.y && p.y <= rect.y + rect.height
+    }
+
+    pub(super) fn plot_local_point(&self, root_local: Point) -> Option<Point> {
+        self.regions.is_in_plot(root_local).then_some(Point::new(
+            root_local.x - self.regions.plot.x,
+            root_local.y - self.regions.plot.y,
+        ))
+    }
+
+    fn splitter_hit_rect(splitter: Rectangle) -> Rectangle {
+        let hit_h = PANEL_SPLITTER_HIT_PX;
+        let center_y = splitter.y + splitter.height * 0.5;
+
+        Rectangle {
+            x: splitter.x,
+            y: center_y - hit_h * 0.5,
+            width: splitter.width,
+            height: hit_h,
+        }
+    }
+
+    pub(super) fn hit_test(&self, root_local: Point) -> LayoutHitZone {
+        if self.regions.is_in_y_axis(root_local) {
+            let panel_local_y = root_local.y - self.regions.plot.y;
+
+            for (index, panel) in self.panels.iter().enumerate() {
+                let top = panel.plot.y.min(panel.x_axis.y);
+                let bottom =
+                    (panel.plot.y + panel.plot.height).max(panel.x_axis.y + panel.x_axis.height);
+
+                if panel_local_y >= top && panel_local_y <= bottom {
+                    return LayoutHitZone::YAxis(index);
+                }
+            }
+
+            if let Some(last_index) = self.panels.len().checked_sub(1) {
+                return LayoutHitZone::YAxis(last_index);
+            }
+
+            return LayoutHitZone::Outside;
+        }
+
+        if self.regions.is_in_x_axis(root_local) {
+            if Self::contains(self.regions.x_axis.shrink(AXIS_DRAG_EDGE_GUARD), root_local) {
+                return LayoutHitZone::BottomXAxis;
+            }
+
+            return LayoutHitZone::Outside;
+        }
+
+        let Some(plot_local) = self.plot_local_point(root_local) else {
+            return LayoutHitZone::Outside;
+        };
+
+        for (index, splitter) in self.splitters.iter().copied().enumerate() {
+            if Self::contains(Self::splitter_hit_rect(splitter), plot_local) {
+                return LayoutHitZone::Splitter(index);
+            }
+        }
+
+        for (index, panel) in self.panels.iter().enumerate() {
+            if Self::contains(panel.plot, plot_local) {
+                return LayoutHitZone::PanelPlot(index);
+            }
+
+            if panel.x_axis.height > 0.0
+                && Self::contains(panel.x_axis.shrink(AXIS_DRAG_EDGE_GUARD), plot_local)
+            {
+                return LayoutHitZone::PanelXAxis(index);
+            }
+        }
+
+        LayoutHitZone::Outside
+    }
+}
+
+impl<'a, S> KlineWidget<'a, S>
+where
+    S: KlineSeriesLike,
+{
+    pub(super) fn panel_plot_heights(
+        &self,
+        panel_stack_height: f32,
+        panel_count: usize,
+    ) -> Vec<f32> {
+        if panel_count == 0 {
+            return Vec::new();
+        }
+
+        let non_plot = panel_count.saturating_sub(1) as f32 * PANEL_SPLITTER_HEIGHT;
+        let usable = (panel_stack_height - non_plot).max(0.0);
+
+        if panel_count == 1 {
+            return vec![usable];
+        }
+
+        let mut splits = self.normalized_panel_splits();
+        let split_count = panel_count.saturating_sub(1);
+
+        if splits.len() > split_count {
+            splits.truncate(split_count);
+        }
+
+        for index in splits.len()..split_count {
+            let fallback = (index + 1) as f32 / panel_count as f32;
+            splits.push(fallback);
+        }
+
+        let mut heights = Vec::with_capacity(panel_count);
+        let mut previous = 0.0;
+
+        for split in splits {
+            let boundary = split.clamp(0.0, 1.0) * usable;
+            heights.push((boundary - previous).max(0.0));
+            previous = boundary;
+        }
+
+        heights.push((usable - previous).max(0.0));
+        heights
+    }
+
+    pub(super) fn split_ratio_from_cursor(
+        &self,
+        cursor_y: f32,
+        layout: &PanelLayoutTree,
+        split_index: usize,
+    ) -> Option<f32> {
+        let panel_count = layout.panels.len();
+        let split_count = panel_count.saturating_sub(1);
+
+        if split_count == 0 || split_index >= split_count {
+            return None;
+        }
+
+        let local_y = (cursor_y - layout.regions.plot.y).clamp(0.0, layout.regions.plot.height);
+        let usable_plot_height: f32 = layout.panels.iter().map(|panel| panel.plot.height).sum();
+        let usable = usable_plot_height.max(1.0);
+
+        let fixed_before =
+            (split_index as f32 * PANEL_SPLITTER_HEIGHT) + (PANEL_SPLITTER_HEIGHT * 0.5);
+        let boundary = (local_y - fixed_before).clamp(0.0, usable);
+
+        Some((boundary / usable).clamp(0.0, 1.0))
+    }
+}

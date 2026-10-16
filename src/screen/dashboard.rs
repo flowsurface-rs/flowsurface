@@ -624,6 +624,7 @@ impl Dashboard {
         main_window: &'a Window,
         tickers_table: &'a TickersTable,
         timezone: UserTimezone,
+        horizontal_pixel_ratio: f32,
     ) -> Element<'a, Message> {
         let pane_grid: Element<_> = PaneGrid::new(&self.panes, |id, pane, maximized| {
             let is_focused = self.focus == Some((main_window.id, id));
@@ -635,6 +636,7 @@ impl Dashboard {
                 main_window.id,
                 main_window,
                 timezone,
+                horizontal_pixel_ratio,
                 tickers_table,
             )
         })
@@ -655,6 +657,7 @@ impl Dashboard {
         main_window: &'a Window,
         tickers_table: &'a TickersTable,
         timezone: UserTimezone,
+        horizontal_pixel_ratio: f32,
     ) -> Element<'a, Message> {
         if let Some((state, _)) = self.popout.get(&window) {
             let content = container(
@@ -668,6 +671,7 @@ impl Dashboard {
                         window,
                         main_window,
                         timezone,
+                        horizontal_pixel_ratio,
                         tickers_table,
                     )
                 })
@@ -1002,8 +1006,8 @@ impl Dashboard {
                 if let Some(pane_state) = self.get_mut_pane_state_by_uuid(main_window, pane_id) {
                     pane_state.status = pane::Status::Ready;
 
-                    if let StreamKind::Kline { .. } = stream_type {
-                        pane_state.insert_hist_oi(req_id, &data);
+                    if let StreamKind::Kline { ticker_info, .. } = stream_type {
+                        pane_state.insert_hist_oi(req_id, ticker_info, &data);
                     }
                 }
             }
@@ -1072,6 +1076,10 @@ impl Dashboard {
                     match &mut pane_state.content {
                         pane::Content::Kline { chart: Some(c), .. } => {
                             c.update_latest_kline(kline);
+                        }
+                        pane::Content::KlineV2 { chart: Some(c) } => {
+                            let ticker_info = stream.ticker_info();
+                            c.update_latest_kline(&ticker_info, kline);
                         }
                         pane::Content::Comparison(Some(c)) => {
                             c.update_latest_kline(&stream.ticker_info(), kline);
@@ -1160,6 +1168,9 @@ impl Dashboard {
                             if let Some(c) = chart {
                                 c.insert_trades(buffer);
                             }
+                        }
+                        pane::Content::KlineV2 { chart: Some(c) } => {
+                            c.insert_trades(&stream.ticker_info(), buffer);
                         }
                         pane::Content::TimeAndSales(panel) => {
                             if let Some(p) = panel {

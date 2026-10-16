@@ -1,3 +1,4 @@
+use chrono::{DateTime, Datelike, Timelike};
 use serde::{Deserialize, Deserializer};
 
 const DAY_MS: u64 = 86_400_000;
@@ -199,6 +200,25 @@ pub fn round_125(v: f64) -> f64 {
         10.0
     };
     mult * base
+}
+
+pub fn reset_to_start_of_day_utc(dt: DateTime<chrono::Utc>) -> DateTime<chrono::Utc> {
+    dt.with_hour(0)
+        .unwrap_or(dt)
+        .with_minute(0)
+        .unwrap_or(dt)
+        .with_second(0)
+        .unwrap_or(dt)
+        .with_nanosecond(0)
+        .unwrap_or(dt)
+}
+
+pub fn reset_to_start_of_month_utc(dt: DateTime<chrono::Utc>) -> DateTime<chrono::Utc> {
+    reset_to_start_of_day_utc(dt.with_day(1).unwrap_or(dt))
+}
+
+pub fn reset_to_start_of_year_utc(dt: DateTime<chrono::Utc>) -> DateTime<chrono::Utc> {
+    reset_to_start_of_month_utc(dt.with_month(1).unwrap_or(dt))
 }
 
 /// Shrinks main panel if needed when adding a new panel.
