@@ -6,11 +6,12 @@ use super::{
 use crate::{widget::chart::heatmap::view::TimeView, window::PixelRatio};
 use data::chart::{
     heatmap::indicators::{HeatmapIndicator, HeatmapIndicators},
-    kline::viewport::{
-        PanelYValueRange, PanelYViewportLimits, ZOOM_SENSITIVITY, autoscale_span_limits,
+    kline::{
+        composition::PanelScaleMode,
+        viewport::{PanelValueScale, PanelYValueRange, PanelYViewportLimits, YUnit, YUnitRange},
     },
 };
-use exchange::{UnixMs, unit::MinTicksize};
+use exchange::{TickerInfo, UnixMs, unit::MinTicksize};
 use iced::wgpu::util::DeviceExt;
 use iced::{Rectangle, Theme, wgpu, widget::shader};
 use rustc_hash::FxHashMap;
@@ -48,9 +49,30 @@ struct Prepared {
 }
 
 impl Prepared {
-    fn range(&self) -> Option<PanelYValueRange> {
-        self.manual_range
-            .or_else(|| PanelYValueRange::normalized(0.0, self.max?))
+    fn autoscale_range(&self, scale: PanelValueScale) -> Option<PanelYValueRange> {
+        let (_, max) =
+            PanelScaleMode::FitVisible.indicator_domain_units(0, scale.value_to_unit(self.max?).0);
+        PanelYValueRange::from_units(YUnitRange::new(YUnit(0), max), scale)
+    }
+
+    fn viewport_limits(
+        &self,
+        scale: PanelValueScale,
+        physical_height: f64,
+    ) -> Option<PanelYViewportLimits> {
+        PanelYViewportLimits::for_scale(
+            scale,
+            self.autoscale_range(scale).or(self.manual_range)?.span(),
+            physical_height,
+        )
+    }
+
+    fn range(&self, scale: PanelValueScale, physical_height: f64) -> Option<PanelYValueRange> {
+        if let Some(range) = self.manual_range {
+            self.viewport_limits(scale, physical_height)?.apply(range)
+        } else {
+            self.autoscale_range(scale)
+        }
     }
 }
 
@@ -71,8 +93,15 @@ impl Default for Panel {
 }
 
 impl Panel {
-    pub fn range(&self) -> Option<PanelYValueRange> {
-        self.prepared.borrow().range()
+    pub fn range(
+        &self,
+        scale: PanelValueScale,
+        height: f32,
+        pixel_ratio: PixelRatio,
+    ) -> Option<PanelYValueRange> {
+        self.prepared
+            .borrow()
+            .range(scale, f64::from(height) * f64::from(pixel_ratio.value()))
     }
 
     pub fn set_range(&mut self, range: Option<PanelYValueRange>) {
@@ -86,32 +115,12 @@ impl Panel {
         delta: f32,
         height: f32,
         pixel_ratio: PixelRatio,
+        scale: PanelValueScale,
     ) -> Option<PanelYValueRange> {
-        if !delta.is_finite() {
-            return None;
-        }
-        let autoscale_span = self.prepared.borrow().max?;
-        let (min_span, max_span) = autoscale_span_limits(
-            autoscale_span,
-            f64::from(height) * f64::from(pixel_ratio.value()),
-            (autoscale_span * 1e-6).max(8e-8),
-        )?;
-        let scale = (f64::from(delta.abs()) / f64::from(ZOOM_SENSITIVITY))
-            .min(f64::MAX.ln())
-            .exp();
-        let scale_limit = if delta > 0.0 {
-            initial.span() / min_span
-        } else {
-            max_span / initial.span()
-        };
-        let scale = scale.min(scale_limit.max(1.0));
-        let range = initial.zoom_around_ratio(anchor_ratio, scale, delta > 0.0)?;
-        PanelYViewportLimits {
-            min_span,
-            max_span,
-            bounds: (f64::from(f32::MIN), f64::from(f32::MAX)),
-        }
-        .apply(range)
+        self.prepared
+            .borrow()
+            .viewport_limits(scale, f64::from(height) * f64::from(pixel_ratio.value()))?
+            .zoom(initial, anchor_ratio, delta)
     }
 
     pub fn prepare(
@@ -120,10 +129,13 @@ impl Panel {
         kind: HeatmapIndicator,
         time: TimeView<'_>,
         bounds: Rectangle,
-        tick: MinTicksize,
+        ticker: TickerInfo,
         theme: &Theme,
         pixel_ratio: PixelRatio,
     ) -> (Primitive, Option<PanelYValueRange>) {
+        let tick = ticker.min_ticksize;
+        let scale = kind.value_scale(indicators.config(), ticker);
+
         let pixels_per_bucket = time.column_world * time.camera.scale();
         let min_group_pixels = 3.0;
         let buckets = (min_group_pixels
@@ -212,7 +224,8 @@ impl Panel {
                 .iter()
                 .flat_map(|group| group.means)
                 .reduce(f64::max);
-            prepared.max = max.map(|max| max + (max * 0.05).max(0.000_001));
+            prepared.max = max.map(|max| max.max(f64::EPSILON));
+
             let mut instances = Vec::with_capacity(prepared.groups.len());
             if let Some(max) = prepared.max {
                 for group in &prepared.groups {
@@ -254,7 +267,11 @@ impl Panel {
         camera.b[1] = bounds.height;
         camera.b[2] = pixel_ratio.value();
         camera.b[3] = bounds.x;
-        let range = prepared.range();
+
+        let range = prepared.range(
+            scale,
+            f64::from(bounds.height) * f64::from(pixel_ratio.value()),
+        );
         let normalization_max = prepared.max.unwrap_or(1.0);
         if let Some(range) = range {
             camera.a[1] = (f64::from(bounds.height) * normalization_max / range.span()) as f32;

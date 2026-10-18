@@ -22,7 +22,7 @@ pub(super) use chrome::{
     PANEL_TITLE_TO_CONTROLS_GAP, legend_background_color, legend_row_background,
 };
 pub use chrome::{StudiesLegend, StudyLegendRow};
-pub(super) use layout::panel_plot_heights;
+pub(super) use layout::{panel_plot_heights, place_non_overlapping_labels};
 
 use crate::widget::chart::kline::chrome::PreparedPanelControls;
 use crate::{style, theme::ThemeState, window::PixelRatio};

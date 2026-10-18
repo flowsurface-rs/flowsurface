@@ -13,8 +13,10 @@ use crate::widget::chart::heatmap::ui::overlay::OverlayCanvas;
 
 use crate::widget::chart::{PANEL_SPLITTER_HEIGHT, panel_splitter_hit_bounds};
 use crate::window::PixelRatio;
-use data::chart::heatmap::indicators::HeatmapIndicators;
+use data::chart::heatmap::indicators::{HeatmapIndicator, HeatmapIndicators};
+use data::chart::kline::viewport::PanelValueScale;
 use data::chart::kline::viewport::PanelYValueRange;
+use exchange::TickerInfo;
 use iced::advanced::widget::tree::{self, Tree};
 use iced::advanced::{Clipboard, Layout, Shell, Widget, layout, renderer};
 use iced::widget::shader::Program;
@@ -72,6 +74,7 @@ pub struct HeatmapShaderWidget<'a> {
     y_axis_gutter: Length,
     x_axis_height: Length,
     indicators: &'a HeatmapIndicators,
+    ticker_info: TickerInfo,
     indicator_panels: &'a [scene::indicator::Panel; 2],
     pixel_ratio: PixelRatio,
 }
@@ -83,12 +86,14 @@ impl<'a> HeatmapShaderWidget<'a> {
         y_axis: AxisYLabelCanvas<'a>,
         overlay: OverlayCanvas<'a>,
         indicators: &'a HeatmapIndicators,
+        ticker_info: TickerInfo,
         indicator_panels: &'a [scene::indicator::Panel; 2],
         pixel_ratio: PixelRatio,
     ) -> Self {
         Self {
             scene,
             indicators,
+            ticker_info,
             indicator_panels,
             pixel_ratio,
             x_axis,
@@ -97,6 +102,10 @@ impl<'a> HeatmapShaderWidget<'a> {
             y_axis_gutter: DEFAULT_Y_AXIS_GUTTER,
             x_axis_height: DEFAULT_X_AXIS_HEIGHT,
         }
+    }
+
+    fn indicator_value_scale(&self, index: usize) -> PanelValueScale {
+        HeatmapIndicator::ALL[index].value_scale(self.indicators.config(), self.ticker_info)
     }
 
     fn indicator_axis_at(
@@ -400,6 +409,7 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
                             delta,
                             bounds.height,
                             self.pixel_ratio,
+                            self.indicator_value_scale(*index),
                         ) {
                             shell.publish(Message::IndicatorYRangeChanged {
                                 index: *index,
@@ -432,7 +442,11 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
                     if click.kind() == click::Kind::Double {
                         state.panel_drag = None;
                         shell.publish(Message::IndicatorYRangeChanged { index, range: None });
-                    } else if let Some(initial_range) = self.indicator_panels[index].range() {
+                    } else if let Some(initial_range) = self.indicator_panels[index].range(
+                        self.indicator_value_scale(index),
+                        bounds.height,
+                        self.pixel_ratio,
+                    ) {
                         state.panel_drag = Some(PanelDrag::IndicatorY {
                             index,
                             origin: position,
@@ -481,13 +495,18 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
                 let panel = &self.indicator_panels[index];
 
                 if delta.abs() > f32::EPSILON
-                    && let Some(initial) = panel.range()
+                    && let Some(initial) = panel.range(
+                        self.indicator_value_scale(index),
+                        bounds.height,
+                        self.pixel_ratio,
+                    )
                     && let Some(range) = panel.zoom_range(
                         initial,
                         f64::from(1.0 - (position.y - bounds.y) / bounds.height.max(1.0)),
                         delta,
                         bounds.height,
                         self.pixel_ratio,
+                        self.indicator_value_scale(index),
                     )
                 {
                     shell.publish(Message::IndicatorYRangeChanged {
@@ -693,7 +712,7 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
                     kind,
                     x_axis.time,
                     plot,
-                    self.y_axis.label_precision,
+                    self.ticker_info,
                     theme,
                     self.pixel_ratio,
                 );
@@ -710,7 +729,7 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
                     plot_width: plot_bounds.width,
                     cursor_time,
                     range,
-                    min_ticksize: self.y_axis.label_precision,
+                    ticker_info: self.ticker_info,
                 };
                 renderer.with_layer(bounds, |renderer| {
                     renderer.with_translation(Vector::new(bounds.x, bounds.y), |renderer| {

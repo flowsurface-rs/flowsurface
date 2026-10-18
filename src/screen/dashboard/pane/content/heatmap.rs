@@ -369,6 +369,7 @@ impl HeatmapShader {
             y_axis,
             overlay,
             &self.indicators,
+            self.ticker_info,
             &self.indicator_panels,
             pixel_ratio,
         )

@@ -1,5 +1,6 @@
 use super::AXIS_TEXT_SIZE;
 use crate::widget::chart;
+use crate::widget::chart::kline::place_non_overlapping_labels;
 use crate::{
     style,
     widget::chart::{
@@ -10,14 +11,8 @@ use crate::{
 use data::{
     chart::heatmap::indicators::{HeatmapIndicator, HeatmapIndicators, SpreadUnit},
     chart::kline::viewport::PanelYValueRange,
-    chart::ticks::{
-        Y_LABEL_DENSITY,
-        y::{TickValue, YAxisScale},
-        y_labels_that_fit,
-    },
-    util::abbr_large_numbers,
 };
-use exchange::{UnixMs, unit::MinTicksize};
+use exchange::{TickerInfo, UnixMs};
 use iced::{Point, Rectangle, Renderer, Size, Theme, mouse, widget::canvas};
 
 pub struct IndicatorCanvas<'a> {
@@ -27,25 +22,7 @@ pub struct IndicatorCanvas<'a> {
     pub plot_width: f32,
     pub cursor_time: Option<UnixMs>,
     pub range: Option<PanelYValueRange>,
-    pub min_ticksize: MinTicksize,
-}
-
-impl IndicatorCanvas<'_> {
-    fn format_value(&self, value: f64) -> String {
-        match self.kind {
-            HeatmapIndicator::Spread => {
-                let formatted = format!("{value:.3}");
-                match self.indicators.config().spread_unit {
-                    SpreadUnit::Bps => formatted,
-                    SpreadUnit::Ticks => formatted
-                        .trim_end_matches('0')
-                        .trim_end_matches('.')
-                        .to_owned(),
-                }
-            }
-            HeatmapIndicator::Depth => abbr_large_numbers(value),
-        }
-    }
+    pub ticker_info: TickerInfo,
 }
 
 impl canvas::Program<Message> for IndicatorCanvas<'_> {
@@ -67,13 +44,19 @@ impl canvas::Program<Message> for IndicatorCanvas<'_> {
         let mut frame = canvas::Frame::new(renderer, bounds.size());
         let channels: Vec<_> = self
             .indicators
-            .channels(self.kind, self.min_ticksize)
+            .channels(self.kind, self.ticker_info.min_ticksize)
             .collect();
         let latest_time = UnixMs::new(
             (self.time.latest_bucket.max(0) as u64).saturating_mul(self.time.interval_ms),
         );
+
+        let scale = self
+            .kind
+            .value_scale(self.indicators.config(), self.ticker_info);
+        let label_policy = self.kind.value_label_policy();
         let top = 0.0;
         let bottom = bounds.height;
+
         let title = match self.kind {
             HeatmapIndicator::Spread => {
                 let unit = match self.indicators.config().spread_unit {
@@ -115,8 +98,14 @@ impl canvas::Program<Message> for IndicatorCanvas<'_> {
                 .then(|| channel.value_at(readout_time))
                 .flatten();
             let value = value
-                .map(|value| self.format_value(value))
+                .map(|value| {
+                    label_policy.format_header_value(
+                        || scale.quantize_value(value),
+                        || scale.format_compact(value, 0.01, label_policy.max_decimals),
+                    )
+                })
                 .unwrap_or_else(|| "n/a".to_owned());
+
             end_x = x + value.chars().count() as f32 * chart::LEGEND_CHAR_WIDTH;
             text.push((value, x));
             x = end_x + chart::LEGEND_READOUT_GAP;
@@ -155,11 +144,24 @@ impl canvas::Program<Message> for IndicatorCanvas<'_> {
                 }
             },
         );
-        let cursor_y = cursor
+
+        let cursor_position = cursor
             .position_in(bounds)
-            .filter(|position| position.x < self.plot_width)
-            .map(|position| (position.y.round() + 0.5).clamp(top, bottom));
+            .filter(|position| position.x < self.plot_width);
+        let cursor_value = cursor_position.zip(self.range).map(|(position, range)| {
+            let ratio = f64::from((bottom - position.y) / (bottom - top));
+            scale.quantize_value(range.min_value() + range.span() * ratio)
+        });
+        let cursor_y = cursor_value
+            .zip(self.range)
+            .map(|(value, range)| {
+                (bottom - ((value - range.min_value()) / range.span()) as f32 * (bottom - top))
+                    .clamp(top, bottom)
+            })
+            .or_else(|| cursor_position.map(|position| position.y));
+
         if let Some(y) = cursor_y {
+            let y = (y.round() + 0.5).clamp(top, bottom);
             frame.with_clip(
                 Rectangle::with_size(Size::new(self.plot_width, bounds.height)),
                 |frame| {
@@ -172,24 +174,21 @@ impl canvas::Program<Message> for IndicatorCanvas<'_> {
         }
 
         if let Some(range) = self.range {
-            let min = range.min_value();
-            let max = range.max_value();
             let badge_height = AXIS_TEXT_SIZE + 6.0;
             let badge_top = cursor_y.map(|y| {
                 (y - badge_height * 0.5).clamp(0.0, (bounds.height - badge_height).max(0.0))
             });
-            let ticks = YAxisScale::Linear.ticks(
-                min,
-                max,
-                y_labels_that_fit(bottom - top, AXIS_TEXT_SIZE, Y_LABEL_DENSITY).max(2) as i32,
-            );
+
+            let labels = range.axis_labels(scale, label_policy, top, bounds.height, AXIS_TEXT_SIZE);
+            let centers: Vec<_> = labels.iter().map(|(_, y)| *y).collect();
+            let placements =
+                place_non_overlapping_labels(&centers, top, bottom, AXIS_TEXT_SIZE, 2.0);
             let label_inset = (AXIS_TEXT_SIZE * 0.6).min(bounds.height * 0.5);
-            for tick in ticks.ticks {
-                let TickValue::Float(value) = tick.value else {
-                    continue;
-                };
-                let y = (bottom - tick.ratio as f32 * (bottom - top))
-                    .clamp(label_inset, bounds.height - label_inset);
+
+            for ((content, _), placement) in labels.into_iter().zip(placements) {
+                let Some(y) = placement else { continue };
+                let y = y.clamp(label_inset, bounds.height - label_inset);
+
                 if badge_top.is_some_and(|badge_top| {
                     y + AXIS_TEXT_SIZE * 0.5 >= badge_top
                         && y - AXIS_TEXT_SIZE * 0.5 <= badge_top + badge_height
@@ -198,7 +197,7 @@ impl canvas::Program<Message> for IndicatorCanvas<'_> {
                 }
 
                 frame.fill_text(canvas::Text {
-                    content: self.format_value(value),
+                    content,
                     position: Point::new(self.plot_width + Y_AXIS_LABEL_LEFT_INSET, y),
                     color: palette.background.base.text,
                     size: AXIS_TEXT_SIZE.into(),
@@ -208,8 +207,8 @@ impl canvas::Program<Message> for IndicatorCanvas<'_> {
                     ..Default::default()
                 });
             }
-            if let Some((y, badge_top)) = cursor_y.zip(badge_top) {
-                let value = min + range.span() * f64::from((bottom - y) / (bottom - top));
+
+            if let Some((value, badge_top)) = cursor_value.zip(badge_top) {
                 frame.fill_rectangle(
                     Point::new(self.plot_width, badge_top),
                     Size::new((bounds.width - self.plot_width).max(0.0), badge_height),
@@ -217,7 +216,10 @@ impl canvas::Program<Message> for IndicatorCanvas<'_> {
                 );
 
                 frame.fill_text(canvas::Text {
-                    content: self.format_value(value),
+                    content: label_policy.format_axis_value(
+                        || scale.quantize_value(value),
+                        || scale.format_compact(value, 0.01, label_policy.max_decimals),
+                    ),
                     position: Point::new(
                         self.plot_width + Y_AXIS_LABEL_LEFT_INSET,
                         badge_top + badge_height * 0.5,

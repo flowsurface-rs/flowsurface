@@ -15,6 +15,8 @@ pub enum YAxisScale {
     /// Plain continuous linear scale (indicator values, etc.). Steps are
     /// "nice"; positions are linear.
     Linear,
+    /// Linear scale with tick values aligned to a positive step.
+    Quantized { step: f64 },
     /// Percentage scale (comparison chart). Shares the linear grid with
     /// [`YAxisScale::Linear`] for now, kept distinct so percent-specific step or
     /// formatting policy has a home.
@@ -162,14 +164,10 @@ pub struct FloatGrid {
 }
 
 impl FloatGrid {
-    /// Compute a plain f64 grid (no row alignment) for a range.
-    ///
-    /// Universal across charts: used for indicator axes and for non-price scales
-    /// (e.g. the comparison chart's percent domain), where there is no price row
-    /// to align to.
-    fn new(lowest: f64, highest: f64, labels_can_fit: i32) -> Self {
+    /// Compute a linear grid; a positive `min_step` aligns tick values to its multiples.
+    fn new(lowest: f64, highest: f64, labels_can_fit: i32, min_step: f64) -> Self {
         let span = highest - lowest;
-        if !span.is_finite() || span <= 0.0 {
+        if !span.is_finite() || span <= 0.0 || !min_step.is_finite() || min_step < 0.0 {
             return FloatGrid {
                 step: 0.0,
                 ticks: Vec::new(),
@@ -178,6 +176,11 @@ impl FloatGrid {
 
         let budget = labels_can_fit.max(1) as f64;
         let step = tick_span_min(0.0, span, span / budget, 0.0);
+        let step = if min_step > 0.0 {
+            (step / min_step).ceil().max(1.0) * min_step
+        } else {
+            step
+        };
 
         if !step.is_finite() || step <= 0.0 || step > span {
             return FloatGrid {
@@ -210,7 +213,7 @@ impl FloatGrid {
 pub enum TickValue {
     /// Exact atomic price units (for [`YAxisScale::Price`]).
     PriceUnits(i64),
-    /// Continuous float value (for [`YAxisScale::Linear`] and [`YAxisScale::Percent`])
+    /// Float value for linear, quantized, and percentage scales.
     Float(f64),
 }
 
@@ -258,7 +261,11 @@ impl YAxisScale {
                 row.map(YTicks::from_grid).unwrap_or_default()
             }
             YAxisScale::Linear | YAxisScale::Percent => {
-                let grid = Grid::Float(FloatGrid::new(lowest, highest, labels_can_fit));
+                let grid = Grid::Float(FloatGrid::new(lowest, highest, labels_can_fit, 0.0));
+                YTicks::from_grid(grid)
+            }
+            YAxisScale::Quantized { step } => {
+                let grid = Grid::Float(FloatGrid::new(lowest, highest, labels_can_fit, *step));
                 YTicks::from_grid(grid)
             }
         }

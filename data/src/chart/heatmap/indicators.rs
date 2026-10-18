@@ -1,7 +1,11 @@
+use crate::chart::kline::{
+    composition::{PanelValueLabelMode, PanelValueLabelPolicy, PanelValuePrecision},
+    viewport::PanelValueScale,
+};
 use exchange::{
-    Timeframe, UnixMs,
+    TickerInfo, Timeframe, UnixMs,
     depth::Depth,
-    unit::{MinTicksize, Price, Qty},
+    unit::{MinTicksize, Power10, Price, Qty},
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, ops::Bound};
@@ -14,6 +18,33 @@ pub enum HeatmapIndicator {
 
 impl HeatmapIndicator {
     pub const ALL: [Self; 2] = [Self::Spread, Self::Depth];
+
+    pub fn value_scale(
+        self,
+        config: &HeatmapIndicatorConfig,
+        ticker: TickerInfo,
+    ) -> PanelValueScale {
+        let precision = match self {
+            Self::Spread => match config.spread_unit {
+                SpreadUnit::Bps => PanelValuePrecision::FixedStep(0.001),
+                SpreadUnit::Ticks => PanelValuePrecision::FixedStep(1.0),
+            },
+            Self::Depth => PanelValuePrecision::FixedPower10(Power10::new(-Qty::QTY_SCALE as i8)),
+        };
+        PanelValueScale::new(Some(precision), Some(ticker))
+    }
+
+    pub fn value_label_policy(self) -> PanelValueLabelPolicy {
+        let mode = match self {
+            Self::Spread => PanelValueLabelMode::Compact,
+            Self::Depth => PanelValueLabelMode::Abbreviated,
+        };
+        PanelValueLabelPolicy {
+            axis_mode: mode,
+            header_mode: mode,
+            max_decimals: None,
+        }
+    }
 
     pub const fn index(self) -> usize {
         match self {
