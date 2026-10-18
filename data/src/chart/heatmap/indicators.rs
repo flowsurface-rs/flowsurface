@@ -299,83 +299,9 @@ struct Sample {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum IndicatorChannelKind {
-    Spread,
-    BidDepth,
-    AskDepth,
-}
-
-#[derive(Clone, Copy)]
-pub struct IndicatorChannel<'a> {
-    kind: IndicatorChannelKind,
-    samples: &'a BTreeMap<UnixMs, Sample>,
-    spread_unit: SpreadUnit,
-    min_ticksize: MinTicksize,
-}
-
-impl<'a> IndicatorChannel<'a> {
-    pub fn label(self) -> &'static str {
-        match self.kind {
-            IndicatorChannelKind::Spread => "Spread",
-            IndicatorChannelKind::BidDepth => "Bid",
-            IndicatorChannelKind::AskDepth => "Ask",
-        }
-    }
-
-    pub fn samples(
-        self,
-        start: UnixMs,
-        end: UnixMs,
-        interval_ms: u64,
-    ) -> impl Iterator<Item = (UnixMs, Option<f64>)> + 'a {
-        let interval_ms = interval_ms.max(1);
-        let start = start.as_u64() / interval_ms * interval_ms;
-        let end = end.as_u64();
-
-        let mut current = self.samples.range(..=UnixMs::new(start)).next_back();
-        let mut updates = self
-            .samples
-            .range((Bound::Excluded(UnixMs::new(start)), Bound::Unbounded))
-            .peekable();
-
-        // Project the last observed book onto chart buckets without inventing source timestamps.
-        std::iter::successors((start <= end).then_some(start), move |time| {
-            time.checked_add(interval_ms).filter(|next| *next <= end)
-        })
-        .map(move |time| {
-            let time = UnixMs::new(time);
-            while updates.peek().is_some_and(|(update, _)| **update <= time) {
-                current = updates.next();
-            }
-            (time, current.and_then(|(_, sample)| self.value(sample)))
-        })
-    }
-
-    pub fn value_at(self, time: UnixMs) -> Option<f64> {
-        self.samples
-            .range(..=time)
-            .next_back()
-            .and_then(|(_, sample)| self.value(sample))
-    }
-
-    fn value(self, sample: &Sample) -> Option<f64> {
-        match (self.kind, sample.value) {
-            (IndicatorChannelKind::Spread, Some(IndicatorValue::Spread { bid, ask })) => {
-                let gap = (ask.units - bid.units) as f64;
-                Some(match self.spread_unit {
-                    SpreadUnit::Bps => 20_000.0 * gap / (bid.units as f64 + ask.units as f64),
-                    SpreadUnit::Ticks => gap / Price::min_tick_units(self.min_ticksize) as f64,
-                })
-            }
-            (IndicatorChannelKind::BidDepth, Some(IndicatorValue::Depth { bid, .. })) => {
-                Some(bid.to_f64())
-            }
-            (IndicatorChannelKind::AskDepth, Some(IndicatorValue::Depth { ask, .. })) => {
-                Some(ask.to_f64())
-            }
-            _ => None,
-        }
-    }
+pub enum IndicatorValues {
+    Spread(f64),
+    Depth { bid: f64, ask: f64 },
 }
 
 pub struct HeatmapIndicators {
@@ -474,24 +400,65 @@ impl HeatmapIndicators {
         }
     }
 
-    pub fn channels(
+    pub fn samples(
         &self,
         kind: HeatmapPanel,
         min_ticksize: MinTicksize,
-    ) -> impl Iterator<Item = IndicatorChannel<'_>> {
-        let channels: &[IndicatorChannelKind] = match kind {
-            HeatmapPanel::Spread => &[IndicatorChannelKind::Spread],
-            HeatmapPanel::Depth => &[
-                IndicatorChannelKind::BidDepth,
-                IndicatorChannelKind::AskDepth,
-            ],
-        };
+        start: UnixMs,
+        end: UnixMs,
+        interval_ms: u64,
+    ) -> impl Iterator<Item = (UnixMs, Option<IndicatorValues>)> + '_ {
+        let interval_ms = interval_ms.max(1);
+        let start = start.as_u64() / interval_ms * interval_ms;
+        let end = end.as_u64();
         let samples = &self.samples[kind];
-        channels.iter().map(move |&channel| IndicatorChannel {
-            kind: channel,
-            samples,
-            spread_unit: self.config.spread_unit,
-            min_ticksize,
+
+        let mut current = samples.range(..=UnixMs::new(start)).next_back();
+        let mut updates = samples
+            .range((Bound::Excluded(UnixMs::new(start)), Bound::Unbounded))
+            .peekable();
+
+        // Project the last observed book onto chart buckets without inventing source timestamps.
+        std::iter::successors((start <= end).then_some(start), move |time| {
+            time.checked_add(interval_ms).filter(|next| *next <= end)
+        })
+        .map(move |time| {
+            let time = UnixMs::new(time);
+            while updates.peek().is_some_and(|(update, _)| **update <= time) {
+                current = updates.next();
+            }
+            (
+                time,
+                current.and_then(|(_, sample)| self.project(sample, min_ticksize)),
+            )
+        })
+    }
+
+    pub fn value_at(
+        &self,
+        kind: HeatmapPanel,
+        min_ticksize: MinTicksize,
+        time: UnixMs,
+    ) -> Option<IndicatorValues> {
+        self.samples[kind]
+            .range(..=time)
+            .next_back()
+            .and_then(|(_, sample)| self.project(sample, min_ticksize))
+    }
+
+    fn project(&self, sample: &Sample, min_ticksize: MinTicksize) -> Option<IndicatorValues> {
+        Some(match sample.value? {
+            IndicatorValue::Spread { bid, ask } => {
+                let gap = (ask.units - bid.units) as f64;
+                IndicatorValues::Spread(match self.config.spread_unit {
+                    SpreadUnit::Bps => 20_000.0 * gap / (bid.units as f64 + ask.units as f64),
+                    SpreadUnit::Ticks => gap / Price::min_tick_units(min_ticksize) as f64,
+                })
+            }
+            IndicatorValue::Depth { bid, ask } => IndicatorValues::Depth {
+                bid: bid.to_f64(),
+                ask: ask.to_f64(),
+            },
         })
     }
 }

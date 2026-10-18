@@ -9,7 +9,7 @@ use crate::{
     },
 };
 use data::{
-    chart::heatmap::indicators::{HeatmapIndicators, HeatmapPanel, SpreadUnit},
+    chart::heatmap::indicators::{HeatmapIndicators, HeatmapPanel, IndicatorValues, SpreadUnit},
     chart::kline::viewport::PanelYValueRange,
 };
 use exchange::{TickerInfo, UnixMs};
@@ -42,13 +42,24 @@ impl canvas::Program<Message> for IndicatorCanvas<'_> {
 
         let palette = theme.extended_palette();
         let mut frame = canvas::Frame::new(renderer, bounds.size());
-        let channels: Vec<_> = self
-            .indicators
-            .channels(self.kind, self.ticker_info.min_ticksize)
-            .collect();
         let latest_time = UnixMs::new(
             (self.time.latest_bucket.max(0) as u64).saturating_mul(self.time.interval_ms),
         );
+        let readout_time = self.cursor_time.unwrap_or(latest_time);
+        let values = (readout_time <= latest_time)
+            .then(|| {
+                self.indicators
+                    .value_at(self.kind, self.ticker_info.min_ticksize, readout_time)
+            })
+            .flatten();
+        let readouts = match (values, self.kind) {
+            (Some(IndicatorValues::Spread(value)), _) => vec![("Spread", Some(value))],
+            (Some(IndicatorValues::Depth { bid, ask }), _) => {
+                vec![("Bid", Some(bid)), ("Ask", Some(ask))]
+            }
+            (None, HeatmapPanel::Spread) => vec![("Spread", None)],
+            (None, HeatmapPanel::Depth) => vec![("Bid", None), ("Ask", None)],
+        };
 
         let scale = self
             .kind
@@ -77,13 +88,13 @@ impl canvas::Program<Message> for IndicatorCanvas<'_> {
         let mut text = vec![(title, chart::LEGEND_LEFT_PAD)];
         let mut x = end_x + chart::LEGEND_TITLE_GAP;
 
-        for channel in &channels {
+        for (label, value) in readouts {
             if x >= self.plot_width - chart::LEGEND_PADDING {
                 break;
             }
 
             if self.kind == HeatmapPanel::Depth {
-                let label = channel.label().to_owned();
+                let label = label.to_owned();
                 end_x = x + label.chars().count() as f32 * chart::LEGEND_CHAR_WIDTH;
                 text.push((label, x));
                 x = end_x + chart::LEGEND_LABEL_VALUE_GAP;
@@ -93,10 +104,6 @@ impl canvas::Program<Message> for IndicatorCanvas<'_> {
                 break;
             }
 
-            let readout_time = self.cursor_time.unwrap_or(latest_time);
-            let value = (readout_time <= latest_time)
-                .then(|| channel.value_at(readout_time))
-                .flatten();
             let value = value
                 .map(|value| {
                     label_policy.format_header_value(

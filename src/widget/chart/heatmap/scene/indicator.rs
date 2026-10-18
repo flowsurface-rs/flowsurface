@@ -5,7 +5,7 @@ use super::{
 };
 use crate::{widget::chart::heatmap::view::TimeView, window::PixelRatio};
 use data::chart::{
-    heatmap::indicators::{HeatmapIndicators, HeatmapPanel},
+    heatmap::indicators::{HeatmapIndicators, HeatmapPanel, IndicatorValues},
     kline::{
         composition::PanelScaleMode,
         viewport::{PanelValueScale, PanelYValueRange, PanelYViewportLimits, YUnit, YUnitRange},
@@ -179,25 +179,12 @@ impl Panel {
                     .saturating_mul(time.interval_ms),
             );
 
-            let mut channels = indicators.channels(kind, tick);
-            let first_channel = channels.next().expect("indicator has an output channel");
-            let second_channel = channels.next();
-            let mut second =
-                second_channel.map(|channel| channel.samples(start, end, time.interval_ms));
-
-            for (timestamp, value) in first_channel.samples(start, end, time.interval_ms) {
-                let second_value = second
-                    .as_mut()
-                    .and_then(|samples| samples.next())
-                    .and_then(|(_, value)| value);
-                let Some(value) = value else { continue };
-
-                let values = match kind {
-                    HeatmapPanel::Spread => [value, 0.0],
-                    HeatmapPanel::Depth => {
-                        let Some(ask) = second_value else { continue };
-                        [value, ask]
-                    }
+            for (timestamp, values) in indicators.samples(kind, tick, start, end, time.interval_ms)
+            {
+                let values = match values {
+                    Some(IndicatorValues::Spread(value)) => [value, 0.0],
+                    Some(IndicatorValues::Depth { bid, ask }) => [bid, ask],
+                    None => continue,
                 };
 
                 let bucket = timestamp.as_u64() / time.interval_ms / buckets * buckets;
