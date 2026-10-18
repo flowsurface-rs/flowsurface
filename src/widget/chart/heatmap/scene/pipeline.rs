@@ -4,7 +4,7 @@ pub mod rectangle;
 use super::HeatmapColumnCpu;
 use super::camera::CameraUniform;
 use super::drain_dropped_scene_ids;
-use super::uniform::ParamsUniform;
+use super::uniform::{GpuUniforms, ParamsUniform};
 use circle::{CIRCLE_INDICES, CIRCLE_VERTICES, CircleInstance};
 use rectangle::{RECT_INDICES, RECT_VERTICES, RectInstance};
 
@@ -32,8 +32,6 @@ const HEATMAP_SHADER_SRC: &str = concat!(
 
 mod bind {
     pub const CAMERA_GROUP: u32 = 0;
-    pub const CAMERA_BINDING: u32 = 0;
-    pub const PARAMS_BINDING: u32 = 1;
 
     pub const HEATMAP_GROUP: u32 = 1;
     pub const HEATMAP_TEX_BINDING: u32 = 0;
@@ -92,20 +90,13 @@ struct PerSceneGpu {
     circle_instance_capacity: usize,
     circle_uploaded_gen: u64,
 
-    camera_buffer: wgpu::Buffer,
-    params_buffer: wgpu::Buffer,
-    camera_bind_group: wgpu::BindGroup,
+    uniforms: GpuUniforms,
 
     heatmap_tex: wgpu::Texture,
     heatmap_view: wgpu::TextureView,
     heatmap_tex_bind_group: wgpu::BindGroup,
     heatmap_tex_size: (u32, u32),
     heatmap_uploaded_gen: u64,
-
-    last_camera: CameraUniform,
-    has_last_camera: bool,
-    last_params: ParamsUniform,
-    has_last_params: bool,
 }
 
 pub struct Pipeline {
@@ -170,7 +161,7 @@ impl Pipeline {
         });
 
         // -- bind groups
-        let camera_bind_group_layout = rectangle::bind_group_layout(device);
+        let camera_bind_group_layout = GpuUniforms::bind_group_layout(device);
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("heatmap pipeline layout"),
@@ -348,21 +339,9 @@ impl Pipeline {
         queue: &wgpu::Queue,
         params: &ParamsUniform,
     ) {
-        let gpu = self.ensure_scene(id, device);
-
-        if gpu.has_last_params && bytemuck::bytes_of(&gpu.last_params) == bytemuck::bytes_of(params)
-        {
-            return;
-        }
-
-        queue.write_buffer(
-            &gpu.params_buffer,
-            0,
-            bytemuck::cast_slice(std::slice::from_ref(params)),
-        );
-
-        gpu.last_params = *params;
-        gpu.has_last_params = true;
+        self.ensure_scene(id, device)
+            .uniforms
+            .update_params(queue, params);
     }
 
     fn ensure_scene(&mut self, id: u64, device: &wgpu::Device) -> &mut PerSceneGpu {
@@ -383,35 +362,15 @@ impl Pipeline {
                 mapped_at_creation: false,
             });
 
-            let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Camera Buffer"),
-                contents: bytemuck::cast_slice(&[CameraUniform {
+            let uniforms = GpuUniforms::new(
+                device,
+                &self.camera_bind_group_layout,
+                CameraUniform {
                     a: [1.0, 1.0, 0.0, 0.0],
                     b: [1.0, 1.0, 0.0, 0.0],
-                }]),
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            });
-
-            let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Params Buffer"),
-                contents: bytemuck::cast_slice(&[ParamsUniform::default()]),
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            });
-
-            let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                layout: &self.camera_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: bind::CAMERA_BINDING,
-                        resource: camera_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: bind::PARAMS_BINDING,
-                        resource: params_buffer.as_entire_binding(),
-                    },
-                ],
-                label: Some("camera+params bind group"),
-            });
+                },
+                ParamsUniform::default(),
+            );
 
             let heatmap_tex = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("heatmap tex (init)"),
@@ -447,23 +406,13 @@ impl Pipeline {
                 circle_instance_capacity,
                 circle_uploaded_gen: 0,
 
-                camera_buffer,
-                params_buffer,
-                camera_bind_group,
+                uniforms,
 
                 heatmap_tex,
                 heatmap_view,
                 heatmap_tex_bind_group,
                 heatmap_tex_size: (1, 1),
                 heatmap_uploaded_gen: 0,
-
-                last_camera: CameraUniform {
-                    a: [1.0, 1.0, 0.0, 0.0],
-                    b: [1.0, 1.0, 0.0, 0.0],
-                },
-                has_last_camera: false,
-                last_params: ParamsUniform::default(),
-                has_last_params: false,
             }
         })
     }
@@ -812,21 +761,9 @@ impl Pipeline {
         queue: &wgpu::Queue,
         camera: &CameraUniform,
     ) {
-        let gpu = self.ensure_scene(id, device);
-
-        if gpu.has_last_camera && bytemuck::bytes_of(&gpu.last_camera) == bytemuck::bytes_of(camera)
-        {
-            return;
-        }
-
-        queue.write_buffer(
-            &gpu.camera_buffer,
-            0,
-            bytemuck::cast_slice(std::slice::from_ref(camera)),
-        );
-
-        gpu.last_camera = *camera;
-        gpu.has_last_camera = true;
+        self.ensure_scene(id, device)
+            .uniforms
+            .update_camera(queue, camera);
     }
 
     pub fn draw_ordered(
@@ -841,7 +778,7 @@ impl Pipeline {
             return;
         };
 
-        pass.set_bind_group(bind::CAMERA_GROUP, &gpu.camera_bind_group, &[]);
+        pass.set_bind_group(bind::CAMERA_GROUP, &gpu.uniforms.bind_group, &[]);
 
         let rect_stride = std::mem::size_of::<RectInstance>() as u64;
         let circle_stride = std::mem::size_of::<CircleInstance>() as u64;

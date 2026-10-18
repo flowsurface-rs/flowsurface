@@ -1,5 +1,7 @@
+use super::camera::CameraUniform;
 use crate::widget::chart::heatmap::view::ViewWindow;
 use bytemuck::{Pod, Zeroable};
+use iced::wgpu::{self, util::DeviceExt};
 
 // Shift volume-strip rects left by half a bucket to align with circle centers
 const VOLUME_X_SHIFT_BUCKET: f32 = -0.5;
@@ -119,5 +121,107 @@ impl ParamsUniform {
 
     pub fn origin_x(&self) -> f32 {
         self.origin[0]
+    }
+}
+
+pub(super) struct GpuUniforms {
+    camera: wgpu::Buffer,
+    params: wgpu::Buffer,
+    pub(super) bind_group: wgpu::BindGroup,
+    uploaded_camera: CameraUniform,
+    uploaded_params: ParamsUniform,
+}
+
+impl GpuUniforms {
+    pub(super) fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("camera+params bind group layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: Some(
+                            std::num::NonZeroU64::new(std::mem::size_of::<CameraUniform>() as u64)
+                                .unwrap(),
+                        ),
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: Some(
+                            std::num::NonZeroU64::new(std::mem::size_of::<ParamsUniform>() as u64)
+                                .unwrap(),
+                        ),
+                    },
+                    count: None,
+                },
+            ],
+        })
+    }
+
+    pub(super) fn new(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        camera: CameraUniform,
+        params: ParamsUniform,
+    ) -> Self {
+        let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("camera uniform"),
+            contents: bytemuck::bytes_of(&camera),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("params uniform"),
+            contents: bytemuck::bytes_of(&params),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("camera+params bind group"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: camera_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: params_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        Self {
+            camera: camera_buffer,
+            params: params_buffer,
+            bind_group,
+            uploaded_camera: camera,
+            uploaded_params: params,
+        }
+    }
+
+    pub(super) fn update_camera(&mut self, queue: &wgpu::Queue, camera: &CameraUniform) {
+        if bytemuck::bytes_of(&self.uploaded_camera) == bytemuck::bytes_of(camera) {
+            return;
+        }
+
+        queue.write_buffer(&self.camera, 0, bytemuck::bytes_of(camera));
+        self.uploaded_camera = *camera;
+    }
+
+    pub(super) fn update_params(&mut self, queue: &wgpu::Queue, params: &ParamsUniform) {
+        if bytemuck::bytes_of(&self.uploaded_params) == bytemuck::bytes_of(params) {
+            return;
+        }
+
+        queue.write_buffer(&self.params, 0, bytemuck::bytes_of(params));
+        self.uploaded_params = *params;
     }
 }

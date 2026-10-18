@@ -15,12 +15,13 @@ use crate::screen::dashboard::pane::ChartAction as Action;
 use crate::screen::dashboard::pane::settings::HeatmapIndicatorMessage;
 use data::aggr::time::TimeSeries;
 use data::chart::heatmap::indicators::{
-    DepthDistance, HeatmapIndicator, HeatmapIndicatorConfig, HeatmapIndicators,
+    DepthDistance, HeatmapIndicator, HeatmapIndicatorConfig, HeatmapIndicators, HeatmapPanel,
 };
 use data::chart::{
     Basis,
     heatmap::{HeatmapDataPoint, HistoricalDepth},
 };
+use enum_map::EnumMap;
 use exchange::depth::Depth;
 use exchange::unit::{Price, PriceStep};
 use exchange::{TickerInfo, Trade, UnixMs};
@@ -99,7 +100,7 @@ pub struct HeatmapShader {
     qty_scale: f32,
     rebuild_policy: view::RebuildPolicy,
     indicators: HeatmapIndicators,
-    indicator_panels: [heatmap_widget::scene::indicator::Panel; 2],
+    indicator_panels: EnumMap<HeatmapPanel, heatmap_widget::scene::indicator::Panel>,
     depth_distance_input: String,
 }
 
@@ -125,7 +126,7 @@ impl HeatmapShader {
         let depth_distance_input = format!("{:.2}", indicators.distance.percent());
         Self {
             indicators: HeatmapIndicators::new(indicators),
-            indicator_panels: std::array::from_fn(|_| Default::default()),
+            indicator_panels: EnumMap::default(),
             depth_distance_input,
             last_tick: None,
             scene: Scene::new(),
@@ -155,10 +156,8 @@ impl HeatmapShader {
 
     pub fn update(&mut self, message: Message) {
         match message {
-            Message::IndicatorYRangeChanged { index, range } => {
-                if let Some(panel) = self.indicator_panels.get_mut(index) {
-                    panel.set_range(range);
-                }
+            Message::IndicatorYRangeChanged { kind, range } => {
+                self.indicator_panels[kind].set_range(range);
             }
             Message::PanelSplitChanged { index, split } => {
                 self.indicators.set_panel_split(index, split);
@@ -530,13 +529,13 @@ impl HeatmapShader {
             return;
         }
 
-        for (index, kind) in HeatmapIndicator::panels() {
+        for kind in HeatmapPanel::ALL {
             let previous = self.indicators.config();
-            if (previous.is_enabled(kind) && !config.is_enabled(kind))
-                || (kind == HeatmapIndicator::Spread && previous.spread_unit != config.spread_unit)
-                || (kind == HeatmapIndicator::Depth && previous.distance != config.distance)
+            if (previous.is_enabled(kind.into()) && !config.is_enabled(kind.into()))
+                || (kind == HeatmapPanel::Spread && previous.spread_unit != config.spread_unit)
+                || (kind == HeatmapPanel::Depth && previous.distance != config.distance)
             {
-                self.indicator_panels[index] = Default::default();
+                self.indicator_panels[kind] = Default::default();
             }
         }
         let overlays_changed = self.indicator_config().volume != config.volume

@@ -9,7 +9,7 @@ use crate::{
     },
 };
 use data::{
-    chart::heatmap::indicators::{HeatmapIndicator, HeatmapIndicators, SpreadUnit},
+    chart::heatmap::indicators::{HeatmapIndicators, HeatmapPanel, SpreadUnit},
     chart::kline::viewport::PanelYValueRange,
 };
 use exchange::{TickerInfo, UnixMs};
@@ -17,7 +17,7 @@ use iced::{Point, Rectangle, Renderer, Size, Theme, mouse, widget::canvas};
 
 pub struct IndicatorCanvas<'a> {
     pub indicators: &'a HeatmapIndicators,
-    pub kind: HeatmapIndicator,
+    pub kind: HeatmapPanel,
     pub time: TimeView<'a>,
     pub plot_width: f32,
     pub cursor_time: Option<UnixMs>,
@@ -58,17 +58,14 @@ impl canvas::Program<Message> for IndicatorCanvas<'_> {
         let bottom = bounds.height;
 
         let title = match self.kind {
-            HeatmapIndicator::Volume | HeatmapIndicator::VolumeProfile => {
-                self.kind.label().to_owned()
-            }
-            HeatmapIndicator::Spread => {
+            HeatmapPanel::Spread => {
                 let unit = match self.indicators.config().spread_unit {
                     SpreadUnit::Bps => "bps",
                     SpreadUnit::Ticks => "ticks",
                 };
                 format!("Spread ({unit})")
             }
-            HeatmapIndicator::Depth => format!(
+            HeatmapPanel::Depth => format!(
                 "Depth ({:.2}%)",
                 self.indicators.config().distance.percent()
             ),
@@ -85,7 +82,7 @@ impl canvas::Program<Message> for IndicatorCanvas<'_> {
                 break;
             }
 
-            if self.kind == HeatmapIndicator::Depth {
+            if self.kind == HeatmapPanel::Depth {
                 let label = channel.label().to_owned();
                 end_x = x + label.chars().count() as f32 * chart::LEGEND_CHAR_WIDTH;
                 text.push((label, x));

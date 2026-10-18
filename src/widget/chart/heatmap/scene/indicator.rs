@@ -1,11 +1,11 @@
 use super::{
     camera::CameraUniform,
     pipeline::rectangle::{self, RECT_INDICES, RECT_VERTICES, RectInstance, RectXLayout},
-    uniform::ParamsUniform,
+    uniform::{GpuUniforms, ParamsUniform},
 };
 use crate::{widget::chart::heatmap::view::TimeView, window::PixelRatio};
 use data::chart::{
-    heatmap::indicators::{HeatmapIndicator, HeatmapIndicators},
+    heatmap::indicators::{HeatmapIndicators, HeatmapPanel},
     kline::{
         composition::PanelScaleMode,
         viewport::{PanelValueScale, PanelYValueRange, PanelYViewportLimits, YUnit, YUnitRange},
@@ -126,7 +126,7 @@ impl Panel {
     pub fn prepare(
         &self,
         indicators: &HeatmapIndicators,
-        kind: HeatmapIndicator,
+        kind: HeatmapPanel,
         time: TimeView<'_>,
         bounds: Rectangle,
         ticker: TickerInfo,
@@ -151,10 +151,8 @@ impl Panel {
 
         let palette = theme.extended_palette();
         let colors = match kind {
-            HeatmapIndicator::Volume
-            | HeatmapIndicator::Spread
-            | HeatmapIndicator::VolumeProfile => [palette.primary.base.color.into_linear(); 2],
-            HeatmapIndicator::Depth => [
+            HeatmapPanel::Spread => [palette.primary.base.color.into_linear(); 2],
+            HeatmapPanel::Depth => [
                 palette.success.strong.color.into_linear(),
                 palette.danger.strong.color.into_linear(),
             ],
@@ -195,10 +193,8 @@ impl Panel {
                 let Some(value) = value else { continue };
 
                 let values = match kind {
-                    HeatmapIndicator::Volume
-                    | HeatmapIndicator::Spread
-                    | HeatmapIndicator::VolumeProfile => [value, 0.0],
-                    HeatmapIndicator::Depth => {
+                    HeatmapPanel::Spread => [value, 0.0],
+                    HeatmapPanel::Depth => {
                         let Some(ask) = second_value else { continue };
                         [value, ask]
                     }
@@ -236,10 +232,8 @@ impl Panel {
                     let heights = group.means.map(|value| (value / max) as f32);
                     if heights.iter().any(|height| *height > 0.0) {
                         let layout = match kind {
-                            HeatmapIndicator::Volume
-                            | HeatmapIndicator::Spread
-                            | HeatmapIndicator::VolumeProfile => RectXLayout::PixelBar,
-                            HeatmapIndicator::Depth => RectXLayout::IndicatorPair,
+                            HeatmapPanel::Spread => RectXLayout::PixelBar,
+                            HeatmapPanel::Depth => RectXLayout::IndicatorPair,
                         };
 
                         instances.push(RectInstance {
@@ -323,9 +317,7 @@ struct PanelGpu {
     instances: wgpu::Buffer,
     capacity: usize,
     generation: Option<u64>,
-    camera: wgpu::Buffer,
-    params: wgpu::Buffer,
-    bind_group: wgpu::BindGroup,
+    uniforms: GpuUniforms,
 }
 
 pub struct Pipeline {
@@ -338,7 +330,7 @@ pub struct Pipeline {
 
 impl shader::Pipeline for Pipeline {
     fn new(device: &wgpu::Device, _: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
-        let layout = rectangle::bind_group_layout(device);
+        let layout = GpuUniforms::bind_group_layout(device);
         let pipeline = rectangle::pipeline(device, format, &layout);
         let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("indicator vertices"),
@@ -380,32 +372,7 @@ impl shader::Primitive for Primitive {
         camera.b[3] = bounds.x;
 
         let gpu = pipeline.panels.entry(self.id).or_insert_with(|| {
-            let camera = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("indicator camera"),
-                contents: bytemuck::bytes_of(&camera),
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            });
-
-            let params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("indicator params"),
-                contents: bytemuck::bytes_of(&self.params),
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            });
-
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("indicator uniforms"),
-                layout: &pipeline.layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: camera.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: params.as_entire_binding(),
-                    },
-                ],
-            });
+            let uniforms = GpuUniforms::new(device, &pipeline.layout, camera, self.params);
 
             let capacity = self.instances.len().max(1).next_power_of_two();
             PanelGpu {
@@ -413,14 +380,12 @@ impl shader::Primitive for Primitive {
                 instances: instance_buffer(device, capacity),
                 capacity,
                 generation: None,
-                camera,
-                params,
-                bind_group,
+                uniforms,
             }
         });
 
-        queue.write_buffer(&gpu.camera, 0, bytemuck::bytes_of(&camera));
-        queue.write_buffer(&gpu.params, 0, bytemuck::bytes_of(&self.params));
+        gpu.uniforms.update_camera(queue, &camera);
+        gpu.uniforms.update_params(queue, &self.params);
 
         if gpu.generation != Some(self.generation) {
             if self.instances.len() > gpu.capacity {
@@ -444,7 +409,7 @@ impl shader::Primitive for Primitive {
             return true;
         }
         pass.set_pipeline(&pipeline.pipeline);
-        pass.set_bind_group(0, &gpu.bind_group, &[]);
+        pass.set_bind_group(0, &gpu.uniforms.bind_group, &[]);
         pass.set_vertex_buffer(0, pipeline.vertices.slice(..));
         pass.set_vertex_buffer(1, gpu.instances.slice(..));
         pass.set_index_buffer(pipeline.indices.slice(..), wgpu::IndexFormat::Uint16);

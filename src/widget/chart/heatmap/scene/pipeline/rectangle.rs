@@ -200,43 +200,8 @@ impl RectInstance {
     }
 }
 
-use super::super::{camera::CameraUniform, uniform::ParamsUniform};
 use iced::wgpu;
 use iced::wgpu::PipelineCompilationOptions;
-
-pub(crate) fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("camera+params bind group layout"),
-        entries: &[
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: Some(
-                        std::num::NonZeroU64::new(std::mem::size_of::<CameraUniform>() as u64)
-                            .unwrap(),
-                    ),
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: Some(
-                        std::num::NonZeroU64::new(std::mem::size_of::<ParamsUniform>() as u64)
-                            .unwrap(),
-                    ),
-                },
-                count: None,
-            },
-        ],
-    })
-}
 
 pub(crate) fn pipeline(
     device: &wgpu::Device,
