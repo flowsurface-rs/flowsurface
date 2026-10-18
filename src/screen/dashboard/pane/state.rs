@@ -670,20 +670,8 @@ impl State {
             }
         };
 
-        let selected_series = match &self.content {
-            Content::Kline {
-                chart: Some(chart), ..
-            } if chart.basis().is_time() => Some(chart.series()),
-            _ => None,
-        };
-        let body = self.compose_stack_view(
-            base,
-            id,
-            compact_controls,
-            selected_series,
-            tickers_table,
-            theme_accents,
-        );
+        let body =
+            self.compose_stack_view(base, id, compact_controls, tickers_table, theme_accents);
 
         let body = column![
             iced::widget::rule::horizontal(1.0).style(style::split_ruler),
@@ -1258,7 +1246,6 @@ impl State {
         base: Element<'a, Message>,
         pane: pane_grid::Pane,
         compact_controls: Option<Element<'a, Message>>,
-        selected_tickers: Option<&'a [data::chart::kline::series::KlineSeries]>,
         tickers_table: &'a TickersTable,
         theme_accents: ThemeAccents,
     ) -> Element<'a, Message> {
@@ -1306,11 +1293,24 @@ impl State {
                 Alignment::Start,
             ),
             Some(Modal::MiniTickersList(panel)) => {
-                let mini_list = panel
-                    .view(tickers_table, selected_tickers, self.stream_pair())
-                    .map(move |msg| {
-                        Message::PaneEvent(pane, Event::MiniTickersListInteraction(msg))
-                    });
+                let mini_list = match (&self.content, &self.streams) {
+                    (
+                        Content::Kline {
+                            chart: Some(chart), ..
+                        },
+                        _,
+                    ) if chart.basis().is_time() => panel.view(
+                        tickers_table,
+                        Some(chart.series().iter().map(|series| series.ticker_info)),
+                        self.stream_pair(),
+                    ),
+                    _ => panel.view(
+                        tickers_table,
+                        None::<std::iter::Empty<TickerInfo>>,
+                        self.stream_pair(),
+                    ),
+                }
+                .map(move |msg| Message::PaneEvent(pane, Event::MiniTickersListInteraction(msg)));
 
                 let content: Element<_> = container(mini_list)
                     .max_width(260)
