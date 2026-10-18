@@ -3,7 +3,6 @@ use crate::{
     style::{self, Icon, icon_text},
     widget::tooltip_with_delay,
 };
-use data::chart::kline::series::KlineSeries;
 use data::{
     InternalError, MarketMetadata, MetadataSource,
     layout::pane::ContentKind,
@@ -1190,7 +1189,7 @@ impl TickersTable {
         on_select: FSelect,
         on_search: FSearch,
         on_scroll: FScroll,
-        selected_tickers: Option<&'a [KlineSeries]>,
+        selected_tickers: Option<impl Iterator<Item = TickerInfo> + Clone>,
         base_ticker: Option<TickerInfo>,
     ) -> Element<'a, M>
     where
@@ -1204,7 +1203,8 @@ impl TickersTable {
         let selection_enabled = selected_tickers.is_some();
 
         let mut selected_set: FxHashSet<Ticker> = selected_tickers
-            .map(|slice| slice.iter().map(|entry| entry.ticker_info.ticker).collect())
+            .clone()
+            .map(|tickers| tickers.map(|info| info.ticker).collect())
             .unwrap_or_default();
         if let Some(bt) = base_ticker {
             selected_set.insert(bt.ticker);
@@ -1213,10 +1213,9 @@ impl TickersTable {
         let (fav_rows, rest_rows) = self.filtered_rows_compact(&injected_q, &selected_set);
 
         let base_ticker_id = base_ticker.map(|bt| bt.ticker);
-        let selected_count = selected_tickers.map_or(0, |slice| {
-            slice
-                .iter()
-                .filter(|entry| Some(entry.ticker_info.ticker) != base_ticker_id)
+        let selected_count = selected_tickers.clone().map_or(0, |tickers| {
+            tickers
+                .filter(|info| Some(info.ticker) != base_ticker_id)
                 .count()
         }) + usize::from(base_ticker_id.is_some());
 
@@ -1230,12 +1229,8 @@ impl TickersTable {
         let win = virtual_list.window(scroll_offset.y, bounds.height, total_n);
 
         let top_bar = self.compact_top_bar(search_query, search_box_id, on_search);
-        let selected_section = self.compact_selected_section(
-            base_ticker,
-            selected_tickers,
-            on_select,
-            selection_enabled,
-        );
+        let selected_section =
+            self.compact_selected_section(base_ticker, selected_tickers, on_select, selected_count);
 
         let list = self.compact_virtual_list(
             &virtual_list,
@@ -1358,22 +1353,16 @@ impl TickersTable {
     fn compact_selected_section<'a, M, FSelect>(
         &'a self,
         base_ticker: Option<TickerInfo>,
-        selected_tickers: Option<&'a [KlineSeries]>,
+        selected_tickers: Option<impl Iterator<Item = TickerInfo>>,
         on_select: FSelect,
-        selection_enabled: bool,
+        selected_count: usize,
     ) -> Option<Element<'a, M>>
     where
         M: 'a + Clone,
         FSelect: 'static + Copy + Fn(RowSelection) -> M,
     {
         let base_ticker_id = base_ticker.map(|bt| bt.ticker);
-        let selected_count = selected_tickers.map_or(0, |slice| {
-            slice
-                .iter()
-                .filter(|entry| Some(entry.ticker_info.ticker) != base_ticker_id)
-                .count()
-        });
-        if base_ticker.is_none() && selected_count == 0 {
+        if selected_count == 0 {
             return None;
         }
 
@@ -1392,27 +1381,14 @@ impl TickersTable {
         }
 
         if let Some(selected_tickers) = selected_tickers {
-            for info in selected_tickers
-                .iter()
-                .map(|entry| entry.ticker_info)
-                .filter(|info| Some(info.ticker) != base_ticker_id)
-            {
+            for info in selected_tickers.filter(|info| Some(info.ticker) != base_ticker_id) {
                 let label = self.label_with_suffix(info.ticker);
-
-                let (left_action, right) = if selection_enabled {
-                    (
-                        Some(RowSelection::Switch(info)),
-                        Some(("Remove", Some(RowSelection::Remove(info)))),
-                    )
-                } else {
-                    (Some(RowSelection::Switch(info)), None)
-                };
 
                 col = col.push(Self::mini_ticker_card(
                     info.ticker.exchange,
                     label,
-                    left_action,
-                    right,
+                    Some(RowSelection::Switch(info)),
+                    Some(("Remove", Some(RowSelection::Remove(info)))),
                     None,
                     on_select,
                 ));
