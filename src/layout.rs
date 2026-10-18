@@ -60,7 +60,7 @@ impl Default for SavedState {
             theme: data::Theme::default(),
             custom_theme: None,
             audio_cfg: data::AudioStream::default(),
-            volume_size_unit: exchange::SizeUnit::Base,
+            volume_size_unit: exchange::SizeUnit::default(),
             network: data::Network::default(),
             cache_market_metadata: false,
             antialiasing: true,

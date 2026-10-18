@@ -20,7 +20,7 @@ pub enum SizeUnit {
     Quote = 1,
 }
 
-static SIZE_CALC_UNIT: AtomicU8 = AtomicU8::new(SizeUnit::Base as u8);
+static SIZE_CALC_UNIT: AtomicU8 = AtomicU8::new(SizeUnit::Quote as u8);
 
 pub fn set_preferred_currency(v: SizeUnit) {
     SIZE_CALC_UNIT.store(v as u8, Ordering::Relaxed);
@@ -30,7 +30,7 @@ pub fn volume_size_unit() -> SizeUnit {
     match SIZE_CALC_UNIT.load(Ordering::Relaxed) {
         0 => SizeUnit::Base,
         1 => SizeUnit::Quote,
-        _ => SizeUnit::Base,
+        _ => SizeUnit::default(),
     }
 }
 
