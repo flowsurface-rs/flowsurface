@@ -6,6 +6,7 @@ pub mod pipeline;
 mod uniform;
 
 use super::Message;
+use crate::window::PixelRatio;
 use cell::Cell;
 use exchange::unit::{Price, PriceStep};
 use pipeline::Pipeline;
@@ -415,16 +416,9 @@ impl shader::Primitive for Primitive {
     ) {
         pipeline.cleanup_dropped_scenes();
 
-        let mut cam_u = self.camera.to_uniform(bounds.width, bounds.height);
-        cam_u.a[2] = self
+        let cam_u = self
             .camera
-            .screen_to_world_x(bounds.width * 0.5, bounds.width);
-        cam_u.b = [
-            bounds.width,
-            bounds.height,
-            viewport.scale_factor(),
-            bounds.x,
-        ];
+            .to_uniform(*bounds, PixelRatio::from_product(viewport.scale_factor()));
 
         pipeline.update_camera(self.id, device, queue, &cam_u);
         pipeline.update_params(self.id, device, queue, &self.params);

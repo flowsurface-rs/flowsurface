@@ -247,14 +247,7 @@ impl Panel {
             prepared.key = Some(key);
         }
 
-        let mut camera = time.camera.to_uniform(bounds.width, bounds.height);
-        camera.a[2] = time
-            .camera
-            .screen_to_world_x(bounds.width * 0.5, bounds.width);
-        camera.b[0] = bounds.width;
-        camera.b[1] = bounds.height;
-        camera.b[2] = pixel_ratio.value();
-        camera.b[3] = bounds.x;
+        let mut camera = time.camera.to_uniform(bounds, pixel_ratio);
 
         let range = prepared.range(
             scale,

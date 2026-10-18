@@ -1,4 +1,6 @@
 use crate::widget::chart::heatmap::scene::cell::{Cell, MIN_COL_W_WORLD, MIN_ROW_H_WORLD};
+use crate::window::PixelRatio;
+use iced::Rectangle;
 
 const MIN_CAMERA_SCALE: f32 = 1e1;
 const MAX_CAMERA_SCALE: f32 = 1e3;
@@ -329,16 +331,13 @@ impl Camera {
         cy + (screen_y - viewport_h * 0.5) / s
     }
 
-    pub fn to_uniform(self, viewport_w: f32, viewport_h: f32) -> CameraUniform {
-        let vw = viewport_w.round().max(1.0);
-        let vh = viewport_h.round().max(1.0);
-
+    pub fn to_uniform(self, bounds: Rectangle, pixel_ratio: PixelRatio) -> CameraUniform {
         let s = self.clamped_scale();
-        let [center_x, center_y] = self.center(vw);
+        let [center_x, center_y] = self.center(bounds.width);
 
         CameraUniform {
             a: [s, s, center_x, center_y],
-            b: [vw, vh, 1.0, 0.0],
+            b: [bounds.width, bounds.height, pixel_ratio.value(), bounds.x],
         }
     }
 

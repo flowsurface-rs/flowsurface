@@ -12,6 +12,8 @@ use exchange::{
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, ops::Bound};
 
+const MIN_PANEL_RATIO: f32 = 0.08;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HeatmapIndicator {
     Volume,
@@ -218,19 +220,22 @@ impl HeatmapIndicatorConfig {
             .collect()
     }
 
+    fn sanitized_panel_weights(&self) -> [f32; 3] {
+        let defaults = Self::default().panel_weights;
+        std::array::from_fn(|index| {
+            let weight = self.panel_weights[index];
+            if weight.is_finite() && weight > 0.0 {
+                weight
+            } else {
+                defaults[index]
+            }
+        })
+    }
+
     pub fn normalized_weights(&self) -> Vec<f32> {
         let indices = self.panel_indices();
-        let weights: Vec<_> = indices
-            .iter()
-            .map(|&index| {
-                let weight = self.panel_weights[index];
-                if weight.is_finite() && weight > 0.0 {
-                    weight
-                } else {
-                    Self::default().panel_weights[index]
-                }
-            })
-            .collect();
+        let all_weights = self.sanitized_panel_weights();
+        let weights: Vec<_> = indices.iter().map(|&index| all_weights[index]).collect();
 
         let total: f64 = weights.iter().map(|weight| f64::from(*weight)).sum();
         let mut cumulative = 0.0;
@@ -242,8 +247,8 @@ impl HeatmapIndicatorConfig {
                 1.0
             } else {
                 cumulative.clamp(
-                    previous + 0.08,
-                    1.0 - 0.08 * (weights.len() - index - 1) as f32,
+                    previous + MIN_PANEL_RATIO,
+                    1.0 - MIN_PANEL_RATIO * (weights.len() - index - 1) as f32,
                 )
             };
             normalized.push(boundary - previous);
@@ -264,16 +269,13 @@ impl HeatmapIndicatorConfig {
         let mut weights = self.normalized_weights();
         let before: f32 = weights[..index].iter().sum();
         let combined = weights[index] + weights[index + 1];
-        let first = (split - before).clamp(0.08, (combined - 0.08).max(0.08));
+        let first = (split - before).clamp(
+            MIN_PANEL_RATIO,
+            (combined - MIN_PANEL_RATIO).max(MIN_PANEL_RATIO),
+        );
         weights[index] = first;
         weights[index + 1] = combined - first;
-        let defaults = Self::default().panel_weights;
-        let mut all_weights = self.panel_weights.map(f64::from);
-        for (index, weight) in all_weights.iter_mut().enumerate() {
-            if !weight.is_finite() || *weight <= 0.0 {
-                *weight = f64::from(defaults[index]);
-            }
-        }
+        let all_weights = self.sanitized_panel_weights().map(f64::from);
 
         let total: f64 = all_weights.iter().sum();
         let active_total: f64 = indices
