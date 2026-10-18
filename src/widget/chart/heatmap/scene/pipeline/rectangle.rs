@@ -7,16 +7,26 @@ pub const RECT_VERTICES: &[[f32; 2]] = &[[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], 
 pub const RECT_INDICES: &[u16] = &[0, 1, 2, 2, 3, 0];
 
 pub const MIN_BAR_PX: f32 = 1.0;
+pub const MAX_BAR_BUCKETS: i64 = 4096;
+
+#[repr(u32)]
+#[derive(Clone, Copy)]
+pub enum RectXLayout {
+    Absolute = 0,
+    VolumeBar = 1,
+    IndicatorPair = 2,
+    PixelBar = 4,
+}
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct RectInstance {
     pub position: [f32; 2],
-    pub size: [f32; 2],
+    pub size: [f32; 2], // Indicator layouts store two heights; other layouts store width and height.
     pub color: [f32; 4],
     pub x0_bin: i32,
     pub x1_bin_excl: i32,
-    pub x_from_bins: u32,
+    pub x_layout: u32,
     pub fade_mode: u32, // 0=fade, 1=skip
     pub subpx_alpha: f32,
 }
@@ -73,7 +83,7 @@ impl RectInstance {
             color: [rgb[0], rgb[1], rgb[2], Self::DEPTH_PROFILE_ALPHA],
             x0_bin: 0,
             x1_bin_excl: 0,
-            x_from_bins: 0,
+            x_layout: RectXLayout::Absolute as u32,
             fade_mode: 0,
             subpx_alpha,
         }
@@ -114,7 +124,7 @@ impl RectInstance {
             ],
             x0_bin,
             x1_bin_excl,
-            x_from_bins: 1,
+            x_layout: RectXLayout::VolumeBar as u32,
             fade_mode: 0,
             subpx_alpha,
         }
@@ -155,7 +165,7 @@ impl RectInstance {
             ],
             x0_bin,
             x1_bin_excl,
-            x_from_bins: 1,
+            x_layout: RectXLayout::VolumeBar as u32,
             fade_mode: 0,
             subpx_alpha,
         }
@@ -178,7 +188,7 @@ impl RectInstance {
             color: [rgb[0], rgb[1], rgb[2], Self::VOLUME_PROFILE_ALPHA],
             x0_bin: 0,
             x1_bin_excl: 0,
-            x_from_bins: 0,
+            x_layout: RectXLayout::Absolute as u32,
             fade_mode: 1,
             subpx_alpha,
         }
@@ -188,4 +198,152 @@ impl RectInstance {
     pub fn y_center_for_bin(y_bin: i64, w: &ViewWindow) -> f32 {
         -((y_bin as f32 + 0.5) * w.y_bin_h_world)
     }
+}
+
+use super::super::{camera::CameraUniform, uniform::ParamsUniform};
+use iced::wgpu;
+use iced::wgpu::PipelineCompilationOptions;
+
+pub(crate) fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("camera+params bind group layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: Some(
+                        std::num::NonZeroU64::new(std::mem::size_of::<CameraUniform>() as u64)
+                            .unwrap(),
+                    ),
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: Some(
+                        std::num::NonZeroU64::new(std::mem::size_of::<ParamsUniform>() as u64)
+                            .unwrap(),
+                    ),
+                },
+                count: None,
+            },
+        ],
+    })
+}
+
+pub(crate) fn pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    bind_group_layout: &wgpu::BindGroupLayout,
+) -> wgpu::RenderPipeline {
+    let rect_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        source: wgpu::ShaderSource::Wgsl(super::RECT_SHADER_SRC.into()),
+        label: Some("rect shader"),
+    });
+
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("rect pipeline layout"),
+        bind_group_layouts: &[bind_group_layout],
+        push_constant_ranges: &[],
+    });
+
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("rect pipeline"),
+        layout: Some(&pipeline_layout),
+
+        vertex: wgpu::VertexState {
+            module: &rect_shader,
+            entry_point: Some("vs_main"),
+            buffers: &[
+                wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<[f32; 2]>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[wgpu::VertexAttribute {
+                        offset: 0,
+                        shader_location: 0,
+                        format: wgpu::VertexFormat::Float32x2,
+                    }],
+                },
+                wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<RectInstance>() as u64,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &[
+                        // @location(1) position: vec2<f32>
+                        wgpu::VertexAttribute {
+                            offset: 0,
+                            shader_location: 1,
+                            format: wgpu::VertexFormat::Float32x2,
+                        },
+                        // @location(2) size: vec2<f32>
+                        wgpu::VertexAttribute {
+                            offset: 8,
+                            shader_location: 2,
+                            format: wgpu::VertexFormat::Float32x2,
+                        },
+                        // @location(3) color: vec4<f32>
+                        wgpu::VertexAttribute {
+                            offset: 16,
+                            shader_location: 3,
+                            format: wgpu::VertexFormat::Float32x4,
+                        },
+                        // @location(4) x0_bin: i32
+                        wgpu::VertexAttribute {
+                            offset: 32,
+                            shader_location: 4,
+                            format: wgpu::VertexFormat::Sint32,
+                        },
+                        // @location(5) x1_bin_excl: i32
+                        wgpu::VertexAttribute {
+                            offset: 36,
+                            shader_location: 5,
+                            format: wgpu::VertexFormat::Sint32,
+                        },
+                        // @location(6) x_layout: u32
+                        wgpu::VertexAttribute {
+                            offset: 40,
+                            shader_location: 6,
+                            format: wgpu::VertexFormat::Uint32,
+                        },
+                        // @location(7) fade_mode: u32
+                        wgpu::VertexAttribute {
+                            offset: 44,
+                            shader_location: 7,
+                            format: wgpu::VertexFormat::Uint32,
+                        },
+                        // @location(8) subpx_alpha: f32
+                        wgpu::VertexAttribute {
+                            offset: 48,
+                            shader_location: 8,
+                            format: wgpu::VertexFormat::Float32,
+                        },
+                    ],
+                },
+            ],
+            compilation_options: PipelineCompilationOptions::default(),
+        },
+
+        fragment: Some(wgpu::FragmentState {
+            module: &rect_shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: PipelineCompilationOptions::default(),
+        }),
+
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
+        cache: None,
+    })
 }

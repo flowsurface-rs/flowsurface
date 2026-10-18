@@ -1,8 +1,8 @@
 use super::AxisInteraction;
 use crate::widget::chart::heatmap::{
     Message,
-    scene::camera::Camera,
     ui::{AXIS_TEXT_SIZE, AxisZoomAnchor},
+    view::TimeView,
 };
 use data::config::timezone::TimeLabelKind;
 
@@ -21,16 +21,13 @@ const CURSOR_LABEL_PADDING_X: f32 = 6.0;
 const CURSOR_LABEL_PADDING_Y: f32 = 3.0;
 const TICK_CURSOR_GAP_PX: f32 = 2.0;
 
+#[derive(Clone, Copy)]
 pub struct AxisXLabelCanvas<'a> {
     pub cache: &'a iced::widget::canvas::Cache,
-    pub camera: &'a Camera,
+    pub time: TimeView<'a>,
     pub timezone: data::UserTimezone,
     pub plot_bounds: Option<Rectangle>,
     pub is_paused: bool,
-    pub latest_bucket: i64,
-    pub aggr_time: u64,
-    pub column_world: f32,
-    pub x_phase_bucket: f32,
     pub is_x0_visible: Option<bool>,
 }
 
@@ -68,7 +65,7 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
 
                 let zoom_anchor = if use_world_anchor {
                     let vw = self.plot_bounds.map(|r| r.width).unwrap_or(bounds.width);
-                    let x0_screen = self.camera.world_to_screen_x(0.0, vw);
+                    let x0_screen = self.time.camera.world_to_screen_x(0.0, vw);
 
                     Some(AxisZoomAnchor::World {
                         world: 0.0,
@@ -152,7 +149,10 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
-        if self.aggr_time == 0 || !self.column_world.is_finite() || self.column_world <= 0.0 {
+        if self.time.interval_ms == 0
+            || !self.time.column_world.is_finite()
+            || self.time.column_world <= 0.0
+        {
             return vec![];
         }
         let palette = theme.extended_palette();
@@ -162,12 +162,12 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
             let vh = bounds.height;
 
             let vh_f = vh as f64;
-            let cam_sx_f = self.camera.scale() as f64;
-            let col_f = self.column_world as f64;
-            let aggr_time_ms = i64::try_from(self.aggr_time).unwrap_or(i64::MAX);
+            let cam_sx_f = self.time.camera.scale() as f64;
+            let col_f = self.time.column_world as f64;
+            let aggr_time_ms = i64::try_from(self.time.interval_ms).unwrap_or(i64::MAX);
 
             let phase = {
-                let mut phase = self.x_phase_bucket as f64;
+                let mut phase = self.time.phase as f64;
                 if !phase.is_finite() {
                     phase = 0.0;
                 }
@@ -175,13 +175,13 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
                 phase.clamp(0.0, PHASE_MAX)
             };
 
-            let (x_world_left_f32, x_world_right_f32) = self.camera.x_world_bounds(vw);
+            let (x_world_left_f32, x_world_right_f32) = self.time.camera.x_world_bounds(vw);
             let x_world_left = x_world_left_f32 as f64;
             let x_world_right = x_world_right_f32 as f64;
 
             let inv_col = 1.0f64 / col_f.max(COL_EPS);
 
-            let latest_bucket: i64 = self.latest_bucket;
+            let latest_bucket: i64 = self.time.latest_bucket;
             let (b_min0, b_max0) =
                 bucket_bounds(x_world_left, x_world_right, inv_col, phase, latest_bucket);
 
@@ -212,7 +212,7 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
             let text_color = palette.background.base.text;
 
             let world_to_screen_x =
-                |world_x: f64| -> f32 { self.camera.world_to_screen_x(world_x as f32, vw) };
+                |world_x: f64| -> f32 { self.time.camera.world_to_screen_x(world_x as f32, vw) };
 
             let y = (0.5 * vh_f) as f32;
 
@@ -225,13 +225,9 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
                 self.plot_bounds
                     .and_then(|pb| cursor.position_in(pb))
                     .and_then(|p| {
-                        let world_x_cursor = self.camera.screen_to_world_x(p.x, vw) as f64;
-
-                        let u_at_cursor = ((world_x_cursor / col_f) + phase).round() as i64;
-                        let b_at_cursor = latest_bucket.saturating_add(u_at_cursor);
-                        let world_x_for_bucket = ((u_at_cursor as f64) - phase) * col_f;
-                        let x_px = world_to_screen_x(world_x_for_bucket);
-                        let t_ms = b_at_cursor.saturating_mul(aggr_time_ms);
+                        let time = self.time.time_at_x(p.x, vw);
+                        let x_px = self.time.screen_x(time, vw);
+                        let t_ms = time.as_u64().min(i64::MAX as u64) as i64;
 
                         if let Some(label) = self
                             .timezone

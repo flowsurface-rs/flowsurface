@@ -11,9 +11,13 @@ use crate::widget::chart::heatmap::{
     view::{self, ViewConfig, ViewInputs, ViewWindow},
 };
 
+use crate::screen::dashboard::pane::settings::HeatmapIndicatorMessage;
 use crate::widget::study_configurator as study;
 use crate::{screen::dashboard::pane::ChartAction as Action, widget::study_configurator::Study};
 use data::aggr::time::TimeSeries;
+use data::chart::heatmap::indicators::{
+    DepthDistance, HeatmapIndicator, HeatmapIndicatorConfig, HeatmapIndicators,
+};
 use data::chart::{
     Basis,
     heatmap::{HeatmapDataPoint, HeatmapStudy, HistoricalDepth},
@@ -69,6 +73,9 @@ pub struct HeatmapShader {
     qty_scale: f32,
     rebuild_policy: view::RebuildPolicy,
     pub studies: Vec<HeatmapStudy>,
+    indicators: HeatmapIndicators,
+    indicator_panels: [heatmap_widget::scene::indicator::Panel; 2],
+    depth_distance_input: String,
 }
 
 impl HeatmapShader {
@@ -78,6 +85,7 @@ impl HeatmapShader {
         ticker_info: TickerInfo,
         studies: Vec<HeatmapStudy>,
         config: Option<data::chart::heatmap::Config>,
+        indicators: HeatmapIndicatorConfig,
     ) -> Self {
         let depth_history = HistoricalDepth::new(ticker_info.min_qty, step, basis);
         let trades = TimeSeries::<HeatmapDataPoint>::new(basis, step);
@@ -90,7 +98,11 @@ impl HeatmapShader {
             exchange::SizeUnit::Quote => 1.0,
         };
 
+        let depth_distance_input = format!("{:.2}", indicators.distance.percent());
         Self {
+            indicators: HeatmapIndicators::new(indicators),
+            indicator_panels: std::array::from_fn(|_| Default::default()),
+            depth_distance_input,
             last_tick: None,
             scene: Scene::new(),
             viewport: None,
@@ -120,6 +132,16 @@ impl HeatmapShader {
 
     pub fn update(&mut self, message: Message) {
         match message {
+            Message::IndicatorYRangeChanged { index, range } => {
+                if let Some(panel) = self.indicator_panels.get_mut(index) {
+                    panel.set_range(range);
+                }
+            }
+            Message::PanelSplitChanged { index, split } => {
+                let mut config = self.indicator_config().clone();
+                config.set_split(index, split);
+                self.set_indicator_config(config);
+            }
             Message::BoundsChanged(bounds) => {
                 self.viewport = Some(bounds);
                 self.canvas_invalidation.mark_all();
@@ -266,7 +288,11 @@ impl HeatmapShader {
         }
     }
 
-    pub fn view(&self, timezone: data::UserTimezone) -> iced::Element<'_, Message> {
+    pub fn view(
+        &self,
+        timezone: data::UserTimezone,
+        pixel_ratio: crate::window::PixelRatio,
+    ) -> iced::Element<'_, Message> {
         if self.base_price.is_none() {
             return iced::widget::center(
                 iced::widget::text("Waiting for data...").size(crate::style::text_size::TITLE),
@@ -296,14 +322,16 @@ impl HeatmapShader {
 
         let x_axis = AxisXLabelCanvas {
             cache: &self.canvas_caches.x_axis,
-            camera: &self.scene.camera,
+            time: view::TimeView {
+                camera: &self.scene.camera,
+                latest_bucket,
+                interval_ms: aggr_time,
+                column_world: self.scene.cell.width_world(),
+                phase: self.anchor.x_phase_bucket(),
+            },
             timezone,
             plot_bounds: self.viewport,
             is_paused,
-            latest_bucket,
-            aggr_time,
-            column_world: self.scene.cell.width_world(),
-            x_phase_bucket: self.anchor.x_phase_bucket(),
             is_x0_visible: self
                 .viewport
                 .map(|vp| self.scene.profile_start_visible_x0(vp.size())),
@@ -335,8 +363,16 @@ impl HeatmapShader {
             volume_profile_max_qty: self.instances.volume_profile_scale_max_qty,
         };
 
-        let chart = HeatmapShaderWidget::new(&self.scene, x_axis, y_axis, overlay)
-            .with_y_axis_gutter(self.y_axis_gutter);
+        let chart = HeatmapShaderWidget::new(
+            &self.scene,
+            x_axis,
+            y_axis,
+            overlay,
+            &self.indicators,
+            &self.indicator_panels,
+            pixel_ratio,
+        )
+        .with_y_axis_gutter(self.y_axis_gutter);
 
         iced::widget::container(chart).padding(1).into()
     }
@@ -392,6 +428,8 @@ impl HeatmapShader {
     }
 
     pub fn insert_depth(&mut self, depth: &Depth, update_t: UnixMs) {
+        self.indicators
+            .ingest(depth, update_t, self.depth_history.aggr_time);
         self.mark_needs_full_upload_if_stalled();
         let prev_effective_base = self.anchor.effective_base_price(self.base_price);
 
@@ -454,6 +492,50 @@ impl HeatmapShader {
         self.canvas_invalidation.mark_overlay_tooltip();
         self.canvas_invalidation.mark_overlay_scale_labels();
         self.try_rebuild_instances();
+    }
+
+    pub fn indicator_config(&self) -> &HeatmapIndicatorConfig {
+        self.indicators.config()
+    }
+
+    pub fn depth_distance_input(&self) -> &str {
+        &self.depth_distance_input
+    }
+
+    pub fn set_indicator_config(&mut self, config: HeatmapIndicatorConfig) {
+        for (index, kind) in HeatmapIndicator::ALL.into_iter().enumerate() {
+            let previous = self.indicators.config();
+            if (previous.plot(kind).enabled && !config.plot(kind).enabled)
+                || (kind == HeatmapIndicator::Spread && previous.spread_unit != config.spread_unit)
+                || (kind == HeatmapIndicator::Depth && previous.distance != config.distance)
+            {
+                self.indicator_panels[index] = Default::default();
+            }
+        }
+        self.depth_distance_input = format!("{:.2}", config.distance.percent());
+        self.indicators.reconfigure(config);
+        self.canvas_invalidation.mark_all();
+    }
+
+    pub fn update_indicator_settings(&mut self, message: HeatmapIndicatorMessage) {
+        let mut config = self.indicator_config().clone();
+        match message {
+            HeatmapIndicatorMessage::SpreadUnit(unit) => config.spread_unit = unit,
+            HeatmapIndicatorMessage::Enabled(kind, enabled) => {
+                config.plot_mut(kind).enabled = enabled
+            }
+            HeatmapIndicatorMessage::DistanceEdited(value) => {
+                self.depth_distance_input = value;
+                return;
+            }
+            HeatmapIndicatorMessage::DistanceSubmitted => {
+                let Some(distance) = DepthDistance::from_percent(&self.depth_distance_input) else {
+                    return;
+                };
+                config.distance = distance;
+            }
+        }
+        self.set_indicator_config(config);
     }
 
     pub fn visual_config(&self) -> data::chart::heatmap::Config {
@@ -536,6 +618,7 @@ impl HeatmapShader {
         let keep_ms = keep_buckets.saturating_mul(aggr_time);
         let cutoff = latest_time.saturating_sub(keep_ms);
         let cutoff_rounded = (cutoff / aggr_time) * aggr_time;
+        self.indicators.prune_before(UnixMs::new(cutoff_rounded));
 
         // Prune trades (TimeSeries datapoints are bucket timestamps)
         let keep = self

@@ -13,9 +13,9 @@ const PROFILE_FADE_ALPHA_MAX: f32 = 1.0;
 pub struct ParamsUniform {
     /// (max_depth_denom, alpha_min, alpha_max, *pad*)
     depth: [f32; 4],
-    /// (r, g, b, *pad*)
+    /// (r, g, b, alpha for indicator layouts)
     bid_rgb: [f32; 4],
-    /// (r, g, b, *pad*)
+    /// (r, g, b, alpha for indicator layouts)
     ask_rgb: [f32; 4],
     /// (cell_w_world, cell_h_world, steps_per_y_bin, *pad*)
     grid: [f32; 4],
@@ -92,6 +92,11 @@ impl ParamsUniform {
     pub fn set_palette_rgb(&mut self, bid_rgb: [f32; 3], ask_rgb: [f32; 3]) {
         self.bid_rgb = [bid_rgb[0], bid_rgb[1], bid_rgb[2], 0.0];
         self.ask_rgb = [ask_rgb[0], ask_rgb[1], ask_rgb[2], 0.0];
+    }
+
+    pub fn set_palette_rgba(&mut self, bid: [f32; 4], ask: [f32; 4]) {
+        self.bid_rgb = bid;
+        self.ask_rgb = ask;
     }
 
     pub fn set_depth_denom(&mut self, denom: f32) {

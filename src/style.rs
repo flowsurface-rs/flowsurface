@@ -1005,6 +1005,17 @@ pub fn tab_ruler(theme: &Theme) -> iced::widget::rule::Style {
 }
 
 // crosshair dashed line for charts
+pub fn chart_crosshair(theme: &Theme) -> Stroke<'_> {
+    dashed_line(theme).with_color(
+        theme
+            .extended_palette()
+            .background
+            .base
+            .text
+            .scale_alpha(0.35),
+    )
+}
+
 pub fn dashed_line(theme: &'_ Theme) -> Stroke<'_> {
     let palette = theme.extended_palette();
 

@@ -14,7 +14,16 @@ pub use timesales::timesales_cfg_view;
 use iced::{Element, widget::button};
 
 #[derive(Debug, Clone)]
+pub enum HeatmapIndicatorMessage {
+    SpreadUnit(data::chart::heatmap::indicators::SpreadUnit),
+    Enabled(data::chart::heatmap::indicators::HeatmapIndicator, bool),
+    DistanceEdited(String),
+    DistanceSubmitted,
+}
+
+#[derive(Debug, Clone)]
 pub enum Message {
+    HeatmapIndicator(HeatmapIndicatorMessage),
     VisualConfigChanged {
         config: VisualConfig,
         sync_all: bool,

@@ -8,13 +8,13 @@ use super::uniform::ParamsUniform;
 use circle::{CIRCLE_INDICES, CIRCLE_VERTICES, CircleInstance};
 use rectangle::{RECT_INDICES, RECT_VERTICES, RectInstance};
 
+use iced::wgpu;
 use iced::wgpu::PipelineCompilationOptions;
 use iced::wgpu::util::DeviceExt;
-use iced::{Rectangle, wgpu};
 
 use rustc_hash::FxHashMap;
 
-const RECT_SHADER_SRC: &str = concat!(
+pub(super) const RECT_SHADER_SRC: &str = concat!(
     include_str!("../shaders/common.wgsl"),
     "\n",
     include_str!("../shaders/rect.wgsl"),
@@ -160,10 +160,6 @@ impl Pipeline {
             usage: wgpu::BufferUsages::INDEX,
         });
 
-        let rect_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            source: wgpu::ShaderSource::Wgsl(RECT_SHADER_SRC.into()),
-            label: Some("rect shader"),
-        });
         let circle_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             source: wgpu::ShaderSource::Wgsl(CIRCLE_SHADER_SRC.into()),
             label: Some("circle shader"),
@@ -174,42 +170,7 @@ impl Pipeline {
         });
 
         // -- bind groups
-        let camera_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("camera+params bind group layout"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: bind::CAMERA_BINDING,
-                        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: Some(
-                                std::num::NonZeroU64::new(
-                                    std::mem::size_of::<CameraUniform>() as u64
-                                )
-                                .unwrap(),
-                            ),
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: bind::PARAMS_BINDING,
-                        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: Some(
-                                std::num::NonZeroU64::new(
-                                    std::mem::size_of::<ParamsUniform>() as u64
-                                )
-                                .unwrap(),
-                            ),
-                        },
-                        count: None,
-                    },
-                ],
-            });
+        let camera_bind_group_layout = rectangle::bind_group_layout(device);
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("heatmap pipeline layout"),
@@ -217,96 +178,7 @@ impl Pipeline {
             push_constant_ranges: &[],
         });
 
-        // -- rect pipeline
-        let rect_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("rect pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &rect_shader,
-                entry_point: Some("vs_main"),
-                buffers: &[
-                    wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<[f32; 2]>() as u64,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &[wgpu::VertexAttribute {
-                            offset: 0,
-                            shader_location: 0,
-                            format: wgpu::VertexFormat::Float32x2,
-                        }],
-                    },
-                    wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<RectInstance>() as u64,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &[
-                            // @location(1) position: vec2<f32>
-                            wgpu::VertexAttribute {
-                                offset: 0,
-                                shader_location: 1,
-                                format: wgpu::VertexFormat::Float32x2,
-                            },
-                            // @location(2) size: vec2<f32>
-                            wgpu::VertexAttribute {
-                                offset: 8,
-                                shader_location: 2,
-                                format: wgpu::VertexFormat::Float32x2,
-                            },
-                            // @location(3) color: vec4<f32>
-                            wgpu::VertexAttribute {
-                                offset: 16,
-                                shader_location: 3,
-                                format: wgpu::VertexFormat::Float32x4,
-                            },
-                            // @location(4) x0_bin: i32
-                            wgpu::VertexAttribute {
-                                offset: 32,
-                                shader_location: 4,
-                                format: wgpu::VertexFormat::Sint32,
-                            },
-                            // @location(5) x1_bin_excl: i32
-                            wgpu::VertexAttribute {
-                                offset: 36,
-                                shader_location: 5,
-                                format: wgpu::VertexFormat::Sint32,
-                            },
-                            // @location(6) x_from_bins: u32
-                            wgpu::VertexAttribute {
-                                offset: 40,
-                                shader_location: 6,
-                                format: wgpu::VertexFormat::Uint32,
-                            },
-                            // @location(7) fade_mode: u32
-                            wgpu::VertexAttribute {
-                                offset: 44,
-                                shader_location: 7,
-                                format: wgpu::VertexFormat::Uint32,
-                            },
-                            // @location(8) subpx_alpha: f32
-                            wgpu::VertexAttribute {
-                                offset: 48,
-                                shader_location: 8,
-                                format: wgpu::VertexFormat::Float32,
-                            },
-                        ],
-                    },
-                ],
-                compilation_options: PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &rect_shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
-        });
+        let rect_pipeline = rectangle::pipeline(device, format, &camera_bind_group_layout);
 
         // -- circle pipeline
         let circle_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -959,12 +831,10 @@ impl Pipeline {
         gpu.has_last_camera = true;
     }
 
-    pub fn begin_render_pass_ordered(
+    pub fn draw_ordered(
         &self,
         id: u64,
-        encoder: &mut wgpu::CommandEncoder,
-        target: &wgpu::TextureView,
-        viewport: Rectangle<u32>,
+        pass: &mut wgpu::RenderPass<'_>,
         rect_total_instances: u32,
         circle_total_instances: u32,
         draw_list: &[DrawItem],
@@ -972,32 +842,6 @@ impl Pipeline {
         let Some(gpu) = self.per_scene.get(&id) else {
             return;
         };
-
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("heatmap+rect+circle render pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-                depth_slice: None,
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-        });
-
-        pass.set_viewport(
-            viewport.x as f32,
-            viewport.y as f32,
-            viewport.width as f32,
-            viewport.height as f32,
-            0.0,
-            1.0,
-        );
-        pass.set_scissor_rect(viewport.x, viewport.y, viewport.width, viewport.height);
 
         pass.set_bind_group(bind::CAMERA_GROUP, &gpu.camera_bind_group, &[]);
 

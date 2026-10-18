@@ -13,7 +13,7 @@ pub(super) use legend::*;
 pub use legend::{StudiesLegend, StudyLegendRow};
 
 const PANEL_TITLE_LEFT_PAD: f32 = 6.0;
-const PANEL_TITLE_TO_CONTROLS_GAP: f32 = 8.0;
+pub(in crate::widget::chart) const PANEL_TITLE_TO_CONTROLS_GAP: f32 = 8.0;
 const PANEL_CONTROL_BOX: f32 = TEXT_SIZE + 5.0;
 const PANEL_CONTROL_GAP: f32 = 4.0;
 const PANEL_CONTROL_ICON_SIZE: f32 = TEXT_SIZE - 1.0;
@@ -216,7 +216,7 @@ pub(super) fn series_display_name(series: &KlineSeries) -> String {
     series.ticker_info.ticker.symbol_and_exchange_string()
 }
 
-fn legend_background_color(palette: &Extended) -> Color {
+pub(in crate::widget::chart) fn legend_background_color(palette: &Extended) -> Color {
     let alpha = if palette.is_dark {
         DARK_LEGEND_BACKGROUND_ALPHA
     } else {
@@ -226,7 +226,10 @@ fn legend_background_color(palette: &Extended) -> Color {
     palette.background.weakest.color.scale_alpha(alpha)
 }
 
-fn legend_row_background(row: Rectangle, content_end_x: f32) -> Rectangle {
+pub(in crate::widget::chart) fn legend_row_background(
+    row: Rectangle,
+    content_end_x: f32,
+) -> Rectangle {
     Rectangle {
         x: row.x + TICKER_LEGEND_PADDING,
         y: row.y,

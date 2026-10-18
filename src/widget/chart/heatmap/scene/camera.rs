@@ -6,8 +6,8 @@ const MAX_CAMERA_SCALE: f32 = 1e3;
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CameraUniform {
-    pub a: [f32; 4], // (scale, center.x, center.y, pad)
-    pub b: [f32; 4], // (viewport_w, viewport_h, pad, pad)
+    pub a: [f32; 4], // (scale_x, scale_y, center_x, center_y)
+    pub b: [f32; 4], // (viewport_w, viewport_h, pixel_ratio, screen_origin_x)
 }
 
 #[repr(C)]
@@ -338,7 +338,7 @@ impl Camera {
 
         CameraUniform {
             a: [s, s, center_x, center_y],
-            b: [vw, vh, 0.0, 0.0],
+            b: [vw, vh, 1.0, 0.0],
         }
     }
 

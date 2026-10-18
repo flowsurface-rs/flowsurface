@@ -1,3 +1,5 @@
+pub mod indicators;
+
 use super::Basis;
 use super::aggr::time::DataPoint;
 use exchange::unit::MinQtySize;
@@ -34,6 +36,7 @@ impl Default for Config {
 pub struct SettingsSnapshot {
     pub config: Option<Config>,
     pub studies: Vec<HeatmapStudy>,
+    pub indicators: indicators::HeatmapIndicatorConfig,
 }
 
 #[derive(Default)]

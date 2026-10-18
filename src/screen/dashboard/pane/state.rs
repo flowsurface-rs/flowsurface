@@ -279,15 +279,16 @@ impl State {
                         .basis
                         .unwrap_or(Basis::default_heatmap_time(Some(derived_plan.ticker_info)));
 
-                    let studies = if let Content::ShaderHeatmap { chart, studies } = &self.content {
-                        chart
-                            .as_ref()
-                            .map_or(studies.clone(), |c| c.studies.clone())
-                    } else {
-                        vec![HeatmapStudy::VolumeProfile(
-                            data::chart::heatmap::ProfileKind::default(),
-                        )]
-                    };
+                    let studies =
+                        if let Content::ShaderHeatmap { chart, studies, .. } = &self.content {
+                            chart
+                                .as_ref()
+                                .map_or(studies.clone(), |c| c.studies.clone())
+                        } else {
+                            vec![HeatmapStudy::VolumeProfile(
+                                data::chart::heatmap::ProfileKind::default(),
+                            )]
+                        };
 
                     let config = self
                         .settings
@@ -295,6 +296,11 @@ impl State {
                         .clone()
                         .and_then(|cfg| cfg.heatmap());
 
+                    let indicators = self
+                        .content
+                        .heatmap_indicator_config()
+                        .cloned()
+                        .unwrap_or_default();
                     let content = Content::ShaderHeatmap {
                         chart: Some(Box::new(HeatmapShader::new(
                             basis,
@@ -302,8 +308,10 @@ impl State {
                             base_ticker,
                             studies.clone(),
                             config,
+                            indicators,
                         ))),
                         studies,
+                        indicators: None,
                     };
 
                     let streams = vec![depth_stream(&derived_plan), trades_stream(&derived_plan)];
@@ -619,9 +627,10 @@ impl State {
             }
             Content::ShaderHeatmap { chart, .. } => {
                 if let Some(chart) = chart {
-                    let base = HeatmapShader::view(chart, timezone).map(move |message| {
-                        Message::PaneEvent(id, Event::HeatmapShaderInteraction(message))
-                    });
+                    let base =
+                        HeatmapShader::view(chart, timezone, pixel_ratio).map(move |message| {
+                            Message::PaneEvent(id, Event::HeatmapShaderInteraction(message))
+                        });
 
                     let ticker_info = self.stream_pair();
                     let exchange = ticker_info.as_ref().map(|info| info.ticker.exchange);
@@ -818,6 +827,7 @@ impl State {
                                         Content::ShaderHeatmap {
                                             chart: Some(c),
                                             studies,
+                                            ..
                                         } => {
                                             let saved_config = c.config;
                                             **c = HeatmapShader::new(
@@ -826,6 +836,7 @@ impl State {
                                                 c.ticker_info,
                                                 studies.clone(),
                                                 Some(saved_config),
+                                                c.indicator_config().clone(),
                                             );
                                         }
                                         Content::Kline { chart: Some(c), .. } => {
@@ -872,6 +883,7 @@ impl State {
                                             c.ticker_info,
                                             saved_studies,
                                             Some(saved_config),
+                                            c.indicator_config().clone(),
                                         );
 
                                         if let Some(stream_type) =
@@ -1014,9 +1026,17 @@ impl State {
 
     fn update_settings(&mut self, message: settings::Message) -> Option<Effect> {
         match message {
+            settings::Message::HeatmapIndicator(message) => {
+                if let Content::ShaderHeatmap {
+                    chart: Some(chart), ..
+                } = &mut self.content
+                {
+                    chart.update_indicator_settings(message);
+                }
+            }
             settings::Message::Study(study_msg) => match study_msg {
                 crate::widget::study_configurator::StudyMessage::Heatmap(m) => {
-                    if let Content::ShaderHeatmap { chart, studies } = &mut self.content
+                    if let Content::ShaderHeatmap { chart, studies, .. } = &mut self.content
                         && let Some(c) = chart
                     {
                         c.update_study_configurator(m);
