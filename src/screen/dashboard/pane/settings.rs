@@ -1,4 +1,3 @@
-use crate::widget::study_configurator;
 use data::layout::pane::VisualConfig;
 
 mod heatmap;
@@ -16,6 +15,7 @@ use iced::{Element, widget::button};
 #[derive(Debug, Clone)]
 pub enum HeatmapIndicatorMessage {
     SpreadUnit(data::chart::heatmap::indicators::SpreadUnit),
+    VolumeProfile(data::chart::heatmap::ProfileKind),
     Enabled(data::chart::heatmap::indicators::HeatmapIndicator, bool),
     DistanceEdited(String),
     DistanceSubmitted,
@@ -28,7 +28,6 @@ pub enum Message {
         config: VisualConfig,
         sync_all: bool,
     },
-    Study(study_configurator::StudyMessage),
 }
 
 pub fn sync_all_button<'a>(config: VisualConfig) -> Element<'a, Message> {

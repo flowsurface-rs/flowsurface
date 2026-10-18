@@ -58,6 +58,9 @@ impl canvas::Program<Message> for IndicatorCanvas<'_> {
         let bottom = bounds.height;
 
         let title = match self.kind {
+            HeatmapIndicator::Volume | HeatmapIndicator::VolumeProfile => {
+                self.kind.label().to_owned()
+            }
             HeatmapIndicator::Spread => {
                 let unit = match self.indicators.config().spread_unit {
                     SpreadUnit::Bps => "bps",

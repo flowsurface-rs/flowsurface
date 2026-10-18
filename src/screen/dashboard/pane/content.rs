@@ -11,7 +11,6 @@ use crate::{
     screen::dashboard::pane::settings::{
         self, heatmap_shader_cfg_view, ladder_cfg_view, timesales_cfg_view,
     },
-    theme::ThemeAccents,
     widget::inspector::InspectorContent,
 };
 use data::{
@@ -38,7 +37,6 @@ pub enum Content {
     Starter,
     ShaderHeatmap {
         chart: Option<Box<HeatmapShader>>,
-        studies: Vec<data::chart::heatmap::HeatmapStudy>,
         indicators: Option<data::chart::heatmap::indicators::HeatmapIndicatorConfig>,
     },
     Kline {
@@ -117,9 +115,6 @@ impl Content {
             ContentKind::ShaderHeatmap => Content::ShaderHeatmap {
                 chart: None,
                 indicators: Some(Default::default()),
-                studies: vec![data::chart::heatmap::HeatmapStudy::VolumeProfile(
-                    data::chart::heatmap::ProfileKind::default(),
-                )],
             },
             ContentKind::TimeAndSales => Content::TimeAndSales(None),
             ContentKind::Ladder => Content::Ladder(None),
@@ -131,10 +126,9 @@ impl Content {
         transfer: PaneSettingsTransfer,
     ) -> Option<PaneSettingsSnapshot> {
         match (transfer, self) {
-            (PaneSettingsTransfer::Visual(config), Content::ShaderHeatmap { studies, .. }) => Some(
+            (PaneSettingsTransfer::Visual(config), Content::ShaderHeatmap { .. }) => Some(
                 PaneSettingsSnapshot::Heatmap(data::chart::heatmap::SettingsSnapshot {
                     config: config.as_ref().and_then(VisualConfig::heatmap),
-                    studies: studies.clone(),
                     indicators: self.heatmap_indicator_config().cloned().unwrap_or_default(),
                 }),
             ),
@@ -178,16 +172,10 @@ impl Content {
     ) -> Option<KlineAction> {
         match (self, snapshot) {
             (
-                Content::ShaderHeatmap {
-                    chart,
-                    studies: previous,
-                    indicators,
-                },
+                Content::ShaderHeatmap { chart, indicators },
                 PaneSettingsSnapshot::Heatmap(snapshot),
             ) => {
-                *previous = snapshot.studies.clone();
                 if let Some(chart) = chart {
-                    chart.studies = snapshot.studies.clone();
                     chart.set_indicator_config(snapshot.indicators.clone());
                 } else {
                     *indicators = Some(snapshot.indicators.clone());
@@ -541,7 +529,6 @@ impl Content {
         pane: pane_grid::Pane,
         ticker_info: Option<TickerInfo>,
         selected_basis: Option<Basis>,
-        theme_accents: ThemeAccents,
     ) -> Option<InspectorContent<'a, Message>> {
         match self {
             Self::Kline {
@@ -564,18 +551,14 @@ impl Content {
                 Some(content)
             }
             Self::ShaderHeatmap {
-                chart: Some(chart),
-                studies,
-                ..
+                chart: Some(chart), ..
             } => {
                 let basis = selected_basis.unwrap_or(Basis::default_heatmap_time(ticker_info));
 
                 Some(
                     heatmap_shader_cfg_view(
                         chart.visual_config(),
-                        studies,
                         basis,
-                        theme_accents,
                         chart.indicator_config(),
                         chart.depth_distance_input(),
                     )

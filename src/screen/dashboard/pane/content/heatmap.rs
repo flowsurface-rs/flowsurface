@@ -11,16 +11,15 @@ use crate::widget::chart::heatmap::{
     view::{self, ViewConfig, ViewInputs, ViewWindow},
 };
 
+use crate::screen::dashboard::pane::ChartAction as Action;
 use crate::screen::dashboard::pane::settings::HeatmapIndicatorMessage;
-use crate::widget::study_configurator as study;
-use crate::{screen::dashboard::pane::ChartAction as Action, widget::study_configurator::Study};
 use data::aggr::time::TimeSeries;
 use data::chart::heatmap::indicators::{
     DepthDistance, HeatmapIndicator, HeatmapIndicatorConfig, HeatmapIndicators,
 };
 use data::chart::{
     Basis,
-    heatmap::{HeatmapDataPoint, HeatmapStudy, HistoricalDepth},
+    heatmap::{HeatmapDataPoint, HistoricalDepth},
 };
 use exchange::depth::Depth;
 use exchange::unit::{Price, PriceStep};
@@ -72,7 +71,6 @@ pub struct HeatmapShader {
     data_gen: u64,
     qty_scale: f32,
     rebuild_policy: view::RebuildPolicy,
-    pub studies: Vec<HeatmapStudy>,
     indicators: HeatmapIndicators,
     indicator_panels: [heatmap_widget::scene::indicator::Panel; 2],
     depth_distance_input: String,
@@ -83,7 +81,6 @@ impl HeatmapShader {
         basis: Basis,
         step: PriceStep,
         ticker_info: TickerInfo,
-        studies: Vec<HeatmapStudy>,
         config: Option<data::chart::heatmap::Config>,
         indicators: HeatmapIndicatorConfig,
     ) -> Self {
@@ -126,7 +123,6 @@ impl HeatmapShader {
             rebuild_policy: view::RebuildPolicy::Idle,
             anchor: view::Anchor::default(),
             config: config.unwrap_or_default(),
-            studies,
         }
     }
 
@@ -504,17 +500,22 @@ impl HeatmapShader {
     }
 
     pub fn set_indicator_config(&mut self, config: HeatmapIndicatorConfig) {
-        for (index, kind) in HeatmapIndicator::ALL.into_iter().enumerate() {
+        for (index, kind) in HeatmapIndicator::panels() {
             let previous = self.indicators.config();
-            if (previous.plot(kind).enabled && !config.plot(kind).enabled)
+            if (previous.is_enabled(kind) && !config.is_enabled(kind))
                 || (kind == HeatmapIndicator::Spread && previous.spread_unit != config.spread_unit)
                 || (kind == HeatmapIndicator::Depth && previous.distance != config.distance)
             {
                 self.indicator_panels[index] = Default::default();
             }
         }
+        let overlays_changed = self.indicator_config().volume != config.volume
+            || self.indicator_config().volume_profile != config.volume_profile;
         self.depth_distance_input = format!("{:.2}", config.distance.percent());
         self.indicators.reconfigure(config);
+        if overlays_changed {
+            self.try_rebuild_instances();
+        }
         self.canvas_invalidation.mark_all();
     }
 
@@ -522,9 +523,8 @@ impl HeatmapShader {
         let mut config = self.indicator_config().clone();
         match message {
             HeatmapIndicatorMessage::SpreadUnit(unit) => config.spread_unit = unit,
-            HeatmapIndicatorMessage::Enabled(kind, enabled) => {
-                config.plot_mut(kind).enabled = enabled
-            }
+            HeatmapIndicatorMessage::VolumeProfile(kind) => config.volume_profile = Some(kind),
+            HeatmapIndicatorMessage::Enabled(kind, enabled) => config.set_enabled(kind, enabled),
             HeatmapIndicatorMessage::DistanceEdited(value) => {
                 self.depth_distance_input = value;
                 return;
@@ -541,41 +541,6 @@ impl HeatmapShader {
 
     pub fn visual_config(&self) -> data::chart::heatmap::Config {
         self.config
-    }
-
-    pub fn update_study_configurator(&mut self, message: study::Message<HeatmapStudy>) {
-        let studies = &mut self.studies;
-        let mut studies_changed = false;
-
-        match message {
-            study::Message::StudyToggled(study, is_selected) => {
-                if is_selected {
-                    let already_exists = studies.iter().any(|s| s.is_same_type(&study));
-                    if !already_exists {
-                        studies.push(study);
-                        studies_changed = true;
-                    }
-                } else {
-                    let before = studies.len();
-                    studies.retain(|s| !s.is_same_type(&study));
-                    studies_changed = studies.len() != before;
-                }
-            }
-            study::Message::StudyValueChanged(study) => {
-                if let Some(existing_study) = studies.iter_mut().find(|s| s.is_same_type(&study)) {
-                    *existing_study = study;
-                    studies_changed = true;
-                }
-            }
-        }
-
-        if !studies_changed {
-            return;
-        }
-
-        self.canvas_invalidation.mark_overlay_tooltip();
-        self.canvas_invalidation.mark_overlay_scale_labels();
-        self.try_rebuild_instances();
     }
 
     pub fn set_visual_config(&mut self, config: data::chart::heatmap::Config) {
@@ -699,14 +664,6 @@ impl HeatmapShader {
             }
         }
 
-        let volume_profile = self
-            .studies
-            .iter()
-            .map(|study| match study {
-                HeatmapStudy::VolumeProfile(profile) => profile,
-            })
-            .next();
-
         let latest_depth = self
             .depth_history
             .latest_order_runs(
@@ -728,8 +685,10 @@ impl HeatmapShader {
             palette,
             &self.config,
             &self.ticker_info.market_type(),
-            volume_profile,
-            true,
+            self.indicators.config().volume_profile.as_ref(),
+            self.indicators
+                .config()
+                .is_enabled(HeatmapIndicator::Volume),
         );
 
         let draw_list = built.draw_list();

@@ -1,3 +1,4 @@
+use super::ProfileKind;
 use crate::chart::kline::{
     composition::{PanelValueLabelMode, PanelValueLabelPolicy, PanelValuePrecision},
     viewport::PanelValueScale,
@@ -12,12 +13,14 @@ use std::{collections::BTreeMap, ops::Bound};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HeatmapIndicator {
+    Volume,
     Spread,
     Depth,
+    VolumeProfile,
 }
 
 impl HeatmapIndicator {
-    pub const ALL: [Self; 2] = [Self::Spread, Self::Depth];
+    pub const ALL: [Self; 4] = [Self::Volume, Self::VolumeProfile, Self::Spread, Self::Depth];
 
     pub fn value_scale(
         self,
@@ -29,7 +32,9 @@ impl HeatmapIndicator {
                 SpreadUnit::Bps => PanelValuePrecision::FixedStep(0.001),
                 SpreadUnit::Ticks => PanelValuePrecision::FixedStep(1.0),
             },
-            Self::Depth => PanelValuePrecision::FixedPower10(Power10::new(-Qty::QTY_SCALE as i8)),
+            Self::Volume | Self::Depth | Self::VolumeProfile => {
+                PanelValuePrecision::FixedPower10(Power10::new(-Qty::QTY_SCALE as i8))
+            }
         };
         PanelValueScale::new(Some(precision), Some(ticker))
     }
@@ -37,7 +42,7 @@ impl HeatmapIndicator {
     pub fn value_label_policy(self) -> PanelValueLabelPolicy {
         let mode = match self {
             Self::Spread => PanelValueLabelMode::Compact,
-            Self::Depth => PanelValueLabelMode::Abbreviated,
+            Self::Volume | Self::Depth | Self::VolumeProfile => PanelValueLabelMode::Abbreviated,
         };
         PanelValueLabelPolicy {
             axis_mode: mode,
@@ -46,17 +51,26 @@ impl HeatmapIndicator {
         }
     }
 
-    pub const fn index(self) -> usize {
+    pub const fn panel_index(self) -> Option<usize> {
         match self {
-            Self::Spread => 0,
-            Self::Depth => 1,
+            Self::Spread => Some(0),
+            Self::Depth => Some(1),
+            Self::Volume | Self::VolumeProfile => None,
         }
+    }
+
+    pub fn panels() -> impl Iterator<Item = (usize, Self)> {
+        Self::ALL
+            .into_iter()
+            .filter_map(|kind| kind.panel_index().map(|index| (index, kind)))
     }
 
     pub const fn label(self) -> &'static str {
         match self {
+            Self::Volume => "Volume",
             Self::Spread => "Spread",
             Self::Depth => "Depth",
+            Self::VolumeProfile => "Volume Profile",
         }
     }
 }
@@ -91,10 +105,10 @@ impl TryFrom<u16> for DepthDistance {
     type Error = &'static str;
 
     fn try_from(value: u16) -> Result<Self, Self::Error> {
-        (1..=10_000)
+        (1..=1_000)
             .contains(&value)
             .then_some(Self(value))
-            .ok_or("Depth distance must be between 1 and 10000 basis points")
+            .ok_or("Depth distance must be between 1 and 1000 basis points")
     }
 }
 
@@ -137,6 +151,8 @@ pub struct IndicatorPlotConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HeatmapIndicatorConfig {
+    pub volume: IndicatorPlotConfig,
+    pub volume_profile: Option<ProfileKind>,
     pub spread: IndicatorPlotConfig,
     pub spread_unit: SpreadUnit,
     pub depth: IndicatorPlotConfig,
@@ -147,6 +163,8 @@ pub struct HeatmapIndicatorConfig {
 impl Default for HeatmapIndicatorConfig {
     fn default() -> Self {
         Self {
+            volume: IndicatorPlotConfig { enabled: true },
+            volume_profile: Some(ProfileKind::default()),
             spread: IndicatorPlotConfig::default(),
             spread_unit: SpreadUnit::default(),
             depth: IndicatorPlotConfig::default(),
@@ -157,29 +175,33 @@ impl Default for HeatmapIndicatorConfig {
 }
 
 impl HeatmapIndicatorConfig {
-    pub fn plot(&self, kind: HeatmapIndicator) -> IndicatorPlotConfig {
+    pub fn is_enabled(&self, kind: HeatmapIndicator) -> bool {
         match kind {
-            HeatmapIndicator::Spread => self.spread,
-            HeatmapIndicator::Depth => self.depth,
+            HeatmapIndicator::Volume => self.volume.enabled,
+            HeatmapIndicator::Spread => self.spread.enabled,
+            HeatmapIndicator::Depth => self.depth.enabled,
+            HeatmapIndicator::VolumeProfile => self.volume_profile.is_some(),
         }
     }
 
-    pub fn plot_mut(&mut self, kind: HeatmapIndicator) -> &mut IndicatorPlotConfig {
+    pub fn set_enabled(&mut self, kind: HeatmapIndicator, enabled: bool) {
         match kind {
-            HeatmapIndicator::Spread => &mut self.spread,
-            HeatmapIndicator::Depth => &mut self.depth,
+            HeatmapIndicator::Volume => self.volume.enabled = enabled,
+            HeatmapIndicator::Spread => self.spread.enabled = enabled,
+            HeatmapIndicator::Depth => self.depth.enabled = enabled,
+            HeatmapIndicator::VolumeProfile => {
+                self.volume_profile = enabled.then(|| self.volume_profile.unwrap_or_default());
+            }
         }
     }
 
-    pub fn enabled(&self) -> impl Iterator<Item = HeatmapIndicator> + '_ {
-        HeatmapIndicator::ALL
-            .into_iter()
-            .filter(|kind| self.plot(*kind).enabled)
+    pub fn enabled_panels(&self) -> impl Iterator<Item = (usize, HeatmapIndicator)> + '_ {
+        HeatmapIndicator::panels().filter(|(_, kind)| self.is_enabled(*kind))
     }
 
     fn panel_indices(&self) -> Vec<usize> {
         std::iter::once(0)
-            .chain(self.enabled().map(|kind| kind.index() + 1))
+            .chain(self.enabled_panels().map(|(index, _)| index + 1))
             .collect()
     }
 
@@ -367,11 +389,11 @@ impl HeatmapIndicators {
     }
 
     pub fn reconfigure(&mut self, config: HeatmapIndicatorConfig) {
-        for kind in HeatmapIndicator::ALL {
-            if self.config.plot(kind).enabled != config.plot(kind).enabled
+        for (index, kind) in HeatmapIndicator::panels() {
+            if self.config.is_enabled(kind) != config.is_enabled(kind)
                 || (kind == HeatmapIndicator::Depth && self.config.distance != config.distance)
             {
-                self.samples[kind.index()].clear();
+                self.samples[index].clear();
             }
         }
         self.config = config;
@@ -388,8 +410,8 @@ impl HeatmapIndicators {
             .map(|((&bid, _), (&ask, _))| (bid, ask))
             .filter(|(bid, ask)| bid.units > 0 && *ask >= *bid);
 
-        for kind in self.config.enabled() {
-            let samples = &mut self.samples[kind.index()];
+        for (index, kind) in self.config.enabled_panels() {
+            let samples = &mut self.samples[index];
             if samples
                 .last_key_value()
                 .is_some_and(|(_, sample)| sample.timestamp > timestamp)
@@ -412,6 +434,7 @@ impl HeatmapIndicators {
                         ask: sum(&depth.asks, ask, upper)?,
                     })
                 }
+                HeatmapIndicator::Volume | HeatmapIndicator::VolumeProfile => None,
             });
             samples.insert(timestamp.floor_to(interval), Sample { timestamp, value });
             self.revision = self.revision.wrapping_add(1);
@@ -442,12 +465,16 @@ impl HeatmapIndicators {
                 IndicatorChannelKind::BidDepth,
                 IndicatorChannelKind::AskDepth,
             ],
+            HeatmapIndicator::Volume | HeatmapIndicator::VolumeProfile => &[],
         };
-        channels.iter().map(move |&channel| IndicatorChannel {
-            kind: channel,
-            samples: &self.samples[kind.index()],
-            spread_unit: self.config.spread_unit,
-            min_ticksize,
+        let samples = kind.panel_index().map(|index| &self.samples[index]);
+        channels.iter().filter_map(move |&channel| {
+            Some(IndicatorChannel {
+                kind: channel,
+                samples: samples?,
+                spread_unit: self.config.spread_unit,
+                min_ticksize,
+            })
         })
     }
 }

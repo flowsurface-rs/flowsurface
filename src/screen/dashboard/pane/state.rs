@@ -26,7 +26,7 @@ use crate::{
         sidebar::tickers_table::TickersTable,
     },
     style::{self, Icon, icon_text},
-    theme::{ThemeAccents, ThemeState},
+    theme::ThemeState,
     widget::{
         self, button_with_tooltip,
         inspector::{InspectorBody, InspectorContent, InspectorFooter},
@@ -38,7 +38,6 @@ use data::{
     PaneSettingsSnapshot, PaneSettingsTransfer, UserTimezone,
     chart::{
         Basis,
-        heatmap::HeatmapStudy,
         kline::{ChartSettings, OpenInterestSeries},
     },
     layout::pane::{ContentKind, LinkGroup, PaneSetup, Settings, VisualConfig},
@@ -279,17 +278,6 @@ impl State {
                         .basis
                         .unwrap_or(Basis::default_heatmap_time(Some(derived_plan.ticker_info)));
 
-                    let studies =
-                        if let Content::ShaderHeatmap { chart, studies, .. } = &self.content {
-                            chart
-                                .as_ref()
-                                .map_or(studies.clone(), |c| c.studies.clone())
-                        } else {
-                            vec![HeatmapStudy::VolumeProfile(
-                                data::chart::heatmap::ProfileKind::default(),
-                            )]
-                        };
-
                     let config = self
                         .settings
                         .visual_config
@@ -306,11 +294,9 @@ impl State {
                             basis,
                             derived_plan.price_step,
                             base_ticker,
-                            studies.clone(),
                             config,
                             indicators,
                         ))),
-                        studies,
                         indicators: None,
                     };
 
@@ -384,7 +370,6 @@ impl State {
         tickers_table: &'a TickersTable,
         theme: &'a ThemeState,
     ) -> pane_grid::Content<'a, Message, Theme, Renderer> {
-        let theme_accents = theme.accents();
         let mut top_left_buttons = if Content::Starter == self.content {
             row![]
         } else {
@@ -668,8 +653,7 @@ impl State {
             }
         };
 
-        let body =
-            self.compose_stack_view(base, id, compact_controls, tickers_table, theme_accents);
+        let body = self.compose_stack_view(base, id, compact_controls, tickers_table);
 
         let body = column![
             iced::widget::rule::horizontal(1.0).style(style::split_ruler),
@@ -824,17 +808,12 @@ impl State {
                                         Content::Ladder(Some(p)) => {
                                             p.set_tick_size(tm.multiply_with_min_tick_step(ticker));
                                         }
-                                        Content::ShaderHeatmap {
-                                            chart: Some(c),
-                                            studies,
-                                            ..
-                                        } => {
+                                        Content::ShaderHeatmap { chart: Some(c), .. } => {
                                             let saved_config = c.config;
                                             **c = HeatmapShader::new(
                                                 c.basis,
                                                 tm.multiply_with_min_tick_step(ticker),
                                                 c.ticker_info,
-                                                studies.clone(),
                                                 Some(saved_config),
                                                 c.indicator_config().clone(),
                                             );
@@ -876,12 +855,10 @@ impl State {
                                 match &mut self.content {
                                     Content::ShaderHeatmap { chart: Some(c), .. } => {
                                         let saved_config = c.config;
-                                        let saved_studies = c.studies.clone();
                                         **c = HeatmapShader::new(
                                             new_basis,
                                             c.tick_size(),
                                             c.ticker_info,
-                                            saved_studies,
                                             Some(saved_config),
                                             c.indicator_config().clone(),
                                         );
@@ -1034,16 +1011,6 @@ impl State {
                     chart.update_indicator_settings(message);
                 }
             }
-            settings::Message::Study(study_msg) => match study_msg {
-                crate::widget::study_configurator::StudyMessage::Heatmap(m) => {
-                    if let Content::ShaderHeatmap { chart, studies, .. } = &mut self.content
-                        && let Some(c) = chart
-                    {
-                        c.update_study_configurator(m);
-                        *studies = c.studies.clone();
-                    }
-                }
-            },
             settings::Message::VisualConfigChanged { .. } => {}
         }
 
@@ -1088,11 +1055,7 @@ impl State {
         }
     }
 
-    fn inspector_view<'a>(
-        &'a self,
-        pane: pane_grid::Pane,
-        theme_accents: ThemeAccents,
-    ) -> Option<Element<'a, Message>> {
+    fn inspector_view<'a>(&'a self, pane: pane_grid::Pane) -> Option<Element<'a, Message>> {
         let page = self.inspector?;
         if !self.supports_inspector(page) {
             return None;
@@ -1120,7 +1083,7 @@ impl State {
                 header,
                 rule::horizontal(1.0).style(style::split_ruler),
                 responsive(move |size| {
-                    self.inspector_body_view(pane, page, theme_accents, size.height)
+                    self.inspector_body_view(pane, page, size.height)
                         .unwrap_or_else(|| column![].into())
                 }),
             ])
@@ -1136,14 +1099,11 @@ impl State {
         &'a self,
         pane: pane_grid::Pane,
         page: InspectorPage,
-        theme_accents: ThemeAccents,
         available_height: f32,
     ) -> Option<Element<'a, Message>> {
         let (body, footer) = match page {
             InspectorPage::PaneSettings => {
-                let (sections, footer) = self
-                    .pane_settings_content(pane, theme_accents)?
-                    .into_parts();
+                let (sections, footer) = self.pane_settings_content(pane)?.into_parts();
                 (
                     sections,
                     footer.map(|footer| (InspectorFooter::HEIGHT, footer)),
@@ -1299,9 +1259,8 @@ impl State {
         pane: pane_grid::Pane,
         compact_controls: Option<Element<'a, Message>>,
         tickers_table: &'a TickersTable,
-        theme_accents: ThemeAccents,
     ) -> Element<'a, Message> {
-        let base = if let Some(inspector) = self.inspector_view(pane, theme_accents) {
+        let base = if let Some(inspector) = self.inspector_view(pane) {
             row![
                 base,
                 rule::vertical(1.0).style(style::split_ruler),
@@ -1425,14 +1384,9 @@ impl State {
     pub fn pane_settings_content<'a>(
         &'a self,
         pane: pane_grid::Pane,
-        theme_accents: ThemeAccents,
     ) -> Option<InspectorContent<'a, Message>> {
-        self.content.pane_settings_content(
-            pane,
-            self.stream_pair(),
-            self.settings.selected_basis,
-            theme_accents,
-        )
+        self.content
+            .pane_settings_content(pane, self.stream_pair(), self.settings.selected_basis)
     }
 
     fn show_modal_with_focus(&mut self, requested_modal: Modal) -> Option<Effect> {

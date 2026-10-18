@@ -151,7 +151,9 @@ impl Panel {
 
         let palette = theme.extended_palette();
         let colors = match kind {
-            HeatmapIndicator::Spread => [palette.primary.base.color.into_linear(); 2],
+            HeatmapIndicator::Volume
+            | HeatmapIndicator::Spread
+            | HeatmapIndicator::VolumeProfile => [palette.primary.base.color.into_linear(); 2],
             HeatmapIndicator::Depth => [
                 palette.success.strong.color.into_linear(),
                 palette.danger.strong.color.into_linear(),
@@ -193,7 +195,9 @@ impl Panel {
                 let Some(value) = value else { continue };
 
                 let values = match kind {
-                    HeatmapIndicator::Spread => [value, 0.0],
+                    HeatmapIndicator::Volume
+                    | HeatmapIndicator::Spread
+                    | HeatmapIndicator::VolumeProfile => [value, 0.0],
                     HeatmapIndicator::Depth => {
                         let Some(ask) = second_value else { continue };
                         [value, ask]
@@ -232,9 +236,12 @@ impl Panel {
                     let heights = group.means.map(|value| (value / max) as f32);
                     if heights.iter().any(|height| *height > 0.0) {
                         let layout = match kind {
-                            HeatmapIndicator::Spread => RectXLayout::PixelBar,
+                            HeatmapIndicator::Volume
+                            | HeatmapIndicator::Spread
+                            | HeatmapIndicator::VolumeProfile => RectXLayout::PixelBar,
                             HeatmapIndicator::Depth => RectXLayout::IndicatorPair,
                         };
+
                         instances.push(RectInstance {
                             position: [0.0, 0.0],
                             size: heights,

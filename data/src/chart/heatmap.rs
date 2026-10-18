@@ -35,7 +35,6 @@ impl Default for Config {
 #[derive(Debug, Clone)]
 pub struct SettingsSnapshot {
     pub config: Option<Config>,
-    pub studies: Vec<HeatmapStudy>,
     pub indicators: indicators::HeatmapIndicatorConfig,
 }
 
@@ -617,25 +616,6 @@ impl GroupedTrade {
             self.price.cmp(&price)
         } else {
             self.is_sell.cmp(&is_sell)
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-pub enum HeatmapStudy {
-    VolumeProfile(ProfileKind),
-}
-
-impl HeatmapStudy {
-    pub const ALL: [HeatmapStudy; 1] = [HeatmapStudy::VolumeProfile(ProfileKind::VisibleRange)];
-}
-
-impl std::fmt::Display for HeatmapStudy {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            HeatmapStudy::VolumeProfile(kind) => {
-                write!(f, "Volume Profile ({})", kind)
-            }
         }
     }
 }

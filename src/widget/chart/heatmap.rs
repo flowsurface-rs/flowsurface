@@ -105,7 +105,11 @@ impl<'a> HeatmapShaderWidget<'a> {
     }
 
     fn indicator_value_scale(&self, index: usize) -> PanelValueScale {
-        HeatmapIndicator::ALL[index].value_scale(self.indicators.config(), self.ticker_info)
+        HeatmapIndicator::panels()
+            .find(|(panel_index, _)| *panel_index == index)
+            .expect("indicator panel index")
+            .1
+            .value_scale(self.indicators.config(), self.ticker_info)
     }
 
     fn indicator_axis_at(
@@ -116,15 +120,15 @@ impl<'a> HeatmapShaderWidget<'a> {
     ) -> Option<(usize, Rectangle)> {
         self.indicators
             .config()
-            .enabled()
+            .enabled_panels()
             .zip(regions)
-            .find_map(|(kind, (_, bounds))| {
+            .find_map(|((index, _), (_, bounds))| {
                 let axis = Rectangle {
                     x: bounds.x + plot_width,
                     width: (bounds.width - plot_width).max(0.0),
                     ..*bounds
                 };
-                cursor.position_over(axis).map(|_| (kind.index(), *bounds))
+                cursor.position_over(axis).map(|_| (index, *bounds))
             })
     }
 
@@ -695,13 +699,13 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
                 }
             });
 
-            for (kind, (_, bounds)) in self
+            for ((index, kind), (_, bounds)) in self
                 .indicators
                 .config()
-                .enabled()
+                .enabled_panels()
                 .zip(State::indicator_regions(layout))
             {
-                let panel = &self.indicator_panels[kind.index()];
+                let panel = &self.indicator_panels[index];
                 let plot = Rectangle {
                     width: plot_bounds.width,
                     ..bounds
