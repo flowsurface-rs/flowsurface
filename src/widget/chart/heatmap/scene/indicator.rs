@@ -378,9 +378,7 @@ impl shader::Primitive for Primitive {
     ) {
         let mut camera = self.camera;
         camera.b[3] = bounds.x;
-        pipeline
-            .panels
-            .retain(|_, panel| panel.lifetime.strong_count() > 0);
+
         let gpu = pipeline.panels.entry(self.id).or_insert_with(|| {
             let camera = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("indicator camera"),
@@ -408,10 +406,12 @@ impl shader::Primitive for Primitive {
                     },
                 ],
             });
+
+            let capacity = self.instances.len().max(1).next_power_of_two();
             PanelGpu {
                 lifetime: Arc::downgrade(&self.lifetime),
-                instances: instance_buffer(device, 1),
-                capacity: 1,
+                instances: instance_buffer(device, capacity),
+                capacity,
                 generation: None,
                 camera,
                 params,

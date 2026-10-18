@@ -4,7 +4,7 @@ mod state;
 
 use crate::connector::fetcher::FetchSpec;
 
-pub use content::Content;
+pub use content::{Content, heatmap::HeatmapContent};
 pub use state::{Effect, Message, State};
 
 pub enum Action {

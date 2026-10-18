@@ -366,8 +366,6 @@ impl Pipeline {
     }
 
     fn ensure_scene(&mut self, id: u64, device: &wgpu::Device) -> &mut PerSceneGpu {
-        self.cleanup_dropped_scenes();
-
         self.per_scene.entry(id).or_insert_with(|| {
             let rect_instance_capacity: usize = 4096;
             let rect_instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -470,7 +468,7 @@ impl Pipeline {
         })
     }
 
-    fn cleanup_dropped_scenes(&mut self) {
+    pub(super) fn cleanup_dropped_scenes(&mut self) {
         for id in drain_dropped_scene_ids() {
             self.per_scene.remove(&id);
         }

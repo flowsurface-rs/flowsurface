@@ -413,6 +413,8 @@ impl shader::Primitive for Primitive {
         bounds: &Rectangle,
         viewport: &Viewport,
     ) {
+        pipeline.cleanup_dropped_scenes();
+
         let mut cam_u = self.camera.to_uniform(bounds.width, bounds.height);
         cam_u.a[2] = self
             .camera

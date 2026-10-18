@@ -44,6 +44,33 @@ const DEPTH_PROFILE_WIDTH_PX: f32 = 160.0;
 
 pub type Message = heatmap_widget::Message;
 
+pub enum HeatmapContent {
+    Active(Box<HeatmapShader>),
+    Parked(HeatmapIndicatorConfig),
+}
+
+impl HeatmapContent {
+    pub fn indicator_config(&self) -> &HeatmapIndicatorConfig {
+        match self {
+            Self::Active(chart) => chart.indicator_config(),
+            Self::Parked(config) => config,
+        }
+    }
+
+    pub fn set_indicator_config(&mut self, config: HeatmapIndicatorConfig) {
+        match self {
+            Self::Active(chart) => chart.set_indicator_config(config),
+            Self::Parked(previous) => *previous = config,
+        }
+    }
+
+    pub fn park(&mut self) {
+        if let Self::Active(chart) = self {
+            *self = Self::Parked(chart.indicator_config().clone());
+        }
+    }
+}
+
 pub struct HeatmapShader {
     pub last_tick: Option<Instant>,
     scene: Scene,
@@ -134,9 +161,8 @@ impl HeatmapShader {
                 }
             }
             Message::PanelSplitChanged { index, split } => {
-                let mut config = self.indicator_config().clone();
-                config.set_split(index, split);
-                self.set_indicator_config(config);
+                self.indicators.set_panel_split(index, split);
+                self.canvas_invalidation.mark_all();
             }
             Message::BoundsChanged(bounds) => {
                 self.viewport = Some(bounds);
@@ -500,6 +526,10 @@ impl HeatmapShader {
     }
 
     pub fn set_indicator_config(&mut self, config: HeatmapIndicatorConfig) {
+        if self.indicator_config() == &config {
+            return;
+        }
+
         for (index, kind) in HeatmapIndicator::panels() {
             let previous = self.indicators.config();
             if (previous.is_enabled(kind) && !config.is_enabled(kind))
@@ -511,7 +541,9 @@ impl HeatmapShader {
         }
         let overlays_changed = self.indicator_config().volume != config.volume
             || self.indicator_config().volume_profile != config.volume_profile;
-        self.depth_distance_input = format!("{:.2}", config.distance.percent());
+        if self.indicator_config().distance != config.distance {
+            self.depth_distance_input = format!("{:.2}", config.distance.percent());
+        }
         self.indicators.reconfigure(config);
         if overlays_changed {
             self.try_rebuild_instances();
@@ -533,6 +565,7 @@ impl HeatmapShader {
                 let Some(distance) = DepthDistance::from_percent(&self.depth_distance_input) else {
                     return;
                 };
+                self.depth_distance_input = format!("{:.2}", distance.percent());
                 config.distance = distance;
             }
         }

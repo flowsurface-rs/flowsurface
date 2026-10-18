@@ -388,16 +388,24 @@ impl HeatmapIndicators {
         &self.config
     }
 
+    pub fn set_panel_split(&mut self, index: usize, split: f32) {
+        self.config.set_split(index, split);
+    }
+
     pub fn reconfigure(&mut self, config: HeatmapIndicatorConfig) {
+        let mut values_changed = self.config.spread_unit != config.spread_unit;
         for (index, kind) in HeatmapIndicator::panels() {
             if self.config.is_enabled(kind) != config.is_enabled(kind)
                 || (kind == HeatmapIndicator::Depth && self.config.distance != config.distance)
             {
                 self.samples[index].clear();
+                values_changed = true;
             }
         }
         self.config = config;
-        self.revision = self.revision.wrapping_add(1);
+        if values_changed {
+            self.revision = self.revision.wrapping_add(1);
+        }
     }
 
     pub fn ingest(&mut self, depth: &Depth, timestamp: UnixMs, interval: Timeframe) {

@@ -1,6 +1,6 @@
 use super::content::{
     self, Content,
-    heatmap::HeatmapShader,
+    heatmap::{HeatmapContent, HeatmapShader},
     kline::{Action as KlineAction, ChartCommand},
     ladder::Ladder,
     timesales::TimeAndSales,
@@ -289,16 +289,15 @@ impl State {
                         .heatmap_indicator_config()
                         .cloned()
                         .unwrap_or_default();
-                    let content = Content::ShaderHeatmap {
-                        chart: Some(Box::new(HeatmapShader::new(
+                    let content = Content::ShaderHeatmap(HeatmapContent::Active(Box::new(
+                        HeatmapShader::new(
                             basis,
                             derived_plan.price_step,
                             base_ticker,
                             config,
                             indicators,
-                        ))),
-                        indicators: None,
-                    };
+                        ),
+                    )));
 
                     let streams = vec![depth_stream(&derived_plan), trades_stream(&derived_plan)];
 
@@ -610,8 +609,8 @@ impl State {
                     uninitialized_base(ContentKind::CandlestickChart)
                 }
             }
-            Content::ShaderHeatmap { chart, .. } => {
-                if let Some(chart) = chart {
+            Content::ShaderHeatmap(heatmap) => {
+                if let HeatmapContent::Active(chart) = heatmap {
                     let base =
                         HeatmapShader::view(chart, timezone, pixel_ratio).map(move |message| {
                             Message::PaneEvent(id, Event::HeatmapShaderInteraction(message))
@@ -808,7 +807,7 @@ impl State {
                                         Content::Ladder(Some(p)) => {
                                             p.set_tick_size(tm.multiply_with_min_tick_step(ticker));
                                         }
-                                        Content::ShaderHeatmap { chart: Some(c), .. } => {
+                                        Content::ShaderHeatmap(HeatmapContent::Active(c)) => {
                                             let saved_config = c.config;
                                             **c = HeatmapShader::new(
                                                 c.basis,
@@ -853,7 +852,7 @@ impl State {
                                 self.settings.selected_basis = Some(new_basis);
 
                                 match &mut self.content {
-                                    Content::ShaderHeatmap { chart: Some(c), .. } => {
+                                    Content::ShaderHeatmap(HeatmapContent::Active(c)) => {
                                         let saved_config = c.config;
                                         **c = HeatmapShader::new(
                                             new_basis,
@@ -914,7 +913,7 @@ impl State {
                 }
             }
             Event::HeatmapShaderInteraction(message) => {
-                if let Content::ShaderHeatmap { chart: Some(c), .. } = &mut self.content {
+                if let Content::ShaderHeatmap(HeatmapContent::Active(c)) = &mut self.content {
                     c.update(message);
                 }
             }
@@ -1004,10 +1003,7 @@ impl State {
     fn update_settings(&mut self, message: settings::Message) -> Option<Effect> {
         match message {
             settings::Message::HeatmapIndicator(message) => {
-                if let Content::ShaderHeatmap {
-                    chart: Some(chart), ..
-                } = &mut self.content
-                {
+                if let Content::ShaderHeatmap(HeatmapContent::Active(chart)) = &mut self.content {
                     chart.update_indicator_settings(message);
                 }
             }
@@ -1020,7 +1016,7 @@ impl State {
     fn supports_inspector(&self, page: InspectorPage) -> bool {
         match &self.content {
             Content::Kline { chart: Some(_), .. } => true,
-            Content::ShaderHeatmap { chart: Some(_), .. }
+            Content::ShaderHeatmap(HeatmapContent::Active(_))
             | Content::TimeAndSales(Some(_))
             | Content::Ladder(Some(_)) => page == InspectorPage::PaneSettings,
             _ => false,
