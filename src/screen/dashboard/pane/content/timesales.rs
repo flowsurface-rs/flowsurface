@@ -2,7 +2,10 @@ use crate::style;
 use data::config::theme::{darken, lighten};
 use data::config::timezone::TimeLabelKind;
 pub use data::panel::timesales::Config;
-use data::panel::timesales::{HistAgg, HistAggValues, StackedBar, TapeTrade, prune_trades};
+use data::panel::timesales::{
+    HistAgg, HistAggValues, StackedBar, TapeTrade, TickerDisplay, TimeFormat, prune_trades,
+};
+use data::tickers_table::market_suffix;
 use exchange::unit::Qty;
 use exchange::{TickerInfo, Trade, UnixMs, unit::qty::volume_size_unit};
 
@@ -18,6 +21,12 @@ const TEXT_SIZE: iced::Pixels = iced::Pixels(style::text_size::SMALL);
 const METRICS_HEIGHT_COMPACT: f32 = 8.0;
 const METRICS_HEIGHT_FULL: f32 = 18.0;
 const TRADE_ROW_HEIGHT: f32 = 14.0;
+const COLUMN_PADDING: f32 = 8.0;
+const COLUMN_GAP: f32 = 8.0;
+const TICKER_LABEL_GAP: f32 = 4.0;
+
+const CHAR_WIDTH: f32 = TEXT_SIZE.0 * 0.65;
+
 #[derive(Debug, Clone, Copy)]
 pub enum Message {
     Scrolled(f32),
@@ -335,6 +344,9 @@ impl canvas::Program<Message> for TimeAndSalesView<'_> {
         let palette = theme.extended_palette();
         let is_scroll_paused = self.panel.is_paused;
         let stacked_bar_h = self.panel.stacked_bar_height();
+        let quantity_prefix = self.panel.recent_trades.front().map_or("", |entry| {
+            entry.quantity_prefix(self.panel.multiple_tickers, volume_size_unit())
+        });
 
         let content = self.panel.cache.draw(renderer, bounds.size(), |frame| {
             let content_top_y = -self.panel.scroll_offset;
@@ -384,10 +396,17 @@ impl canvas::Program<Message> for TimeAndSalesView<'_> {
                             let total = buy_val + sell_val;
                             let buy_ratio = if total > 0.0 { buy_val / total } else { 0.5 };
 
+                            let prefix = quantity_prefix;
                             (
                                 buy_ratio,
-                                data::util::abbr_large_numbers(buy_val as f64),
-                                data::util::abbr_large_numbers(sell_val as f64),
+                                format!(
+                                    "{prefix}{}",
+                                    data::util::abbr_large_numbers(buy_val as f64)
+                                ),
+                                format!(
+                                    "{prefix}{}",
+                                    data::util::abbr_large_numbers(sell_val as f64)
+                                ),
                             )
                         }
                     };
@@ -436,6 +455,37 @@ impl canvas::Program<Message> for TimeAndSalesView<'_> {
             // Feed
             let row_height = TRADE_ROW_HEIGHT;
             let row_width = bounds.width;
+            let [source_column, price_column, size_column, time_column] = trade_column_bounds(
+                row_width,
+                self.panel.config.ticker_display,
+                self.panel.config.time_format,
+            );
+            let show_ticker = self.panel.config.ticker_display == TickerDisplay::IconAndTicker;
+            let icon_column = if show_ticker {
+                (
+                    source_column.0,
+                    (source_column.0 + TEXT_SIZE.0).min(source_column.1),
+                )
+            } else {
+                source_column
+            };
+            let ticker_column = (
+                (icon_column.1 + TICKER_LABEL_GAP).min(source_column.1),
+                source_column.1,
+            );
+            let draw_cell = |frame: &mut canvas::Frame, value: Text, (left, right): (f32, f32)| {
+                if right > left {
+                    frame.with_clip(
+                        Rectangle {
+                            x: left,
+                            y: 0.0,
+                            width: right - left,
+                            height: bounds.height,
+                        },
+                        |frame| frame.fill_text(value),
+                    );
+                }
+            };
 
             let row_scroll_offset = (self.panel.scroll_offset - stacked_bar_h).max(0.0);
             let start_index = (row_scroll_offset / row_height).floor() as usize;
@@ -510,45 +560,80 @@ impl canvas::Program<Message> for TimeAndSalesView<'_> {
                     bg_color.scale_alpha(bg_color_alpha.min(0.9)),
                 );
 
-                let trade_time = create_text(
-                    self.timezone
-                        .format_with_kind(
-                            entry.time.as_u64() as i64,
-                            TimeLabelKind::Custom("%M:%S.%3f"),
-                        )
-                        .unwrap_or_default(),
+                draw_cell(
+                    frame,
+                    Text {
+                        content: char::from(style::venue_icon(
+                            entry.ticker_info().exchange().venue(),
+                        ))
+                        .to_string(),
+                        position: Point {
+                            x: (icon_column.0 + icon_column.1) / 2.0,
+                            y: y_position + row_height / 2.0,
+                        },
+                        size: TEXT_SIZE,
+                        font: style::ICONS_FONT,
+                        color: text_color,
+                        align_x: Alignment::Center.into(),
+                        align_y: Alignment::Center.into(),
+                        ..Default::default()
+                    },
+                    icon_column,
+                );
+                if show_ticker {
+                    let (mut label, market) = entry.ticker_info().ticker.display_symbol_and_type();
+                    label.push_str(market_suffix(market));
+                    draw_cell(
+                        frame,
+                        create_text(
+                            label,
+                            Point {
+                                x: ticker_column.0,
+                                y: y_position,
+                            },
+                            Alignment::Start,
+                            text_color,
+                        ),
+                        ticker_column,
+                    );
+                }
+                let trade_price = create_text(
+                    entry.price.to_string(entry.ticker_info().min_ticksize),
                     Point {
-                        x: row_width * 0.1,
+                        x: price_column.0,
                         y: y_position,
                     },
                     Alignment::Start,
                     text_color,
                 );
-                frame.fill_text(trade_time);
-
-                let trade_price = create_text(
-                    entry.price.to_string(entry.ticker_info().min_ticksize),
-                    Point {
-                        x: row_width * 0.67,
-                        y: y_position,
-                    },
-                    Alignment::End,
-                    text_color,
-                );
-                frame.fill_text(trade_price);
+                draw_cell(frame, trade_price, price_column);
 
                 let trade_qty = create_text(
-                    data::util::abbr_large_numbers(
-                        entry.quantity(self.panel.multiple_tickers).to_f64(),
-                    ),
+                    entry.quantity_text(self.panel.multiple_tickers),
                     Point {
-                        x: row_width * 0.9,
+                        x: size_column.0,
+                        y: y_position,
+                    },
+                    Alignment::Start,
+                    text_color,
+                );
+                draw_cell(frame, trade_qty, size_column);
+
+                let trade_time = create_text(
+                    self.timezone
+                        .format_with_kind(
+                            entry.time.as_u64() as i64,
+                            TimeLabelKind::Custom(self.panel.config.time_format.pattern()),
+                        )
+                        .unwrap_or_default(),
+                    Point {
+                        x: time_column.1,
                         y: y_position,
                     },
                     Alignment::End,
                     text_color,
                 );
-                frame.fill_text(trade_qty);
+                draw_cell(frame, trade_time, time_column);
             }
 
             if is_scroll_paused {
@@ -627,4 +712,49 @@ impl canvas::Program<Message> for TimeAndSalesView<'_> {
 
         mouse::Interaction::default()
     }
+}
+
+fn trade_column_bounds(
+    width: f32,
+    display: TickerDisplay,
+    time_format: TimeFormat,
+) -> [(f32, f32); 4] {
+    let time_chars = match time_format {
+        TimeFormat::MinutesSecondsMillis => 9,
+        TimeFormat::HoursMinutesSecondsMillis => 12,
+        TimeFormat::HoursMinutesSeconds => 8,
+    };
+
+    let source_width = TEXT_SIZE.0
+        + if display == TickerDisplay::IconAndTicker {
+            TICKER_LABEL_GAP + (16.0 * CHAR_WIDTH).ceil()
+        } else {
+            0.0
+        };
+    let widths = [
+        source_width,
+        (12.0 * CHAR_WIDTH).ceil(),
+        (9.0 * CHAR_WIDTH).ceil(),
+    ];
+
+    let time_width = (time_chars as f32 * CHAR_WIDTH).ceil();
+    let left = COLUMN_PADDING.min(width / 2.0);
+    let right = (width - COLUMN_PADDING).max(left);
+    let time_left = (right - time_width).max(left);
+    let content_width: f32 = widths.iter().sum();
+
+    let gap = ((right - left - time_width - content_width) / 3.0).max(COLUMN_GAP);
+    let available = (time_left - left - gap * 3.0).max(0.0);
+    let scale = (available / content_width).min(1.0);
+    let content_right = (time_left - gap).max(left);
+
+    let mut x = left;
+    let mut columns = [(left, left); 4];
+    for (column, natural_width) in columns.iter_mut().zip(widths) {
+        let end = (x + natural_width * scale).min(content_right);
+        *column = (x, end);
+        x = (end + gap).min(content_right);
+    }
+    columns[3] = (time_left, right);
+    columns
 }

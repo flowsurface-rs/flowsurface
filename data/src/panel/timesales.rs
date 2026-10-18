@@ -1,6 +1,9 @@
 use std::{collections::VecDeque, time::Duration};
 
-use exchange::{SizeUnit, TickerInfo, Trade, UnixMs, unit::Qty};
+use exchange::{
+    SizeUnit, TickerInfo, Trade, UnixMs,
+    unit::{Qty, qty::volume_size_unit},
+};
 use serde::{Deserialize, Serialize};
 
 use crate::util::ok_or_default;
@@ -9,6 +12,10 @@ const TRADE_RETENTION_MS: u64 = 120_000;
 
 #[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
+    #[serde(deserialize_with = "ok_or_default", default)]
+    pub ticker_display: TickerDisplay,
+    #[serde(deserialize_with = "ok_or_default", default)]
+    pub time_format: TimeFormat,
     pub trade_size_filter: f32,
     #[serde(default = "default_buffer_filter")]
     pub trade_retention: Duration,
@@ -19,10 +26,53 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
+            ticker_display: TickerDisplay::default(),
+            time_format: TimeFormat::default(),
             trade_size_filter: 0.0,
             trade_retention: Duration::from_millis(TRADE_RETENTION_MS),
             stacked_bar: StackedBar::Compact(StackedBarRatio::default()).into(),
         }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TickerDisplay {
+    #[default]
+    Icon,
+    IconAndTicker,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TimeFormat {
+    #[default]
+    MinutesSecondsMillis,
+    HoursMinutesSecondsMillis,
+    HoursMinutesSeconds,
+}
+
+impl TimeFormat {
+    pub const ALL: [Self; 3] = [
+        Self::MinutesSecondsMillis,
+        Self::HoursMinutesSecondsMillis,
+        Self::HoursMinutesSeconds,
+    ];
+
+    pub fn pattern(self) -> &'static str {
+        match self {
+            Self::MinutesSecondsMillis => "%M:%S.%3f",
+            Self::HoursMinutesSecondsMillis => "%H:%M:%S.%3f",
+            Self::HoursMinutesSeconds => "%H:%M:%S",
+        }
+    }
+}
+
+impl std::fmt::Display for TimeFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::MinutesSecondsMillis => "mm:ss.ms",
+            Self::HoursMinutesSecondsMillis => "hh:mm:ss.ms",
+            Self::HoursMinutesSeconds => "hh:mm:ss",
+        })
     }
 }
 
@@ -110,6 +160,14 @@ impl TapeTrade {
         self.ticker_info
     }
 
+    pub fn quantity_text(&self, multiple_tickers: bool) -> String {
+        format!(
+            "{}{}",
+            self.quantity_prefix(multiple_tickers, volume_size_unit()),
+            crate::util::abbr_large_numbers(self.quantity(multiple_tickers).to_f64())
+        )
+    }
+
     pub fn quantity(&self, multiple_tickers: bool) -> Qty {
         if multiple_tickers {
             self.notional
@@ -120,6 +178,17 @@ impl TapeTrade {
 
     pub fn passes_filter(&self, threshold: f32) -> bool {
         self.notional.to_f32_lossy() >= threshold
+    }
+
+    pub fn quantity_prefix(&self, multiple_tickers: bool, size_unit: SizeUnit) -> &'static str {
+        if multiple_tickers
+            || size_unit == SizeUnit::Quote
+            || self.ticker_info.market_type() == exchange::adapter::MarketKind::InversePerps
+        {
+            "$"
+        } else {
+            ""
+        }
     }
 
     pub fn merge_into(target: &mut VecDeque<Self>, mut incoming: Vec<Self>) {

@@ -7,7 +7,7 @@ use crate::{
     },
 };
 use data::layout::pane::VisualConfig;
-use data::panel::timesales::{self, StackedBar, StackedBarRatio};
+use data::panel::timesales::{self, StackedBar, StackedBarRatio, TickerDisplay, TimeFormat};
 use data::util::format_with_commas;
 use iced::{
     Alignment, Element, Length,
@@ -19,6 +19,38 @@ use iced::{
 use std::time::Duration;
 
 pub fn timesales_cfg_view<'a>(cfg: timesales::Config) -> InspectorContent<'a, Message> {
+    let change_ticker_display = move |ticker_display| Message::VisualConfigChanged {
+        config: VisualConfig::TimeAndSales(timesales::Config {
+            ticker_display,
+            ..cfg
+        }),
+        sync_all: false,
+    };
+    let ticker_display = row![
+        radio(
+            "Icon",
+            TickerDisplay::Icon,
+            Some(cfg.ticker_display),
+            change_ticker_display
+        )
+        .spacing(4),
+        radio(
+            "Icon + ticker",
+            TickerDisplay::IconAndTicker,
+            Some(cfg.ticker_display),
+            change_ticker_display
+        )
+        .spacing(4),
+    ]
+    .spacing(12);
+
+    let time_format = pick_list(TimeFormat::ALL, Some(cfg.time_format), move |time_format| {
+        Message::VisualConfigChanged {
+            config: VisualConfig::TimeAndSales(timesales::Config { time_format, ..cfg }),
+            sync_all: false,
+        }
+    });
+
     let filter = cfg.trade_size_filter;
     let trade_size_slider = classic_slider_row(
         Some(text("Trade")),
@@ -145,9 +177,11 @@ pub fn timesales_cfg_view<'a>(cfg: timesales::Config) -> InspectorContent<'a, Me
     };
 
     let mut content = InspectorContent::new(vec![
+        InspectorSection::titled("Stacked bar", stacked_bar).with_modal_container(),
+        InspectorSection::titled("Ticker display", ticker_display).with_modal_container(),
+        InspectorSection::titled("Time format", time_format).with_modal_container(),
         InspectorSection::titled("Size filter", trade_size_slider).with_modal_container(),
         InspectorSection::new(history_title, retention_slider).with_modal_container(),
-        InspectorSection::titled("Stacked bar", stacked_bar).with_modal_container(),
     ]);
     content.set_footer(row![
         space::horizontal(),
