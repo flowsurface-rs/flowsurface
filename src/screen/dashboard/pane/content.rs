@@ -310,7 +310,7 @@ impl Content {
             }
             Self::TimeAndSales(panel) => {
                 if let Some(panel) = panel {
-                    panel.insert_buffer(trades);
+                    panel.insert_buffer(stream.ticker_info(), trades);
                 }
             }
             Self::Ladder(panel) => {
@@ -482,7 +482,7 @@ impl Content {
                 c.set_visual_config(cfg);
             }
             (Content::TimeAndSales(Some(panel)), VisualConfig::TimeAndSales(cfg)) => {
-                panel.config = cfg;
+                panel.set_config(cfg);
             }
             (Content::Ladder(Some(panel)), VisualConfig::Ladder(cfg)) => {
                 panel.config = cfg;

@@ -14,7 +14,11 @@ use crate::{
     },
     modal::{
         self, ModifierKind,
-        pane::{Modal, mini_tickers_list::MiniPanel, stack_modal},
+        pane::{
+            Modal,
+            mini_tickers_list::{MiniPanel, RowSelection},
+            stack_modal,
+        },
     },
     notify::Notifications,
     screen::{
@@ -42,7 +46,7 @@ use data::{
 };
 use exchange::{
     Kline, StreamPairKind, TickMultiplier, TickerInfo, Timeframe,
-    adapter::{MarketKind, StreamKind, StreamTicksize},
+    adapter::{StreamKind, StreamTicksize},
     unit::PriceStep,
 };
 use iced::{
@@ -242,15 +246,15 @@ impl State {
                         .and_then(|cfg| cfg.time_and_sales());
                     let content = Content::TimeAndSales(Some(Box::new(TimeAndSales::new(
                         config,
-                        derived_plan.ticker_info,
+                        tickers.len(),
                     ))));
 
-                    let temp = PaneSetup {
-                        push_freq: exchange::PushFrequency::ServerDefault,
-                        ..derived_plan
-                    };
-
-                    let streams = vec![trades_stream(&temp)];
+                    let streams = tickers
+                        .iter()
+                        .map(|ticker_info| StreamKind::Trades {
+                            ticker_info: *ticker_info,
+                        })
+                        .collect();
 
                     (content, streams)
                 }
@@ -388,13 +392,10 @@ impl State {
             };
 
             let exchange_icon = icon_text(style::venue_icon(base_ti.ticker.exchange.venue()), 14);
-            let mut label = {
-                let symbol = base_ti.ticker.display_symbol_and_type().0;
-                match base_ti.ticker.market_type() {
-                    MarketKind::Spot => symbol,
-                    MarketKind::LinearPerps | MarketKind::InversePerps => symbol + " PERP",
-                }
-            };
+            let mut label = base_ti.ticker.display_symbol_and_type().0;
+            if base_ti.is_perps() {
+                label.push_str(" PERP");
+            }
             if extra > 0 {
                 label = format!("{label} +{extra}");
             }
@@ -948,7 +949,10 @@ impl State {
 
                     let crate::modal::pane::mini_tickers_list::Action::RowSelected(sel) = action;
                     match sel {
-                        crate::modal::pane::mini_tickers_list::RowSelection::Add(ti) => {
+                        RowSelection::Add(ti) => {
+                            if matches!(self.content, Content::TimeAndSales(Some(_))) {
+                                return self.change_timesales_ticker(sel);
+                            }
                             if let Content::Kline { chart: Some(c), .. } = &mut self.content {
                                 if matches!(c.basis(), Basis::Tick(_)) {
                                     return None;
@@ -961,7 +965,10 @@ impl State {
                                 }
                             }
                         }
-                        crate::modal::pane::mini_tickers_list::RowSelection::Remove(ti) => {
+                        RowSelection::Remove(ti) => {
+                            if matches!(self.content, Content::TimeAndSales(Some(_))) {
+                                return self.change_timesales_ticker(sel);
+                            }
                             if let Content::Kline { chart: Some(c), .. } = &mut self.content {
                                 let _ =
                                     c.apply_command(ChartCommand::RemoveTicker { ticker_info: ti });
@@ -970,7 +977,7 @@ impl State {
                                 }
                             }
                         }
-                        crate::modal::pane::mini_tickers_list::RowSelection::Switch(ti) => {
+                        RowSelection::Switch(ti) => {
                             return Some(Effect::SwitchTickersInGroup(ti));
                         }
                     }
@@ -978,6 +985,43 @@ impl State {
             }
         }
         None
+    }
+
+    fn change_timesales_ticker(&mut self, selection: RowSelection) -> Option<Effect> {
+        let ResolvedStream::Ready(streams) = &mut self.streams else {
+            return None;
+        };
+        match selection {
+            RowSelection::Add(ticker_info) => {
+                if streams
+                    .iter()
+                    .any(|stream| stream.ticker_info().ticker == ticker_info.ticker)
+                {
+                    return None;
+                }
+                streams.push(StreamKind::Trades { ticker_info });
+            }
+            RowSelection::Remove(ticker_info) => {
+                if streams
+                    .first()
+                    .is_some_and(|stream| stream.ticker_info().ticker == ticker_info.ticker)
+                {
+                    return None;
+                }
+                let previous_len = streams.len();
+                streams.retain(|stream| stream.ticker_info().ticker != ticker_info.ticker);
+                if streams.len() == previous_len {
+                    return None;
+                }
+            }
+            RowSelection::Switch(_) => return None,
+        }
+
+        if let Content::TimeAndSales(Some(panel)) = &mut self.content {
+            let tickers: Vec<_> = streams.iter().map(|stream| stream.ticker_info()).collect();
+            panel.set_sources(&tickers);
+        }
+        Some(Effect::RefreshStreams)
     }
 
     fn update_settings(&mut self, message: settings::Message) -> Option<Effect> {
@@ -1302,6 +1346,11 @@ impl State {
                     ) if chart.basis().is_time() => panel.view(
                         tickers_table,
                         Some(chart.series().iter().map(|series| series.ticker_info)),
+                        self.stream_pair(),
+                    ),
+                    (Content::TimeAndSales(Some(_)), ResolvedStream::Ready(streams)) => panel.view(
+                        tickers_table,
+                        Some(streams.iter().map(|stream| stream.ticker_info())),
                         self.stream_pair(),
                     ),
                     _ => panel.view(

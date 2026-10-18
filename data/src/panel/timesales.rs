@@ -1,7 +1,6 @@
-use std::time::Duration;
+use std::{collections::VecDeque, time::Duration};
 
-use exchange::Trade;
-use exchange::unit::Qty;
+use exchange::{SizeUnit, TickerInfo, Trade, UnixMs, unit::Qty};
 use serde::{Deserialize, Serialize};
 
 use crate::util::ok_or_default;
@@ -78,6 +77,98 @@ impl StackedBarRatio {
     ];
 }
 
+#[derive(Clone, Copy)]
+pub struct TapeTrade {
+    trade: Trade,
+    ticker_info: TickerInfo,
+    notional: Qty,
+}
+
+impl std::ops::Deref for TapeTrade {
+    type Target = Trade;
+
+    fn deref(&self) -> &Trade {
+        &self.trade
+    }
+}
+
+impl TapeTrade {
+    pub fn new(ticker_info: TickerInfo, trade: Trade, size_unit: SizeUnit) -> Self {
+        let notional = Qty::from_f64(ticker_info.market_type().qty_in_quote_value(
+            trade.qty,
+            trade.price,
+            size_unit == SizeUnit::Quote,
+        ));
+        Self {
+            trade,
+            ticker_info,
+            notional,
+        }
+    }
+
+    pub fn ticker_info(&self) -> TickerInfo {
+        self.ticker_info
+    }
+
+    pub fn quantity(&self, multiple_tickers: bool) -> Qty {
+        if multiple_tickers {
+            self.notional
+        } else {
+            self.qty
+        }
+    }
+
+    pub fn passes_filter(&self, threshold: f32) -> bool {
+        self.notional.to_f32_lossy() >= threshold
+    }
+
+    pub fn merge_into(target: &mut VecDeque<Self>, mut incoming: Vec<Self>) {
+        if incoming.is_empty() {
+            return;
+        }
+        incoming.sort_by_key(|entry| entry.time);
+        if target
+            .back()
+            .is_none_or(|last| last.time <= incoming[0].time)
+        {
+            target.extend(incoming);
+            return;
+        }
+        let merge_start = target.partition_point(|entry| entry.time <= incoming[0].time);
+        let mut previous = target.split_off(merge_start);
+        for entry in incoming {
+            while previous.front().is_some_and(|old| old.time <= entry.time) {
+                target.push_back(previous.pop_front().unwrap());
+            }
+            target.push_back(entry);
+        }
+        target.append(&mut previous);
+    }
+}
+
+pub fn prune_trades(trades: &mut VecDeque<TapeTrade>, retention: Duration, now: UnixMs) -> bool {
+    let retention_ms = retention.as_millis() as u64;
+    let prune_slack_ms = retention_ms / 10;
+    let retention_cutoff = now.saturating_sub(retention_ms);
+    let slack_cutoff = now.saturating_sub(retention_ms.saturating_add(prune_slack_ms));
+
+    if trades
+        .front()
+        .is_none_or(|oldest| oldest.time >= slack_cutoff)
+    {
+        return false;
+    }
+
+    let previous_len = trades.len();
+    while trades
+        .front()
+        .is_some_and(|trade| trade.time < retention_cutoff)
+    {
+        trades.pop_front();
+    }
+    trades.len() != previous_len
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum HistAggValues {
     Count { buy: u64, sell: u64 },
@@ -109,35 +200,13 @@ impl HistAgg {
         Qty::from_units(rounded)
     }
 
-    pub fn add(&mut self, trade: &Trade) {
-        let qty = trade.qty;
-
-        if trade.is_sell {
+    pub fn add(&mut self, is_sell: bool, qty: Qty) {
+        if is_sell {
             self.sell_count += 1;
-            self.sell_sum += qty;
+            self.sell_sum = Qty::from_units(self.sell_sum.units.saturating_add(qty.units));
         } else {
             self.buy_count += 1;
-            self.buy_sum += qty;
-        }
-    }
-
-    pub fn remove(&mut self, trade: &Trade) {
-        let qty = trade.qty;
-
-        if trade.is_sell {
-            self.sell_count = self.sell_count.saturating_sub(1);
-            self.sell_sum = if self.sell_sum.units >= qty.units {
-                self.sell_sum - qty
-            } else {
-                Qty::ZERO
-            };
-        } else {
-            self.buy_count = self.buy_count.saturating_sub(1);
-            self.buy_sum = if self.buy_sum.units >= qty.units {
-                self.buy_sum - qty
-            } else {
-                Qty::ZERO
-            };
+            self.buy_sum = Qty::from_units(self.buy_sum.units.saturating_add(qty.units));
         }
     }
 
