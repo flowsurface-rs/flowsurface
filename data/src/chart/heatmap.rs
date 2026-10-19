@@ -9,7 +9,7 @@ use exchange::{Timeframe, UnixMs, adapter::MarketKind, depth::Depth};
 
 use rustc_hash::{FxBuildHasher, FxHashMap};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, ops::ControlFlow};
 
 pub const CLEANUP_THRESHOLD: usize = 4800;
 
@@ -267,7 +267,31 @@ impl HistoricalDepth {
             })
     }
 
-    pub fn replay_depth(&self, start: UnixMs, mut on_snapshot: impl FnMut(UnixMs, &Depth)) {
+    pub fn depth_at(&self, time: UnixMs) -> Depth {
+        let mut depth = Depth::default();
+        for (&price, runs) in &self.price_levels {
+            let first = runs.partition_point(|run| run.until_time <= time);
+            if let Some(run) = runs.get(first)
+                && run.start_time <= time
+                && run.qty > Qty::ZERO
+            {
+                let side = if run.is_bid {
+                    &mut depth.bids
+                } else {
+                    &mut depth.asks
+                };
+                side.insert(price, run.qty);
+            }
+        }
+        depth
+    }
+
+    pub fn replay_depth_interruptible(
+        &self,
+        start: UnixMs,
+        mut on_snapshot: impl FnMut(UnixMs, &Depth),
+        mut control: impl FnMut() -> ControlFlow<()>,
+    ) -> ControlFlow<()> {
         #[derive(PartialEq, Eq, PartialOrd, Ord)]
         enum Change {
             Remove,
@@ -275,25 +299,26 @@ impl HistoricalDepth {
         }
 
         let Some(latest) = self.last_snapshot_time.filter(|latest| *latest >= start) else {
-            return;
+            return ControlFlow::Continue(());
         };
 
         // One pending event per price level bounds replay memory.
-        let mut cursors = self
-            .price_levels
-            .iter()
-            .filter_map(|(&price, runs)| {
-                let first = runs.partition_point(|run| run.until_time <= start);
-                let mut remaining = runs[first..]
-                    .iter()
-                    .take_while(|run| run.start_time <= latest)
-                    .filter(|run| run.qty > Qty::ZERO && run.start_time < run.until_time);
-                let current = remaining.next()?;
-                Some((price, current, remaining))
-            })
-            .collect::<Vec<_>>();
+        let mut cursors = Vec::new();
+        for (&price, runs) in &self.price_levels {
+            control()?;
+            let first = runs.partition_point(|run| run.until_time <= start);
+            let mut remaining = runs[first..]
+                .iter()
+                .take_while(|run| run.start_time <= latest)
+                .filter(|run| run.qty > Qty::ZERO && run.start_time < run.until_time);
+            if let Some(current) = remaining.next() {
+                cursors.push((price, current, remaining));
+            }
+        }
+
         let mut changes = BTreeMap::<(UnixMs, Change), Vec<usize>>::new();
         for (index, (_, run, _)) in cursors.iter().enumerate() {
+            control()?;
             changes
                 .entry((run.start_time.max(start), Change::Insert))
                 .or_default()
@@ -303,6 +328,7 @@ impl HistoricalDepth {
         let mut depth = Depth::default();
         let mut time = start;
         while let Some(((next, change), indices)) = changes.pop_first() {
+            control()?;
             if next != time {
                 on_snapshot(time, &depth);
                 time = next;
@@ -352,10 +378,14 @@ impl HistoricalDepth {
             }
         }
 
+        control()?;
         on_snapshot(time, &depth);
         if time < latest {
+            control()?;
             on_snapshot(latest, &depth);
         }
+
+        ControlFlow::Continue(())
     }
 
     pub fn cleanup_old_price_levels(&mut self, oldest_time: UnixMs) {

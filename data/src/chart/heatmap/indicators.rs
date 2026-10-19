@@ -10,7 +10,10 @@ use exchange::{
     unit::{MinTicksize, Power10, Price, PriceStep, Qty},
 };
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, ops::Bound};
+use std::{
+    collections::BTreeMap,
+    ops::{Bound, ControlFlow},
+};
 
 const MIN_PANEL_RATIO: f32 = 0.08;
 
@@ -386,6 +389,63 @@ pub enum IndicatorValues {
     Depth { bid: f64, ask: f64 },
 }
 
+#[derive(Clone)]
+pub struct HeatmapReplay {
+    config: HeatmapIndicatorConfig,
+    depth_timestamp: Option<UnixMs>,
+}
+
+impl HeatmapReplay {
+    pub fn is_empty(&self) -> bool {
+        !self.config.depth.enabled
+    }
+
+    pub fn matches(&self, config: &HeatmapIndicatorConfig) -> bool {
+        !self.config.depth.enabled
+            || (config.depth.enabled && self.config.distance == config.distance)
+    }
+
+    pub fn include(&mut self, previous: &Self) {
+        self.config.depth.enabled |= previous.config.depth.enabled;
+        self.depth_timestamp = self.depth_timestamp.max(previous.depth_timestamp);
+    }
+
+    pub fn retain_enabled(&mut self, config: &HeatmapIndicatorConfig) {
+        self.config.depth.enabled &= config.depth.enabled;
+    }
+
+    pub fn run(
+        self,
+        history: &HistoricalDepth,
+        start: UnixMs,
+        control: impl FnMut() -> ControlFlow<()>,
+    ) -> ControlFlow<(), HeatmapIndicators> {
+        let mut replay = HeatmapIndicators::new(self.config);
+        history.replay_depth_interruptible(
+            start,
+            |time, depth| {
+                replay.ingest(
+                    HeatmapPanel::Depth,
+                    depth,
+                    time,
+                    history.aggr_time,
+                    DepthSource::Reconstructed,
+                    history.tick_size,
+                );
+            },
+            control,
+        )?;
+
+        if let Some(time) = self.depth_timestamp
+            && let Some(mut latest) = replay.samples[HeatmapPanel::Depth].last_entry()
+        {
+            latest.get_mut().timestamp = latest.get().timestamp.max(time);
+        }
+
+        ControlFlow::Continue(replay)
+    }
+}
+
 pub struct HeatmapIndicators {
     config: HeatmapIndicatorConfig,
     samples: EnumMap<HeatmapPanel, BTreeMap<UnixMs, Sample>>,
@@ -413,78 +473,60 @@ impl HeatmapIndicators {
         self.config.set_split(index, split);
     }
 
-    pub fn reconfigure(
-        &mut self,
-        config: HeatmapIndicatorConfig,
-        history: &HistoricalDepth,
-        start: UnixMs,
-    ) {
+    pub fn reconfigure(&mut self, config: HeatmapIndicatorConfig) -> HeatmapReplay {
         let depth_distance_changed = self.config.distance != config.distance;
-        let reload_spread = config.spread.enabled && !self.config.spread.enabled;
-        let reload_depth = config.depth.enabled
-            && (self.config.depth.enabled != config.depth.enabled || depth_distance_changed);
-        let previous_depth_time = self.samples[HeatmapPanel::Depth]
+        let mut replay_config = config.clone();
+        replay_config.depth.enabled =
+            config.depth.enabled && (!self.config.depth.enabled || depth_distance_changed);
+        let depth_timestamp = self.samples[HeatmapPanel::Depth]
             .last_key_value()
             .map(|(_, sample)| sample.timestamp);
 
-        let mut values_changed = self.config.spread_unit != config.spread_unit;
-        for kind in HeatmapPanel::ALL {
-            if self.config.is_enabled(kind.into()) != config.is_enabled(kind.into())
-                || (kind == HeatmapPanel::Depth && depth_distance_changed)
-            {
-                self.samples[kind].clear();
-                values_changed = true;
-            }
+        let depth_changed =
+            self.config.depth.enabled != config.depth.enabled || depth_distance_changed;
+        let values_changed = depth_changed
+            || self.config.spread.enabled != config.spread.enabled
+            || self.config.spread_unit != config.spread_unit;
+        if depth_changed {
+            self.samples[HeatmapPanel::Depth].clear();
         }
 
         self.config = config;
-
-        if reload_spread || reload_depth {
-            let mut replay_config = self.config.clone();
-            replay_config.spread.enabled = reload_spread;
-            replay_config.depth.enabled = reload_depth;
-            let mut replay = Self::new(replay_config);
-
-            history.replay_depth(start, |time, depth| {
-                replay.ingest(
-                    depth,
-                    time,
-                    history.aggr_time,
-                    DepthSource::Reconstructed,
-                    history.tick_size,
-                );
-            });
-
-            if reload_spread {
-                self.samples[HeatmapPanel::Spread] =
-                    std::mem::take(&mut replay.samples[HeatmapPanel::Spread]);
-            }
-
-            if reload_depth {
-                let samples = &mut replay.samples[HeatmapPanel::Depth];
-                if let Some(time) = previous_depth_time
-                    && let Some(mut latest) = samples.last_entry()
-                {
-                    latest.get_mut().timestamp = latest.get().timestamp.max(time);
-                }
-
-                self.samples[HeatmapPanel::Depth] = std::mem::take(samples);
-            }
-        }
-
         if values_changed {
             self.revision = self.revision.wrapping_add(1);
         }
+
+        HeatmapReplay {
+            config: replay_config,
+            depth_timestamp,
+        }
+    }
+
+    pub fn merge_replay(&mut self, replay: Self, cutoff: UnixMs) {
+        for (kind, samples) in replay.samples {
+            if self.config.is_enabled(kind.into()) && replay.config.is_enabled(kind.into()) {
+                for (time, sample) in samples {
+                    self.samples[kind].entry(time).or_insert(sample);
+                }
+            }
+        }
+
+        self.prune_before(cutoff);
     }
 
     pub fn ingest(
         &mut self,
+        kind: HeatmapPanel,
         depth: &Depth,
         timestamp: UnixMs,
         interval: Timeframe,
         source: DepthSource,
         step: PriceStep,
     ) {
+        if kind == HeatmapPanel::Depth && !self.config.depth.enabled {
+            return;
+        }
+
         let best_prices = depth
             .bids
             .iter()
@@ -494,28 +536,26 @@ impl HeatmapIndicators {
             .map(|((&bid, _), (&ask, _))| (bid, ask))
             .filter(|(bid, ask)| bid.units > 0 && *ask >= *bid);
 
-        for kind in self.config.enabled_panels() {
-            let samples = &mut self.samples[kind];
-            if samples
-                .last_key_value()
-                .is_some_and(|(_, sample)| sample.timestamp > timestamp)
-            {
-                continue;
-            }
-
-            let value = best_prices.and_then(|(bid, ask)| match kind {
-                HeatmapPanel::Spread => Some(IndicatorValue::Spread { bid, ask }),
-                HeatmapPanel::Depth => IndicatorValue::percentage_depth(
-                    depth,
-                    (bid, ask),
-                    step,
-                    self.config.distance,
-                    source,
-                ),
-            });
-            samples.insert(timestamp.floor_to(interval), Sample { timestamp, value });
-            self.revision = self.revision.wrapping_add(1);
+        let samples = &mut self.samples[kind];
+        if samples
+            .last_key_value()
+            .is_some_and(|(_, sample)| sample.timestamp > timestamp)
+        {
+            return;
         }
+
+        let value = best_prices.and_then(|(bid, ask)| match kind {
+            HeatmapPanel::Spread => Some(IndicatorValue::Spread { bid, ask }),
+            HeatmapPanel::Depth => IndicatorValue::percentage_depth(
+                depth,
+                (bid, ask),
+                step,
+                self.config.distance,
+                source,
+            ),
+        });
+        samples.insert(timestamp.floor_to(interval), Sample { timestamp, value });
+        self.revision = self.revision.wrapping_add(1);
     }
 
     pub fn prune_before(&mut self, cutoff: UnixMs) {

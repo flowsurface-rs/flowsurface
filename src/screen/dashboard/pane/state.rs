@@ -99,6 +99,7 @@ pub enum Event {
     ContentSelected(ContentKind),
     KlineInteraction(content::kline::Message),
     HeatmapShaderInteraction(content::heatmap::Message),
+    HeatmapBackground(content::heatmap::BackgroundMessage),
     LadderInteraction(content::ladder::Message),
     TimeAndSalesInteraction(content::timesales::Message),
     DeleteNotification(usize),
@@ -915,6 +916,11 @@ impl State {
             Event::HeatmapShaderInteraction(message) => {
                 if let Content::ShaderHeatmap(HeatmapContent::Active(c)) = &mut self.content {
                     c.update(message);
+                }
+            }
+            Event::HeatmapBackground(message) => {
+                if let Content::ShaderHeatmap(HeatmapContent::Active(chart)) = &mut self.content {
+                    chart.update_background(message);
                 }
             }
             Event::MiniTickersListInteraction(message) => {

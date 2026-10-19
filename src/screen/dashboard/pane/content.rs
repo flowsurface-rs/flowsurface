@@ -249,6 +249,9 @@ impl Content {
             } => chart
                 .rebuild_indicators()
                 .map(|task| task.map(Event::KlineInteraction)),
+            Content::ShaderHeatmap(HeatmapContent::Active(chart)) => chart
+                .rebuild_indicators()
+                .map(|task| task.map(Event::HeatmapBackground)),
             _ => None,
         }
     }

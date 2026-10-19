@@ -952,7 +952,7 @@ impl IndicatorState {
         let snapshot = completed.snapshot;
         self.accept_full_rebuild(
             data,
-            completed.host,
+            completed.output,
             &snapshot.frames,
             &snapshot.plan.dirty_ids,
             &snapshot.plan.replay_ids,

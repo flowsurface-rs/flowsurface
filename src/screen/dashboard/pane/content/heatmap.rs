@@ -11,12 +11,13 @@ use crate::widget::chart::heatmap::{
     view::{self, ViewConfig, ViewInputs, ViewWindow},
 };
 
+use super::super::BackgroundJob;
 use crate::screen::dashboard::pane::ChartAction as Action;
 use crate::screen::dashboard::pane::settings::HeatmapIndicatorMessage;
 use data::aggr::time::TimeSeries;
 use data::chart::heatmap::indicators::{
     DepthDistance, DepthSource, HeatmapIndicator, HeatmapIndicatorConfig, HeatmapIndicators,
-    HeatmapPanel,
+    HeatmapPanel, HeatmapReplay,
 };
 use data::chart::{
     Basis,
@@ -45,6 +46,16 @@ const VOLUME_PROFILE_WIDTH_PCT: f32 = 0.10;
 const DEPTH_PROFILE_WIDTH_PX: f32 = 160.0;
 
 pub type Message = heatmap_widget::Message;
+
+#[derive(Debug, Clone)]
+pub enum BackgroundMessage {
+    ReplayCompleted { job_id: u64 },
+}
+
+struct ReplaySnapshot {
+    request: HeatmapReplay,
+    start: UnixMs,
+}
 
 pub enum HeatmapContent {
     Active(Box<HeatmapShader>),
@@ -103,6 +114,8 @@ pub struct HeatmapShader {
     indicators: HeatmapIndicators,
     indicator_panels: EnumMap<HeatmapPanel, heatmap_widget::scene::indicator::Panel>,
     depth_distance_input: String,
+    replay: BackgroundJob<ReplaySnapshot, HistoricalDepth, HeatmapIndicators>,
+    replay_requested: Option<HeatmapReplay>,
 }
 
 impl HeatmapShader {
@@ -129,6 +142,8 @@ impl HeatmapShader {
             indicators: HeatmapIndicators::new(indicators),
             indicator_panels: EnumMap::default(),
             depth_distance_input,
+            replay: BackgroundJob::default(),
+            replay_requested: None,
             last_tick: None,
             scene: Scene::new(),
             viewport: None,
@@ -452,6 +467,7 @@ impl HeatmapShader {
 
     pub fn insert_depth(&mut self, depth: &Depth, update_t: UnixMs) {
         self.indicators.ingest(
+            HeatmapPanel::Spread,
             depth,
             update_t,
             self.depth_history.aggr_time,
@@ -476,6 +492,11 @@ impl HeatmapShader {
                 .apply_mid_price(mid_rounded, &mut self.base_price);
         }
 
+        let gap_start = self
+            .latest_time
+            .map(|time| time.saturating_add(aggr_time))
+            .filter(|time| *time < rounded_t_ms)
+            .map(UnixMs::new);
         self.latest_time = Some(rounded_t_ms);
 
         self.clock = self.clock.anchor_with_update(update_t_ms);
@@ -485,6 +506,19 @@ impl HeatmapShader {
 
         self.depth_grid.ensure_layout(aggr_time);
         self.depth_history.insert_latest_depth(depth, rounded_t);
+        if self.indicator_config().depth.enabled {
+            for time in gap_start.into_iter().chain(std::iter::once(update_t)) {
+                let stored_depth = self.depth_history.depth_at(time.floor_to(aggr_interval));
+                self.indicators.ingest(
+                    HeatmapPanel::Depth,
+                    &stored_depth,
+                    time,
+                    aggr_interval,
+                    DepthSource::Reconstructed,
+                    self.step,
+                );
+            }
+        }
 
         if !paused {
             self.update_live_ring_and_scene(depth, rounded_t_ms, is_interacting);
@@ -552,15 +586,75 @@ impl HeatmapShader {
             self.depth_distance_input = format!("{:.2}", config.distance.percent());
         }
 
-        let start = self.history_cutoff().unwrap_or_default();
-        self.indicators
-            .reconfigure(config, &self.depth_history, start);
+        let mut request = self.indicators.reconfigure(config);
+        if let Some(queued) = self.replay_requested.take() {
+            request.include(&queued);
+        }
+
+        let obsolete = self
+            .replay
+            .snapshot()
+            .is_some_and(|snapshot| !snapshot.request.matches(self.indicator_config()));
+        if !request.is_empty() || obsolete {
+            if let Some(snapshot) = self.replay.snapshot() {
+                request.include(&snapshot.request);
+            }
+            self.replay.cancel();
+        }
+
+        request.retain_enabled(self.indicator_config());
+        self.replay_requested = (!request.is_empty()).then_some(request);
 
         if overlays_changed {
             self.try_rebuild_instances();
         }
 
         self.canvas_invalidation.mark_all();
+    }
+
+    pub fn rebuild_indicators(&mut self) -> Option<iced::Task<BackgroundMessage>> {
+        if let Some(job_id) = self.replay.pending_job() {
+            self.complete_replay(job_id);
+        }
+        if self.replay.pending_job().is_some() {
+            return None;
+        }
+
+        let request = self.replay_requested.take()?;
+        let start = self.history_cutoff().unwrap_or_default();
+        // shortcut: copying retained runs is synchronous, share snapshots if profiling shows a UI stall.
+        let history = self.depth_history.clone();
+        self.replay
+            .prepare(ReplaySnapshot { request, start }, history);
+        let snapshot = self.replay.snapshot()?;
+        let request = snapshot.request.clone();
+        let start = snapshot.start;
+        let worker = self.replay.launch(move |history, cancelled| {
+            request
+                .run(&history, start, || cancelled.check())
+                .continue_value()
+        })?;
+
+        Some(iced::Task::perform(worker, |job_id| {
+            BackgroundMessage::ReplayCompleted { job_id }
+        }))
+    }
+
+    pub fn update_background(&mut self, message: BackgroundMessage) {
+        match message {
+            BackgroundMessage::ReplayCompleted { job_id } => self.complete_replay(job_id),
+        }
+    }
+
+    fn complete_replay(&mut self, job_id: u64) {
+        let Some(completed) = self.replay.poll(job_id) else {
+            return;
+        };
+        if completed.snapshot.request.matches(self.indicator_config()) {
+            self.indicators
+                .merge_replay(completed.output, self.history_cutoff().unwrap_or_default());
+            self.canvas_invalidation.mark_all();
+        }
     }
 
     pub fn update_indicator_settings(&mut self, message: HeatmapIndicatorMessage) {
