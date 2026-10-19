@@ -21,7 +21,7 @@ use data::chart::heatmap::indicators::{
 };
 use data::chart::{
     Basis,
-    heatmap::{HeatmapDataPoint, HistoricalDepth},
+    heatmap::{DepthSnapshotUpdate, HeatmapDataPoint, HistoricalDepth},
 };
 use enum_map::EnumMap;
 use exchange::depth::Depth;
@@ -95,7 +95,6 @@ pub struct HeatmapShader {
     trades: TimeSeries<HeatmapDataPoint>,
     depth_history: HistoricalDepth,
 
-    latest_time: Option<u64>,
     base_price: Option<Price>,
     clock: view::ExchangeClock,
     anchor: view::Anchor,
@@ -149,7 +148,6 @@ impl HeatmapShader {
             basis,
             ticker_info,
             trades,
-            latest_time: None,
             base_price: None,
             clock: view::ExchangeClock::Uninit,
             y_axis_gutter: DEFAULT_Y_AXIS_GUTTER,
@@ -461,6 +459,12 @@ impl HeatmapShader {
     }
 
     pub fn insert_depth(&mut self, depth: &Depth, update_t: UnixMs) {
+        let gap_start = match self.depth_history.insert_latest_depth(depth, update_t) {
+            DepthSnapshotUpdate::Stale => return,
+            DepthSnapshotUpdate::Continuous => None,
+            DepthSnapshotUpdate::Gap { start } => Some(start),
+        };
+
         self.indicators.ingest(
             HeatmapPanel::Spread,
             depth,
@@ -487,20 +491,12 @@ impl HeatmapShader {
                 .apply_mid_price(mid_rounded, &mut self.base_price);
         }
 
-        let gap_start = self
-            .latest_time
-            .map(|time| time.saturating_add(aggr_time))
-            .filter(|time| *time < rounded_t_ms)
-            .map(UnixMs::new);
-        self.latest_time = Some(rounded_t_ms);
-
         self.clock = self.clock.anchor_with_update(update_t_ms);
 
         self.anchor
             .set_scroll_ref_bucket_if_zero((rounded_t_ms / aggr_time) as i64);
 
         self.depth_grid.ensure_layout(aggr_time);
-        self.depth_history.insert_latest_depth(depth, rounded_t);
         if self.indicator_config().depth {
             if let Some(time) = gap_start {
                 let stored_depth = self.depth_history.depth_at(time);
@@ -721,7 +717,11 @@ impl HeatmapShader {
         let aggr_time = self.depth_history.aggr_time_ms();
         let keep_buckets: u64 = (self.depth_grid.tex_w().max(1)) as u64;
         let keep_ms = keep_buckets.saturating_mul(aggr_time);
-        let cutoff = self.latest_time?.saturating_sub(keep_ms);
+        let cutoff = self
+            .depth_history
+            .latest_time()?
+            .as_u64()
+            .saturating_sub(keep_ms);
         let cutoff_rounded = (cutoff / aggr_time) * aggr_time;
         Some(UnixMs::new(cutoff_rounded))
     }
@@ -747,7 +747,7 @@ impl HeatmapShader {
     }
 
     fn compute_view_window(&self, viewport_size: iced::Size) -> Option<ViewWindow> {
-        let latest_time = self.latest_time?;
+        let latest_time = self.depth_history.latest_time()?.as_u64();
         let base_price = self.anchor.effective_base_price(self.base_price)?;
 
         let cfg = ViewConfig {
@@ -782,7 +782,7 @@ impl HeatmapShader {
         let Some(palette) = &self.palette else {
             return;
         };
-        let latest_time = match self.latest_time {
+        let latest_time = match self.depth_history.latest_time().map(UnixMs::as_u64) {
             Some(time) => time,
             None => return,
         };
@@ -863,7 +863,7 @@ impl HeatmapShader {
             return;
         };
 
-        let latest_time = match self.latest_time {
+        let latest_time = match self.depth_history.latest_time().map(UnixMs::as_u64) {
             Some(time) => time,
             None => return,
         };
@@ -983,7 +983,7 @@ impl HeatmapShader {
     }
 
     fn invalidate_with_view_window(&mut self, now_i: Instant, aggr_time: u64, w: &ViewWindow) {
-        let latest_time = match self.latest_time {
+        let latest_time = match self.depth_history.latest_time().map(UnixMs::as_u64) {
             Some(time) => time,
             None => return,
         };

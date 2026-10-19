@@ -10,7 +10,7 @@ use data::chart::heatmap::indicators::{
 };
 use data::chart::heatmap::{CLEANUP_THRESHOLD, ProfileKind};
 use data::layout::pane::VisualConfig;
-use data::util::format_with_commas;
+use data::util::{format_duration_ms, format_with_commas};
 use exchange::adapter::Venue;
 use iced::{
     Length,
@@ -249,7 +249,7 @@ fn volume_profile_controls<'a>(
     let fixed_window_label = match kind {
         ProfileKind::FixedWindow(count) => format!(
             "Fixed window ({})",
-            study_window_duration(count, interval_ms)
+            format_duration_ms((count as u64).saturating_mul(interval_ms))
         ),
         ProfileKind::VisibleRange => "Fixed window".to_owned(),
     };
@@ -278,19 +278,4 @@ fn volume_profile_controls<'a>(
     }
 
     controls.into()
-}
-
-fn study_window_duration(datapoint_count: usize, interval_ms: u64) -> String {
-    let duration_secs = (datapoint_count as u64 * interval_ms) / 1000;
-    if duration_secs < 60 {
-        format!("{} seconds", duration_secs)
-    } else {
-        let minutes = duration_secs / 60;
-        let seconds = duration_secs % 60;
-        if seconds == 0 {
-            format!("{} minutes", minutes)
-        } else {
-            format!("{}m {}s", minutes, seconds)
-        }
-    }
 }

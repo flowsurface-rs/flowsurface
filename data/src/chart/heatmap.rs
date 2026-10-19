@@ -116,6 +116,12 @@ pub struct HistoricalDepth {
     last_snapshot_time: Option<UnixMs>,
 }
 
+pub enum DepthSnapshotUpdate {
+    Stale,
+    Continuous,
+    Gap { start: UnixMs },
+}
+
 impl HistoricalDepth {
     pub fn new(min_order_qty: MinQtySize, tick_size: PriceStep, basis: Basis) -> Self {
         Self {
@@ -135,21 +141,31 @@ impl HistoricalDepth {
         self.aggr_time.to_milliseconds()
     }
 
-    pub fn insert_latest_depth(&mut self, depth: &Depth, time: UnixMs) {
+    pub fn latest_time(&self) -> Option<UnixMs> {
+        self.last_snapshot_time
+            .map(|time| time.floor_to(self.aggr_time))
+    }
+
+    pub fn insert_latest_depth(&mut self, depth: &Depth, time: UnixMs) -> DepthSnapshotUpdate {
         if let Some(prev_time) = self.last_snapshot_time
             && time < prev_time
         {
-            return;
+            return DepthSnapshotUpdate::Stale;
         }
 
-        let aggr_time = self.aggr_time_ms();
-        let has_snapshot_gap = self
-            .last_snapshot_time
-            .is_some_and(|prev_time| time > prev_time.saturating_add(aggr_time));
+        let bucket = time.floor_to(self.aggr_time);
+        let gap_start = self
+            .latest_time()
+            .map(|previous| previous.saturating_add(self.aggr_time_ms()))
+            .filter(|start| *start < bucket);
 
-        self.process_side(&depth.bids, time, true, has_snapshot_gap);
-        self.process_side(&depth.asks, time, false, has_snapshot_gap);
+        self.process_side(&depth.bids, bucket, true, gap_start.is_some());
+        self.process_side(&depth.asks, bucket, false, gap_start.is_some());
         self.last_snapshot_time = Some(time);
+
+        gap_start.map_or(DepthSnapshotUpdate::Continuous, |start| {
+            DepthSnapshotUpdate::Gap { start }
+        })
     }
 
     fn process_side(
@@ -298,7 +314,7 @@ impl HistoricalDepth {
             Insert,
         }
 
-        let Some(latest) = self.last_snapshot_time.filter(|latest| *latest >= start) else {
+        let Some(latest) = self.latest_time().filter(|latest| *latest >= start) else {
             return ControlFlow::Continue(());
         };
 
