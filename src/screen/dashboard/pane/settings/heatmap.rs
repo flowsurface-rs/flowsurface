@@ -11,6 +11,7 @@ use data::chart::heatmap::indicators::{
 use data::chart::heatmap::{CLEANUP_THRESHOLD, ProfileKind};
 use data::layout::pane::VisualConfig;
 use data::util::format_with_commas;
+use exchange::adapter::Venue;
 use iced::{
     Length,
     widget::{
@@ -22,6 +23,7 @@ use iced::{
 pub fn heatmap_shader_cfg_view<'a>(
     cfg: heatmap::Config,
     basis: data::chart::Basis,
+    venue: Venue,
     indicators: &'a HeatmapIndicatorConfig,
     distance_input: &'a str,
 ) -> InspectorContent<'a, Message> {
@@ -108,15 +110,14 @@ pub fn heatmap_shader_cfg_view<'a>(
     let input_width = Length::Fixed(80.0);
 
     for kind in HeatmapIndicator::ALL {
-        let enabled = indicators.is_enabled(kind);
-        let mut checkbox_row =
-            row![
-                checkbox(enabled)
-                    .label(kind.label())
-                    .on_toggle(move |enabled| {
-                        Message::HeatmapIndicator(HeatmapIndicatorMessage::Enabled(kind, enabled))
-                    }),
-            ]
+        let unsupported_reason = kind.unsupported_reason(venue);
+        let enabled = indicators.is_enabled(kind) && unsupported_reason.is_none();
+        let toggle = checkbox(enabled).label(kind.label()).on_toggle_maybe(
+            unsupported_reason.is_none().then_some(move |enabled| {
+                Message::HeatmapIndicator(HeatmapIndicatorMessage::Enabled(kind, enabled))
+            }),
+        );
+        let mut checkbox_row = row![toggle]
             .spacing(4)
             .height(36)
             .align_y(iced::Alignment::Center)
@@ -133,6 +134,12 @@ pub fn heatmap_shader_cfg_view<'a>(
         }
 
         let mut controls = column![checkbox_row];
+        if let Some(reason) = unsupported_reason {
+            controls = controls.push(
+                container(text(reason).size(style::text_size::SMALL))
+                    .padding(iced::padding::bottom(8).horizontal(8)),
+            );
+        }
         if enabled {
             let settings: Option<iced::Element<'_, Message>> = match kind {
                 HeatmapIndicator::Volume => None,

@@ -544,6 +544,7 @@ impl Content {
                     heatmap_shader_cfg_view(
                         chart.visual_config(),
                         basis,
+                        chart.ticker_info.exchange().venue(),
                         chart.indicator_config(),
                         chart.depth_distance_input(),
                     )

@@ -134,7 +134,7 @@ impl HeatmapShader {
 
         let depth_distance_input = indicators.distance.to_string();
         Self {
-            indicators: HeatmapIndicators::new(indicators),
+            indicators: HeatmapIndicators::new(indicators, ticker_info.exchange().venue()),
             indicator_panels: EnumMap::default(),
             depth_distance_input,
             replay: BackgroundJob::default(),

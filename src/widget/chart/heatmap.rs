@@ -199,7 +199,7 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
             .min(size.height)
             .max(0.0);
 
-        layout::build_node(size, gutter_w, x_axis_h, self.indicators.config())
+        layout::build_node(size, gutter_w, x_axis_h, self.indicators)
     }
 
     fn update(
@@ -215,7 +215,7 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
     ) {
         use iced::widget::canvas::Program as _;
 
-        let geometry = HeatmapLayout::from_layout(layout, self.indicators.config());
+        let geometry = HeatmapLayout::from_layout(layout, self.indicators);
         let plot_bounds = geometry.plot;
         let y_axis_bounds = geometry.y_axis;
         let x_axis_bounds = geometry.x_axis;
@@ -509,7 +509,7 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
         cursor: mouse::Cursor,
         _viewport: &Rectangle,
     ) {
-        let geometry = HeatmapLayout::from_layout(layout, self.indicators.config());
+        let geometry = HeatmapLayout::from_layout(layout, self.indicators);
         let plot_bounds = geometry.plot;
         let y_axis_bounds = geometry.y_axis;
         let x_axis_bounds = geometry.x_axis;
@@ -707,7 +707,7 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
     ) -> mouse::Interaction {
         use iced::widget::canvas::Program as _;
 
-        let geometry = HeatmapLayout::from_layout(layout, self.indicators.config());
+        let geometry = HeatmapLayout::from_layout(layout, self.indicators);
         let plot_bounds = geometry.plot;
         let y_axis_bounds = geometry.y_axis;
         let x_axis_bounds = geometry.x_axis;

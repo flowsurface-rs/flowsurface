@@ -1,5 +1,5 @@
 use crate::widget::chart::{PANEL_SPLITTER_HEIGHT, panel_plot_heights, panel_splitter_hit_bounds};
-use data::chart::heatmap::indicators::{HeatmapIndicatorConfig, HeatmapPanel};
+use data::chart::heatmap::indicators::{HeatmapIndicators, HeatmapPanel};
 use iced::{
     Point, Rectangle, Size,
     advanced::{Layout, layout},
@@ -38,13 +38,13 @@ pub(super) struct HeatmapLayout {
 }
 
 impl HeatmapLayout {
-    pub fn from_layout(layout: Layout<'_>, config: &HeatmapIndicatorConfig) -> Self {
+    pub fn from_layout(layout: Layout<'_>, indicators: &HeatmapIndicators) -> Self {
         let mut children = layout.children();
         let plot = children.next().expect("heatmap plot").bounds();
         let y_axis = children.next().expect("heatmap price axis").bounds();
         let x_axis = children.next().expect("heatmap time axis").bounds();
         let _corner = children.next().expect("heatmap axis corner");
-        let indicators = config
+        let indicators = indicators
             .enabled_panels()
             .map(|kind| IndicatorRegion {
                 kind,
@@ -97,11 +97,11 @@ pub(super) fn build_node(
     size: Size,
     gutter_width: f32,
     axis_height: f32,
-    config: &HeatmapIndicatorConfig,
+    indicators: &HeatmapIndicators,
 ) -> layout::Node {
     let plot_width = (size.width - gutter_width).max(0.0);
     let stack_height = (size.height - axis_height).max(0.0);
-    let weights = config.normalized_weights();
+    let weights = indicators.normalized_weights();
     let splits: Vec<_> = weights
         .iter()
         .take(weights.len().saturating_sub(1))

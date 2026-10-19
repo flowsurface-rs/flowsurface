@@ -6,6 +6,7 @@ use crate::chart::kline::{
 use enum_map::{Enum, EnumMap};
 use exchange::{
     TickerInfo, Timeframe, UnixMs,
+    adapter::Venue,
     depth::Depth,
     unit::{MinTicksize, Power10, Price, PriceStep, Qty},
 };
@@ -36,6 +37,11 @@ impl HeatmapIndicator {
             Self::Depth => "Depth",
             Self::VolumeProfile => "Volume Profile",
         }
+    }
+
+    pub fn unsupported_reason(self, venue: Venue) -> Option<&'static str> {
+        (self == Self::Spread && venue == Venue::Hyperliquid)
+            .then_some("Spread unavailable.\nDepth prices may be server-aggregated.")
     }
 }
 
@@ -215,20 +221,21 @@ impl HeatmapIndicatorConfig {
         }
     }
 
-    pub fn enabled_panels(&self) -> impl Iterator<Item = HeatmapPanel> + '_ {
-        HeatmapPanel::ALL
-            .into_iter()
-            .filter(|kind| self.is_enabled((*kind).into()))
+    fn enabled_panels(&self, venue: Venue) -> impl Iterator<Item = HeatmapPanel> + '_ {
+        HeatmapPanel::ALL.into_iter().filter(move |kind| {
+            let indicator = HeatmapIndicator::from(*kind);
+            self.is_enabled(indicator) && indicator.unsupported_reason(venue).is_none()
+        })
     }
 
-    fn panel_indices(&self) -> Vec<usize> {
+    fn panel_indices(&self, venue: Venue) -> Vec<usize> {
         std::iter::once(0)
-            .chain(self.enabled_panels().map(HeatmapPanel::weight_index))
+            .chain(self.enabled_panels(venue).map(HeatmapPanel::weight_index))
             .collect()
     }
 
-    pub fn normalized_weights(&self) -> Vec<f32> {
-        let indices = self.panel_indices();
+    fn normalized_weights(&self, venue: Venue) -> Vec<f32> {
+        let indices = self.panel_indices(venue);
         let weights: Vec<_> = indices
             .iter()
             .map(|&index| self.panel_weights[index])
@@ -254,16 +261,16 @@ impl HeatmapIndicatorConfig {
         normalized
     }
 
-    pub fn set_split(&mut self, index: usize, split: f32) {
+    fn set_split(&mut self, index: usize, split: f32, venue: Venue) {
         if !split.is_finite() {
             return;
         }
-        let indices = self.panel_indices();
+        let indices = self.panel_indices(venue);
         if index + 1 >= indices.len() {
             return;
         }
 
-        let mut weights = self.normalized_weights();
+        let mut weights = self.normalized_weights(venue);
         let before: f32 = weights[..index].iter().sum();
         let combined = weights[index] + weights[index + 1];
         let first = (split - before).clamp(
@@ -470,14 +477,16 @@ impl HeatmapReplay {
 
 pub struct HeatmapIndicators {
     config: HeatmapIndicatorConfig,
+    venue: Venue,
     samples: EnumMap<HeatmapPanel, BTreeMap<UnixMs, Sample>>,
     revision: u64,
 }
 
 impl HeatmapIndicators {
-    pub fn new(config: HeatmapIndicatorConfig) -> Self {
+    pub fn new(config: HeatmapIndicatorConfig, venue: Venue) -> Self {
         Self {
             config,
+            venue,
             revision: 0,
             samples: EnumMap::default(),
         }
@@ -491,8 +500,16 @@ impl HeatmapIndicators {
         &self.config
     }
 
+    pub fn enabled_panels(&self) -> impl Iterator<Item = HeatmapPanel> + '_ {
+        self.config.enabled_panels(self.venue)
+    }
+
+    pub fn normalized_weights(&self) -> Vec<f32> {
+        self.config.normalized_weights(self.venue)
+    }
+
     pub fn set_panel_split(&mut self, index: usize, split: f32) {
-        self.config.set_split(index, split);
+        self.config.set_split(index, split, self.venue);
     }
 
     pub fn reconfigure(&mut self, config: HeatmapIndicatorConfig) -> Option<HeatmapReplay> {
@@ -546,7 +563,11 @@ impl HeatmapIndicators {
         source: DepthSource,
         step: PriceStep,
     ) {
-        if kind == HeatmapPanel::Depth && !self.config.depth {
+        if HeatmapIndicator::from(kind)
+            .unsupported_reason(self.venue)
+            .is_some()
+            || (kind == HeatmapPanel::Depth && !self.config.depth)
+        {
             return;
         }
 
