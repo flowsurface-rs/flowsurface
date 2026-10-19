@@ -16,8 +16,8 @@ use crate::screen::dashboard::pane::ChartAction as Action;
 use crate::screen::dashboard::pane::settings::HeatmapIndicatorMessage;
 use data::aggr::time::TimeSeries;
 use data::chart::heatmap::indicators::{
-    DepthDistance, DepthSource, HeatmapIndicator, HeatmapIndicatorConfig, HeatmapIndicators,
-    HeatmapPanel, HeatmapReplay,
+    DepthDistance, DepthReplayResult, DepthSource, HeatmapIndicator, HeatmapIndicatorConfig,
+    HeatmapIndicators, HeatmapPanel, HeatmapReplay,
 };
 use data::chart::{
     Basis,
@@ -50,11 +50,6 @@ pub type Message = heatmap_widget::Message;
 #[derive(Debug, Clone)]
 pub enum BackgroundMessage {
     ReplayCompleted { job_id: u64 },
-}
-
-struct ReplaySnapshot {
-    request: HeatmapReplay,
-    start: UnixMs,
 }
 
 pub enum HeatmapContent {
@@ -114,7 +109,7 @@ pub struct HeatmapShader {
     indicators: HeatmapIndicators,
     indicator_panels: EnumMap<HeatmapPanel, heatmap_widget::scene::indicator::Panel>,
     depth_distance_input: String,
-    replay: BackgroundJob<ReplaySnapshot, HistoricalDepth, HeatmapIndicators>,
+    replay: BackgroundJob<HeatmapReplay, HistoricalDepth, DepthReplayResult>,
     replay_requested: Option<HeatmapReplay>,
 }
 
@@ -137,7 +132,7 @@ impl HeatmapShader {
             exchange::SizeUnit::Quote => 1.0,
         };
 
-        let depth_distance_input = format!("{:.2}", indicators.distance.percent());
+        let depth_distance_input = indicators.distance.to_string();
         Self {
             indicators: HeatmapIndicators::new(indicators),
             indicator_panels: EnumMap::default(),
@@ -506,9 +501,9 @@ impl HeatmapShader {
 
         self.depth_grid.ensure_layout(aggr_time);
         self.depth_history.insert_latest_depth(depth, rounded_t);
-        if self.indicator_config().depth.enabled {
-            for time in gap_start.into_iter().chain(std::iter::once(update_t)) {
-                let stored_depth = self.depth_history.depth_at(time.floor_to(aggr_interval));
+        if self.indicator_config().depth {
+            if let Some(time) = gap_start {
+                let stored_depth = self.depth_history.depth_at(time);
                 self.indicators.ingest(
                     HeatmapPanel::Depth,
                     &stored_depth,
@@ -518,6 +513,14 @@ impl HeatmapShader {
                     self.step,
                 );
             }
+            self.indicators.ingest(
+                HeatmapPanel::Depth,
+                depth,
+                update_t,
+                aggr_interval,
+                DepthSource::Live,
+                self.step,
+            );
         }
 
         if !paused {
@@ -583,27 +586,32 @@ impl HeatmapShader {
             || self.indicator_config().volume_profile != config.volume_profile;
 
         if self.indicator_config().distance != config.distance {
-            self.depth_distance_input = format!("{:.2}", config.distance.percent());
+            self.depth_distance_input = config.distance.to_string();
         }
 
-        let mut request = self.indicators.reconfigure(config);
-        if let Some(queued) = self.replay_requested.take() {
-            request.include(&queued);
+        if let Some(mut request) = self.indicators.reconfigure(config) {
+            if let Some(queued) = self.replay_requested.take() {
+                request.include(&queued);
+            }
+            self.replay_requested = Some(request);
         }
+        self.replay_requested = self
+            .replay_requested
+            .take()
+            .filter(|request| request.matches(self.indicator_config()));
 
         let obsolete = self
             .replay
             .snapshot()
-            .is_some_and(|snapshot| !snapshot.request.matches(self.indicator_config()));
-        if !request.is_empty() || obsolete {
-            if let Some(snapshot) = self.replay.snapshot() {
-                request.include(&snapshot.request);
+            .is_some_and(|request| !request.matches(self.indicator_config()));
+        if self.replay_requested.is_some() || obsolete {
+            if let Some(request) = &mut self.replay_requested
+                && let Some(previous) = self.replay.snapshot()
+            {
+                request.include(previous);
             }
             self.replay.cancel();
         }
-
-        request.retain_enabled(self.indicator_config());
-        self.replay_requested = (!request.is_empty()).then_some(request);
 
         if overlays_changed {
             self.try_rebuild_instances();
@@ -622,13 +630,9 @@ impl HeatmapShader {
 
         let request = self.replay_requested.take()?;
         let start = self.history_cutoff().unwrap_or_default();
-        // shortcut: copying retained runs is synchronous, share snapshots if profiling shows a UI stall.
+
         let history = self.depth_history.clone();
-        self.replay
-            .prepare(ReplaySnapshot { request, start }, history);
-        let snapshot = self.replay.snapshot()?;
-        let request = snapshot.request.clone();
-        let start = snapshot.start;
+        self.replay.prepare(request.clone(), history);
         let worker = self.replay.launch(move |history, cancelled| {
             request
                 .run(&history, start, || cancelled.check())
@@ -650,9 +654,10 @@ impl HeatmapShader {
         let Some(completed) = self.replay.poll(job_id) else {
             return;
         };
-        if completed.snapshot.request.matches(self.indicator_config()) {
-            self.indicators
-                .merge_replay(completed.output, self.history_cutoff().unwrap_or_default());
+        if self
+            .indicators
+            .merge_replay(completed.output, self.history_cutoff().unwrap_or_default())
+        {
             self.canvas_invalidation.mark_all();
         }
     }
@@ -671,7 +676,7 @@ impl HeatmapShader {
                 let Some(distance) = DepthDistance::from_percent(&self.depth_distance_input) else {
                     return;
                 };
-                self.depth_distance_input = format!("{:.2}", distance.percent());
+                self.depth_distance_input = distance.to_string();
                 config.distance = distance;
             }
         }

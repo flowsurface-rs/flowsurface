@@ -760,3 +760,11 @@ impl<'a> From<HeatmapShaderWidget<'a>> for Element<'a, Message, Theme, Renderer>
         Element::new(widget)
     }
 }
+
+fn panel_colors(kind: HeatmapPanel, theme: &Theme) -> [iced::Color; 2] {
+    let palette = theme.extended_palette();
+    match kind {
+        HeatmapPanel::Spread => [palette.primary.base.color; 2],
+        HeatmapPanel::Depth => [palette.success.strong.color, palette.danger.strong.color],
+    }
+}

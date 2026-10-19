@@ -149,14 +149,8 @@ impl Panel {
             * buckets;
         let latest = time.latest_bucket.max(0) as u64;
 
-        let palette = theme.extended_palette();
-        let colors = match kind {
-            HeatmapPanel::Spread => [palette.primary.base.color.into_linear(); 2],
-            HeatmapPanel::Depth => [
-                palette.success.strong.color.into_linear(),
-                palette.danger.strong.color.into_linear(),
-            ],
-        };
+        let colors =
+            crate::widget::chart::heatmap::panel_colors(kind, theme).map(iced::Color::into_linear);
 
         let key = Key {
             revision: indicators.revision(),

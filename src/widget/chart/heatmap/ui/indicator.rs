@@ -48,12 +48,9 @@ impl canvas::Program<Message> for IndicatorCanvas<'_> {
             (self.time.latest_bucket.max(0) as u64).saturating_mul(self.time.interval_ms),
         );
         let readout_time = self.cursor_time.unwrap_or(latest_time);
-        let values = (readout_time <= latest_time)
-            .then(|| {
-                self.indicators
-                    .value_at(self.kind, self.ticker_info.min_ticksize, readout_time)
-            })
-            .flatten();
+        let values =
+            self.indicators
+                .value_at(self.kind, self.ticker_info.min_ticksize, readout_time);
 
         let readouts = match (values, self.kind) {
             (Some(IndicatorValues::Spread(value)), _) => vec![("Spread", Some(value))],
@@ -63,10 +60,7 @@ impl canvas::Program<Message> for IndicatorCanvas<'_> {
             (None, HeatmapPanel::Spread) => vec![("Spread", None)],
             (None, HeatmapPanel::Depth) => vec![("Bid", None), ("Ask", None)],
         };
-        let colors = match self.kind {
-            HeatmapPanel::Spread => [palette.primary.base.color; 2],
-            HeatmapPanel::Depth => [palette.success.strong.color, palette.danger.strong.color],
-        };
+        let colors = chart::heatmap::panel_colors(self.kind, theme);
 
         let scale = self
             .kind
@@ -83,10 +77,7 @@ impl canvas::Program<Message> for IndicatorCanvas<'_> {
                 };
                 format!("Spread ({unit})")
             }
-            HeatmapPanel::Depth => format!(
-                "Depth ({:.2}%)",
-                self.indicators.config().distance.percent()
-            ),
+            HeatmapPanel::Depth => format!("Depth ({}%)", self.indicators.config().distance),
         };
 
         let y = chart::LEGEND_TOP_PAD + chart::LEGEND_ROW_HEIGHT * 0.5;

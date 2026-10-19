@@ -9,13 +9,14 @@ use exchange::{
     depth::Depth,
     unit::{MinTicksize, Power10, Price, PriceStep, Qty},
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::{
     collections::BTreeMap,
     ops::{Bound, ControlFlow},
 };
 
 const MIN_PANEL_RATIO: f32 = 0.08;
+const DEFAULT_PANEL_WEIGHTS: [f32; 3] = [70.0, 15.0, 15.0];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HeatmapIndicator {
@@ -113,7 +114,7 @@ pub struct DepthDistance(u16);
 
 impl Default for DepthDistance {
     fn default() -> Self {
-        Self(100)
+        Self(10)
     }
 }
 
@@ -122,36 +123,33 @@ impl TryFrom<f64> for DepthDistance {
     type Error = &'static str;
 
     fn try_from(basis_points: f64) -> Result<Self, Self::Error> {
-        if !basis_points.is_finite() || !(0.1..=1_000.0).contains(&basis_points) {
-            return Err("Depth distance must be between 0.001% and 10%");
+        if !basis_points.is_finite() || !(1.0..=1_000.0).contains(&basis_points) {
+            return Err("Depth distance must be between 0.01% and 10%");
         }
-        Ok(Self((basis_points * 10.0).round() as u16))
+        Ok(Self(basis_points.round() as u16))
     }
 }
 
 impl From<DepthDistance> for f64 {
     fn from(value: DepthDistance) -> Self {
-        f64::from(value.0) / 10.0
+        f64::from(value.0)
     }
 }
 
 impl DepthDistance {
     pub fn from_percent(input: &str) -> Option<Self> {
         let percent = input.trim().parse::<f64>().ok()?;
-        if !(0.01..=10.0).contains(&percent) {
-            return None;
-        }
-        Self::try_from((percent * 100.0).round()).ok()
+        Self::try_from(percent * 100.0).ok()
     }
 
     pub fn percent(self) -> f64 {
-        f64::from(self.0) / 1_000.0
+        f64::from(self.0) / 100.0
     }
 
     fn bounds(self, bid: Price, ask: Price) -> (Price, Price) {
         let distance = i128::from(self.0);
-        let lower = (i128::from(bid.units) * (100_000 - distance) + 99_999) / 100_000;
-        let upper = i128::from(ask.units) * (100_000 + distance) / 100_000;
+        let lower = (i128::from(bid.units) * (10_000 - distance) + 9_999) / 10_000;
+        let upper = i128::from(ask.units) * (10_000 + distance) / 10_000;
         (
             Price::from_units(lower as i64),
             Price::from_units(upper.min(i128::from(i64::MAX)) as i64),
@@ -159,53 +157,58 @@ impl DepthDistance {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct IndicatorPlotConfig {
-    pub enabled: bool,
+impl std::fmt::Display for DepthDistance {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:.2}", self.percent())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HeatmapIndicatorConfig {
-    pub volume: IndicatorPlotConfig,
+    pub volume: bool,
     pub volume_profile: Option<ProfileKind>,
-    pub spread: IndicatorPlotConfig,
+    pub spread: bool,
     pub spread_unit: SpreadUnit,
-    pub depth: IndicatorPlotConfig,
+    pub depth: bool,
     pub distance: DepthDistance,
-    pub panel_weights: [f32; 3],
+    #[serde(deserialize_with = "deserialize_panel_weights")]
+    panel_weights: [f32; 3],
 }
 
 impl Default for HeatmapIndicatorConfig {
     fn default() -> Self {
         Self {
-            volume: IndicatorPlotConfig { enabled: true },
+            volume: true,
             volume_profile: Some(ProfileKind::default()),
-            spread: IndicatorPlotConfig::default(),
+            spread: false,
             spread_unit: SpreadUnit::default(),
-            depth: IndicatorPlotConfig::default(),
+            depth: false,
             distance: DepthDistance::default(),
-            panel_weights: [70.0, 15.0, 15.0],
+            panel_weights: DEFAULT_PANEL_WEIGHTS,
         }
     }
 }
 
 impl HeatmapIndicatorConfig {
+    fn accepts_depth_replay(&self, distance: DepthDistance) -> bool {
+        self.depth && self.distance == distance
+    }
+
     pub fn is_enabled(&self, kind: HeatmapIndicator) -> bool {
         match kind {
-            HeatmapIndicator::Volume => self.volume.enabled,
-            HeatmapIndicator::Spread => self.spread.enabled,
-            HeatmapIndicator::Depth => self.depth.enabled,
+            HeatmapIndicator::Volume => self.volume,
+            HeatmapIndicator::Spread => self.spread,
+            HeatmapIndicator::Depth => self.depth,
             HeatmapIndicator::VolumeProfile => self.volume_profile.is_some(),
         }
     }
 
     pub fn set_enabled(&mut self, kind: HeatmapIndicator, enabled: bool) {
         match kind {
-            HeatmapIndicator::Volume => self.volume.enabled = enabled,
-            HeatmapIndicator::Spread => self.spread.enabled = enabled,
-            HeatmapIndicator::Depth => self.depth.enabled = enabled,
+            HeatmapIndicator::Volume => self.volume = enabled,
+            HeatmapIndicator::Spread => self.spread = enabled,
+            HeatmapIndicator::Depth => self.depth = enabled,
             HeatmapIndicator::VolumeProfile => {
                 self.volume_profile = enabled.then(|| self.volume_profile.unwrap_or_default());
             }
@@ -224,22 +227,12 @@ impl HeatmapIndicatorConfig {
             .collect()
     }
 
-    fn sanitized_panel_weights(&self) -> [f32; 3] {
-        let defaults = Self::default().panel_weights;
-        std::array::from_fn(|index| {
-            let weight = self.panel_weights[index];
-            if weight.is_finite() && weight > 0.0 {
-                weight
-            } else {
-                defaults[index]
-            }
-        })
-    }
-
     pub fn normalized_weights(&self) -> Vec<f32> {
         let indices = self.panel_indices();
-        let all_weights = self.sanitized_panel_weights();
-        let weights: Vec<_> = indices.iter().map(|&index| all_weights[index]).collect();
+        let weights: Vec<_> = indices
+            .iter()
+            .map(|&index| self.panel_weights[index])
+            .collect();
 
         let total: f64 = weights.iter().map(|weight| f64::from(*weight)).sum();
         let mut cumulative = 0.0;
@@ -279,17 +272,18 @@ impl HeatmapIndicatorConfig {
         );
         weights[index] = first;
         weights[index + 1] = combined - first;
-        let all_weights = self.sanitized_panel_weights().map(f64::from);
+        let all_weights = self.panel_weights.map(f64::from);
 
         let total: f64 = all_weights.iter().sum();
         let active_total: f64 = indices
             .iter()
             .map(|&index| all_weights[index] / total)
             .sum();
-        self.panel_weights = all_weights.map(|weight| (weight / total) as f32);
+        let mut panel_weights = all_weights.map(|weight| (weight / total) as f32);
         for (&slot, weight) in indices.iter().zip(weights) {
-            self.panel_weights[slot] = (f64::from(weight) * active_total) as f32;
+            panel_weights[slot] = (f64::from(weight) * active_total) as f32;
         }
+        self.panel_weights = sanitize_panel_weights(panel_weights);
     }
 }
 
@@ -383,6 +377,35 @@ struct Sample {
     value: Option<IndicatorValue>,
 }
 
+impl Sample {
+    fn from_depth(
+        kind: HeatmapPanel,
+        depth: &Depth,
+        timestamp: UnixMs,
+        step: PriceStep,
+        distance: DepthDistance,
+        source: DepthSource,
+    ) -> Self {
+        let best_prices = depth
+            .bids
+            .iter()
+            .rev()
+            .find(|(_, qty)| **qty > Qty::ZERO)
+            .zip(depth.asks.iter().find(|(_, qty)| **qty > Qty::ZERO))
+            .map(|((&bid, _), (&ask, _))| (bid, ask))
+            .filter(|(bid, ask)| bid.units > 0 && *ask >= *bid);
+
+        let value = best_prices.and_then(|(bid, ask)| match kind {
+            HeatmapPanel::Spread => Some(IndicatorValue::Spread { bid, ask }),
+            HeatmapPanel::Depth => {
+                IndicatorValue::percentage_depth(depth, (bid, ask), step, distance, source)
+            }
+        });
+
+        Self { timestamp, value }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum IndicatorValues {
     Spread(f64),
@@ -391,27 +414,22 @@ pub enum IndicatorValues {
 
 #[derive(Clone)]
 pub struct HeatmapReplay {
-    config: HeatmapIndicatorConfig,
+    distance: DepthDistance,
     depth_timestamp: Option<UnixMs>,
 }
 
-impl HeatmapReplay {
-    pub fn is_empty(&self) -> bool {
-        !self.config.depth.enabled
-    }
+pub struct DepthReplayResult {
+    distance: DepthDistance,
+    samples: BTreeMap<UnixMs, Sample>,
+}
 
+impl HeatmapReplay {
     pub fn matches(&self, config: &HeatmapIndicatorConfig) -> bool {
-        !self.config.depth.enabled
-            || (config.depth.enabled && self.config.distance == config.distance)
+        config.accepts_depth_replay(self.distance)
     }
 
     pub fn include(&mut self, previous: &Self) {
-        self.config.depth.enabled |= previous.config.depth.enabled;
         self.depth_timestamp = self.depth_timestamp.max(previous.depth_timestamp);
-    }
-
-    pub fn retain_enabled(&mut self, config: &HeatmapIndicatorConfig) {
-        self.config.depth.enabled &= config.depth.enabled;
     }
 
     pub fn run(
@@ -419,30 +437,34 @@ impl HeatmapReplay {
         history: &HistoricalDepth,
         start: UnixMs,
         control: impl FnMut() -> ControlFlow<()>,
-    ) -> ControlFlow<(), HeatmapIndicators> {
-        let mut replay = HeatmapIndicators::new(self.config);
+    ) -> ControlFlow<(), DepthReplayResult> {
+        let mut samples = BTreeMap::new();
         history.replay_depth_interruptible(
             start,
             |time, depth| {
-                replay.ingest(
+                let sample = Sample::from_depth(
                     HeatmapPanel::Depth,
                     depth,
                     time,
-                    history.aggr_time,
-                    DepthSource::Reconstructed,
                     history.tick_size,
+                    self.distance,
+                    DepthSource::Reconstructed,
                 );
+                samples.insert(time.floor_to(history.aggr_time), sample);
             },
             control,
         )?;
 
         if let Some(time) = self.depth_timestamp
-            && let Some(mut latest) = replay.samples[HeatmapPanel::Depth].last_entry()
+            && let Some(mut latest) = samples.last_entry()
         {
             latest.get_mut().timestamp = latest.get().timestamp.max(time);
         }
 
-        ControlFlow::Continue(replay)
+        ControlFlow::Continue(DepthReplayResult {
+            distance: self.distance,
+            samples,
+        })
     }
 }
 
@@ -473,19 +495,20 @@ impl HeatmapIndicators {
         self.config.set_split(index, split);
     }
 
-    pub fn reconfigure(&mut self, config: HeatmapIndicatorConfig) -> HeatmapReplay {
+    pub fn reconfigure(&mut self, config: HeatmapIndicatorConfig) -> Option<HeatmapReplay> {
         let depth_distance_changed = self.config.distance != config.distance;
-        let mut replay_config = config.clone();
-        replay_config.depth.enabled =
-            config.depth.enabled && (!self.config.depth.enabled || depth_distance_changed);
-        let depth_timestamp = self.samples[HeatmapPanel::Depth]
-            .last_key_value()
-            .map(|(_, sample)| sample.timestamp);
+        let replay = (config.depth && (!self.config.depth || depth_distance_changed)).then(|| {
+            HeatmapReplay {
+                distance: config.distance,
+                depth_timestamp: self.samples[HeatmapPanel::Depth]
+                    .last_key_value()
+                    .map(|(_, sample)| sample.timestamp),
+            }
+        });
 
-        let depth_changed =
-            self.config.depth.enabled != config.depth.enabled || depth_distance_changed;
+        let depth_changed = self.config.depth != config.depth || depth_distance_changed;
         let values_changed = depth_changed
-            || self.config.spread.enabled != config.spread.enabled
+            || self.config.spread != config.spread
             || self.config.spread_unit != config.spread_unit;
         if depth_changed {
             self.samples[HeatmapPanel::Depth].clear();
@@ -496,22 +519,22 @@ impl HeatmapIndicators {
             self.revision = self.revision.wrapping_add(1);
         }
 
-        HeatmapReplay {
-            config: replay_config,
-            depth_timestamp,
-        }
+        replay
     }
 
-    pub fn merge_replay(&mut self, replay: Self, cutoff: UnixMs) {
-        for (kind, samples) in replay.samples {
-            if self.config.is_enabled(kind.into()) && replay.config.is_enabled(kind.into()) {
-                for (time, sample) in samples {
-                    self.samples[kind].entry(time).or_insert(sample);
-                }
-            }
+    pub fn merge_replay(&mut self, replay: DepthReplayResult, cutoff: UnixMs) -> bool {
+        if !self.config.accepts_depth_replay(replay.distance) {
+            return false;
+        }
+
+        for (time, sample) in replay.samples {
+            self.samples[HeatmapPanel::Depth]
+                .entry(time)
+                .or_insert(sample);
         }
 
         self.prune_before(cutoff);
+        true
     }
 
     pub fn ingest(
@@ -523,18 +546,9 @@ impl HeatmapIndicators {
         source: DepthSource,
         step: PriceStep,
     ) {
-        if kind == HeatmapPanel::Depth && !self.config.depth.enabled {
+        if kind == HeatmapPanel::Depth && !self.config.depth {
             return;
         }
-
-        let best_prices = depth
-            .bids
-            .iter()
-            .rev()
-            .find(|(_, qty)| **qty > Qty::ZERO)
-            .zip(depth.asks.iter().find(|(_, qty)| **qty > Qty::ZERO))
-            .map(|((&bid, _), (&ask, _))| (bid, ask))
-            .filter(|(bid, ask)| bid.units > 0 && *ask >= *bid);
 
         let samples = &mut self.samples[kind];
         if samples
@@ -544,17 +558,8 @@ impl HeatmapIndicators {
             return;
         }
 
-        let value = best_prices.and_then(|(bid, ask)| match kind {
-            HeatmapPanel::Spread => Some(IndicatorValue::Spread { bid, ask }),
-            HeatmapPanel::Depth => IndicatorValue::percentage_depth(
-                depth,
-                (bid, ask),
-                step,
-                self.config.distance,
-                source,
-            ),
-        });
-        samples.insert(timestamp.floor_to(interval), Sample { timestamp, value });
+        let sample = Sample::from_depth(kind, depth, timestamp, step, self.config.distance, source);
+        samples.insert(timestamp.floor_to(interval), sample);
         self.revision = self.revision.wrapping_add(1);
     }
 
@@ -642,4 +647,22 @@ impl HeatmapIndicators {
             }),
         }
     }
+}
+
+fn sanitize_panel_weights(weights: [f32; 3]) -> [f32; 3] {
+    std::array::from_fn(|index| {
+        let weight = weights[index];
+        if weight.is_finite() && weight > 0.0 {
+            weight
+        } else {
+            DEFAULT_PANEL_WEIGHTS[index]
+        }
+    })
+}
+
+fn deserialize_panel_weights<'de, D>(deserializer: D) -> Result<[f32; 3], D::Error>
+where
+    D: Deserializer<'de>,
+{
+    <[f32; 3]>::deserialize(deserializer).map(sanitize_panel_weights)
 }
