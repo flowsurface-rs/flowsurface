@@ -9,7 +9,9 @@ use crate::{
     },
 };
 use data::{
-    chart::heatmap::indicators::{HeatmapIndicators, HeatmapPanel, IndicatorValues, SpreadUnit},
+    chart::heatmap::indicators::{
+        DepthCoverage, HeatmapIndicators, HeatmapPanel, IndicatorValues, SpreadUnit,
+    },
     chart::kline::viewport::PanelYValueRange,
 };
 use exchange::{TickerInfo, UnixMs};
@@ -52,6 +54,7 @@ impl canvas::Program<Message> for IndicatorCanvas<'_> {
                     .value_at(self.kind, self.ticker_info.min_ticksize, readout_time)
             })
             .flatten();
+
         let readouts = match (values, self.kind) {
             (Some(IndicatorValues::Spread(value)), _) => vec![("Spread", Some(value))],
             (Some(IndicatorValues::Depth { bid, ask }), _) => {
@@ -59,6 +62,10 @@ impl canvas::Program<Message> for IndicatorCanvas<'_> {
             }
             (None, HeatmapPanel::Spread) => vec![("Spread", None)],
             (None, HeatmapPanel::Depth) => vec![("Bid", None), ("Ask", None)],
+        };
+        let colors = match self.kind {
+            HeatmapPanel::Spread => [palette.primary.base.color; 2],
+            HeatmapPanel::Depth => [palette.success.strong.color, palette.danger.strong.color],
         };
 
         let scale = self
@@ -83,12 +90,23 @@ impl canvas::Program<Message> for IndicatorCanvas<'_> {
         };
 
         let y = chart::LEGEND_TOP_PAD + chart::LEGEND_ROW_HEIGHT * 0.5;
-        let mut end_x =
-            chart::LEGEND_LEFT_PAD + title.chars().count() as f32 * chart::LEGEND_CHAR_WIDTH;
-        let mut text = vec![(title, chart::LEGEND_LEFT_PAD)];
+        let text_color = palette.background.base.text;
+        let mut text = Vec::new();
+        let mut title_x = chart::LEGEND_LEFT_PAD;
+
+        if self.kind == HeatmapPanel::Depth
+            && values.is_some()
+            && self.indicators.depth_coverage_at(readout_time) == Some(DepthCoverage::FallsShort)
+        {
+            text.push(("!".to_owned(), title_x, palette.danger.base.color));
+            title_x += chart::LEGEND_CHAR_WIDTH + chart::LEGEND_PADDING;
+        }
+
+        let mut end_x = title_x + title.chars().count() as f32 * chart::LEGEND_CHAR_WIDTH;
+        text.push((title, title_x, text_color));
         let mut x = end_x + chart::LEGEND_TITLE_GAP;
 
-        for (label, value) in readouts {
+        for ((label, value), color) in readouts.into_iter().zip(colors) {
             if x >= self.plot_width - chart::LEGEND_PADDING {
                 break;
             }
@@ -96,7 +114,7 @@ impl canvas::Program<Message> for IndicatorCanvas<'_> {
             if self.kind == HeatmapPanel::Depth {
                 let label = label.to_owned();
                 end_x = x + label.chars().count() as f32 * chart::LEGEND_CHAR_WIDTH;
-                text.push((label, x));
+                text.push((label, x, color));
                 x = end_x + chart::LEGEND_LABEL_VALUE_GAP;
             }
 
@@ -114,7 +132,7 @@ impl canvas::Program<Message> for IndicatorCanvas<'_> {
                 .unwrap_or_else(|| "n/a".to_owned());
 
             end_x = x + value.chars().count() as f32 * chart::LEGEND_CHAR_WIDTH;
-            text.push((value, x));
+            text.push((value, x, color));
             x = end_x + chart::LEGEND_READOUT_GAP;
         }
 
@@ -137,11 +155,11 @@ impl canvas::Program<Message> for IndicatorCanvas<'_> {
                     chart::legend_background_color(palette),
                 );
 
-                for (content, x) in text {
+                for (content, x, color) in text {
                     frame.fill_text(canvas::Text {
                         content,
                         position: Point::new(x, y),
-                        color: palette.background.base.text,
+                        color,
                         size: chart::LEGEND_TEXT_SIZE.into(),
                         font: style::AZERET_MONO,
                         align_x: iced::Alignment::Start.into(),

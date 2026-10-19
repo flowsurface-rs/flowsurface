@@ -1,9 +1,9 @@
 use super::{HeatmapIndicatorMessage, Message, sync_all_button};
-use crate::style;
 use crate::widget::{
     classic_slider_row,
     inspector::{InspectorContent, InspectorSection},
 };
+use crate::{style, tooltip};
 use data::chart::heatmap;
 use data::chart::heatmap::indicators::{
     DepthDistance, HeatmapIndicator, HeatmapIndicatorConfig, SpreadUnit,
@@ -13,7 +13,10 @@ use data::layout::pane::VisualConfig;
 use data::util::format_with_commas;
 use iced::{
     Length,
-    widget::{checkbox, column, container, radio, row, space, text, text_input},
+    widget::{
+        button, checkbox, column, container, radio, row, space, text, text_input,
+        tooltip::Position as TooltipPosition,
+    },
 };
 
 pub fn heatmap_shader_cfg_view<'a>(
@@ -106,19 +109,30 @@ pub fn heatmap_shader_cfg_view<'a>(
 
     for kind in HeatmapIndicator::ALL {
         let enabled = indicators.is_enabled(kind);
-        let checkbox_row = row![
-            checkbox(enabled)
-                .label(kind.label())
-                .on_toggle(move |enabled| {
-                    Message::HeatmapIndicator(HeatmapIndicatorMessage::Enabled(kind, enabled))
-                }),
-        ]
-        .height(36)
-        .align_y(iced::Alignment::Center)
-        .padding([0, 8]);
+        let mut checkbox_row =
+            row![
+                checkbox(enabled)
+                    .label(kind.label())
+                    .on_toggle(move |enabled| {
+                        Message::HeatmapIndicator(HeatmapIndicatorMessage::Enabled(kind, enabled))
+                    }),
+            ]
+            .spacing(4)
+            .height(36)
+            .align_y(iced::Alignment::Center)
+            .padding([0, 8]);
+
+        if kind == HeatmapIndicator::Depth && enabled {
+            checkbox_row = checkbox_row
+                .push(iced::widget::space::horizontal())
+                .push(tooltip(
+                    button("i").style(style::button::info),
+                    Some("`!` in legend means book falls short of range.\nMissing levels may go unflagged."),
+                    TooltipPosition::Left,
+                ));
+        }
 
         let mut controls = column![checkbox_row];
-
         if enabled {
             let settings: Option<iced::Element<'_, Message>> = match kind {
                 HeatmapIndicator::Volume => None,

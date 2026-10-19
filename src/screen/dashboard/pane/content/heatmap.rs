@@ -15,7 +15,8 @@ use crate::screen::dashboard::pane::ChartAction as Action;
 use crate::screen::dashboard::pane::settings::HeatmapIndicatorMessage;
 use data::aggr::time::TimeSeries;
 use data::chart::heatmap::indicators::{
-    DepthDistance, HeatmapIndicator, HeatmapIndicatorConfig, HeatmapIndicators, HeatmapPanel,
+    DepthDistance, DepthSource, HeatmapIndicator, HeatmapIndicatorConfig, HeatmapIndicators,
+    HeatmapPanel,
 };
 use data::chart::{
     Basis,
@@ -450,8 +451,13 @@ impl HeatmapShader {
     }
 
     pub fn insert_depth(&mut self, depth: &Depth, update_t: UnixMs) {
-        self.indicators
-            .ingest(depth, update_t, self.depth_history.aggr_time);
+        self.indicators.ingest(
+            depth,
+            update_t,
+            self.depth_history.aggr_time,
+            DepthSource::Live,
+            self.step,
+        );
         self.mark_needs_full_upload_if_stalled();
         let prev_effective_base = self.anchor.effective_base_price(self.base_price);
 
@@ -487,7 +493,7 @@ impl HeatmapShader {
         self.data_gen = self.data_gen.wrapping_add(1);
 
         if (self.data_gen & 0x3F) == 0 {
-            self.cleanup_old_data(aggr_time);
+            self.cleanup_old_data();
         }
 
         if !paused && !is_interacting {
@@ -538,15 +544,22 @@ impl HeatmapShader {
                 self.indicator_panels[kind] = Default::default();
             }
         }
+
         let overlays_changed = self.indicator_config().volume != config.volume
             || self.indicator_config().volume_profile != config.volume_profile;
+
         if self.indicator_config().distance != config.distance {
             self.depth_distance_input = format!("{:.2}", config.distance.percent());
         }
-        self.indicators.reconfigure(config);
+
+        let start = self.history_cutoff().unwrap_or_default();
+        self.indicators
+            .reconfigure(config, &self.depth_history, start);
+
         if overlays_changed {
             self.try_rebuild_instances();
         }
+
         self.canvas_invalidation.mark_all();
     }
 
@@ -605,24 +618,24 @@ impl HeatmapShader {
         }
     }
 
-    fn cleanup_old_data(&mut self, aggr_time: u64) {
-        // Keep CPU history aligned with what the ring can represent
+    fn history_cutoff(&self) -> Option<UnixMs> {
+        let aggr_time = self.depth_history.aggr_time_ms();
         let keep_buckets: u64 = (self.depth_grid.tex_w().max(1)) as u64;
+        let keep_ms = keep_buckets.saturating_mul(aggr_time);
+        let cutoff = self.latest_time?.saturating_sub(keep_ms);
+        let cutoff_rounded = (cutoff / aggr_time) * aggr_time;
+        Some(UnixMs::new(cutoff_rounded))
+    }
 
-        let Some(latest_time) = self.latest_time else {
+    fn cleanup_old_data(&mut self) {
+        // Keep CPU history aligned with what the ring can represent
+        let Some(cutoff) = self.history_cutoff() else {
             return;
         };
-
-        let keep_ms = keep_buckets.saturating_mul(aggr_time);
-        let cutoff = latest_time.saturating_sub(keep_ms);
-        let cutoff_rounded = (cutoff / aggr_time) * aggr_time;
-        self.indicators.prune_before(UnixMs::new(cutoff_rounded));
+        self.indicators.prune_before(cutoff);
 
         // Prune trades (TimeSeries datapoints are bucket timestamps)
-        let keep = self
-            .trades
-            .datapoints
-            .split_off(&UnixMs::new(cutoff_rounded));
+        let keep = self.trades.datapoints.split_off(&cutoff);
         self.trades.datapoints = keep;
 
         // Prune HistoricalDepth to match the oldest remaining trade bucket (if any),
@@ -630,8 +643,7 @@ impl HeatmapShader {
         if let Some(oldest_time) = self.trades.datapoints.keys().next().copied() {
             self.depth_history.cleanup_old_price_levels(oldest_time);
         } else {
-            self.depth_history
-                .cleanup_old_price_levels(UnixMs::new(cutoff_rounded));
+            self.depth_history.cleanup_old_price_levels(cutoff);
         }
     }
 

@@ -267,6 +267,97 @@ impl HistoricalDepth {
             })
     }
 
+    pub fn replay_depth(&self, start: UnixMs, mut on_snapshot: impl FnMut(UnixMs, &Depth)) {
+        #[derive(PartialEq, Eq, PartialOrd, Ord)]
+        enum Change {
+            Remove,
+            Insert,
+        }
+
+        let Some(latest) = self.last_snapshot_time.filter(|latest| *latest >= start) else {
+            return;
+        };
+
+        // One pending event per price level bounds replay memory.
+        let mut cursors = self
+            .price_levels
+            .iter()
+            .filter_map(|(&price, runs)| {
+                let first = runs.partition_point(|run| run.until_time <= start);
+                let mut remaining = runs[first..]
+                    .iter()
+                    .take_while(|run| run.start_time <= latest)
+                    .filter(|run| run.qty > Qty::ZERO && run.start_time < run.until_time);
+                let current = remaining.next()?;
+                Some((price, current, remaining))
+            })
+            .collect::<Vec<_>>();
+        let mut changes = BTreeMap::<(UnixMs, Change), Vec<usize>>::new();
+        for (index, (_, run, _)) in cursors.iter().enumerate() {
+            changes
+                .entry((run.start_time.max(start), Change::Insert))
+                .or_default()
+                .push(index);
+        }
+
+        let mut depth = Depth::default();
+        let mut time = start;
+        while let Some(((next, change), indices)) = changes.pop_first() {
+            if next != time {
+                on_snapshot(time, &depth);
+                time = next;
+            }
+
+            for index in indices {
+                let (price, current, remaining) = &mut cursors[index];
+                let side = if current.is_bid {
+                    &mut depth.bids
+                } else {
+                    &mut depth.asks
+                };
+                match change {
+                    Change::Insert => {
+                        side.insert(*price, current.qty);
+                        if current.until_time <= latest {
+                            changes
+                                .entry((current.until_time, Change::Remove))
+                                .or_default()
+                                .push(index);
+                        }
+                    }
+                    Change::Remove => match remaining.next() {
+                        Some(next) if next.start_time == time && next.is_bid == current.is_bid => {
+                            side.insert(*price, next.qty);
+                            *current = next;
+                            if next.until_time <= latest {
+                                changes
+                                    .entry((next.until_time, Change::Remove))
+                                    .or_default()
+                                    .push(index);
+                            }
+                        }
+                        Some(next) => {
+                            side.remove(price);
+                            *current = next;
+                            changes
+                                .entry((next.start_time, Change::Insert))
+                                .or_default()
+                                .push(index);
+                        }
+                        None => {
+                            side.remove(price);
+                        }
+                    },
+                }
+            }
+        }
+
+        on_snapshot(time, &depth);
+        if time < latest {
+            on_snapshot(latest, &depth);
+        }
+    }
+
     pub fn cleanup_old_price_levels(&mut self, oldest_time: UnixMs) {
         self.price_levels.iter_mut().for_each(|(_, runs)| {
             runs.retain(|run| run.until_time >= oldest_time);
