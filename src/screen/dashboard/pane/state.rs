@@ -563,18 +563,12 @@ impl State {
 
                     let stream_pair = self.stream_pair();
 
-                    let price_step = stream_pair
-                        .map(|ti| {
-                            tick_multiply.unscale_step_or_min_tick(panel.step, ti.min_ticksize)
-                        })
-                        .unwrap_or_else(|| tick_multiply.unscale_step(panel.step));
-
                     let exchange = stream_pair.map(|ti| ti.ticker.exchange);
                     let min_ticksize = stream_pair.map(|ti| ti.min_ticksize);
 
                     let modifiers = ticksize_modifier(
                         id,
-                        price_step,
+                        panel.tick_size(),
                         min_ticksize,
                         tick_multiply,
                         modifier,
@@ -640,19 +634,13 @@ impl State {
 
                     let kind = ModifierKind::Heatmap(basis, tick_multiply);
 
-                    let price_step = ticker_info
-                        .map(|ti| {
-                            tick_multiply
-                                .unscale_step_or_min_tick(chart.tick_size(), ti.min_ticksize)
-                        })
-                        .unwrap_or_else(|| tick_multiply.unscale_step(chart.tick_size()));
                     let min_ticksize = ticker_info.map(|ti| ti.min_ticksize);
 
                     let modifiers = row![
                         basis_modifier(id, basis, modifier, kind),
                         ticksize_modifier(
                             id,
-                            price_step,
+                            chart.tick_size(),
                             min_ticksize,
                             tick_multiply,
                             modifier,

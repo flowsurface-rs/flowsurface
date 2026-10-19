@@ -84,7 +84,7 @@ pub struct Ladder {
     pub config: Config,
     cache: canvas::Cache,
     last_tick: Instant,
-    pub step: PriceStep,
+    step: PriceStep,
     scroll_px: f32,
     last_exchange_ts_ms: Option<UnixMs>,
     orderbook: [GroupedDepth; 2],
@@ -179,6 +179,10 @@ impl Ladder {
 
     pub fn min_tick_size(&self) -> f32 {
         self.ticker_info.min_ticksize.into()
+    }
+
+    pub fn tick_size(&self) -> PriceStep {
+        self.pending_tick_size.unwrap_or(self.step)
     }
 
     pub fn set_tick_size(&mut self, step: PriceStep) {
