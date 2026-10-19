@@ -12,7 +12,7 @@ use data::layout::pane::VisualConfig;
 use data::util::format_with_commas;
 use iced::{
     Length,
-    widget::{checkbox, column, container, row, space, text},
+    widget::{checkbox, column, container, pick_list, row, space, text},
 };
 
 pub fn heatmap_shader_cfg_view<'a>(
@@ -100,12 +100,58 @@ pub fn heatmap_shader_cfg_view<'a>(
             .style(style::inspector_control)
     };
 
+    let history_column = {
+        let save_checkbox = checkbox(cfg.save_history)
+            .label("Save and load history")
+            .on_toggle(move |value| Message::VisualConfigChanged {
+                config: VisualConfig::Heatmap(heatmap::Config {
+                    save_history: value,
+                    ..cfg
+                }),
+                sync_all: false,
+            });
+
+        let mut col = column![
+            row![save_checkbox]
+                .height(36)
+                .align_y(iced::Alignment::Center)
+                .padding([0, 8])
+        ];
+
+        if cfg.save_history {
+            let window_picker = row![
+                text("Max time window"),
+                space::horizontal(),
+                pick_list(
+                    heatmap::HistoryWindow::ALL,
+                    Some(cfg.history_window),
+                    move |window| Message::VisualConfigChanged {
+                        config: VisualConfig::Heatmap(heatmap::Config {
+                            history_window: window,
+                            ..cfg
+                        }),
+                        sync_all: false,
+                    },
+                ),
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center);
+
+            col = col.push(container(window_picker).padding(8));
+        }
+
+        container(col)
+            .width(Length::Fill)
+            .style(style::inspector_control)
+    };
+
     let study_cfg = study::view(studies, basis, theme_accents)
         .map(move |msg| Message::Study(study::StudyMessage::Heatmap(msg)));
 
     let mut content = InspectorContent::new(vec![
         InspectorSection::titled("Size filter", size_filters).with_modal_container(),
         InspectorSection::titled("Trade visualization", trade_viz_column).with_modal_container(),
+        InspectorSection::titled("History", history_column).with_modal_container(),
         InspectorSection::titled("Studies", study_cfg).with_modal_container(),
     ]);
     content.set_footer(row![

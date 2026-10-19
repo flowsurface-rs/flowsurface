@@ -9,7 +9,48 @@ use rustc_hash::{FxBuildHasher, FxHashMap};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+mod persist;
+
+pub use persist::{HistoryLoad, history_path, now_ms, write_history};
+
 pub const CLEANUP_THRESHOLD: usize = 4800;
+
+/// How much heatmap history is kept on disk (and in memory) when saving is enabled.
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub enum HistoryWindow {
+    M15,
+    M30,
+    #[default]
+    H1,
+    H2,
+    H4,
+}
+
+impl HistoryWindow {
+    pub const ALL: [Self; 5] = [Self::M15, Self::M30, Self::H1, Self::H2, Self::H4];
+
+    pub const fn to_milliseconds(self) -> u64 {
+        match self {
+            Self::M15 => 15 * 60_000,
+            Self::M30 => 30 * 60_000,
+            Self::H1 => 60 * 60_000,
+            Self::H2 => 2 * 60 * 60_000,
+            Self::H4 => 4 * 60 * 60_000,
+        }
+    }
+}
+
+impl std::fmt::Display for HistoryWindow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::M15 => "15 minutes",
+            Self::M30 => "30 minutes",
+            Self::H1 => "1 hour",
+            Self::H2 => "2 hours",
+            Self::H4 => "4 hours",
+        })
+    }
+}
 
 #[derive(Debug, Copy, Clone, PartialEq, Deserialize, Serialize)]
 pub struct Config {
@@ -17,6 +58,11 @@ pub struct Config {
     pub order_size_filter: f32,
     pub trade_size_scale: Option<i32>,
     pub coalescing: Option<CoalesceKind>,
+    /// Save depth/trade history to disk and reload it on startup.
+    #[serde(default)]
+    pub save_history: bool,
+    #[serde(default)]
+    pub history_window: HistoryWindow,
 }
 
 impl Default for Config {
@@ -26,6 +72,8 @@ impl Default for Config {
             order_size_filter: 0.0,
             trade_size_scale: Some(100),
             coalescing: Some(CoalesceKind::Average(0.15)),
+            save_history: false,
+            history_window: HistoryWindow::default(),
         }
     }
 }

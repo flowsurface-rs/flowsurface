@@ -16,7 +16,7 @@ use crate::{screen::dashboard::pane::ChartAction as Action, widget::study_config
 use data::aggr::time::TimeSeries;
 use data::chart::{
     Basis,
-    heatmap::{HeatmapDataPoint, HeatmapStudy, HistoricalDepth},
+    heatmap::{self, HeatmapDataPoint, HeatmapStudy, HistoricalDepth},
 };
 use exchange::depth::Depth;
 use exchange::unit::{Price, PriceStep};
@@ -32,6 +32,9 @@ const REBUILD_DEBOUNCE_MS: u64 = 250;
 
 // If rendering stalls longer than this, assume GPU heatmap texture may have been lost/desynced
 const HEATMAP_RESYNC_AFTER_STALL_MS: u64 = 750;
+
+// How often changed history is flushed to disk while saving is enabled
+const HISTORY_SAVE_INTERVAL: Duration = Duration::from_secs(60);
 
 // Volume profile width as % of viewport width
 const VOLUME_PROFILE_WIDTH_PCT: f32 = 0.10;
@@ -69,6 +72,10 @@ pub struct HeatmapShader {
     qty_scale: f32,
     rebuild_policy: view::RebuildPolicy,
     pub studies: Vec<HeatmapStudy>,
+
+    history_path: std::path::PathBuf,
+    history_dirty: bool,
+    last_history_save: Instant,
 }
 
 impl HeatmapShader {
@@ -79,8 +86,35 @@ impl HeatmapShader {
         studies: Vec<HeatmapStudy>,
         config: Option<data::chart::heatmap::Config>,
     ) -> Self {
-        let depth_history = HistoricalDepth::new(ticker_info.min_qty, step, basis);
-        let trades = TimeSeries::<HeatmapDataPoint>::new(basis, step);
+        let mut depth_history = HistoricalDepth::new(ticker_info.min_qty, step, basis);
+        let mut trades = TimeSeries::<HeatmapDataPoint>::new(basis, step);
+        let config = config.unwrap_or_default();
+
+        let history_path = heatmap::history_path(&ticker_info, step, depth_history.aggr_time_ms());
+        let mut rebuild_policy = view::RebuildPolicy::Idle;
+
+        if config.save_history {
+            match std::fs::read(&history_path) {
+                Ok(bytes) => match depth_history.load_history(
+                    &mut trades,
+                    &bytes,
+                    config.history_window,
+                    heatmap::now_ms(),
+                ) {
+                    Ok(loaded) => {
+                        log::info!(
+                            "Loaded heatmap history: {} price levels, {} trade buckets",
+                            loaded.price_levels,
+                            loaded.trade_buckets
+                        );
+                        rebuild_policy = rebuild_policy.request_rebuild_from_historical();
+                    }
+                    Err(err) => log::warn!("Ignoring saved heatmap history: {err}"),
+                },
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => log::warn!("Failed to read heatmap history: {err}"),
+            }
+        }
 
         let qty_scale: f32 = match exchange::unit::qty::volume_size_unit() {
             exchange::SizeUnit::Base => {
@@ -111,10 +145,13 @@ impl HeatmapShader {
             depth_grid: GridRing::default(),
             depth_norm: view::DepthNormCache::new(),
             data_gen: 1,
-            rebuild_policy: view::RebuildPolicy::Idle,
+            rebuild_policy,
             anchor: view::Anchor::default(),
-            config: config.unwrap_or_default(),
+            config,
             studies,
+            history_path,
+            history_dirty: false,
+            last_history_save: Instant::now(),
         }
     }
 
@@ -430,6 +467,9 @@ impl HeatmapShader {
             self.cleanup_old_data(aggr_time);
         }
 
+        self.history_dirty = true;
+        self.save_history_if_due();
+
         if !paused && !is_interacting {
             self.rebuild_policy = self.rebuild_policy.promote_to_immediate();
         }
@@ -450,6 +490,7 @@ impl HeatmapShader {
 
         self.trades
             .ingest_trades_bucket(rounded_t, buffer, self.step);
+        self.history_dirty = true;
 
         self.canvas_invalidation.mark_overlay_tooltip();
         self.canvas_invalidation.mark_overlay_scale_labels();
@@ -503,6 +544,20 @@ impl HeatmapShader {
         let prev = self.config;
         self.config = config;
 
+        if prev.save_history != config.save_history {
+            if config.save_history {
+                self.history_dirty = true;
+                self.last_history_save = Instant::now();
+            } else {
+                self.history_dirty = false;
+                if let Err(err) = std::fs::remove_file(&self.history_path)
+                    && err.kind() != std::io::ErrorKind::NotFound
+                {
+                    log::warn!("Failed to delete saved heatmap history: {err}");
+                }
+            }
+        }
+
         let order_filter_changed =
             prev.order_size_filter.to_bits() != self.config.order_size_filter.to_bits();
         let trade_visual_changed = prev.trade_size_filter.to_bits()
@@ -525,6 +580,32 @@ impl HeatmapShader {
         }
     }
 
+    fn save_history_if_due(&mut self) {
+        if !self.config.save_history
+            || !self.history_dirty
+            || self.last_history_save.elapsed() < HISTORY_SAVE_INTERVAL
+        {
+            return;
+        }
+
+        self.last_history_save = Instant::now();
+        self.history_dirty = false;
+
+        let bytes = self.depth_history.encode_history(
+            &self.trades,
+            self.config.history_window,
+            heatmap::now_ms(),
+        );
+        let path = self.history_path.clone();
+
+        // Encoding happens above; only the disk write leaves the UI thread.
+        std::thread::spawn(move || {
+            if let Err(err) = heatmap::write_history(&path, &bytes) {
+                log::warn!("Failed to save heatmap history: {err}");
+            }
+        });
+    }
+
     fn cleanup_old_data(&mut self, aggr_time: u64) {
         // Keep CPU history aligned with what the ring can represent
         let keep_buckets: u64 = (self.depth_grid.tex_w().max(1)) as u64;
@@ -533,7 +614,10 @@ impl HeatmapShader {
             return;
         };
 
-        let keep_ms = keep_buckets.saturating_mul(aggr_time);
+        let mut keep_ms = keep_buckets.saturating_mul(aggr_time);
+        if self.config.save_history {
+            keep_ms = keep_ms.max(self.config.history_window.to_milliseconds());
+        }
         let cutoff = latest_time.saturating_sub(keep_ms);
         let cutoff_rounded = (cutoff / aggr_time) * aggr_time;
 
@@ -988,5 +1072,22 @@ impl HeatmapShader {
             self.ticker_info.min_ticksize,
         )
         .unwrap_or(DEFAULT_Y_AXIS_GUTTER);
+    }
+}
+
+impl Drop for HeatmapShader {
+    fn drop(&mut self) {
+        if !self.config.save_history || !self.history_dirty || self.depth_history.is_empty() {
+            return;
+        }
+
+        let bytes = self.depth_history.encode_history(
+            &self.trades,
+            self.config.history_window,
+            heatmap::now_ms(),
+        );
+        if let Err(err) = heatmap::write_history(&self.history_path, &bytes) {
+            log::warn!("Failed to save heatmap history: {err}");
+        }
     }
 }
