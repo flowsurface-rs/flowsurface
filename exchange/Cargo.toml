@@ -34,8 +34,8 @@ fastwebsockets = { version = "0.10.0", default-features = false, features = ["up
 http-body-util = "0.1.3"
 hyper = { version = "1", default-features = false, features = ["http1", "client"] }
 hyper-util = { version = "0.1.20", default-features = false }
-tokio-rustls = "0.24.1"
-webpki-roots = "0.23.1"
+tokio-rustls = { version = "0.26.4", default-features = false, features = ["logging", "ring", "tls12"] }
+webpki-roots = "1.0.10"
 zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 csv = "1.4.0"
 tokio-socks = "0.5.2"
