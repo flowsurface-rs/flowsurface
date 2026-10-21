@@ -1,3 +1,7 @@
+mod catalog;
+
+use crate::layout::indicator_catalog::{Message as CatalogMessage, State as Catalog};
+
 use super::studies::StudyAvailability;
 use super::{KlineChart, Message as KlineMessage};
 use crate::style::{self, Icon, icon_text};
@@ -14,13 +18,26 @@ use iced::{
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    OpenCatalog,
+    Back,
+    CatalogSearchChanged(String),
+    ToggleCatalogEntry(IndicatorId),
+    Catalog(CatalogMessage),
     SearchChanged(String),
     ToggleIndicator(IndicatorId),
     ToggleStudy(KlineStudy),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Page {
+    Local,
+    Catalog,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct State {
+    page: Page,
+    catalog: catalog::ViewState,
     search_query: String,
     search_box_id: iced::widget::Id,
     scroll_id: iced::widget::Id,
@@ -132,9 +149,38 @@ impl Default for State {
 impl State {
     pub fn new() -> Self {
         Self {
+            page: Page::Local,
+            catalog: catalog::ViewState::default(),
             search_query: String::new(),
             search_box_id: iced::widget::Id::unique(),
             scroll_id: iced::widget::Id::unique(),
+        }
+    }
+
+    pub(super) fn open_catalog(&mut self) {
+        self.page = Page::Catalog;
+    }
+
+    pub(super) fn go_back(&mut self) -> bool {
+        if self.page == Page::Catalog {
+            self.page = Page::Local;
+            return true;
+        }
+        false
+    }
+
+    pub(super) fn set_catalog_query(&mut self, query: String) {
+        self.catalog.set_search(query);
+    }
+
+    pub(super) fn toggle_catalog_entry(&mut self, id: IndicatorId) {
+        self.catalog.toggle_details(id);
+    }
+
+    pub(super) fn title(&self) -> &'static str {
+        match self.page {
+            Page::Local => "Add indicators or studies",
+            Page::Catalog => "Browse indicators",
         }
     }
 
@@ -160,7 +206,18 @@ impl State {
     }
 }
 
-pub fn view<'a>(chart: &'a KlineChart, picker: &'a State) -> Element<'a, KlineMessage> {
+pub fn view<'a>(
+    chart: &'a KlineChart,
+    picker: &'a State,
+    catalog: &'a Catalog,
+) -> Element<'a, KlineMessage> {
+    if picker.page == Page::Catalog {
+        return picker
+            .catalog
+            .view(catalog)
+            .map(KlineMessage::IndicatorBrowser);
+    }
+
     let active_indicators = chart
         .selected_indicators()
         .into_iter()
@@ -222,6 +279,16 @@ pub fn view<'a>(chart: &'a KlineChart, picker: &'a State) -> Element<'a, KlineMe
             .id(picker.search_box_id())
             .padding(6)
             .width(Length::Fill),
+        iced::widget::tooltip(
+            button(iced::widget::text("+"))
+                .style(|theme, status| style::button::transparent(theme, status, false))
+                .padding([4, 6])
+                .on_press(KlineMessage::IndicatorBrowser(Message::OpenCatalog)),
+            container(iced::widget::text("Get more indicators"))
+                .style(style::tooltip)
+                .padding(8),
+            Position::Bottom,
+        ),
     ]
     .align_y(Alignment::Center)
     .spacing(6);

@@ -66,6 +66,7 @@ num-traits.workspace = true
 rustc-hash.workspace = true
 enum-map.workspace = true
 url.workspace = true
+ring = "0.17.14"
 fern = "0.7.1"
 reqwest.workspace = true
 tokio.workspace = true

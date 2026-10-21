@@ -165,8 +165,13 @@ impl LayoutManager {
             message,
         } = message
         {
-            let task =
-                self.update_chart_resources(*message, main_window.id, *layout_id, (window, pane));
+            let task = self.update_chart_resources(
+                *message,
+                main_window.id,
+                *layout_id,
+                (window, pane),
+                &data_sources.catalog_http,
+            );
             return Some((task, None));
         }
 
@@ -185,8 +190,9 @@ impl LayoutManager {
         main_window: window::Id,
         layout_id: Uuid,
         origin: (window::Id, iced::widget::pane_grid::Pane),
+        catalog_http: &reqwest::Client,
     ) -> iced::Task<dashboard::Message> {
-        let (task, event) = self.chart_resources.update(message);
+        let (task, event) = self.chart_resources.update(message, catalog_http);
         if let Some(event) = event {
             for layout in &mut self.layouts {
                 layout

@@ -13,6 +13,7 @@ mod updates;
 mod viewport;
 
 use crate::connector::fetcher::FetchSpec;
+use crate::layout::{ChartResourcesMessage, indicator_catalog};
 use crate::screen::dashboard::pane::ChartAction;
 use crate::style;
 use crate::theme::{ThemeAccents, ThemeState};
@@ -71,6 +72,8 @@ pub enum Action {
     RequestFetch(Vec<FetchSpec>),
     OpenUrl(String),
     OpenNetworkSettings,
+    FocusWidget(iced::widget::Id),
+    SharedChartResources(Box<ChartResourcesMessage>),
 }
 
 #[derive(Debug, Clone)]
@@ -292,6 +295,27 @@ impl KlineChart {
                 self.close_contextual_settings();
             }
             Message::IndicatorBrowser(message) => match message {
+                indicator_browser::Message::OpenCatalog => {
+                    self.indicator_browser.open_catalog();
+                    return Some(Action::SharedChartResources(Box::new(
+                        ChartResourcesMessage::IndicatorCatalog(indicator_catalog::Message::Open),
+                    )));
+                }
+                indicator_browser::Message::Back => {
+                    self.indicator_browser.go_back();
+                    return Some(Action::FocusWidget(self.indicator_browser.search_box_id()));
+                }
+                indicator_browser::Message::CatalogSearchChanged(query) => {
+                    self.indicator_browser.set_catalog_query(query);
+                }
+                indicator_browser::Message::ToggleCatalogEntry(id) => {
+                    self.indicator_browser.toggle_catalog_entry(id);
+                }
+                indicator_browser::Message::Catalog(message) => {
+                    return Some(Action::SharedChartResources(Box::new(
+                        ChartResourcesMessage::IndicatorCatalog(message),
+                    )));
+                }
                 indicator_browser::Message::SearchChanged(query) => {
                     self.indicator_browser.set_search_query(query);
                 }
@@ -775,8 +799,19 @@ impl KlineChart {
         )
     }
 
-    pub fn indicator_browser_view(&self) -> iced::Element<'_, Message> {
-        indicator_browser::view(self, &self.indicator_browser)
+    pub fn indicator_browser_view<'a>(
+        &'a self,
+        catalog: &'a indicator_catalog::State,
+    ) -> iced::Element<'a, Message> {
+        indicator_browser::view(self, &self.indicator_browser, catalog)
+    }
+
+    pub fn indicator_browser_go_back(&mut self) -> bool {
+        self.indicator_browser.go_back()
+    }
+
+    pub fn indicator_browser_title(&self) -> &'static str {
+        self.indicator_browser.title()
     }
 
     pub fn indicator_browser_focus_id(&self) -> iced::widget::Id {

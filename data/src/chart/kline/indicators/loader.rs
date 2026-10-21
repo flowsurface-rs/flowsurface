@@ -2,7 +2,7 @@ use super::{IndicatorRegistration, language};
 use crate::data_path;
 use log::warn;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Filesystem sources used to build the process-wide indicator catalog.
 ///
@@ -20,19 +20,112 @@ impl IndicatorCatalogPaths {
     fn from_data_directory() -> Self {
         Self {
             bundled_directory: None,
-            installed_directory: data_path(Some("indicators")),
+            installed_directory: installed_indicator_directory(),
             additional_files: Vec::new(),
         }
     }
+}
+
+fn installed_indicator_directory() -> PathBuf {
+    std::env::var_os("FLOWSURFACE_INDICATORS_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| data_path(Some("indicators")))
+}
+
+fn installed_sources(directory: &Path) -> Result<Vec<language::LoadedIndicatorSource>, String> {
+    let (files, diagnostics) = language::indicator_files_in_directory(directory)?;
+    if !diagnostics.is_empty() {
+        return Err(diagnostics.join("\n"));
+    }
+    Ok(language::load_from_files_report(&files, language::PackageOrigin::Installed).loaded_sources)
+}
+
+pub fn install_indicator_source(id: &super::IndicatorId, source: &[u8]) -> Result<(), String> {
+    if super::catalog().get(id).is_some() {
+        return Err("This indicator is already loaded".to_owned());
+    }
+
+    let directory = installed_indicator_directory();
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    if installed_sources(&directory)?
+        .iter()
+        .any(|loaded| loaded.id == id.as_str())
+    {
+        return Err(
+            "An indicator with this ID already exists in the indicators directory".to_owned(),
+        );
+    }
+
+    let (namespace, name) = id
+        .as_str()
+        .rsplit_once('.')
+        .expect("Validated indicator ID has a namespace");
+    let destination_directory = directory.join(namespace);
+    let destination = destination_directory.join(format!("{name}.ind"));
+    let source_text = std::str::from_utf8(source).map_err(|error| error.to_string())?;
+    let report = language::load_compiled_report(
+        [(
+            destination.clone(),
+            indicator_engine::compile(source_text, &destination),
+        )],
+        language::PackageOrigin::Installed,
+    );
+    if !report.diagnostics.is_empty() {
+        return Err(report.diagnostics.join("\n"));
+    }
+    if report.registrations.len() != 1 || report.registrations[0].id != *id {
+        return Err("Downloaded indicator does not declare the expected ID".to_owned());
+    }
+
+    fs::create_dir_all(&destination_directory).map_err(|error| error.to_string())?;
+    // A non-source extension keeps interrupted writes out of source discovery on the same filesystem.
+    let temporary = destination_directory.join(format!(".install-{}.part", uuid::Uuid::new_v4()));
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .map_err(|error| error.to_string())?;
+    let result = (|| {
+        use std::io::Write;
+        file.write_all(source).map_err(|error| error.to_string())?;
+        file.sync_all().map_err(|error| error.to_string())?;
+        drop(file);
+
+        // A hard link publishes the complete file atomically and refuses to replace an existing path.
+        fs::hard_link(&temporary, &destination).map_err(|error| error.to_string())
+    })();
+    if let Err(error) = fs::remove_file(&temporary) {
+        log::warn!("Could not remove indicator installation staging file: {error}");
+    }
+    result
+}
+
+pub fn remove_indicator_source(id: &super::IndicatorId) -> Result<(), String> {
+    if super::catalog()
+        .get(id)
+        .is_some_and(|registration| registration.origin == language::PackageOrigin::Bundled)
+    {
+        return Err("Bundled indicators cannot be removed".to_owned());
+    }
+
+    let installed = installed_sources(&installed_indicator_directory())?;
+    let mut sources = installed.iter().filter(|source| source.id == id.as_str());
+    let source = sources.next().ok_or_else(|| {
+        "No matching source was found in the configured indicators directory".to_owned()
+    })?;
+    if sources.next().is_some() {
+        return Err(
+            "Multiple sources declare this indicator ID; remove the conflicting files manually"
+                .to_owned(),
+        );
+    }
+    fs::remove_file(&source.path).map_err(|error| error.to_string())
 }
 
 pub fn initialize_indicator_catalog() -> Result<(), String> {
     let additional_files =
         indicator_paths_from_args().map_err(|error| format!("Invalid indicator path: {error}"))?;
     let mut paths = IndicatorCatalogPaths::from_data_directory();
-    if let Some(directory) = std::env::var_os("FLOWSURFACE_INDICATORS_PATH") {
-        paths.installed_directory = directory.into();
-    }
     paths.additional_files.extend(additional_files);
 
     initialize_indicator_catalog_with_paths(&paths)

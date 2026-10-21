@@ -1,3 +1,5 @@
+pub(crate) mod indicator_catalog;
+
 use crate::modal::layout_manager::LayoutManager;
 use crate::screen::dashboard::{Dashboard, pane};
 use data::{
@@ -24,11 +26,13 @@ pub struct LayoutId {
 #[derive(Default)]
 pub struct SharedChartResources {
     presets: presets::Library,
+    indicator_catalog: indicator_catalog::State,
 }
 
 #[derive(Debug, Clone)]
 pub enum ChartResourcesMessage {
     Presets(presets::Command),
+    IndicatorCatalog(indicator_catalog::Message),
 }
 
 pub enum ChartResourcesEvent {
@@ -39,6 +43,7 @@ impl SharedChartResources {
     pub fn from_config(presets: Vec<data::chart::kline::ChartPreset>) -> Self {
         Self {
             presets: presets::Library::from_config(presets),
+            indicator_catalog: indicator_catalog::State::default(),
         }
     }
 
@@ -46,14 +51,25 @@ impl SharedChartResources {
         &self.presets
     }
 
+    pub fn indicator_catalog(&self) -> &indicator_catalog::State {
+        &self.indicator_catalog
+    }
+
     pub fn update(
         &mut self,
         message: ChartResourcesMessage,
+        catalog_http: &reqwest::Client,
     ) -> (Task<ChartResourcesMessage>, Option<ChartResourcesEvent>) {
         match message {
             ChartResourcesMessage::Presets(command) => (
                 Task::none(),
                 Some(ChartResourcesEvent::Presets(self.presets.update(command))),
+            ),
+            ChartResourcesMessage::IndicatorCatalog(message) => (
+                self.indicator_catalog
+                    .update(message, catalog_http)
+                    .map(ChartResourcesMessage::IndicatorCatalog),
+                None,
             ),
         }
     }

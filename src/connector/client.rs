@@ -11,6 +11,7 @@ use exchange::proxy::Proxy;
 
 #[derive(Clone)]
 pub struct DataSources {
+    pub catalog_http: reqwest::Client,
     pub exchange: AdapterHandles,
     pub server: Option<ServerClient>,
 }
@@ -22,13 +23,26 @@ impl DataSources {
         let proxy = network.proxy.as_ref();
         let (exchange_http, server_http) = Self::build_http_clients(proxy);
 
+        let catalog_builder = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .user_agent(concat!("Flowsurface/", env!("CARGO_PKG_VERSION")))
+            .redirect(reqwest::redirect::Policy::none());
+        let catalog_http = exchange::adapter::proxy::try_apply_proxy(catalog_builder, proxy)
+            .build()
+            .expect("Failed to build indicator catalog HTTP client");
+
         let server = ServerClient::from_mode(&server_http, network);
         let exchange = AdapterHandles::spawn_venues(&exchange_http, Venue::ALL, proxy);
 
-        Self { exchange, server }
+        Self {
+            exchange,
+            server,
+            catalog_http,
+        }
     }
 
-    /// Build the two HTTP clients used by the application.
+    /// Build the exchange-adapter and market-data server HTTP clients.
     ///
     /// Returns `(exchange_client, server_client)`.
     ///

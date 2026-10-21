@@ -1075,7 +1075,12 @@ impl State {
 
         let title = match page {
             InspectorPage::PaneSettings => "Pane settings".to_owned(),
-            InspectorPage::Indicators => "Add indicators or studies".to_owned(),
+            InspectorPage::Indicators => match &self.content {
+                Content::Kline {
+                    chart: Some(chart), ..
+                } => chart.indicator_browser_title().to_owned(),
+                _ => return None,
+            },
         };
 
         let close = button(icon_text(Icon::Close, 14))
@@ -1125,7 +1130,9 @@ impl State {
                 )
             }
             InspectorPage::Indicators => (
-                InspectorBody::view_without_scroll(self.indicators_sidebar_view(pane)?),
+                InspectorBody::view_without_scroll(
+                    self.indicators_sidebar_view(pane, chart_resources)?,
+                ),
                 None,
             ),
         };
@@ -1145,6 +1152,7 @@ impl State {
     pub fn indicators_sidebar_view<'a>(
         &'a self,
         pane: pane_grid::Pane,
+        chart_resources: &'a SharedChartResources,
     ) -> Option<Element<'a, Message>> {
         let Content::Kline {
             chart: Some(chart), ..
@@ -1155,7 +1163,7 @@ impl State {
 
         Some(
             chart
-                .indicator_browser_view()
+                .indicator_browser_view(chart_resources.indicator_catalog())
                 .map(move |message| Message::PaneEvent(pane, Event::KlineInteraction(message))),
         )
     }
@@ -1381,6 +1389,14 @@ impl State {
         if self.inspector == Some(InspectorPage::PaneSettings) && self.preset_editor.cancel() {
             return true;
         }
+        if self.inspector == Some(InspectorPage::Indicators)
+            && let Content::Kline {
+                chart: Some(chart), ..
+            } = &mut self.content
+            && chart.indicator_browser_go_back()
+        {
+            return true;
+        }
         if let Content::Kline {
             chart: Some(chart), ..
         } = &mut self.content
@@ -1467,6 +1483,10 @@ impl State {
             Some(KlineAction::RequestFetch(fetch)) => Some(Effect::RequestFetch(fetch)),
             Some(KlineAction::OpenNetworkSettings) => Some(Effect::OpenNetworkSettings),
             Some(KlineAction::OpenUrl(url)) => Some(Effect::OpenUrl(url)),
+            Some(KlineAction::FocusWidget(id)) => Some(Effect::FocusWidget(id)),
+            Some(KlineAction::SharedChartResources(message)) => {
+                Some(Effect::SharedChartResources(message))
+            }
             Some(KlineAction::RemoveSeries(ticker_info)) => {
                 if let Content::Kline {
                     chart: Some(chart), ..

@@ -81,9 +81,16 @@ Candlestick/footprint charts include [bundled indicators](data/indicators/README
 Add more from the optional [catalog](https://github.com/flowsurface-rs/indicators/tree/main/sources) or write your own `.ind` files;
 installing indicators does not require rebuilding the app.
 
-To install, go to **Settings → Open data folder** and copy the desired catalog
-`.ind` files into `indicators/` subfolder there. Restart the app, then add them
-through the chart pane's **Indicators** sidebar. The data directory is `$FLOWSURFACE_DATA_PATH`
+Open the chart pane's **Indicators** sidebar and click **+** to browse the catalog.
+The first visit loads the list; use **Refresh** to reload it. Click **Install**,
+restart the app, then add the indicator through the same sidebar. Downloads are
+verified and compiled before installation; existing files are never overwritten.
+Use the trash button beside **Installed** to remove a catalog indicator. Loaded
+indicators remain available until you restart the app; bundled indicators cannot
+be removed.
+
+For manual installation, go to **Settings → Open data folder** and copy `.ind`
+files into the `indicators/` subfolder, then restart. The data directory is `$FLOWSURFACE_DATA_PATH`
 when set, otherwise your platform's data directory under `flowsurface/`.
 See [installation details](https://github.com/flowsurface-rs/indicators#install-and-run) for path overrides
 and loading behavior.
