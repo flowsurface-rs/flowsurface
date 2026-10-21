@@ -452,21 +452,11 @@ impl InstanceBuilder {
         palette: &HeatmapPalette,
         rects: &mut Vec<RectInstance>,
     ) {
-        const BUCKET_GAP_FRAC: f32 = 0.10;
-        const MIN_BAR_W_PX: f32 = 2.0;
-        const MAX_COLS_PER_X_BIN: i64 = 4096;
         if w.volume_area_max_height <= 0.0 {
             return;
         }
-
-        // Compute X binning
-        let px_per_col = w.cam_scale;
-        let px_per_drawn_col = px_per_col * (1.0 - BUCKET_GAP_FRAC);
-        let mut cols_per_x_bin = 1i64;
-        if px_per_drawn_col.is_finite() && px_per_drawn_col > 0.0 {
-            cols_per_x_bin = (MIN_BAR_W_PX / px_per_drawn_col).ceil() as i64;
-            cols_per_x_bin = cols_per_x_bin.clamp(1, MAX_COLS_PER_X_BIN);
-        }
+        let cols_per_x_bin =
+            super::scene::pipeline::rectangle::bar_buckets(w.cam_scale * w.column_width_world);
 
         let start_bucket = (w.earliest / w.aggr_time) as i64;
         let latest_bucket = (w.latest_vis / w.aggr_time) as i64;
@@ -549,21 +539,9 @@ impl InstanceBuilder {
             let x1_bin =
                 (end_bucket_excl - ref_bucket).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
 
-            // Total volume bar
-            let total_bar = RectInstance::volume_total_bar(
-                total_qty, max_total, buy, sell, x0_bin, x1_bin, w, palette,
-            );
-            let total_h = total_bar.size[1];
-            let base_rgb = [total_bar.color[0], total_bar.color[1], total_bar.color[2]];
-            rects.push(total_bar);
-
-            // Delta overlay (if not tied)
-            let diff = buy.abs_diff(sell);
-            if !diff.is_zero() {
-                rects.push(RectInstance::volume_delta_bar(
-                    diff, total_h, max_total, base_rgb, x0_bin, x1_bin, w,
-                ));
-            }
+            rects.push(RectInstance::volume_bar(
+                buy, sell, max_total, x0_bin, x1_bin, w, palette,
+            ));
         }
     }
 }

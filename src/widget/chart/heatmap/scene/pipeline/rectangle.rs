@@ -22,7 +22,7 @@ pub enum RectXLayout {
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct RectInstance {
     pub position: [f32; 2],
-    pub size: [f32; 2], // Indicator layouts store two heights; other layouts store width and height.
+    pub size: [f32; 2], // Bar layouts store two heights; absolute layouts store width and height.
     pub color: [f32; 4],
     pub x0_bin: i32,
     pub x1_bin_excl: i32,
@@ -35,8 +35,6 @@ impl RectInstance {
     const DEPTH_PROFILE_ALPHA: f32 = 1.0;
 
     const VOLUME_TOTAL_ALPHA: f32 = 0.65;
-    const VOLUME_DELTA_ALPHA: f32 = 1.0;
-    const VOLUME_DELTA_TINT_TO_WHITE: f32 = 0.12;
 
     const VOLUME_PROFILE_ALPHA: f32 = 1.0;
 
@@ -89,33 +87,30 @@ impl RectInstance {
         }
     }
 
-    pub fn volume_total_bar(
-        total_qty: Qty,
-        max_qty: Qty,
+    pub fn volume_bar(
         buy_qty: Qty,
         sell_qty: Qty,
+        max_qty: Qty,
         x0_bin: i32,
         x1_bin_excl: i32,
         w: &ViewWindow,
         palette: &HeatmapPalette,
     ) -> Self {
         let denom = max_qty.to_scale_or_one();
-
-        let (base_rgb, _is_tie) = if buy_qty > sell_qty {
-            (palette.buy_rgb, false)
+        let base_rgb = if buy_qty > sell_qty {
+            palette.buy_rgb
         } else if sell_qty > buy_qty {
-            (palette.sell_rgb, false)
+            palette.sell_rgb
         } else {
-            (palette.secondary_rgb, true)
+            palette.secondary_rgb
         };
-
-        let raw_total_h = ((total_qty.to_f64() / denom) * w.volume_area_max_height as f64) as f32;
-        let (total_h, subpx_alpha) = Self::extent_and_subpx_alpha(raw_total_h, w.cam_scale);
-        let total_center_y = w.volume_area_bottom_y - 0.5 * total_h;
-
+        let height = |qty: Qty| ((qty.to_f64() / denom) * w.volume_area_max_height as f64) as f32;
         Self {
-            position: [0.0, total_center_y],
-            size: [0.0, total_h],
+            position: [0.0, w.volume_area_bottom_y],
+            size: [
+                height(buy_qty + sell_qty),
+                height(buy_qty.abs_diff(sell_qty)),
+            ],
             color: [
                 base_rgb[0],
                 base_rgb[1],
@@ -126,48 +121,7 @@ impl RectInstance {
             x1_bin_excl,
             x_layout: RectXLayout::VolumeBar as u32,
             fade_mode: 0,
-            subpx_alpha,
-        }
-    }
-
-    pub fn volume_delta_bar(
-        diff_qty: Qty,
-        total_h: f32,
-        max_qty: Qty,
-        base_rgb: [f32; 3],
-        x0_bin: i32,
-        x1_bin_excl: i32,
-        w: &ViewWindow,
-    ) -> Self {
-        let denom = max_qty.to_scale_or_one();
-        let raw_overlay_h = ((diff_qty.to_f64() / denom) * w.volume_area_max_height as f64)
-            .min(total_h.max(0.0_f32) as f64) as f32;
-        let (overlay_h, subpx_alpha) = Self::extent_and_subpx_alpha(raw_overlay_h, w.cam_scale);
-        let overlay_h = overlay_h.min(total_h.max(0.0));
-
-        let t = Self::VOLUME_DELTA_TINT_TO_WHITE;
-        let overlay_rgb = [
-            base_rgb[0] + (1.0 - base_rgb[0]) * t,
-            base_rgb[1] + (1.0 - base_rgb[1]) * t,
-            base_rgb[2] + (1.0 - base_rgb[2]) * t,
-        ];
-
-        let overlay_center_y = w.volume_area_bottom_y - 0.5 * overlay_h;
-
-        Self {
-            position: [0.0, overlay_center_y],
-            size: [0.0, overlay_h],
-            color: [
-                overlay_rgb[0],
-                overlay_rgb[1],
-                overlay_rgb[2],
-                Self::VOLUME_DELTA_ALPHA,
-            ],
-            x0_bin,
-            x1_bin_excl,
-            x_layout: RectXLayout::VolumeBar as u32,
-            fade_mode: 0,
-            subpx_alpha,
+            subpx_alpha: 1.0,
         }
     }
 
@@ -311,4 +265,15 @@ pub(crate) fn pipeline(
         multiview: None,
         cache: None,
     })
+}
+
+pub const BAR_GAP_FRACTION: f32 = 0.10;
+
+pub fn bar_buckets(pixels_per_bucket: f32) -> i64 {
+    let width = pixels_per_bucket * (1.0 - BAR_GAP_FRACTION);
+    if width.is_finite() && width > 0.0 {
+        ((2.0 / width).ceil() as i64).clamp(1, MAX_BAR_BUCKETS)
+    } else {
+        1
+    }
 }

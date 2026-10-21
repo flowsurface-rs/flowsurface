@@ -621,6 +621,7 @@ pub struct ViewWindow {
 
     // Camera scale (world->px)
     pub cam_scale: f32,
+    pub column_width_world: f32,
 
     // Overlays
     pub volume_profile_max_width: f32,
@@ -713,6 +714,7 @@ impl ViewWindow {
             highest,
             row_h,
             cam_scale,
+            column_width_world: col_w_world,
             volume_profile_max_width: overlay.volume_profile_max_width_world,
             depth_profile_max_width: overlay.depth_profile_max_width_world,
             volume_area_max_height: overlay.volume_strip_height_world,

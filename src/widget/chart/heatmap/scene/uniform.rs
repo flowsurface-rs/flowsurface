@@ -1,4 +1,4 @@
-use super::camera::CameraUniform;
+use super::{camera::CameraUniform, pipeline::rectangle::BAR_GAP_FRACTION};
 use crate::widget::chart::heatmap::view::ViewWindow;
 use bytemuck::{Pod, Zeroable};
 use iced::wgpu::{self, util::DeviceExt};
@@ -38,7 +38,7 @@ impl Default for ParamsUniform {
             bid_rgb: [0.0, 1.0, 0.0, 0.0],
             ask_rgb: [1.0, 0.0, 0.0, 0.0],
             grid: [0.1, 0.1, 1.0, 0.0],
-            origin: [0.0, 0.0, 0.0, VOLUME_X_SHIFT_BUCKET],
+            origin: [0.0, 0.0, BAR_GAP_FRACTION, VOLUME_X_SHIFT_BUCKET],
             heatmap_map: [0.0, 0.0, 1.0, 0.0],
             heatmap_tex: [0.0, 0.0, 0.0, 0.0],
             fade: [0.0, 0.0, 1.0, 1.0],
