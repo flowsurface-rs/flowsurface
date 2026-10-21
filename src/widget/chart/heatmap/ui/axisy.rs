@@ -7,7 +7,7 @@ use iced_core::mouse;
 
 /// Rough vertical spacing (in screen pixels) between Y-axis labels.
 const LABEL_TARGET_PX: f32 = 48.0;
-const DRAG_ZOOM_SENS: f32 = 0.005;
+const DRAG_ZOOM_SENS: f32 = 0.004;
 
 pub struct AxisYLabelCanvas<'a> {
     pub cache: &'a iced::widget::canvas::Cache,
@@ -123,15 +123,9 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
             }
             iced::Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
                 let p = cursor.position_in(bounds)?;
-                let scroll_amount = match delta {
-                    mouse::ScrollDelta::Lines { y, .. } => *y * 0.1,
-                    mouse::ScrollDelta::Pixels { y, .. } => *y * 0.01,
-                };
-
-                let factor = (1.0 + scroll_amount).clamp(0.01, 100.0);
 
                 Some(canvas::Action::publish(Message::ScrolledAxisY {
-                    factor,
+                    factor: super::wheel_zoom_factor(*delta),
                     cursor_y: p.y,
                     viewport_h: bounds.height,
                 }))

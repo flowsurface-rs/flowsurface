@@ -9,7 +9,8 @@ use data::config::timezone::TimeLabelKind;
 use iced::{Rectangle, Renderer, Theme, widget::canvas};
 use iced_core::mouse;
 
-const DRAG_ZOOM_SENS: f32 = 0.005;
+const MIN_DRAG_ZOOM_WIDTH_PX: f32 = 200.0;
+const DRAG_ZOOM_SENS: f32 = 1.5;
 const PHASE_MAX: f64 = 0.999_999;
 const COL_EPS: f64 = 1e-18;
 const BUCKET_EPS: f64 = 1e-9;
@@ -104,13 +105,13 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
                     let delta_px = *position - *last_position;
                     *last_position = *position;
 
-                    let scroll_amount = -delta_px.x * DRAG_ZOOM_SENS;
-                    let factor = (1.0 + scroll_amount).clamp(0.01, 100.0);
+                    let vw = self.plot_bounds.map(|r| r.width).unwrap_or(bounds.width);
+                    let factor = (-delta_px.x * DRAG_ZOOM_SENS / vw.max(MIN_DRAG_ZOOM_WIDTH_PX))
+                        .exp()
+                        .clamp(0.01, 100.0);
 
                     match *zoom_anchor {
                         Some(AxisZoomAnchor::World { screen, .. }) => {
-                            let vw = self.plot_bounds.map(|r| r.width).unwrap_or(bounds.width);
-
                             Some(canvas::Action::publish(Message::DragZoomAxisXKeepAnchor {
                                 factor,
                                 anchor_screen_x: screen,
@@ -132,15 +133,9 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
             }
             iced::Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
                 let cursor_rel_pos = cursor.position_in(bounds)?;
-                let scroll_amount = match delta {
-                    mouse::ScrollDelta::Lines { y, .. } => *y * 0.1,
-                    mouse::ScrollDelta::Pixels { y, .. } => *y * 0.01,
-                };
-
-                let factor = (1.0 + scroll_amount).clamp(0.01, 100.0);
 
                 Some(canvas::Action::publish(Message::ScrolledAxisX {
-                    factor,
+                    factor: super::wheel_zoom_factor(*delta),
                     cursor_x: cursor_rel_pos.x,
                     viewport_w: bounds.width,
                 }))
