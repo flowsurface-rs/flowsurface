@@ -19,7 +19,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::time::Instant;
 use tokio_rustls::{
     TlsConnector,
-    rustls::{ClientConfig, OwnedTrustAnchor},
+    rustls::{ClientConfig, pki_types::ServerName},
 };
 use url::Url;
 
@@ -42,18 +42,11 @@ pub(super) const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_DRAIN_PER_TICK: usize = 256;
 
 pub(super) static TLS_CONNECTOR: LazyLock<TlsConnector> = LazyLock::new(|| {
-    let mut root_store = tokio_rustls::rustls::RootCertStore::empty();
-
-    root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|ta| {
-        OwnedTrustAnchor::from_subject_spki_name_constraints(
-            ta.subject,
-            ta.spki,
-            ta.name_constraints,
-        )
-    }));
+    let root_store = tokio_rustls::rustls::RootCertStore::from_iter(
+        webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
+    );
 
     let config = ClientConfig::builder()
-        .with_safe_defaults()
         .with_root_certificates(root_store)
         .with_no_client_auth();
 
@@ -861,7 +854,7 @@ impl WsTransport {
         stream: ProxyStream,
         domain: &str,
     ) -> Result<Box<tokio_rustls::client::TlsStream<ProxyStream>>, AdapterError> {
-        let server_name = tokio_rustls::rustls::ServerName::try_from(domain)
+        let server_name = ServerName::try_from(domain.to_owned())
             .map_err(|_| AdapterError::ParseError("invalid dnsname".to_string()))?;
 
         let tls_stream = TLS_CONNECTOR
