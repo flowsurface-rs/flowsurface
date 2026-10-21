@@ -1275,11 +1275,7 @@ impl KlineChart {
                 _ => None,
             },
             InspectorEffect::StudyConfigurator(message) => {
-                let command = self.studies.update_configurator(
-                    message,
-                    self.basis,
-                    self.trade_data_enabled(),
-                )?;
+                let command = self.studies.update_configurator(message)?;
                 let _ = self.apply_command_inner(ChartCommand::Study(command));
                 None
             }

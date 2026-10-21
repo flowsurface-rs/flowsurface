@@ -3,6 +3,7 @@ use super::layout::place_non_overlapping_labels;
 use super::painting::PixelGeometry;
 use super::presentation::IndicatorView;
 use super::scene::{ChartCoordinates, Scene, XAxis};
+use data::chart::axis::PanelYValueRange;
 use data::chart::kline::{composition::PanelScaleMode, table_columns};
 use data::chart::ticks::{
     Y_LABEL_DENSITY,
@@ -306,35 +307,23 @@ impl AxisView<'_> {
             let Some(panel) = scene.layout.panel(panel_index) else {
                 continue;
             };
-            let panel_precision = self.coordinates.panel_value_precision(panel_index);
-            let min_value = indicator.min_value();
-            let max_value = indicator.max_value();
-            let y_ticks = YAxisScale::Linear.ticks(
-                min_value,
-                max_value,
-                labels_for_height(panel.plot.height),
+            let Some(range) =
+                PanelYValueRange::from_units(indicator.domain.active(), indicator.value_scale)
+            else {
+                continue;
+            };
+            labels.extend(
+                range
+                    .axis_labels(
+                        indicator.value_scale,
+                        self.coordinates.panel_value_label_policy(panel_index),
+                        panel.plot.y,
+                        panel.plot.height,
+                        TEXT_SIZE,
+                    )
+                    .into_iter()
+                    .map(|(text, y)| (panel_index, text, y)),
             );
-            let step_value = y_ticks.step.unwrap_or(1.0);
-
-            for tick in y_ticks.ticks {
-                let TickValue::Float(value) = tick.value else {
-                    continue;
-                };
-                let Some(y) = scene.map_indicator_plot(panel_index, value) else {
-                    continue;
-                };
-                let y = y.clamp(panel.plot.y, panel.plot.y + panel.plot.height);
-                labels.push((
-                    panel_index,
-                    self.coordinates.format_panel_axis_value(
-                        panel_index,
-                        panel_precision,
-                        value,
-                        step_value,
-                    ),
-                    y,
-                ));
-            }
         }
 
         self.resolve_y_axis_label_overlaps(&mut labels);

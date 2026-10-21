@@ -812,7 +812,6 @@ impl DrawingView<'_> {
         let Some(clip_bounds) = self.panel_plot_bounds_in_overlay(panel_index) else {
             return;
         };
-        let panel_precision = self.context.coordinates.panel_value_precision(panel_index);
         let value_scale = self.context.coordinates.panel_value_scale(panel_index);
 
         let start_value = value_scale.unit_to_value(state.start.y_unit);
@@ -848,12 +847,10 @@ impl DrawingView<'_> {
         } else {
             ""
         };
-        let delta_label = self.context.coordinates.format_panel_axis_value(
-            panel_index,
-            panel_precision,
-            delta.abs(),
-            0.01,
-        );
+        let delta_label =
+            self.context
+                .coordinates
+                .format_panel_axis_value(panel_index, delta.abs(), 0.01);
         let text1 = format!("{sign}{delta_label} ({sign}{:.2}%)", pct.abs());
         let text2 = match span_ms {
             Some(span_ms) => format!("{} ({bars}b)", data::util::format_duration_ms(span_ms)),
@@ -1097,7 +1094,6 @@ impl DrawingView<'_> {
         let scene = self.context.scene;
         let panel_index = self.context.coordinates.panel_index_for_id(panel_id)?;
         let panel = scene.layout.panel(panel_index)?;
-        let panel_precision = self.context.coordinates.panel_value_precision(panel_index);
         let value_scale = self.context.coordinates.panel_value_scale(panel_index);
 
         match panel.kind {
@@ -1106,7 +1102,6 @@ impl DrawingView<'_> {
             }
             KlinePanelKind::Indicator => Some(self.context.coordinates.format_panel_axis_value(
                 panel_index,
-                panel_precision,
                 value_scale.unit_to_value(y_unit),
                 0.01,
             )),

@@ -15,8 +15,8 @@ use crate::widget::chart::heatmap::ui::overlay::OverlayCanvas;
 use self::layout::HeatmapLayout;
 use crate::widget::chart::PANEL_SPLITTER_HEIGHT;
 use crate::window::PixelRatio;
+use data::chart::axis::PanelYValueRange;
 use data::chart::heatmap::indicators::{HeatmapIndicators, HeatmapPanel};
-use data::chart::kline::viewport::PanelYValueRange;
 use enum_map::EnumMap;
 use exchange::TickerInfo;
 use iced::advanced::widget::tree::{self, Tree};
@@ -407,13 +407,8 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
                 && geometry.indicator_plot_at(cursor).is_some()
                 && let Some(position) = cursor.position()
             {
-                let amount = match delta {
-                    mouse::ScrollDelta::Lines { y, .. } => *y * 0.1,
-                    mouse::ScrollDelta::Pixels { y, .. } => *y * 0.01,
-                };
-
                 shell.publish(Message::ScrolledAxisX {
-                    factor: (1.0 + amount).clamp(0.01, 100.0),
+                    factor: ui::wheel_zoom_factor(*delta),
                     cursor_x: position.x - plot_bounds.x,
                     viewport_w: plot_bounds.width,
                 });

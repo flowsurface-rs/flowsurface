@@ -1,5 +1,7 @@
 use super::Y_AXIS_LABEL_LEFT_INSET;
 use super::composition::{PanelRole, PanelSpec};
+use crate::widget::chart::panel_splitter_hit_bounds;
+pub(super) use data::chart::axis::place_non_overlapping_labels;
 use iced::Size;
 use iced::advanced::Layout;
 use iced::advanced::layout as iced_layout;
@@ -11,78 +13,10 @@ use iced::{Point, Rectangle};
 /// (e.g. pane split dragging when trying to interact with labels)
 const AXIS_DRAG_EDGE_GUARD: f32 = 4.0;
 
-const PANEL_SPLITTER_HIT_PX: f32 = 8.0;
-
 /// Inclusive edge test: rects that share a boundary both own it, so hit tests
 /// stay continuous across plot, axis, and splitter seams.
 pub(super) fn contains_inclusive(rect: Rectangle, p: Point) -> bool {
     p.x >= rect.x && p.x <= rect.x + rect.width && p.y >= rect.y && p.y <= rect.y + rect.height
-}
-
-pub(in crate::widget::chart) fn place_non_overlapping_labels(
-    desired_centers: &[f32],
-    min_y: f32,
-    max_y: f32,
-    label_height: f32,
-    gap: f32,
-) -> Vec<Option<f32>> {
-    if desired_centers.is_empty() {
-        return Vec::new();
-    }
-
-    let label_height = label_height.max(1.0);
-    let min_center = min_y + label_height * 0.5;
-    let max_center = (max_y - label_height * 0.5).max(min_center);
-    let spacing = (label_height + gap.max(0.0)).max(label_height);
-    let capacity = ((max_center - min_center) / spacing).floor() as usize + 1;
-    let visible_count = desired_centers.len().min(capacity.max(1));
-
-    let mut candidates: Vec<(usize, f32)> = desired_centers.iter().copied().enumerate().collect();
-    candidates.sort_by(|(_, left), (_, right)| left.total_cmp(right));
-
-    let selected = if visible_count == candidates.len() {
-        candidates
-    } else {
-        (0..visible_count)
-            .map(|slot| {
-                let source_index = if visible_count == 1 {
-                    candidates.len() / 2
-                } else {
-                    slot * (candidates.len() - 1) / (visible_count - 1)
-                };
-                candidates[source_index]
-            })
-            .collect()
-    };
-
-    let mut centers: Vec<f32> = selected
-        .iter()
-        .map(|(_, center)| center.clamp(min_center, max_center))
-        .collect();
-
-    if centers.len() > 1 {
-        centers[0] = centers[0].max(min_center);
-
-        for index in 1..centers.len() {
-            centers[index] = centers[index].max(centers[index - 1] + spacing);
-        }
-
-        if centers[centers.len() - 1] > max_center {
-            let last = centers.len() - 1;
-            centers[last] = max_center;
-
-            for index in (0..last).rev() {
-                centers[index] = centers[index].min(centers[index + 1] - spacing);
-            }
-        }
-    }
-
-    let mut placements = vec![None; desired_centers.len()];
-    for ((source_index, _), center) in selected.into_iter().zip(centers) {
-        placements[source_index] = Some(center);
-    }
-
-    placements
 }
 
 pub(super) fn label_bounds_overlap(
@@ -242,18 +176,6 @@ impl PanelLayoutTree {
         ))
     }
 
-    fn splitter_hit_rect(splitter: Rectangle) -> Rectangle {
-        let hit_h = PANEL_SPLITTER_HIT_PX;
-        let center_y = splitter.y + splitter.height * 0.5;
-
-        Rectangle {
-            x: splitter.x,
-            y: center_y - hit_h * 0.5,
-            width: splitter.width,
-            height: hit_h,
-        }
-    }
-
     pub(super) fn hit_test(&self, root_local: Point) -> LayoutHitZone {
         if contains_inclusive(self.regions.y_axis, root_local) {
             let panel_local_y = root_local.y - self.regions.plot.y;
@@ -288,7 +210,7 @@ impl PanelLayoutTree {
         };
 
         for (index, splitter) in self.splitters.iter().copied().enumerate() {
-            if contains_inclusive(Self::splitter_hit_rect(splitter), plot_local) {
+            if contains_inclusive(panel_splitter_hit_bounds(splitter), plot_local) {
                 return LayoutHitZone::Splitter(index);
             }
         }
@@ -341,57 +263,13 @@ impl Regions {
     }
 }
 
-pub(in crate::widget::chart) fn panel_plot_heights(
-    panel_stack_height: f32,
-    panel_count: usize,
-    normalized_splits: &[f32],
-    splitter_height: f32,
-) -> Vec<f32> {
-    if panel_count == 0 {
-        return Vec::new();
-    }
-
-    let non_plot = panel_count.saturating_sub(1) as f32 * splitter_height;
-    let usable = (panel_stack_height - non_plot).max(0.0);
-
-    if panel_count == 1 {
-        return vec![usable];
-    }
-
-    let mut splits = normalized_splits.to_vec();
-    let split_count = panel_count.saturating_sub(1);
-
-    if splits.len() > split_count {
-        splits.truncate(split_count);
-    }
-
-    for index in splits.len()..split_count {
-        let fallback = (index + 1) as f32 / panel_count as f32;
-        splits.push(fallback);
-    }
-
-    let mut heights = Vec::with_capacity(panel_count);
-    let mut previous = 0.0;
-
-    for split in splits {
-        let boundary = (split.clamp(0.0, 1.0) * usable)
-            .round()
-            .clamp(previous, usable);
-        heights.push((boundary - previous).max(0.0));
-        previous = boundary;
-    }
-
-    heights.push((usable - previous).max(0.0));
-    heights
-}
-
 pub(super) fn build_panel_stack(
     panel_count: usize,
     normalized_splits: &[f32],
     stack_size: Size,
     splitter_height: f32,
 ) -> iced_layout::Node {
-    let plot_heights = panel_plot_heights(
+    let plot_heights = crate::widget::chart::panel_plot_heights(
         stack_size.height,
         panel_count,
         normalized_splits,
@@ -439,20 +317,12 @@ impl PanelLayoutTree {
         split_index: usize,
         splitter_height: f32,
     ) -> Option<f32> {
-        let panel_count = self.panels.len();
-        let split_count = panel_count.saturating_sub(1);
-
-        if split_count == 0 || split_index >= split_count {
-            return None;
-        }
-
-        let local_y = (cursor_y - self.regions.plot.y).clamp(0.0, self.regions.plot.height);
-        let usable_plot_height: f32 = self.panels.iter().map(|panel| panel.plot.height).sum();
-        let usable = usable_plot_height.max(1.0);
-
-        let fixed_before = (split_index as f32 * splitter_height) + (splitter_height * 0.5);
-        let boundary = (local_y - fixed_before).round().clamp(0.0, usable);
-
-        Some((boundary / usable).clamp(0.0, 1.0))
+        crate::widget::chart::split_ratio_from_cursor(
+            (cursor_y - self.regions.plot.y).clamp(0.0, self.regions.plot.height),
+            split_index,
+            self.panels.len(),
+            self.panels.iter().map(|panel| panel.plot.height).sum(),
+            splitter_height,
+        )
     }
 }

@@ -1,7 +1,6 @@
 use super::{HistoricalDepth, ProfileKind};
-use crate::chart::kline::{
-    composition::{PanelValueLabelMode, PanelValueLabelPolicy, PanelValuePrecision},
-    viewport::PanelValueScale,
+use crate::chart::value::{
+    PanelValueLabelMode, PanelValueLabelPolicy, PanelValuePrecision, PanelValueScale,
 };
 use enum_map::{Enum, EnumMap};
 use exchange::{

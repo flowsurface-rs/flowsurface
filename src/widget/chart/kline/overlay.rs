@@ -267,13 +267,10 @@ impl OverlayView<'_> {
                 })
                 .or_else(|| {
                     cursor.y_indicator_unit.map(|indicator_unit| {
-                        let panel_precision =
-                            self.coordinates.panel_value_precision(cursor.panel_index);
                         let value_scale = self.coordinates.panel_value_scale(cursor.panel_index);
                         let indicator_value = value_scale.unit_to_value(indicator_unit);
                         self.coordinates.format_panel_axis_value(
                             cursor.panel_index,
-                            panel_precision,
                             indicator_value,
                             0.01,
                         )

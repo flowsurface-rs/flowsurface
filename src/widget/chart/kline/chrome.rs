@@ -1,10 +1,13 @@
 use super::layout::{PanelLayoutTree, contains_inclusive};
 use super::scene::{ChartCoordinates, Scene};
 use super::{CHAR_W, PANEL_TITLE_TOP_PAD};
+use crate::widget::chart::{
+    LEGEND_TITLE_GAP as PANEL_TITLE_TO_CONTROLS_GAP, legend_background_color, legend_row_background,
+};
 pub(super) mod legend;
 use super::PanelInteraction;
 use super::composition::{PanelScaleMode, PanelValueId};
-use super::{KlineWidgetEvent, TEXT_SIZE, TICKER_LEGEND_PADDING};
+use super::{KlineWidgetEvent, TEXT_SIZE};
 use crate::style;
 use data::chart::kline::series::KlineSeries;
 use iced::theme::palette::Extended;
@@ -13,7 +16,6 @@ pub(super) use legend::*;
 pub use legend::{StudiesLegend, StudyLegendRow};
 
 const PANEL_TITLE_LEFT_PAD: f32 = 6.0;
-pub(in crate::widget::chart) const PANEL_TITLE_TO_CONTROLS_GAP: f32 = 8.0;
 const PANEL_CONTROL_BOX: f32 = TEXT_SIZE + 5.0;
 const PANEL_CONTROL_GAP: f32 = 4.0;
 const PANEL_CONTROL_ICON_SIZE: f32 = TEXT_SIZE - 1.0;
@@ -22,8 +24,6 @@ const TICKER_LEGEND_ICON_GAP: f32 = 4.0;
 const TICKER_LEGEND_TOP_OFFSET: f32 = 0.0;
 pub(super) const SERIES_END_LABEL_GAP: f32 = 1.0;
 const HIDDEN_LEGEND_ALPHA: f32 = 0.45;
-const LIGHT_LEGEND_BACKGROUND_ALPHA: f32 = 0.7;
-const DARK_LEGEND_BACKGROUND_ALPHA: f32 = 0.9;
 const STUDY_LEGEND_INDENT: f32 = 8.0;
 const STUDY_COUNT_BADGE_GAP: f32 = 4.0;
 const STUDY_COUNT_BADGE_HORIZONTAL_PAD: f32 = 4.0;
@@ -214,28 +214,6 @@ impl ControlPaint {
 
 pub(super) fn series_display_name(series: &KlineSeries) -> String {
     series.ticker_info.ticker.symbol_and_exchange_string()
-}
-
-pub(in crate::widget::chart) fn legend_background_color(palette: &Extended) -> Color {
-    let alpha = if palette.is_dark {
-        DARK_LEGEND_BACKGROUND_ALPHA
-    } else {
-        LIGHT_LEGEND_BACKGROUND_ALPHA
-    };
-
-    palette.background.weakest.color.scale_alpha(alpha)
-}
-
-pub(in crate::widget::chart) fn legend_row_background(
-    row: Rectangle,
-    content_end_x: f32,
-) -> Rectangle {
-    Rectangle {
-        x: row.x + TICKER_LEGEND_PADDING,
-        y: row.y,
-        width: (content_end_x - row.x).max(0.0),
-        height: row.height,
-    }
 }
 
 fn control_colors(palette: &Extended, hovered: bool, active: bool) -> (Color, Color) {

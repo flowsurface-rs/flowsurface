@@ -17,6 +17,7 @@ use crate::widget::chart::kline::{
     CHAR_W, KlineWidgetEvent, PANEL_TITLE_TOP_PAD, TEXT_SIZE, TICKER_LEGEND_PADDING,
     TICKER_LEGEND_ROW_H, TOOLTIP_ROW_LEFT_PAD,
 };
+use crate::widget::chart::{LEGEND_LABEL_VALUE_GAP, LEGEND_READOUT_GAP};
 use data::chart::kline::{
     CandlestickConfig, FootprintConfig, KlineStudyId, LegendVisibility, footprint::ClusterKind,
 };
@@ -371,12 +372,8 @@ impl<'a> LegendView<'a> {
             Some(format!("{:+.2}%", ((value / anchor) - 1.0) * 100.0))
         } else {
             Some(
-                self.coordinates.format_panel_header_value(
-                    scene.primary.panel_index,
-                    self.coordinates
-                        .panel_value_precision(scene.primary.panel_index),
-                    value,
-                ),
+                self.coordinates
+                    .format_panel_header_value(scene.primary.panel_index, value),
             )
         }
     }
@@ -478,14 +475,14 @@ impl<'a> LegendView<'a> {
                 .overlay_channel_color(Some(row.value_id), &channel, palette, generated_accents)
                 .scale_alpha(row_alpha);
             prepared.end_x = prepared.push_text(channel.label.to_owned(), Point::new(x, y), color);
-            x = prepared.end_x + 2.0;
+            x = prepared.end_x + LEGEND_LABEL_VALUE_GAP;
             let Some(value_text) = bar_index.and_then(|bar_index| {
                 self.primary_overlay_value_text(scene, row.value_id, channel.source, bar_index)
             }) else {
                 continue;
             };
             prepared.end_x = prepared.push_text(value_text, Point::new(x, y), color);
-            x = prepared.end_x + 6.0;
+            x = prepared.end_x + LEGEND_READOUT_GAP;
         }
         prepared
     }
@@ -571,11 +568,9 @@ impl<'a> LegendView<'a> {
             if x >= max_x {
                 break;
             }
-            let value_text = self.coordinates.format_panel_header_value(
-                panel_index,
-                self.coordinates.panel_value_precision(panel_index),
-                readout.value,
-            );
+            let value_text = self
+                .coordinates
+                .format_panel_header_value(panel_index, readout.value);
             let color = self.indicators.indicator_value_color(
                 Some(readout.value_id),
                 readout.color_slot,
@@ -583,14 +578,15 @@ impl<'a> LegendView<'a> {
                 palette,
                 generated_accents,
             );
-            x = prepared.push_text(readout.label.to_owned(), Point::new(x, y), color) + 2.0;
+            x = prepared.push_text(readout.label.to_owned(), Point::new(x, y), color)
+                + LEGEND_LABEL_VALUE_GAP;
             if x >= max_x {
                 break;
             }
             prepared.end_x = prepared
                 .push_text(value_text, Point::new(x, y), color)
                 .max(label_end_x);
-            x = prepared.end_x + 6.0;
+            x = prepared.end_x + LEGEND_READOUT_GAP;
         }
         prepared
     }

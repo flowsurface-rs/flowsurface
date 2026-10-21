@@ -1,3 +1,8 @@
+use super::{
+    LEGEND_CHAR_WIDTH as CHAR_W, LEGEND_LEFT_PAD as TOOLTIP_ROW_LEFT_PAD,
+    LEGEND_PADDING as TICKER_LEGEND_PADDING, LEGEND_ROW_HEIGHT as TICKER_LEGEND_ROW_H,
+    LEGEND_TEXT_SIZE as TEXT_SIZE, LEGEND_TOP_PAD as PANEL_TITLE_TOP_PAD,
+};
 mod axes;
 mod chrome;
 pub mod drawing;
@@ -18,13 +23,10 @@ use scene::{
     PanelValueScale, PrimaryPercentScaleState, PrimaryScale, SceneBase, SceneCacheEntry, XViewport,
 };
 
-pub(super) use chrome::{
-    PANEL_TITLE_TO_CONTROLS_GAP, legend_background_color, legend_row_background,
-};
 pub use chrome::{StudiesLegend, StudyLegendRow};
-pub(super) use layout::{panel_plot_heights, place_non_overlapping_labels};
 
 use crate::widget::chart::kline::chrome::PreparedPanelControls;
+use crate::widget::chart::{PANEL_SPLITTER_HEIGHT, Y_AXIS_LABEL_LEFT_INSET};
 use crate::{style, theme::ThemeState, window::PixelRatio};
 use composition::{
     BarMode, ChartComposition, DEFAULT_MIN_PANEL_RATIO, HistogramMode, MarkKind, PanelId,
@@ -81,16 +83,6 @@ use std::{sync::Arc, time::Duration};
 const Y_AXIS_GUTTER: f32 = 66.0;
 const X_AXIS_HEIGHT: f32 = 24.0;
 pub const MIN_FULL_CACHE_REFRESH_INTERVAL: Duration = Duration::from_micros(33_333);
-
-pub(super) const TEXT_SIZE: f32 = 12.0;
-pub(super) const CHAR_W: f32 = TEXT_SIZE * 0.64;
-pub(super) const Y_AXIS_LABEL_LEFT_INSET: f32 = 4.0;
-pub(super) const PANEL_SPLITTER_HEIGHT: f32 = 1.0;
-pub(super) const PANEL_TITLE_TOP_PAD: f32 = 4.0;
-
-pub(super) const TICKER_LEGEND_PADDING: f32 = 4.0;
-pub(super) const TOOLTIP_ROW_LEFT_PAD: f32 = TICKER_LEGEND_PADDING * 2.0;
-pub(super) const TICKER_LEGEND_ROW_H: f32 = TEXT_SIZE + 6.0;
 
 /// The submission order used by [`KlineWidget::draw`]; Iced may merge compatible layers.
 ///
@@ -1289,11 +1281,7 @@ impl<'a> KlineWidget<'a> {
 
                     (y_primary_unit, y_plot)
                 } else {
-                    let y_primary_unit = Scene::lerp_unit(
-                        scene.primary.domain.active().min(),
-                        scene.primary.domain.active().max(),
-                        value_ratio,
-                    );
+                    let y_primary_unit = scene.primary.domain.active().unit_at_ratio(value_ratio);
                     let y_plot = scene
                         .map_primary_plot_unit(y_primary_unit)
                         .clamp(panel.plot.y, panel.plot.y + panel.plot.height);
@@ -1312,14 +1300,10 @@ impl<'a> KlineWidget<'a> {
                     let indicator_ratio = 1.0 - (y_in_panel / panel.plot.height.max(1.0));
                     let y_indicator_unit = scene
                         .indicator_panel_config(panel_index)
-                        .map(|indicator| {
-                            Scene::lerp_unit(
-                                indicator.domain.active().min(),
-                                indicator.domain.active().max(),
-                                indicator_ratio,
-                            )
-                        })
-                        .unwrap_or_else(|| Scene::lerp_unit(YUnit(0), YUnit(1), indicator_ratio));
+                        .map(|indicator| indicator.domain.active().unit_at_ratio(indicator_ratio))
+                        .unwrap_or_else(|| {
+                            YUnitRange::new(YUnit(0), YUnit(1)).unit_at_ratio(indicator_ratio)
+                        });
                     let snapped_y_plot = scene
                         .map_indicator_plot_unit(panel_index, y_indicator_unit)
                         .map(|y| y.clamp(panel.plot.y, panel.plot.y + panel.plot.height))

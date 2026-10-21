@@ -1,4 +1,5 @@
 use super::AxisInteraction;
+use crate::widget::chart::Y_AXIS_LABEL_LEFT_INSET;
 use crate::widget::chart::heatmap::{Message, scene::camera::Camera, ui::AXIS_TEXT_SIZE};
 use data::chart::ticks::y::{PriceAxis, TickValue};
 use exchange::unit::{MinTicksize, Price, PriceStep};
@@ -40,11 +41,6 @@ impl LabelKind {
     }
 }
 
-/// Checks if two ranges overlap.
-fn ranges_overlap(a: (f32, f32), b: (f32, f32)) -> bool {
-    a.1 >= b.0 && a.0 <= b.1
-}
-
 impl AxisYLabelCanvas<'_> {
     fn world_to_px_y(&self, y_world: f32, bounds: Rectangle) -> f32 {
         self.camera
@@ -77,22 +73,12 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
         match event {
             iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let p = cursor.position_over(bounds)?;
+                let click = mouse::Click::new(p, mouse::Button::Left, state.previous_click);
+                state.previous_click = Some(click);
 
-                // Double-click detection needs global cursor position + previous click state.
-                if let Some(global_pos) = cursor.position() {
-                    let new_click =
-                        mouse::Click::new(global_pos, mouse::Button::Left, state.previous_click);
-
-                    let is_double = new_click.kind() == mouse::click::Kind::Double;
-
-                    state.previous_click = Some(new_click);
-
-                    if is_double {
-                        state.interaction = AxisInteraction::None;
-                        return Some(canvas::Action::publish(Message::AxisYDoubleClicked));
-                    }
-                } else {
-                    state.previous_click = None;
+                if click.kind() == mouse::click::Kind::Double {
+                    state.interaction = AxisInteraction::None;
+                    return Some(canvas::Action::publish(Message::AxisYDoubleClicked));
                 }
 
                 state.interaction = AxisInteraction::Panning {
@@ -198,7 +184,7 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
                 ticks = axis.ticks_from_row(lowest_price.to_f64(), highest_price.to_f64());
             }
 
-            let x = bounds.width / 2.0;
+            let x = Y_AXIS_LABEL_LEFT_INSET;
             let cursor_label_padding = 3.0f32;
             let cursor_label_height = AXIS_TEXT_SIZE + 2.0 * cursor_label_padding;
             let size_cursor_label = iced::Size {
@@ -296,7 +282,7 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
                         color: text_color,
                         size: AXIS_TEXT_SIZE.into(),
                         font: crate::style::AZERET_MONO,
-                        align_x: iced::Alignment::Center.into(),
+                        align_x: iced::Alignment::Start.into(),
                         align_y: iced::Alignment::Center.into(),
                         ..Default::default()
                     });
@@ -325,7 +311,7 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
                         color: palette.primary.strong.text,
                         size: AXIS_TEXT_SIZE.into(),
                         font: crate::style::AZERET_MONO,
-                        align_x: iced::Alignment::Center.into(),
+                        align_x: iced::Alignment::Start.into(),
                         align_y: iced::Alignment::Center.into(),
                         ..Default::default()
                     });
@@ -345,7 +331,7 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
 
                 frame.fill_text(canvas::Text {
                     content: label,
-                    position: iced::Point::new(4.0, label_y + 0.5 * size_cursor_label.height),
+                    position: iced::Point::new(x, label_y + 0.5 * size_cursor_label.height),
                     color: palette.background.strong.text,
                     size: AXIS_TEXT_SIZE.into(),
                     font: crate::style::AZERET_MONO,
@@ -374,4 +360,8 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
             mouse::Interaction::default()
         }
     }
+}
+
+fn ranges_overlap(a: (f32, f32), b: (f32, f32)) -> bool {
+    a.1 >= b.0 && a.0 <= b.1
 }

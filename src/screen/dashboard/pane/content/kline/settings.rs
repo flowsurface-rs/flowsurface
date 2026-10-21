@@ -2,7 +2,6 @@ use super::layout::IndicatorState;
 use super::studies::StudyState;
 use super::{ChartCommand, IndicatorInputCommand, IndicatorStyleCommand, Message as ChartMessage};
 use crate::widget::chart::kline::{IndicatorPresentationContext, ResolvedIndicatorStyleSlot};
-use crate::widget::study_configurator::Study as _;
 use crate::{
     split_column, style,
     theme::ThemeAccents,
@@ -280,7 +279,7 @@ impl<'a> SettingsContext<'a> {
 pub(super) enum InspectorEffect {
     None,
     Command(ChartCommand),
-    StudyConfigurator(study::Message<KlineStudy>),
+    StudyConfigurator(KlineStudy),
     OpenUrl(String),
 }
 
@@ -349,7 +348,7 @@ pub enum Message {
     ResetFootprintSettings,
     ResetSeriesSettings(TickerInfo),
     StudyTabSelected(inspector::InspectorTab),
-    Study(study::Message<KlineStudy>),
+    Study(KlineStudy),
     Indicator {
         instance_id: data::chart::kline::IndicatorInstanceId,
         message: IndicatorIdSettingsMessage,
@@ -1468,9 +1467,7 @@ fn study_cfg_view(
     theme_accents: ThemeAccents,
 ) -> (inspector::InspectorTab, Element<'static, Message>) {
     let content_for_tab = |tab| {
-        study
-            .view_config_without_reset(basis, theme_accents, tab, study::Message::StudyValueChanged)
-            .map(|content| content.map(Message::Study))
+        study::view(study, basis, theme_accents, tab).map(|content| content.map(Message::Study))
     };
 
     inspector::tabbed_content(
@@ -1659,7 +1656,7 @@ impl SettingsTarget {
                     ResetScope::Style => study.with_default_style(),
                     ResetScope::All => return None,
                 };
-                Some(Message::Study(study::Message::StudyValueChanged(defaults)))
+                Some(Message::Study(defaults))
             }
         }
     }

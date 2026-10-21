@@ -6,7 +6,6 @@ use crate::widget::chart::kline::studies::{
     VolumeProfileObject,
 };
 use crate::widget::chart::kline::{KlineWidget, StudiesLegend, StudyLegendRow};
-use crate::widget::study_configurator as study;
 use data::chart::Basis;
 use data::chart::kline::{
     FetchBatch, FetchRange, KlineData, SettingsSnapshot, TpoBoundaryEdits, TpoProfileStatus,
@@ -596,25 +595,14 @@ impl StudyState {
         }
     }
 
-    pub(super) fn update_configurator(
-        &mut self,
-        message: study::Message<KlineStudy>,
-        basis: Basis,
-        trade_data_enabled: bool,
-    ) -> Option<StudyCommand> {
-        match message {
-            study::Message::StudyToggled(study, is_active) => self
-                .studies_with_active(study, is_active, basis, trade_data_enabled)
-                .map(StudyCommand::Set),
-            study::Message::StudyValueChanged(study) => {
-                let mut studies = self.active().collect::<Vec<_>>();
-                let active = studies
-                    .iter_mut()
-                    .find(|active| active.is_same_type(study))?;
-                *active = study;
-                Some(StudyCommand::Set(studies))
-            }
-        }
+    pub(super) fn update_configurator(&mut self, study: KlineStudy) -> Option<StudyCommand> {
+        let mut studies = self.active().collect::<Vec<_>>();
+        let active = studies
+            .iter_mut()
+            .find(|active| active.is_same_type(study))?;
+        *active = study;
+
+        Some(StudyCommand::Set(studies))
     }
 
     fn apply_set(&mut self, studies: Vec<KlineStudy>, basis: Basis) -> StudyChange {

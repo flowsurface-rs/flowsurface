@@ -5,11 +5,9 @@ use super::{
 };
 use crate::{widget::chart::heatmap::view::TimeView, window::PixelRatio};
 use data::chart::{
+    axis::{PanelYValueRange, PanelYViewportLimits},
     heatmap::indicators::{HeatmapIndicators, HeatmapPanel, IndicatorValues},
-    kline::{
-        composition::PanelScaleMode,
-        viewport::{PanelValueScale, PanelYValueRange, PanelYViewportLimits, YUnit, YUnitRange},
-    },
+    value::{PanelValueScale, YUnit, YUnitRange},
 };
 use exchange::{TickerInfo, UnixMs, unit::MinTicksize};
 use iced::wgpu::util::DeviceExt;
@@ -50,9 +48,8 @@ struct Prepared {
 
 impl Prepared {
     fn autoscale_range(&self, scale: PanelValueScale) -> Option<PanelYValueRange> {
-        let (_, max) =
-            PanelScaleMode::FitVisible.indicator_domain_units(0, scale.value_to_unit(self.max?).0);
-        PanelYValueRange::from_units(YUnitRange::new(YUnit(0), max), scale)
+        let padded = YUnitRange::new(YUnit(0), scale.value_to_unit(self.max?)).padded();
+        PanelYValueRange::from_units(YUnitRange::new(YUnit(0), padded.max()), scale)
     }
 
     fn viewport_limits(

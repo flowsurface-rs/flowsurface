@@ -428,20 +428,6 @@ impl Scene {
         self.primary.value_scale.unit_to_value_f32(y_unit)
     }
 
-    pub(super) fn lerp_unit(min_unit: YUnit, max_unit: YUnit, ratio: f32) -> YUnit {
-        let ratio = ratio.clamp(0.0, 1.0);
-        let min = min_unit.0;
-        let max = max_unit.0;
-        let span = max.saturating_sub(min);
-        if span == 0 {
-            return min_unit;
-        }
-
-        let offset = ((span as f32) * ratio).round() as i64;
-        let value = min.saturating_add(offset);
-        YUnit(value)
-    }
-
     pub(super) fn plot_rect(&self) -> Rectangle {
         self.layout.regions.plot
     }
@@ -924,7 +910,7 @@ impl<'a> ChartCoordinates<'a> {
             .and_then(|panel| panel.value_precision)
     }
 
-    fn panel_value_label_policy(&self, panel_index: usize) -> PanelValueLabelPolicy {
+    pub(super) fn panel_value_label_policy(&self, panel_index: usize) -> PanelValueLabelPolicy {
         self.composition
             .panels
             .get(panel_index)
@@ -943,54 +929,15 @@ impl<'a> ChartCoordinates<'a> {
         )
     }
 
-    fn format_panel_value_compact(
-        &self,
-        panel_index: usize,
-        value_precision: Option<PanelValuePrecision>,
-        value: f64,
-        fallback_step: f64,
-    ) -> String {
-        let max_decimals = self.panel_value_label_policy(panel_index).max_decimals;
-
-        if let Some(precision) = value_precision {
-            return precision.format_compact(
-                value,
-                fallback_step,
-                max_decimals,
-                self.base_ticker_info(),
-            );
-        }
-
-        let scale = self.panel_value_scale(panel_index);
-        let quantized = scale.unit_to_value(scale.value_to_unit(value));
-        let fallback = fallback_step.abs().max(1e-6);
-        let decimals = PanelValuePrecision::decimals_for_step(fallback);
-        let decimals = max_decimals
-            .map(|max| decimals.min(max as usize))
-            .unwrap_or(decimals);
-        format!("{quantized:.decimals$}")
-    }
-
     pub(super) fn format_panel_axis_value(
         &self,
         panel_index: usize,
-        value_precision: Option<PanelValuePrecision>,
         value: f64,
         fallback_step: f64,
     ) -> String {
         let scale = self.panel_value_scale(panel_index);
         self.panel_value_label_policy(panel_index)
-            .format_axis_value(
-                || scale.unit_to_value(scale.value_to_unit(value)),
-                || {
-                    self.format_panel_value_compact(
-                        panel_index,
-                        value_precision,
-                        value,
-                        fallback_step,
-                    )
-                },
-            )
+            .format_axis_value(scale, value, fallback_step)
     }
 
     pub(super) fn tick_time_for_unit(&self, x_axis: XAxis, unit: i64) -> Option<UnixMs> {
@@ -1124,18 +1071,10 @@ impl Scene {
 }
 
 impl<'a> ChartCoordinates<'a> {
-    pub(super) fn format_panel_header_value(
-        &self,
-        panel_index: usize,
-        value_precision: Option<PanelValuePrecision>,
-        value: f64,
-    ) -> String {
+    pub(super) fn format_panel_header_value(&self, panel_index: usize, value: f64) -> String {
         let scale = self.panel_value_scale(panel_index);
         self.panel_value_label_policy(panel_index)
-            .format_header_value(
-                || scale.unit_to_value(scale.value_to_unit(value)),
-                || self.format_panel_value_compact(panel_index, value_precision, value, 0.01),
-            )
+            .format_header_value(scale, value, 0.01)
     }
 
     pub(super) fn resolved_panel_title(

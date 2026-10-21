@@ -165,7 +165,7 @@ fn world_y_for_y_bin_center(y_bin: i64, steps_per_y_bin: i64, row_h: f32) -> f32
     -((y_bin as f32 + 0.5) * (steps_per_y_bin.max(1) as f32) * row_h)
 }
 
-fn wheel_zoom_factor(delta: iced_core::mouse::ScrollDelta) -> f32 {
+pub(super) fn wheel_zoom_factor(delta: iced_core::mouse::ScrollDelta) -> f32 {
     let amount = match delta {
         iced_core::mouse::ScrollDelta::Lines { y, .. } => y * 0.02,
         iced_core::mouse::ScrollDelta::Pixels { y, .. } => y * 0.002,

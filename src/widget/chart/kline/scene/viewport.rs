@@ -3,8 +3,8 @@ use crate::widget::chart::kline::composition::{PanelId, PanelScaleMode};
 use crate::widget::chart::kline::layout::KlinePanelKind;
 use crate::window::PixelRatio;
 use data::chart::kline::viewport::{
-    PanelYValueRange, PanelYViewportLimits, PrimaryViewportState, Y_UNIT_STEP_FALLBACK, YUnitRange,
-    ZOOM_SENSITIVITY, autoscale_span_limits,
+    PanelYValueRange, PanelYViewportLimits, PrimaryViewportState, YUnitRange, ZOOM_SENSITIVITY,
+    autoscale_span_limits,
 };
 
 pub struct PanelViewportView<'a> {
@@ -88,38 +88,13 @@ impl PanelViewportView<'_> {
                     .iter()
                     .find(|indicator| indicator.panel_index == panel_index)?;
                 let value_scale = self.coordinates.panel_value_scale(panel_index);
-                let bounds = self
-                    .coordinates
-                    .panel_value_precision(panel_index)
-                    .and_then(|precision| {
-                        precision.value_bounds(self.coordinates.base_ticker_info())
-                    })
-                    .unwrap_or_else(|| {
-                        let step = f64::from(Y_UNIT_STEP_FALLBACK);
-                        (i64::MIN as f64 * step, i64::MAX as f64 * step)
-                    });
                 let (autoscale_min, autoscale_max) =
                     value_scale.values(indicator.domain.autoscale());
-                let min_span = value_scale
-                    .quantization_step()
-                    .unwrap_or(1e-4)
-                    .abs()
-                    .max(1e-8)
-                    * 8.0;
-                let (min_span, max_span) = autoscale_span_limits(
+                PanelYViewportLimits::for_scale(
+                    value_scale,
                     (autoscale_max - autoscale_min).abs(),
                     physical_height,
-                    min_span,
-                )?;
-                let max_span = max_span.min(bounds.1 - bounds.0);
-                if max_span < min_span {
-                    return None;
-                }
-                Some(PanelYViewportLimits {
-                    min_span,
-                    max_span,
-                    bounds,
-                })
+                )
             }
         }
     }
@@ -130,9 +105,7 @@ impl PanelViewportView<'_> {
         viewport: PanelYValueRange,
     ) -> Option<YUnitRange> {
         let scale = self.coordinates.panel_value_scale(panel_index);
-        let min_unit = scale.value_to_unit(viewport.min_value());
-        let max_unit = scale.value_to_unit(viewport.max_value());
-        Some(YUnitRange::new(min_unit, max_unit))
+        Some(viewport.to_units(scale))
     }
 
     fn resolve_panel_viewport(
@@ -180,8 +153,7 @@ impl PanelViewportView<'_> {
             }
             KlinePanelKind::Indicator => {
                 let scale = self.coordinates.panel_value_scale(panel_index);
-                let (min_value, max_value) = scale.values(range);
-                let viewport = limits.apply(PanelYValueRange::normalized(min_value, max_value)?)?;
+                let viewport = limits.apply(PanelYValueRange::from_units(range, scale)?)?;
                 self.value_range_to_unit_range(panel_index, viewport)
             }
         }
@@ -258,7 +230,10 @@ impl PanelViewportView<'_> {
                     .indicator_panels
                     .iter()
                     .find(|indicator| indicator.panel_index == panel_index)?;
-                (indicator.min_value(), indicator.max_value())
+                return PanelYValueRange::from_units(
+                    indicator.domain.active(),
+                    indicator.value_scale,
+                );
             }
         };
         PanelYValueRange::normalized(min, max)
@@ -282,14 +257,16 @@ impl PanelViewportView<'_> {
             (1.0 - (y_in_panel / panel_h)).clamp(0.0, 1.0)
         };
 
-        let zoom_scale = (f64::from(scroll_delta.abs()) / f64::from(ZOOM_SENSITIVITY))
-            .min(f64::MAX.ln())
-            .exp();
-        let zoom_in = scroll_delta > 0.0;
-        let viewport = viewport.zoom_around_ratio(f64::from(anchor_ratio), zoom_scale, zoom_in)?;
-
         match panel.kind {
             KlinePanelKind::PrimaryChart => {
+                let zoom_scale = (f64::from(scroll_delta.abs()) / f64::from(ZOOM_SENSITIVITY))
+                    .min(f64::MAX.ln())
+                    .exp();
+                let viewport = viewport.zoom_around_ratio(
+                    f64::from(anchor_ratio),
+                    zoom_scale,
+                    scroll_delta > 0.0,
+                )?;
                 let display_viewport = PanelYValueRange::normalized(
                     f64::from(scene.primary_display_to_value(viewport.min_value() as f32)),
                     f64::from(scene.primary_display_to_value(viewport.max_value() as f32)),
@@ -298,8 +275,12 @@ impl PanelViewportView<'_> {
                 self.resolve_panel_viewport(scene, panel_index, range)
             }
             KlinePanelKind::Indicator => {
-                let range = self.value_range_to_unit_range(panel_index, viewport)?;
-                self.resolve_panel_viewport(scene, panel_index, range)
+                let viewport = self.panel_viewport_limits(scene, panel_index)?.zoom(
+                    viewport,
+                    f64::from(anchor_ratio),
+                    scroll_delta,
+                )?;
+                self.value_range_to_unit_range(panel_index, viewport)
             }
         }
     }

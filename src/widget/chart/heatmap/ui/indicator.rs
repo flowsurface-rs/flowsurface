@@ -1,6 +1,5 @@
 use super::AXIS_TEXT_SIZE;
 use crate::widget::chart;
-use crate::widget::chart::kline::place_non_overlapping_labels;
 use crate::{
     style,
     widget::chart::{
@@ -9,10 +8,10 @@ use crate::{
     },
 };
 use data::{
+    chart::axis::{PanelYValueRange, place_non_overlapping_labels},
     chart::heatmap::indicators::{
         DepthCoverage, HeatmapIndicators, HeatmapPanel, IndicatorValues, SpreadUnit,
     },
-    chart::kline::viewport::PanelYValueRange,
 };
 use exchange::{TickerInfo, UnixMs};
 use iced::{Point, Rectangle, Renderer, Size, Theme, mouse, widget::canvas};
@@ -114,12 +113,7 @@ impl canvas::Program<Message> for IndicatorCanvas<'_> {
             }
 
             let value = value
-                .map(|value| {
-                    label_policy.format_header_value(
-                        || scale.quantize_value(value),
-                        || scale.format_compact(value, 0.01, label_policy.max_decimals),
-                    )
-                })
+                .map(|value| label_policy.format_header_value(scale, value, 0.01))
                 .unwrap_or_else(|| "n/a".to_owned());
 
             end_x = x + value.chars().count() as f32 * chart::LEGEND_CHAR_WIDTH;
@@ -232,10 +226,7 @@ impl canvas::Program<Message> for IndicatorCanvas<'_> {
                 );
 
                 frame.fill_text(canvas::Text {
-                    content: label_policy.format_axis_value(
-                        || scale.quantize_value(value),
-                        || scale.format_compact(value, 0.01, label_policy.max_decimals),
-                    ),
+                    content: label_policy.format_axis_value(scale, value, 0.01),
                     position: Point::new(
                         self.plot_width + Y_AXIS_LABEL_LEFT_INSET,
                         badge_top + badge_height * 0.5,
