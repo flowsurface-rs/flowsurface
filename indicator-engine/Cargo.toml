@@ -10,5 +10,7 @@ homepage.workspace = true
 [dependencies]
 chrono.workspace = true
 serde = { version = "1.0.228", features = ["derive", "std"] }
+serde_json.workspace = true
+ring = "0.17.14"
 thiserror.workspace = true
 url.workspace = true

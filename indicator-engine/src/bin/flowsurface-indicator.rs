@@ -6,6 +6,7 @@ use flowsurface_indicator_engine::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process;
 
@@ -19,6 +20,7 @@ fn main() {
         Some("new") => command_new(&arguments[1..]),
         Some("check") => command_check(&arguments[1..], "check"),
         Some("test") => command_test(&arguments[1..]),
+        Some("catalog") => command_catalog(&arguments[1..]),
         Some(command) => Err(format!("unknown subcommand '{command}'")),
         None => Err(usage()),
     };
@@ -29,7 +31,7 @@ fn main() {
 }
 
 fn usage() -> String {
-    "usage: flowsurface-indicator <new|check|test> ...\n\n  flowsurface-indicator new [directory] --id <namespace.name> --title <Title>\n  flowsurface-indicator check <file.ind|directory> [--namespace <prefix>]\n  flowsurface-indicator test <file.ind|directory> [--namespace <prefix>]"
+    "usage: flowsurface-indicator <new|check|test|catalog> ...\n\n  flowsurface-indicator new [directory] --id <namespace.name> --title <Title>\n  flowsurface-indicator check <file.ind|directory> [--namespace <prefix>]\n  flowsurface-indicator test <file.ind|directory> [--namespace <prefix>]\n  flowsurface-indicator catalog <file.ind|directory> --output <catalog.json> [--namespace <prefix>]"
         .to_owned()
 }
 
@@ -139,6 +141,82 @@ fn command_test(arguments: &[String]) -> Result<(), String> {
     }
 }
 
+fn command_catalog(arguments: &[String]) -> Result<(), String> {
+    if wants_help(arguments) {
+        println!(
+            "usage: flowsurface-indicator catalog <file.ind|directory> --output <catalog.json> [--namespace <prefix>]"
+        );
+        return Ok(());
+    }
+
+    let CatalogArguments {
+        path,
+        namespace,
+        output,
+    } = parse_catalog_arguments(arguments)?;
+
+    let paths = source_paths(&path)?;
+    let mut report = load_sources(&paths, namespace.as_deref());
+    print_diagnostics(&report.diagnostics);
+    if !report.diagnostics.is_empty() {
+        return Err(failure_summary("catalog", report.diagnostics.len()));
+    }
+
+    report.sources.sort_by(|left, right| {
+        left.indicator
+            .descriptor
+            .id
+            .cmp(&right.indicator.descriptor.id)
+    });
+
+    let root = if path.is_dir() {
+        path.as_path()
+    } else {
+        path.parent().unwrap_or_else(|| Path::new(""))
+    };
+    let entries = report
+        .sources
+        .iter()
+        .map(|source| source.catalog_entry(root))
+        .collect::<Result<Vec<_>, _>>()?;
+    let catalog = serde_json::json!({
+        "schema_version": 1,
+        "generator_version": env!("CARGO_PKG_VERSION"),
+        "language_version": 1,
+        "indicators": entries,
+    });
+    let mut json = serde_json::to_vec_pretty(&catalog).map_err(|error| error.to_string())?;
+    json.push(b'\n');
+
+    write_catalog(&output, &json)?;
+    println!(
+        "catalog written: {} ({})",
+        output.display(),
+        source_summary(report.sources.len())
+    );
+    Ok(())
+}
+
+fn write_catalog(output: &Path, json: &[u8]) -> Result<(), String> {
+    let name = output
+        .file_name()
+        .ok_or_else(|| "catalog output must name a file".to_owned())?;
+    let temporary =
+        output.with_file_name(format!(".{}.{}.tmp", name.to_string_lossy(), process::id()));
+    let mut file = fs::File::create_new(&temporary)
+        .map_err(|error| format!("cannot create {}: {error}", temporary.display()))?;
+
+    let result = file.write_all(json);
+    drop(file);
+
+    if let Err(error) = result.and_then(|()| fs::rename(&temporary, output)) {
+        let _ = fs::remove_file(&temporary);
+        return Err(format!("cannot write {}: {error}", output.display()));
+    }
+
+    Ok(())
+}
+
 fn validate_source_filename(path: &Path, id: &IndicatorId) -> Result<(), String> {
     let expected_file_name = id.source_file_name();
     let actual_file_name = path
@@ -160,7 +238,64 @@ fn validate_source_filename(path: &Path, id: &IndicatorId) -> Result<(), String>
 
 struct CompiledSource {
     path: PathBuf,
+    source: String,
     indicator: CompiledIndicator,
+}
+
+impl CompiledSource {
+    fn catalog_entry(&self, root: &Path) -> Result<serde_json::Value, String> {
+        let relative = self
+            .path
+            .strip_prefix(root)
+            .map_err(|error| error.to_string())?;
+        let path = relative
+            .components()
+            .map(|component| {
+                component.as_os_str().to_str().ok_or_else(|| {
+                    format!(
+                        "{}: catalog source paths must be UTF-8",
+                        self.path.display()
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .join("/");
+
+        let digest = ring::digest::digest(&ring::digest::SHA256, self.source.as_bytes());
+        let sha256 = digest
+            .as_ref()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+
+        let descriptor = &self.indicator.descriptor;
+        let author = descriptor
+            .author
+            .as_ref()
+            .map(|author| serde_json::json!({ "name": author.name, "url": author.url }));
+        let bases = descriptor
+            .bases
+            .as_deref()
+            .unwrap_or(&[TimeOrTick::Time, TimeOrTick::Tick])
+            .iter()
+            .map(|basis| match basis {
+                TimeOrTick::Time => "time",
+                TimeOrTick::Tick => "tick",
+            })
+            .collect::<Vec<_>>();
+
+        Ok(serde_json::json!({
+            "id": descriptor.id.as_str(),
+            "name": descriptor.title,
+            "description": descriptor.description,
+            "author": author,
+            "source_url": descriptor.source,
+            "path": path,
+            "sha256": sha256,
+            "size_bytes": self.source.len(),
+            "bases": bases,
+        }))
+    }
 }
 
 struct SourceReport {
@@ -253,6 +388,7 @@ fn load_sources(paths: &[PathBuf], namespace: Option<&str>) -> SourceReport {
         }
         report.sources.push(CompiledSource {
             path: path.clone(),
+            source,
             indicator,
         });
     }
@@ -406,6 +542,46 @@ fn parse_new_arguments(arguments: &[String]) -> Result<NewArguments, String> {
         directory,
         id: id.ok_or_else(|| "new requires --id <namespace.name>".to_owned())?,
         title: title.ok_or_else(|| "new requires --title <Title>".to_owned())?,
+    })
+}
+
+struct CatalogArguments {
+    path: PathBuf,
+    namespace: Option<String>,
+    output: PathBuf,
+}
+
+fn parse_catalog_arguments(arguments: &[String]) -> Result<CatalogArguments, String> {
+    let mut source_arguments = Vec::new();
+    let mut output = None;
+    let mut index = 0;
+
+    while index < arguments.len() {
+        if arguments[index] == "--output" {
+            let value = arguments
+                .get(index + 1)
+                .filter(|value| !value.starts_with('-'))
+                .ok_or_else(|| "catalog requires --output <catalog.json>".to_owned())?;
+            if output.replace(PathBuf::from(value)).is_some() {
+                return Err("catalog received duplicate --output".to_owned());
+            }
+            index += 2;
+        } else {
+            source_arguments.push(arguments[index].clone());
+            index += 1;
+        }
+    }
+
+    let output = output.ok_or_else(|| "catalog requires --output <catalog.json>".to_owned())?;
+    if output.extension().and_then(|extension| extension.to_str()) == Some("ind") {
+        return Err("catalog output must not be an .ind source file".to_owned());
+    }
+
+    let (path, namespace) = parse_source_arguments(&source_arguments, "catalog")?;
+    Ok(CatalogArguments {
+        path,
+        namespace,
+        output,
     })
 }
 
