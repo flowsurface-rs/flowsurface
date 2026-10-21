@@ -7,6 +7,34 @@ use exchange::UnixMs;
 use exchange::adapter::MarketKind;
 use exchange::unit::{Price, PriceStep};
 
+#[derive(Clone, Copy)]
+pub struct TimeView<'a> {
+    pub camera: &'a Camera,
+    pub latest_bucket: i64,
+    pub interval_ms: u64,
+    pub column_world: f32,
+    pub phase: f32,
+}
+
+impl TimeView<'_> {
+    pub fn screen_x(self, time: UnixMs, width: f32) -> f32 {
+        let bucket = (time.as_u64() / self.interval_ms.max(1)) as i64;
+        self.camera.world_to_screen_x(
+            ((bucket - self.latest_bucket) as f32 - self.phase) * self.column_world,
+            width,
+        )
+    }
+
+    pub fn time_at_x(self, x: f32, width: f32) -> UnixMs {
+        let world = self.camera.screen_to_world_x(x, width);
+        let relative = (world / self.column_world.max(f32::EPSILON) + self.phase).round() as i64;
+        UnixMs::new(
+            (self.latest_bucket.saturating_add(relative).max(0) as u64)
+                .saturating_mul(self.interval_ms),
+        )
+    }
+}
+
 use iced::time::Instant;
 
 /// Throttle depth denom recompute while interacting (keeps zoom smooth)

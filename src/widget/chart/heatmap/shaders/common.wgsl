@@ -1,6 +1,6 @@
 struct Camera {
     a: vec4<f32>, // (scale_x, scale_y, center_x, center_y)
-    b: vec4<f32>, // (viewport_w, viewport_h, _, _)
+    b: vec4<f32>, // (viewport_w, viewport_h, pixel_ratio, screen_origin_x)
 };
 @group(0) @binding(0)
 var<uniform> camera: Camera;

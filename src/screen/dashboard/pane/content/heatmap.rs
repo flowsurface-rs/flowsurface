@@ -11,13 +11,19 @@ use crate::widget::chart::heatmap::{
     view::{self, ViewConfig, ViewInputs, ViewWindow},
 };
 
-use crate::widget::study_configurator as study;
-use crate::{screen::dashboard::pane::ChartAction as Action, widget::study_configurator::Study};
+use super::super::BackgroundJob;
+use crate::screen::dashboard::pane::ChartAction as Action;
+use crate::screen::dashboard::pane::settings::HeatmapIndicatorMessage;
 use data::aggr::time::TimeSeries;
+use data::chart::heatmap::indicators::{
+    DepthDistance, DepthReplayResult, DepthSource, HeatmapIndicator, HeatmapIndicatorConfig,
+    HeatmapIndicators, HeatmapPanel, HeatmapReplay,
+};
 use data::chart::{
     Basis,
-    heatmap::{HeatmapDataPoint, HeatmapStudy, HistoricalDepth},
+    heatmap::{DepthSnapshotUpdate, HeatmapDataPoint, HistoricalDepth},
 };
+use enum_map::EnumMap;
 use exchange::depth::Depth;
 use exchange::unit::{Price, PriceStep};
 use exchange::{TickerInfo, Trade, UnixMs};
@@ -41,6 +47,38 @@ const DEPTH_PROFILE_WIDTH_PX: f32 = 160.0;
 
 pub type Message = heatmap_widget::Message;
 
+#[derive(Debug, Clone)]
+pub enum BackgroundMessage {
+    ReplayCompleted { job_id: u64 },
+}
+
+pub enum HeatmapContent {
+    Active(Box<HeatmapShader>),
+    Parked(HeatmapIndicatorConfig),
+}
+
+impl HeatmapContent {
+    pub fn indicator_config(&self) -> &HeatmapIndicatorConfig {
+        match self {
+            Self::Active(chart) => chart.indicator_config(),
+            Self::Parked(config) => config,
+        }
+    }
+
+    pub fn set_indicator_config(&mut self, config: HeatmapIndicatorConfig) {
+        match self {
+            Self::Active(chart) => chart.set_indicator_config(config),
+            Self::Parked(previous) => *previous = config,
+        }
+    }
+
+    pub fn park(&mut self) {
+        if let Self::Active(chart) = self {
+            *self = Self::Parked(chart.indicator_config().clone());
+        }
+    }
+}
+
 pub struct HeatmapShader {
     pub last_tick: Option<Instant>,
     scene: Scene,
@@ -57,7 +95,6 @@ pub struct HeatmapShader {
     trades: TimeSeries<HeatmapDataPoint>,
     depth_history: HistoricalDepth,
 
-    latest_time: Option<u64>,
     base_price: Option<Price>,
     clock: view::ExchangeClock,
     anchor: view::Anchor,
@@ -68,7 +105,11 @@ pub struct HeatmapShader {
     data_gen: u64,
     qty_scale: f32,
     rebuild_policy: view::RebuildPolicy,
-    pub studies: Vec<HeatmapStudy>,
+    indicators: HeatmapIndicators,
+    indicator_panels: EnumMap<HeatmapPanel, heatmap_widget::scene::indicator::Panel>,
+    depth_distance_input: String,
+    replay: BackgroundJob<HeatmapReplay, HistoricalDepth, DepthReplayResult>,
+    replay_requested: Option<HeatmapReplay>,
 }
 
 impl HeatmapShader {
@@ -76,8 +117,8 @@ impl HeatmapShader {
         basis: Basis,
         step: PriceStep,
         ticker_info: TickerInfo,
-        studies: Vec<HeatmapStudy>,
         config: Option<data::chart::heatmap::Config>,
+        indicators: HeatmapIndicatorConfig,
     ) -> Self {
         let depth_history = HistoricalDepth::new(ticker_info.min_qty, step, basis);
         let trades = TimeSeries::<HeatmapDataPoint>::new(basis, step);
@@ -90,7 +131,13 @@ impl HeatmapShader {
             exchange::SizeUnit::Quote => 1.0,
         };
 
+        let depth_distance_input = indicators.distance.to_string();
         Self {
+            indicators: HeatmapIndicators::new(indicators, ticker_info.exchange().venue()),
+            indicator_panels: EnumMap::default(),
+            depth_distance_input,
+            replay: BackgroundJob::default(),
+            replay_requested: None,
             last_tick: None,
             scene: Scene::new(),
             viewport: None,
@@ -101,7 +148,6 @@ impl HeatmapShader {
             basis,
             ticker_info,
             trades,
-            latest_time: None,
             base_price: None,
             clock: view::ExchangeClock::Uninit,
             y_axis_gutter: DEFAULT_Y_AXIS_GUTTER,
@@ -114,12 +160,18 @@ impl HeatmapShader {
             rebuild_policy: view::RebuildPolicy::Idle,
             anchor: view::Anchor::default(),
             config: config.unwrap_or_default(),
-            studies,
         }
     }
 
     pub fn update(&mut self, message: Message) {
         match message {
+            Message::IndicatorYRangeChanged { kind, range } => {
+                self.indicator_panels[kind].set_range(range);
+            }
+            Message::PanelSplitChanged { index, split } => {
+                self.indicators.set_panel_split(index, split);
+                self.canvas_invalidation.mark_all();
+            }
             Message::BoundsChanged(bounds) => {
                 self.viewport = Some(bounds);
                 self.canvas_invalidation.mark_all();
@@ -266,7 +318,11 @@ impl HeatmapShader {
         }
     }
 
-    pub fn view(&self, timezone: data::UserTimezone) -> iced::Element<'_, Message> {
+    pub fn view(
+        &self,
+        timezone: data::UserTimezone,
+        pixel_ratio: crate::window::PixelRatio,
+    ) -> iced::Element<'_, Message> {
         if self.base_price.is_none() {
             return iced::widget::center(
                 iced::widget::text("Waiting for data...").size(crate::style::text_size::TITLE),
@@ -296,14 +352,16 @@ impl HeatmapShader {
 
         let x_axis = AxisXLabelCanvas {
             cache: &self.canvas_caches.x_axis,
-            camera: &self.scene.camera,
+            time: view::TimeView {
+                camera: &self.scene.camera,
+                latest_bucket,
+                interval_ms: aggr_time,
+                column_world: self.scene.cell.width_world(),
+                phase: self.anchor.x_phase_bucket(),
+            },
             timezone,
             plot_bounds: self.viewport,
             is_paused,
-            latest_bucket,
-            aggr_time,
-            column_world: self.scene.cell.width_world(),
-            x_phase_bucket: self.anchor.x_phase_bucket(),
             is_x0_visible: self
                 .viewport
                 .map(|vp| self.scene.profile_start_visible_x0(vp.size())),
@@ -335,8 +393,17 @@ impl HeatmapShader {
             volume_profile_max_qty: self.instances.volume_profile_scale_max_qty,
         };
 
-        let chart = HeatmapShaderWidget::new(&self.scene, x_axis, y_axis, overlay)
-            .with_y_axis_gutter(self.y_axis_gutter);
+        let chart = HeatmapShaderWidget::new(
+            &self.scene,
+            x_axis,
+            y_axis,
+            overlay,
+            &self.indicators,
+            self.ticker_info,
+            &self.indicator_panels,
+            pixel_ratio,
+        )
+        .with_y_axis_gutter(self.y_axis_gutter);
 
         iced::widget::container(chart).padding(1).into()
     }
@@ -392,6 +459,20 @@ impl HeatmapShader {
     }
 
     pub fn insert_depth(&mut self, depth: &Depth, update_t: UnixMs) {
+        let gap_start = match self.depth_history.insert_latest_depth(depth, update_t) {
+            DepthSnapshotUpdate::Stale => return,
+            DepthSnapshotUpdate::Continuous => None,
+            DepthSnapshotUpdate::Gap { start } => Some(start),
+        };
+
+        self.indicators.ingest(
+            HeatmapPanel::Spread,
+            depth,
+            update_t,
+            self.depth_history.aggr_time,
+            DepthSource::Live,
+            self.step,
+        );
         self.mark_needs_full_upload_if_stalled();
         let prev_effective_base = self.anchor.effective_base_price(self.base_price);
 
@@ -410,15 +491,33 @@ impl HeatmapShader {
                 .apply_mid_price(mid_rounded, &mut self.base_price);
         }
 
-        self.latest_time = Some(rounded_t_ms);
-
         self.clock = self.clock.anchor_with_update(update_t_ms);
 
         self.anchor
             .set_scroll_ref_bucket_if_zero((rounded_t_ms / aggr_time) as i64);
 
         self.depth_grid.ensure_layout(aggr_time);
-        self.depth_history.insert_latest_depth(depth, rounded_t);
+        if self.indicator_config().depth {
+            if let Some(time) = gap_start {
+                let stored_depth = self.depth_history.depth_at(time);
+                self.indicators.ingest(
+                    HeatmapPanel::Depth,
+                    &stored_depth,
+                    time,
+                    aggr_interval,
+                    DepthSource::Reconstructed,
+                    self.step,
+                );
+            }
+            self.indicators.ingest(
+                HeatmapPanel::Depth,
+                depth,
+                update_t,
+                aggr_interval,
+                DepthSource::Live,
+                self.step,
+            );
+        }
 
         if !paused {
             self.update_live_ring_and_scene(depth, rounded_t_ms, is_interacting);
@@ -427,7 +526,7 @@ impl HeatmapShader {
         self.data_gen = self.data_gen.wrapping_add(1);
 
         if (self.data_gen & 0x3F) == 0 {
-            self.cleanup_old_data(aggr_time);
+            self.cleanup_old_data();
         }
 
         if !paused && !is_interacting {
@@ -456,43 +555,132 @@ impl HeatmapShader {
         self.try_rebuild_instances();
     }
 
-    pub fn visual_config(&self) -> data::chart::heatmap::Config {
-        self.config
+    pub fn indicator_config(&self) -> &HeatmapIndicatorConfig {
+        self.indicators.config()
     }
 
-    pub fn update_study_configurator(&mut self, message: study::Message<HeatmapStudy>) {
-        let studies = &mut self.studies;
-        let mut studies_changed = false;
+    pub fn depth_distance_input(&self) -> &str {
+        &self.depth_distance_input
+    }
 
-        match message {
-            study::Message::StudyToggled(study, is_selected) => {
-                if is_selected {
-                    let already_exists = studies.iter().any(|s| s.is_same_type(&study));
-                    if !already_exists {
-                        studies.push(study);
-                        studies_changed = true;
-                    }
-                } else {
-                    let before = studies.len();
-                    studies.retain(|s| !s.is_same_type(&study));
-                    studies_changed = studies.len() != before;
-                }
-            }
-            study::Message::StudyValueChanged(study) => {
-                if let Some(existing_study) = studies.iter_mut().find(|s| s.is_same_type(&study)) {
-                    *existing_study = study;
-                    studies_changed = true;
-                }
-            }
-        }
-
-        if !studies_changed {
+    pub fn set_indicator_config(&mut self, config: HeatmapIndicatorConfig) {
+        if self.indicator_config() == &config {
             return;
         }
 
-        self.canvas_invalidation.mark_overlay_tooltip();
-        self.canvas_invalidation.mark_overlay_scale_labels();
-        self.try_rebuild_instances();
+        for kind in HeatmapPanel::ALL {
+            let previous = self.indicators.config();
+            if (previous.is_enabled(kind.into()) && !config.is_enabled(kind.into()))
+                || (kind == HeatmapPanel::Spread && previous.spread_unit != config.spread_unit)
+                || (kind == HeatmapPanel::Depth && previous.distance != config.distance)
+            {
+                self.indicator_panels[kind] = Default::default();
+            }
+        }
+
+        let overlays_changed = self.indicator_config().volume != config.volume
+            || self.indicator_config().volume_profile != config.volume_profile;
+
+        if self.indicator_config().distance != config.distance {
+            self.depth_distance_input = config.distance.to_string();
+        }
+
+        if let Some(mut request) = self.indicators.reconfigure(config) {
+            if let Some(queued) = self.replay_requested.take() {
+                request.include(&queued);
+            }
+            self.replay_requested = Some(request);
+        }
+        self.replay_requested = self
+            .replay_requested
+            .take()
+            .filter(|request| request.matches(self.indicator_config()));
+
+        let obsolete = self
+            .replay
+            .snapshot()
+            .is_some_and(|request| !request.matches(self.indicator_config()));
+        if self.replay_requested.is_some() || obsolete {
+            if let Some(request) = &mut self.replay_requested
+                && let Some(previous) = self.replay.snapshot()
+            {
+                request.include(previous);
+            }
+            self.replay.cancel();
+        }
+
+        if overlays_changed {
+            self.try_rebuild_instances();
+        }
+
+        self.canvas_invalidation.mark_all();
+    }
+
+    pub fn rebuild_indicators(&mut self) -> Option<iced::Task<BackgroundMessage>> {
+        if let Some(job_id) = self.replay.pending_job() {
+            self.complete_replay(job_id);
+        }
+        if self.replay.pending_job().is_some() {
+            return None;
+        }
+
+        let request = self.replay_requested.take()?;
+        let start = self.history_cutoff().unwrap_or_default();
+
+        let history = self.depth_history.clone();
+        self.replay.prepare(request.clone(), history);
+        let worker = self.replay.launch(move |history, cancelled| {
+            request
+                .run(&history, start, || cancelled.check())
+                .continue_value()
+        })?;
+
+        Some(iced::Task::perform(worker, |job_id| {
+            BackgroundMessage::ReplayCompleted { job_id }
+        }))
+    }
+
+    pub fn update_background(&mut self, message: BackgroundMessage) {
+        match message {
+            BackgroundMessage::ReplayCompleted { job_id } => self.complete_replay(job_id),
+        }
+    }
+
+    fn complete_replay(&mut self, job_id: u64) {
+        let Some(completed) = self.replay.poll(job_id) else {
+            return;
+        };
+        if self
+            .indicators
+            .merge_replay(completed.output, self.history_cutoff().unwrap_or_default())
+        {
+            self.canvas_invalidation.mark_all();
+        }
+    }
+
+    pub fn update_indicator_settings(&mut self, message: HeatmapIndicatorMessage) {
+        let mut config = self.indicator_config().clone();
+        match message {
+            HeatmapIndicatorMessage::SpreadUnit(unit) => config.spread_unit = unit,
+            HeatmapIndicatorMessage::VolumeProfile(kind) => config.volume_profile = Some(kind),
+            HeatmapIndicatorMessage::Enabled(kind, enabled) => config.set_enabled(kind, enabled),
+            HeatmapIndicatorMessage::DistanceEdited(value) => {
+                self.depth_distance_input = value;
+                return;
+            }
+            HeatmapIndicatorMessage::DistanceSubmitted => {
+                let Some(distance) = DepthDistance::from_percent(&self.depth_distance_input) else {
+                    return;
+                };
+                self.depth_distance_input = distance.to_string();
+                config.distance = distance;
+            }
+        }
+        self.set_indicator_config(config);
+    }
+
+    pub fn visual_config(&self) -> data::chart::heatmap::Config {
+        self.config
     }
 
     pub fn set_visual_config(&mut self, config: data::chart::heatmap::Config) {
@@ -525,23 +713,28 @@ impl HeatmapShader {
         }
     }
 
-    fn cleanup_old_data(&mut self, aggr_time: u64) {
-        // Keep CPU history aligned with what the ring can represent
+    fn history_cutoff(&self) -> Option<UnixMs> {
+        let aggr_time = self.depth_history.aggr_time_ms();
         let keep_buckets: u64 = (self.depth_grid.tex_w().max(1)) as u64;
+        let keep_ms = keep_buckets.saturating_mul(aggr_time);
+        let cutoff = self
+            .depth_history
+            .latest_time()?
+            .as_u64()
+            .saturating_sub(keep_ms);
+        let cutoff_rounded = (cutoff / aggr_time) * aggr_time;
+        Some(UnixMs::new(cutoff_rounded))
+    }
 
-        let Some(latest_time) = self.latest_time else {
+    fn cleanup_old_data(&mut self) {
+        // Keep CPU history aligned with what the ring can represent
+        let Some(cutoff) = self.history_cutoff() else {
             return;
         };
-
-        let keep_ms = keep_buckets.saturating_mul(aggr_time);
-        let cutoff = latest_time.saturating_sub(keep_ms);
-        let cutoff_rounded = (cutoff / aggr_time) * aggr_time;
+        self.indicators.prune_before(cutoff);
 
         // Prune trades (TimeSeries datapoints are bucket timestamps)
-        let keep = self
-            .trades
-            .datapoints
-            .split_off(&UnixMs::new(cutoff_rounded));
+        let keep = self.trades.datapoints.split_off(&cutoff);
         self.trades.datapoints = keep;
 
         // Prune HistoricalDepth to match the oldest remaining trade bucket (if any),
@@ -549,13 +742,12 @@ impl HeatmapShader {
         if let Some(oldest_time) = self.trades.datapoints.keys().next().copied() {
             self.depth_history.cleanup_old_price_levels(oldest_time);
         } else {
-            self.depth_history
-                .cleanup_old_price_levels(UnixMs::new(cutoff_rounded));
+            self.depth_history.cleanup_old_price_levels(cutoff);
         }
     }
 
     fn compute_view_window(&self, viewport_size: iced::Size) -> Option<ViewWindow> {
-        let latest_time = self.latest_time?;
+        let latest_time = self.depth_history.latest_time()?.as_u64();
         let base_price = self.anchor.effective_base_price(self.base_price)?;
 
         let cfg = ViewConfig {
@@ -590,7 +782,7 @@ impl HeatmapShader {
         let Some(palette) = &self.palette else {
             return;
         };
-        let latest_time = match self.latest_time {
+        let latest_time = match self.depth_history.latest_time().map(UnixMs::as_u64) {
             Some(time) => time,
             None => return,
         };
@@ -615,14 +807,6 @@ impl HeatmapShader {
             }
         }
 
-        let volume_profile = self
-            .studies
-            .iter()
-            .map(|study| match study {
-                HeatmapStudy::VolumeProfile(profile) => profile,
-            })
-            .next();
-
         let latest_depth = self
             .depth_history
             .latest_order_runs(
@@ -644,8 +828,10 @@ impl HeatmapShader {
             palette,
             &self.config,
             &self.ticker_info.market_type(),
-            volume_profile,
-            true,
+            self.indicators.config().volume_profile.as_ref(),
+            self.indicators
+                .config()
+                .is_enabled(HeatmapIndicator::Volume),
         );
 
         let draw_list = built.draw_list();
@@ -677,7 +863,7 @@ impl HeatmapShader {
             return;
         };
 
-        let latest_time = match self.latest_time {
+        let latest_time = match self.depth_history.latest_time().map(UnixMs::as_u64) {
             Some(time) => time,
             None => return,
         };
@@ -797,7 +983,7 @@ impl HeatmapShader {
     }
 
     fn invalidate_with_view_window(&mut self, now_i: Instant, aggr_time: u64, w: &ViewWindow) {
-        let latest_time = match self.latest_time {
+        let latest_time = match self.depth_history.latest_time().map(UnixMs::as_u64) {
             Some(time) => time,
             None => return,
         };

@@ -6,7 +6,7 @@ use crate::panel::{ladder, timesales};
 use crate::stream::PersistStreamKind;
 use crate::util::ok_or_default;
 
-use crate::chart::{Basis, heatmap::HeatmapStudy};
+use crate::chart::Basis;
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 pub enum Axis {
@@ -28,7 +28,7 @@ pub enum Pane {
     },
     ShaderHeatmap {
         #[serde(deserialize_with = "ok_or_default", default)]
-        studies: Vec<HeatmapStudy>,
+        indicators: heatmap::indicators::HeatmapIndicatorConfig,
         #[serde(deserialize_with = "ok_or_default", default)]
         stream_type: Vec<PersistStreamKind>,
         #[serde(deserialize_with = "ok_or_default")]

@@ -19,7 +19,7 @@ pub(super) fn contains_inclusive(rect: Rectangle, p: Point) -> bool {
     p.x >= rect.x && p.x <= rect.x + rect.width && p.y >= rect.y && p.y <= rect.y + rect.height
 }
 
-pub(super) fn place_non_overlapping_labels(
+pub(in crate::widget::chart) fn place_non_overlapping_labels(
     desired_centers: &[f32],
     min_y: f32,
     max_y: f32,
@@ -341,7 +341,7 @@ impl Regions {
     }
 }
 
-fn panel_plot_heights(
+pub(in crate::widget::chart) fn panel_plot_heights(
     panel_stack_height: f32,
     panel_count: usize,
     normalized_splits: &[f32],

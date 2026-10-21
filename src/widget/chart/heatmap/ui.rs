@@ -1,5 +1,6 @@
 pub mod axisx;
 pub mod axisy;
+pub mod indicator;
 pub mod overlay;
 
 const AXIS_TEXT_SIZE: f32 = crate::style::text_size::BODY;

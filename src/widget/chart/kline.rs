@@ -18,7 +18,11 @@ use scene::{
     PanelValueScale, PrimaryPercentScaleState, PrimaryScale, SceneBase, SceneCacheEntry, XViewport,
 };
 
+pub(super) use chrome::{
+    PANEL_TITLE_TO_CONTROLS_GAP, legend_background_color, legend_row_background,
+};
 pub use chrome::{StudiesLegend, StudyLegendRow};
+pub(super) use layout::{panel_plot_heights, place_non_overlapping_labels};
 
 use crate::widget::chart::kline::chrome::PreparedPanelControls;
 use crate::{style, theme::ThemeState, window::PixelRatio};
@@ -78,15 +82,15 @@ const Y_AXIS_GUTTER: f32 = 66.0;
 const X_AXIS_HEIGHT: f32 = 24.0;
 pub const MIN_FULL_CACHE_REFRESH_INTERVAL: Duration = Duration::from_micros(33_333);
 
-const TEXT_SIZE: f32 = 12.0;
-const CHAR_W: f32 = TEXT_SIZE * 0.64;
-const Y_AXIS_LABEL_LEFT_INSET: f32 = 4.0;
-const PANEL_SPLITTER_HEIGHT: f32 = 1.0;
-const PANEL_TITLE_TOP_PAD: f32 = 4.0;
+pub(super) const TEXT_SIZE: f32 = 12.0;
+pub(super) const CHAR_W: f32 = TEXT_SIZE * 0.64;
+pub(super) const Y_AXIS_LABEL_LEFT_INSET: f32 = 4.0;
+pub(super) const PANEL_SPLITTER_HEIGHT: f32 = 1.0;
+pub(super) const PANEL_TITLE_TOP_PAD: f32 = 4.0;
 
-const TICKER_LEGEND_PADDING: f32 = 4.0;
-const TOOLTIP_ROW_LEFT_PAD: f32 = TICKER_LEGEND_PADDING * 2.0;
-const TICKER_LEGEND_ROW_H: f32 = TEXT_SIZE + 6.0;
+pub(super) const TICKER_LEGEND_PADDING: f32 = 4.0;
+pub(super) const TOOLTIP_ROW_LEFT_PAD: f32 = TICKER_LEGEND_PADDING * 2.0;
+pub(super) const TICKER_LEGEND_ROW_H: f32 = TEXT_SIZE + 6.0;
 
 /// The submission order used by [`KlineWidget::draw`]; Iced may merge compatible layers.
 ///

@@ -6,7 +6,6 @@ use crate::{
         inspector::{self, InspectorSection},
     },
 };
-use data::chart::heatmap::{CLEANUP_THRESHOLD, HeatmapStudy, ProfileKind};
 use data::chart::kline::{
     KlineStudy, MAX_TPO_VALUE_AREA_PERCENT, MAX_VOLUME_PROFILE_OPACITY_PERCENT,
     MAX_VOLUME_PROFILE_WIDTH_PERCENT, MIN_TPO_VALUE_AREA_PERCENT,
@@ -22,14 +21,7 @@ use iced::{
     widget::{button, checkbox, column, container, pick_list, radio, row, rule, space, text},
 };
 
-#[derive(Debug, Clone, Copy)]
-pub enum StudyMessage {
-    Heatmap(Message<HeatmapStudy>),
-}
-
 pub trait Study: Sized + Copy + 'static {
-    fn is_same_type(&self, other: &Self) -> bool;
-    fn all() -> Vec<Self>;
     fn view_config<'a>(
         &self,
         basis: data::chart::Basis,
@@ -99,21 +91,6 @@ where
     match layout {
         StudyConfigLayout::Card => content.into(),
         StudyConfigLayout::Inspector(_) => crate::widget::inspector::modal_container(content),
-    }
-}
-
-fn study_window_duration(datapoint_count: usize, interval_ms: u64) -> String {
-    let duration_secs = (datapoint_count as u64 * interval_ms) / 1000;
-    if duration_secs < 60 {
-        format!("{} seconds", duration_secs)
-    } else {
-        let minutes = duration_secs / 60;
-        let seconds = duration_secs % 60;
-        if seconds == 0 {
-            format!("{} minutes", minutes)
-        } else {
-            format!("{}m {}s", minutes, seconds)
-        }
     }
 }
 
@@ -339,81 +316,6 @@ fn volume_profile_settings_sections<'a>(
             };
 
             settings.into()
-        }
-    }
-}
-
-impl Study for HeatmapStudy {
-    fn is_same_type(&self, other: &Self) -> bool {
-        std::mem::discriminant(self) == std::mem::discriminant(other)
-    }
-
-    fn all() -> Vec<Self> {
-        HeatmapStudy::ALL.to_vec()
-    }
-
-    fn view_config<'a>(
-        &self,
-        basis: data::chart::Basis,
-        _theme_accents: ThemeAccents,
-        on_change: impl Fn(Self) -> Message<Self> + Copy + 'a,
-    ) -> Element<'a, Message<Self>> {
-        let interval_ms = match basis {
-            data::chart::Basis::Time(interval) => interval.to_milliseconds(),
-            data::chart::Basis::Tick(_) => {
-                return iced::widget::center(text(
-                    "Heatmap studies are not supported for tick-based charts",
-                ))
-                .into();
-            }
-        };
-
-        match self {
-            HeatmapStudy::VolumeProfile(kind) => {
-                let fixed_window = match kind {
-                    ProfileKind::FixedWindow(_) => *kind,
-                    ProfileKind::VisibleRange => ProfileKind::FixedWindow(CLEANUP_THRESHOLD / 5),
-                };
-                let fixed_window_label = match kind {
-                    ProfileKind::FixedWindow(datapoint_count) => format!(
-                        "Fixed window ({})",
-                        study_window_duration(*datapoint_count, interval_ms)
-                    ),
-                    ProfileKind::VisibleRange => "Fixed window".to_owned(),
-                };
-                let mut controls = column![
-                    radio(
-                        "Visible range",
-                        ProfileKind::VisibleRange,
-                        Some(*kind),
-                        move |kind| { on_change(HeatmapStudy::VolumeProfile(kind)) }
-                    ),
-                    radio(fixed_window_label, fixed_window, Some(*kind), move |kind| {
-                        on_change(HeatmapStudy::VolumeProfile(kind))
-                    }),
-                ]
-                .spacing(4);
-
-                if let ProfileKind::FixedWindow(datapoint_count) = kind {
-                    let min_range = CLEANUP_THRESHOLD / 20;
-                    let slider = classic_slider_row(
-                        Some(text("Window")),
-                        min_range as f32..=CLEANUP_THRESHOLD as f32,
-                        *datapoint_count as f32,
-                        move |new_datapoint_count| {
-                            on_change(HeatmapStudy::VolumeProfile(ProfileKind::FixedWindow(
-                                new_datapoint_count as usize,
-                            )))
-                        },
-                        |value| format!("{} datapoints", *value as usize),
-                        Some(40.0),
-                    );
-
-                    controls = controls.push(slider);
-                }
-
-                controls.padding(8).into()
-            }
         }
     }
 }
@@ -1108,14 +1010,6 @@ fn tpo_color_setting<'a>(
 }
 
 impl Study for KlineStudy {
-    fn is_same_type(&self, other: &Self) -> bool {
-        (*self).is_same_type(*other)
-    }
-
-    fn all() -> Vec<Self> {
-        KlineStudy::ALL.to_vec()
-    }
-
     fn view_config<'a>(
         &self,
         basis: data::chart::Basis,
@@ -1167,36 +1061,4 @@ impl Study for KlineStudy {
 pub enum Message<S: Study> {
     StudyToggled(S, bool),
     StudyValueChanged(S),
-}
-
-pub fn view<'a, S: Study + ToString>(
-    active_studies: &[S],
-    basis: data::chart::Basis,
-    theme_accents: ThemeAccents,
-) -> Element<'a, Message<S>> {
-    let mut content = column![].spacing(4);
-    for study in S::all() {
-        let study_config = active_studies
-            .iter()
-            .find(|active| active.is_same_type(&study))
-            .copied();
-        let checkbox = checkbox(study_config.is_some())
-            .label(study_config.unwrap_or(study).to_string())
-            .on_toggle(move |checked| Message::StudyToggled(study, checked));
-        let checkbox_row = row![checkbox]
-            .height(36)
-            .align_y(iced::Alignment::Center)
-            .padding([0, 8]);
-        let mut controls = column![checkbox_row];
-        if let Some(config) = study_config {
-            controls =
-                controls.push(config.view_config(basis, theme_accents, Message::StudyValueChanged));
-        }
-        content = content.push(
-            container(controls)
-                .width(Length::Fill)
-                .style(style::inspector_control),
-        );
-    }
-    content.into()
 }

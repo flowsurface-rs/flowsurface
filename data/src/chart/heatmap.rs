@@ -1,3 +1,5 @@
+pub mod indicators;
+
 use super::Basis;
 use super::aggr::time::DataPoint;
 use exchange::unit::MinQtySize;
@@ -7,7 +9,7 @@ use exchange::{Timeframe, UnixMs, adapter::MarketKind, depth::Depth};
 
 use rustc_hash::{FxBuildHasher, FxHashMap};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, ops::ControlFlow};
 
 pub const CLEANUP_THRESHOLD: usize = 4800;
 
@@ -33,7 +35,7 @@ impl Default for Config {
 #[derive(Debug, Clone)]
 pub struct SettingsSnapshot {
     pub config: Option<Config>,
-    pub studies: Vec<HeatmapStudy>,
+    pub indicators: indicators::HeatmapIndicatorConfig,
 }
 
 #[derive(Default)]
@@ -114,6 +116,12 @@ pub struct HistoricalDepth {
     last_snapshot_time: Option<UnixMs>,
 }
 
+pub enum DepthSnapshotUpdate {
+    Stale,
+    Continuous,
+    Gap { start: UnixMs },
+}
+
 impl HistoricalDepth {
     pub fn new(min_order_qty: MinQtySize, tick_size: PriceStep, basis: Basis) -> Self {
         Self {
@@ -133,21 +141,31 @@ impl HistoricalDepth {
         self.aggr_time.to_milliseconds()
     }
 
-    pub fn insert_latest_depth(&mut self, depth: &Depth, time: UnixMs) {
+    pub fn latest_time(&self) -> Option<UnixMs> {
+        self.last_snapshot_time
+            .map(|time| time.floor_to(self.aggr_time))
+    }
+
+    pub fn insert_latest_depth(&mut self, depth: &Depth, time: UnixMs) -> DepthSnapshotUpdate {
         if let Some(prev_time) = self.last_snapshot_time
             && time < prev_time
         {
-            return;
+            return DepthSnapshotUpdate::Stale;
         }
 
-        let aggr_time = self.aggr_time_ms();
-        let has_snapshot_gap = self
-            .last_snapshot_time
-            .is_some_and(|prev_time| time > prev_time.saturating_add(aggr_time));
+        let bucket = time.floor_to(self.aggr_time);
+        let gap_start = self
+            .latest_time()
+            .map(|previous| previous.saturating_add(self.aggr_time_ms()))
+            .filter(|start| *start < bucket);
 
-        self.process_side(&depth.bids, time, true, has_snapshot_gap);
-        self.process_side(&depth.asks, time, false, has_snapshot_gap);
+        self.process_side(&depth.bids, bucket, true, gap_start.is_some());
+        self.process_side(&depth.asks, bucket, false, gap_start.is_some());
         self.last_snapshot_time = Some(time);
+
+        gap_start.map_or(DepthSnapshotUpdate::Continuous, |start| {
+            DepthSnapshotUpdate::Gap { start }
+        })
     }
 
     fn process_side(
@@ -263,6 +281,127 @@ impl HistoricalDepth {
                     .filter(|run| run.until_time >= latest_timestamp)
                     .map(|run| (price, run))
             })
+    }
+
+    pub fn depth_at(&self, time: UnixMs) -> Depth {
+        let mut depth = Depth::default();
+        for (&price, runs) in &self.price_levels {
+            let first = runs.partition_point(|run| run.until_time <= time);
+            if let Some(run) = runs.get(first)
+                && run.start_time <= time
+                && run.qty > Qty::ZERO
+            {
+                let side = if run.is_bid {
+                    &mut depth.bids
+                } else {
+                    &mut depth.asks
+                };
+                side.insert(price, run.qty);
+            }
+        }
+        depth
+    }
+
+    pub fn replay_depth_interruptible(
+        &self,
+        start: UnixMs,
+        mut on_snapshot: impl FnMut(UnixMs, &Depth),
+        mut control: impl FnMut() -> ControlFlow<()>,
+    ) -> ControlFlow<()> {
+        #[derive(PartialEq, Eq, PartialOrd, Ord)]
+        enum Change {
+            Remove,
+            Insert,
+        }
+
+        let Some(latest) = self.latest_time().filter(|latest| *latest >= start) else {
+            return ControlFlow::Continue(());
+        };
+
+        // One pending event per price level bounds replay memory.
+        let mut cursors = Vec::new();
+        for (&price, runs) in &self.price_levels {
+            control()?;
+            let first = runs.partition_point(|run| run.until_time <= start);
+            let mut remaining = runs[first..]
+                .iter()
+                .take_while(|run| run.start_time <= latest)
+                .filter(|run| run.qty > Qty::ZERO && run.start_time < run.until_time);
+            if let Some(current) = remaining.next() {
+                cursors.push((price, current, remaining));
+            }
+        }
+
+        let mut changes = BTreeMap::<(UnixMs, Change), Vec<usize>>::new();
+        for (index, (_, run, _)) in cursors.iter().enumerate() {
+            control()?;
+            changes
+                .entry((run.start_time.max(start), Change::Insert))
+                .or_default()
+                .push(index);
+        }
+
+        let mut depth = Depth::default();
+        let mut time = start;
+        while let Some(((next, change), indices)) = changes.pop_first() {
+            control()?;
+            if next != time {
+                on_snapshot(time, &depth);
+                time = next;
+            }
+
+            for index in indices {
+                let (price, current, remaining) = &mut cursors[index];
+                let side = if current.is_bid {
+                    &mut depth.bids
+                } else {
+                    &mut depth.asks
+                };
+                match change {
+                    Change::Insert => {
+                        side.insert(*price, current.qty);
+                        if current.until_time <= latest {
+                            changes
+                                .entry((current.until_time, Change::Remove))
+                                .or_default()
+                                .push(index);
+                        }
+                    }
+                    Change::Remove => match remaining.next() {
+                        Some(next) if next.start_time == time && next.is_bid == current.is_bid => {
+                            side.insert(*price, next.qty);
+                            *current = next;
+                            if next.until_time <= latest {
+                                changes
+                                    .entry((next.until_time, Change::Remove))
+                                    .or_default()
+                                    .push(index);
+                            }
+                        }
+                        Some(next) => {
+                            side.remove(price);
+                            *current = next;
+                            changes
+                                .entry((next.start_time, Change::Insert))
+                                .or_default()
+                                .push(index);
+                        }
+                        None => {
+                            side.remove(price);
+                        }
+                    },
+                }
+            }
+        }
+
+        control()?;
+        on_snapshot(time, &depth);
+        if time < latest {
+            control()?;
+            on_snapshot(latest, &depth);
+        }
+
+        ControlFlow::Continue(())
     }
 
     pub fn cleanup_old_price_levels(&mut self, oldest_time: UnixMs) {
@@ -614,25 +753,6 @@ impl GroupedTrade {
             self.price.cmp(&price)
         } else {
             self.is_sell.cmp(&is_sell)
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-pub enum HeatmapStudy {
-    VolumeProfile(ProfileKind),
-}
-
-impl HeatmapStudy {
-    pub const ALL: [HeatmapStudy; 1] = [HeatmapStudy::VolumeProfile(ProfileKind::VisibleRange)];
-}
-
-impl std::fmt::Display for HeatmapStudy {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            HeatmapStudy::VolumeProfile(kind) => {
-                write!(f, "Volume Profile ({})", kind)
-            }
         }
     }
 }

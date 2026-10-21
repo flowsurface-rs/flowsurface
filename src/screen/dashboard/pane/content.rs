@@ -11,7 +11,6 @@ use crate::{
     screen::dashboard::pane::settings::{
         self, heatmap_shader_cfg_view, ladder_cfg_view, timesales_cfg_view,
     },
-    theme::ThemeAccents,
     widget::inspector::InspectorContent,
 };
 use data::{
@@ -27,7 +26,7 @@ use iced::{
 };
 use std::time::Instant;
 
-use heatmap::HeatmapShader;
+use heatmap::HeatmapContent;
 use kline::{Action as KlineAction, ChartCommand, DataUpdate, FetchUpdate, KlineChart};
 use ladder::Ladder;
 use timesales::TimeAndSales;
@@ -36,10 +35,7 @@ use timesales::TimeAndSales;
 pub enum Content {
     #[default]
     Starter,
-    ShaderHeatmap {
-        chart: Option<Box<HeatmapShader>>,
-        studies: Vec<data::chart::heatmap::HeatmapStudy>,
-    },
+    ShaderHeatmap(HeatmapContent),
     Kline {
         chart: Option<Box<KlineChart>>,
         layout: Option<Box<data::chart::kline::Config>>,
@@ -49,6 +45,15 @@ pub enum Content {
 }
 
 impl Content {
+    pub fn heatmap_indicator_config(
+        &self,
+    ) -> Option<&data::chart::heatmap::indicators::HeatmapIndicatorConfig> {
+        match self {
+            Self::ShaderHeatmap(heatmap) => Some(heatmap.indicator_config()),
+            _ => None,
+        }
+    }
+
     pub(super) fn new_kline(
         current_content: &Content,
         tickers: &[TickerInfo],
@@ -101,12 +106,9 @@ impl Content {
                 chart: None,
                 layout: None,
             },
-            ContentKind::ShaderHeatmap => Content::ShaderHeatmap {
-                chart: None,
-                studies: vec![data::chart::heatmap::HeatmapStudy::VolumeProfile(
-                    data::chart::heatmap::ProfileKind::default(),
-                )],
-            },
+            ContentKind::ShaderHeatmap => {
+                Content::ShaderHeatmap(HeatmapContent::Parked(Default::default()))
+            }
             ContentKind::TimeAndSales => Content::TimeAndSales(None),
             ContentKind::Ladder => Content::Ladder(None),
         }
@@ -117,10 +119,10 @@ impl Content {
         transfer: PaneSettingsTransfer,
     ) -> Option<PaneSettingsSnapshot> {
         match (transfer, self) {
-            (PaneSettingsTransfer::Visual(config), Content::ShaderHeatmap { studies, .. }) => Some(
+            (PaneSettingsTransfer::Visual(config), Content::ShaderHeatmap(heatmap)) => Some(
                 PaneSettingsSnapshot::Heatmap(data::chart::heatmap::SettingsSnapshot {
                     config: config.as_ref().and_then(VisualConfig::heatmap),
-                    studies: studies.clone(),
+                    indicators: heatmap.indicator_config().clone(),
                 }),
             ),
             (PaneSettingsTransfer::Visual(config), Content::TimeAndSales(_)) => {
@@ -144,16 +146,16 @@ impl Content {
     pub fn can_apply_settings_snapshot(&self, snapshot: &PaneSettingsSnapshot) -> bool {
         matches!(
             (self, snapshot),
-            (
-                Content::ShaderHeatmap { .. },
-                PaneSettingsSnapshot::Heatmap(_)
-            ) | (
-                Content::Kline { chart: Some(_), .. },
-                PaneSettingsSnapshot::Kline(_)
-            ) | (
-                Content::TimeAndSales(_),
-                PaneSettingsSnapshot::TimeAndSales(_)
-            ) | (Content::Ladder(_), PaneSettingsSnapshot::Ladder(_))
+            (Content::ShaderHeatmap(_), PaneSettingsSnapshot::Heatmap(_))
+                | (
+                    Content::Kline { chart: Some(_), .. },
+                    PaneSettingsSnapshot::Kline(_)
+                )
+                | (
+                    Content::TimeAndSales(_),
+                    PaneSettingsSnapshot::TimeAndSales(_)
+                )
+                | (Content::Ladder(_), PaneSettingsSnapshot::Ladder(_))
         )
     }
 
@@ -162,17 +164,8 @@ impl Content {
         snapshot: &PaneSettingsSnapshot,
     ) -> Option<KlineAction> {
         match (self, snapshot) {
-            (
-                Content::ShaderHeatmap {
-                    chart,
-                    studies: previous,
-                },
-                PaneSettingsSnapshot::Heatmap(snapshot),
-            ) => {
-                *previous = snapshot.studies.clone();
-                if let Some(chart) = chart {
-                    chart.studies = snapshot.studies.clone();
-                }
+            (Content::ShaderHeatmap(heatmap), PaneSettingsSnapshot::Heatmap(snapshot)) => {
+                heatmap.set_indicator_config(snapshot.indicators.clone());
                 None
             }
             (
@@ -191,7 +184,8 @@ impl Content {
             Content::TimeAndSales(panel) => Some(panel.as_ref()?.last_update()),
             Content::Ladder(panel) => Some(panel.as_ref()?.last_update()),
             Content::Starter => None,
-            Content::ShaderHeatmap { chart, .. } => Some(chart.as_ref()?.last_tick?),
+            Content::ShaderHeatmap(HeatmapContent::Active(chart)) => chart.last_tick,
+            Content::ShaderHeatmap(HeatmapContent::Parked(_)) => None,
         }
     }
 
@@ -199,7 +193,7 @@ impl Content {
         match self {
             Content::Kline { .. } => Some(250),
             Content::Ladder(_) | Content::TimeAndSales(_) => Some(100),
-            Content::ShaderHeatmap { .. } | Content::Starter => None,
+            Content::ShaderHeatmap(_) | Content::Starter => None,
         }
     }
 
@@ -221,9 +215,8 @@ impl Content {
                 }
                 None
             }
-            Content::ShaderHeatmap { chart, .. } => {
-                chart.as_mut().and_then(|chart| chart.invalidate(Some(now)))
-            }
+            Content::ShaderHeatmap(HeatmapContent::Active(chart)) => chart.invalidate(Some(now)),
+            Content::ShaderHeatmap(HeatmapContent::Parked(_)) => None,
         }
     }
 
@@ -256,13 +249,16 @@ impl Content {
             } => chart
                 .rebuild_indicators()
                 .map(|task| task.map(Event::KlineInteraction)),
+            Content::ShaderHeatmap(HeatmapContent::Active(chart)) => chart
+                .rebuild_indicators()
+                .map(|task| task.map(Event::HeatmapBackground)),
             _ => None,
         }
     }
 
     pub(super) fn park(&mut self) {
-        if let Content::ShaderHeatmap { chart, .. } = self {
-            *chart = None;
+        if let Content::ShaderHeatmap(heatmap) = self {
+            heatmap.park();
         }
     }
 
@@ -294,11 +290,10 @@ impl Content {
 
     pub fn ingest_live_trades(&mut self, stream: &StreamKind, trades: &[Trade], update_t: UnixMs) {
         match self {
-            Self::ShaderHeatmap { chart, .. } => {
-                if let Some(chart) = chart {
-                    chart.insert_trades(trades, update_t);
-                }
+            Self::ShaderHeatmap(HeatmapContent::Active(chart)) => {
+                chart.insert_trades(trades, update_t);
             }
+            Self::ShaderHeatmap(HeatmapContent::Parked(_)) => {}
             Self::Kline {
                 chart: Some(chart), ..
             } => {
@@ -324,11 +319,10 @@ impl Content {
 
     pub fn ingest_live_depth(&mut self, stream: &StreamKind, depth: &Depth, update_t: UnixMs) {
         match self {
-            Self::ShaderHeatmap { chart, .. } => {
-                if let Some(chart) = chart {
-                    chart.insert_depth(depth, update_t);
-                }
+            Self::ShaderHeatmap(HeatmapContent::Active(chart)) => {
+                chart.insert_depth(depth, update_t);
             }
+            Self::ShaderHeatmap(HeatmapContent::Parked(_)) => {}
             Self::Ladder(panel) => {
                 if let Some(panel) = panel {
                     panel.insert_depth(depth, update_t);
@@ -478,7 +472,7 @@ impl Content {
 
     pub fn change_visual_config(&mut self, config: VisualConfig) {
         match (self, config) {
-            (Content::ShaderHeatmap { chart: Some(c), .. }, VisualConfig::Heatmap(cfg)) => {
+            (Content::ShaderHeatmap(HeatmapContent::Active(c)), VisualConfig::Heatmap(cfg)) => {
                 c.set_visual_config(cfg);
             }
             (Content::TimeAndSales(Some(panel)), VisualConfig::TimeAndSales(cfg)) => {
@@ -497,19 +491,19 @@ impl Content {
             Content::TimeAndSales(_) => ContentKind::TimeAndSales,
             Content::Ladder(_) => ContentKind::Ladder,
             Content::Starter => ContentKind::Starter,
-            Content::ShaderHeatmap { .. } => ContentKind::ShaderHeatmap,
+            Content::ShaderHeatmap(_) => ContentKind::ShaderHeatmap,
         }
     }
 
     pub fn update_theme(&mut self, theme: &iced_core::Theme) {
-        if let Content::ShaderHeatmap { chart: Some(c), .. } = self {
+        if let Content::ShaderHeatmap(HeatmapContent::Active(c)) = self {
             c.update_theme(theme);
         }
     }
 
     pub(super) fn initialized(&self) -> bool {
         match self {
-            Content::ShaderHeatmap { chart, .. } => chart.is_some(),
+            Content::ShaderHeatmap(heatmap) => matches!(heatmap, HeatmapContent::Active(_)),
             Content::Kline { chart, .. } => chart.is_some(),
             Content::TimeAndSales(panel) => panel.is_some(),
             Content::Ladder(panel) => panel.is_some(),
@@ -522,7 +516,6 @@ impl Content {
         pane: pane_grid::Pane,
         ticker_info: Option<TickerInfo>,
         selected_basis: Option<Basis>,
-        theme_accents: ThemeAccents,
     ) -> Option<InspectorContent<'a, Message>> {
         match self {
             Self::Kline {
@@ -544,16 +537,18 @@ impl Content {
                 );
                 Some(content)
             }
-            Self::ShaderHeatmap {
-                chart: Some(chart),
-                studies,
-                ..
-            } => {
+            Self::ShaderHeatmap(HeatmapContent::Active(chart)) => {
                 let basis = selected_basis.unwrap_or(Basis::default_heatmap_time(ticker_info));
 
                 Some(
-                    heatmap_shader_cfg_view(chart.visual_config(), studies, basis, theme_accents)
-                        .map(move |message| settings_message(pane, message)),
+                    heatmap_shader_cfg_view(
+                        chart.visual_config(),
+                        basis,
+                        chart.ticker_info.exchange().venue(),
+                        chart.indicator_config(),
+                        chart.depth_distance_input(),
+                    )
+                    .map(move |message| settings_message(pane, message)),
                 )
             }
             Self::TimeAndSales(Some(panel)) => Some(
@@ -567,7 +562,7 @@ impl Content {
             | Self::Kline { chart: None, .. }
             | Self::TimeAndSales(None)
             | Self::Ladder(None)
-            | Self::ShaderHeatmap { chart: None, .. } => None,
+            | Self::ShaderHeatmap(HeatmapContent::Parked(_)) => None,
         }
     }
 }
@@ -583,7 +578,7 @@ impl PartialEq for Content {
         matches!(
             (self, other),
             (Content::Starter, Content::Starter)
-                | (Content::ShaderHeatmap { .. }, Content::ShaderHeatmap { .. })
+                | (Content::ShaderHeatmap(_), Content::ShaderHeatmap(_))
                 | (Content::Kline { .. }, Content::Kline { .. })
                 | (Content::TimeAndSales(_), Content::TimeAndSales(_))
                 | (Content::Ladder(_), Content::Ladder(_))

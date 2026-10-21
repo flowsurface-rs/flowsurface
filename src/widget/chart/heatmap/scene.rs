@@ -1,10 +1,12 @@
 pub mod camera;
 pub mod cell;
 pub mod depth_grid;
+pub mod indicator;
 pub mod pipeline;
 mod uniform;
 
 use super::Message;
+use crate::window::PixelRatio;
 use cell::Cell;
 use exchange::unit::{Price, PriceStep};
 use pipeline::Pipeline;
@@ -410,9 +412,13 @@ impl shader::Primitive for Primitive {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         bounds: &Rectangle,
-        _viewport: &Viewport,
+        viewport: &Viewport,
     ) {
-        let cam_u = self.camera.to_uniform(bounds.width, bounds.height);
+        pipeline.cleanup_dropped_scenes();
+
+        let cam_u = self
+            .camera
+            .to_uniform(*bounds, PixelRatio::from_product(viewport.scale_factor()));
 
         pipeline.update_camera(self.id, device, queue, &cam_u);
         pipeline.update_params(self.id, device, queue, &self.params);
@@ -470,22 +476,15 @@ impl shader::Primitive for Primitive {
         }
     }
 
-    fn render(
-        &self,
-        pipeline: &Pipeline,
-        encoder: &mut wgpu::CommandEncoder,
-        target: &wgpu::TextureView,
-        clip_bounds: &Rectangle<u32>,
-    ) {
-        pipeline.begin_render_pass_ordered(
+    fn draw(&self, pipeline: &Pipeline, pass: &mut wgpu::RenderPass<'_>) -> bool {
+        pipeline.draw_ordered(
             self.id,
-            encoder,
-            target,
-            *clip_bounds,
+            pass,
             self.rectangles.len() as u32,
             self.circles.len() as u32,
             self.draw_list.as_ref(),
         );
+        true
     }
 }
 

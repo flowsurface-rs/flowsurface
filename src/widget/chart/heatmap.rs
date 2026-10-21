@@ -1,4 +1,5 @@
 mod instance;
+mod layout;
 pub mod scene;
 pub mod ui;
 pub mod view;
@@ -11,18 +12,35 @@ use crate::widget::chart::heatmap::ui::axisx::AxisXLabelCanvas;
 use crate::widget::chart::heatmap::ui::axisy::AxisYLabelCanvas;
 use crate::widget::chart::heatmap::ui::overlay::OverlayCanvas;
 
+use self::layout::HeatmapLayout;
+use crate::widget::chart::PANEL_SPLITTER_HEIGHT;
+use crate::window::PixelRatio;
+use data::chart::heatmap::indicators::{HeatmapIndicators, HeatmapPanel};
+use data::chart::kline::viewport::PanelYValueRange;
+use enum_map::EnumMap;
+use exchange::TickerInfo;
 use iced::advanced::widget::tree::{self, Tree};
-use iced::advanced::{Clipboard, Layout, Shell, Widget, layout, renderer};
+use iced::advanced::{Clipboard, Layout, Shell, Widget, layout as iced_layout, renderer};
 use iced::widget::shader::Program;
 use iced::widget::{canvas, shader};
 use iced::{Element, Event, Length, Rectangle, Renderer, Size, Theme, Vector, mouse};
+use iced_core::mouse::{Click, click};
 use iced_core::renderer::Quad;
+use ui::indicator::IndicatorCanvas;
 
 pub const DEFAULT_Y_AXIS_GUTTER: Length = Length::Fixed(66.0);
 pub const DEFAULT_X_AXIS_HEIGHT: Length = Length::Fixed(24.0);
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    IndicatorYRangeChanged {
+        kind: HeatmapPanel,
+        range: Option<PanelYValueRange>,
+    },
+    PanelSplitChanged {
+        index: usize,
+        split: f32,
+    },
     BoundsChanged(iced::Rectangle),
     PanDeltaPx(iced::Vector),
     ZoomAt {
@@ -57,6 +75,10 @@ pub struct HeatmapShaderWidget<'a> {
     overlay: OverlayCanvas<'a>,
     y_axis_gutter: Length,
     x_axis_height: Length,
+    indicators: &'a HeatmapIndicators,
+    ticker_info: TickerInfo,
+    indicator_panels: &'a EnumMap<HeatmapPanel, scene::indicator::Panel>,
+    pixel_ratio: PixelRatio,
 }
 
 impl<'a> HeatmapShaderWidget<'a> {
@@ -65,9 +87,17 @@ impl<'a> HeatmapShaderWidget<'a> {
         x_axis: AxisXLabelCanvas<'a>,
         y_axis: AxisYLabelCanvas<'a>,
         overlay: OverlayCanvas<'a>,
+        indicators: &'a HeatmapIndicators,
+        ticker_info: TickerInfo,
+        indicator_panels: &'a EnumMap<HeatmapPanel, scene::indicator::Panel>,
+        pixel_ratio: PixelRatio,
     ) -> Self {
         Self {
             scene,
+            indicators,
+            ticker_info,
+            indicator_panels,
+            pixel_ratio,
             x_axis,
             y_axis,
             overlay,
@@ -97,41 +127,26 @@ struct State {
 
     // `Message::BoundsChanged` publishes when plot bounds change,
     // so `HeatmapShader` keeps working even if the current event is over an axis.
-    last_plot_size: [f32; 2],
+    last_plot_bounds: Option<Rectangle>,
+    panel_drag: Option<PanelDrag>,
+    indicator_axis_clicks: EnumMap<HeatmapPanel, Option<Click>>,
     // Used to publish one extra cursor event when exiting plot so cursor-dependent
     // labels/tooltips can be cleared without publishing every global mouse move.
     was_cursor_in_plot: bool,
 }
 
+enum PanelDrag {
+    Splitter(usize),
+    TimePan(iced::Point),
+    IndicatorY {
+        kind: HeatmapPanel,
+        origin: iced::Point,
+        initial_range: PanelYValueRange,
+        bounds: Rectangle,
+    },
+}
+
 impl State {
-    // Children order (root):
-    // 0 plot, 1 y_axis, 2 x_axis, 3 corner
-    fn bounds_from_layout(layout: Layout<'_>) -> (Rectangle, Rectangle, Rectangle, Rectangle) {
-        let mut children = layout.children();
-
-        let plot = children
-            .next()
-            .expect("HeatmapShaderWidget layout: missing plot child")
-            .bounds();
-
-        let y_axis = children
-            .next()
-            .expect("HeatmapShaderWidget layout: missing y_axis child")
-            .bounds();
-
-        let x_axis = children
-            .next()
-            .expect("HeatmapShaderWidget layout: missing x_axis child")
-            .bounds();
-
-        let corner = children
-            .next()
-            .expect("HeatmapShaderWidget layout: missing corner child")
-            .bounds();
-
-        (plot, y_axis, x_axis, corner)
-    }
-
     fn apply_action(shell: &mut Shell<'_, Message>, action: iced::widget::canvas::Action<Message>) {
         let (message, redraw_request, event_status) = action.into_inner();
 
@@ -167,40 +182,24 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
         &mut self,
         _tree: &mut Tree,
         _renderer: &Renderer,
-        limits: &layout::Limits,
-    ) -> layout::Node {
+        limits: &iced_layout::Limits,
+    ) -> iced_layout::Node {
         let size = limits.resolve(Length::Fill, Length::Fill, Size::ZERO);
 
-        let gutter_w = layout::Limits::new(Size::ZERO, size)
+        let gutter_w = iced_layout::Limits::new(Size::ZERO, size)
             .width(self.y_axis_gutter)
             .resolve(self.y_axis_gutter, Length::Shrink, Size::ZERO)
             .width
             .min(size.width)
             .max(0.0);
-        let x_axis_h = layout::Limits::new(Size::ZERO, size)
+        let x_axis_h = iced_layout::Limits::new(Size::ZERO, size)
             .height(self.x_axis_height)
             .resolve(Length::Shrink, self.x_axis_height, Size::ZERO)
             .height
             .min(size.height)
             .max(0.0);
 
-        let plot_w = (size.width - gutter_w).max(0.0);
-        let plot_h = (size.height - x_axis_h).max(0.0);
-
-        let plot_node = layout::Node::new(Size::new(plot_w, plot_h));
-
-        let y_axis_node =
-            layout::Node::new(Size::new(gutter_w, plot_h)).move_to(iced::Point::new(plot_w, 0.0));
-
-        // X axis must match plot width
-        let x_axis_node =
-            layout::Node::new(Size::new(plot_w, x_axis_h)).move_to(iced::Point::new(0.0, plot_h));
-
-        // Bottom-right empty corner cell
-        let corner_node = layout::Node::new(Size::new(gutter_w, x_axis_h))
-            .move_to(iced::Point::new(plot_w, plot_h));
-
-        layout::Node::with_children(size, vec![plot_node, y_axis_node, x_axis_node, corner_node])
+        layout::build_node(size, gutter_w, x_axis_h, self.indicators)
     }
 
     fn update(
@@ -216,16 +215,21 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
     ) {
         use iced::widget::canvas::Program as _;
 
-        let (plot_bounds, y_axis_bounds, x_axis_bounds, _corner) =
-            State::bounds_from_layout(layout);
+        let geometry = HeatmapLayout::from_layout(layout, self.indicators);
+        let plot_bounds = geometry.plot;
+        let y_axis_bounds = geometry.y_axis;
+        let x_axis_bounds = geometry.x_axis;
 
+        let regions = &geometry.indicators;
+        let stack_bounds = geometry.stack_bounds();
+        self.x_axis.plot_bounds = Some(stack_bounds);
         let state = tree.state.downcast_mut::<State>();
 
-        // Ensure HeatmapShader gets bounds updates even when interacting with axes
-        let plot_size = [plot_bounds.width, plot_bounds.height];
-        if plot_size != state.last_plot_size && plot_bounds.width > 0.0 && plot_bounds.height > 0.0
+        if Some(plot_bounds) != state.last_plot_bounds
+            && plot_bounds.width > 0.0
+            && plot_bounds.height > 0.0
         {
-            state.last_plot_size = plot_size;
+            state.last_plot_bounds = Some(plot_bounds);
             shell.publish(Message::BoundsChanged(plot_bounds));
         }
 
@@ -234,11 +238,188 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
         let over_plot = cursor.position_over(plot_bounds).is_some();
 
         if matches!(event, Event::Mouse(mouse::Event::CursorMoved { .. })) {
-            if over_plot || state.was_cursor_in_plot {
+            let over_stack = cursor.position_over(stack_bounds).is_some();
+            if over_stack || state.was_cursor_in_plot {
                 shell.publish(Message::CursorMoved);
             }
 
-            state.was_cursor_in_plot = over_plot;
+            state.was_cursor_in_plot = over_stack;
+        }
+
+        if matches!(
+            event,
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
+        ) {
+            if state.panel_drag.take().is_some() {
+                shell.capture_event();
+            }
+        } else {
+            if let Event::Mouse(mouse::Event::CursorMoved { position }) = event {
+                match &mut state.panel_drag {
+                    Some(PanelDrag::TimePan(last)) => {
+                        shell.publish(Message::PanDeltaPx(Vector::new(position.x - last.x, 0.0)));
+                        *last = *position;
+                        shell.capture_event();
+                        return;
+                    }
+
+                    Some(PanelDrag::Splitter(index)) => {
+                        let usable = plot_bounds.height
+                            + regions
+                                .iter()
+                                .map(|region| region.bounds.height)
+                                .sum::<f32>();
+
+                        if let Some(split) = super::split_ratio_from_cursor(
+                            position.y - stack_bounds.y,
+                            *index,
+                            regions.len() + 1,
+                            usable,
+                            PANEL_SPLITTER_HEIGHT,
+                        ) {
+                            shell.publish(Message::PanelSplitChanged {
+                                index: *index,
+                                split,
+                            });
+                        }
+
+                        shell.capture_event();
+                        return;
+                    }
+
+                    Some(PanelDrag::IndicatorY {
+                        kind,
+                        origin,
+                        initial_range,
+                        bounds,
+                    }) => {
+                        let delta = (origin.y - position.y).round() * 0.1;
+
+                        if let Some(range) = self.indicator_panels[*kind].zoom_range(
+                            *initial_range,
+                            0.5,
+                            delta,
+                            bounds.height,
+                            self.pixel_ratio,
+                            kind.value_scale(self.indicators.config(), self.ticker_info),
+                        ) {
+                            shell.publish(Message::IndicatorYRangeChanged {
+                                kind: *kind,
+                                range: Some(range),
+                            });
+                        }
+
+                        shell.capture_event();
+                        return;
+                    }
+                    None => {}
+                }
+            }
+
+            if matches!(
+                event,
+                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+            ) {
+                if let Some(region) = geometry.indicator_axis_at(cursor)
+                    && let Some(position) = cursor.position()
+                {
+                    let kind = region.kind;
+                    let bounds = region.bounds;
+                    let click = Click::new(
+                        position,
+                        mouse::Button::Left,
+                        state.indicator_axis_clicks[kind],
+                    );
+                    state.indicator_axis_clicks[kind] = Some(click);
+
+                    if click.kind() == click::Kind::Double {
+                        state.panel_drag = None;
+                        shell.publish(Message::IndicatorYRangeChanged { kind, range: None });
+                    } else if let Some(initial_range) = self.indicator_panels[kind].range(
+                        kind.value_scale(self.indicators.config(), self.ticker_info),
+                        bounds.height,
+                        self.pixel_ratio,
+                    ) {
+                        state.panel_drag = Some(PanelDrag::IndicatorY {
+                            kind,
+                            origin: position,
+                            initial_range,
+                            bounds,
+                        });
+                    }
+
+                    shell.capture_event();
+                    return;
+                }
+
+                if let Some(index) = geometry.splitter_at(cursor) {
+                    state.panel_drag = Some(PanelDrag::Splitter(index));
+                    shell.capture_event();
+                    return;
+                }
+
+                if geometry.indicator_plot_at(cursor).is_some() {
+                    state.panel_drag = cursor.position().map(PanelDrag::TimePan);
+                    shell.capture_event();
+                    return;
+                }
+            }
+
+            if let Event::Mouse(mouse::Event::WheelScrolled { delta }) = event
+                && let Some(region) = geometry.indicator_axis_at(cursor)
+                && let Some(position) = cursor.position()
+            {
+                let kind = region.kind;
+                let bounds = region.bounds;
+                let delta = match delta {
+                    mouse::ScrollDelta::Lines { y, .. } => *y,
+                    mouse::ScrollDelta::Pixels { y, .. } => *y / 40.0,
+                }
+                .clamp(-6.0, 6.0);
+                let panel = &self.indicator_panels[kind];
+
+                if delta.abs() > f32::EPSILON
+                    && let Some(initial) = panel.range(
+                        kind.value_scale(self.indicators.config(), self.ticker_info),
+                        bounds.height,
+                        self.pixel_ratio,
+                    )
+                    && let Some(range) = panel.zoom_range(
+                        initial,
+                        f64::from(1.0 - (position.y - bounds.y) / bounds.height.max(1.0)),
+                        delta,
+                        bounds.height,
+                        self.pixel_ratio,
+                        kind.value_scale(self.indicators.config(), self.ticker_info),
+                    )
+                {
+                    shell.publish(Message::IndicatorYRangeChanged {
+                        kind,
+                        range: Some(range),
+                    });
+                }
+
+                shell.capture_event();
+                return;
+            }
+
+            if let Event::Mouse(mouse::Event::WheelScrolled { delta }) = event
+                && geometry.indicator_plot_at(cursor).is_some()
+                && let Some(position) = cursor.position()
+            {
+                let amount = match delta {
+                    mouse::ScrollDelta::Lines { y, .. } => *y * 0.1,
+                    mouse::ScrollDelta::Pixels { y, .. } => *y * 0.01,
+                };
+
+                shell.publish(Message::ScrolledAxisX {
+                    factor: (1.0 + amount).clamp(0.01, 100.0),
+                    cursor_x: position.x - plot_bounds.x,
+                    viewport_w: plot_bounds.width,
+                });
+                shell.capture_event();
+                return;
+            }
         }
 
         let x_dragging = matches!(
@@ -328,12 +509,22 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
         cursor: mouse::Cursor,
         _viewport: &Rectangle,
     ) {
-        let (plot_bounds, y_axis_bounds, x_axis_bounds, _corner) =
-            State::bounds_from_layout(layout);
+        let geometry = HeatmapLayout::from_layout(layout, self.indicators);
+        let plot_bounds = geometry.plot;
+        let y_axis_bounds = geometry.y_axis;
+        let x_axis_bounds = geometry.x_axis;
         if plot_bounds.width < 1.0 || plot_bounds.height < 1.0 {
             return;
         }
 
+        let stack_bounds = geometry.stack_bounds();
+        let x_axis = AxisXLabelCanvas {
+            plot_bounds: Some(stack_bounds),
+            ..self.x_axis
+        };
+        let cursor_time = cursor
+            .position_in(stack_bounds)
+            .map(|position| x_axis.time.time_at_x(position.x, plot_bounds.width));
         let state = tree.state.downcast_ref::<State>();
 
         {
@@ -369,8 +560,7 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
             // 3) Axes canvases
             renderer.with_translation(Vector::new(x_axis_bounds.x, x_axis_bounds.y), |renderer| {
                 for layer in
-                    self.x_axis
-                        .draw(&state.x_axis_state, renderer, theme, x_axis_bounds, cursor)
+                    x_axis.draw(&state.x_axis_state, renderer, theme, x_axis_bounds, cursor)
                 {
                     renderer.draw_geometry(layer);
                 }
@@ -384,19 +574,101 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
                 }
             });
 
-            // 4) Splitters
-            let palette = theme.extended_palette();
-            let splitter_color = palette.background.strong.color.scale_alpha(0.25);
+            for region in &geometry.indicators {
+                let kind = region.kind;
+                let bounds = region.bounds;
+                let panel = &self.indicator_panels[kind];
+                let plot = region.plot_bounds(plot_bounds.width);
 
-            // Horizontal splitter between (plot+y_axis) and x_axis
-            // spans plot width + y gutter width
+                let (primitive, range) = panel.prepare(
+                    self.indicators,
+                    kind,
+                    x_axis.time,
+                    plot,
+                    self.ticker_info,
+                    theme,
+                    self.pixel_ratio,
+                );
+
+                {
+                    use iced_wgpu::primitive::Renderer;
+                    renderer.draw_primitive(plot, primitive);
+                }
+
+                let canvas = IndicatorCanvas {
+                    indicators: self.indicators,
+                    kind,
+                    time: x_axis.time,
+                    plot_width: plot_bounds.width,
+                    cursor_time,
+                    range,
+                    ticker_info: self.ticker_info,
+                };
+                renderer.with_layer(bounds, |renderer| {
+                    renderer.with_translation(Vector::new(bounds.x, bounds.y), |renderer| {
+                        for geometry in canvas.draw(&(), renderer, theme, bounds, cursor) {
+                            renderer.draw_geometry(geometry);
+                        }
+                    });
+                });
+            }
+
+            if let Some(time) = cursor_time {
+                let x = (x_axis.time.screen_x(time, plot_bounds.width).round() + 0.5)
+                    .clamp(0.0, plot_bounds.width);
+                let regions = &geometry.indicators;
+                let primary = (cursor.position_over(plot_bounds).is_none() && !regions.is_empty())
+                    .then_some(plot_bounds);
+
+                for bounds in primary
+                    .into_iter()
+                    .chain(regions.iter().map(|region| region.bounds))
+                {
+                    let mut frame = canvas::Frame::new(renderer, bounds.size());
+                    frame.with_clip(
+                        Rectangle::with_size(Size::new(plot_bounds.width, bounds.height)),
+                        |frame| {
+                            frame.stroke(
+                                &canvas::Path::line(
+                                    iced::Point::new(x, 0.0),
+                                    iced::Point::new(x, bounds.height),
+                                ),
+                                crate::style::chart_crosshair(theme),
+                            );
+                        },
+                    );
+
+                    renderer.with_layer(bounds, |renderer| {
+                        renderer.with_translation(Vector::new(bounds.x, bounds.y), |renderer| {
+                            renderer.draw_geometry(frame.into_geometry());
+                        });
+                    });
+                }
+            }
+
+            let splitter_style = crate::style::split_ruler(theme);
+            for region in &geometry.indicators {
+                renderer.fill_quad(
+                    Quad {
+                        bounds: region.splitter,
+                        snap: splitter_style.snap,
+                        ..Default::default()
+                    },
+                    splitter_style.color,
+                );
+            }
+
+            // 4) Splitters
+            let splitter_color = splitter_style.color;
+
+            // Divider above the shared time axis.
             let total_top_row_w = (plot_bounds.width + y_axis_bounds.width).max(0.0);
             if total_top_row_w >= 1.0 {
                 renderer.fill_quad(
                     Quad {
                         bounds: Rectangle {
                             x: plot_bounds.x,
-                            y: plot_bounds.y + plot_bounds.height,
+                            y: x_axis_bounds.y,
                             width: total_top_row_w,
                             height: 1.0,
                         },
@@ -407,15 +679,14 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
                 );
             }
 
-            // Vertical splitter between plot and y-axis
-            if plot_bounds.height >= 1.0 {
+            if stack_bounds.height >= 1.0 {
                 renderer.fill_quad(
                     Quad {
                         bounds: Rectangle {
                             x: plot_bounds.x + plot_bounds.width,
                             y: plot_bounds.y,
                             width: 1.0,
-                            height: plot_bounds.height,
+                            height: stack_bounds.height,
                         },
                         snap: true,
                         ..Default::default()
@@ -436,11 +707,29 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
     ) -> mouse::Interaction {
         use iced::widget::canvas::Program as _;
 
-        let (plot_bounds, y_axis_bounds, x_axis_bounds, _corner) =
-            State::bounds_from_layout(layout);
+        let geometry = HeatmapLayout::from_layout(layout, self.indicators);
+        let plot_bounds = geometry.plot;
+        let y_axis_bounds = geometry.y_axis;
+        let x_axis_bounds = geometry.x_axis;
 
         let state = tree.state.downcast_ref::<State>();
 
+        if matches!(state.panel_drag, Some(PanelDrag::Splitter(_)))
+            || geometry.splitter_at(cursor).is_some()
+        {
+            return mouse::Interaction::ResizingVertically;
+        }
+        if matches!(state.panel_drag, Some(PanelDrag::IndicatorY { .. }))
+            || geometry.indicator_axis_at(cursor).is_some()
+        {
+            return mouse::Interaction::ResizingVertically;
+        }
+        if matches!(state.panel_drag, Some(PanelDrag::TimePan(_))) {
+            return mouse::Interaction::Grabbing;
+        }
+        if geometry.indicator_plot_at(cursor).is_some() {
+            return mouse::Interaction::Crosshair;
+        }
         let over_x = cursor.position_over(x_axis_bounds).is_some();
         let over_y = cursor.position_over(y_axis_bounds).is_some();
 
@@ -469,5 +758,13 @@ impl<'a> Widget<Message, Theme, Renderer> for HeatmapShaderWidget<'a> {
 impl<'a> From<HeatmapShaderWidget<'a>> for Element<'a, Message, Theme, Renderer> {
     fn from(widget: HeatmapShaderWidget<'a>) -> Self {
         Element::new(widget)
+    }
+}
+
+fn panel_colors(kind: HeatmapPanel, theme: &Theme) -> [iced::Color; 2] {
+    let palette = theme.extended_palette();
+    match kind {
+        HeatmapPanel::Spread => [palette.primary.base.color; 2],
+        HeatmapPanel::Depth => [palette.success.strong.color, palette.danger.strong.color],
     }
 }
