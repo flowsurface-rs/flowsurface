@@ -165,8 +165,9 @@ impl LayoutManager {
             message,
         } = message
         {
-            self.update_chart_resources(*message, main_window.id, *layout_id, (window, pane));
-            return Some((iced::Task::none(), None));
+            let task =
+                self.update_chart_resources(*message, main_window.id, *layout_id, (window, pane));
+            return Some((task, None));
         }
 
         let layout_index = self
@@ -184,24 +185,31 @@ impl LayoutManager {
         main_window: window::Id,
         layout_id: Uuid,
         origin: (window::Id, iced::widget::pane_grid::Pane),
-    ) {
-        let event = self.chart_resources.update(message);
-        for layout in &mut self.layouts {
-            layout
-                .dashboard
-                .chart_resources_changed(main_window, &event);
+    ) -> iced::Task<dashboard::Message> {
+        let (task, event) = self.chart_resources.update(message);
+        if let Some(event) = event {
+            for layout in &mut self.layouts {
+                layout
+                    .dashboard
+                    .chart_resources_changed(main_window, &event);
+            }
+
+            if let Some(layout) = self
+                .layouts
+                .iter_mut()
+                .find(|layout| layout.id.unique == layout_id)
+            {
+                layout
+                    .dashboard
+                    .chart_resources_updated(main_window, origin.0, origin.1, event);
+            }
         }
 
-        let Some(layout) = self
-            .layouts
-            .iter_mut()
-            .find(|layout| layout.id.unique == layout_id)
-        else {
-            return;
-        };
-        layout
-            .dashboard
-            .chart_resources_updated(main_window, origin.0, origin.1, event);
+        task.map(move |message| dashboard::Message::SharedChartResources {
+            window: origin.0,
+            pane: origin.1,
+            message: Box::new(message),
+        })
     }
 
     pub fn park_inactive_layouts(&mut self, active_layout_id: Uuid, main_window: window::Id) {

@@ -5,6 +5,7 @@ use data::{
     layout::{WindowSpec, pane::Axis, presets},
 };
 
+use iced::Task;
 use iced::widget::pane_grid::{self, Configuration};
 use std::vec;
 use uuid::Uuid;
@@ -45,11 +46,15 @@ impl SharedChartResources {
         &self.presets
     }
 
-    pub fn update(&mut self, message: ChartResourcesMessage) -> ChartResourcesEvent {
+    pub fn update(
+        &mut self,
+        message: ChartResourcesMessage,
+    ) -> (Task<ChartResourcesMessage>, Option<ChartResourcesEvent>) {
         match message {
-            ChartResourcesMessage::Presets(command) => {
-                ChartResourcesEvent::Presets(self.presets.update(command))
-            }
+            ChartResourcesMessage::Presets(command) => (
+                Task::none(),
+                Some(ChartResourcesEvent::Presets(self.presets.update(command))),
+            ),
         }
     }
 }
