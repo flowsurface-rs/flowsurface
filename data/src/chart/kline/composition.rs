@@ -493,7 +493,6 @@ impl PanelSpec {
         if self.base_layer.is_none() {
             self.base_layer = Some(layer_id);
         }
-        self.enforce_comparison_mark_policy();
 
         true
     }
@@ -509,7 +508,6 @@ impl PanelSpec {
             self.base_layer = self.layers.first().map(|layer| layer.id);
         }
 
-        self.enforce_comparison_mark_policy();
         true
     }
 
@@ -558,29 +556,12 @@ impl PanelSpec {
     }
 
     fn set_layer_mark(&mut self, layer_id: LayerId, mark: MarkKind) -> bool {
-        let is_multi_source = self.uses_multi_source();
-        let force_line = self.comparison_policy.force_line_for_non_base_sources
-            && is_multi_source
-            && self.base_layer != Some(layer_id);
-
         let Some(layer) = self.layers.iter_mut().find(|layer| layer.id == layer_id) else {
             return false;
         };
 
-        layer.mark_override = Some(if force_line { MarkKind::Line } else { mark });
+        layer.mark_override = Some(mark);
         true
-    }
-
-    fn enforce_comparison_mark_policy(&mut self) {
-        if !(self.comparison_policy.force_line_for_non_base_sources && self.uses_multi_source()) {
-            return;
-        }
-
-        for layer in &mut self.layers {
-            if Some(layer.id) != self.base_layer {
-                layer.mark_override = Some(MarkKind::Line);
-            }
-        }
     }
 }
 
