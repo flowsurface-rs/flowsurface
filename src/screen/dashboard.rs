@@ -1,6 +1,7 @@
 pub mod pane;
 
 use super::DashboardError;
+use crate::layout::{ChartResourcesEvent, ChartResourcesMessage, SharedChartResources};
 use crate::{
     connector::{
         client::DataSources,
@@ -16,7 +17,7 @@ use crate::{
 use data::{
     UserTimezone,
     chart::kline::ChartSettings,
-    layout::{WindowSpec, pane::ContentKind},
+    layout::{WindowSpec, pane::ContentKind, presets},
     stream::PersistStreamKind,
 };
 use exchange::{
@@ -74,6 +75,11 @@ impl Default for Dashboard {
 
 #[derive(Debug, Clone)]
 pub enum Event {
+    SharedChartResources {
+        window: window::Id,
+        pane: pane_grid::Pane,
+        message: Box<ChartResourcesMessage>,
+    },
     OpenUrlRequested(String),
     OpenNetworkSettings,
     Notification(Toast),
@@ -157,6 +163,7 @@ impl Dashboard {
         message: Message,
         main_window: &Window,
         data_sources: &DataSources,
+        chart_resources: &SharedChartResources,
     ) -> (Task<Message>, Option<Event>) {
         match message {
             Message::SavePopoutSpecs(specs) => {
@@ -319,47 +326,15 @@ impl Dashboard {
                     let mut chart_settings = self.chart_settings;
                     let effect = self
                         .get_mut_pane(main_window.id, window, pane)
-                        .map(|state| state.update(event, &mut chart_settings));
+                        .map(|state| state.update(event, &mut chart_settings, chart_resources));
                     self.chart_settings = chart_settings;
-                    let Some(effect) = effect.flatten() else {
-                        return (Task::none(), None);
-                    };
-
-                    match effect {
-                        pane::Effect::RefreshStreams => {
-                            return (self.refresh_streams(main_window.id), None);
-                        }
-                        pane::Effect::RequestFetch(reqs) => {
-                            let Some(state) = self.get_mut_pane(main_window.id, window, pane)
-                            else {
-                                return (Task::none(), None);
-                            };
-                            let task = state
-                                .request_fetch(data_sources, reqs)
-                                .map(Message::from)
-                                .chain(self.refresh_streams(main_window.id));
-                            return (task, None);
-                        }
-                        pane::Effect::SwitchTickersInGroup(ticker_info) => {
-                            return (
-                                self.switch_tickers_in_group(
-                                    data_sources,
-                                    main_window.id,
-                                    ticker_info,
-                                ),
-                                None,
-                            );
-                        }
-                        pane::Effect::FocusWidget(id) => {
-                            return (iced::widget::operation::focus(id), None);
-                        }
-                        pane::Effect::OpenNetworkSettings => {
-                            return (Task::none(), Some(Event::OpenNetworkSettings));
-                        }
-                        pane::Effect::OpenUrl(url) => {
-                            return (Task::none(), Some(Event::OpenUrlRequested(url)));
-                        }
-                    }
+                    return self.dispatch_pane_effect(
+                        effect.flatten(),
+                        main_window.id,
+                        window,
+                        pane,
+                        data_sources,
+                    );
                 }
             },
             Message::RequestPalette => {
@@ -600,6 +575,7 @@ impl Dashboard {
         timezone: UserTimezone,
         pixel_ratio: PixelRatio,
         theme: &'a ThemeState,
+        chart_resources: &'a SharedChartResources,
     ) -> Element<'a, Message> {
         let pane_grid: Element<_> = PaneGrid::new(&self.panes, |id, pane, maximized| {
             let is_focused = self.focus == Some((main_window.id, id));
@@ -614,6 +590,7 @@ impl Dashboard {
                 pixel_ratio,
                 tickers_table,
                 theme,
+                chart_resources,
             )
         })
         .min_size(240)
@@ -635,6 +612,7 @@ impl Dashboard {
         timezone: UserTimezone,
         pixel_ratio: PixelRatio,
         theme: &'a ThemeState,
+        chart_resources: &'a SharedChartResources,
     ) -> Element<'a, Message> {
         if let Some((state, _)) = self.popout.get(&window) {
             let content = container(
@@ -651,6 +629,7 @@ impl Dashboard {
                         pixel_ratio,
                         tickers_table,
                         theme,
+                        chart_resources,
                     )
                 })
                 .on_click(pane::Message::PaneClicked),
@@ -1274,20 +1253,73 @@ impl Dashboard {
         let Some(state) = self.get_mut_pane(main_window, window, pane) else {
             return Task::none();
         };
-        let Some(effect) = state.apply_settings_snapshot(snapshot) else {
-            return Task::none();
-        };
+        let effect = state.apply_settings_snapshot(snapshot);
+        self.dispatch_pane_effect(effect, main_window, window, pane, data_sources)
+            .0
+    }
 
+    pub fn chart_resources_changed(
+        &mut self,
+        main_window: window::Id,
+        event: &ChartResourcesEvent,
+    ) {
+        if let ChartResourcesEvent::Presets(Ok(presets::Response::Removed(id))) = event {
+            for (_, _, state) in self.iter_all_panes_mut(main_window) {
+                state.clear_chart_preset(*id);
+            }
+        }
+    }
+
+    pub fn chart_resources_updated(
+        &mut self,
+        main_window: window::Id,
+        window: window::Id,
+        pane: pane_grid::Pane,
+        event: ChartResourcesEvent,
+    ) {
+        if let Some(state) = self.get_mut_pane(main_window, window, pane) {
+            state.chart_resources_updated(event);
+        }
+    }
+
+    fn dispatch_pane_effect(
+        &mut self,
+        effect: Option<pane::Effect>,
+        main_window: window::Id,
+        window: window::Id,
+        pane: pane_grid::Pane,
+        data_sources: &DataSources,
+    ) -> (Task<Message>, Option<Event>) {
         match effect {
-            pane::Effect::RefreshStreams => self.refresh_streams(main_window),
-            pane::Effect::RequestFetch(reqs) => state
-                .request_fetch(data_sources, reqs)
-                .map(Message::from)
-                .chain(self.refresh_streams(main_window)),
-            pane::Effect::SwitchTickersInGroup(_)
-            | pane::Effect::FocusWidget(_)
-            | pane::Effect::OpenUrl(_)
-            | pane::Effect::OpenNetworkSettings => Task::none(),
+            Some(pane::Effect::RefreshStreams) => (self.refresh_streams(main_window), None),
+            Some(pane::Effect::RequestFetch(requests)) => {
+                let Some(state) = self.get_mut_pane(main_window, window, pane) else {
+                    return (Task::none(), None);
+                };
+                let task = state
+                    .request_fetch(data_sources, requests)
+                    .map(Message::from)
+                    .chain(self.refresh_streams(main_window));
+                (task, None)
+            }
+            Some(pane::Effect::SwitchTickersInGroup(ticker_info)) => (
+                self.switch_tickers_in_group(data_sources, main_window, ticker_info),
+                None,
+            ),
+            Some(pane::Effect::FocusWidget(id)) => (iced::widget::operation::focus(id), None),
+            Some(pane::Effect::OpenNetworkSettings) => {
+                (Task::none(), Some(Event::OpenNetworkSettings))
+            }
+            Some(pane::Effect::OpenUrl(url)) => (Task::none(), Some(Event::OpenUrlRequested(url))),
+            Some(pane::Effect::SharedChartResources(message)) => (
+                Task::none(),
+                Some(Event::SharedChartResources {
+                    window,
+                    pane,
+                    message,
+                }),
+            ),
+            None => (Task::none(), None),
         }
     }
 

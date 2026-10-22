@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 
 pub mod dashboard;
 pub mod pane;
+pub mod presets;
+
+pub const MAX_NAME_LENGTH: usize = 20;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Layout {

@@ -337,6 +337,19 @@ impl Flowsurface {
                 };
 
                 let additional_task = match event {
+                    Some(dashboard::Event::SharedChartResources {
+                        window,
+                        pane,
+                        message,
+                    }) => {
+                        self.layout_manager.update_chart_resources(
+                            *message,
+                            main_window.id,
+                            layout_id,
+                            (window, pane),
+                        );
+                        Task::none()
+                    }
                     Some(dashboard::Event::OpenUrlRequested(url)) => {
                         Task::done(Message::OpenUrlRequested(Cow::Owned(url)))
                     }
@@ -729,6 +742,7 @@ impl Flowsurface {
                     self.timezone,
                     pixel_ratio,
                     &self.theme,
+                    self.layout_manager.chart_resources(),
                 )
                 .map(move |msg| Message::Dashboard {
                     layout_id: None,
@@ -779,6 +793,7 @@ impl Flowsurface {
                         self.timezone,
                         pixel_ratio,
                         &self.theme,
+                        self.layout_manager.chart_resources(),
                     )
                     .map(move |msg| Message::Dashboard {
                         layout_id: None,
@@ -1487,6 +1502,12 @@ impl Flowsurface {
         }
 
         let layouts = data::Layouts {
+            chart_presets: self
+                .layout_manager
+                .chart_resources()
+                .presets()
+                .entries()
+                .to_vec(),
             layouts: ser_layouts,
             active_layout: self
                 .layout_manager

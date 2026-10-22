@@ -1056,6 +1056,31 @@ impl ChartComposition {
         self.rebuild_comparison_bindings(selected_tickers, Some(base_ticker));
     }
 
+    pub fn copy_comparison_layers_from(&mut self, previous: &Self) {
+        let Some(primary_panel) = self.primary_panel_id() else {
+            return;
+        };
+        let Some(previous_panel) = previous
+            .primary_panel_id()
+            .and_then(|id| previous.panel(id))
+        else {
+            return;
+        };
+
+        for layer in &previous_panel.layers {
+            if matches!(
+                layer.source,
+                LayerSource::RawKline {
+                    source: DataSourceId::Comparison(_)
+                }
+            ) {
+                let mut layer = layer.clone();
+                layer.id = self.new_layer_id();
+                self.add_layer_to_panel(primary_panel, layer);
+            }
+        }
+    }
+
     pub fn primary_uses_multi_source(&self) -> bool {
         self.primary_panel_id()
             .and_then(|panel_id| self.panel(panel_id))

@@ -6,7 +6,7 @@ mod ladder;
 mod timesales;
 
 pub use heatmap::heatmap_shader_cfg_view;
-pub use kline::kline_cfg_view;
+pub use kline::{kline_cfg_view, presets};
 pub use ladder::ladder_cfg_view;
 pub use timesales::timesales_cfg_view;
 

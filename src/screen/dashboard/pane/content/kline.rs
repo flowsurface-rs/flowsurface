@@ -29,7 +29,7 @@ use drawing::{DrawingMessage, DrawingState, DrawingTools, DrawingUpdate};
 use fetch::FetchCoordinator;
 use layout::{IndicatorRebuildReason, IndicatorState};
 use settings::{InspectorEffect, InspectorState, SettingsContext};
-use studies::{StudyChange, StudyCommand, StudyState};
+use studies::{StudyChange, StudyCommand, StudySnapshot, StudyState};
 use updates::DataUpdateEffect;
 use viewport::ViewportState;
 
@@ -40,9 +40,10 @@ pub use updates::DataUpdate;
 
 use data::chart::Basis;
 use data::chart::kline::composition::{
-    ChartComposition, DEFAULT_MIN_PANEL_RATIO, MarkKind, PanelRole, PanelScaleMode,
+    ChartComposition, DEFAULT_MIN_PANEL_RATIO, MarkKind, PanelId, PanelRole, PanelScaleMode,
 };
 use data::chart::kline::footprint::{ClusterKind, ClusterScaling};
+use data::chart::kline::indicators::AvailabilityContext;
 use data::chart::kline::series::KlineSeries;
 use data::chart::kline::viewport::XAxis;
 use data::chart::kline::{
@@ -86,6 +87,7 @@ pub enum Message {
 }
 
 pub struct KlineChart {
+    pub selected_preset: Option<uuid::Uuid>,
     basis: Basis,
     viewport: ViewportState,
     options: ChartOptions,
@@ -102,6 +104,136 @@ pub struct KlineChart {
     last_maintenance_at: Instant,
 }
 
+pub struct PresetPreview {
+    pub adjustments: Vec<String>,
+    pub affected_drawings: usize,
+}
+
+impl PresetPreview {
+    fn new(
+        settings: &SettingsSnapshot,
+        adapted: &PreparedSettings,
+        context: AvailabilityContext,
+        affected_drawings: usize,
+    ) -> Self {
+        let mut adjustments = settings
+            .study_configs
+            .iter()
+            .filter_map(|study| {
+                let updated = adapted
+                    .studies
+                    .configs
+                    .iter()
+                    .find(|updated| updated.id() == study.id());
+                match updated {
+                    None => Some(format!("{study} is unavailable on this chart basis.")),
+                    Some(updated) if study != updated => Some(format!(
+                        "{study} settings will be adjusted for this chart basis."
+                    )),
+                    _ => None,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        adjustments.extend(
+            adapted
+                .composition
+                .selected_indicators()
+                .into_iter()
+                .filter_map(|id| adapted.instances.get(id))
+                .filter_map(|instance| {
+                    instance.kind.unsupported_reason(context).map(|reason| {
+                        format!(
+                            "{}: {}.",
+                            instance.kind.definition().display_name,
+                            reason.indicator_unavailable_tooltip(),
+                        )
+                    })
+                }),
+        );
+
+        Self {
+            adjustments,
+            affected_drawings,
+        }
+    }
+
+    pub fn requires_confirmation(&self) -> bool {
+        self.affected_drawings > 0 || !self.adjustments.is_empty()
+    }
+}
+
+pub struct PresetApplication {
+    settings: PreparedSettings,
+    pub preview: PresetPreview,
+    replaced_panels: Vec<PanelId>,
+    primary_panel: PanelId,
+}
+
+struct PreparedSettings {
+    primary_scale_inverted: bool,
+    primary_series_style: Option<persisted::PrimarySeriesStyle>,
+    options: ChartOptions,
+    studies: StudySnapshot,
+    composition: ChartComposition,
+    instances: IndicatorInstanceStore,
+}
+
+impl PreparedSettings {
+    fn from_snapshot(snapshot: &SettingsSnapshot, basis: Basis) -> Self {
+        let instances = snapshot.indicator_instance_store();
+        let composition = if snapshot.panels.is_empty() {
+            let mut composition = ChartComposition::prototype_kline();
+            let volume = IndicatorId::parse("core.volume").expect("static ID is valid");
+            if let Some(instance) = instances
+                .instances()
+                .iter()
+                .find(|instance| instance.kind == volume)
+            {
+                let _ = composition.add_indicator(instance.id, volume);
+            }
+            composition
+        } else {
+            ChartComposition::from_parts(
+                snapshot
+                    .panels
+                    .iter()
+                    .map(persisted::panel_spec_from_config)
+                    .collect(),
+                snapshot.splits.clone(),
+            )
+        };
+
+        Self {
+            primary_scale_inverted: snapshot.primary_scale_inverted,
+            primary_series_style: snapshot.primary_series_style,
+            options: snapshot.options,
+            studies: StudySnapshot::from_settings(snapshot).normalized_for_basis(basis),
+            composition,
+            instances,
+        }
+    }
+
+    fn into_snapshot(self) -> SettingsSnapshot {
+        SettingsSnapshot {
+            primary_scale_inverted: self.primary_scale_inverted,
+            primary_series_style: self.primary_series_style,
+            options: self.options,
+            panels: self
+                .composition
+                .panels
+                .iter()
+                .map(persisted::panel_config_from_spec)
+                .collect(),
+            splits: self.composition.splits,
+            active_studies: self.studies.active,
+            study_configs: self.studies.configs,
+            tpo_profile_edits: self.studies.edits,
+            indicator_instances: self.instances.instances().to_vec(),
+        }
+    }
+}
+
 impl KlineChart {
     pub fn new(basis: Basis, tickers: &[TickerInfo]) -> Self {
         let base_ticker = tickers
@@ -112,6 +244,7 @@ impl KlineChart {
         let indicators = IndicatorState::new();
 
         let mut chart = Self {
+            selected_preset: None,
             basis,
             viewport: ViewportState::default(),
             options: ChartOptions::default(),
@@ -829,39 +962,6 @@ impl KlineChart {
             IndicatorRebuildReason::IndicatorStructureChanged,
         );
         true
-    }
-
-    fn replace_indicator_configuration(
-        &mut self,
-        instances: IndicatorInstanceStore,
-        panels: &[persisted::PanelConfig],
-        splits: &[f32],
-    ) {
-        self.indicators.instances = instances;
-
-        if !panels.is_empty() {
-            let panels = panels
-                .iter()
-                .map(persisted::panel_spec_from_config)
-                .collect();
-            self.indicators.composition = ChartComposition::from_parts(panels, splits.to_vec());
-        } else if let Some(volume_id) = self
-            .indicators
-            .instances
-            .instances()
-            .iter()
-            .find(|instance| {
-                instance.kind == IndicatorId::parse("core.volume").expect("static ID is valid")
-            })
-            .map(|instance| instance.id)
-        {
-            let mut composition = ChartComposition::prototype_kline();
-            let volume = IndicatorId::parse("core.volume").expect("static ID is valid");
-            let _ = composition.add_indicator(volume_id, volume);
-            self.indicators.composition = composition;
-        } else {
-            self.indicators.composition = ChartComposition::prototype_kline();
-        }
     }
 
     fn indicator_presentation_context(&self) -> IndicatorPresentationContext {
@@ -1619,20 +1719,24 @@ impl KlineChart {
         )
     }
 
-    fn apply_shared_settings(&mut self, snapshot: &SettingsSnapshot) {
+    fn apply_shared_settings(&mut self, settings: PreparedSettings) {
         self.settings_reconfigure_pending = false;
         let previous_requirements = self.data_requirements();
-        self.replace_indicator_configuration(
-            snapshot.indicator_instance_store(),
-            &snapshot.panels,
-            &snapshot.splits,
-        );
+        self.indicators.instances = settings.instances;
+        self.indicators.composition = settings.composition;
 
-        self.viewport.primary_scale_inverted = snapshot.primary_scale_inverted;
+        self.viewport.primary_scale_inverted = settings.primary_scale_inverted;
+        if let Some(style) = settings.primary_series_style {
+            let ticker = self.data.base_ticker();
+            let _ = self.data.set_series_color(ticker, style.color);
+            let _ = self.data.set_series_line_width(ticker, style.line_width);
+            let _ = self
+                .data
+                .set_series_stroke_style(ticker, style.stroke_style);
+        }
 
-        self.options = snapshot.options;
-
-        self.studies.restore_settings(snapshot, self.basis);
+        self.options = settings.options;
+        self.studies.restore_snapshot(settings.studies);
 
         self.reconcile_indicator_layout(true);
         self.sync_tick_drawing_sequence();
@@ -1641,8 +1745,12 @@ impl KlineChart {
     }
 
     fn apply_persisted_config(&mut self, config: &persisted::Config) {
+        self.selected_preset = config.selected_preset;
         self.drawings.clear_history();
-        self.apply_shared_settings(&config.settings);
+        self.apply_shared_settings(PreparedSettings::from_snapshot(
+            &config.settings,
+            self.basis,
+        ));
 
         self.drawing_sidebar_visible = config.drawing_sidebar_visible;
         self.drawings.floating_toolbar =
@@ -1657,6 +1765,11 @@ impl KlineChart {
         self.drawings.tools.set_basis(self.basis);
 
         for series_config in &config.series {
+            if config.settings.primary_series_style.is_some()
+                && series_config.ticker == self.data.base_ticker().ticker
+            {
+                continue;
+            }
             let Some(index) = self
                 .data
                 .series()
@@ -1695,7 +1808,11 @@ impl KlineChart {
     }
 
     pub fn apply_settings_snapshot(&mut self, snapshot: &SettingsSnapshot) -> Option<Action> {
-        self.apply_shared_settings(snapshot);
+        self.apply_prepared_settings(PreparedSettings::from_snapshot(snapshot, self.basis))
+    }
+
+    fn apply_prepared_settings(&mut self, settings: PreparedSettings) -> Option<Action> {
+        self.apply_shared_settings(settings);
         let selected_tickers = self.data.selected_tickers();
         self.fetch.rebuild_handlers(&selected_tickers);
         self.refresh_indicator_presentation();
@@ -1734,10 +1851,147 @@ impl KlineChart {
         requirements
     }
 
+    pub fn preset_settings(&self) -> SettingsSnapshot {
+        self.settings_snapshot().preset_settings()
+    }
+
+    fn auxiliary_panels(&self) -> Vec<PanelId> {
+        self.indicators
+            .composition
+            .panels
+            .iter()
+            .filter(|panel| panel.role != PanelRole::Primary)
+            .map(|panel| panel.id)
+            .collect()
+    }
+
+    pub fn preset_modified(&self, settings: &SettingsSnapshot) -> bool {
+        self.prepare_preset_settings(settings)
+            .map(|prepared| self.preset_settings() != prepared.into_snapshot())
+            .unwrap_or(true)
+    }
+
+    fn prepare_preset_settings(
+        &self,
+        settings: &SettingsSnapshot,
+    ) -> Result<PreparedSettings, String> {
+        let missing = settings
+            .indicator_instances
+            .iter()
+            .filter(|instance| !instance.kind.is_registered())
+            .map(|instance| instance.kind.to_string())
+            .collect::<std::collections::BTreeSet<_>>();
+        if !missing.is_empty() {
+            return Err(format!(
+                "Install these indicators before applying: {}",
+                missing.into_iter().collect::<Vec<_>>().join(", ")
+            ));
+        }
+
+        if settings
+            .panels
+            .iter()
+            .filter(|panel| panel.role == PanelRole::Primary)
+            .count()
+            != 1
+        {
+            return Err("This preset must have exactly one price panel.".into());
+        }
+
+        let mut prepared =
+            PreparedSettings::from_snapshot(&settings.clone().preset_settings(), self.basis);
+        prepared.primary_series_style = prepared
+            .primary_series_style
+            .or_else(|| self.primary_series_style());
+        let active = prepared.composition.selected_indicators();
+        if prepared.instances.instances().len() != settings.indicator_instances.len() {
+            return Err(
+                "This preset contains invalid or duplicate indicator configurations.".into(),
+            );
+        }
+        for instance in prepared.instances.instances() {
+            for input in instance.source_bindings.keys() {
+                prepared
+                    .instances
+                    .validate_source_binding(&active, instance.id, input)
+                    .map_err(|error| format!("{}: {error}", instance.kind))?;
+            }
+        }
+
+        Ok(prepared)
+    }
+
+    pub fn prepare_preset(&self, settings: &SettingsSnapshot) -> Result<PresetApplication, String> {
+        let mut prepared = self.prepare_preset_settings(settings)?;
+        prepared
+            .composition
+            .copy_comparison_layers_from(&self.indicators.composition);
+        let primary_panel = prepared
+            .composition
+            .primary_panel_id()
+            .expect("validated preset has a price panel");
+        let replaced_panels = self.auxiliary_panels();
+        let preview = PresetPreview::new(
+            settings,
+            &prepared,
+            AvailabilityContext {
+                basis: self.basis,
+                base_ticker: self.data.base_ticker(),
+            },
+            self.drawings.tools.panel_drawing_count(&replaced_panels),
+        );
+        prepared.studies.edits = self.studies.snapshot().edits;
+        Ok(PresetApplication {
+            settings: prepared,
+            preview,
+            replaced_panels,
+            primary_panel,
+        })
+    }
+
+    pub fn apply_preset(
+        &mut self,
+        id: uuid::Uuid,
+        application: PresetApplication,
+    ) -> Option<Action> {
+        self.drawings.finish_pending_edit();
+        self.drawings.tools.set_basis(self.basis);
+        let previous_primary = self.indicators.composition.primary_panel_id();
+        for panel in &application.replaced_panels {
+            self.drawings.tools.prune_panel_drawings(*panel);
+            let _ = self.viewport.indicator_y_ranges.reset(*panel);
+        }
+        if let Some(previous) = previous_primary
+            && previous != application.primary_panel
+        {
+            self.drawings
+                .tools
+                .remap_panel_drawings(previous, application.primary_panel);
+        }
+        if !application.replaced_panels.is_empty()
+            || previous_primary != Some(application.primary_panel)
+        {
+            self.drawings.clear_history();
+        }
+        self.selected_preset = Some(id);
+        self.apply_prepared_settings(application.settings)
+    }
+
+    fn primary_series_style(&self) -> Option<persisted::PrimarySeriesStyle> {
+        self.data
+            .base_series()
+            .map(|series| persisted::PrimarySeriesStyle {
+                color: series.color(),
+                line_width: series.line_width(),
+                stroke_style: series.stroke_style(),
+            })
+    }
+
     pub fn settings_snapshot(&self) -> SettingsSnapshot {
         let studies = self.studies.snapshot();
         SettingsSnapshot {
             primary_scale_inverted: self.viewport.primary_scale_inverted,
+            primary_series_style: self.primary_series_style(),
             options: self.options,
             panels: self
                 .indicators
@@ -1782,6 +2036,7 @@ impl KlineChart {
 
     pub fn serializable_config(&self) -> persisted::Config {
         persisted::Config {
+            selected_preset: self.selected_preset,
             settings: self.settings_snapshot(),
             drawings: self.drawings.tools.time_drawings().to_vec(),
             active_drawing_tool: self.drawings.tools.active_tool(),
@@ -1791,11 +2046,7 @@ impl KlineChart {
                 .data
                 .series()
                 .iter()
-                .filter(|series| {
-                    series.ticker_info != self.data.base_ticker()
-                        || series.has_custom_line_style()
-                        || !series.color().is_default()
-                })
+                .filter(|series| series.ticker_info != self.data.base_ticker())
                 .map(|series| {
                     let color = series.color();
                     persisted::SeriesConfig {
