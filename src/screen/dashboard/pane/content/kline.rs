@@ -1904,7 +1904,7 @@ impl KlineChart {
         }
 
         let prepared =
-            PreparedSettings::from_snapshot(&self.adapted_preset_settings(settings), self.basis);
+            PreparedSettings::from_snapshot(&settings.clone().normalized_preset(), self.basis);
         let active = prepared.composition.selected_indicators();
         if prepared.instances.instances().len() != settings.indicator_instances.len() {
             return Err(
