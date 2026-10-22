@@ -235,7 +235,7 @@ pub mod button {
         }
     }
 
-    pub fn layout_name(theme: &Theme, status: Status) -> Style {
+    pub fn manager_entry(theme: &Theme, status: Status) -> Style {
         let palette = theme.extended_palette();
 
         let bg_color = match status {
@@ -808,6 +808,20 @@ pub fn chart_info_tooltip(theme: &Theme) -> Style {
             color: Color::BLACK.scale_alpha(if palette.is_dark { 0.8 } else { 0.2 }),
         },
         snap: true,
+    }
+}
+
+pub fn manager_row_container(theme: &Theme, is_selected: bool) -> Style {
+    let palette = theme.extended_palette();
+    let color = if is_selected {
+        palette.background.weak.color
+    } else {
+        palette.background.weakest.color
+    };
+
+    Style {
+        background: Some(color.into()),
+        ..Default::default()
     }
 }
 

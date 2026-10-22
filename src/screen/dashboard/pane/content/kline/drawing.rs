@@ -1800,6 +1800,33 @@ impl DrawingTools {
         true
     }
 
+    pub(super) fn panel_drawing_count(&self, panels: &[PanelId]) -> usize {
+        self.drawings
+            .iter()
+            .chain(&self.inactive_drawings)
+            .filter(|drawing| panels.iter().any(|panel| drawing.belongs_to_panel(*panel)))
+            .count()
+    }
+
+    pub(super) fn remap_panel_drawings(&mut self, previous: PanelId, next: PanelId) {
+        for drawing in self.drawings.iter_mut().chain(&mut self.inactive_drawings) {
+            match &mut drawing.object {
+                DrawingObject::Trendline { start, end } | DrawingObject::Box { start, end, .. } => {
+                    if start.panel_id == previous {
+                        start.panel_id = next;
+                    }
+                    if end.panel_id == previous {
+                        end.panel_id = next;
+                    }
+                }
+                DrawingObject::HorizontalLine { panel_id, .. } if *panel_id == previous => {
+                    *panel_id = next
+                }
+                _ => {}
+            }
+        }
+    }
+
     pub(super) fn prune_panel_drawings(&mut self, panel_id: PanelId) -> bool {
         let before = self.drawings.len() + self.inactive_drawings.len();
         self.drawings

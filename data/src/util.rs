@@ -1,10 +1,28 @@
 use chrono::{DateTime, Datelike, Timelike};
 use serde::{Deserialize, Deserializer};
 
-const DAY_MS: u64 = 86_400_000;
-const HOUR_MS: u64 = 3_600_000;
-const MINUTE_MS: u64 = 60_000;
-const SECOND_MS: u64 = 1_000;
+pub fn unique_name<'a>(
+    proposed: &str,
+    existing: impl Iterator<Item = &'a str>,
+    max_chars: usize,
+) -> String {
+    let existing = existing.collect::<Vec<_>>();
+    let proposed = proposed.trim();
+    let mut name = proposed.chars().take(max_chars).collect::<String>();
+    let mut suffix = 2;
+
+    while existing.contains(&name.as_str()) {
+        let ending = format!(" ({suffix})");
+        let prefix = proposed
+            .chars()
+            .take(max_chars.saturating_sub(ending.len()))
+            .collect::<String>();
+        name = format!("{prefix}{ending}");
+        suffix += 1;
+    }
+
+    name
+}
 
 pub fn ok_or_default<'a, T, D>(deserializer: D) -> Result<T, D::Error>
 where
@@ -129,6 +147,11 @@ pub fn pct_change(change: f32) -> String {
 }
 
 pub fn format_duration_ms(diff_ms: u64) -> String {
+    const DAY_MS: u64 = 86_400_000;
+    const HOUR_MS: u64 = 3_600_000;
+    const MINUTE_MS: u64 = 60_000;
+    const SECOND_MS: u64 = 1_000;
+
     if diff_ms >= DAY_MS {
         let days = diff_ms / DAY_MS;
         let hours = (diff_ms % DAY_MS) / HOUR_MS;

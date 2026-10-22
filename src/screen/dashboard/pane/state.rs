@@ -1,3 +1,7 @@
+use super::settings::presets::{self as preset_editor, Action as PresetEditorAction};
+use crate::layout::{ChartResourcesEvent, ChartResourcesMessage, SharedChartResources};
+use data::layout::presets::Response as PresetResponse;
+
 use super::content::{
     self, Content,
     heatmap::{HeatmapContent, HeatmapShader},
@@ -65,6 +69,7 @@ pub enum Effect {
     FocusWidget(iced::widget::Id),
     OpenUrl(String),
     OpenNetworkSettings,
+    SharedChartResources(Box<ChartResourcesMessage>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,6 +99,7 @@ pub enum Message {
 
 #[derive(Debug, Clone)]
 pub enum Event {
+    PresetEditor(preset_editor::Message),
     ShowModal(Modal),
     HideModal,
     ContentSelected(ContentKind),
@@ -109,6 +115,7 @@ pub enum Event {
 }
 
 pub struct State {
+    preset_editor: preset_editor::State,
     inspector: Option<InspectorPage>,
     id: uuid::Uuid,
     pub modal: Option<Modal>,
@@ -369,6 +376,7 @@ impl State {
         pixel_ratio: PixelRatio,
         tickers_table: &'a TickersTable,
         theme: &'a ThemeState,
+        chart_resources: &'a SharedChartResources,
     ) -> pane_grid::Content<'a, Message, Theme, Renderer> {
         let mut top_left_buttons = if Content::Starter == self.content {
             row![]
@@ -653,7 +661,8 @@ impl State {
             }
         };
 
-        let body = self.compose_stack_view(base, id, compact_controls, tickers_table);
+        let body =
+            self.compose_stack_view(base, id, compact_controls, tickers_table, chart_resources);
 
         let body = column![
             iced::widget::rule::horizontal(1.0).style(style::split_ruler),
@@ -707,14 +716,36 @@ impl State {
         })
     }
 
-    pub fn update(&mut self, msg: Event, chart_settings: &mut ChartSettings) -> Option<Effect> {
-        let effect = self.update_event(msg, chart_settings);
+    pub fn update(
+        &mut self,
+        msg: Event,
+        chart_settings: &mut ChartSettings,
+        chart_resources: &SharedChartResources,
+    ) -> Option<Effect> {
+        let effect = self.update_event(msg, chart_settings, chart_resources);
         self.reconcile_inspector();
         effect
     }
 
-    fn update_event(&mut self, msg: Event, chart_settings: &mut ChartSettings) -> Option<Effect> {
+    fn update_event(
+        &mut self,
+        msg: Event,
+        chart_settings: &mut ChartSettings,
+        chart_resources: &SharedChartResources,
+    ) -> Option<Effect> {
         match msg {
+            Event::PresetEditor(message) => {
+                let Content::Kline {
+                    chart: Some(chart), ..
+                } = &self.content
+                else {
+                    return None;
+                };
+                let action = self
+                    .preset_editor
+                    .update(message, chart_resources.presets(), chart);
+                return self.apply_preset_editor_action(action);
+            }
             Event::ShowModal(requested_modal) => {
                 return self.show_modal_with_focus(requested_modal);
             }
@@ -749,32 +780,7 @@ impl State {
                     Content::Kline { chart: Some(c), .. } => c.update(message, chart_settings),
                     _ => None,
                 };
-                let stream_plan_changed = self.sync_kline_streams();
-
-                if let Some(action) = action {
-                    match action {
-                        KlineAction::RequestFetch(fetch) => {
-                            return Some(Effect::RequestFetch(fetch));
-                        }
-                        KlineAction::OpenNetworkSettings => {
-                            return Some(Effect::OpenNetworkSettings);
-                        }
-                        KlineAction::OpenUrl(url) => return Some(Effect::OpenUrl(url)),
-                        KlineAction::RemoveSeries(ti) => {
-                            if let Content::Kline { chart: Some(c), .. } = &mut self.content {
-                                let _ =
-                                    c.apply_command(ChartCommand::RemoveTicker { ticker_info: ti });
-                            }
-                            let _ = self.sync_kline_streams();
-
-                            return Some(Effect::RefreshStreams);
-                        }
-                    }
-                }
-
-                if stream_plan_changed {
-                    return Some(Effect::RefreshStreams);
-                }
+                return self.finish_kline_action(action);
             }
             Event::Settings(message) => return self.update_settings(message),
             Event::LadderInteraction(message) => {
@@ -1057,7 +1063,11 @@ impl State {
         }
     }
 
-    fn inspector_view<'a>(&'a self, pane: pane_grid::Pane) -> Option<Element<'a, Message>> {
+    fn inspector_view<'a>(
+        &'a self,
+        pane: pane_grid::Pane,
+        chart_resources: &'a SharedChartResources,
+    ) -> Option<Element<'a, Message>> {
         let page = self.inspector?;
         if !self.supports_inspector(page) {
             return None;
@@ -1085,7 +1095,7 @@ impl State {
                 header,
                 rule::horizontal(1.0).style(style::split_ruler),
                 responsive(move |size| {
-                    self.inspector_body_view(pane, page, size.height)
+                    self.inspector_body_view(pane, page, size.height, chart_resources)
                         .unwrap_or_else(|| column![].into())
                 }),
             ])
@@ -1102,10 +1112,13 @@ impl State {
         pane: pane_grid::Pane,
         page: InspectorPage,
         available_height: f32,
+        chart_resources: &'a SharedChartResources,
     ) -> Option<Element<'a, Message>> {
         let (body, footer) = match page {
             InspectorPage::PaneSettings => {
-                let (sections, footer) = self.pane_settings_content(pane)?.into_parts();
+                let (sections, footer) = self
+                    .pane_settings_content(pane, chart_resources)?
+                    .into_parts();
                 (
                     sections,
                     footer.map(|footer| (InspectorFooter::HEIGHT, footer)),
@@ -1261,8 +1274,9 @@ impl State {
         pane: pane_grid::Pane,
         compact_controls: Option<Element<'a, Message>>,
         tickers_table: &'a TickersTable,
+        chart_resources: &'a SharedChartResources,
     ) -> Element<'a, Message> {
-        let base = if let Some(inspector) = self.inspector_view(pane) {
+        let base = if let Some(inspector) = self.inspector_view(pane, chart_resources) {
             row![
                 base,
                 rule::vertical(1.0).style(style::split_ruler),
@@ -1364,6 +1378,9 @@ impl State {
     }
 
     pub fn go_back(&mut self) -> bool {
+        if self.inspector == Some(InspectorPage::PaneSettings) && self.preset_editor.cancel() {
+            return true;
+        }
         if let Content::Kline {
             chart: Some(chart), ..
         } = &mut self.content
@@ -1386,9 +1403,98 @@ impl State {
     pub fn pane_settings_content<'a>(
         &'a self,
         pane: pane_grid::Pane,
+        chart_resources: &'a SharedChartResources,
     ) -> Option<InspectorContent<'a, Message>> {
-        self.content
-            .pane_settings_content(pane, self.stream_pair(), self.settings.selected_basis)
+        let mut content = self.content.pane_settings_content(
+            pane,
+            self.stream_pair(),
+            self.settings.selected_basis,
+        )?;
+        if let Content::Kline {
+            chart: Some(chart), ..
+        } = &self.content
+        {
+            content.prepend(
+                crate::widget::inspector::InspectorSection::titled(
+                    "Presets",
+                    self.preset_editor
+                        .view(chart_resources.presets(), chart)
+                        .map(move |message| Message::PaneEvent(pane, Event::PresetEditor(message))),
+                )
+                .with_modal_container(),
+            );
+        }
+        Some(content)
+    }
+
+    fn apply_preset_editor_action(&mut self, action: PresetEditorAction) -> Option<Effect> {
+        match action {
+            PresetEditorAction::None => None,
+            PresetEditorAction::FocusWidget(id) => Some(Effect::FocusWidget(id)),
+            PresetEditorAction::Command(command) => Some(Effect::SharedChartResources(Box::new(
+                ChartResourcesMessage::Presets(command),
+            ))),
+            PresetEditorAction::Apply { id, application } => {
+                let Content::Kline {
+                    chart: Some(chart), ..
+                } = &mut self.content
+                else {
+                    return None;
+                };
+                let action = chart.apply_preset(id, application);
+                self.reconcile_inspector();
+                self.finish_kline_action(action)
+            }
+        }
+    }
+
+    pub fn chart_resources_updated(&mut self, event: ChartResourcesEvent) {
+        let ChartResourcesEvent::Presets(response) = event;
+        let Content::Kline {
+            chart: Some(chart), ..
+        } = &mut self.content
+        else {
+            return;
+        };
+        if let Ok(PresetResponse::Created(id)) = &response {
+            chart.selected_preset = Some(*id);
+        }
+        self.preset_editor.command_completed(response);
+    }
+
+    fn finish_kline_action(&mut self, action: Option<KlineAction>) -> Option<Effect> {
+        let effect = match action {
+            Some(KlineAction::RequestFetch(fetch)) => Some(Effect::RequestFetch(fetch)),
+            Some(KlineAction::OpenNetworkSettings) => Some(Effect::OpenNetworkSettings),
+            Some(KlineAction::OpenUrl(url)) => Some(Effect::OpenUrl(url)),
+            Some(KlineAction::RemoveSeries(ticker_info)) => {
+                if let Content::Kline {
+                    chart: Some(chart), ..
+                } = &mut self.content
+                {
+                    let _ = chart.apply_command(ChartCommand::RemoveTicker { ticker_info });
+                }
+                Some(Effect::RefreshStreams)
+            }
+            None => None,
+        };
+        let streams_changed = self.sync_kline_streams();
+        effect.or_else(|| streams_changed.then_some(Effect::RefreshStreams))
+    }
+
+    pub fn clear_chart_preset(&mut self, id: uuid::Uuid) {
+        if let Content::Kline { chart, layout, .. } = &mut self.content {
+            if let Some(chart) = chart
+                && chart.selected_preset == Some(id)
+            {
+                chart.selected_preset = None;
+            }
+            if let Some(config) = layout
+                && config.selected_preset == Some(id)
+            {
+                config.selected_preset = None;
+            }
+        }
     }
 
     fn show_modal_with_focus(&mut self, requested_modal: Modal) -> Option<Effect> {
@@ -1499,19 +1605,14 @@ impl State {
 
         let action = self.content.apply_settings_snapshot(snapshot);
         self.reconcile_inspector();
-        let stream_plan_changed =
-            matches!(snapshot, PaneSettingsSnapshot::Kline(_)) && self.sync_kline_streams();
-
-        if let Some(KlineAction::RequestFetch(fetch)) = action {
-            return Some(Effect::RequestFetch(fetch));
-        }
-        stream_plan_changed.then_some(Effect::RefreshStreams)
+        self.finish_kline_action(action)
     }
 }
 
 impl Default for State {
     fn default() -> Self {
         Self {
+            preset_editor: preset_editor::State::default(),
             inspector: None,
             id: uuid::Uuid::new_v4(),
             modal: None,

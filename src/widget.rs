@@ -237,17 +237,37 @@ pub fn press_button_with_tooltip<'a, M: Clone + 'a>(
     )
 }
 
-pub fn dragger_row<'a, Message>(
-    content: Element<'a, Message>,
-    is_enabled: bool,
+pub fn manager_row<'a, Message>(
+    content: iced::widget::Row<'a, Message>,
+    is_selected: bool,
+    is_editing: bool,
+    body: Option<Element<'a, Message>>,
 ) -> Element<'a, Message>
 where
     Message: Clone + 'a,
 {
-    let content = if is_enabled {
-        let icon = icon_text(Icon::DragHandle, 11);
-        row![icon, content,]
-            .align_y(Alignment::Center)
+    const HEADER_HEIGHT: f32 = 32.0;
+
+    let header = content
+        .height(HEADER_HEIGHT)
+        .width(Fill)
+        .padding(4)
+        .align_y(Alignment::Center);
+    let mut content = column![header];
+    if let Some(body) = body {
+        content = content.push(container(body).width(Fill).padding(12));
+    }
+
+    let content: Element<'a, Message> = container(content)
+        .width(Fill)
+        .style(move |theme| style::manager_row_container(theme, is_selected))
+        .into();
+
+    let content = if is_editing {
+        let icon = container(icon_text(Icon::DragHandle, 11)).center_y(HEADER_HEIGHT);
+        row![icon, content]
+            .width(Fill)
+            .align_y(Alignment::Start)
             .spacing(2)
             .into()
     } else {
@@ -255,9 +275,37 @@ where
     };
 
     container(content)
+        .width(Fill)
         .padding(2)
         .style(style::dragger_row_container)
         .into()
+}
+
+pub fn manager_icon_button<'a, Message: 'a>(
+    icon: Icon,
+    message: Option<Message>,
+) -> button::Button<'a, Message> {
+    button(icon_text(icon, 12).align_y(Alignment::Center))
+        .style(style::button::manager_entry)
+        .on_press_maybe(message)
+}
+
+pub fn manager_list<'a, Message: 'a>(
+    rows: Vec<Element<'a, Message>>,
+    on_reorder: Option<fn(column_drag::DragEvent) -> Message>,
+) -> Element<'a, Message> {
+    if let Some(on_reorder) = on_reorder {
+        column_drag::Column::with_children(rows)
+            .width(Fill)
+            .spacing(4)
+            .on_drag(on_reorder)
+            .into()
+    } else {
+        iced::widget::Column::with_children(rows)
+            .width(Fill)
+            .spacing(4)
+            .into()
+    }
 }
 
 pub fn theme_color_control<'a, Message>(

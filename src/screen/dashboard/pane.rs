@@ -10,6 +10,7 @@ use std::sync::{
 };
 use tokio::sync::oneshot;
 
+pub use content::kline::{KlineChart, PresetApplication};
 pub use content::{Content, heatmap::HeatmapContent};
 pub use state::{Effect, Message, State};
 
