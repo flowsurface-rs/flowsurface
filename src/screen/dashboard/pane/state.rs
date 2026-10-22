@@ -1414,15 +1414,15 @@ impl State {
             chart: Some(chart), ..
         } = &self.content
         {
-            content.prepend(
-                crate::widget::inspector::InspectorSection::titled(
-                    "Presets",
-                    self.preset_editor
-                        .view(chart_resources.presets(), chart)
-                        .map(move |message| Message::PaneEvent(pane, Event::PresetEditor(message))),
-                )
-                .with_modal_container(),
-            );
+            let presets = crate::widget::inspector::InspectorSection::titled(
+                "Presets",
+                self.preset_editor
+                    .view(chart_resources.presets(), chart)
+                    .map(move |message| Message::PaneEvent(pane, Event::PresetEditor(message))),
+            )
+            .with_modal_container();
+
+            content.push(presets);
         }
         Some(content)
     }
@@ -1590,7 +1590,10 @@ impl State {
         self.content.settings_snapshot(transfer)
     }
 
-    pub fn apply_settings_snapshot(&mut self, snapshot: &PaneSettingsSnapshot) -> Option<Effect> {
+    pub fn apply_settings_snapshot(
+        &mut self,
+        snapshot: &PaneSettingsSnapshot,
+    ) -> Option<Vec<FetchSpec>> {
         if !self.content.can_apply_settings_snapshot(snapshot) {
             return None;
         }
@@ -1603,9 +1606,11 @@ impl State {
             }
         }
 
-        let action = self.content.apply_settings_snapshot(snapshot);
+        let requests = self.content.apply_settings_snapshot(snapshot);
         self.reconcile_inspector();
-        self.finish_kline_action(action)
+        self.sync_kline_streams();
+
+        requests
     }
 }
 

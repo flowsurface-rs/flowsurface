@@ -5,7 +5,7 @@ use crate::layout::{ChartResourcesEvent, ChartResourcesMessage, SharedChartResou
 use crate::{
     connector::{
         client::DataSources,
-        fetcher::{self, FetchedData},
+        fetcher::{self, FetchSpec, FetchedData},
         stream::ResolvedStream,
     },
     screen::sidebar::tickers_table::TickersTable,
@@ -1256,9 +1256,29 @@ impl Dashboard {
         let Some(state) = self.get_mut_pane(main_window, window, pane) else {
             return Task::none();
         };
-        let effect = state.apply_settings_snapshot(snapshot);
-        self.dispatch_pane_effect(effect, main_window, window, pane, data_sources)
-            .0
+
+        match state.apply_settings_snapshot(snapshot) {
+            Some(requests) => self.request_fetch(main_window, window, pane, requests, data_sources),
+            None => self.refresh_streams(main_window),
+        }
+    }
+
+    fn request_fetch(
+        &mut self,
+        main_window: window::Id,
+        window: window::Id,
+        pane: pane_grid::Pane,
+        requests: Vec<FetchSpec>,
+        data_sources: &DataSources,
+    ) -> Task<Message> {
+        let Some(state) = self.get_mut_pane(main_window, window, pane) else {
+            return Task::none();
+        };
+
+        state
+            .request_fetch(data_sources, requests)
+            .map(Message::from)
+            .chain(self.refresh_streams(main_window))
     }
 
     pub fn chart_resources_changed(
@@ -1295,16 +1315,10 @@ impl Dashboard {
     ) -> (Task<Message>, Option<Event>) {
         match effect {
             Some(pane::Effect::RefreshStreams) => (self.refresh_streams(main_window), None),
-            Some(pane::Effect::RequestFetch(requests)) => {
-                let Some(state) = self.get_mut_pane(main_window, window, pane) else {
-                    return (Task::none(), None);
-                };
-                let task = state
-                    .request_fetch(data_sources, requests)
-                    .map(Message::from)
-                    .chain(self.refresh_streams(main_window));
-                (task, None)
-            }
+            Some(pane::Effect::RequestFetch(requests)) => (
+                self.request_fetch(main_window, window, pane, requests, data_sources),
+                None,
+            ),
             Some(pane::Effect::SwitchTickersInGroup(ticker_info)) => (
                 self.switch_tickers_in_group(data_sources, main_window, ticker_info),
                 None,

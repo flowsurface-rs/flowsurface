@@ -218,8 +218,8 @@ impl<'a, Message: 'a> InspectorContent<'a, Message> {
         }
     }
 
-    pub fn prepend(&mut self, section: InspectorSection<'a, Message>) {
-        self.sections.insert(0, section);
+    pub fn push(&mut self, section: InspectorSection<'a, Message>) {
+        self.sections.push(section);
     }
 
     pub fn set_footer(&mut self, footer: impl Into<Element<'a, Message>>) {

@@ -1788,11 +1788,14 @@ impl KlineChart {
         self.render_invalidation.invalidate();
     }
 
-    pub fn apply_settings_snapshot(&mut self, snapshot: &SettingsSnapshot) -> Option<Action> {
+    pub fn apply_settings_snapshot(
+        &mut self,
+        snapshot: &SettingsSnapshot,
+    ) -> Option<Vec<FetchSpec>> {
         self.apply_prepared_settings(PreparedSettings::from_snapshot(snapshot, self.basis))
     }
 
-    fn apply_prepared_settings(&mut self, settings: PreparedSettings) -> Option<Action> {
+    fn apply_prepared_settings(&mut self, settings: PreparedSettings) -> Option<Vec<FetchSpec>> {
         self.apply_shared_settings(settings);
         let selected_tickers = self.data.selected_tickers();
         self.fetch.rebuild_handlers(&selected_tickers);
@@ -1800,7 +1803,7 @@ impl KlineChart {
         self.reconcile_settings_target();
         self.render_invalidation.invalidate();
 
-        self.request_fetch_action(false).map(Action::RequestFetch)
+        self.request_fetch_action(false)
     }
 
     pub fn trade_data_enabled(&self) -> bool {
@@ -1977,6 +1980,7 @@ impl KlineChart {
         }
         self.selected_preset = Some(id);
         self.apply_prepared_settings(application.settings)
+            .map(Action::RequestFetch)
     }
 
     fn primary_series_style(&self) -> Option<persisted::PrimarySeriesStyle> {
