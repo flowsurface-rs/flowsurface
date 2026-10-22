@@ -337,19 +337,6 @@ impl Flowsurface {
                 };
 
                 let additional_task = match event {
-                    Some(dashboard::Event::SharedChartResources {
-                        window,
-                        pane,
-                        message,
-                    }) => {
-                        self.layout_manager.update_chart_resources(
-                            *message,
-                            main_window.id,
-                            layout_id,
-                            (window, pane),
-                        );
-                        Task::none()
-                    }
                     Some(dashboard::Event::OpenUrlRequested(url)) => {
                         Task::done(Message::OpenUrlRequested(Cow::Owned(url)))
                     }

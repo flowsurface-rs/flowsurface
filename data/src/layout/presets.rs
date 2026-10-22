@@ -124,14 +124,8 @@ impl Library {
                 Ok(Response::Removed(id))
             }
             Command::Reorder { index, target } => {
-                if index >= self.presets.len() || target > self.presets.len() {
-                    return Err("This preset order is no longer available.".into());
-                }
-                if target != index {
-                    let preset = self.presets.remove(index);
-                    self.presets
-                        .insert(if index < target { target - 1 } else { target }, preset);
-                }
+                crate::util::reorder_vec(&mut self.presets, index, target)
+                    .ok_or("This preset order is no longer available.")?;
                 Ok(Response::Reordered)
             }
         }

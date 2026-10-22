@@ -1,6 +1,19 @@
 use chrono::{DateTime, Datelike, Timelike};
 use serde::{Deserialize, Deserializer};
 
+pub fn reorder_vec<T>(items: &mut Vec<T>, index: usize, target: usize) -> Option<()> {
+    if index >= items.len() || target > items.len() {
+        return None;
+    }
+
+    if target != index {
+        let item = items.remove(index);
+        items.insert(if index < target { target - 1 } else { target }, item);
+    }
+
+    Some(())
+}
+
 pub fn unique_name<'a>(
     proposed: &str,
     existing: impl Iterator<Item = &'a str>,

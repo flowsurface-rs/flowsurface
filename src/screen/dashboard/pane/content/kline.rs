@@ -213,25 +213,6 @@ impl PreparedSettings {
             instances,
         }
     }
-
-    fn into_snapshot(self) -> SettingsSnapshot {
-        SettingsSnapshot {
-            primary_scale_inverted: self.primary_scale_inverted,
-            primary_series_style: self.primary_series_style,
-            options: self.options,
-            panels: self
-                .composition
-                .panels
-                .iter()
-                .map(persisted::panel_config_from_spec)
-                .collect(),
-            splits: self.composition.splits,
-            active_studies: self.studies.active,
-            study_configs: self.studies.configs,
-            tpo_profile_edits: self.studies.edits,
-            indicator_instances: self.instances.instances().to_vec(),
-        }
-    }
 }
 
 impl KlineChart {
@@ -1866,9 +1847,33 @@ impl KlineChart {
     }
 
     pub fn preset_modified(&self, settings: &SettingsSnapshot) -> bool {
-        self.prepare_preset_settings(settings)
-            .map(|prepared| self.preset_settings() != prepared.into_snapshot())
-            .unwrap_or(true)
+        self.preset_settings() != self.adapted_preset_settings(settings)
+    }
+
+    fn adapted_preset_settings(&self, settings: &SettingsSnapshot) -> SettingsSnapshot {
+        let mut settings = settings.clone().normalized_preset();
+        let studies = StudySnapshot::from_settings(&settings).normalized_for_basis(self.basis);
+        let composition = ChartComposition::from_parts(
+            settings
+                .panels
+                .iter()
+                .map(persisted::panel_spec_from_config)
+                .collect(),
+            settings.splits,
+        );
+
+        settings.primary_series_style = settings
+            .primary_series_style
+            .or_else(|| self.primary_series_style());
+        settings.active_studies = studies.active;
+        settings.study_configs = studies.configs;
+        settings.panels = composition
+            .panels
+            .iter()
+            .map(persisted::panel_config_from_spec)
+            .collect();
+        settings.splits = composition.splits;
+        settings
     }
 
     fn prepare_preset_settings(
@@ -1898,11 +1903,8 @@ impl KlineChart {
             return Err("This preset must have exactly one price panel.".into());
         }
 
-        let mut prepared =
-            PreparedSettings::from_snapshot(&settings.clone().preset_settings(), self.basis);
-        prepared.primary_series_style = prepared
-            .primary_series_style
-            .or_else(|| self.primary_series_style());
+        let prepared =
+            PreparedSettings::from_snapshot(&self.adapted_preset_settings(settings), self.basis);
         let active = prepared.composition.selected_indicators();
         if prepared.instances.instances().len() != settings.indicator_instances.len() {
             return Err(
