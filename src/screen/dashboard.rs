@@ -51,6 +51,11 @@ pub enum Message {
     },
     ResolveStreams(uuid::Uuid, Vec<PersistStreamKind>),
     RequestPalette,
+    SharedChartResources {
+        window: window::Id,
+        pane: pane_grid::Pane,
+        message: Box<ChartResourcesMessage>,
+    },
 }
 
 pub struct Dashboard {
@@ -75,11 +80,6 @@ impl Default for Dashboard {
 
 #[derive(Debug, Clone)]
 pub enum Event {
-    SharedChartResources {
-        window: window::Id,
-        pane: pane_grid::Pane,
-        message: Box<ChartResourcesMessage>,
-    },
     OpenUrlRequested(String),
     OpenNetworkSettings,
     Notification(Toast),
@@ -166,6 +166,9 @@ impl Dashboard {
         chart_resources: &SharedChartResources,
     ) -> (Task<Message>, Option<Event>) {
         match message {
+            message @ Message::SharedChartResources { .. } => {
+                return (Task::done(message), None);
+            }
             Message::SavePopoutSpecs(specs) => {
                 for (window_id, new_spec) in specs {
                     if let Some((_, spec)) = self.popout.get_mut(&window_id) {
@@ -1312,12 +1315,12 @@ impl Dashboard {
             }
             Some(pane::Effect::OpenUrl(url)) => (Task::none(), Some(Event::OpenUrlRequested(url))),
             Some(pane::Effect::SharedChartResources(message)) => (
-                Task::none(),
-                Some(Event::SharedChartResources {
+                Task::done(Message::SharedChartResources {
                     window,
                     pane,
                     message,
                 }),
+                None,
             ),
             None => (Task::none(), None),
         }

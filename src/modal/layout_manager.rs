@@ -2,7 +2,7 @@ use crate::connector::client::DataSources;
 use crate::layout::{ChartResourcesMessage, Layout, LayoutId, SharedChartResources};
 use crate::screen::dashboard::{self, Dashboard};
 use crate::style::icon_text;
-use crate::widget::column_drag::{self, DragEvent};
+use crate::widget::column_drag::DragEvent;
 use crate::widget::{manager_icon_button, manager_list, manager_row};
 use crate::{style, tooltip};
 use data::layout::MAX_NAME_LENGTH;
@@ -159,6 +159,16 @@ impl LayoutManager {
         layout_id: &Uuid,
         data_sources: &DataSources,
     ) -> Option<(iced::Task<dashboard::Message>, Option<dashboard::Event>)> {
+        if let dashboard::Message::SharedChartResources {
+            window,
+            pane,
+            message,
+        } = message
+        {
+            self.update_chart_resources(*message, main_window.id, *layout_id, (window, pane));
+            return Some((iced::Task::none(), None));
+        }
+
         let layout_index = self
             .layouts
             .iter()
@@ -168,7 +178,7 @@ impl LayoutManager {
         Some(dashboard.update(message, main_window, data_sources, &self.chart_resources))
     }
 
-    pub fn update_chart_resources(
+    fn update_chart_resources(
         &mut self,
         message: ChartResourcesMessage,
         main_window: window::Id,
@@ -265,7 +275,13 @@ impl LayoutManager {
             Message::CloneLayout(id) => {
                 return Some(Action::Clone(id));
             }
-            Message::Reorder(event) => column_drag::reorder_vec(&mut self.layouts, &event),
+            Message::Reorder(DragEvent::Dropped {
+                index,
+                target_index,
+            }) => {
+                let _ = data::util::reorder_vec(&mut self.layouts, index, target_index);
+            }
+            Message::Reorder(_) => {}
         }
 
         None
