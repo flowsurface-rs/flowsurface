@@ -40,7 +40,7 @@ pub use updates::DataUpdate;
 
 use data::chart::Basis;
 use data::chart::kline::composition::{
-    ChartComposition, DEFAULT_MIN_PANEL_RATIO, MarkKind, PanelRole, PanelScaleMode,
+    ChartComposition, DEFAULT_MIN_PANEL_RATIO, MarkKind, PanelId, PanelScaleMode,
 };
 use data::chart::kline::footprint::{ClusterKind, ClusterScaling};
 use data::chart::kline::series::KlineSeries;
@@ -113,7 +113,7 @@ struct PreparedSettings {
 }
 
 impl PreparedSettings {
-    fn from_snapshot(snapshot: &SettingsSnapshot, basis: Basis) -> Self {
+    fn from_snapshot(snapshot: &SettingsSnapshot, basis: Basis) -> Result<Self, String> {
         let instances = snapshot.indicator_instance_store();
         let composition = if snapshot.panels.is_empty() {
             let mut composition = ChartComposition::prototype_kline();
@@ -135,16 +135,17 @@ impl PreparedSettings {
                     .collect(),
                 snapshot.splits.clone(),
             )
+            .ok_or("A chart must have exactly one price panel.")?
         };
 
-        Self {
+        Ok(Self {
             primary_scale_inverted: snapshot.primary_scale_inverted,
             primary_series_style: snapshot.primary_series_style,
             options: snapshot.options,
             studies: StudySnapshot::from_settings(snapshot).normalized_for_basis(basis),
             composition,
             instances,
-        }
+        })
     }
 
     fn settings_snapshot(&self) -> SettingsSnapshot {
@@ -1253,7 +1254,7 @@ impl KlineChart {
         let Some(panel) = self.indicators.composition.panels.get(index) else {
             return false;
         };
-        if matches!(panel.role, PanelRole::Primary) {
+        if panel.id.is_main() {
             return false;
         }
 
@@ -1586,12 +1587,11 @@ impl KlineChart {
         };
 
         self.reconcile_data_requirements(previous_requirements);
-        if previous_panels
-            .iter()
-            .any(|panel_id| self.indicators.composition.panel(*panel_id).is_none())
-        {
-            self.drawings.clear_history();
-        }
+        let removed_panels = previous_panels
+            .into_iter()
+            .filter(|panel_id| self.indicators.composition.panel(*panel_id).is_none())
+            .collect();
+        self.prune_drawings_for_removed_panels(removed_panels);
 
         if let Some(policy) = policy {
             self.request_settings_update(policy);
@@ -1678,12 +1678,14 @@ impl KlineChart {
     }
 
     fn apply_persisted_config(&mut self, config: &persisted::Config) {
+        let Ok(settings) = PreparedSettings::from_snapshot(&config.settings, self.basis) else {
+            log::error!("Ignoring saved chart with an invalid panel composition");
+            return;
+        };
+
         self.selected_preset = config.selected_preset;
         self.drawings.clear_history();
-        self.apply_shared_settings(PreparedSettings::from_snapshot(
-            &config.settings,
-            self.basis,
-        ));
+        self.apply_shared_settings(settings);
 
         self.drawing_sidebar_visible = config.drawing_sidebar_visible;
         self.drawings.floating_toolbar =
@@ -1739,10 +1741,36 @@ impl KlineChart {
         &mut self,
         snapshot: &SettingsSnapshot,
     ) -> Option<Vec<FetchSpec>> {
-        self.apply_prepared_settings(PreparedSettings::from_snapshot(snapshot, self.basis))
+        let settings = PreparedSettings::from_snapshot(snapshot, self.basis).ok()?;
+        self.apply_prepared_settings(settings)
+    }
+
+    fn prune_drawings_for_removed_panels(&mut self, removed_panels: Vec<PanelId>) {
+        if removed_panels.is_empty() {
+            return;
+        }
+
+        for panel_id in removed_panels {
+            self.drawings.tools.prune_panel_drawings(panel_id);
+        }
+
+        self.drawings.clear_history();
     }
 
     fn apply_prepared_settings(&mut self, settings: PreparedSettings) -> Option<Vec<FetchSpec>> {
+        let previous_panels = self
+            .indicators
+            .composition
+            .panels
+            .iter()
+            .map(|panel| panel.id)
+            .collect::<Vec<_>>();
+        let removed_panels = previous_panels
+            .into_iter()
+            .filter(|panel_id| settings.composition.panel(*panel_id).is_none())
+            .collect();
+        self.prune_drawings_for_removed_panels(removed_panels);
+
         self.apply_shared_settings(settings);
         let selected_tickers = self.data.selected_tickers();
         self.fetch.rebuild_handlers(&selected_tickers);
@@ -1787,9 +1815,10 @@ impl KlineChart {
     }
 
     pub fn preset_modified(&self, settings: &SettingsSnapshot) -> bool {
-        let mut applied = PreparedSettings::from_snapshot(settings, self.basis)
-            .settings_snapshot()
-            .preset_settings();
+        let Ok(applied) = PreparedSettings::from_snapshot(settings, self.basis) else {
+            return true;
+        };
+        let mut applied = applied.settings_snapshot().preset_settings();
         applied.primary_series_style = applied
             .primary_series_style
             .or_else(|| self.primary_series_style());
@@ -1813,18 +1842,9 @@ impl KlineChart {
             ));
         }
 
-        if settings
-            .panels
-            .iter()
-            .filter(|panel| panel.role == PanelRole::Primary)
-            .count()
-            != 1
-        {
-            return Err("This preset must have exactly one price panel.".into());
-        }
-
         let prepared =
-            PreparedSettings::from_snapshot(&settings.clone().normalized_preset(), self.basis);
+            PreparedSettings::from_snapshot(&settings.clone().normalized_preset(), self.basis)
+                .map_err(|_| "This preset must have exactly one price panel.".to_string())?;
         let active = prepared.composition.selected_indicators();
         if prepared.instances.instances().len() != settings.indicator_instances.len() {
             return Err(

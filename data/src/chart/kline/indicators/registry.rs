@@ -4,6 +4,7 @@ use super::{
     IndicatorSettingValue, IndicatorSettingsContext, IndicatorUnsupportedReason,
 };
 use crate::chart::Basis;
+use crate::util::stable_hash;
 use exchange::UnixMs;
 use indicator_engine::CompiledIndicator;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -44,13 +45,7 @@ impl IndicatorId {
     }
 
     pub fn default_instance_slot(&self) -> u64 {
-        self.id()
-            .bytes()
-            .fold(0xcbf29ce484222325_u64, |hash, byte| {
-                hash.wrapping_mul(0x100000001b3)
-                    .wrapping_add(u64::from(byte))
-            })
-            & 0x0000_7fff_ffff_ffff
+        stable_hash(self.id().as_bytes()) & 0x0000_7fff_ffff_ffff
     }
 
     pub fn is_registered(&self) -> bool {

@@ -1,5 +1,5 @@
 use super::Y_AXIS_LABEL_LEFT_INSET;
-use super::composition::{PanelRole, PanelSpec};
+use super::composition::PanelSpec;
 use crate::widget::chart::panel_splitter_hit_bounds;
 pub(super) use data::chart::axis::place_non_overlapping_labels;
 use iced::Size;
@@ -91,13 +91,12 @@ impl PanelLayoutTree {
             height: r.height,
         };
 
-        let panel_kind_for_index =
-            |index: usize| match panels_spec.get(index).map(|panel| panel.role) {
-                Some(PanelRole::Primary) => KlinePanelKind::PrimaryChart,
-                Some(PanelRole::Auxiliary) => KlinePanelKind::Indicator,
-                None if index == 0 => KlinePanelKind::PrimaryChart,
-                None => KlinePanelKind::Indicator,
-            };
+        let panel_kind_for_index = |index: usize| match panels_spec.get(index) {
+            Some(panel) if panel.id.is_main() => KlinePanelKind::PrimaryChart,
+            Some(_) => KlinePanelKind::Indicator,
+            None if index == 0 => KlinePanelKind::PrimaryChart,
+            None => KlinePanelKind::Indicator,
+        };
 
         let mut cursor = 0usize;
         let mut panel_nodes = Vec::with_capacity(panel_count);

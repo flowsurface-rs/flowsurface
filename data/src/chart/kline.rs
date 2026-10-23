@@ -1352,8 +1352,7 @@ pub struct ChartPreset {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PanelConfig {
-    pub id: u32,
-    pub role: PanelRole,
+    pub id: composition::PanelId,
     pub presentation: composition::PanelPresentation,
     #[serde(default)]
     pub named_pane: Option<u32>,
@@ -1369,8 +1368,7 @@ pub struct PanelConfig {
 impl Default for PanelConfig {
     fn default() -> Self {
         Self {
-            id: 0,
-            role: PanelRole::Auxiliary,
+            id: composition::PanelId::Main,
             presentation: composition::PanelPresentation::Plot,
             named_pane: None,
             title: None,
@@ -1419,8 +1417,7 @@ impl Default for LayerConfig {
 
 pub use composition::{
     AxisBinding, BarMode, HistogramMode, LayerDataKind, LayerPurpose, LayerStyle, MarkKind,
-    PanelPresentation, PanelRole, PanelScaleMode, PanelValueId, PanelValueLabelMode,
-    PanelValueLabelPolicy,
+    PanelPresentation, PanelScaleMode, PanelValueId, PanelValueLabelMode, PanelValueLabelPolicy,
 };
 pub type ComparisonPolicy = composition::PanelComparisonPolicy;
 pub type ValueLabelPolicy = composition::PanelValueLabelPolicy;
@@ -1467,8 +1464,7 @@ fn default_series_line_width() -> u8 {
 
 pub fn panel_config_from_spec(panel: &PanelSpec) -> PanelConfig {
     PanelConfig {
-        id: panel.id.0,
-        role: panel.role,
+        id: panel.id,
         presentation: panel.presentation,
         named_pane: panel.named_pane,
         title: panel.title.clone(),
@@ -1498,8 +1494,7 @@ fn layer_config_from_spec(layer: &LayerSpec) -> LayerConfig {
 
 pub fn panel_spec_from_config(panel: &PanelConfig) -> PanelSpec {
     PanelSpec {
-        id: composition::PanelId(panel.id),
-        role: panel.role,
+        id: panel.id,
         presentation: panel.presentation,
         named_pane: panel.named_pane,
         title: panel.title.clone(),
