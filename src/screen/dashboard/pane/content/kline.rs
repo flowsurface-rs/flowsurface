@@ -213,6 +213,25 @@ impl PreparedSettings {
             instances,
         }
     }
+
+    fn settings_snapshot(&self) -> SettingsSnapshot {
+        SettingsSnapshot {
+            primary_scale_inverted: self.primary_scale_inverted,
+            primary_series_style: self.primary_series_style,
+            options: self.options,
+            panels: self
+                .composition
+                .panels
+                .iter()
+                .map(persisted::panel_config_from_spec)
+                .collect(),
+            splits: self.composition.splits.clone(),
+            active_studies: self.studies.active.clone(),
+            study_configs: self.studies.configs.clone(),
+            tpo_profile_edits: self.studies.edits.clone(),
+            indicator_instances: self.instances.instances().to_vec(),
+        }
+    }
 }
 
 impl KlineChart {
@@ -1850,33 +1869,13 @@ impl KlineChart {
     }
 
     pub fn preset_modified(&self, settings: &SettingsSnapshot) -> bool {
-        self.preset_settings() != self.adapted_preset_settings(settings)
-    }
-
-    fn adapted_preset_settings(&self, settings: &SettingsSnapshot) -> SettingsSnapshot {
-        let mut settings = settings.clone().normalized_preset();
-        let studies = StudySnapshot::from_settings(&settings).normalized_for_basis(self.basis);
-        let composition = ChartComposition::from_parts(
-            settings
-                .panels
-                .iter()
-                .map(persisted::panel_spec_from_config)
-                .collect(),
-            settings.splits,
-        );
-
-        settings.primary_series_style = settings
+        let mut applied = PreparedSettings::from_snapshot(settings, self.basis)
+            .settings_snapshot()
+            .preset_settings();
+        applied.primary_series_style = applied
             .primary_series_style
             .or_else(|| self.primary_series_style());
-        settings.active_studies = studies.active;
-        settings.study_configs = studies.configs;
-        settings.panels = composition
-            .panels
-            .iter()
-            .map(persisted::panel_config_from_spec)
-            .collect();
-        settings.splits = composition.splits;
-        settings
+        self.preset_settings() != applied
     }
 
     fn prepare_preset_settings(
