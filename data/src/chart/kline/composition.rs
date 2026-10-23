@@ -444,6 +444,11 @@ impl LayerSource {
             _ => None,
         }
     }
+
+    fn references_instance(&self, id: IndicatorInstanceId) -> bool {
+        self.indicator_output()
+            .is_some_and(|output| output.instance_id == id)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -548,10 +553,7 @@ impl PanelSpec {
             layer.visible
                 && (!matches!(self.presentation, PanelPresentation::Table)
                     || layer.purpose == LayerPurpose::TableBinding)
-                && layer
-                    .source
-                    .indicator_output()
-                    .is_some_and(|output| output.instance_id == id)
+                && layer.source.references_instance(id)
         })
     }
 
@@ -852,6 +854,7 @@ impl ChartComposition {
         layers: Vec<LayerSpec>,
         value_precision: Option<PanelValuePrecision>,
         value_label_policy: PanelValueLabelPolicy,
+        preferred_scale: PanelScaleMode,
         presentation: PanelPresentation,
     ) -> Option<PanelId> {
         let mut heights = self.normalized_panel_heights(DEFAULT_MIN_PANEL_RATIO);
@@ -876,7 +879,7 @@ impl ChartComposition {
             value_precision,
             value_label_policy,
             base_layer,
-            preferred_scale: PanelScaleMode::Absolute,
+            preferred_scale,
             comparison_policy: PanelComparisonPolicy::default(),
             layers,
         });
@@ -885,6 +888,40 @@ impl ChartComposition {
         heights.push(auxiliary_height);
         self.splits = Self::splits_from_heights(&heights);
         self.splits = self.normalized_splits(DEFAULT_MIN_PANEL_RATIO);
+        Some(panel_id)
+    }
+
+    fn named_panel_id(&self, named_pane: u32) -> Option<PanelId> {
+        self.panels
+            .iter()
+            .find(|panel| {
+                panel.id.is_aux()
+                    && panel.presentation == PanelPresentation::Plot
+                    && panel.named_pane == Some(named_pane)
+            })
+            .map(|panel| panel.id)
+    }
+
+    fn add_named_panel(
+        &mut self,
+        named_pane: u32,
+        title: impl Into<String>,
+        value_precision: PanelValuePrecision,
+        value_label_policy: PanelValueLabelPolicy,
+        preferred_scale: PanelScaleMode,
+    ) -> Option<PanelId> {
+        let panel_id = self.add_aux_panel(
+            PanelId::named(named_pane),
+            title,
+            Vec::new(),
+            Some(value_precision),
+            value_label_policy,
+            preferred_scale,
+            PanelPresentation::Plot,
+        )?;
+        if let Some(panel) = self.panel_mut(panel_id) {
+            panel.named_pane = Some(named_pane);
+        }
         Some(panel_id)
     }
 
@@ -902,6 +939,7 @@ impl ChartComposition {
             Vec::new(),
             None,
             PanelValueLabelPolicy::default(),
+            PanelScaleMode::Absolute,
             PanelPresentation::Table,
         )?;
         let mut layer = self.new_layer(
@@ -1210,18 +1248,21 @@ impl ChartComposition {
         self.clear_panel_layer_mark(panel_id, layer_id)
     }
 
+    fn indicator_locations(
+        &self,
+        id: IndicatorInstanceId,
+    ) -> impl Iterator<Item = (PanelId, LayerId)> + '_ {
+        self.panels.iter().flat_map(move |panel| {
+            panel
+                .layers
+                .iter()
+                .filter(move |layer| layer.source.references_instance(id))
+                .map(move |layer| (panel.id, layer.id))
+        })
+    }
+
     fn indicator_layer_binding(&self, id: IndicatorInstanceId) -> Option<(PanelId, LayerId)> {
-        for panel in &self.panels {
-            if let Some(layer) = panel.layers.iter().find(|layer| {
-                layer
-                    .source
-                    .indicator_output()
-                    .is_some_and(|output| output.instance_id == id)
-            }) {
-                return Some((panel.id, layer.id));
-            }
-        }
-        None
+        self.indicator_locations(id).next()
     }
 
     fn indicator_mark_layer_ids(
@@ -1235,12 +1276,7 @@ impl ChartComposition {
         let output_layers = panel
             .layers
             .iter()
-            .filter(|layer| {
-                layer
-                    .source
-                    .indicator_output()
-                    .is_some_and(|output| output.instance_id == id)
-            })
+            .filter(|layer| layer.source.references_instance(id))
             .collect::<Vec<_>>();
         if output_layers.is_empty() {
             return None;
@@ -1346,12 +1382,10 @@ impl ChartComposition {
         let Some(panel) = self.panel_mut(panel_id) else {
             return false;
         };
-        let has_output_layers = panel.layers.iter().any(|layer| {
-            layer
-                .source
-                .indicator_output()
-                .is_some_and(|output| output.instance_id == id)
-        });
+        let has_output_layers = panel
+            .layers
+            .iter()
+            .any(|layer| layer.source.references_instance(id));
         if !has_output_layers {
             return panel
                 .layers
@@ -1363,11 +1397,7 @@ impl ChartComposition {
 
         let mut changed = false;
         for layer in &mut panel.layers {
-            if layer
-                .source
-                .indicator_output()
-                .is_some_and(|output| output.instance_id == id)
-            {
+            if layer.source.references_instance(id) {
                 changed |= layer.mark_override.take().is_some();
             }
         }
@@ -1384,12 +1414,7 @@ impl ChartComposition {
         let visible = !panel.indicator_visible(id);
         let mut changed = false;
         for layer in &mut panel.layers {
-            if layer
-                .source
-                .indicator_output()
-                .is_some_and(|output| output.instance_id == id)
-                && layer.visible != visible
-            {
+            if layer.source.references_instance(id) && layer.visible != visible {
                 layer.visible = visible;
                 changed = true;
             }
@@ -1432,42 +1457,30 @@ impl ChartComposition {
                         let layers = self.new_indicator_layers(id, declared_layers);
                         let panel_id =
                             self.next_indicator_panel_id(&indicator, PanelPresentation::Plot);
-                        let Some(panel_id) = self.add_aux_panel(
-                            panel_id,
-                            panel_title,
-                            layers,
-                            Some(value_precision),
-                            value_label_policy,
-                            PanelPresentation::Plot,
-                        ) else {
-                            return false;
-                        };
-                        let _ = self.set_panel_preferred_scale(panel_id, preferred_scale);
-                    }
-                    PaneTarget::Named(named_pane) => {
-                        let panel_id = self
-                            .panels
-                            .iter()
-                            .find(|panel| {
-                                panel.id.is_aux()
-                                    && panel.presentation == PanelPresentation::Plot
-                                    && panel.named_pane == Some(named_pane)
-                            })
-                            .map(|panel| panel.id);
-                        let panel_id = panel_id.or_else(|| {
-                            let panel_id = self.add_aux_panel(
-                                PanelId::named(named_pane),
-                                panel_title.clone(),
-                                Vec::new(),
+                        if self
+                            .add_aux_panel(
+                                panel_id,
+                                panel_title,
+                                layers,
                                 Some(value_precision),
                                 value_label_policy,
+                                preferred_scale,
                                 PanelPresentation::Plot,
-                            )?;
-                            if let Some(panel) = self.panel_mut(panel_id) {
-                                panel.named_pane = Some(named_pane);
-                                panel.preferred_scale = preferred_scale;
-                            }
-                            Some(panel_id)
+                            )
+                            .is_none()
+                        {
+                            return false;
+                        }
+                    }
+                    PaneTarget::Named(named_pane) => {
+                        let panel_id = self.named_panel_id(named_pane).or_else(|| {
+                            self.add_named_panel(
+                                named_pane,
+                                panel_title,
+                                value_precision,
+                                value_label_policy,
+                                preferred_scale,
+                            )
                         });
                         let Some(panel_id) = panel_id else {
                             return false;
@@ -1566,33 +1579,21 @@ impl ChartComposition {
     }
 
     pub fn indicator_panel_id(&self, id: IndicatorInstanceId) -> Option<PanelId> {
-        self.panels.iter().find_map(|panel| {
-            panel
-                .layers
-                .iter()
-                .any(|layer| {
-                    layer
-                        .source
-                        .indicator_output()
-                        .is_some_and(|output| output.instance_id == id)
-                })
-                .then_some(panel.id)
-        })
+        self.indicator_locations(id)
+            .next()
+            .map(|(panel_id, _)| panel_id)
     }
 
     pub fn indicator_output_panel_id(&self, output: &IndicatorOutputRef) -> Option<PanelId> {
-        self.panels.iter().find_map(|panel| {
-            panel
-                .layers
-                .iter()
-                .any(|layer| {
-                    layer
-                        .source
-                        .indicator_output()
-                        .is_some_and(|candidate| candidate == output)
-                })
-                .then_some(panel.id)
-        })
+        self.panels
+            .iter()
+            .find(|panel| {
+                panel
+                    .layers
+                    .iter()
+                    .any(|layer| layer.source.indicator_output() == Some(output))
+            })
+            .map(|panel| panel.id)
     }
 
     pub fn reconcile_attached_indicator_placements(
@@ -1695,30 +1696,15 @@ impl ChartComposition {
 
         match pane {
             PaneTarget::Main => self.primary_panel_id(),
-            PaneTarget::Named(named_pane) => self
-                .panels
-                .iter()
-                .find(|panel| {
-                    panel.id.is_aux()
-                        && panel.presentation == PanelPresentation::Plot
-                        && panel.named_pane == Some(named_pane)
-                })
-                .map(|panel| panel.id)
-                .or_else(|| {
-                    let panel_id = self.add_aux_panel(
-                        PanelId::named(named_pane),
-                        panel_title,
-                        Vec::new(),
-                        Some(value_precision),
-                        value_label_policy,
-                        PanelPresentation::Plot,
-                    )?;
-                    if let Some(panel) = self.panel_mut(panel_id) {
-                        panel.named_pane = Some(named_pane);
-                        panel.preferred_scale = preferred_scale;
-                    }
-                    Some(panel_id)
-                }),
+            PaneTarget::Named(named_pane) => self.named_panel_id(named_pane).or_else(|| {
+                self.add_named_panel(
+                    named_pane,
+                    panel_title,
+                    value_precision,
+                    value_label_policy,
+                    preferred_scale,
+                )
+            }),
             PaneTarget::Indicator => {
                 let source_instances = instances
                     .get(id)
@@ -1731,12 +1717,10 @@ impl ChartComposition {
                     .find(|panel| {
                         panel.id.is_aux()
                             && panel.presentation == PanelPresentation::Plot
-                            && panel.layers.iter().any(|layer| {
-                                layer
-                                    .source
-                                    .indicator_output()
-                                    .is_some_and(|output| output.instance_id == id)
-                            })
+                            && panel
+                                .layers
+                                .iter()
+                                .any(|layer| layer.source.references_instance(id))
                             && panel
                                 .layers
                                 .iter()
@@ -1750,16 +1734,15 @@ impl ChartComposition {
                     .or_else(|| {
                         let panel_id =
                             self.next_indicator_panel_id(indicator, PanelPresentation::Plot);
-                        let panel_id = self.add_aux_panel(
+                        self.add_aux_panel(
                             panel_id,
                             panel_title,
                             Vec::new(),
                             Some(value_precision),
                             value_label_policy,
+                            preferred_scale,
                             PanelPresentation::Plot,
-                        )?;
-                        let _ = self.set_panel_preferred_scale(panel_id, preferred_scale);
-                        Some(panel_id)
+                        )
                     })
             }
         }
@@ -1778,8 +1761,8 @@ impl ChartComposition {
             .panels
             .iter()
             .flat_map(|panel| panel.layers.iter())
+            .filter(|layer| layer.source.references_instance(id))
             .filter_map(|layer| layer.source.indicator_output())
-            .filter(|output| output.instance_id == id)
             .map(|output| output.channel_id.clone())
             .collect::<FxHashSet<_>>();
         let mut changed = false;
@@ -1809,19 +1792,7 @@ impl ChartComposition {
         id: IndicatorInstanceId,
         target_panel: PanelId,
     ) -> bool {
-        let locations = self
-            .panels
-            .iter()
-            .flat_map(|panel| {
-                panel.layers.iter().filter_map(|layer| {
-                    layer
-                        .source
-                        .indicator_output()
-                        .filter(|output| output.instance_id == id)
-                        .map(|_| (panel.id, layer.id))
-                })
-            })
-            .collect::<Vec<_>>();
+        let locations = self.indicator_locations(id).collect::<Vec<_>>();
         if locations.is_empty()
             || locations
                 .iter()
@@ -1861,28 +1832,16 @@ impl ChartComposition {
     }
 
     pub fn remove_indicator(&mut self, id: IndicatorInstanceId) -> bool {
-        let layer_ids = self
-            .panels
-            .iter()
-            .flat_map(|panel| {
-                panel.layers.iter().filter_map(|layer| {
-                    layer
-                        .source
-                        .indicator_output()
-                        .filter(|output| output.instance_id == id)
-                        .map(|_| (panel.id, layer.id))
-                })
-            })
-            .collect::<Vec<_>>();
-        if layer_ids.is_empty() {
+        let locations = self.indicator_locations(id).collect::<Vec<_>>();
+        if locations.is_empty() {
             return false;
         }
-        let touched_panels = layer_ids
+        let touched_panels = locations
             .iter()
             .map(|(panel_id, _)| *panel_id)
             .collect::<FxHashSet<_>>();
         let mut removed = false;
-        for (panel_id, layer_id) in layer_ids {
+        for (panel_id, layer_id) in locations {
             removed |= self.remove_layer_from_panel(panel_id, layer_id);
         }
         let empty_panels = self
