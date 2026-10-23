@@ -66,11 +66,12 @@ pub fn kline_cfg_view(
 
 pub mod presets {
     use crate::{
-        screen::dashboard::pane::{KlineChart, PresetApplication},
+        screen::dashboard::pane::KlineChart,
         style::{self, Icon, icon_text},
         widget::{column_drag::DragEvent, manager_icon_button, manager_list, manager_row},
     };
-    use data::layout::presets::{Command, Library, MAX_NAME_LENGTH, Response};
+    use data::layout::MAX_NAME_LENGTH;
+    use data::layout::presets::{Command, Library};
     use iced::{
         Element, Length,
         widget::{button, center, column, container, row, space, text, text_input},
@@ -90,7 +91,6 @@ pub mod presets {
         Reorder(DragEvent),
         NameChanged(String),
         SubmitName,
-        ConfirmApply(Uuid),
         Cancel,
     }
 
@@ -107,17 +107,7 @@ pub mod presets {
             purpose: Naming,
             name: String,
         },
-        Apply(Uuid),
         Delete(Uuid),
-        Error {
-            target: Option<Uuid>,
-            message: String,
-        },
-    }
-
-    enum DialogView<'a> {
-        Inline(iced::widget::Row<'a, Message>),
-        Expanded(Element<'a, Message>),
     }
 
     impl Dialog {
@@ -127,14 +117,12 @@ pub mod presets {
                     purpose: Naming::Rename(id),
                     ..
                 }
-                | Self::Apply(id)
                 | Self::Delete(id) => Some(*id),
                 Self::Naming {
                     purpose: Naming::Create,
                     ..
-                } => None,
-                Self::Error { target, .. } => *target,
-                Self::None => None,
+                }
+                | Self::None => None,
             }
         }
     }
@@ -155,21 +143,10 @@ pub mod presets {
         }
     }
 
-    #[derive(Default)]
     pub enum Action {
-        #[default]
-        None,
         FocusWidget(iced::widget::Id),
         Command(Command),
-        Apply {
-            id: Uuid,
-            application: PresetApplication,
-        },
-    }
-
-    enum ApplyStage {
-        Preview,
-        Confirmed,
+        Apply(Uuid),
     }
 
     impl State {
@@ -197,54 +174,8 @@ pub mod presets {
             Action::FocusWidget(self.name_input.clone())
         }
 
-        fn apply(
-            &mut self,
-            id: Uuid,
-            stage: ApplyStage,
-            library: &Library,
-            chart: &KlineChart,
-        ) -> Action {
-            let Some(preset) = library.get(Some(id)) else {
-                self.dialog = Dialog::Error {
-                    target: Some(id),
-                    message: "This preset no longer exists.".into(),
-                };
-                return Action::None;
-            };
-            let application = match chart.prepare_preset(&preset.settings) {
-                Ok(application) => application,
-                Err(error) => {
-                    self.dialog = Dialog::Error {
-                        target: Some(id),
-                        message: error,
-                    };
-                    return Action::None;
-                }
-            };
-
-            match stage {
-                ApplyStage::Preview if application.preview.requires_confirmation() => {
-                    self.dialog = Dialog::Apply(id);
-                    Action::None
-                }
-                _ => {
-                    self.dialog = Dialog::None;
-                    Action::Apply { id, application }
-                }
-            }
-        }
-
-        pub fn command_completed(&mut self, response: Result<Response, String>) {
-            match response {
-                Ok(Response::Reordered) => {}
-                Ok(_) => self.dialog = Dialog::None,
-                Err(error) => {
-                    self.dialog = Dialog::Error {
-                        target: self.dialog.target(),
-                        message: error,
-                    };
-                }
-            }
+        pub fn command_completed(&mut self) {
+            self.dialog = Dialog::None;
         }
 
         pub fn update(
@@ -252,47 +183,40 @@ pub mod presets {
             message: Message,
             library: &Library,
             chart: &KlineChart,
-        ) -> Action {
+        ) -> Option<Action> {
             let command = match message {
                 Message::ToggleEdit => {
                     self.managing = !self.managing;
-                    return Action::None;
+                    return None;
                 }
                 Message::Cancel => {
                     self.dialog = Dialog::None;
-                    return Action::None;
+                    return None;
                 }
-                Message::Apply(id) => {
-                    return self.apply(id, ApplyStage::Preview, library, chart);
-                }
-                Message::ConfirmApply(id) => {
-                    return self.apply(id, ApplyStage::Confirmed, library, chart);
-                }
+                Message::Apply(id) => return Some(Action::Apply(id)),
                 Message::Save => {
-                    let Some(id) = chart.selected_preset else {
-                        return Action::None;
-                    };
+                    let id = chart.selected_preset?;
                     Command::Save {
                         id,
-                        settings: chart.preset_settings(),
+                        settings: Box::new(chart.preset_settings()),
                     }
                 }
                 Message::SaveAs => {
-                    return self.start_name(library, Naming::Create);
+                    return Some(self.start_name(library, Naming::Create));
                 }
-                Message::Rename(id) => return self.start_name(library, Naming::Rename(id)),
+                Message::Rename(id) => return Some(self.start_name(library, Naming::Rename(id))),
                 Message::NameChanged(value) => {
                     if let Dialog::Naming { name, .. } = &mut self.dialog {
                         *name = value.chars().take(MAX_NAME_LENGTH).collect();
                     }
-                    return Action::None;
+                    return None;
                 }
                 Message::SubmitName => {
                     let Dialog::Naming { purpose, name } = &self.dialog else {
-                        return Action::None;
+                        return None;
                     };
                     if name.trim().is_empty() {
-                        return Action::None;
+                        return None;
                     }
                     match purpose {
                         Naming::Rename(id) => Command::Rename {
@@ -301,14 +225,14 @@ pub mod presets {
                         },
                         Naming::Create => Command::Create {
                             name: name.clone(),
-                            settings: chart.preset_settings(),
+                            settings: Box::new(chart.preset_settings()),
                         },
                     }
                 }
                 Message::Duplicate(id) => Command::Duplicate(id),
                 Message::Delete(id) => {
                     self.dialog = Dialog::Delete(id);
-                    return Action::None;
+                    return None;
                 }
                 Message::ConfirmDelete(id) => Command::Remove(id),
                 Message::Reorder(DragEvent::Dropped {
@@ -318,93 +242,41 @@ pub mod presets {
                     index,
                     target: target_index,
                 },
-                Message::Reorder(_) => return Action::None,
+                Message::Reorder(_) => return None,
             };
-            Action::Command(command)
+            Some(Action::Command(command))
         }
 
-        fn dialog_view<'a>(
-            &'a self,
-            library: &'a Library,
-            chart: &'a KlineChart,
-        ) -> Option<DialogView<'a>> {
-            let cancel = || button("Cancel").on_press(Message::Cancel);
-            if self
-                .dialog
-                .target()
-                .is_some_and(|id| library.get(Some(id)).is_none())
-            {
-                return Some(DialogView::Expanded(
-                    column![text("This preset no longer exists."), cancel()]
-                        .spacing(8)
-                        .into(),
-                ));
-            }
-
-            let mut content = column![].spacing(8);
-            let confirm_button = |message| {
-                manager_icon_button(Icon::Checkmark, message)
-                    .style(|theme, status| style::button::confirm(theme, status, true))
-            };
+        fn dialog_view(&self) -> Option<iced::widget::Row<'_, Message>> {
             let cancel_button = || {
                 manager_icon_button(Icon::Close, Some(Message::Cancel))
                     .style(|theme, status| style::button::cancel(theme, status, true))
             };
 
             match &self.dialog {
-                Dialog::Naming { name, .. } => {
-                    return Some(DialogView::Inline(row![
-                        center(
-                            text_input("Preset name", name)
-                                .id(self.name_input.clone())
-                                .on_input(Message::NameChanged)
-                                .on_submit(Message::SubmitName),
-                        )
-                        .padding(iced::padding::left(4)),
-                        cancel_button(),
-                    ]));
-                }
-                Dialog::Apply(id) => {
-                    let application = library
-                        .get(Some(*id))
-                        .ok_or_else(|| "This preset no longer exists.".to_owned())
-                        .and_then(|preset| chart.prepare_preset(&preset.settings));
-
-                    match application {
-                        Ok(application) => {
-                            let preview = application.preview;
-                            for adjustment in preview.adjustments {
-                                content = content.push(text(adjustment));
-                            }
-                            if preview.affected_drawings > 0 {
-                                content = content.push(text(format!("Applying removes {} drawing(s) on replaced indicator panels. Price-panel drawings are kept.", preview.affected_drawings)));
-                            }
-                            content =
-                                content.push(button("Apply").on_press(Message::ConfirmApply(*id)));
-                        }
-                        Err(error) => content = content.push(text(error)),
-                    }
-                    content = content.push(cancel());
-                }
-                Dialog::Delete(id) => {
-                    return Some(DialogView::Inline(row![
-                        center(
-                            text("Delete this preset?")
-                                .size(style::text_size::BODY)
-                                .wrapping(iced::widget::text::Wrapping::None),
-                        )
-                        .clip(true),
-                        confirm_button(Some(Message::ConfirmDelete(*id))),
-                        cancel_button(),
-                    ]));
-                }
-                Dialog::Error { message, .. } => {
-                    content = content.push(text(message)).push(cancel())
-                }
-                Dialog::None => return None,
+                Dialog::Naming { name, .. } => Some(row![
+                    center(
+                        text_input("Preset name", name)
+                            .id(self.name_input.clone())
+                            .on_input(Message::NameChanged)
+                            .on_submit(Message::SubmitName),
+                    )
+                    .padding(iced::padding::left(4)),
+                    cancel_button(),
+                ]),
+                Dialog::Delete(id) => Some(row![
+                    center(
+                        text("Delete this preset?")
+                            .size(style::text_size::BODY)
+                            .wrapping(iced::widget::text::Wrapping::None),
+                    )
+                    .clip(true),
+                    manager_icon_button(Icon::Checkmark, Some(Message::ConfirmDelete(*id)))
+                        .style(|theme, status| style::button::confirm(theme, status, true)),
+                    cancel_button(),
+                ]),
+                Dialog::None => None,
             }
-
-            Some(DialogView::Expanded(content.into()))
         }
 
         pub fn view<'a>(
@@ -414,13 +286,14 @@ pub mod presets {
         ) -> Element<'a, Message> {
             let idle = matches!(self.dialog, Dialog::None);
             let show_actions = idle && self.managing;
+            let editing = self.managing && idle;
             let selected = library.get(chart.selected_preset);
             let modified = selected.is_some_and(|preset| chart.preset_modified(&preset.settings));
             let target = self
                 .dialog
                 .target()
                 .filter(|id| library.get(Some(*id)).is_some());
-            let mut dialog = self.dialog_view(library, chart);
+            let mut dialog = self.dialog_view();
             let edit_button: Element<_> = if self.managing {
                 crate::tooltip(
                     button(icon_text(Icon::Return, 12))
@@ -433,7 +306,7 @@ pub mod presets {
                     .on_press_maybe(idle.then_some(Message::ToggleEdit))
                     .into()
             };
-            let mut content = column![
+            let content = column![
                 row![
                     button("Save").on_press_maybe((idle && modified).then_some(Message::Save)),
                     button("Save as").on_press_maybe(idle.then_some(Message::SaveAs)),
@@ -489,47 +362,20 @@ pub mod presets {
                     );
                 }
 
-                let row_body = if target == Some(preset.id) {
-                    match dialog.take() {
-                        Some(DialogView::Inline(row)) => {
-                            entry = row;
-                            None
-                        }
-                        Some(DialogView::Expanded(body)) => Some(body),
-                        None => None,
-                    }
-                } else {
-                    None
-                };
-                rows.push(manager_row(entry, is_selected, self.managing, row_body));
+                if target == Some(preset.id)
+                    && let Some(row) = dialog.take()
+                {
+                    entry = row;
+                }
+                rows.push(manager_row(entry, is_selected, editing));
             }
 
-            let mut list = column![manager_list(
-                rows,
-                self.managing.then_some(Message::Reorder),
-            )]
-            .spacing(4);
+            let mut list =
+                column![manager_list(rows, editing.then_some(Message::Reorder),)].spacing(4);
             if target.is_none()
-                && let Some(dialog) = dialog.take()
+                && let Some(row) = dialog.take()
             {
-                match dialog {
-                    DialogView::Inline(row) => {
-                        list = list.push(manager_row(row, false, false, None));
-                    }
-                    DialogView::Expanded(body) => {
-                        content = content.push(
-                            container(
-                                container(body)
-                                    .width(Length::Fill)
-                                    .padding(12)
-                                    .style(|theme| style::manager_row_container(theme, true)),
-                            )
-                            .width(Length::Fill)
-                            .padding(2)
-                            .style(style::dragger_row_container),
-                        );
-                    }
-                }
+                list = list.push(manager_row(row, false, false));
             }
 
             content.push(list).into()

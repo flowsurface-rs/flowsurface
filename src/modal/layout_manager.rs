@@ -1,11 +1,12 @@
 use crate::connector::client::DataSources;
-use crate::layout::{ChartResourcesMessage, Layout, LayoutId, SharedChartResources};
+use crate::layout::{Layout, LayoutId};
 use crate::screen::dashboard::{self, Dashboard};
 use crate::style::icon_text;
 use crate::widget::column_drag::DragEvent;
 use crate::widget::{manager_icon_button, manager_list, manager_row};
 use crate::{style, tooltip};
 use data::layout::MAX_NAME_LENGTH;
+use data::layout::presets::Library as PresetLibrary;
 
 use iced::widget::{
     button, center, column, container, row, scrollable, space, text, text_input,
@@ -42,7 +43,7 @@ pub enum Action {
 
 pub struct LayoutManager {
     pub layouts: Vec<Layout>,
-    chart_resources: SharedChartResources,
+    presets: PresetLibrary,
     active_layout_id: Option<Uuid>,
     pub edit_mode: Editing,
 }
@@ -66,7 +67,7 @@ impl LayoutManager {
 
         Self {
             layouts: vec![layout],
-            chart_resources: SharedChartResources::default(),
+            presets: PresetLibrary::default(),
             active_layout_id: Some(default_layout.unique),
             edit_mode: Editing::None,
         }
@@ -79,7 +80,7 @@ impl LayoutManager {
     ) -> Self {
         let mut manager = Self {
             layouts,
-            chart_resources: SharedChartResources::from_config(chart_presets),
+            presets: PresetLibrary::from_config(chart_presets),
             active_layout_id: active_layout.map(|l| l.unique),
             edit_mode: Editing::None,
         };
@@ -87,8 +88,8 @@ impl LayoutManager {
         manager
     }
 
-    pub fn chart_resources(&self) -> &SharedChartResources {
-        &self.chart_resources
+    pub fn presets(&self) -> &PresetLibrary {
+        &self.presets
     }
 
     pub fn ensure_layout(&mut self) {
@@ -159,49 +160,43 @@ impl LayoutManager {
         layout_id: &Uuid,
         data_sources: &DataSources,
     ) -> Option<(iced::Task<dashboard::Message>, Option<dashboard::Event>)> {
-        if let dashboard::Message::SharedChartResources {
-            window,
-            pane,
-            message,
-        } = message
-        {
-            self.update_chart_resources(*message, main_window.id, *layout_id, (window, pane));
-            return Some((iced::Task::none(), None));
-        }
-
         let layout_index = self
             .layouts
             .iter()
             .position(|layout| layout.id.unique == *layout_id)?;
         let dashboard = &mut self.layouts[layout_index].dashboard;
 
-        Some(dashboard.update(message, main_window, data_sources, &self.chart_resources))
+        Some(dashboard.update(message, main_window, data_sources, &self.presets))
     }
 
-    fn update_chart_resources(
+    pub fn update_presets(
         &mut self,
-        message: ChartResourcesMessage,
+        command: data::layout::presets::Command,
         main_window: window::Id,
         layout_id: Uuid,
-        origin: (window::Id, iced::widget::pane_grid::Pane),
+        origin_window: window::Id,
+        origin_pane: iced::widget::pane_grid::Pane,
     ) {
-        let event = self.chart_resources.update(message);
+        let response = self.presets.update(command);
+
         for layout in &mut self.layouts {
             layout
                 .dashboard
-                .chart_resources_changed(main_window, &event);
+                .reconcile_selected_presets(main_window, &self.presets);
         }
 
-        let Some(layout) = self
+        if let Some(layout) = self
             .layouts
             .iter_mut()
             .find(|layout| layout.id.unique == layout_id)
-        else {
-            return;
-        };
-        layout
-            .dashboard
-            .chart_resources_updated(main_window, origin.0, origin.1, event);
+        {
+            layout.dashboard.preset_command_completed(
+                main_window,
+                origin_window,
+                origin_pane,
+                response,
+            );
+        }
     }
 
     pub fn park_inactive_layouts(&mut self, active_layout_id: Uuid, main_window: window::Id) {
@@ -383,7 +378,7 @@ impl LayoutManager {
                 );
             }
 
-            layout_widgets.push(manager_row(layout_row, is_active, is_edit_mode, None));
+            layout_widgets.push(manager_row(layout_row, is_active, is_edit_mode));
         }
 
         content = content.push(manager_list(

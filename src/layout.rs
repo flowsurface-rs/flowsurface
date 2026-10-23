@@ -1,9 +1,6 @@
 use crate::modal::layout_manager::LayoutManager;
 use crate::screen::dashboard::{Dashboard, pane};
-use data::{
-    UserTimezone,
-    layout::{WindowSpec, pane::Axis, presets},
-};
+use data::{UserTimezone, layout::WindowSpec, layout::pane::Axis};
 
 use iced::widget::pane_grid::{self, Configuration};
 use std::vec;
@@ -18,40 +15,6 @@ pub struct Layout {
 pub struct LayoutId {
     pub unique: Uuid,
     pub name: String,
-}
-
-#[derive(Default)]
-pub struct SharedChartResources {
-    presets: presets::Library,
-}
-
-#[derive(Debug, Clone)]
-pub enum ChartResourcesMessage {
-    Presets(presets::Command),
-}
-
-pub enum ChartResourcesEvent {
-    Presets(Result<presets::Response, String>),
-}
-
-impl SharedChartResources {
-    pub fn from_config(presets: Vec<data::chart::kline::ChartPreset>) -> Self {
-        Self {
-            presets: presets::Library::from_config(presets),
-        }
-    }
-
-    pub fn presets(&self) -> &presets::Library {
-        &self.presets
-    }
-
-    pub fn update(&mut self, message: ChartResourcesMessage) -> ChartResourcesEvent {
-        match message {
-            ChartResourcesMessage::Presets(command) => {
-                ChartResourcesEvent::Presets(self.presets.update(command))
-            }
-        }
-    }
 }
 
 pub struct SavedState {

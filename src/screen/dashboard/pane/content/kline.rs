@@ -40,10 +40,9 @@ pub use updates::DataUpdate;
 
 use data::chart::Basis;
 use data::chart::kline::composition::{
-    ChartComposition, DEFAULT_MIN_PANEL_RATIO, MarkKind, PanelId, PanelRole, PanelScaleMode,
+    ChartComposition, DEFAULT_MIN_PANEL_RATIO, MarkKind, PanelRole, PanelScaleMode,
 };
 use data::chart::kline::footprint::{ClusterKind, ClusterScaling};
-use data::chart::kline::indicators::AvailabilityContext;
 use data::chart::kline::series::KlineSeries;
 use data::chart::kline::viewport::XAxis;
 use data::chart::kline::{
@@ -102,72 +101,6 @@ pub struct KlineChart {
     settings_reconfigure_pending: bool,
     render_invalidation: RenderInvalidation,
     last_maintenance_at: Instant,
-}
-
-pub struct PresetPreview {
-    pub adjustments: Vec<String>,
-    pub affected_drawings: usize,
-}
-
-impl PresetPreview {
-    fn new(
-        settings: &SettingsSnapshot,
-        adapted: &PreparedSettings,
-        context: AvailabilityContext,
-        affected_drawings: usize,
-    ) -> Self {
-        let mut adjustments = settings
-            .study_configs
-            .iter()
-            .filter_map(|study| {
-                let updated = adapted
-                    .studies
-                    .configs
-                    .iter()
-                    .find(|updated| updated.id() == study.id());
-                match updated {
-                    None => Some(format!("{study} is unavailable on this chart basis.")),
-                    Some(updated) if study != updated => Some(format!(
-                        "{study} settings will be adjusted for this chart basis."
-                    )),
-                    _ => None,
-                }
-            })
-            .collect::<Vec<_>>();
-
-        adjustments.extend(
-            adapted
-                .composition
-                .selected_indicators()
-                .into_iter()
-                .filter_map(|id| adapted.instances.get(id))
-                .filter_map(|instance| {
-                    instance.kind.unsupported_reason(context).map(|reason| {
-                        format!(
-                            "{}: {}.",
-                            instance.kind.definition().display_name,
-                            reason.indicator_unavailable_tooltip(),
-                        )
-                    })
-                }),
-        );
-
-        Self {
-            adjustments,
-            affected_drawings,
-        }
-    }
-
-    pub fn requires_confirmation(&self) -> bool {
-        self.affected_drawings > 0 || !self.adjustments.is_empty()
-    }
-}
-
-pub struct PresetApplication {
-    settings: PreparedSettings,
-    pub preview: PresetPreview,
-    replaced_panels: Vec<PanelId>,
-    primary_panel: PanelId,
 }
 
 struct PreparedSettings {
@@ -1755,13 +1688,8 @@ impl KlineChart {
         self.drawing_sidebar_visible = config.drawing_sidebar_visible;
         self.drawings.floating_toolbar =
             toolbar::FloatingToolbarState::from_position(config.floating_toolbar_position);
-        let drawings = config
-            .drawings
-            .iter()
-            .filter(|drawing| drawing.object.panels_exist(&self.indicators.composition))
-            .cloned()
-            .collect();
-        self.drawings.tools = DrawingTools::from_parts(config.active_drawing_tool, drawings);
+        self.drawings.tools =
+            DrawingTools::from_parts(config.active_drawing_tool, config.drawings.clone());
         self.drawings.tools.set_basis(self.basis);
 
         for series_config in &config.series {
@@ -1858,16 +1786,6 @@ impl KlineChart {
         self.settings_snapshot().preset_settings()
     }
 
-    fn auxiliary_panels(&self) -> Vec<PanelId> {
-        self.indicators
-            .composition
-            .panels
-            .iter()
-            .filter(|panel| panel.role != PanelRole::Primary)
-            .map(|panel| panel.id)
-            .collect()
-    }
-
     pub fn preset_modified(&self, settings: &SettingsSnapshot) -> bool {
         let mut applied = PreparedSettings::from_snapshot(settings, self.basis)
             .settings_snapshot()
@@ -1925,61 +1843,20 @@ impl KlineChart {
         Ok(prepared)
     }
 
-    pub fn prepare_preset(&self, settings: &SettingsSnapshot) -> Result<PresetApplication, String> {
+    pub fn apply_preset(
+        &mut self,
+        id: uuid::Uuid,
+        settings: &SettingsSnapshot,
+    ) -> Result<Option<Action>, String> {
         let mut prepared = self.prepare_preset_settings(settings)?;
         prepared
             .composition
             .copy_comparison_layers_from(&self.indicators.composition);
-        let primary_panel = prepared
-            .composition
-            .primary_panel_id()
-            .expect("validated preset has a price panel");
-        let replaced_panels = self.auxiliary_panels();
-        let preview = PresetPreview::new(
-            settings,
-            &prepared,
-            AvailabilityContext {
-                basis: self.basis,
-                base_ticker: self.data.base_ticker(),
-            },
-            self.drawings.tools.panel_drawing_count(&replaced_panels),
-        );
         prepared.studies.edits = self.studies.snapshot().edits;
-        Ok(PresetApplication {
-            settings: prepared,
-            preview,
-            replaced_panels,
-            primary_panel,
-        })
-    }
-
-    pub fn apply_preset(
-        &mut self,
-        id: uuid::Uuid,
-        application: PresetApplication,
-    ) -> Option<Action> {
-        self.drawings.finish_pending_edit();
-        self.drawings.tools.set_basis(self.basis);
-        let previous_primary = self.indicators.composition.primary_panel_id();
-        for panel in &application.replaced_panels {
-            self.drawings.tools.prune_panel_drawings(*panel);
-            let _ = self.viewport.indicator_y_ranges.reset(*panel);
-        }
-        if let Some(previous) = previous_primary
-            && previous != application.primary_panel
-        {
-            self.drawings
-                .tools
-                .remap_panel_drawings(previous, application.primary_panel);
-        }
-        if !application.replaced_panels.is_empty()
-            || previous_primary != Some(application.primary_panel)
-        {
-            self.drawings.clear_history();
-        }
         self.selected_preset = Some(id);
-        self.apply_prepared_settings(application.settings)
-            .map(Action::RequestFetch)
+        Ok(self
+            .apply_prepared_settings(prepared)
+            .map(Action::RequestFetch))
     }
 
     fn primary_series_style(&self) -> Option<persisted::PrimarySeriesStyle> {

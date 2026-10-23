@@ -1,7 +1,6 @@
 use crate::chart::kline::{ChartPreset, SettingsSnapshot};
+use crate::layout::MAX_NAME_LENGTH;
 use uuid::Uuid;
-
-pub const MAX_NAME_LENGTH: usize = 20;
 
 #[derive(Default)]
 pub struct Library {
@@ -12,11 +11,11 @@ pub struct Library {
 pub enum Command {
     Create {
         name: String,
-        settings: SettingsSnapshot,
+        settings: Box<SettingsSnapshot>,
     },
     Save {
         id: Uuid,
-        settings: SettingsSnapshot,
+        settings: Box<SettingsSnapshot>,
     },
     Rename {
         id: Uuid,
@@ -28,15 +27,6 @@ pub enum Command {
         index: usize,
         target: usize,
     },
-}
-
-#[derive(Debug, Clone)]
-pub enum Response {
-    Created(Uuid),
-    Saved,
-    Changed,
-    Reordered,
-    Removed(Uuid),
 }
 
 impl Library {
@@ -92,17 +82,17 @@ impl Library {
         id
     }
 
-    pub fn update(&mut self, command: Command) -> Result<Response, String> {
+    pub fn update(&mut self, command: Command) -> Result<Option<Uuid>, String> {
         match command {
             Command::Create { name, settings } => {
                 if name.trim().is_empty() {
                     return Err("Enter a preset name.".into());
                 }
-                Ok(Response::Created(self.add(&name, settings)))
+                Ok(Some(self.add(&name, *settings)))
             }
             Command::Save { id, settings } => {
                 self.get_mut(id)?.settings = settings.normalized_preset();
-                Ok(Response::Saved)
+                Ok(None)
             }
             Command::Rename { id, name } => {
                 if name.trim().is_empty() {
@@ -110,23 +100,23 @@ impl Library {
                 }
                 let name = self.unique_name(&name, Some(id));
                 self.get_mut(id)?.name = name;
-                Ok(Response::Changed)
+                Ok(None)
             }
             Command::Duplicate(id) => {
                 let preset = self.get(Some(id)).ok_or("This preset no longer exists.")?;
                 let name = format!("{} copy", preset.name);
                 self.add(&name, preset.settings.clone());
-                Ok(Response::Changed)
+                Ok(None)
             }
             Command::Remove(id) => {
                 self.get_mut(id)?;
                 self.presets.retain(|preset| preset.id != id);
-                Ok(Response::Removed(id))
+                Ok(None)
             }
             Command::Reorder { index, target } => {
                 crate::util::reorder_vec(&mut self.presets, index, target)
                     .ok_or("This preset order is no longer available.")?;
-                Ok(Response::Reordered)
+                Ok(None)
             }
         }
     }

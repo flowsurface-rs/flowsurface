@@ -435,6 +435,21 @@ impl Flowsurface {
 
                         Task::none()
                     }
+                    Some(dashboard::Event::ChartPresets {
+                        window,
+                        pane,
+                        command,
+                    }) => {
+                        self.layout_manager.update_presets(
+                            command,
+                            main_window.id,
+                            layout_id,
+                            window,
+                            pane,
+                        );
+
+                        Task::none()
+                    }
                     None => Task::none(),
                 };
 
@@ -729,7 +744,7 @@ impl Flowsurface {
                     self.timezone,
                     pixel_ratio,
                     &self.theme,
-                    self.layout_manager.chart_resources(),
+                    self.layout_manager.presets(),
                 )
                 .map(move |msg| Message::Dashboard {
                     layout_id: None,
@@ -780,7 +795,7 @@ impl Flowsurface {
                         self.timezone,
                         pixel_ratio,
                         &self.theme,
-                        self.layout_manager.chart_resources(),
+                        self.layout_manager.presets(),
                     )
                     .map(move |msg| Message::Dashboard {
                         layout_id: None,
@@ -1489,12 +1504,7 @@ impl Flowsurface {
         }
 
         let layouts = data::Layouts {
-            chart_presets: self
-                .layout_manager
-                .chart_resources()
-                .presets()
-                .entries()
-                .to_vec(),
+            chart_presets: self.layout_manager.presets().entries().to_vec(),
             layouts: ser_layouts,
             active_layout: self
                 .layout_manager

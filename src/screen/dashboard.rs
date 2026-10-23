@@ -1,7 +1,6 @@
 pub mod pane;
 
 use super::DashboardError;
-use crate::layout::{ChartResourcesEvent, ChartResourcesMessage, SharedChartResources};
 use crate::{
     connector::{
         client::DataSources,
@@ -51,11 +50,6 @@ pub enum Message {
     },
     ResolveStreams(uuid::Uuid, Vec<PersistStreamKind>),
     RequestPalette,
-    SharedChartResources {
-        window: window::Id,
-        pane: pane_grid::Pane,
-        message: Box<ChartResourcesMessage>,
-    },
 }
 
 pub struct Dashboard {
@@ -93,6 +87,11 @@ pub enum Event {
         streams: Vec<PersistStreamKind>,
     },
     RequestPalette,
+    ChartPresets {
+        window: window::Id,
+        pane: pane_grid::Pane,
+        command: presets::Command,
+    },
 }
 
 impl Dashboard {
@@ -163,12 +162,9 @@ impl Dashboard {
         message: Message,
         main_window: &Window,
         data_sources: &DataSources,
-        chart_resources: &SharedChartResources,
+        chart_presets: &presets::Library,
     ) -> (Task<Message>, Option<Event>) {
         match message {
-            message @ Message::SharedChartResources { .. } => {
-                return (Task::done(message), None);
-            }
             Message::SavePopoutSpecs(specs) => {
                 for (window_id, new_spec) in specs {
                     if let Some((_, spec)) = self.popout.get_mut(&window_id) {
@@ -329,7 +325,7 @@ impl Dashboard {
                     let mut chart_settings = self.chart_settings;
                     let effect = self
                         .get_mut_pane(main_window.id, window, pane)
-                        .map(|state| state.update(event, &mut chart_settings, chart_resources));
+                        .map(|state| state.update(event, &mut chart_settings, chart_presets));
                     self.chart_settings = chart_settings;
                     return self.dispatch_pane_effect(
                         effect.flatten(),
@@ -578,7 +574,7 @@ impl Dashboard {
         timezone: UserTimezone,
         pixel_ratio: PixelRatio,
         theme: &'a ThemeState,
-        chart_resources: &'a SharedChartResources,
+        chart_presets: &'a presets::Library,
     ) -> Element<'a, Message> {
         let pane_grid: Element<_> = PaneGrid::new(&self.panes, |id, pane, maximized| {
             let is_focused = self.focus == Some((main_window.id, id));
@@ -593,7 +589,7 @@ impl Dashboard {
                 pixel_ratio,
                 tickers_table,
                 theme,
-                chart_resources,
+                chart_presets,
             )
         })
         .min_size(240)
@@ -615,7 +611,7 @@ impl Dashboard {
         timezone: UserTimezone,
         pixel_ratio: PixelRatio,
         theme: &'a ThemeState,
-        chart_resources: &'a SharedChartResources,
+        chart_presets: &'a presets::Library,
     ) -> Element<'a, Message> {
         if let Some((state, _)) = self.popout.get(&window) {
             let content = container(
@@ -632,7 +628,7 @@ impl Dashboard {
                         pixel_ratio,
                         tickers_table,
                         theme,
-                        chart_resources,
+                        chart_presets,
                     )
                 })
                 .on_click(pane::Message::PaneClicked),
@@ -1281,27 +1277,25 @@ impl Dashboard {
             .chain(self.refresh_streams(main_window))
     }
 
-    pub fn chart_resources_changed(
+    pub fn reconcile_selected_presets(
         &mut self,
         main_window: window::Id,
-        event: &ChartResourcesEvent,
+        presets: &presets::Library,
     ) {
-        if let ChartResourcesEvent::Presets(Ok(presets::Response::Removed(id))) = event {
-            for (_, _, state) in self.iter_all_panes_mut(main_window) {
-                state.clear_chart_preset(*id);
-            }
+        for (_, _, state) in self.iter_all_panes_mut(main_window) {
+            state.clear_missing_preset(presets);
         }
     }
 
-    pub fn chart_resources_updated(
+    pub fn preset_command_completed(
         &mut self,
         main_window: window::Id,
         window: window::Id,
         pane: pane_grid::Pane,
-        event: ChartResourcesEvent,
+        response: Result<Option<uuid::Uuid>, String>,
     ) {
         if let Some(state) = self.get_mut_pane(main_window, window, pane) {
-            state.chart_resources_updated(event);
+            state.preset_command_completed(response);
         }
     }
 
@@ -1328,13 +1322,13 @@ impl Dashboard {
                 (Task::none(), Some(Event::OpenNetworkSettings))
             }
             Some(pane::Effect::OpenUrl(url)) => (Task::none(), Some(Event::OpenUrlRequested(url))),
-            Some(pane::Effect::SharedChartResources(message)) => (
-                Task::done(Message::SharedChartResources {
+            Some(pane::Effect::ChartPresets(command)) => (
+                Task::none(),
+                Some(Event::ChartPresets {
                     window,
                     pane,
-                    message,
+                    command,
                 }),
-                None,
             ),
             None => (Task::none(), None),
         }

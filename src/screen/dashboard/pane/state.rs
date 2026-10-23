@@ -1,6 +1,5 @@
 use super::settings::presets::{self as preset_editor, Action as PresetEditorAction};
-use crate::layout::{ChartResourcesEvent, ChartResourcesMessage, SharedChartResources};
-use data::layout::presets::Response as PresetResponse;
+use data::layout::presets::{Command as PresetCommand, Library as PresetLibrary};
 
 use super::content::{
     self, Content,
@@ -35,6 +34,7 @@ use crate::{
         self, button_with_tooltip,
         inspector::{InspectorBody, InspectorContent, InspectorFooter},
         link_group_button, press_button_with_tooltip,
+        toast::Toast,
     },
     window::{self, PixelRatio, Window},
 };
@@ -69,7 +69,7 @@ pub enum Effect {
     FocusWidget(iced::widget::Id),
     OpenUrl(String),
     OpenNetworkSettings,
-    SharedChartResources(Box<ChartResourcesMessage>),
+    ChartPresets(PresetCommand),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -376,7 +376,7 @@ impl State {
         pixel_ratio: PixelRatio,
         tickers_table: &'a TickersTable,
         theme: &'a ThemeState,
-        chart_resources: &'a SharedChartResources,
+        presets: &'a PresetLibrary,
     ) -> pane_grid::Content<'a, Message, Theme, Renderer> {
         let mut top_left_buttons = if Content::Starter == self.content {
             row![]
@@ -661,8 +661,7 @@ impl State {
             }
         };
 
-        let body =
-            self.compose_stack_view(base, id, compact_controls, tickers_table, chart_resources);
+        let body = self.compose_stack_view(base, id, compact_controls, tickers_table, presets);
 
         let body = column![
             iced::widget::rule::horizontal(1.0).style(style::split_ruler),
@@ -720,9 +719,9 @@ impl State {
         &mut self,
         msg: Event,
         chart_settings: &mut ChartSettings,
-        chart_resources: &SharedChartResources,
+        presets: &PresetLibrary,
     ) -> Option<Effect> {
-        let effect = self.update_event(msg, chart_settings, chart_resources);
+        let effect = self.update_event(msg, chart_settings, presets);
         self.reconcile_inspector();
         effect
     }
@@ -731,7 +730,7 @@ impl State {
         &mut self,
         msg: Event,
         chart_settings: &mut ChartSettings,
-        chart_resources: &SharedChartResources,
+        presets: &PresetLibrary,
     ) -> Option<Effect> {
         match msg {
             Event::PresetEditor(message) => {
@@ -741,10 +740,8 @@ impl State {
                 else {
                     return None;
                 };
-                let action = self
-                    .preset_editor
-                    .update(message, chart_resources.presets(), chart);
-                return self.apply_preset_editor_action(action);
+                let action = self.preset_editor.update(message, presets, chart);
+                return self.apply_preset_editor_action(action, presets);
             }
             Event::ShowModal(requested_modal) => {
                 return self.show_modal_with_focus(requested_modal);
@@ -1066,7 +1063,7 @@ impl State {
     fn inspector_view<'a>(
         &'a self,
         pane: pane_grid::Pane,
-        chart_resources: &'a SharedChartResources,
+        presets: &'a PresetLibrary,
     ) -> Option<Element<'a, Message>> {
         let page = self.inspector?;
         if !self.supports_inspector(page) {
@@ -1095,7 +1092,7 @@ impl State {
                 header,
                 rule::horizontal(1.0).style(style::split_ruler),
                 responsive(move |size| {
-                    self.inspector_body_view(pane, page, size.height, chart_resources)
+                    self.inspector_body_view(pane, page, size.height, presets)
                         .unwrap_or_else(|| column![].into())
                 }),
             ])
@@ -1112,13 +1109,11 @@ impl State {
         pane: pane_grid::Pane,
         page: InspectorPage,
         available_height: f32,
-        chart_resources: &'a SharedChartResources,
+        presets: &'a PresetLibrary,
     ) -> Option<Element<'a, Message>> {
         let (body, footer) = match page {
             InspectorPage::PaneSettings => {
-                let (sections, footer) = self
-                    .pane_settings_content(pane, chart_resources)?
-                    .into_parts();
+                let (sections, footer) = self.pane_settings_content(pane, presets)?.into_parts();
                 (
                     sections,
                     footer.map(|footer| (InspectorFooter::HEIGHT, footer)),
@@ -1274,9 +1269,9 @@ impl State {
         pane: pane_grid::Pane,
         compact_controls: Option<Element<'a, Message>>,
         tickers_table: &'a TickersTable,
-        chart_resources: &'a SharedChartResources,
+        presets: &'a PresetLibrary,
     ) -> Element<'a, Message> {
-        let base = if let Some(inspector) = self.inspector_view(pane, chart_resources) {
+        let base = if let Some(inspector) = self.inspector_view(pane, presets) {
             row![
                 base,
                 rule::vertical(1.0).style(style::split_ruler),
@@ -1403,7 +1398,7 @@ impl State {
     pub fn pane_settings_content<'a>(
         &'a self,
         pane: pane_grid::Pane,
-        chart_resources: &'a SharedChartResources,
+        presets: &'a PresetLibrary,
     ) -> Option<InspectorContent<'a, Message>> {
         let mut content = self.content.pane_settings_content(
             pane,
@@ -1414,52 +1409,72 @@ impl State {
             chart: Some(chart), ..
         } = &self.content
         {
-            let presets = crate::widget::inspector::InspectorSection::titled(
+            let presets_section = crate::widget::inspector::InspectorSection::titled(
                 "Presets",
                 self.preset_editor
-                    .view(chart_resources.presets(), chart)
+                    .view(presets, chart)
                     .map(move |message| Message::PaneEvent(pane, Event::PresetEditor(message))),
             )
             .with_modal_container();
 
-            content.push(presets);
+            content.push(presets_section);
         }
         Some(content)
     }
 
-    fn apply_preset_editor_action(&mut self, action: PresetEditorAction) -> Option<Effect> {
-        match action {
-            PresetEditorAction::None => None,
+    fn apply_preset_editor_action(
+        &mut self,
+        action: Option<PresetEditorAction>,
+        presets: &PresetLibrary,
+    ) -> Option<Effect> {
+        match action? {
             PresetEditorAction::FocusWidget(id) => Some(Effect::FocusWidget(id)),
-            PresetEditorAction::Command(command) => Some(Effect::SharedChartResources(Box::new(
-                ChartResourcesMessage::Presets(command),
-            ))),
-            PresetEditorAction::Apply { id, application } => {
-                let Content::Kline {
-                    chart: Some(chart), ..
-                } = &mut self.content
-                else {
-                    return None;
-                };
-                let action = chart.apply_preset(id, application);
-                self.reconcile_inspector();
-                self.finish_kline_action(action)
-            }
+            PresetEditorAction::Command(command) => Some(Effect::ChartPresets(command)),
+            PresetEditorAction::Apply(id) => self.apply_chart_preset(id, presets),
         }
     }
 
-    pub fn chart_resources_updated(&mut self, event: ChartResourcesEvent) {
-        let ChartResourcesEvent::Presets(response) = event;
+    fn apply_chart_preset(&mut self, id: uuid::Uuid, presets: &PresetLibrary) -> Option<Effect> {
+        let Some(preset) = presets.get(Some(id)) else {
+            self.notifications
+                .push(Toast::error("This preset no longer exists."));
+            return None;
+        };
+
         let Content::Kline {
             chart: Some(chart), ..
         } = &mut self.content
         else {
-            return;
+            return None;
         };
-        if let Ok(PresetResponse::Created(id)) = &response {
-            chart.selected_preset = Some(*id);
+        let result = chart.apply_preset(id, &preset.settings);
+
+        match result {
+            Ok(action) => {
+                self.reconcile_inspector();
+                self.finish_kline_action(action)
+            }
+            Err(error) => {
+                self.notifications.push(Toast::error(error));
+                None
+            }
         }
-        self.preset_editor.command_completed(response);
+    }
+
+    pub fn preset_command_completed(&mut self, response: Result<Option<uuid::Uuid>, String>) {
+        match response {
+            Ok(Some(id)) => {
+                if let Content::Kline {
+                    chart: Some(chart), ..
+                } = &mut self.content
+                {
+                    chart.selected_preset = Some(id);
+                }
+            }
+            Ok(None) => {}
+            Err(error) => self.notifications.push(Toast::error(error)),
+        }
+        self.preset_editor.command_completed();
     }
 
     fn finish_kline_action(&mut self, action: Option<KlineAction>) -> Option<Effect> {
@@ -1482,15 +1497,18 @@ impl State {
         effect.or_else(|| streams_changed.then_some(Effect::RefreshStreams))
     }
 
-    pub fn clear_chart_preset(&mut self, id: uuid::Uuid) {
+    pub fn clear_missing_preset(&mut self, presets: &PresetLibrary) {
+        let missing = |selected: Option<uuid::Uuid>| {
+            selected.is_some_and(|id| presets.get(Some(id)).is_none())
+        };
         if let Content::Kline { chart, layout, .. } = &mut self.content {
             if let Some(chart) = chart
-                && chart.selected_preset == Some(id)
+                && missing(chart.selected_preset)
             {
                 chart.selected_preset = None;
             }
             if let Some(config) = layout
-                && config.selected_preset == Some(id)
+                && missing(config.selected_preset)
             {
                 config.selected_preset = None;
             }
