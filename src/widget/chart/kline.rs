@@ -30,7 +30,7 @@ use crate::widget::chart::{PANEL_SPLITTER_HEIGHT, Y_AXIS_LABEL_LEFT_INSET};
 use crate::{style, theme::ThemeState, window::PixelRatio};
 use composition::{
     BarMode, ChartComposition, DEFAULT_MIN_PANEL_RATIO, HistogramMode, MarkKind, PanelId,
-    PanelRole, PanelScaleMode, PanelValueId, PanelValuePrecision,
+    PanelScaleMode, PanelValueId, PanelValuePrecision,
 };
 use data::UserTimezone;
 use data::chart::Basis;
@@ -1838,7 +1838,7 @@ where
                 .iter()
                 .enumerate()
                 .any(|(panel_index, panel)| {
-                    panel.role == PanelRole::Auxiliary
+                    panel.id.is_aux()
                         && self
                             .indicators()
                             .indicator_panel_value_id(panel_index)
@@ -2592,6 +2592,12 @@ where
             }
             CursorTarget::PanelXAxis(_) | CursorTarget::BottomXAxis => {
                 advanced::mouse::Interaction::ResizingHorizontally
+            }
+            CursorTarget::Plot(_) if !self.drawing_snapshot.allows_panning() => {
+                advanced::mouse::Interaction::Pointer
+            }
+            CursorTarget::Plot(_) if !self.drawing_snapshot.selected_drawings.is_empty() => {
+                advanced::mouse::Interaction::default()
             }
             CursorTarget::Plot(_) => advanced::mouse::Interaction::Crosshair,
         }

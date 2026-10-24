@@ -187,9 +187,14 @@ impl UniqueStreams {
         });
     }
 
+    /// Collects stream specs in a stable total order.
+    ///
+    /// `Subscription::run_with` hashes the chunked `StreamConfig` to identify a
+    /// stream, so the order must depend only on the set of streams.
     fn streams<T, F>(&self, exchange_filter: Option<Exchange>, stream_extractor: F) -> Vec<T>
     where
         F: Fn(Exchange, &StreamKind) -> Option<T>,
+        T: Ord,
     {
         let f = &stream_extractor;
 
@@ -201,10 +206,14 @@ impl UniqueStreams {
                 .filter_map(move |stream| f(exchange, stream))
         };
 
-        match exchange_filter {
+        let mut specs: Vec<T> = match exchange_filter {
             Some(exchange) => per_exchange(exchange).collect(),
             None => Exchange::ALL.into_iter().flat_map(per_exchange).collect(),
-        }
+        };
+
+        // Specs are unique, so the unstable sort is deterministic.
+        specs.sort_unstable();
+        specs
     }
 
     pub fn depth_streams(
@@ -233,7 +242,9 @@ impl UniqueStreams {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[derive(
+    Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize, PartialOrd, Ord,
+)]
 pub enum StreamTicksize {
     ServerSide(TickMultiplier),
     #[default]

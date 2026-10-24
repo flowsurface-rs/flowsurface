@@ -1,6 +1,13 @@
 use chrono::{DateTime, Datelike, Timelike};
 use serde::{Deserialize, Deserializer};
 
+pub(crate) fn stable_hash(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        hash.wrapping_mul(0x0000_0100_0000_01b3)
+            .wrapping_add(u64::from(*byte))
+    })
+}
+
 pub fn reorder_vec<T>(items: &mut Vec<T>, index: usize, target: usize) -> Option<()> {
     if index >= items.len() || target > items.len() {
         return None;

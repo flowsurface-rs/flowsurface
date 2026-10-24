@@ -241,7 +241,6 @@ pub fn manager_row<'a, Message>(
     content: iced::widget::Row<'a, Message>,
     is_selected: bool,
     is_editing: bool,
-    body: Option<Element<'a, Message>>,
 ) -> Element<'a, Message>
 where
     Message: Clone + 'a,
@@ -253,12 +252,8 @@ where
         .width(Fill)
         .padding(4)
         .align_y(Alignment::Center);
-    let mut content = column![header];
-    if let Some(body) = body {
-        content = content.push(container(body).width(Fill).padding(12));
-    }
 
-    let content: Element<'a, Message> = container(content)
+    let content: Element<'a, Message> = container(header)
         .width(Fill)
         .style(move |theme| style::manager_row_container(theme, is_selected))
         .into();

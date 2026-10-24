@@ -31,12 +31,7 @@ pub struct SharedChartResources {
 
 #[derive(Debug, Clone)]
 pub enum ChartResourcesMessage {
-    Presets(presets::Command),
     IndicatorCatalog(indicator_catalog::Message),
-}
-
-pub enum ChartResourcesEvent {
-    Presets(Result<presets::Response, String>),
 }
 
 impl SharedChartResources {
@@ -59,19 +54,17 @@ impl SharedChartResources {
         &mut self,
         message: ChartResourcesMessage,
         catalog_http: &reqwest::Client,
-    ) -> (Task<ChartResourcesMessage>, Option<ChartResourcesEvent>) {
+    ) -> Task<ChartResourcesMessage> {
         match message {
-            ChartResourcesMessage::Presets(command) => (
-                Task::none(),
-                Some(ChartResourcesEvent::Presets(self.presets.update(command))),
-            ),
-            ChartResourcesMessage::IndicatorCatalog(message) => (
-                self.indicator_catalog
-                    .update(message, catalog_http)
-                    .map(ChartResourcesMessage::IndicatorCatalog),
-                None,
-            ),
+            ChartResourcesMessage::IndicatorCatalog(message) => self
+                .indicator_catalog
+                .update(message, catalog_http)
+                .map(ChartResourcesMessage::IndicatorCatalog),
         }
+    }
+
+    pub fn update_presets(&mut self, command: presets::Command) -> Result<Option<Uuid>, String> {
+        self.presets.update(command)
     }
 }
 

@@ -1,6 +1,6 @@
 use super::settings::presets::{self as preset_editor, Action as PresetEditorAction};
-use crate::layout::{ChartResourcesEvent, ChartResourcesMessage, SharedChartResources};
-use data::layout::presets::Response as PresetResponse;
+use crate::layout::{ChartResourcesMessage, SharedChartResources};
+use data::layout::presets::{Command as PresetCommand, Library as PresetLibrary};
 
 use super::content::{
     self, Content,
@@ -35,6 +35,7 @@ use crate::{
         self, button_with_tooltip,
         inspector::{InspectorBody, InspectorContent, InspectorFooter},
         link_group_button, press_button_with_tooltip,
+        toast::Toast,
     },
     window::{self, PixelRatio, Window},
 };
@@ -70,6 +71,7 @@ pub enum Effect {
     OpenUrl(String),
     OpenNetworkSettings,
     SharedChartResources(Box<ChartResourcesMessage>),
+    ChartPresets(PresetCommand),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -744,7 +746,7 @@ impl State {
                 let action = self
                     .preset_editor
                     .update(message, chart_resources.presets(), chart);
-                return self.apply_preset_editor_action(action);
+                return self.apply_preset_editor_action(action, chart_resources.presets());
             }
             Event::ShowModal(requested_modal) => {
                 return self.show_modal_with_focus(requested_modal);
@@ -1430,52 +1432,72 @@ impl State {
             chart: Some(chart), ..
         } = &self.content
         {
-            content.prepend(
-                crate::widget::inspector::InspectorSection::titled(
-                    "Presets",
-                    self.preset_editor
-                        .view(chart_resources.presets(), chart)
-                        .map(move |message| Message::PaneEvent(pane, Event::PresetEditor(message))),
-                )
-                .with_modal_container(),
-            );
+            let presets_section = crate::widget::inspector::InspectorSection::titled(
+                "Presets",
+                self.preset_editor
+                    .view(chart_resources.presets(), chart)
+                    .map(move |message| Message::PaneEvent(pane, Event::PresetEditor(message))),
+            )
+            .with_modal_container();
+
+            content.push(presets_section);
         }
         Some(content)
     }
 
-    fn apply_preset_editor_action(&mut self, action: PresetEditorAction) -> Option<Effect> {
-        match action {
-            PresetEditorAction::None => None,
+    fn apply_preset_editor_action(
+        &mut self,
+        action: Option<PresetEditorAction>,
+        presets: &PresetLibrary,
+    ) -> Option<Effect> {
+        match action? {
             PresetEditorAction::FocusWidget(id) => Some(Effect::FocusWidget(id)),
-            PresetEditorAction::Command(command) => Some(Effect::SharedChartResources(Box::new(
-                ChartResourcesMessage::Presets(command),
-            ))),
-            PresetEditorAction::Apply { id, application } => {
-                let Content::Kline {
-                    chart: Some(chart), ..
-                } = &mut self.content
-                else {
-                    return None;
-                };
-                let action = chart.apply_preset(id, application);
-                self.reconcile_inspector();
-                self.finish_kline_action(action)
-            }
+            PresetEditorAction::Command(command) => Some(Effect::ChartPresets(command)),
+            PresetEditorAction::Apply(id) => self.apply_chart_preset(id, presets),
         }
     }
 
-    pub fn chart_resources_updated(&mut self, event: ChartResourcesEvent) {
-        let ChartResourcesEvent::Presets(response) = event;
+    fn apply_chart_preset(&mut self, id: uuid::Uuid, presets: &PresetLibrary) -> Option<Effect> {
+        let Some(preset) = presets.get(Some(id)) else {
+            self.notifications
+                .push(Toast::error("This preset no longer exists."));
+            return None;
+        };
+
         let Content::Kline {
             chart: Some(chart), ..
         } = &mut self.content
         else {
-            return;
+            return None;
         };
-        if let Ok(PresetResponse::Created(id)) = &response {
-            chart.selected_preset = Some(*id);
+        let result = chart.apply_preset(id, &preset.settings);
+
+        match result {
+            Ok(action) => {
+                self.reconcile_inspector();
+                self.finish_kline_action(action)
+            }
+            Err(error) => {
+                self.notifications.push(Toast::error(error));
+                None
+            }
         }
-        self.preset_editor.command_completed(response);
+    }
+
+    pub fn preset_command_completed(&mut self, response: Result<Option<uuid::Uuid>, String>) {
+        match response {
+            Ok(Some(id)) => {
+                if let Content::Kline {
+                    chart: Some(chart), ..
+                } = &mut self.content
+                {
+                    chart.selected_preset = Some(id);
+                }
+            }
+            Ok(None) => {}
+            Err(error) => self.notifications.push(Toast::error(error)),
+        }
+        self.preset_editor.command_completed();
     }
 
     fn finish_kline_action(&mut self, action: Option<KlineAction>) -> Option<Effect> {
@@ -1502,15 +1524,18 @@ impl State {
         effect.or_else(|| streams_changed.then_some(Effect::RefreshStreams))
     }
 
-    pub fn clear_chart_preset(&mut self, id: uuid::Uuid) {
+    pub fn clear_missing_preset(&mut self, presets: &PresetLibrary) {
+        let missing = |selected: Option<uuid::Uuid>| {
+            selected.is_some_and(|id| presets.get(Some(id)).is_none())
+        };
         if let Content::Kline { chart, layout, .. } = &mut self.content {
             if let Some(chart) = chart
-                && chart.selected_preset == Some(id)
+                && missing(chart.selected_preset)
             {
                 chart.selected_preset = None;
             }
             if let Some(config) = layout
-                && config.selected_preset == Some(id)
+                && missing(config.selected_preset)
             {
                 config.selected_preset = None;
             }
@@ -1610,7 +1635,10 @@ impl State {
         self.content.settings_snapshot(transfer)
     }
 
-    pub fn apply_settings_snapshot(&mut self, snapshot: &PaneSettingsSnapshot) -> Option<Effect> {
+    pub fn apply_settings_snapshot(
+        &mut self,
+        snapshot: &PaneSettingsSnapshot,
+    ) -> Option<Vec<FetchSpec>> {
         if !self.content.can_apply_settings_snapshot(snapshot) {
             return None;
         }
@@ -1623,9 +1651,11 @@ impl State {
             }
         }
 
-        let action = self.content.apply_settings_snapshot(snapshot);
+        let requests = self.content.apply_settings_snapshot(snapshot);
         self.reconcile_inspector();
-        self.finish_kline_action(action)
+        self.sync_kline_streams();
+
+        requests
     }
 }
 

@@ -1,11 +1,11 @@
 pub mod pane;
 
 use super::DashboardError;
-use crate::layout::{ChartResourcesEvent, ChartResourcesMessage, SharedChartResources};
+use crate::layout::{ChartResourcesMessage, SharedChartResources};
 use crate::{
     connector::{
         client::DataSources,
-        fetcher::{self, FetchedData},
+        fetcher::{self, FetchSpec, FetchedData},
         stream::ResolvedStream,
     },
     screen::sidebar::tickers_table::TickersTable,
@@ -93,6 +93,11 @@ pub enum Event {
         streams: Vec<PersistStreamKind>,
     },
     RequestPalette,
+    ChartPresets {
+        window: window::Id,
+        pane: pane_grid::Pane,
+        command: presets::Command,
+    },
 }
 
 impl Dashboard {
@@ -1256,32 +1261,50 @@ impl Dashboard {
         let Some(state) = self.get_mut_pane(main_window, window, pane) else {
             return Task::none();
         };
-        let effect = state.apply_settings_snapshot(snapshot);
-        self.dispatch_pane_effect(effect, main_window, window, pane, data_sources)
-            .0
-    }
 
-    pub fn chart_resources_changed(
-        &mut self,
-        main_window: window::Id,
-        event: &ChartResourcesEvent,
-    ) {
-        if let ChartResourcesEvent::Presets(Ok(presets::Response::Removed(id))) = event {
-            for (_, _, state) in self.iter_all_panes_mut(main_window) {
-                state.clear_chart_preset(*id);
-            }
+        match state.apply_settings_snapshot(snapshot) {
+            Some(requests) => self.request_fetch(main_window, window, pane, requests, data_sources),
+            None => self.refresh_streams(main_window),
         }
     }
 
-    pub fn chart_resources_updated(
+    fn request_fetch(
         &mut self,
         main_window: window::Id,
         window: window::Id,
         pane: pane_grid::Pane,
-        event: ChartResourcesEvent,
+        requests: Vec<FetchSpec>,
+        data_sources: &DataSources,
+    ) -> Task<Message> {
+        let Some(state) = self.get_mut_pane(main_window, window, pane) else {
+            return Task::none();
+        };
+
+        state
+            .request_fetch(data_sources, requests)
+            .map(Message::from)
+            .chain(self.refresh_streams(main_window))
+    }
+
+    pub fn reconcile_selected_presets(
+        &mut self,
+        main_window: window::Id,
+        presets: &presets::Library,
+    ) {
+        for (_, _, state) in self.iter_all_panes_mut(main_window) {
+            state.clear_missing_preset(presets);
+        }
+    }
+
+    pub fn preset_command_completed(
+        &mut self,
+        main_window: window::Id,
+        window: window::Id,
+        pane: pane_grid::Pane,
+        response: Result<Option<uuid::Uuid>, String>,
     ) {
         if let Some(state) = self.get_mut_pane(main_window, window, pane) {
-            state.chart_resources_updated(event);
+            state.preset_command_completed(response);
         }
     }
 
@@ -1295,16 +1318,10 @@ impl Dashboard {
     ) -> (Task<Message>, Option<Event>) {
         match effect {
             Some(pane::Effect::RefreshStreams) => (self.refresh_streams(main_window), None),
-            Some(pane::Effect::RequestFetch(requests)) => {
-                let Some(state) = self.get_mut_pane(main_window, window, pane) else {
-                    return (Task::none(), None);
-                };
-                let task = state
-                    .request_fetch(data_sources, requests)
-                    .map(Message::from)
-                    .chain(self.refresh_streams(main_window));
-                (task, None)
-            }
+            Some(pane::Effect::RequestFetch(requests)) => (
+                self.request_fetch(main_window, window, pane, requests, data_sources),
+                None,
+            ),
             Some(pane::Effect::SwitchTickersInGroup(ticker_info)) => (
                 self.switch_tickers_in_group(data_sources, main_window, ticker_info),
                 None,
@@ -1314,6 +1331,14 @@ impl Dashboard {
                 (Task::none(), Some(Event::OpenNetworkSettings))
             }
             Some(pane::Effect::OpenUrl(url)) => (Task::none(), Some(Event::OpenUrlRequested(url))),
+            Some(pane::Effect::ChartPresets(command)) => (
+                Task::none(),
+                Some(Event::ChartPresets {
+                    window,
+                    pane,
+                    command,
+                }),
+            ),
             Some(pane::Effect::SharedChartResources(message)) => (
                 Task::done(Message::SharedChartResources {
                     window,

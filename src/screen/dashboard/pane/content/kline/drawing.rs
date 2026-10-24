@@ -10,7 +10,7 @@ use crate::widget::chart::kline::drawing::{
 };
 use crate::widget::{color_swatch_button, tooltip};
 use data::chart::kline::DrawingSettings;
-use data::chart::kline::composition::{ChartComposition, PanelId, PanelRole};
+use data::chart::kline::composition::{ChartComposition, PanelId};
 use data::config::theme::{ThemeAccent, ThemeColor, ThemeColorRole, ThemeColorShade};
 
 use iced::widget::{checkbox, pick_list, row, text, tooltip::Position as TooltipPosition};
@@ -1263,7 +1263,7 @@ impl DrawingTools {
                 }
             }
 
-            grouped.sort_by_key(|(panel_id, _)| panel_id.map(|id| id.0).unwrap_or(u32::MAX));
+            grouped.sort_by_key(|(panel_id, _)| Self::panel_order(composition, *panel_id));
 
             for (panel_id, drawings) in grouped {
                 content = content.push(
@@ -1800,33 +1800,6 @@ impl DrawingTools {
         true
     }
 
-    pub(super) fn panel_drawing_count(&self, panels: &[PanelId]) -> usize {
-        self.drawings
-            .iter()
-            .chain(&self.inactive_drawings)
-            .filter(|drawing| panels.iter().any(|panel| drawing.belongs_to_panel(*panel)))
-            .count()
-    }
-
-    pub(super) fn remap_panel_drawings(&mut self, previous: PanelId, next: PanelId) {
-        for drawing in self.drawings.iter_mut().chain(&mut self.inactive_drawings) {
-            match &mut drawing.object {
-                DrawingObject::Trendline { start, end } | DrawingObject::Box { start, end, .. } => {
-                    if start.panel_id == previous {
-                        start.panel_id = next;
-                    }
-                    if end.panel_id == previous {
-                        end.panel_id = next;
-                    }
-                }
-                DrawingObject::HorizontalLine { panel_id, .. } if *panel_id == previous => {
-                    *panel_id = next
-                }
-                _ => {}
-            }
-        }
-    }
-
     pub(super) fn prune_panel_drawings(&mut self, panel_id: PanelId) -> bool {
         let before = self.drawings.len() + self.inactive_drawings.len();
         self.drawings
@@ -1947,27 +1920,31 @@ impl DrawingTools {
         true
     }
 
+    fn panel_order(composition: &ChartComposition, panel_id: Option<PanelId>) -> usize {
+        panel_id
+            .and_then(|panel_id| {
+                composition
+                    .panels
+                    .iter()
+                    .position(|panel| panel.id == panel_id)
+            })
+            .unwrap_or(usize::MAX)
+    }
+
     fn panel_group_title(composition: &ChartComposition, panel_id: Option<PanelId>) -> String {
-        match panel_id {
-            Some(panel_id) => {
-                let Some(panel) = composition.panel(panel_id) else {
-                    return format!("Panel {}", panel_id.0);
-                };
-
-                if let Some(title) = panel.title.as_deref()
-                    && !title.is_empty()
-                {
-                    return title.to_string();
-                }
-
-                if matches!(panel.role, PanelRole::Primary) {
-                    "Main".to_string()
-                } else {
-                    format!("Panel {}", panel_id.0)
-                }
-            }
-            None => "All Panels".to_string(),
+        let Some(panel_id) = panel_id else {
+            return "All Panels".to_string();
+        };
+        if panel_id.is_main() {
+            return "Main".to_string();
         }
+
+        composition
+            .panel(panel_id)
+            .and_then(|panel| panel.title.as_deref())
+            .filter(|title| !title.is_empty())
+            .unwrap_or("Unavailable panel")
+            .to_string()
     }
 
     fn start_drawing_drag(

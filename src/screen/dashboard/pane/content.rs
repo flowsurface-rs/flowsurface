@@ -8,6 +8,7 @@ use super::{
     state::{Event, Message},
 };
 use crate::{
+    connector::fetcher::FetchSpec,
     screen::dashboard::pane::settings::{
         self, heatmap_shader_cfg_view, ladder_cfg_view, timesales_cfg_view,
     },
@@ -27,7 +28,7 @@ use iced::{
 use std::time::Instant;
 
 use heatmap::HeatmapContent;
-use kline::{Action as KlineAction, ChartCommand, DataUpdate, FetchUpdate, KlineChart};
+use kline::{ChartCommand, DataUpdate, FetchUpdate, KlineChart};
 use ladder::Ladder;
 use timesales::TimeAndSales;
 
@@ -162,7 +163,7 @@ impl Content {
     pub fn apply_settings_snapshot(
         &mut self,
         snapshot: &PaneSettingsSnapshot,
-    ) -> Option<KlineAction> {
+    ) -> Option<Vec<FetchSpec>> {
         match (self, snapshot) {
             (Content::ShaderHeatmap(heatmap), PaneSettingsSnapshot::Heatmap(snapshot)) => {
                 heatmap.set_indicator_config(snapshot.indicators.clone());
