@@ -1,8 +1,8 @@
 use super::Message as BrowserMessage;
 use crate::layout::indicator_catalog::{
-    CatalogState, Entry, Message, SourceChange, SourceOperation, State,
+    CatalogState, Entry, Installation, Message, SourceChange, SourceOperation, State,
 };
-use data::chart::kline::indicators::{IndicatorId, language::PackageOrigin};
+use data::chart::kline::indicators::IndicatorId;
 use iced::{
     Element, Length,
     widget::{button, column, container, row, scrollable, text, text_input},
@@ -125,6 +125,7 @@ impl ViewState {
         use crate::style::{self, Icon, icon_text};
 
         let expanded = self.expanded.as_ref() == Some(&entry.id);
+        let installation = catalog.installation(entry);
         let mut heading = row![
             text(&entry.name)
                 .size(style::text_size::BODY)
@@ -133,7 +134,7 @@ impl ViewState {
         .spacing(4)
         .align_y(iced::Alignment::Center);
 
-        if catalog.is_installed(entry) {
+        if installation.is_installed() {
             heading = heading.push(icon_text(Icon::Checkmark, 12));
         }
 
@@ -162,25 +163,28 @@ impl ViewState {
             return heading.into();
         }
 
-        container(column![heading, self.entry_details(catalog, entry)])
-            .width(Length::Fill)
-            .style(move |theme| {
-                let appearance =
-                    style::button::indicator_row(theme, button::Status::Active, expanded);
-                container::Style {
-                    background: appearance.background,
-                    border: appearance.border,
-                    text_color: Some(appearance.text_color),
-                    ..Default::default()
-                }
-            })
-            .into()
+        container(column![
+            heading,
+            self.entry_details(catalog, entry, installation)
+        ])
+        .width(Length::Fill)
+        .style(move |theme| {
+            let appearance = style::button::indicator_row(theme, button::Status::Active, expanded);
+            container::Style {
+                background: appearance.background,
+                border: appearance.border,
+                text_color: Some(appearance.text_color),
+                ..Default::default()
+            }
+        })
+        .into()
     }
 
     fn entry_details<'a>(
         &'a self,
         catalog: &'a State,
         entry: &'a Entry,
+        installation: Installation,
     ) -> Element<'a, BrowserMessage> {
         use crate::{
             style,
@@ -194,17 +198,12 @@ impl ViewState {
             && id == &entry.id
         {
             "Installing..."
-        } else if catalog.source_change(&entry.id) == Some(SourceChange::Installed) {
-            "Installed"
-        } else if catalog.source_change(&entry.id) == Some(SourceChange::Removed) {
-            "Install"
-        } else if let Some(registration) = entry.registration() {
-            match registration.origin {
-                PackageOrigin::Bundled => "Bundled",
-                PackageOrigin::Installed => "Installed",
-            }
         } else {
-            "Install"
+            match installation {
+                Installation::Installed | Installation::PendingInstall => "Installed",
+                Installation::Bundled => "Bundled",
+                Installation::NotInstalled | Installation::PendingRemove => "Install",
+            }
         };
 
         let description = entry.description.as_deref().unwrap_or("Not provided");
@@ -246,7 +245,7 @@ impl ViewState {
             .width(Length::Fill)
             .align_y(iced::Alignment::Center);
 
-        if catalog.is_installed(entry) {
+        if installation.is_installed() {
             actions = actions.push(crate::widget::tooltip(
                 button(crate::style::icon_text(crate::style::Icon::TrashBin, 12))
                     .style(|theme, status| {
@@ -260,7 +259,7 @@ impl ViewState {
                     .padding([4, 6])
                     .on_press_maybe(
                         catalog
-                            .can_remove(entry)
+                            .can_remove(installation)
                             .then(|| BrowserMessage::Catalog(Message::Remove(entry.id.clone()))),
                     ),
                 Some("Remove indicator"),
@@ -271,17 +270,17 @@ impl ViewState {
         actions = actions.push(
             button(text(label)).on_press_maybe(
                 catalog
-                    .can_install(entry)
+                    .can_install(installation)
                     .then(|| BrowserMessage::Catalog(Message::Install(entry.id.clone()))),
             ),
         );
         details = details.push(actions);
 
-        match catalog.source_change(&entry.id) {
-            Some(SourceChange::Installed) => {
+        match installation {
+            Installation::PendingInstall => {
                 details = details.push(crate::widget::text::muted("Restart to use"));
             }
-            Some(SourceChange::Removed) if entry.registration().is_some() => {
+            Installation::PendingRemove => {
                 details = details.push(crate::widget::text::muted("Restart to apply removal"));
             }
             _ => {}

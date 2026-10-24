@@ -1,4 +1,4 @@
-use data::chart::kline::indicators::{self, IndicatorId, language::PackageOrigin};
+use data::chart::kline::indicators::{self, IndicatorId, SourceWrite, language::PackageOrigin};
 use iced::Task;
 use serde::Deserialize;
 use std::{
@@ -92,6 +92,21 @@ pub enum SourceChange {
     Removed,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum Installation {
+    Bundled,
+    Installed,
+    PendingInstall,
+    PendingRemove,
+    NotInstalled,
+}
+
+impl Installation {
+    pub fn is_installed(self) -> bool {
+        matches!(self, Self::Installed | Self::PendingInstall)
+    }
+}
+
 #[derive(Default)]
 pub enum SourceOperation {
     #[default]
@@ -122,8 +137,16 @@ impl State {
         &self.operation
     }
 
-    pub fn source_change(&self, id: &IndicatorId) -> Option<SourceChange> {
-        self.source_changes.get(id).copied()
+    pub fn installation(&self, entry: &Entry) -> Installation {
+        match self.source_changes.get(&entry.id) {
+            Some(SourceChange::Installed) => Installation::PendingInstall,
+            Some(SourceChange::Removed) => Installation::PendingRemove,
+            None => match entry.registration().map(|registration| registration.origin) {
+                Some(PackageOrigin::Installed) => Installation::Installed,
+                Some(PackageOrigin::Bundled) => Installation::Bundled,
+                None => Installation::NotInstalled,
+            },
+        }
     }
 
     fn open(&mut self, client: &reqwest::Client) -> Task<Message> {
@@ -154,28 +177,34 @@ impl State {
         !matches!(self.catalog, CatalogState::Loading(_)) && self.can_request()
     }
 
-    pub fn can_install(&self, entry: &Entry) -> bool {
-        !matches!(self.operation, SourceOperation::Running { .. })
-            && self.source_changes.get(&entry.id) != Some(&SourceChange::Installed)
-            && (entry.registration().is_none()
-                || self.source_changes.get(&entry.id) == Some(&SourceChange::Removed))
-            && self.can_request()
+    pub fn can_install(&self, installation: Installation) -> bool {
+        let installable = matches!(
+            installation,
+            Installation::NotInstalled | Installation::PendingRemove
+        );
+
+        installable && !self.is_running() && self.can_request()
     }
 
-    pub fn is_installed(&self, entry: &Entry) -> bool {
-        match self.source_changes.get(&entry.id) {
-            Some(SourceChange::Installed) => true,
-            Some(SourceChange::Removed) => false,
-            None => entry
-                .registration()
-                .is_some_and(|registration| registration.origin == PackageOrigin::Installed),
+    pub fn can_remove(&self, installation: Installation) -> bool {
+        installation.is_installed() && !self.is_running() && self.can_request()
+    }
+
+    fn is_running(&self) -> bool {
+        matches!(self.operation, SourceOperation::Running { .. })
+    }
+
+    fn record_change(&mut self, id: IndicatorId, change: SourceChange) {
+        let loaded = indicators::catalog().get(&id).is_some();
+        let pending = match change {
+            SourceChange::Installed => !loaded,
+            SourceChange::Removed => loaded,
+        };
+        if pending {
+            self.source_changes.insert(id, change);
+        } else {
+            self.source_changes.remove(&id);
         }
-    }
-
-    pub fn can_remove(&self, entry: &Entry) -> bool {
-        self.is_installed(entry)
-            && !matches!(self.operation, SourceOperation::Running { .. })
-            && self.can_request()
     }
 
     fn refresh(&mut self, client: &reqwest::Client) -> Task<Message> {
@@ -203,25 +232,28 @@ impl State {
                     return Task::none();
                 };
 
-                if !self.can_install(&entry) {
+                let installation = self.installation(&entry);
+                if !self.can_install(installation) {
                     return Task::none();
                 }
 
                 let base = catalog.source_base_path.clone();
-                let restore = self.source_changes.get(&id) == Some(&SourceChange::Removed);
+                let mode = match installation {
+                    Installation::PendingRemove => SourceWrite::Restore,
+                    _ => SourceWrite::Install,
+                };
                 self.operation = SourceOperation::Running {
                     id: id.clone(),
                     change: SourceChange::Installed,
                 };
 
-                return Task::perform(
-                    entry.install(base, client.clone(), restore),
-                    move |result| Message::SourceChanged {
+                return Task::perform(entry.install(base, client.clone(), mode), move |result| {
+                    Message::SourceChanged {
                         id: id.clone(),
                         change: SourceChange::Installed,
                         result,
-                    },
-                );
+                    }
+                });
             }
             Message::Remove(id) => {
                 let Some(entry) = self
@@ -232,7 +264,8 @@ impl State {
                     return Task::none();
                 };
 
-                if !self.can_remove(entry) {
+                let installation = self.installation(entry);
+                if !self.can_remove(installation) {
                     return Task::none();
                 }
 
@@ -242,14 +275,7 @@ impl State {
                 };
 
                 return Task::perform(
-                    async move {
-                        let result = tokio::task::spawn_blocking(move || {
-                            indicators::remove_indicator_source(&id)
-                        })
-                        .await
-                        .map_err(|error| error.to_string())?;
-                        result.map_err(FetchError::from)
-                    },
+                    blocking(move || indicators::remove_indicator_source(&id)),
                     {
                         let id = entry.id.clone();
                         move |result| Message::SourceChanged {
@@ -271,14 +297,7 @@ impl State {
             }
             Message::SourceChanged { id, change, result } => match result {
                 Ok(()) => {
-                    let restored = change == SourceChange::Installed
-                        && self.source_changes.get(&id) == Some(&SourceChange::Removed);
-                    if restored && indicators::catalog().get(&id).is_some() {
-                        self.source_changes.remove(&id);
-                    } else {
-                        self.source_changes.insert(id, change);
-                    }
-
+                    self.record_change(id, change);
                     self.operation = SourceOperation::Idle;
                 }
                 Err(error) => self.operation = SourceOperation::Failed { id, error },
@@ -364,7 +383,7 @@ impl Entry {
         self,
         base: String,
         client: reqwest::Client,
-        restore: bool,
+        mode: SourceWrite,
     ) -> Result<(), FetchError> {
         let mut url = url::Url::parse(API_ORIGIN).map_err(|error| error.to_string())?;
         url.set_path(&base);
@@ -389,17 +408,17 @@ impl Entry {
             );
         }
 
-        tokio::task::spawn_blocking(move || {
-            if restore {
-                indicators::restore_indicator_source(&self.id, &bytes)
-            } else {
-                indicators::install_indicator_source(&self.id, &bytes)
-            }
-        })
-        .await
-        .map_err(|error| error.to_string())?
-        .map_err(Into::into)
+        blocking(move || indicators::write_indicator_source(&self.id, &bytes, mode)).await
     }
+}
+
+async fn blocking(
+    work: impl FnOnce() -> Result<(), String> + Send + 'static,
+) -> Result<(), FetchError> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|error| format!("Indicator worker failed: {error}"))?
+        .map_err(FetchError::from)
 }
 
 async fn download(
