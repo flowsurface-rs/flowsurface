@@ -157,7 +157,8 @@ impl State {
     pub fn can_install(&self, entry: &Entry) -> bool {
         !matches!(self.operation, SourceOperation::Running { .. })
             && self.source_changes.get(&entry.id) != Some(&SourceChange::Installed)
-            && entry.registration().is_none()
+            && (entry.registration().is_none()
+                || self.source_changes.get(&entry.id) == Some(&SourceChange::Removed))
             && self.can_request()
     }
 
@@ -205,17 +206,19 @@ impl State {
                     return Task::none();
                 }
                 let base = catalog.source_base_path.clone();
+                let restore = self.source_changes.get(&id) == Some(&SourceChange::Removed);
                 self.operation = SourceOperation::Running {
                     id: id.clone(),
                     change: SourceChange::Installed,
                 };
-                return Task::perform(entry.install(base, client.clone()), move |result| {
-                    Message::SourceChanged {
+                return Task::perform(
+                    entry.install(base, client.clone(), restore),
+                    move |result| Message::SourceChanged {
                         id: id.clone(),
                         change: SourceChange::Installed,
                         result,
-                    }
-                });
+                    },
+                );
             }
             Message::Remove(id) => {
                 let Some(entry) = self
@@ -262,7 +265,13 @@ impl State {
             }
             Message::SourceChanged { id, change, result } => match result {
                 Ok(()) => {
-                    self.source_changes.insert(id, change);
+                    let restored = change == SourceChange::Installed
+                        && self.source_changes.get(&id) == Some(&SourceChange::Removed);
+                    if restored && indicators::catalog().get(&id).is_some() {
+                        self.source_changes.remove(&id);
+                    } else {
+                        self.source_changes.insert(id, change);
+                    }
                     self.operation = SourceOperation::Idle;
                 }
                 Err(error) => self.operation = SourceOperation::Failed { id, error },
@@ -339,7 +348,12 @@ impl Entry {
         indicators::catalog().get(&self.id)
     }
 
-    async fn install(self, base: String, client: reqwest::Client) -> Result<(), FetchError> {
+    async fn install(
+        self,
+        base: String,
+        client: reqwest::Client,
+        restore: bool,
+    ) -> Result<(), FetchError> {
         let mut url = url::Url::parse(API_ORIGIN).map_err(|error| error.to_string())?;
         url.set_path(&base);
         url.path_segments_mut()
@@ -360,10 +374,16 @@ impl Entry {
                     .into(),
             );
         }
-        tokio::task::spawn_blocking(move || indicators::install_indicator_source(&self.id, &bytes))
-            .await
-            .map_err(|error| error.to_string())?
-            .map_err(Into::into)
+        tokio::task::spawn_blocking(move || {
+            if restore {
+                indicators::restore_indicator_source(&self.id, &bytes)
+            } else {
+                indicators::install_indicator_source(&self.id, &bytes)
+            }
+        })
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(Into::into)
     }
 }
 

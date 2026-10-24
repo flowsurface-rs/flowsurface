@@ -32,14 +32,10 @@ impl ViewState {
 
         let loading = matches!(catalog.catalog_state(), CatalogState::Loading(_));
         let header = row![
-            tooltip(
-                button(icon_text(Icon::Return, 14))
-                    .style(|theme, status| style::button::transparent(theme, status, false))
-                    .padding([4, 6])
-                    .on_press(BrowserMessage::Back),
-                Some("Back to indicators"),
-                Position::Bottom,
-            ),
+            button(icon_text(Icon::Return, 14))
+                .style(|theme, status| style::button::transparent(theme, status, false))
+                .padding([4, 6])
+                .on_press(BrowserMessage::Back),
             text_input("Search catalog...", &self.search)
                 .style(|theme, status| style::validated_text_input(theme, status, true))
                 .on_input(BrowserMessage::CatalogSearchChanged)
@@ -47,7 +43,13 @@ impl ViewState {
                 .width(Length::Fill),
             tooltip(
                 button(icon_text(Icon::Refresh, 14))
-                    .style(|theme, status| style::button::transparent(theme, status, false))
+                    .style(|theme, status| {
+                        let mut appearance = style::button::transparent(theme, status, false);
+                        if status == button::Status::Disabled {
+                            appearance.text_color = theme.extended_palette().secondary.strong.color;
+                        }
+                        appearance
+                    })
                     .padding([4, 6])
                     .on_press_maybe(
                         catalog
@@ -124,7 +126,7 @@ impl ViewState {
         ]
         .spacing(4)
         .align_y(iced::Alignment::Center);
-        if !expanded && catalog.is_installed(entry) {
+        if catalog.is_installed(entry) {
             heading = heading.push(icon_text(Icon::Checkmark, 12));
         }
         let heading = button(heading.push(icon_text(
@@ -137,9 +139,12 @@ impl ViewState {
         )))
         .width(Length::Fill)
         .style(move |theme, status| {
-            let mut appearance = style::button::indicator_row(theme, status, expanded);
+            let mut appearance = style::button::indicator_row(theme, status, false);
             if expanded {
                 appearance.border.width = 0.0;
+                if status == button::Status::Active {
+                    appearance.background = None;
+                }
             }
             appearance
         })
@@ -149,13 +154,9 @@ impl ViewState {
         }
         container(column![heading, self.entry_details(catalog, entry)])
             .width(Length::Fill)
-            .padding(2)
             .style(move |theme| {
-                let appearance = style::button::indicator_row(
-                    theme,
-                    iced::widget::button::Status::Active,
-                    expanded,
-                );
+                let appearance =
+                    style::button::indicator_row(theme, button::Status::Active, expanded);
                 container::Style {
                     background: appearance.background,
                     border: appearance.border,
@@ -171,19 +172,22 @@ impl ViewState {
         catalog: &'a State,
         entry: &'a Entry,
     ) -> Element<'a, BrowserMessage> {
-        let label = if let SourceOperation::Running { id, change } = catalog.operation()
+        use crate::{
+            style,
+            widget::inspector::{MODAL_SECTION_SPACING, setting_section},
+        };
+
+        let label = if let SourceOperation::Running {
+            id,
+            change: SourceChange::Installed,
+        } = catalog.operation()
             && id == &entry.id
         {
-            match change {
-                SourceChange::Installed => "Installing...",
-                SourceChange::Removed => "Removing...",
-            }
+            "Installing..."
         } else if catalog.source_change(&entry.id) == Some(SourceChange::Installed) {
             "Installed"
-        } else if catalog.source_change(&entry.id) == Some(SourceChange::Removed)
-            && entry.registration().is_some()
-        {
-            "Removed"
+        } else if catalog.source_change(&entry.id) == Some(SourceChange::Removed) {
+            "Install"
         } else if let Some(registration) = entry.registration() {
             match registration.origin {
                 PackageOrigin::Bundled => "Bundled",
@@ -192,17 +196,30 @@ impl ViewState {
         } else {
             "Install"
         };
-        let mut details = column![crate::widget::text::muted(entry.id.as_str())].spacing(6);
-        if let Some(description) = &entry.description {
-            details = details.push(text(description));
-        }
-        if let Some(author) = &entry.author {
-            details = details.push(crate::widget::text::muted(format!("By {}", author.name)));
-        }
-        details = details.push(crate::widget::text::muted(format!(
-            "Chart bases: {}",
-            entry.bases.join(", ")
-        )));
+        let description = entry.description.as_deref().unwrap_or("Not provided");
+        let author = entry
+            .author
+            .as_ref()
+            .map_or("Not provided", |author| author.name.as_str());
+        let bases = entry.bases.join(", ");
+
+        let mut details = column![
+            crate::widget::text::muted(entry.id.as_str()),
+            setting_section("Author", text(author).style(style::text_color::secondary))
+                .with_modal_container()
+                .into_element(),
+            setting_section(
+                "Description",
+                text(description).style(style::text_color::secondary),
+            )
+            .with_modal_container()
+            .into_element(),
+            setting_section("Basis", text(bases).style(style::text_color::secondary))
+                .with_modal_container()
+                .into_element(),
+        ]
+        .spacing(MODAL_SECTION_SPACING)
+        .width(Length::Fill);
         if let SourceOperation::Failed { id, error } = catalog.operation()
             && id == &entry.id
         {
@@ -211,31 +228,38 @@ impl ViewState {
                 crate::widget::BannerKind::Error,
             ));
         }
-        let mut actions = row![
+        let mut actions = row![iced::widget::space::horizontal()]
+            .spacing(8)
+            .width(Length::Fill)
+            .align_y(iced::Alignment::Center);
+        if catalog.is_installed(entry) {
+            actions = actions.push(crate::widget::tooltip(
+                button(crate::style::icon_text(crate::style::Icon::TrashBin, 12))
+                    .style(|theme, status| {
+                        let mut appearance = style::button::cancel(theme, status, false);
+                        if status == button::Status::Disabled {
+                            appearance.background = None;
+                            appearance.text_color = theme.extended_palette().secondary.strong.color;
+                        }
+                        appearance
+                    })
+                    .padding([4, 6])
+                    .on_press_maybe(
+                        catalog
+                            .can_remove(entry)
+                            .then(|| BrowserMessage::Catalog(Message::Remove(entry.id.clone()))),
+                    ),
+                Some("Remove indicator"),
+                iced::widget::tooltip::Position::Bottom,
+            ));
+        }
+        actions = actions.push(
             button(text(label)).on_press_maybe(
                 catalog
                     .can_install(entry)
                     .then(|| BrowserMessage::Catalog(Message::Install(entry.id.clone()))),
-            )
-        ]
-        .width(Length::Fill)
-        .align_y(iced::Alignment::Center);
-        if catalog.is_installed(entry) {
-            actions = actions
-                .push(iced::widget::space::horizontal())
-                .push(crate::widget::tooltip(
-                    button(crate::style::icon_text(crate::style::Icon::TrashBin, 12))
-                        .style(|theme, status| crate::style::button::cancel(theme, status, false))
-                        .padding([4, 6])
-                        .on_press_maybe(
-                            catalog.can_remove(entry).then(|| {
-                                BrowserMessage::Catalog(Message::Remove(entry.id.clone()))
-                            }),
-                        ),
-                    Some("Remove indicator"),
-                    iced::widget::tooltip::Position::Bottom,
-                ));
-        }
+            ),
+        );
         details = details.push(actions);
         match catalog.source_change(&entry.id) {
             Some(SourceChange::Installed) => {
@@ -247,7 +271,7 @@ impl ViewState {
             _ => {}
         }
         container(details)
-            .padding([6, 8])
+            .padding([6, 10])
             .width(Length::Fill)
             .into()
     }

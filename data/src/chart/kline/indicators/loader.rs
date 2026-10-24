@@ -41,7 +41,23 @@ fn installed_sources(directory: &Path) -> Result<Vec<language::LoadedIndicatorSo
 }
 
 pub fn install_indicator_source(id: &super::IndicatorId, source: &[u8]) -> Result<(), String> {
-    if super::catalog().get(id).is_some() {
+    write_indicator_source(id, source, false)
+}
+
+/// Rewrites a source whose file was removed while the running catalog still
+/// holds it loaded, so a removal can be undone without a restart.
+pub fn restore_indicator_source(id: &super::IndicatorId, source: &[u8]) -> Result<(), String> {
+    write_indicator_source(id, source, true)
+}
+
+fn write_indicator_source(
+    id: &super::IndicatorId,
+    source: &[u8],
+    allow_loaded_installed: bool,
+) -> Result<(), String> {
+    if let Some(registration) = super::catalog().get(id)
+        && !(allow_loaded_installed && registration.origin == language::PackageOrigin::Installed)
+    {
         return Err("This indicator is already loaded".to_owned());
     }
 

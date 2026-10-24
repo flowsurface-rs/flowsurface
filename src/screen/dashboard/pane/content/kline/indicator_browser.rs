@@ -272,26 +272,12 @@ pub fn view<'a>(
 
     let available_column = available_column(available_indicators, available_studies);
 
-    let search = row![
-        text_input("Search indicators and studies...", picker.search_query())
-            .style(|theme, status| style::validated_text_input(theme, status, true))
-            .on_input(|query| KlineMessage::IndicatorBrowser(Message::SearchChanged(query)))
-            .id(picker.search_box_id())
-            .padding(6)
-            .width(Length::Fill),
-        iced::widget::tooltip(
-            button(iced::widget::text("+"))
-                .style(|theme, status| style::button::transparent(theme, status, false))
-                .padding([4, 6])
-                .on_press(KlineMessage::IndicatorBrowser(Message::OpenCatalog)),
-            container(iced::widget::text("Get more indicators"))
-                .style(style::tooltip)
-                .padding(8),
-            Position::Bottom,
-        ),
-    ]
-    .align_y(Alignment::Center)
-    .spacing(6);
+    let search = text_input("Search indicators and studies...", picker.search_query())
+        .style(|theme, status| style::validated_text_input(theme, status, true))
+        .on_input(|query| KlineMessage::IndicatorBrowser(Message::SearchChanged(query)))
+        .id(picker.search_box_id())
+        .padding(6)
+        .width(Length::Fill);
 
     let scrollable = scrollable::Scrollable::with_direction(
         available_column,
@@ -315,14 +301,12 @@ fn available_column(
     let study_groups = study_group_views(studies);
 
     let mut sections = Vec::with_capacity(2);
-    if !indicator_groups.is_empty() {
-        sections.push(InspectorSection::new(
-            crate::widget::text::title("Indicators"),
-            iced::widget::Column::with_children(indicator_groups)
-                .spacing(10)
-                .width(Length::Fill),
-        ));
-    }
+    sections.push(InspectorSection::new(
+        indicators_title(),
+        iced::widget::Column::with_children(indicator_groups)
+            .spacing(10)
+            .width(Length::Fill),
+    ));
     if !study_groups.is_empty() {
         sections.push(InspectorSection::new(
             crate::widget::text::title("Studies"),
@@ -333,6 +317,24 @@ fn available_column(
     }
 
     InspectorContent::new(sections).into_element()
+}
+
+fn indicators_title() -> Element<'static, KlineMessage> {
+    row![
+        crate::widget::text::title("Indicators"),
+        space::horizontal(),
+        iced::widget::tooltip(
+            button(crate::widget::text::title("+"))
+                .style(|theme, status| style::button::transparent(theme, status, false))
+                .on_press(KlineMessage::IndicatorBrowser(Message::OpenCatalog)),
+            container(iced::widget::text("Get more indicators"))
+                .style(style::tooltip)
+                .padding(8),
+            Position::Bottom,
+        ),
+    ]
+    .align_y(Alignment::Center)
+    .into()
 }
 
 fn indicator_group_views(
