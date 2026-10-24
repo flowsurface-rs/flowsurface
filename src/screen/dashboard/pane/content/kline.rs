@@ -756,7 +756,9 @@ impl KlineChart {
         &'a self,
         catalog: &'a indicator_catalog::State,
     ) -> iced::Element<'a, Message> {
-        indicator_browser::view(self, &self.indicator_browser, catalog)
+        self.indicator_browser
+            .view(self, catalog)
+            .map(Message::IndicatorBrowser)
     }
 
     pub fn indicator_browser_go_back(&mut self) -> bool {

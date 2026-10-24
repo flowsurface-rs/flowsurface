@@ -202,15 +202,18 @@ impl State {
                 else {
                     return Task::none();
                 };
+
                 if !self.can_install(&entry) {
                     return Task::none();
                 }
+
                 let base = catalog.source_base_path.clone();
                 let restore = self.source_changes.get(&id) == Some(&SourceChange::Removed);
                 self.operation = SourceOperation::Running {
                     id: id.clone(),
                     change: SourceChange::Installed,
                 };
+
                 return Task::perform(
                     entry.install(base, client.clone(), restore),
                     move |result| Message::SourceChanged {
@@ -228,13 +231,16 @@ impl State {
                 else {
                     return Task::none();
                 };
+
                 if !self.can_remove(entry) {
                     return Task::none();
                 }
+
                 self.operation = SourceOperation::Running {
                     id: id.clone(),
                     change: SourceChange::Removed,
                 };
+
                 return Task::perform(
                     async move {
                         let result = tokio::task::spawn_blocking(move || {
@@ -272,6 +278,7 @@ impl State {
                     } else {
                         self.source_changes.insert(id, change);
                     }
+
                     self.operation = SourceOperation::Idle;
                 }
                 Err(error) => self.operation = SourceOperation::Failed { id, error },
@@ -289,6 +296,7 @@ impl Catalog {
             client,
         )
         .await?;
+
         let mut catalog: Self =
             serde_json::from_slice(&bytes).map_err(|error| format!("Invalid catalog: {error}"))?;
         catalog.validate()?;
@@ -304,6 +312,7 @@ impl Catalog {
                 "This catalog requires an unsupported format or language version".to_owned(),
             );
         }
+
         if self.source_revision.len() != 40
             || !self
                 .source_revision
@@ -313,11 +322,13 @@ impl Catalog {
         {
             return Err("Invalid catalog source revision".to_owned());
         }
+
         let mut ids = BTreeSet::new();
         for entry in &self.indicators {
             if !ids.insert(&entry.id) {
                 return Err("Catalog contains duplicate IDs".to_owned());
             }
+
             if !entry.path.ends_with(".ind")
                 || entry.path.split('/').any(|part| {
                     part.is_empty()
@@ -328,6 +339,7 @@ impl Catalog {
             {
                 return Err(format!("Invalid source path for {}", entry.id.as_str()));
             }
+
             if entry.size_bytes == 0
                 || entry.size_bytes > indicator_engine::CompileLimits::default().max_source_bytes
                 || entry.sha256.len() != 64
@@ -360,7 +372,9 @@ impl Entry {
             .map_err(|()| "Invalid source URL".to_owned())?
             .pop_if_empty()
             .extend(self.path.split('/'));
+
         let bytes = download(url.into(), self.size_bytes, client).await?;
+
         let digest = ring::digest::digest(&ring::digest::SHA256, &bytes);
         let checksum = digest
             .as_ref()
@@ -374,6 +388,7 @@ impl Entry {
                     .into(),
             );
         }
+
         tokio::task::spawn_blocking(move || {
             if restore {
                 indicators::restore_indicator_source(&self.id, &bytes)
@@ -397,6 +412,7 @@ async fn download(
         .send()
         .await
         .map_err(|error| error.to_string())?;
+
     if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
         let seconds = response
             .headers()
@@ -421,15 +437,18 @@ async fn download(
             retry_at: Some(Instant::now() + Duration::from_secs(seconds)),
         });
     }
+
     if !response.status().is_success() {
         return Err(format!("Indicator server returned {}", response.status()).into());
     }
+
     if response
         .content_length()
         .is_some_and(|length| length > limit as u64)
     {
         return Err("Server response exceeds the allowed size".to_owned().into());
     }
+
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
         if chunk.len() > limit.saturating_sub(bytes.len()) {

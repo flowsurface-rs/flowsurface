@@ -78,6 +78,7 @@ fn write_indicator_source(
         .expect("Validated indicator ID has a namespace");
     let destination_directory = directory.join(namespace);
     let destination = destination_directory.join(format!("{name}.ind"));
+
     let source_text = std::str::from_utf8(source).map_err(|error| error.to_string())?;
     let report = language::load_compiled_report(
         [(

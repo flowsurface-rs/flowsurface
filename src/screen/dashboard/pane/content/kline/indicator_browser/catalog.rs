@@ -67,6 +67,7 @@ impl ViewState {
         .spacing(6)
         .align_y(iced::Alignment::Center);
         let mut content = column![header].spacing(12);
+
         if let CatalogState::Failed { error, .. } = catalog.catalog_state() {
             content = content.push(crate::widget::banner(
                 &error.message,
@@ -75,9 +76,11 @@ impl ViewState {
         }
 
         let mut entries = column![].spacing(2);
+
         if let Some(manifest) = catalog.catalog_state().catalog() {
             let query = self.search.trim().to_lowercase();
             let mut count = 0;
+
             for entry in &manifest.indicators {
                 if !entry.name.to_lowercase().contains(&query)
                     && !entry.id.as_str().to_lowercase().contains(&query)
@@ -87,6 +90,7 @@ impl ViewState {
                 count += 1;
                 entries = entries.push(self.entry_view(catalog, entry));
             }
+
             if count == 0 {
                 entries = entries.push(text(if manifest.indicators.is_empty() {
                     "No indicators are available."
@@ -97,6 +101,7 @@ impl ViewState {
         } else if loading {
             entries = entries.push(text("Loading indicators..."));
         }
+
         let list = scrollable::Scrollable::with_direction(
             entries,
             scrollable::Direction::Vertical(
@@ -105,6 +110,7 @@ impl ViewState {
         )
         .height(Length::Fill)
         .style(style::scroll_bar);
+
         container(content.push(list))
             .width(Length::Fill)
             .height(Length::Fill)
@@ -126,9 +132,11 @@ impl ViewState {
         ]
         .spacing(4)
         .align_y(iced::Alignment::Center);
+
         if catalog.is_installed(entry) {
             heading = heading.push(icon_text(Icon::Checkmark, 12));
         }
+
         let heading = button(heading.push(icon_text(
             if expanded {
                 Icon::ChevronDown
@@ -149,9 +157,11 @@ impl ViewState {
             appearance
         })
         .on_press(BrowserMessage::ToggleCatalogEntry(entry.id.clone()));
+
         if !expanded {
             return heading.into();
         }
+
         container(column![heading, self.entry_details(catalog, entry)])
             .width(Length::Fill)
             .style(move |theme| {
@@ -196,6 +206,7 @@ impl ViewState {
         } else {
             "Install"
         };
+
         let description = entry.description.as_deref().unwrap_or("Not provided");
         let author = entry
             .author
@@ -220,6 +231,7 @@ impl ViewState {
         ]
         .spacing(MODAL_SECTION_SPACING)
         .width(Length::Fill);
+
         if let SourceOperation::Failed { id, error } = catalog.operation()
             && id == &entry.id
         {
@@ -228,10 +240,12 @@ impl ViewState {
                 crate::widget::BannerKind::Error,
             ));
         }
+
         let mut actions = row![iced::widget::space::horizontal()]
             .spacing(8)
             .width(Length::Fill)
             .align_y(iced::Alignment::Center);
+
         if catalog.is_installed(entry) {
             actions = actions.push(crate::widget::tooltip(
                 button(crate::style::icon_text(crate::style::Icon::TrashBin, 12))
@@ -253,6 +267,7 @@ impl ViewState {
                 iced::widget::tooltip::Position::Bottom,
             ));
         }
+
         actions = actions.push(
             button(text(label)).on_press_maybe(
                 catalog
@@ -261,6 +276,7 @@ impl ViewState {
             ),
         );
         details = details.push(actions);
+
         match catalog.source_change(&entry.id) {
             Some(SourceChange::Installed) => {
                 details = details.push(crate::widget::text::muted("Restart to use"));
@@ -270,6 +286,7 @@ impl ViewState {
             }
             _ => {}
         }
+
         container(details)
             .padding([6, 10])
             .width(Length::Fill)
