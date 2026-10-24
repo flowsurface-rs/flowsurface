@@ -10,7 +10,7 @@ pub type ContractSize = Power10<-4, 6>;
 pub type MinTicksize = Power10<-11, 2>;
 pub type MinQtySize = Power10<-6, 8>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq, PartialOrd, Ord)]
 pub struct Power10<const MIN: i8, const MAX: i8> {
     pub power: i8,
 }
