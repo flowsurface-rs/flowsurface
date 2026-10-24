@@ -1229,6 +1229,8 @@ impl std::fmt::Display for LegendVisibility {
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub settings: SettingsSnapshot,
+    #[serde(default)]
+    pub selected_preset: Option<uuid::Uuid>,
     pub drawings: Vec<DrawingConfig>,
     pub active_drawing_tool: DrawingTool,
     pub floating_toolbar_position: FloatingToolbarPosition,
@@ -1240,6 +1242,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             settings: SettingsSnapshot::default(),
+            selected_preset: None,
             drawings: Vec::new(),
             active_drawing_tool: DrawingTool::Cursor,
             floating_toolbar_position: FloatingToolbarPosition::default(),
@@ -1275,6 +1278,7 @@ impl ChartOptions {
 #[serde(default)]
 pub struct SettingsSnapshot {
     pub primary_scale_inverted: bool,
+    pub primary_series_style: Option<PrimarySeriesStyle>,
     #[serde(flatten)]
     pub options: ChartOptions,
     pub panels: Vec<PanelConfig>,
@@ -1286,34 +1290,69 @@ pub struct SettingsSnapshot {
     pub indicator_instances: Vec<IndicatorInstance>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PrimarySeriesStyle {
+    pub color: SeriesColor,
+    pub line_width: u8,
+    pub stroke_style: LineStrokeStyle,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct ChartSettings {
     pub drawing: drawing::DrawingSettings,
 }
 
 impl SettingsSnapshot {
+    pub fn normalized_preset(self) -> Self {
+        let mut settings = self.preset_settings();
+        settings.indicator_instances = settings
+            .indicator_instances
+            .into_iter()
+            .map(IndicatorInstance::normalized)
+            .collect();
+        settings
+    }
+
+    pub fn preset_settings(mut self) -> Self {
+        self.tpo_profile_edits = TpoBoundaryEdits::default();
+        for panel in &mut self.panels {
+            panel
+                .layers
+                .retain(|layer| !matches!(layer.source, LayerSource::Comparison(_)));
+            if panel
+                .base_layer
+                .is_some_and(|id| !panel.layers.iter().any(|layer| layer.id == id))
+            {
+                panel.base_layer = panel.layers.first().map(|layer| layer.id);
+            }
+        }
+        self
+    }
+
     pub fn indicator_instance_store(&self) -> IndicatorInstanceStore {
-        indicator_instance_store(&self.indicator_instances)
+        if self.panels.is_empty() && self.indicator_instances.is_empty() {
+            let kind = IndicatorId::parse("core.volume").expect("static ID is valid");
+            IndicatorInstanceStore::from_instances(vec![IndicatorInstance::new(
+                IndicatorInstanceId::default_for(&kind),
+                kind,
+            )])
+        } else {
+            IndicatorInstanceStore::from_instances(self.indicator_instances.clone())
+        }
     }
 }
 
-fn indicator_instance_store(instances: &[IndicatorInstance]) -> IndicatorInstanceStore {
-    if !instances.is_empty() {
-        return IndicatorInstanceStore::from_instances(instances.to_vec());
-    }
-
-    let kind = IndicatorId::parse("core.volume").expect("static ID is valid");
-    IndicatorInstanceStore::from_instances(vec![IndicatorInstance::new(
-        IndicatorInstanceId::default_for(&kind),
-        kind,
-    )])
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChartPreset {
+    pub id: uuid::Uuid,
+    pub name: String,
+    pub settings: SettingsSnapshot,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PanelConfig {
-    pub id: u32,
-    pub role: PanelRole,
+    pub id: composition::PanelId,
     pub presentation: composition::PanelPresentation,
     #[serde(default)]
     pub named_pane: Option<u32>,
@@ -1329,8 +1368,7 @@ pub struct PanelConfig {
 impl Default for PanelConfig {
     fn default() -> Self {
         Self {
-            id: 0,
-            role: PanelRole::Auxiliary,
+            id: composition::PanelId::Main,
             presentation: composition::PanelPresentation::Plot,
             named_pane: None,
             title: None,
@@ -1379,8 +1417,7 @@ impl Default for LayerConfig {
 
 pub use composition::{
     AxisBinding, BarMode, HistogramMode, LayerDataKind, LayerPurpose, LayerStyle, MarkKind,
-    PanelPresentation, PanelRole, PanelScaleMode, PanelValueId, PanelValueLabelMode,
-    PanelValueLabelPolicy,
+    PanelPresentation, PanelScaleMode, PanelValueId, PanelValueLabelMode, PanelValueLabelPolicy,
 };
 pub type ComparisonPolicy = composition::PanelComparisonPolicy;
 pub type ValueLabelPolicy = composition::PanelValueLabelPolicy;
@@ -1427,8 +1464,7 @@ fn default_series_line_width() -> u8 {
 
 pub fn panel_config_from_spec(panel: &PanelSpec) -> PanelConfig {
     PanelConfig {
-        id: panel.id.0,
-        role: panel.role,
+        id: panel.id,
         presentation: panel.presentation,
         named_pane: panel.named_pane,
         title: panel.title.clone(),
@@ -1458,8 +1494,7 @@ fn layer_config_from_spec(layer: &LayerSpec) -> LayerConfig {
 
 pub fn panel_spec_from_config(panel: &PanelConfig) -> PanelSpec {
     PanelSpec {
-        id: composition::PanelId(panel.id),
-        role: panel.role,
+        id: panel.id,
         presentation: panel.presentation,
         named_pane: panel.named_pane,
         title: panel.title.clone(),

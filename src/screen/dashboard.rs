@@ -4,7 +4,7 @@ use super::DashboardError;
 use crate::{
     connector::{
         client::DataSources,
-        fetcher::{self, FetchedData},
+        fetcher::{self, FetchSpec, FetchedData},
         stream::ResolvedStream,
     },
     screen::sidebar::tickers_table::TickersTable,
@@ -16,7 +16,7 @@ use crate::{
 use data::{
     UserTimezone,
     chart::kline::ChartSettings,
-    layout::{WindowSpec, pane::ContentKind},
+    layout::{WindowSpec, pane::ContentKind, presets},
     stream::PersistStreamKind,
 };
 use exchange::{
@@ -87,6 +87,11 @@ pub enum Event {
         streams: Vec<PersistStreamKind>,
     },
     RequestPalette,
+    ChartPresets {
+        window: window::Id,
+        pane: pane_grid::Pane,
+        command: presets::Command,
+    },
 }
 
 impl Dashboard {
@@ -157,6 +162,7 @@ impl Dashboard {
         message: Message,
         main_window: &Window,
         data_sources: &DataSources,
+        chart_presets: &presets::Library,
     ) -> (Task<Message>, Option<Event>) {
         match message {
             Message::SavePopoutSpecs(specs) => {
@@ -319,47 +325,15 @@ impl Dashboard {
                     let mut chart_settings = self.chart_settings;
                     let effect = self
                         .get_mut_pane(main_window.id, window, pane)
-                        .map(|state| state.update(event, &mut chart_settings));
+                        .map(|state| state.update(event, &mut chart_settings, chart_presets));
                     self.chart_settings = chart_settings;
-                    let Some(effect) = effect.flatten() else {
-                        return (Task::none(), None);
-                    };
-
-                    match effect {
-                        pane::Effect::RefreshStreams => {
-                            return (self.refresh_streams(main_window.id), None);
-                        }
-                        pane::Effect::RequestFetch(reqs) => {
-                            let Some(state) = self.get_mut_pane(main_window.id, window, pane)
-                            else {
-                                return (Task::none(), None);
-                            };
-                            let task = state
-                                .request_fetch(data_sources, reqs)
-                                .map(Message::from)
-                                .chain(self.refresh_streams(main_window.id));
-                            return (task, None);
-                        }
-                        pane::Effect::SwitchTickersInGroup(ticker_info) => {
-                            return (
-                                self.switch_tickers_in_group(
-                                    data_sources,
-                                    main_window.id,
-                                    ticker_info,
-                                ),
-                                None,
-                            );
-                        }
-                        pane::Effect::FocusWidget(id) => {
-                            return (iced::widget::operation::focus(id), None);
-                        }
-                        pane::Effect::OpenNetworkSettings => {
-                            return (Task::none(), Some(Event::OpenNetworkSettings));
-                        }
-                        pane::Effect::OpenUrl(url) => {
-                            return (Task::none(), Some(Event::OpenUrlRequested(url)));
-                        }
-                    }
+                    return self.dispatch_pane_effect(
+                        effect.flatten(),
+                        main_window.id,
+                        window,
+                        pane,
+                        data_sources,
+                    );
                 }
             },
             Message::RequestPalette => {
@@ -600,6 +574,7 @@ impl Dashboard {
         timezone: UserTimezone,
         pixel_ratio: PixelRatio,
         theme: &'a ThemeState,
+        chart_presets: &'a presets::Library,
     ) -> Element<'a, Message> {
         let pane_grid: Element<_> = PaneGrid::new(&self.panes, |id, pane, maximized| {
             let is_focused = self.focus == Some((main_window.id, id));
@@ -614,6 +589,7 @@ impl Dashboard {
                 pixel_ratio,
                 tickers_table,
                 theme,
+                chart_presets,
             )
         })
         .min_size(240)
@@ -635,6 +611,7 @@ impl Dashboard {
         timezone: UserTimezone,
         pixel_ratio: PixelRatio,
         theme: &'a ThemeState,
+        chart_presets: &'a presets::Library,
     ) -> Element<'a, Message> {
         if let Some((state, _)) = self.popout.get(&window) {
             let content = container(
@@ -651,6 +628,7 @@ impl Dashboard {
                         pixel_ratio,
                         tickers_table,
                         theme,
+                        chart_presets,
                     )
                 })
                 .on_click(pane::Message::PaneClicked),
@@ -1274,20 +1252,85 @@ impl Dashboard {
         let Some(state) = self.get_mut_pane(main_window, window, pane) else {
             return Task::none();
         };
-        let Some(effect) = state.apply_settings_snapshot(snapshot) else {
+
+        match state.apply_settings_snapshot(snapshot) {
+            Some(requests) => self.request_fetch(main_window, window, pane, requests, data_sources),
+            None => self.refresh_streams(main_window),
+        }
+    }
+
+    fn request_fetch(
+        &mut self,
+        main_window: window::Id,
+        window: window::Id,
+        pane: pane_grid::Pane,
+        requests: Vec<FetchSpec>,
+        data_sources: &DataSources,
+    ) -> Task<Message> {
+        let Some(state) = self.get_mut_pane(main_window, window, pane) else {
             return Task::none();
         };
 
+        state
+            .request_fetch(data_sources, requests)
+            .map(Message::from)
+            .chain(self.refresh_streams(main_window))
+    }
+
+    pub fn reconcile_selected_presets(
+        &mut self,
+        main_window: window::Id,
+        presets: &presets::Library,
+    ) {
+        for (_, _, state) in self.iter_all_panes_mut(main_window) {
+            state.clear_missing_preset(presets);
+        }
+    }
+
+    pub fn preset_command_completed(
+        &mut self,
+        main_window: window::Id,
+        window: window::Id,
+        pane: pane_grid::Pane,
+        response: Result<Option<uuid::Uuid>, String>,
+    ) {
+        if let Some(state) = self.get_mut_pane(main_window, window, pane) {
+            state.preset_command_completed(response);
+        }
+    }
+
+    fn dispatch_pane_effect(
+        &mut self,
+        effect: Option<pane::Effect>,
+        main_window: window::Id,
+        window: window::Id,
+        pane: pane_grid::Pane,
+        data_sources: &DataSources,
+    ) -> (Task<Message>, Option<Event>) {
         match effect {
-            pane::Effect::RefreshStreams => self.refresh_streams(main_window),
-            pane::Effect::RequestFetch(reqs) => state
-                .request_fetch(data_sources, reqs)
-                .map(Message::from)
-                .chain(self.refresh_streams(main_window)),
-            pane::Effect::SwitchTickersInGroup(_)
-            | pane::Effect::FocusWidget(_)
-            | pane::Effect::OpenUrl(_)
-            | pane::Effect::OpenNetworkSettings => Task::none(),
+            Some(pane::Effect::RefreshStreams) => (self.refresh_streams(main_window), None),
+            Some(pane::Effect::RequestFetch(requests)) => (
+                self.request_fetch(main_window, window, pane, requests, data_sources),
+                None,
+            ),
+            Some(pane::Effect::SwitchTickersInGroup(ticker_info)) => (
+                self.switch_tickers_in_group(data_sources, main_window, ticker_info),
+                None,
+            ),
+            Some(pane::Effect::FocusWidget(id)) => (iced::widget::operation::focus(id), None),
+            Some(pane::Effect::OpenNetworkSettings) => {
+                (Task::none(), Some(Event::OpenNetworkSettings))
+            }
+            Some(pane::Effect::OpenUrl(url)) => (Task::none(), Some(Event::OpenUrlRequested(url))),
+            Some(pane::Effect::ChartPresets(command)) => (
+                Task::none(),
+                Some(Event::ChartPresets {
+                    window,
+                    pane,
+                    command,
+                }),
+            ),
+            None => (Task::none(), None),
         }
     }
 

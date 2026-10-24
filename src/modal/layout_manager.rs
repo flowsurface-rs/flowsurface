@@ -1,16 +1,18 @@
 use crate::connector::client::DataSources;
 use crate::layout::{Layout, LayoutId};
 use crate::screen::dashboard::{self, Dashboard};
-use crate::style::{Icon, icon_text};
-use crate::widget::column_drag::{self, DragEvent};
-use crate::widget::dragger_row;
+use crate::style::icon_text;
+use crate::widget::column_drag::DragEvent;
+use crate::widget::{manager_icon_button, manager_list, manager_row};
 use crate::{style, tooltip};
+use data::layout::MAX_NAME_LENGTH;
+use data::layout::presets::Library as PresetLibrary;
 
 use iced::widget::{
     button, center, column, container, row, scrollable, space, text, text_input,
     tooltip::Position as TooltipPosition,
 };
-use iced::{Element, Theme, padding, window};
+use iced::{Element, padding, window};
 use std::vec;
 use uuid::Uuid;
 
@@ -41,6 +43,7 @@ pub enum Action {
 
 pub struct LayoutManager {
     pub layouts: Vec<Layout>,
+    presets: PresetLibrary,
     active_layout_id: Option<Uuid>,
     pub edit_mode: Editing,
 }
@@ -64,17 +67,29 @@ impl LayoutManager {
 
         Self {
             layouts: vec![layout],
+            presets: PresetLibrary::default(),
             active_layout_id: Some(default_layout.unique),
             edit_mode: Editing::None,
         }
     }
 
-    pub fn from_config(layouts: Vec<Layout>, active_layout: Option<LayoutId>) -> Self {
-        Self {
+    pub fn from_config(
+        layouts: Vec<Layout>,
+        active_layout: Option<LayoutId>,
+        chart_presets: Vec<data::chart::kline::ChartPreset>,
+    ) -> Self {
+        let mut manager = Self {
             layouts,
+            presets: PresetLibrary::from_config(chart_presets),
             active_layout_id: active_layout.map(|l| l.unique),
             edit_mode: Editing::None,
-        }
+        };
+        manager.ensure_layout();
+        manager
+    }
+
+    pub fn presets(&self) -> &PresetLibrary {
+        &self.presets
     }
 
     pub fn ensure_layout(&mut self) {
@@ -124,17 +139,14 @@ impl LayoutManager {
     }
 
     pub fn ensure_unique_name(&self, proposed: &str, current_id: Uuid) -> String {
-        let mut final_name = proposed.to_string();
-        let mut suffix = 2;
-        while self
-            .layouts
-            .iter()
-            .any(|layout| layout.id.unique != current_id && layout.id.name == final_name)
-        {
-            final_name = format!("{proposed} ({suffix})");
-            suffix += 1;
-        }
-        final_name.chars().take(20).collect()
+        data::util::unique_name(
+            proposed,
+            self.layouts
+                .iter()
+                .filter(|layout| layout.id.unique != current_id)
+                .map(|layout| layout.id.name.as_str()),
+            MAX_NAME_LENGTH,
+        )
     }
 
     pub fn mut_dashboard(&mut self, id: Uuid) -> Option<&mut Dashboard> {
@@ -154,7 +166,37 @@ impl LayoutManager {
             .position(|layout| layout.id.unique == *layout_id)?;
         let dashboard = &mut self.layouts[layout_index].dashboard;
 
-        Some(dashboard.update(message, main_window, data_sources))
+        Some(dashboard.update(message, main_window, data_sources, &self.presets))
+    }
+
+    pub fn update_presets(
+        &mut self,
+        command: data::layout::presets::Command,
+        main_window: window::Id,
+        layout_id: Uuid,
+        origin_window: window::Id,
+        origin_pane: iced::widget::pane_grid::Pane,
+    ) {
+        let response = self.presets.update(command);
+
+        for layout in &mut self.layouts {
+            layout
+                .dashboard
+                .reconcile_selected_presets(main_window, &self.presets);
+        }
+
+        if let Some(layout) = self
+            .layouts
+            .iter_mut()
+            .find(|layout| layout.id.unique == layout_id)
+        {
+            layout.dashboard.preset_command_completed(
+                main_window,
+                origin_window,
+                origin_pane,
+                response,
+            );
+        }
     }
 
     pub fn park_inactive_layouts(&mut self, active_layout_id: Uuid, main_window: window::Id) {
@@ -219,7 +261,7 @@ impl LayoutManager {
             Message::Renaming(name) => {
                 self.edit_mode = match self.edit_mode {
                     Editing::Renaming(id, _) => {
-                        let truncated = name.chars().take(20).collect();
+                        let truncated = name.chars().take(MAX_NAME_LENGTH).collect();
                         Editing::Renaming(id, truncated)
                     }
                     _ => Editing::None,
@@ -228,7 +270,13 @@ impl LayoutManager {
             Message::CloneLayout(id) => {
                 return Some(Action::Clone(id));
             }
-            Message::Reorder(event) => column_drag::reorder_vec(&mut self.layouts, &event),
+            Message::Reorder(DragEvent::Dropped {
+                index,
+                target_index,
+            }) => {
+                let _ = data::util::reorder_vec(&mut self.layouts, index, target_index);
+            }
+            Message::Reorder(_) => {}
         }
 
         None
@@ -268,7 +316,7 @@ impl LayoutManager {
         for layout in &self.layouts {
             let layout_id = &layout.id;
 
-            let mut layout_row = row![].height(iced::Length::Fixed(32.0)).padding(4);
+            let mut layout_row = row![];
 
             let is_active = self.active_layout_id == Some(layout_id.unique);
             match &self.edit_mode {
@@ -325,41 +373,18 @@ impl LayoutManager {
             }
 
             if is_active && !is_edit_mode {
-                layout_row = layout_row
-                    .push(container(icon_text(Icon::Checkmark, 12)).padding(padding::right(16)));
+                layout_row = layout_row.push(
+                    container(icon_text(style::Icon::Checkmark, 12)).padding(padding::right(16)),
+                );
             }
 
-            let styled_container = container(layout_row.align_y(iced::Alignment::Center))
-                .style(move |theme| {
-                    let palette = theme.extended_palette();
-                    let color = if is_active {
-                        palette.background.weak.color
-                    } else {
-                        palette.background.weakest.color
-                    };
-
-                    iced::widget::container::Style {
-                        background: Some(color.into()),
-                        ..Default::default()
-                    }
-                })
-                .into();
-
-            layout_widgets.push(dragger_row(styled_container, is_edit_mode));
+            layout_widgets.push(manager_row(layout_row, is_active, is_edit_mode));
         }
 
-        let layouts_list: Element<'_, Message> = if is_edit_mode {
-            column_drag::Column::with_children(layout_widgets)
-                .on_drag(Message::Reorder)
-                .spacing(4)
-                .into()
-        } else {
-            iced::widget::Column::with_children(layout_widgets)
-                .spacing(4)
-                .into()
-        };
-
-        content = content.push(layouts_list);
+        content = content.push(manager_list(
+            layout_widgets,
+            is_edit_mode.then_some(Message::Reorder),
+        ));
 
         if self.edit_mode != Editing::None {
             content = content.push(
@@ -381,10 +406,8 @@ impl LayoutManager {
 }
 
 fn create_delete_button<'a>(layout: &LayoutId) -> Element<'a, Message> {
-    create_icon_button(
+    manager_icon_button(
         style::Icon::TrashBin,
-        12,
-        |theme, status| style::button::layout_name(theme, *status),
         Some(Message::ToggleEditMode(Editing::ConfirmingDelete(
             layout.unique,
         ))),
@@ -393,10 +416,8 @@ fn create_delete_button<'a>(layout: &LayoutId) -> Element<'a, Message> {
 }
 
 fn create_rename_button<'a>(layout: &LayoutId) -> button::Button<'a, Message> {
-    create_icon_button(
+    manager_icon_button(
         style::Icon::Edit,
-        12,
-        |theme, status| style::button::layout_name(theme, *status),
         Some(Message::ToggleEditMode(Editing::Renaming(
             layout.unique,
             layout.name.clone(),
@@ -406,13 +427,11 @@ fn create_rename_button<'a>(layout: &LayoutId) -> button::Button<'a, Message> {
 
 fn create_clone_button<'a>(layout: &LayoutId) -> Element<'a, Message> {
     tooltip(
-        create_icon_button(
+        manager_icon_button(
             style::Icon::Clone,
-            12,
-            |theme, status| style::button::layout_name(theme, *status),
             Some(Message::CloneLayout(layout.unique)),
         ),
-        Some("Clone layout"),
+        Some("Duplicate layout"),
         TooltipPosition::Top,
     )
 }
@@ -420,47 +439,33 @@ fn create_clone_button<'a>(layout: &LayoutId) -> Element<'a, Message> {
 fn create_confirm_delete_buttons<'a>(
     layout: &LayoutId,
 ) -> (button::Button<'a, Message>, button::Button<'a, Message>) {
-    let confirm = create_icon_button(
+    let confirm = manager_icon_button(
         style::Icon::Checkmark,
-        12,
-        |theme, status| style::button::confirm(theme, *status, true),
         Some(Message::RemoveLayout(layout.unique)),
-    );
+    )
+    .style(|theme, status| style::button::confirm(theme, status, true));
 
-    let cancel = create_icon_button(
+    let cancel = manager_icon_button(
         style::Icon::Close,
-        12,
-        |theme, status| style::button::cancel(theme, *status, true),
         Some(Message::ToggleEditMode(Editing::Preview)),
-    );
+    )
+    .style(|theme, status| style::button::cancel(theme, status, true));
 
     (confirm, cancel)
 }
 
-fn create_layout_button<'a>(layout: &LayoutId, on_press: Option<Message>) -> Element<'a, Message> {
-    let mut layout_btn = button(text(layout.name.clone()).align_y(iced::Alignment::Center))
-        .width(iced::Length::Fill)
-        .style(style::button::layout_name);
-
-    if let Some(msg) = on_press {
-        layout_btn = layout_btn.on_press(msg);
-    }
-
-    layout_btn.into()
-}
-
-fn create_icon_button<'a>(
-    icon: style::Icon,
-    size: u16,
-    style_fn: impl Fn(&Theme, &button::Status) -> button::Style + 'static,
+fn create_layout_button<'a>(
+    layout: &'a LayoutId,
     on_press: Option<Message>,
-) -> button::Button<'a, Message> {
-    let mut btn = button(icon_text(icon, size).align_y(iced::Alignment::Center))
-        .style(move |theme, status| style_fn(theme, &status));
-
-    if let Some(msg) = on_press {
-        btn = btn.on_press(msg);
-    }
-
-    btn
+) -> Element<'a, Message> {
+    button(
+        text(&layout.name)
+            .align_y(iced::Alignment::Center)
+            .wrapping(iced::widget::text::Wrapping::None),
+    )
+    .width(iced::Length::Fill)
+    .clip(true)
+    .style(style::button::manager_entry)
+    .on_press_maybe(on_press)
+    .into()
 }

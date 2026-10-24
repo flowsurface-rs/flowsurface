@@ -1,9 +1,6 @@
 use crate::modal::layout_manager::LayoutManager;
 use crate::screen::dashboard::{Dashboard, pane};
-use data::{
-    UserTimezone,
-    layout::{WindowSpec, pane::Axis},
-};
+use data::{UserTimezone, layout::WindowSpec, layout::pane::Axis};
 
 use iced::widget::pane_grid::{self, Configuration};
 use std::vec;
@@ -267,22 +264,24 @@ pub fn load_saved_state() -> SavedState {
                     log::error!(
                         "Saved state contained no layouts. Starting with a default layout."
                     );
-                    LayoutManager::new()
-                } else {
-                    let active_layout =
-                        state
-                            .layout_manager
-                            .active_layout
-                            .as_ref()
-                            .and_then(|target_name| {
-                                layouts
-                                    .iter()
-                                    .find(|layout| layout.id.name == *target_name)
-                                    .map(|layout| layout.id.clone())
-                            });
-
-                    LayoutManager::from_config(layouts, active_layout)
                 }
+
+                let active_layout =
+                    state
+                        .layout_manager
+                        .active_layout
+                        .as_ref()
+                        .and_then(|target_name| {
+                            layouts
+                                .iter()
+                                .find(|layout| layout.id.name == *target_name)
+                                .map(|layout| layout.id.clone())
+                        });
+                LayoutManager::from_config(
+                    layouts,
+                    active_layout,
+                    state.layout_manager.chart_presets.clone(),
+                )
             };
 
             // Hydrate secrets from keychain into the network config

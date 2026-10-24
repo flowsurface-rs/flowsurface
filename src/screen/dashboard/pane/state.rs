@@ -1,3 +1,6 @@
+use super::settings::presets::{self as preset_editor, Action as PresetEditorAction};
+use data::layout::presets::{Command as PresetCommand, Library as PresetLibrary};
+
 use super::content::{
     self, Content,
     heatmap::{HeatmapContent, HeatmapShader},
@@ -31,6 +34,7 @@ use crate::{
         self, button_with_tooltip,
         inspector::{InspectorBody, InspectorContent, InspectorFooter},
         link_group_button, press_button_with_tooltip,
+        toast::Toast,
     },
     window::{self, PixelRatio, Window},
 };
@@ -65,6 +69,7 @@ pub enum Effect {
     FocusWidget(iced::widget::Id),
     OpenUrl(String),
     OpenNetworkSettings,
+    ChartPresets(PresetCommand),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,6 +99,7 @@ pub enum Message {
 
 #[derive(Debug, Clone)]
 pub enum Event {
+    PresetEditor(preset_editor::Message),
     ShowModal(Modal),
     HideModal,
     ContentSelected(ContentKind),
@@ -109,6 +115,7 @@ pub enum Event {
 }
 
 pub struct State {
+    preset_editor: preset_editor::State,
     inspector: Option<InspectorPage>,
     id: uuid::Uuid,
     pub modal: Option<Modal>,
@@ -369,6 +376,7 @@ impl State {
         pixel_ratio: PixelRatio,
         tickers_table: &'a TickersTable,
         theme: &'a ThemeState,
+        presets: &'a PresetLibrary,
     ) -> pane_grid::Content<'a, Message, Theme, Renderer> {
         let mut top_left_buttons = if Content::Starter == self.content {
             row![]
@@ -653,7 +661,7 @@ impl State {
             }
         };
 
-        let body = self.compose_stack_view(base, id, compact_controls, tickers_table);
+        let body = self.compose_stack_view(base, id, compact_controls, tickers_table, presets);
 
         let body = column![
             iced::widget::rule::horizontal(1.0).style(style::split_ruler),
@@ -707,14 +715,34 @@ impl State {
         })
     }
 
-    pub fn update(&mut self, msg: Event, chart_settings: &mut ChartSettings) -> Option<Effect> {
-        let effect = self.update_event(msg, chart_settings);
+    pub fn update(
+        &mut self,
+        msg: Event,
+        chart_settings: &mut ChartSettings,
+        presets: &PresetLibrary,
+    ) -> Option<Effect> {
+        let effect = self.update_event(msg, chart_settings, presets);
         self.reconcile_inspector();
         effect
     }
 
-    fn update_event(&mut self, msg: Event, chart_settings: &mut ChartSettings) -> Option<Effect> {
+    fn update_event(
+        &mut self,
+        msg: Event,
+        chart_settings: &mut ChartSettings,
+        presets: &PresetLibrary,
+    ) -> Option<Effect> {
         match msg {
+            Event::PresetEditor(message) => {
+                let Content::Kline {
+                    chart: Some(chart), ..
+                } = &self.content
+                else {
+                    return None;
+                };
+                let action = self.preset_editor.update(message, presets, chart);
+                return self.apply_preset_editor_action(action, presets);
+            }
             Event::ShowModal(requested_modal) => {
                 return self.show_modal_with_focus(requested_modal);
             }
@@ -749,32 +777,7 @@ impl State {
                     Content::Kline { chart: Some(c), .. } => c.update(message, chart_settings),
                     _ => None,
                 };
-                let stream_plan_changed = self.sync_kline_streams();
-
-                if let Some(action) = action {
-                    match action {
-                        KlineAction::RequestFetch(fetch) => {
-                            return Some(Effect::RequestFetch(fetch));
-                        }
-                        KlineAction::OpenNetworkSettings => {
-                            return Some(Effect::OpenNetworkSettings);
-                        }
-                        KlineAction::OpenUrl(url) => return Some(Effect::OpenUrl(url)),
-                        KlineAction::RemoveSeries(ti) => {
-                            if let Content::Kline { chart: Some(c), .. } = &mut self.content {
-                                let _ =
-                                    c.apply_command(ChartCommand::RemoveTicker { ticker_info: ti });
-                            }
-                            let _ = self.sync_kline_streams();
-
-                            return Some(Effect::RefreshStreams);
-                        }
-                    }
-                }
-
-                if stream_plan_changed {
-                    return Some(Effect::RefreshStreams);
-                }
+                return self.finish_kline_action(action);
             }
             Event::Settings(message) => return self.update_settings(message),
             Event::LadderInteraction(message) => {
@@ -1057,7 +1060,11 @@ impl State {
         }
     }
 
-    fn inspector_view<'a>(&'a self, pane: pane_grid::Pane) -> Option<Element<'a, Message>> {
+    fn inspector_view<'a>(
+        &'a self,
+        pane: pane_grid::Pane,
+        presets: &'a PresetLibrary,
+    ) -> Option<Element<'a, Message>> {
         let page = self.inspector?;
         if !self.supports_inspector(page) {
             return None;
@@ -1085,7 +1092,7 @@ impl State {
                 header,
                 rule::horizontal(1.0).style(style::split_ruler),
                 responsive(move |size| {
-                    self.inspector_body_view(pane, page, size.height)
+                    self.inspector_body_view(pane, page, size.height, presets)
                         .unwrap_or_else(|| column![].into())
                 }),
             ])
@@ -1102,10 +1109,11 @@ impl State {
         pane: pane_grid::Pane,
         page: InspectorPage,
         available_height: f32,
+        presets: &'a PresetLibrary,
     ) -> Option<Element<'a, Message>> {
         let (body, footer) = match page {
             InspectorPage::PaneSettings => {
-                let (sections, footer) = self.pane_settings_content(pane)?.into_parts();
+                let (sections, footer) = self.pane_settings_content(pane, presets)?.into_parts();
                 (
                     sections,
                     footer.map(|footer| (InspectorFooter::HEIGHT, footer)),
@@ -1261,8 +1269,9 @@ impl State {
         pane: pane_grid::Pane,
         compact_controls: Option<Element<'a, Message>>,
         tickers_table: &'a TickersTable,
+        presets: &'a PresetLibrary,
     ) -> Element<'a, Message> {
-        let base = if let Some(inspector) = self.inspector_view(pane) {
+        let base = if let Some(inspector) = self.inspector_view(pane, presets) {
             row![
                 base,
                 rule::vertical(1.0).style(style::split_ruler),
@@ -1364,6 +1373,9 @@ impl State {
     }
 
     pub fn go_back(&mut self) -> bool {
+        if self.inspector == Some(InspectorPage::PaneSettings) && self.preset_editor.cancel() {
+            return true;
+        }
         if let Content::Kline {
             chart: Some(chart), ..
         } = &mut self.content
@@ -1386,9 +1398,121 @@ impl State {
     pub fn pane_settings_content<'a>(
         &'a self,
         pane: pane_grid::Pane,
+        presets: &'a PresetLibrary,
     ) -> Option<InspectorContent<'a, Message>> {
-        self.content
-            .pane_settings_content(pane, self.stream_pair(), self.settings.selected_basis)
+        let mut content = self.content.pane_settings_content(
+            pane,
+            self.stream_pair(),
+            self.settings.selected_basis,
+        )?;
+        if let Content::Kline {
+            chart: Some(chart), ..
+        } = &self.content
+        {
+            let presets_section = crate::widget::inspector::InspectorSection::titled(
+                "Presets",
+                self.preset_editor
+                    .view(presets, chart)
+                    .map(move |message| Message::PaneEvent(pane, Event::PresetEditor(message))),
+            )
+            .with_modal_container();
+
+            content.push(presets_section);
+        }
+        Some(content)
+    }
+
+    fn apply_preset_editor_action(
+        &mut self,
+        action: Option<PresetEditorAction>,
+        presets: &PresetLibrary,
+    ) -> Option<Effect> {
+        match action? {
+            PresetEditorAction::FocusWidget(id) => Some(Effect::FocusWidget(id)),
+            PresetEditorAction::Command(command) => Some(Effect::ChartPresets(command)),
+            PresetEditorAction::Apply(id) => self.apply_chart_preset(id, presets),
+        }
+    }
+
+    fn apply_chart_preset(&mut self, id: uuid::Uuid, presets: &PresetLibrary) -> Option<Effect> {
+        let Some(preset) = presets.get(Some(id)) else {
+            self.notifications
+                .push(Toast::error("This preset no longer exists."));
+            return None;
+        };
+
+        let Content::Kline {
+            chart: Some(chart), ..
+        } = &mut self.content
+        else {
+            return None;
+        };
+        let result = chart.apply_preset(id, &preset.settings);
+
+        match result {
+            Ok(action) => {
+                self.reconcile_inspector();
+                self.finish_kline_action(action)
+            }
+            Err(error) => {
+                self.notifications.push(Toast::error(error));
+                None
+            }
+        }
+    }
+
+    pub fn preset_command_completed(&mut self, response: Result<Option<uuid::Uuid>, String>) {
+        match response {
+            Ok(Some(id)) => {
+                if let Content::Kline {
+                    chart: Some(chart), ..
+                } = &mut self.content
+                {
+                    chart.selected_preset = Some(id);
+                }
+            }
+            Ok(None) => {}
+            Err(error) => self.notifications.push(Toast::error(error)),
+        }
+        self.preset_editor.command_completed();
+    }
+
+    fn finish_kline_action(&mut self, action: Option<KlineAction>) -> Option<Effect> {
+        let effect = match action {
+            Some(KlineAction::RequestFetch(fetch)) => Some(Effect::RequestFetch(fetch)),
+            Some(KlineAction::OpenNetworkSettings) => Some(Effect::OpenNetworkSettings),
+            Some(KlineAction::OpenUrl(url)) => Some(Effect::OpenUrl(url)),
+            Some(KlineAction::RemoveSeries(ticker_info)) => {
+                if let Content::Kline {
+                    chart: Some(chart), ..
+                } = &mut self.content
+                {
+                    let _ = chart.apply_command(ChartCommand::RemoveTicker { ticker_info });
+                }
+                Some(Effect::RefreshStreams)
+            }
+            None => None,
+        };
+        let streams_changed = self.sync_kline_streams();
+        effect.or_else(|| streams_changed.then_some(Effect::RefreshStreams))
+    }
+
+    pub fn clear_missing_preset(&mut self, presets: &PresetLibrary) {
+        let missing = |selected: Option<uuid::Uuid>| {
+            selected.is_some_and(|id| presets.get(Some(id)).is_none())
+        };
+        if let Content::Kline { chart, layout, .. } = &mut self.content {
+            if let Some(chart) = chart
+                && missing(chart.selected_preset)
+            {
+                chart.selected_preset = None;
+            }
+            if let Some(config) = layout
+                && missing(config.selected_preset)
+            {
+                config.selected_preset = None;
+            }
+        }
     }
 
     fn show_modal_with_focus(&mut self, requested_modal: Modal) -> Option<Effect> {
@@ -1484,7 +1608,10 @@ impl State {
         self.content.settings_snapshot(transfer)
     }
 
-    pub fn apply_settings_snapshot(&mut self, snapshot: &PaneSettingsSnapshot) -> Option<Effect> {
+    pub fn apply_settings_snapshot(
+        &mut self,
+        snapshot: &PaneSettingsSnapshot,
+    ) -> Option<Vec<FetchSpec>> {
         if !self.content.can_apply_settings_snapshot(snapshot) {
             return None;
         }
@@ -1497,21 +1624,18 @@ impl State {
             }
         }
 
-        let action = self.content.apply_settings_snapshot(snapshot);
+        let requests = self.content.apply_settings_snapshot(snapshot);
         self.reconcile_inspector();
-        let stream_plan_changed =
-            matches!(snapshot, PaneSettingsSnapshot::Kline(_)) && self.sync_kline_streams();
+        self.sync_kline_streams();
 
-        if let Some(KlineAction::RequestFetch(fetch)) = action {
-            return Some(Effect::RequestFetch(fetch));
-        }
-        stream_plan_changed.then_some(Effect::RefreshStreams)
+        requests
     }
 }
 
 impl Default for State {
     fn default() -> Self {
         Self {
+            preset_editor: preset_editor::State::default(),
             inspector: None,
             id: uuid::Uuid::new_v4(),
             modal: None,

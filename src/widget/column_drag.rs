@@ -20,24 +20,6 @@ use iced::{Element, Length, Padding, Pixels, Point, Rectangle, Size, Theme, Vect
 
 const DRAG_HANDLE_WIDTH: f32 = 14.0;
 
-pub fn reorder_vec<T>(vec: &mut Vec<T>, event: &DragEvent) {
-    if let DragEvent::Dropped {
-        index,
-        target_index,
-    } = event
-        && vec.len() > 1
-        && target_index != index
-    {
-        let item = vec.remove(*index);
-        let insert_index = if index < target_index {
-            *target_index - 1
-        } else {
-            *target_index
-        };
-        vec.insert(insert_index, item);
-    }
-}
-
 #[derive(Debug, Clone)]
 pub enum Action {
     Idle,

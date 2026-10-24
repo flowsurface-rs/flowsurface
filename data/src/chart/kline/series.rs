@@ -967,10 +967,6 @@ impl KlineSeries {
         true
     }
 
-    pub fn has_custom_line_style(&self) -> bool {
-        self.line_width != MIN_LINE_WIDTH || self.stroke_style != LineStrokeStyle::Solid
-    }
-
     pub fn time_at_index(&self, index: usize) -> Option<UnixMs> {
         match self.basis() {
             Basis::Time(_) => self.time_index.get(index).copied(),

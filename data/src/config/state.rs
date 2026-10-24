@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 pub struct Layouts {
     pub layouts: Vec<Layout>,
     pub active_layout: Option<String>,
+    #[serde(default)]
+    pub chart_presets: Vec<crate::chart::kline::ChartPreset>,
 }
 
 #[derive(Default, Clone, Deserialize, Serialize)]

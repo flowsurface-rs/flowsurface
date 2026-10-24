@@ -504,12 +504,10 @@ impl StudyState {
         StudyAvailability::Available
     }
 
-    pub(super) fn restore_settings(&mut self, snapshot: &SettingsSnapshot, basis: Basis) {
-        self.active = snapshot.active_studies.clone();
-        self.configs = snapshot.study_configs.clone();
-        self.profiles
-            .restore_edits(snapshot.tpo_profile_edits.clone());
-        self.normalize_for_basis(basis);
+    pub(super) fn restore_snapshot(&mut self, snapshot: StudySnapshot) {
+        self.active = snapshot.active;
+        self.configs = snapshot.configs;
+        self.profiles.restore_edits(snapshot.edits);
     }
 
     pub(super) fn set_basis(&mut self, basis: Basis) {
@@ -527,10 +525,14 @@ impl StudyState {
     }
 
     fn normalize_for_basis(&mut self, basis: Basis) {
-        let active = Self::normalized_active(self.active(), basis);
-        self.configs = Self::normalized_for_basis(self.configs.iter().copied(), basis);
-        self.remember_configs(&active);
-        self.active = active.iter().map(|study| study.id()).collect();
+        let snapshot = StudySnapshot {
+            active: std::mem::take(&mut self.active),
+            configs: std::mem::take(&mut self.configs),
+            edits: TpoBoundaryEdits::default(),
+        }
+        .normalized_for_basis(basis);
+        self.active = snapshot.active;
+        self.configs = snapshot.configs;
     }
 
     pub(super) fn apply(
@@ -606,7 +608,7 @@ impl StudyState {
     }
 
     fn apply_set(&mut self, studies: Vec<KlineStudy>, basis: Basis) -> StudyChange {
-        let normalized = Self::normalized_active(studies, basis);
+        let normalized = StudySnapshot::normalized_active(studies, basis);
         let change = if self.active().eq(normalized.iter().copied()) {
             StudyChange::Unchanged
         } else if self.active.len() != normalized.len()
@@ -662,20 +664,33 @@ impl StudyState {
     }
 
     fn remember_configs(&mut self, studies: &[KlineStudy]) {
-        for study in studies {
-            if let Some(configured) = self
-                .configs
-                .iter_mut()
-                .find(|configured| configured.is_same_type(*study))
-            {
-                *configured = *study;
-            } else {
-                self.configs.push(*study);
-            }
+        remember_configs(&mut self.configs, studies);
+    }
+}
+
+impl StudySnapshot {
+    pub(super) fn from_settings(snapshot: &SettingsSnapshot) -> Self {
+        Self {
+            active: snapshot.active_studies.clone(),
+            configs: snapshot.study_configs.clone(),
+            edits: snapshot.tpo_profile_edits.clone(),
         }
     }
 
-    fn normalized_active(
+    pub(super) fn normalized_for_basis(mut self, basis: Basis) -> Self {
+        let active = Self::normalized_active(
+            self.active
+                .iter()
+                .filter_map(|id| self.configs.iter().find(|study| study.id() == *id).copied()),
+            basis,
+        );
+        self.configs = Self::normalized_configs(self.configs, basis);
+        remember_configs(&mut self.configs, &active);
+        self.active = active.iter().map(|study| study.id()).collect();
+        self
+    }
+
+    pub(super) fn normalized_active(
         studies: impl IntoIterator<Item = KlineStudy>,
         basis: Basis,
     ) -> Vec<KlineStudy> {
@@ -694,10 +709,10 @@ impl StudyState {
                 SourceConstraint::Independent => true,
             });
 
-        Self::active_for_families(Self::normalized_for_basis(studies, basis))
+        Self::active_for_families(Self::normalized_configs(studies, basis))
     }
 
-    fn normalized_for_basis(
+    fn normalized_configs(
         studies: impl IntoIterator<Item = KlineStudy>,
         basis: Basis,
     ) -> Vec<KlineStudy> {
@@ -723,5 +738,18 @@ impl StudyState {
             active.push(study);
         }
         active
+    }
+}
+
+fn remember_configs(configs: &mut Vec<KlineStudy>, studies: &[KlineStudy]) {
+    for study in studies {
+        if let Some(configured) = configs
+            .iter_mut()
+            .find(|configured| configured.is_same_type(*study))
+        {
+            *configured = *study;
+        } else {
+            configs.push(*study);
+        }
     }
 }
