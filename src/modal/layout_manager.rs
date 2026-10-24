@@ -1,5 +1,7 @@
 use crate::connector::client::DataSources;
-use crate::layout::{ChartResourcesMessage, Layout, LayoutId, SharedChartResources};
+use crate::layout::{
+    ChartResourcesEvent, ChartResourcesMessage, Layout, LayoutId, SharedChartResources,
+};
 use crate::screen::dashboard::{self, Dashboard};
 use crate::style::icon_text;
 use crate::widget::column_drag::DragEvent;
@@ -170,8 +172,13 @@ impl LayoutManager {
             message,
         } = message
         {
-            let task =
-                self.update_chart_resources(*message, (window, pane), &data_sources.catalog_http);
+            let task = self.update_chart_resources(
+                *message,
+                main_window.id,
+                *layout_id,
+                (window, pane),
+                &data_sources.catalog_http,
+            );
             return Some((task, None));
         }
 
@@ -187,46 +194,39 @@ impl LayoutManager {
     fn update_chart_resources(
         &mut self,
         message: ChartResourcesMessage,
+        main_window: window::Id,
+        layout_id: Uuid,
         origin: (window::Id, iced::widget::pane_grid::Pane),
         catalog_http: &reqwest::Client,
     ) -> iced::Task<dashboard::Message> {
-        let task = self.chart_resources.update(message, catalog_http);
+        let (task, event) = self.chart_resources.update(message, catalog_http);
+
+        if let Some(ChartResourcesEvent::Presets(response)) = event {
+            for layout in &mut self.layouts {
+                layout
+                    .dashboard
+                    .reconcile_selected_presets(main_window, self.chart_resources.presets());
+            }
+
+            if let Some(layout) = self
+                .layouts
+                .iter_mut()
+                .find(|layout| layout.id.unique == layout_id)
+            {
+                layout.dashboard.preset_command_completed(
+                    main_window,
+                    origin.0,
+                    origin.1,
+                    response,
+                );
+            }
+        }
 
         task.map(move |message| dashboard::Message::SharedChartResources {
             window: origin.0,
             pane: origin.1,
             message: Box::new(message),
         })
-    }
-
-    pub fn update_presets(
-        &mut self,
-        command: data::layout::presets::Command,
-        main_window: window::Id,
-        layout_id: Uuid,
-        origin_window: window::Id,
-        origin_pane: iced::widget::pane_grid::Pane,
-    ) {
-        let response = self.chart_resources.update_presets(command);
-
-        for layout in &mut self.layouts {
-            layout
-                .dashboard
-                .reconcile_selected_presets(main_window, self.chart_resources.presets());
-        }
-
-        if let Some(layout) = self
-            .layouts
-            .iter_mut()
-            .find(|layout| layout.id.unique == layout_id)
-        {
-            layout.dashboard.preset_command_completed(
-                main_window,
-                origin_window,
-                origin_pane,
-                response,
-            );
-        }
     }
 
     pub fn park_inactive_layouts(&mut self, active_layout_id: Uuid, main_window: window::Id) {

@@ -1,4 +1,4 @@
-pub(crate) mod indicator_catalog;
+pub mod indicator_catalog;
 
 use crate::modal::layout_manager::LayoutManager;
 use crate::screen::dashboard::{Dashboard, pane};
@@ -31,7 +31,12 @@ pub struct SharedChartResources {
 
 #[derive(Debug, Clone)]
 pub enum ChartResourcesMessage {
+    Presets(presets::Command),
     IndicatorCatalog(indicator_catalog::Message),
+}
+
+pub enum ChartResourcesEvent {
+    Presets(Result<Option<Uuid>, String>),
 }
 
 impl SharedChartResources {
@@ -54,17 +59,19 @@ impl SharedChartResources {
         &mut self,
         message: ChartResourcesMessage,
         catalog_http: &reqwest::Client,
-    ) -> Task<ChartResourcesMessage> {
+    ) -> (Task<ChartResourcesMessage>, Option<ChartResourcesEvent>) {
         match message {
-            ChartResourcesMessage::IndicatorCatalog(message) => self
-                .indicator_catalog
-                .update(message, catalog_http)
-                .map(ChartResourcesMessage::IndicatorCatalog),
+            ChartResourcesMessage::Presets(command) => (
+                Task::none(),
+                Some(ChartResourcesEvent::Presets(self.presets.update(command))),
+            ),
+            ChartResourcesMessage::IndicatorCatalog(message) => (
+                self.indicator_catalog
+                    .update(message, catalog_http)
+                    .map(ChartResourcesMessage::IndicatorCatalog),
+                None,
+            ),
         }
-    }
-
-    pub fn update_presets(&mut self, command: presets::Command) -> Result<Option<Uuid>, String> {
-        self.presets.update(command)
     }
 }
 

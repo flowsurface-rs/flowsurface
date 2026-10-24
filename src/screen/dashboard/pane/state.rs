@@ -1,6 +1,6 @@
 use super::settings::presets::{self as preset_editor, Action as PresetEditorAction};
 use crate::layout::{ChartResourcesMessage, SharedChartResources};
-use data::layout::presets::{Command as PresetCommand, Library as PresetLibrary};
+use data::layout::presets::Library as PresetLibrary;
 
 use super::content::{
     self, Content,
@@ -71,7 +71,6 @@ pub enum Effect {
     OpenUrl(String),
     OpenNetworkSettings,
     SharedChartResources(Box<ChartResourcesMessage>),
-    ChartPresets(PresetCommand),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1452,7 +1451,9 @@ impl State {
     ) -> Option<Effect> {
         match action? {
             PresetEditorAction::FocusWidget(id) => Some(Effect::FocusWidget(id)),
-            PresetEditorAction::Command(command) => Some(Effect::ChartPresets(command)),
+            PresetEditorAction::Command(command) => Some(Effect::SharedChartResources(Box::new(
+                ChartResourcesMessage::Presets(command),
+            ))),
             PresetEditorAction::Apply(id) => self.apply_chart_preset(id, presets),
         }
     }

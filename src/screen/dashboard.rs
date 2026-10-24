@@ -93,11 +93,6 @@ pub enum Event {
         streams: Vec<PersistStreamKind>,
     },
     RequestPalette,
-    ChartPresets {
-        window: window::Id,
-        pane: pane_grid::Pane,
-        command: presets::Command,
-    },
 }
 
 impl Dashboard {
@@ -1331,14 +1326,6 @@ impl Dashboard {
                 (Task::none(), Some(Event::OpenNetworkSettings))
             }
             Some(pane::Effect::OpenUrl(url)) => (Task::none(), Some(Event::OpenUrlRequested(url))),
-            Some(pane::Effect::ChartPresets(command)) => (
-                Task::none(),
-                Some(Event::ChartPresets {
-                    window,
-                    pane,
-                    command,
-                }),
-            ),
             Some(pane::Effect::SharedChartResources(message)) => (
                 Task::done(Message::SharedChartResources {
                     window,

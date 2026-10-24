@@ -435,21 +435,6 @@ impl Flowsurface {
 
                         Task::none()
                     }
-                    Some(dashboard::Event::ChartPresets {
-                        window,
-                        pane,
-                        command,
-                    }) => {
-                        self.layout_manager.update_presets(
-                            command,
-                            main_window.id,
-                            layout_id,
-                            window,
-                            pane,
-                        );
-
-                        Task::none()
-                    }
                     None => Task::none(),
                 };
 

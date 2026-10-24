@@ -29,29 +29,29 @@ pub struct Catalog {
     language_version: u32,
     source_revision: String,
     source_base_path: String,
-    pub(crate) indicators: Vec<Entry>,
+    pub indicators: Vec<Entry>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub(crate) struct Entry {
-    pub(crate) id: IndicatorId,
-    pub(crate) name: String,
-    pub(crate) description: Option<String>,
-    pub(crate) author: Option<Author>,
-    pub(crate) bases: Vec<String>,
+pub struct Entry {
+    pub id: IndicatorId,
+    pub name: String,
+    pub description: Option<String>,
+    pub author: Option<Author>,
+    pub bases: Vec<String>,
     path: String,
     sha256: String,
     size_bytes: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub(crate) struct Author {
-    pub(crate) name: String,
+pub struct Author {
+    pub name: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct FetchError {
-    pub(crate) message: String,
+    pub message: String,
     retry_at: Option<Instant>,
 }
 
@@ -65,7 +65,7 @@ impl From<String> for FetchError {
 }
 
 #[derive(Default)]
-pub(crate) enum CatalogState {
+pub enum CatalogState {
     #[default]
     Unopened,
     Loading(Option<Catalog>),
@@ -77,7 +77,7 @@ pub(crate) enum CatalogState {
 }
 
 impl CatalogState {
-    pub(crate) fn catalog(&self) -> Option<&Catalog> {
+    pub fn catalog(&self) -> Option<&Catalog> {
         match self {
             Self::Unopened => None,
             Self::Loading(previous) | Self::Failed { previous, .. } => previous.as_ref(),
@@ -93,7 +93,7 @@ pub enum SourceChange {
 }
 
 #[derive(Default)]
-pub(crate) enum SourceOperation {
+pub enum SourceOperation {
     #[default]
     Idle,
     Running {
@@ -114,15 +114,15 @@ pub struct State {
 }
 
 impl State {
-    pub(crate) fn catalog_state(&self) -> &CatalogState {
+    pub fn catalog_state(&self) -> &CatalogState {
         &self.catalog
     }
 
-    pub(crate) fn operation(&self) -> &SourceOperation {
+    pub fn operation(&self) -> &SourceOperation {
         &self.operation
     }
 
-    pub(crate) fn source_change(&self, id: &IndicatorId) -> Option<SourceChange> {
+    pub fn source_change(&self, id: &IndicatorId) -> Option<SourceChange> {
         self.source_changes.get(id).copied()
     }
 
@@ -150,18 +150,18 @@ impl State {
             .is_none_or(|at| Instant::now() >= at)
     }
 
-    pub(crate) fn can_refresh(&self) -> bool {
+    pub fn can_refresh(&self) -> bool {
         !matches!(self.catalog, CatalogState::Loading(_)) && self.can_request()
     }
 
-    pub(crate) fn can_install(&self, entry: &Entry) -> bool {
+    pub fn can_install(&self, entry: &Entry) -> bool {
         !matches!(self.operation, SourceOperation::Running { .. })
             && self.source_changes.get(&entry.id) != Some(&SourceChange::Installed)
             && entry.registration().is_none()
             && self.can_request()
     }
 
-    pub(crate) fn is_installed(&self, entry: &Entry) -> bool {
+    pub fn is_installed(&self, entry: &Entry) -> bool {
         match self.source_changes.get(&entry.id) {
             Some(SourceChange::Installed) => true,
             Some(SourceChange::Removed) => false,
@@ -171,7 +171,7 @@ impl State {
         }
     }
 
-    pub(crate) fn can_remove(&self, entry: &Entry) -> bool {
+    pub fn can_remove(&self, entry: &Entry) -> bool {
         self.is_installed(entry)
             && !matches!(self.operation, SourceOperation::Running { .. })
             && self.can_request()
@@ -335,7 +335,7 @@ impl Catalog {
 }
 
 impl Entry {
-    pub(crate) fn registration(&self) -> Option<&'static indicators::IndicatorRegistration> {
+    pub fn registration(&self) -> Option<&'static indicators::IndicatorRegistration> {
         indicators::catalog().get(&self.id)
     }
 
