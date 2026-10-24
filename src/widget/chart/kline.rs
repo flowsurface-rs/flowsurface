@@ -2593,6 +2593,12 @@ where
             CursorTarget::PanelXAxis(_) | CursorTarget::BottomXAxis => {
                 advanced::mouse::Interaction::ResizingHorizontally
             }
+            CursorTarget::Plot(_) if !self.drawing_snapshot.allows_panning() => {
+                advanced::mouse::Interaction::Pointer
+            }
+            CursorTarget::Plot(_) if !self.drawing_snapshot.selected_drawings.is_empty() => {
+                advanced::mouse::Interaction::default()
+            }
             CursorTarget::Plot(_) => advanced::mouse::Interaction::Crosshair,
         }
     }
