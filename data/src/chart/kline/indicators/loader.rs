@@ -3,6 +3,9 @@ use crate::data_path;
 use log::warn;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+static INSTALLED_DIRECTORY: OnceLock<PathBuf> = OnceLock::new();
 
 /// Filesystem sources used to build the process-wide indicator catalog.
 ///
@@ -20,27 +23,32 @@ impl IndicatorCatalogPaths {
     fn from_data_directory() -> Self {
         Self {
             bundled_directory: None,
-            installed_directory: installed_indicator_directory(),
+            installed_directory: default_installed_directory(),
             additional_files: Vec::new(),
         }
     }
 }
 
-fn installed_indicator_directory() -> PathBuf {
+fn default_installed_directory() -> PathBuf {
     std::env::var_os("FLOWSURFACE_INDICATORS_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|| data_path(Some("indicators")))
 }
 
+fn installed_directory() -> Result<PathBuf, String> {
+    INSTALLED_DIRECTORY
+        .get()
+        .cloned()
+        .ok_or_else(|| "Indicator catalog is not initialized".to_owned())
+}
+
 fn installed_sources(directory: &Path) -> Result<Vec<language::LoadedIndicatorSource>, String> {
-    let (files, diagnostics) = language::indicator_files_in_directory(directory)?;
-    if !diagnostics.is_empty() {
-        return Err(diagnostics.join("\n"));
-    }
+    let (files, _) = language::indicator_files_in_directory(directory)?;
     Ok(language::load_from_files_report(&files, language::PackageOrigin::Installed).loaded_sources)
 }
 
 pub fn write_indicator_source(id: &super::IndicatorId, source: &[u8]) -> Result<(), String> {
+    let directory = installed_directory()?;
     if super::catalog()
         .get(id)
         .is_some_and(|registration| registration.origin == language::PackageOrigin::Bundled)
@@ -48,7 +56,6 @@ pub fn write_indicator_source(id: &super::IndicatorId, source: &[u8]) -> Result<
         return Err("Bundled indicators cannot be replaced".to_owned());
     }
 
-    let directory = installed_indicator_directory();
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
     if installed_sources(&directory)?
         .iter()
@@ -105,6 +112,7 @@ pub fn write_indicator_source(id: &super::IndicatorId, source: &[u8]) -> Result<
 }
 
 pub fn remove_indicator_source(id: &super::IndicatorId) -> Result<(), String> {
+    let directory = installed_directory()?;
     if super::catalog()
         .get(id)
         .is_some_and(|registration| registration.origin == language::PackageOrigin::Bundled)
@@ -112,7 +120,7 @@ pub fn remove_indicator_source(id: &super::IndicatorId) -> Result<(), String> {
         return Err("Bundled indicators cannot be removed".to_owned());
     }
 
-    let installed = installed_sources(&installed_indicator_directory())?;
+    let installed = installed_sources(&directory)?;
     let mut sources = installed.iter().filter(|source| source.id == id.as_str());
     let source = sources.next().ok_or_else(|| {
         "No matching source was found in the configured indicators directory".to_owned()
@@ -139,12 +147,14 @@ pub fn initialize_indicator_catalog() -> Result<(), String> {
 pub fn initialize_indicator_catalog_with_paths(
     paths: &IndicatorCatalogPaths,
 ) -> Result<(), String> {
+    let _ = INSTALLED_DIRECTORY.set(paths.installed_directory.clone());
     let sources = load_catalog_sources(paths)?;
     let bundled_ids = sources
         .bundled
         .iter()
         .map(|registration| registration.id.clone())
         .collect::<Vec<_>>();
+
     super::install_catalog_with_bundled_diagnostics(
         sources.bundled,
         sources.installed,
@@ -223,7 +233,7 @@ fn load_catalog_sources(paths: &IndicatorCatalogPaths) -> Result<IndicatorCatalo
     }
 
     let mut diagnostics = Vec::new();
-    let mut installed_files = if let Err(error) = fs::create_dir_all(&paths.installed_directory) {
+    let installed_files = if let Err(error) = fs::create_dir_all(&paths.installed_directory) {
         diagnostics.push(format!(
             "could not create installed indicator directory {}: {error}",
             paths.installed_directory.display()
@@ -241,9 +251,17 @@ fn load_catalog_sources(paths: &IndicatorCatalogPaths) -> Result<IndicatorCatalo
             }
         }
     };
-    installed_files.extend(paths.additional_files.iter().cloned());
-    let installed_report =
+    let mut installed_report =
         language::load_from_files_report(&installed_files, language::PackageOrigin::Installed);
+    let additional_report =
+        language::load_from_files_report(&paths.additional_files, language::PackageOrigin::Bundled);
+    installed_report
+        .registrations
+        .extend(additional_report.registrations);
+    installed_report
+        .diagnostics
+        .extend(additional_report.diagnostics);
+
     for diagnostic in &installed_report.diagnostics {
         warn!("Ignoring invalid installed indicator source: {diagnostic}");
     }
