@@ -28,7 +28,11 @@ impl DataSources {
         });
         let catalog_http = http_client("indicator catalog", proxy, |builder| {
             builder
-                .user_agent(concat!("Flowsurface/", env!("CARGO_PKG_VERSION")))
+                .user_agent(concat!(
+                    env!("CARGO_PKG_NAME"),
+                    "/",
+                    env!("CARGO_PKG_VERSION")
+                ))
                 .redirect(reqwest::redirect::Policy::none())
         });
 

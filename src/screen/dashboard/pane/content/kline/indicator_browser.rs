@@ -93,7 +93,7 @@ impl State {
             Page::Catalog => self.catalog.view(catalog),
         };
 
-        let notice = catalog.restart_pending().then(|| {
+        let notice = (self.page == Page::Catalog && catalog.restart_pending()).then(|| {
             crate::widget::banner(
                 "Restart required.\nChanges will take effect after restart.",
                 crate::widget::BannerKind::Warning,
