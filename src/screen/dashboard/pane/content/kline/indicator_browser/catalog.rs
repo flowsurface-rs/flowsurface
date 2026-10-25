@@ -1,7 +1,5 @@
 use super::Message as BrowserMessage;
-use crate::layout::indicator_catalog::{
-    CatalogState, Entry, Installation, Message, SourceChange, SourceOperation, State,
-};
+use crate::layout::indicator_catalog::{Entry, Installation, Message, State};
 use data::chart::kline::indicators::IndicatorId;
 use iced::{
     Element, Length,
@@ -30,7 +28,7 @@ impl ViewState {
         };
         use iced::widget::tooltip::Position;
 
-        let loading = matches!(catalog.catalog_state(), CatalogState::Loading(_));
+        let loading = catalog.catalog_state().is_loading();
         let header = row![
             button(icon_text(Icon::Return, 14))
                 .style(|theme, status| style::button::transparent(theme, status, false))
@@ -56,11 +54,7 @@ impl ViewState {
                             .can_refresh()
                             .then_some(BrowserMessage::Catalog(Message::Refresh))
                     ),
-                Some(if loading {
-                    "Refreshing..."
-                } else {
-                    "Refresh catalog"
-                }),
+                Some("Refresh catalog"),
                 Position::Bottom,
             ),
         ]
@@ -68,7 +62,7 @@ impl ViewState {
         .align_y(iced::Alignment::Center);
         let mut content = column![header].spacing(12);
 
-        if let CatalogState::Failed { error, .. } = catalog.catalog_state() {
+        if let Some(error) = catalog.catalog_state().error() {
             content = content.push(crate::widget::banner(
                 &error.message,
                 crate::widget::BannerKind::Error,
@@ -126,15 +120,31 @@ impl ViewState {
 
         let expanded = self.expanded.as_ref() == Some(&entry.id);
         let installation = catalog.installation(entry);
-        let mut heading = row![
+        let mut heading = row![].spacing(4).align_y(iced::Alignment::Center);
+
+        if catalog.restart_pending_for(&entry.id) {
+            heading = heading.push(crate::widget::tooltip(
+                button(
+                    text("!")
+                        .size(style::text_size::BODY)
+                        .style(|theme: &iced::Theme| iced::widget::text::Style {
+                            color: Some(theme.extended_palette().warning.base.color),
+                        }),
+                )
+                .padding([0, 2])
+                .style(|theme, status| style::button::modifier(theme, status, true)),
+                Some("Restart required"),
+                iced::widget::tooltip::Position::Top,
+            ));
+        }
+
+        heading = heading.push(
             text(&entry.name)
                 .size(style::text_size::BODY)
                 .width(Length::Fill),
-        ]
-        .spacing(4)
-        .align_y(iced::Alignment::Center);
+        );
 
-        if installation.is_installed() {
+        if matches!(installation, Installation::Installed) {
             heading = heading.push(icon_text(Icon::Checkmark, 12));
         }
 
@@ -191,19 +201,10 @@ impl ViewState {
             widget::inspector::{MODAL_SECTION_SPACING, setting_section},
         };
 
-        let label = if let SourceOperation::Running {
-            id,
-            change: SourceChange::Installed,
-        } = catalog.operation()
-            && id == &entry.id
-        {
-            "Installing..."
-        } else {
-            match installation {
-                Installation::Installed | Installation::PendingInstall => "Installed",
-                Installation::Bundled => "Bundled",
-                Installation::NotInstalled | Installation::PendingRemove => "Install",
-            }
+        let action = match installation {
+            Installation::Installed => "Remove",
+            Installation::Bundled => "Bundled",
+            Installation::NotInstalled => "Install",
         };
 
         let description = entry.description.as_deref().unwrap_or("Not provided");
@@ -231,64 +232,27 @@ impl ViewState {
         .spacing(MODAL_SECTION_SPACING)
         .width(Length::Fill);
 
-        if let SourceOperation::Failed { id, error } = catalog.operation()
-            && id == &entry.id
-        {
+        if let Some(error) = catalog.error_for(&entry.id) {
             details = details.push(crate::widget::banner(
                 &error.message,
                 crate::widget::BannerKind::Error,
             ));
         }
 
-        let mut actions = row![iced::widget::space::horizontal()]
+        details = details.push(
+            row![
+                iced::widget::space::horizontal(),
+                button(text(action)).on_press_maybe(
+                    catalog
+                        .can_toggle(installation)
+                        .then(|| BrowserMessage::Catalog(Message::ToggleSource(entry.id.clone()))),
+                ),
+            ]
             .spacing(8)
             .width(Length::Fill)
-            .align_y(iced::Alignment::Center);
-
-        if installation.is_installed() {
-            actions = actions.push(crate::widget::tooltip(
-                button(crate::style::icon_text(crate::style::Icon::TrashBin, 12))
-                    .style(|theme, status| {
-                        let mut appearance = style::button::cancel(theme, status, false);
-                        if status == button::Status::Disabled {
-                            appearance.background = None;
-                            appearance.text_color = theme.extended_palette().secondary.strong.color;
-                        }
-                        appearance
-                    })
-                    .padding([4, 6])
-                    .on_press_maybe(
-                        catalog
-                            .can_remove(installation)
-                            .then(|| BrowserMessage::Catalog(Message::Remove(entry.id.clone()))),
-                    ),
-                Some("Remove indicator"),
-                iced::widget::tooltip::Position::Bottom,
-            ));
-        }
-
-        actions = actions.push(
-            button(text(label)).on_press_maybe(
-                catalog
-                    .can_install(installation)
-                    .then(|| BrowserMessage::Catalog(Message::Install(entry.id.clone()))),
-            ),
+            .align_y(iced::Alignment::Center),
         );
-        details = details.push(actions);
 
-        match installation {
-            Installation::PendingInstall => {
-                details = details.push(crate::widget::text::muted("Restart to use"));
-            }
-            Installation::PendingRemove => {
-                details = details.push(crate::widget::text::muted("Restart to apply removal"));
-            }
-            _ => {}
-        }
-
-        container(details)
-            .padding([6, 10])
-            .width(Length::Fill)
-            .into()
+        container(details).padding(10).width(Length::Fill).into()
     }
 }

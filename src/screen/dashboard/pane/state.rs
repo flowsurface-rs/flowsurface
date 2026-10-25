@@ -5,7 +5,7 @@ use data::layout::presets::Library as PresetLibrary;
 use super::content::{
     self, Content,
     heatmap::{HeatmapContent, HeatmapShader},
-    kline::{Action as KlineAction, ChartCommand},
+    kline::{Action as KlineAction, ChartCommand, KlineChart},
     ladder::Ladder,
     timesales::TimeAndSales,
 };
@@ -32,10 +32,8 @@ use crate::{
     style::{self, Icon, icon_text},
     theme::ThemeState,
     widget::{
-        self, button_with_tooltip,
-        inspector::{InspectorBody, InspectorContent, InspectorFooter},
-        link_group_button, press_button_with_tooltip,
-        toast::Toast,
+        self, button_with_tooltip, inspector::InspectorContent, link_group_button,
+        press_button_with_tooltip, toast::Toast,
     },
     window::{self, PixelRatio, Window},
 };
@@ -1026,6 +1024,15 @@ impl State {
         None
     }
 
+    fn kline_chart(&self) -> Option<&KlineChart> {
+        match &self.content {
+            Content::Kline {
+                chart: Some(chart), ..
+            } => Some(chart),
+            _ => None,
+        }
+    }
+
     fn supports_inspector(&self, page: InspectorPage) -> bool {
         match &self.content {
             Content::Kline { chart: Some(_), .. } => true,
@@ -1076,12 +1083,7 @@ impl State {
 
         let title = match page {
             InspectorPage::PaneSettings => "Pane settings".to_owned(),
-            InspectorPage::Indicators => match &self.content {
-                Content::Kline {
-                    chart: Some(chart), ..
-                } => chart.indicator_browser_title().to_owned(),
-                _ => return None,
-            },
+            InspectorPage::Indicators => self.kline_chart()?.indicator_browser_title().to_owned(),
         };
 
         let close = button(icon_text(Icon::Close, 14))
@@ -1120,62 +1122,19 @@ impl State {
         available_height: f32,
         chart_resources: &'a SharedChartResources,
     ) -> Option<Element<'a, Message>> {
-        let (body, footer) = match page {
-            InspectorPage::PaneSettings => {
-                let (sections, footer) = self
-                    .pane_settings_content(pane, chart_resources)?
-                    .into_parts();
-                (
-                    sections,
-                    footer.map(|footer| (InspectorFooter::HEIGHT, footer)),
-                )
-            }
-            InspectorPage::Indicators => (
-                InspectorBody::view_without_scroll(
-                    self.indicators_sidebar_view(pane, chart_resources)?,
-                ),
-                None,
+        match page {
+            InspectorPage::PaneSettings => Some(
+                self.pane_settings_content(pane, chart_resources)?
+                    .into_page(available_height),
             ),
-        };
-        let body = if page == InspectorPage::Indicators {
-            body
-        } else {
-            let footer_height = footer.as_ref().map_or(0.0, |(height, _)| *height);
-            InspectorBody::view(body, (available_height - footer_height).max(0.0))
-        };
-        let mut content = column![body];
-        if let Some((height, footer)) = footer {
-            content = content.push(InspectorFooter::view(footer, height));
+            InspectorPage::Indicators => self
+                .content
+                .indicators_view(pane, chart_resources.indicator_catalog()),
         }
-        Some(content.into())
-    }
-
-    pub fn indicators_sidebar_view<'a>(
-        &'a self,
-        pane: pane_grid::Pane,
-        chart_resources: &'a SharedChartResources,
-    ) -> Option<Element<'a, Message>> {
-        let Content::Kline {
-            chart: Some(chart), ..
-        } = &self.content
-        else {
-            return None;
-        };
-
-        Some(
-            chart
-                .indicator_browser_view(chart_resources.indicator_catalog())
-                .map(move |message| Message::PaneEvent(pane, Event::KlineInteraction(message))),
-        )
     }
 
     pub fn indicators_sidebar_focus_id(&self) -> Option<iced::widget::Id> {
-        match &self.content {
-            Content::Kline {
-                chart: Some(chart), ..
-            } => Some(chart.indicator_browser_focus_id()),
-            _ => None,
-        }
+        Some(self.kline_chart()?.indicator_browser_focus_id())
     }
 
     fn view_controls(
@@ -1194,10 +1153,7 @@ impl State {
         let tooltip_pos = tooltip::Position::Bottom;
         let mut buttons = row![];
 
-        if let Content::Kline {
-            chart: Some(chart), ..
-        } = &self.content
-        {
+        if let Some(chart) = self.kline_chart() {
             buttons = buttons.push(press_button_with_tooltip(
                 icon_text(Icon::Edit, 12),
                 Message::PaneEvent(

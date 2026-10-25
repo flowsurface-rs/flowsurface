@@ -88,9 +88,18 @@ impl State {
         chart: &'a KlineChart,
         catalog: &'a Catalog,
     ) -> Element<'a, Message> {
-        match self.page {
+        let body = match self.page {
             Page::Installed => self.installed.view(chart),
             Page::Catalog => self.catalog.view(catalog),
-        }
+        };
+
+        let notice = catalog.restart_pending().then(|| {
+            crate::widget::banner(
+                "Restart required.\nChanges will take effect after restart.",
+                crate::widget::BannerKind::Warning,
+            )
+        });
+
+        crate::widget::inspector::panel_page(body, notice)
     }
 }

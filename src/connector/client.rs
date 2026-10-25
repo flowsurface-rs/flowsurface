@@ -21,16 +21,16 @@ impl DataSources {
     /// create a market-data server client from the persisted configuration.
     pub fn new(network: &data::Network) -> Self {
         let proxy = network.proxy.as_ref();
-        let (exchange_http, server_http) = Self::build_http_clients(proxy);
 
-        let catalog_builder = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .user_agent(concat!("Flowsurface/", env!("CARGO_PKG_VERSION")))
-            .redirect(reqwest::redirect::Policy::none());
-        let catalog_http = exchange::adapter::proxy::try_apply_proxy(catalog_builder, proxy)
-            .build()
-            .expect("Failed to build indicator catalog HTTP client");
+        let exchange_http = http_client("exchange", proxy, |builder| builder);
+        let server_http = http_client("server", proxy, |builder| {
+            builder.danger_accept_invalid_certs(true)
+        });
+        let catalog_http = http_client("indicator catalog", proxy, |builder| {
+            builder
+                .user_agent(concat!("Flowsurface/", env!("CARGO_PKG_VERSION")))
+                .redirect(reqwest::redirect::Policy::none())
+        });
 
         let server = ServerClient::from_mode(&server_http, network);
         let exchange = AdapterHandles::spawn_venues(&exchange_http, Venue::ALL, proxy);
@@ -41,48 +41,33 @@ impl DataSources {
             catalog_http,
         }
     }
+}
 
-    /// Build the exchange-adapter and market-data server HTTP clients.
-    ///
-    /// Returns `(exchange_client, server_client)`.
-    ///
-    /// * `exchange_client`: For exchange adapters (proxy-aware, no TLS
-    ///   relaxation).
-    /// * `server_client`: For the user-configured market-data server
-    ///   (proxy-aware, accepts invalid TLS certificates for self-signed
-    ///   server certs).
-    ///
-    /// # Panics
-    ///
-    /// Panics if either `reqwest::Client::builder().build()` fails.
-    fn build_http_clients(proxy_cfg: Option<&Proxy>) -> (reqwest::Client, reqwest::Client) {
-        let mut exchange_builder = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .connect_timeout(std::time::Duration::from_secs(10));
-        exchange_builder = exchange::adapter::proxy::try_apply_proxy(exchange_builder, proxy_cfg);
-        let exchange_client = exchange_builder.build().unwrap_or_else(|e| {
+/// Build a proxy-aware HTTP client with the timeouts shared by every transport.
+///
+/// `name` labels the failure logs and the panic message.
+///
+/// # Panics
+///
+/// Panics if `reqwest::Client::builder().build()` fails.
+fn http_client(
+    name: &str,
+    proxy_cfg: Option<&Proxy>,
+    configure: impl FnOnce(reqwest::ClientBuilder) -> reqwest::ClientBuilder,
+) -> reqwest::Client {
+    let builder = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .connect_timeout(std::time::Duration::from_secs(10));
+
+    exchange::adapter::proxy::try_apply_proxy(configure(builder), proxy_cfg)
+        .build()
+        .unwrap_or_else(|e| {
             log::error!(
-                "Fatal: failed to build exchange HTTP client - TLS backend missing, \
+                "Fatal: failed to build {name} HTTP client - TLS backend missing, \
                  resource exhaustion, or invalid proxy config?\n  {e}"
             );
-            panic!("Failed to build exchange HTTP client: {e}");
-        });
-
-        let mut server_builder = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .danger_accept_invalid_certs(true);
-        server_builder = exchange::adapter::proxy::try_apply_proxy(server_builder, proxy_cfg);
-        let server_client = server_builder.build().unwrap_or_else(|e| {
-            log::error!(
-                "Fatal: failed to build server HTTP client - TLS backend missing, \
-                 resource exhaustion, or invalid proxy config?\n  {e}"
-            );
-            panic!("Failed to build server HTTP client: {e}");
-        });
-
-        (exchange_client, server_client)
-    }
+            panic!("Failed to build {name} HTTP client: {e}");
+        })
 }
 
 impl std::fmt::Debug for DataSources {

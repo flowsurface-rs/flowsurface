@@ -24,8 +24,8 @@ pub use core::output::{IndicatorOutputRef, OutputChannelSpec, OutputValue, Outpu
 pub use core::runtime::IndicatorHost;
 
 pub use loader::{
-    IndicatorCatalogPaths, SourceWrite, initialize_indicator_catalog,
-    initialize_indicator_catalog_with_paths, remove_indicator_source, write_indicator_source,
+    IndicatorCatalogPaths, initialize_indicator_catalog, initialize_indicator_catalog_with_paths,
+    remove_indicator_source, write_indicator_source,
 };
 pub(crate) use registry::install_catalog_with_bundled_diagnostics;
 pub use registry::{

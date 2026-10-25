@@ -1,8 +1,8 @@
-use data::chart::kline::indicators::{self, IndicatorId, SourceWrite, language::PackageOrigin};
+use data::chart::kline::indicators::{self, IndicatorId, language::PackageOrigin};
 use iced::Task;
 use serde::Deserialize;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     time::{Duration, Instant},
 };
 
@@ -13,8 +13,7 @@ const MAX_CATALOG_BYTES: usize = 4 << 20;
 pub enum Message {
     Open,
     Refresh,
-    Install(IndicatorId),
-    Remove(IndicatorId),
+    ToggleSource(IndicatorId),
     Fetched(Result<Catalog, FetchError>),
     SourceChanged {
         id: IndicatorId,
@@ -65,24 +64,51 @@ impl From<String> for FetchError {
 }
 
 #[derive(Default)]
-pub enum CatalogState {
+pub struct CatalogState {
+    catalog: Option<Catalog>,
+    status: Status,
+}
+
+#[derive(Default)]
+enum Status {
     #[default]
     Unopened,
-    Loading(Option<Catalog>),
-    Ready(Catalog),
-    Failed {
-        previous: Option<Catalog>,
-        error: FetchError,
-    },
+    Loading,
+    Ready,
+    Failed(FetchError),
 }
 
 impl CatalogState {
     pub fn catalog(&self) -> Option<&Catalog> {
-        match self {
-            Self::Unopened => None,
-            Self::Loading(previous) | Self::Failed { previous, .. } => previous.as_ref(),
-            Self::Ready(catalog) => Some(catalog),
+        self.catalog.as_ref()
+    }
+
+    pub fn is_loading(&self) -> bool {
+        matches!(self.status, Status::Loading)
+    }
+
+    pub fn error(&self) -> Option<&FetchError> {
+        match &self.status {
+            Status::Failed(error) => Some(error),
+            _ => None,
         }
+    }
+
+    fn is_unopened(&self) -> bool {
+        matches!(self.status, Status::Unopened)
+    }
+
+    fn begin_loading(&mut self) {
+        self.status = Status::Loading;
+    }
+
+    fn loaded(&mut self, catalog: Catalog) {
+        self.catalog = Some(catalog);
+        self.status = Status::Ready;
+    }
+
+    fn failed(&mut self, error: FetchError) {
+        self.status = Status::Failed(error);
     }
 }
 
@@ -92,29 +118,18 @@ pub enum SourceChange {
     Removed,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Installation {
     Bundled,
     Installed,
-    PendingInstall,
-    PendingRemove,
     NotInstalled,
-}
-
-impl Installation {
-    pub fn is_installed(self) -> bool {
-        matches!(self, Self::Installed | Self::PendingInstall)
-    }
 }
 
 #[derive(Default)]
 pub enum SourceOperation {
     #[default]
     Idle,
-    Running {
-        id: IndicatorId,
-        change: SourceChange,
-    },
+    Running,
     Failed {
         id: IndicatorId,
         error: FetchError,
@@ -124,7 +139,7 @@ pub enum SourceOperation {
 #[derive(Default)]
 pub struct State {
     catalog: CatalogState,
-    source_changes: BTreeMap<IndicatorId, SourceChange>,
+    pending: BTreeSet<IndicatorId>,
     operation: SourceOperation,
 }
 
@@ -133,24 +148,41 @@ impl State {
         &self.catalog
     }
 
-    pub fn operation(&self) -> &SourceOperation {
-        &self.operation
-    }
-
-    pub fn installation(&self, entry: &Entry) -> Installation {
-        match self.source_changes.get(&entry.id) {
-            Some(SourceChange::Installed) => Installation::PendingInstall,
-            Some(SourceChange::Removed) => Installation::PendingRemove,
-            None => match entry.registration().map(|registration| registration.origin) {
-                Some(PackageOrigin::Installed) => Installation::Installed,
-                Some(PackageOrigin::Bundled) => Installation::Bundled,
-                None => Installation::NotInstalled,
-            },
+    pub fn error_for(&self, id: &IndicatorId) -> Option<&FetchError> {
+        match &self.operation {
+            SourceOperation::Failed { id: failed, error } if failed == id => Some(error),
+            _ => None,
         }
     }
 
+    pub fn installation(&self, entry: &Entry) -> Installation {
+        let origin = entry.registration().map(|registration| registration.origin);
+        if origin == Some(PackageOrigin::Bundled) {
+            return Installation::Bundled;
+        }
+
+        let pending = self.pending.contains(&entry.id);
+        let present = match origin {
+            Some(_) => !pending,
+            None => pending,
+        };
+        if present {
+            Installation::Installed
+        } else {
+            Installation::NotInstalled
+        }
+    }
+
+    pub fn restart_pending(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
+    pub fn restart_pending_for(&self, id: &IndicatorId) -> bool {
+        self.pending.contains(id)
+    }
+
     fn open(&mut self, client: &reqwest::Client) -> Task<Message> {
-        if matches!(self.catalog, CatalogState::Unopened) {
+        if self.catalog.is_unopened() {
             self.refresh(client)
         } else {
             Task::none()
@@ -158,10 +190,7 @@ impl State {
     }
 
     fn can_request(&self) -> bool {
-        let catalog_retry = match &self.catalog {
-            CatalogState::Failed { error, .. } => error.retry_at,
-            _ => None,
-        };
+        let catalog_retry = self.catalog.error().and_then(|error| error.retry_at);
         let operation_retry = match &self.operation {
             SourceOperation::Failed { error, .. } => error.retry_at,
             _ => None,
@@ -174,24 +203,15 @@ impl State {
     }
 
     pub fn can_refresh(&self) -> bool {
-        !matches!(self.catalog, CatalogState::Loading(_)) && self.can_request()
+        !self.catalog.is_loading() && self.can_request()
     }
 
-    pub fn can_install(&self, installation: Installation) -> bool {
-        let installable = matches!(
-            installation,
-            Installation::NotInstalled | Installation::PendingRemove
-        );
-
-        installable && !self.is_running() && self.can_request()
-    }
-
-    pub fn can_remove(&self, installation: Installation) -> bool {
-        installation.is_installed() && !self.is_running() && self.can_request()
+    pub fn can_toggle(&self, installation: Installation) -> bool {
+        !matches!(installation, Installation::Bundled) && !self.is_running() && self.can_request()
     }
 
     fn is_running(&self) -> bool {
-        matches!(self.operation, SourceOperation::Running { .. })
+        matches!(self.operation, SourceOperation::Running)
     }
 
     fn record_change(&mut self, id: IndicatorId, change: SourceChange) {
@@ -201,9 +221,9 @@ impl State {
             SourceChange::Removed => loaded,
         };
         if pending {
-            self.source_changes.insert(id, change);
+            self.pending.insert(id);
         } else {
-            self.source_changes.remove(&id);
+            self.pending.remove(&id);
         }
     }
 
@@ -211,7 +231,7 @@ impl State {
         if !self.can_refresh() {
             return Task::none();
         }
-        self.catalog = CatalogState::Loading(self.catalog.catalog().cloned());
+        self.catalog.begin_loading();
         Task::perform(Catalog::fetch(client.clone()), Message::Fetched)
     }
 
@@ -219,7 +239,7 @@ impl State {
         match message {
             Message::Open => return self.open(client),
             Message::Refresh => return self.refresh(client),
-            Message::Install(id) => {
+            Message::ToggleSource(id) => {
                 let Some(catalog) = self.catalog.catalog() else {
                     return Task::none();
                 };
@@ -233,68 +253,37 @@ impl State {
                 };
 
                 let installation = self.installation(&entry);
-                if !self.can_install(installation) {
+                if !self.can_toggle(installation) {
                     return Task::none();
                 }
 
                 let base = catalog.source_base_path.clone();
-                let mode = match installation {
-                    Installation::PendingRemove => SourceWrite::Restore,
-                    _ => SourceWrite::Install,
-                };
-                self.operation = SourceOperation::Running {
-                    id: id.clone(),
-                    change: SourceChange::Installed,
-                };
+                self.operation = SourceOperation::Running;
 
-                return Task::perform(entry.install(base, client.clone(), mode), move |result| {
+                if matches!(installation, Installation::Installed) {
+                    let removed = id.clone();
+                    return Task::perform(
+                        blocking(move || indicators::remove_indicator_source(&removed)),
+                        move |result| Message::SourceChanged {
+                            id,
+                            change: SourceChange::Removed,
+                            result,
+                        },
+                    );
+                }
+
+                return Task::perform(entry.install(base, client.clone()), move |result| {
                     Message::SourceChanged {
-                        id: id.clone(),
+                        id,
                         change: SourceChange::Installed,
                         result,
                     }
                 });
             }
-            Message::Remove(id) => {
-                let Some(entry) = self
-                    .catalog
-                    .catalog()
-                    .and_then(|catalog| catalog.indicators.iter().find(|entry| entry.id == id))
-                else {
-                    return Task::none();
-                };
-
-                let installation = self.installation(entry);
-                if !self.can_remove(installation) {
-                    return Task::none();
-                }
-
-                self.operation = SourceOperation::Running {
-                    id: id.clone(),
-                    change: SourceChange::Removed,
-                };
-
-                return Task::perform(
-                    blocking(move || indicators::remove_indicator_source(&id)),
-                    {
-                        let id = entry.id.clone();
-                        move |result| Message::SourceChanged {
-                            id: id.clone(),
-                            change: SourceChange::Removed,
-                            result,
-                        }
-                    },
-                );
-            }
-            Message::Fetched(result) => {
-                self.catalog = match result {
-                    Ok(catalog) => CatalogState::Ready(catalog),
-                    Err(error) => CatalogState::Failed {
-                        previous: self.catalog.catalog().cloned(),
-                        error,
-                    },
-                };
-            }
+            Message::Fetched(result) => match result {
+                Ok(catalog) => self.catalog.loaded(catalog),
+                Err(error) => self.catalog.failed(error),
+            },
             Message::SourceChanged { id, change, result } => match result {
                 Ok(()) => {
                     self.record_change(id, change);
@@ -379,12 +368,7 @@ impl Entry {
         indicators::catalog().get(&self.id)
     }
 
-    async fn install(
-        self,
-        base: String,
-        client: reqwest::Client,
-        mode: SourceWrite,
-    ) -> Result<(), FetchError> {
+    async fn install(self, base: String, client: reqwest::Client) -> Result<(), FetchError> {
         let mut url = url::Url::parse(API_ORIGIN).map_err(|error| error.to_string())?;
         url.set_path(&base);
         url.path_segments_mut()
@@ -408,7 +392,7 @@ impl Entry {
             );
         }
 
-        blocking(move || indicators::write_indicator_source(&self.id, &bytes, mode)).await
+        blocking(move || indicators::write_indicator_source(&self.id, &bytes)).await
     }
 }
 

@@ -40,24 +40,12 @@ fn installed_sources(directory: &Path) -> Result<Vec<language::LoadedIndicatorSo
     Ok(language::load_from_files_report(&files, language::PackageOrigin::Installed).loaded_sources)
 }
 
-#[derive(Clone, Copy)]
-pub enum SourceWrite {
-    Install,
-    /// Rewrites a source whose file was removed while this process still holds
-    /// it loaded.
-    Restore,
-}
-
-pub fn write_indicator_source(
-    id: &super::IndicatorId,
-    source: &[u8],
-    mode: SourceWrite,
-) -> Result<(), String> {
-    if let Some(registration) = super::catalog().get(id)
-        && !(matches!(mode, SourceWrite::Restore)
-            && registration.origin == language::PackageOrigin::Installed)
+pub fn write_indicator_source(id: &super::IndicatorId, source: &[u8]) -> Result<(), String> {
+    if super::catalog()
+        .get(id)
+        .is_some_and(|registration| registration.origin == language::PackageOrigin::Bundled)
     {
-        return Err("This indicator is already loaded".to_owned());
+        return Err("Bundled indicators cannot be replaced".to_owned());
     }
 
     let directory = installed_indicator_directory();

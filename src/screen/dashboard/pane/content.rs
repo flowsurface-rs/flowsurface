@@ -9,6 +9,7 @@ use super::{
 };
 use crate::{
     connector::fetcher::FetchSpec,
+    layout::indicator_catalog,
     screen::dashboard::pane::settings::{
         self, heatmap_shader_cfg_view, ladder_cfg_view, timesales_cfg_view,
     },
@@ -21,7 +22,7 @@ use data::{
 };
 use exchange::{Kline, TickerInfo, Timeframe, Trade, UnixMs, adapter::StreamKind, depth::Depth};
 use iced::{
-    Alignment,
+    Alignment, Element,
     task::Handle,
     widget::{button, pane_grid, row, space},
 };
@@ -510,6 +511,25 @@ impl Content {
             Content::Ladder(panel) => panel.is_some(),
             Content::Starter => true,
         }
+    }
+
+    pub(super) fn indicators_view<'a>(
+        &'a self,
+        pane: pane_grid::Pane,
+        catalog: &'a indicator_catalog::State,
+    ) -> Option<Element<'a, Message>> {
+        let Self::Kline {
+            chart: Some(chart), ..
+        } = self
+        else {
+            return None;
+        };
+
+        Some(
+            chart
+                .indicator_browser_view(catalog)
+                .map(move |message| Message::PaneEvent(pane, Event::KlineInteraction(message))),
+        )
     }
 
     pub(super) fn pane_settings_content<'a>(
