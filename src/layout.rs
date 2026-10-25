@@ -7,8 +7,8 @@ use data::{
     layout::{WindowSpec, pane::Axis, presets},
 };
 
-use iced::Task;
 use iced::widget::pane_grid::{self, Configuration};
+use iced::{Task, window};
 use std::vec;
 use uuid::Uuid;
 
@@ -35,8 +35,15 @@ pub enum ChartResourcesMessage {
     IndicatorCatalog(indicator_catalog::Message),
 }
 
-pub enum ChartResourcesEvent {
-    Presets(Result<Option<Uuid>, String>),
+#[derive(Debug, Clone)]
+pub enum SharedChartResourcesMessage {
+    PresetCommand {
+        layout_id: Uuid,
+        window: window::Id,
+        pane: pane_grid::Pane,
+        command: presets::Command,
+    },
+    IndicatorCatalog(indicator_catalog::Message),
 }
 
 impl SharedChartResources {
@@ -55,23 +62,16 @@ impl SharedChartResources {
         &self.indicator_catalog
     }
 
-    pub fn update(
+    pub fn update_indicator_catalog(
         &mut self,
-        message: ChartResourcesMessage,
+        message: indicator_catalog::Message,
         catalog_http: &reqwest::Client,
-    ) -> (Task<ChartResourcesMessage>, Option<ChartResourcesEvent>) {
-        match message {
-            ChartResourcesMessage::Presets(command) => (
-                Task::none(),
-                Some(ChartResourcesEvent::Presets(self.presets.update(command))),
-            ),
-            ChartResourcesMessage::IndicatorCatalog(message) => (
-                self.indicator_catalog
-                    .update(message, catalog_http)
-                    .map(ChartResourcesMessage::IndicatorCatalog),
-                None,
-            ),
-        }
+    ) -> Task<indicator_catalog::Message> {
+        self.indicator_catalog.update(message, catalog_http)
+    }
+
+    pub fn update_presets(&mut self, command: presets::Command) -> Result<Option<Uuid>, String> {
+        self.presets.update(command)
     }
 }
 

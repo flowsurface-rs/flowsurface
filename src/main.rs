@@ -129,6 +129,7 @@ enum Message {
     ThemeEditor(modal::theme_editor::Message),
     NetworkEditor(modal::network_editor::Message),
     Layouts(modal::layout_manager::Message),
+    SharedChartResources(layout::SharedChartResourcesMessage),
     AudioStream(modal::audio::Message),
 }
 
@@ -435,6 +436,22 @@ impl Flowsurface {
 
                         Task::none()
                     }
+                    Some(dashboard::Event::PresetCommand {
+                        window,
+                        pane,
+                        command,
+                    }) => self.update_shared_chart_resources(
+                        layout::SharedChartResourcesMessage::PresetCommand {
+                            layout_id,
+                            window,
+                            pane,
+                            command,
+                        },
+                    ),
+                    Some(dashboard::Event::IndicatorCatalog(message)) => self
+                        .update_shared_chart_resources(
+                            layout::SharedChartResourcesMessage::IndicatorCatalog(message),
+                        ),
                     None => Task::none(),
                 };
 
@@ -455,6 +472,9 @@ impl Flowsurface {
                 if let Some(task) = self.sidebar.force_refresh_metadata() {
                     return task.map(Message::Sidebar);
                 }
+            }
+            Message::SharedChartResources(message) => {
+                return self.update_shared_chart_resources(message);
             }
             Message::ScaleFactorChanged(value) => {
                 self.ui_scale_factor = value;
@@ -869,6 +889,19 @@ impl Flowsurface {
             .get_mut(active_layout.unique)
             .map(|layout| &mut layout.dashboard)
             .expect("No active dashboard")
+    }
+
+    fn update_shared_chart_resources(
+        &mut self,
+        message: layout::SharedChartResourcesMessage,
+    ) -> Task<Message> {
+        self.layout_manager
+            .update_chart_resources(
+                message,
+                self.main_window.id,
+                &self.data_sources.catalog_http,
+            )
+            .map(Message::SharedChartResources)
     }
 
     fn map_dashboard_task(

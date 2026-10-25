@@ -1,7 +1,7 @@
 pub mod pane;
 
 use super::DashboardError;
-use crate::layout::{ChartResourcesMessage, SharedChartResources};
+use crate::layout::{ChartResourcesMessage, SharedChartResources, indicator_catalog};
 use crate::{
     connector::{
         client::DataSources,
@@ -51,11 +51,6 @@ pub enum Message {
     },
     ResolveStreams(uuid::Uuid, Vec<PersistStreamKind>),
     RequestPalette,
-    SharedChartResources {
-        window: window::Id,
-        pane: pane_grid::Pane,
-        message: Box<ChartResourcesMessage>,
-    },
 }
 
 pub struct Dashboard {
@@ -93,6 +88,12 @@ pub enum Event {
         streams: Vec<PersistStreamKind>,
     },
     RequestPalette,
+    PresetCommand {
+        window: window::Id,
+        pane: pane_grid::Pane,
+        command: presets::Command,
+    },
+    IndicatorCatalog(indicator_catalog::Message),
 }
 
 impl Dashboard {
@@ -166,9 +167,6 @@ impl Dashboard {
         chart_resources: &SharedChartResources,
     ) -> (Task<Message>, Option<Event>) {
         match message {
-            message @ Message::SharedChartResources { .. } => {
-                return (Task::done(message), None);
-            }
             Message::SavePopoutSpecs(specs) => {
                 for (window_id, new_spec) in specs {
                     if let Some((_, spec)) = self.popout.get_mut(&window_id) {
@@ -1326,14 +1324,19 @@ impl Dashboard {
                 (Task::none(), Some(Event::OpenNetworkSettings))
             }
             Some(pane::Effect::OpenUrl(url)) => (Task::none(), Some(Event::OpenUrlRequested(url))),
-            Some(pane::Effect::SharedChartResources(message)) => (
-                Task::done(Message::SharedChartResources {
-                    window,
-                    pane,
-                    message,
-                }),
-                None,
-            ),
+            Some(pane::Effect::SharedChartResources(message)) => match *message {
+                ChartResourcesMessage::Presets(command) => (
+                    Task::none(),
+                    Some(Event::PresetCommand {
+                        window,
+                        pane,
+                        command,
+                    }),
+                ),
+                ChartResourcesMessage::IndicatorCatalog(message) => {
+                    (Task::none(), Some(Event::IndicatorCatalog(message)))
+                }
+            },
             None => (Task::none(), None),
         }
     }

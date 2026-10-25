@@ -1,14 +1,12 @@
 use crate::connector::client::DataSources;
-use crate::layout::{
-    ChartResourcesEvent, ChartResourcesMessage, Layout, LayoutId, SharedChartResources,
-};
+use crate::layout::{Layout, LayoutId, SharedChartResources, SharedChartResourcesMessage};
 use crate::screen::dashboard::{self, Dashboard};
 use crate::style::icon_text;
 use crate::widget::column_drag::DragEvent;
 use crate::widget::{manager_icon_button, manager_list, manager_row};
 use crate::{style, tooltip};
 use data::layout::MAX_NAME_LENGTH;
-use data::layout::presets::Library as PresetLibrary;
+use data::layout::presets::{self, Library as PresetLibrary};
 
 use iced::widget::{
     button, center, column, container, row, scrollable, space, text, text_input,
@@ -166,22 +164,6 @@ impl LayoutManager {
         layout_id: &Uuid,
         data_sources: &DataSources,
     ) -> Option<(iced::Task<dashboard::Message>, Option<dashboard::Event>)> {
-        if let dashboard::Message::SharedChartResources {
-            window,
-            pane,
-            message,
-        } = message
-        {
-            let task = self.update_chart_resources(
-                *message,
-                main_window.id,
-                *layout_id,
-                (window, pane),
-                &data_sources.catalog_http,
-            );
-            return Some((task, None));
-        }
-
         let layout_index = self
             .layouts
             .iter()
@@ -191,42 +173,53 @@ impl LayoutManager {
         Some(dashboard.update(message, main_window, data_sources, &self.chart_resources))
     }
 
-    fn update_chart_resources(
+    pub fn update_chart_resources(
         &mut self,
-        message: ChartResourcesMessage,
+        message: SharedChartResourcesMessage,
+        main_window: window::Id,
+        catalog_http: &reqwest::Client,
+    ) -> iced::Task<SharedChartResourcesMessage> {
+        match message {
+            SharedChartResourcesMessage::PresetCommand {
+                layout_id,
+                window,
+                pane,
+                command,
+            } => {
+                self.apply_preset_command(main_window, layout_id, (window, pane), command);
+                iced::Task::none()
+            }
+            SharedChartResourcesMessage::IndicatorCatalog(message) => self
+                .chart_resources
+                .update_indicator_catalog(message, catalog_http)
+                .map(SharedChartResourcesMessage::IndicatorCatalog),
+        }
+    }
+
+    fn apply_preset_command(
+        &mut self,
         main_window: window::Id,
         layout_id: Uuid,
         origin: (window::Id, iced::widget::pane_grid::Pane),
-        catalog_http: &reqwest::Client,
-    ) -> iced::Task<dashboard::Message> {
-        let (task, event) = self.chart_resources.update(message, catalog_http);
+        command: presets::Command,
+    ) {
+        let response = self.chart_resources.update_presets(command);
 
-        if let Some(ChartResourcesEvent::Presets(response)) = event {
-            for layout in &mut self.layouts {
-                layout
-                    .dashboard
-                    .reconcile_selected_presets(main_window, self.chart_resources.presets());
-            }
-
-            if let Some(layout) = self
-                .layouts
-                .iter_mut()
-                .find(|layout| layout.id.unique == layout_id)
-            {
-                layout.dashboard.preset_command_completed(
-                    main_window,
-                    origin.0,
-                    origin.1,
-                    response,
-                );
-            }
+        for layout in &mut self.layouts {
+            layout
+                .dashboard
+                .reconcile_selected_presets(main_window, self.chart_resources.presets());
         }
 
-        task.map(move |message| dashboard::Message::SharedChartResources {
-            window: origin.0,
-            pane: origin.1,
-            message: Box::new(message),
-        })
+        if let Some(layout) = self
+            .layouts
+            .iter_mut()
+            .find(|layout| layout.id.unique == layout_id)
+        {
+            layout
+                .dashboard
+                .preset_command_completed(main_window, origin.0, origin.1, response);
+        }
     }
 
     pub fn park_inactive_layouts(&mut self, active_layout_id: Uuid, main_window: window::Id) {
