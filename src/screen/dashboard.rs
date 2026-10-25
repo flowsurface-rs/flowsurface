@@ -77,11 +77,6 @@ pub enum Event {
     OpenUrlRequested(String),
     OpenNetworkSettings,
     Notification(Toast),
-    DistributeFetchedData {
-        pane_id: uuid::Uuid,
-        data: FetchedData,
-        stream: StreamKind,
-    },
     ResolveStreams {
         pane_id: uuid::Uuid,
         streams: Vec<PersistStreamKind>,
@@ -186,8 +181,8 @@ impl Dashboard {
                 }
                 _ => {
                     return (
-                        Task::done(Message::Notification(Toast::error(err.to_string()))),
-                        None,
+                        Task::none(),
+                        Some(Event::Notification(Toast::error(err.to_string()))),
                     );
                 }
             },
@@ -345,12 +340,8 @@ impl Dashboard {
                 stream,
             } => {
                 return (
-                    Task::none(),
-                    Some(Event::DistributeFetchedData {
-                        pane_id,
-                        data,
-                        stream,
-                    }),
+                    self.distribute_fetched_data(main_window.id, pane_id, data, stream),
+                    None,
                 );
             }
             Message::ResolveStreams(pane_id, streams) => {

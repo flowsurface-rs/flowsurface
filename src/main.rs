@@ -338,26 +338,8 @@ impl Flowsurface {
 
                 let additional_task = match event {
                     Some(dashboard::Event::OpenUrlRequested(url)) => {
-                        Task::done(Message::OpenUrlRequested(Cow::Owned(url)))
-                    }
-                    Some(dashboard::Event::DistributeFetchedData {
-                        pane_id,
-                        data,
-                        stream,
-                    }) => {
-                        let task = self
-                            .layout_manager
-                            .mut_dashboard(layout_id)
-                            .map(|dashboard| {
-                                dashboard.distribute_fetched_data(
-                                    main_window.id,
-                                    pane_id,
-                                    data,
-                                    stream,
-                                )
-                            })
-                            .unwrap_or_else(Task::none);
-                        self.map_dashboard_task(task, Some(layout_id))
+                        self.open_url(&url);
+                        Task::none()
                     }
                     Some(dashboard::Event::Notification(toast)) => {
                         self.notifications.push(toast);
@@ -568,12 +550,7 @@ impl Flowsurface {
                         .push(Toast::error(format!("Failed to open data folder: {err}")));
                 }
             }
-            Message::OpenUrlRequested(url) => {
-                if let Err(err) = data::open_url(url.as_ref()) {
-                    self.notifications
-                        .push(Toast::error(format!("Failed to open link: {err}")));
-                }
-            }
+            Message::OpenUrlRequested(url) => self.open_url(url.as_ref()),
             Message::ThemeEditor(msg) => {
                 let action = self.theme_editor.update(msg, self.theme.current());
 
@@ -903,6 +880,13 @@ impl Flowsurface {
             layout_id: Some(layout_id),
             event,
         })
+    }
+
+    fn open_url(&mut self, url: &str) {
+        if let Err(err) = data::open_url(url) {
+            self.notifications
+                .push(Toast::error(format!("Failed to open link: {err}")));
+        }
     }
 
     fn replace_theme(&mut self, theme: iced_core::Theme) {
