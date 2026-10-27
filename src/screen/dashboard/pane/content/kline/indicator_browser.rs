@@ -1,11 +1,10 @@
 mod catalog;
 mod installed;
 
-use crate::layout::indicator_catalog::{Message as CatalogMessage, State as Catalog};
-
 use super::KlineChart;
 use data::chart::kline::IndicatorId;
 use data::chart::kline::KlineStudy;
+use data::chart::kline::indicators::manifest::{self, Message as CatalogMessage};
 use iced::Element;
 
 #[derive(Debug, Clone)]
@@ -86,7 +85,7 @@ impl State {
     pub(super) fn view<'a>(
         &'a self,
         chart: &'a KlineChart,
-        catalog: &'a Catalog,
+        catalog: &'a manifest::State,
     ) -> Element<'a, Message> {
         let body = match self.page {
             Page::Installed => self.installed.view(chart),

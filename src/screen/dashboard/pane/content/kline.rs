@@ -13,7 +13,7 @@ mod updates;
 mod viewport;
 
 use crate::connector::fetcher::FetchSpec;
-use crate::layout::{ChartResourcesMessage, indicator_catalog};
+use crate::layout::ChartResourcesMessage;
 use crate::screen::dashboard::pane::ChartAction;
 use crate::style;
 use crate::theme::{ThemeAccents, ThemeState};
@@ -44,6 +44,7 @@ use data::chart::kline::composition::{
     ChartComposition, DEFAULT_MIN_PANEL_RATIO, MarkKind, PanelId, PanelScaleMode,
 };
 use data::chart::kline::footprint::{ClusterKind, ClusterScaling};
+use data::chart::kline::indicators::manifest;
 use data::chart::kline::series::KlineSeries;
 use data::chart::kline::viewport::XAxis;
 use data::chart::kline::{
@@ -251,7 +252,7 @@ impl KlineChart {
                 indicator_browser::Message::OpenCatalog => {
                     self.indicator_browser.open_catalog();
                     return Some(Action::SharedChartResources(Box::new(
-                        ChartResourcesMessage::IndicatorCatalog(indicator_catalog::Message::Open),
+                        ChartResourcesMessage::IndicatorCatalog(manifest::Message::Open),
                     )));
                 }
                 indicator_browser::Message::Back => {
@@ -754,7 +755,7 @@ impl KlineChart {
 
     pub fn indicator_browser_view<'a>(
         &'a self,
-        catalog: &'a indicator_catalog::State,
+        catalog: &'a manifest::State,
     ) -> iced::Element<'a, Message> {
         self.indicator_browser
             .view(self, catalog)

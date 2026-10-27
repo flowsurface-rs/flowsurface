@@ -14,6 +14,7 @@ mod widget;
 mod window;
 
 use connector::client::DataSources;
+use data::chart::kline::indicators::manifest;
 use data::config::theme::default_theme;
 use data::{layout::WindowSpec, sidebar};
 use layout::{LayoutId, configuration};
@@ -129,7 +130,7 @@ enum Message {
     ThemeEditor(modal::theme_editor::Message),
     NetworkEditor(modal::network_editor::Message),
     Layouts(modal::layout_manager::Message),
-    SharedChartResources(layout::SharedChartResourcesMessage),
+    SharedChartResources(manifest::Message),
     AudioStream(modal::audio::Message),
 }
 
@@ -422,18 +423,19 @@ impl Flowsurface {
                         window,
                         pane,
                         command,
-                    }) => self.update_shared_chart_resources(
-                        layout::SharedChartResourcesMessage::PresetCommand {
+                    }) => {
+                        self.layout_manager.apply_preset_command(
+                            main_window.id,
                             layout_id,
                             window,
                             pane,
                             command,
-                        },
-                    ),
-                    Some(dashboard::Event::IndicatorCatalog(message)) => self
-                        .update_shared_chart_resources(
-                            layout::SharedChartResourcesMessage::IndicatorCatalog(message),
-                        ),
+                        );
+                        Task::none()
+                    }
+                    Some(dashboard::Event::IndicatorCatalog(message)) => {
+                        self.update_shared_chart_resources(message)
+                    }
                     None => Task::none(),
                 };
 
@@ -868,16 +870,9 @@ impl Flowsurface {
             .expect("No active dashboard")
     }
 
-    fn update_shared_chart_resources(
-        &mut self,
-        message: layout::SharedChartResourcesMessage,
-    ) -> Task<Message> {
+    fn update_shared_chart_resources(&mut self, message: manifest::Message) -> Task<Message> {
         self.layout_manager
-            .update_chart_resources(
-                message,
-                self.main_window.id,
-                &self.data_sources.catalog_http,
-            )
+            .update_chart_resources(message, &self.data_sources.catalog_http)
             .map(Message::SharedChartResources)
     }
 

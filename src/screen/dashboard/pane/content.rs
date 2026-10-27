@@ -9,12 +9,12 @@ use super::{
 };
 use crate::{
     connector::fetcher::FetchSpec,
-    layout::indicator_catalog,
     screen::dashboard::pane::settings::{
         self, heatmap_shader_cfg_view, ladder_cfg_view, timesales_cfg_view,
     },
     widget::inspector::InspectorContent,
 };
+use data::chart::kline::indicators::manifest;
 use data::{
     PaneSettingsSnapshot, PaneSettingsTransfer,
     chart::{Basis, kline::OpenInterestSeries},
@@ -516,7 +516,7 @@ impl Content {
     pub(super) fn indicators_view<'a>(
         &'a self,
         pane: pane_grid::Pane,
-        catalog: &'a indicator_catalog::State,
+        catalog: &'a manifest::State,
     ) -> Option<Element<'a, Message>> {
         let Self::Kline {
             chart: Some(chart), ..

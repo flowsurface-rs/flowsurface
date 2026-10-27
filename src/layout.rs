@@ -1,14 +1,16 @@
-pub mod indicator_catalog;
-
+use crate::connector::catalog;
 use crate::modal::layout_manager::LayoutManager;
 use crate::screen::dashboard::{Dashboard, pane};
 use data::{
     UserTimezone,
+    chart::kline::indicators::manifest::{
+        self, Message as CatalogMessage, SourceAction, SourceChange, Trigger,
+    },
     layout::{WindowSpec, pane::Axis, presets},
 };
 
+use iced::Task;
 use iced::widget::pane_grid::{self, Configuration};
-use iced::{Task, window};
 use std::vec;
 use uuid::Uuid;
 
@@ -26,31 +28,20 @@ pub struct LayoutId {
 #[derive(Default)]
 pub struct SharedChartResources {
     presets: presets::Library,
-    indicator_catalog: indicator_catalog::State,
+    indicator_catalog: manifest::State,
 }
 
 #[derive(Debug, Clone)]
 pub enum ChartResourcesMessage {
     Presets(presets::Command),
-    IndicatorCatalog(indicator_catalog::Message),
-}
-
-#[derive(Debug, Clone)]
-pub enum SharedChartResourcesMessage {
-    PresetCommand {
-        layout_id: Uuid,
-        window: window::Id,
-        pane: pane_grid::Pane,
-        command: presets::Command,
-    },
-    IndicatorCatalog(indicator_catalog::Message),
+    IndicatorCatalog(manifest::Message),
 }
 
 impl SharedChartResources {
     pub fn from_config(presets: Vec<data::chart::kline::ChartPreset>) -> Self {
         Self {
             presets: presets::Library::from_config(presets),
-            indicator_catalog: indicator_catalog::State::default(),
+            indicator_catalog: manifest::State::default(),
         }
     }
 
@@ -58,16 +49,67 @@ impl SharedChartResources {
         &self.presets
     }
 
-    pub fn indicator_catalog(&self) -> &indicator_catalog::State {
+    pub fn indicator_catalog(&self) -> &manifest::State {
         &self.indicator_catalog
     }
 
-    pub fn update_indicator_catalog(
+    pub fn update(
         &mut self,
-        message: indicator_catalog::Message,
+        message: CatalogMessage,
         catalog_http: &reqwest::Client,
-    ) -> Task<indicator_catalog::Message> {
-        self.indicator_catalog.update(message, catalog_http)
+    ) -> Task<CatalogMessage> {
+        let fetch = |started: bool| {
+            if started {
+                Task::perform(
+                    catalog::fetch(catalog_http.clone()),
+                    CatalogMessage::Fetched,
+                )
+            } else {
+                Task::none()
+            }
+        };
+
+        match message {
+            CatalogMessage::Open => fetch(self.indicator_catalog.begin_load(Trigger::Open)),
+            CatalogMessage::Refresh => fetch(self.indicator_catalog.begin_load(Trigger::Refresh)),
+            CatalogMessage::ToggleSource(id) => match self.indicator_catalog.begin_toggle(&id) {
+                Some(SourceAction::Remove(target)) => {
+                    Task::perform(catalog::remove(target.clone()), move |result| {
+                        CatalogMessage::SourceChanged {
+                            id: target,
+                            change: SourceChange::Removed,
+                            result,
+                        }
+                    })
+                }
+                Some(SourceAction::Install { entry, base }) => {
+                    let id = entry.id.clone();
+                    Task::perform(
+                        catalog::install(entry, base, catalog_http.clone()),
+                        move |result| CatalogMessage::SourceChanged {
+                            id,
+                            change: SourceChange::Installed,
+                            result,
+                        },
+                    )
+                }
+                None => Task::none(),
+            },
+            CatalogMessage::Fetched(result) => {
+                match result {
+                    Ok(fetched) => self.indicator_catalog.loaded(fetched),
+                    Err(error) => self.indicator_catalog.failed(error),
+                }
+                Task::none()
+            }
+            CatalogMessage::SourceChanged { id, change, result } => {
+                match result {
+                    Ok(()) => self.indicator_catalog.operation_succeeded(id, change),
+                    Err(error) => self.indicator_catalog.operation_failed(id, error),
+                }
+                Task::none()
+            }
+        }
     }
 
     pub fn update_presets(&mut self, command: presets::Command) -> Result<Option<Uuid>, String> {

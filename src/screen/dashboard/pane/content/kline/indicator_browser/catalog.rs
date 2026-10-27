@@ -1,6 +1,6 @@
 use super::Message as BrowserMessage;
-use crate::layout::indicator_catalog::{Entry, Installation, Message, State};
 use data::chart::kline::indicators::IndicatorId;
+use data::chart::kline::indicators::manifest::{Entry, Installation, Message, State};
 use iced::{
     Element, Length,
     widget::{button, column, container, row, scrollable, text, text_input},
@@ -28,7 +28,7 @@ impl ViewState {
         };
         use iced::widget::tooltip::Position;
 
-        let loading = catalog.catalog_state().is_loading();
+        let loading = catalog.is_loading();
         let header = row![
             button(icon_text(Icon::Return, 14))
                 .style(|theme, status| style::button::transparent(theme, status, false))
@@ -62,7 +62,7 @@ impl ViewState {
         .align_y(iced::Alignment::Center);
         let mut content = column![header].spacing(12);
 
-        if let Some(error) = catalog.catalog_state().error() {
+        if let Some(error) = catalog.error() {
             content = content.push(crate::widget::banner(
                 &error.message,
                 crate::widget::BannerKind::Error,
@@ -71,11 +71,11 @@ impl ViewState {
 
         let mut entries = column![].spacing(2);
 
-        if let Some(manifest) = catalog.catalog_state().catalog() {
+        if let Some(published) = catalog.catalog() {
             let query = self.search.trim().to_lowercase();
             let mut count = 0;
 
-            for entry in &manifest.indicators {
+            for entry in &published.indicators {
                 if !entry.name.to_lowercase().contains(&query)
                     && !entry.id.as_str().to_lowercase().contains(&query)
                 {
@@ -86,7 +86,7 @@ impl ViewState {
             }
 
             if count == 0 {
-                entries = entries.push(text(if manifest.indicators.is_empty() {
+                entries = entries.push(text(if published.indicators.is_empty() {
                     "No indicators are available."
                 } else {
                     "No matching indicators."

@@ -1,7 +1,7 @@
 pub mod pane;
 
 use super::DashboardError;
-use crate::layout::{ChartResourcesMessage, SharedChartResources, indicator_catalog};
+use crate::layout::{ChartResourcesMessage, SharedChartResources};
 use crate::{
     connector::{
         client::DataSources,
@@ -16,7 +16,7 @@ use crate::{
 };
 use data::{
     UserTimezone,
-    chart::kline::ChartSettings,
+    chart::kline::{ChartSettings, indicators::manifest},
     layout::{WindowSpec, pane::ContentKind, presets},
     stream::PersistStreamKind,
 };
@@ -88,7 +88,7 @@ pub enum Event {
         pane: pane_grid::Pane,
         command: presets::Command,
     },
-    IndicatorCatalog(indicator_catalog::Message),
+    IndicatorCatalog(manifest::Message),
 }
 
 impl Dashboard {

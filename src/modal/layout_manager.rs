@@ -1,10 +1,11 @@
 use crate::connector::client::DataSources;
-use crate::layout::{Layout, LayoutId, SharedChartResources, SharedChartResourcesMessage};
+use crate::layout::{Layout, LayoutId, SharedChartResources};
 use crate::screen::dashboard::{self, Dashboard};
 use crate::style::icon_text;
 use crate::widget::column_drag::DragEvent;
 use crate::widget::{manager_icon_button, manager_list, manager_row};
 use crate::{style, tooltip};
+use data::chart::kline::indicators::manifest;
 use data::layout::MAX_NAME_LENGTH;
 use data::layout::presets::{self, Library as PresetLibrary};
 
@@ -175,32 +176,18 @@ impl LayoutManager {
 
     pub fn update_chart_resources(
         &mut self,
-        message: SharedChartResourcesMessage,
-        main_window: window::Id,
+        message: manifest::Message,
         catalog_http: &reqwest::Client,
-    ) -> iced::Task<SharedChartResourcesMessage> {
-        match message {
-            SharedChartResourcesMessage::PresetCommand {
-                layout_id,
-                window,
-                pane,
-                command,
-            } => {
-                self.apply_preset_command(main_window, layout_id, (window, pane), command);
-                iced::Task::none()
-            }
-            SharedChartResourcesMessage::IndicatorCatalog(message) => self
-                .chart_resources
-                .update_indicator_catalog(message, catalog_http)
-                .map(SharedChartResourcesMessage::IndicatorCatalog),
-        }
+    ) -> iced::Task<manifest::Message> {
+        self.chart_resources.update(message, catalog_http)
     }
 
-    fn apply_preset_command(
+    pub fn apply_preset_command(
         &mut self,
         main_window: window::Id,
         layout_id: Uuid,
-        origin: (window::Id, iced::widget::pane_grid::Pane),
+        source_window: window::Id,
+        source_pane: iced::widget::pane_grid::Pane,
         command: presets::Command,
     ) {
         let response = self.chart_resources.update_presets(command);
@@ -216,9 +203,12 @@ impl LayoutManager {
             .iter_mut()
             .find(|layout| layout.id.unique == layout_id)
         {
-            layout
-                .dashboard
-                .preset_command_completed(main_window, origin.0, origin.1, response);
+            layout.dashboard.preset_command_completed(
+                main_window,
+                source_window,
+                source_pane,
+                response,
+            );
         }
     }
 

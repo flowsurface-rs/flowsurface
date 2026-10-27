@@ -2,6 +2,7 @@ mod bundled;
 mod core;
 pub mod language;
 mod loader;
+pub mod manifest;
 mod registry;
 pub mod scripting;
 
