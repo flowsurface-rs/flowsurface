@@ -230,6 +230,26 @@ impl<'a, Message: 'a> InspectorContent<'a, Message> {
         InspectorSectionList::new(self.sections).view()
     }
 
+    /// Lays the sections and footer out as a page capped at `available_height`.
+    pub fn into_page(self, available_height: f32) -> Element<'a, Message> {
+        let (sections, footer) = self.into_parts();
+        let footer = footer.map(|footer| InspectorFooter::view(footer, InspectorFooter::HEIGHT));
+        let reserved = if footer.is_some() {
+            InspectorFooter::HEIGHT
+        } else {
+            0.0
+        };
+
+        let mut page = column![InspectorBody::view(
+            sections,
+            (available_height - reserved).max(0.0)
+        )];
+        if let Some(footer) = footer {
+            page = page.push(footer);
+        }
+        page.into()
+    }
+
     pub fn map<Next>(
         self,
         mapper: impl Fn(Message) -> Next + Copy + 'a,
@@ -294,6 +314,20 @@ impl InspectorFooter {
         content: impl Into<Element<'a, Message>>,
         height: f32,
     ) -> Element<'a, Message> {
+        Self::band(content, Length::Fixed(height))
+    }
+
+    /// Footer sized by its content, for notices that wrap.
+    pub fn view_shrink<'a, Message: 'a>(
+        content: impl Into<Element<'a, Message>>,
+    ) -> Element<'a, Message> {
+        Self::band(content, Length::Shrink)
+    }
+
+    fn band<'a, Message: 'a>(
+        content: impl Into<Element<'a, Message>>,
+        height: Length,
+    ) -> Element<'a, Message> {
         column![
             rule::horizontal(1.0).style(crate::style::split_ruler),
             container(content)
@@ -304,4 +338,16 @@ impl InspectorFooter {
         .height(height)
         .into()
     }
+}
+
+/// A page whose body fills the inspector, with an optional notice footer.
+pub fn panel_page<'a, Message: 'a>(
+    body: impl Into<Element<'a, Message>>,
+    notice: Option<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    let mut page = column![InspectorBody::view_without_scroll(body)];
+    if let Some(notice) = notice {
+        page = page.push(InspectorFooter::view_shrink(notice));
+    }
+    page.into()
 }

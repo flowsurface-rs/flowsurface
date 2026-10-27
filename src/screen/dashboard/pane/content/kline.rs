@@ -13,6 +13,7 @@ mod updates;
 mod viewport;
 
 use crate::connector::fetcher::FetchSpec;
+use crate::layout::ChartResourcesMessage;
 use crate::screen::dashboard::pane::ChartAction;
 use crate::style;
 use crate::theme::{ThemeAccents, ThemeState};
@@ -43,6 +44,7 @@ use data::chart::kline::composition::{
     ChartComposition, DEFAULT_MIN_PANEL_RATIO, MarkKind, PanelId, PanelScaleMode,
 };
 use data::chart::kline::footprint::{ClusterKind, ClusterScaling};
+use data::chart::kline::indicators::manifest;
 use data::chart::kline::series::KlineSeries;
 use data::chart::kline::viewport::XAxis;
 use data::chart::kline::{
@@ -70,6 +72,8 @@ pub enum Action {
     RequestFetch(Vec<FetchSpec>),
     OpenUrl(String),
     OpenNetworkSettings,
+    FocusWidget(iced::widget::Id),
+    SharedChartResources(Box<ChartResourcesMessage>),
 }
 
 #[derive(Debug, Clone)]
@@ -245,6 +249,27 @@ impl KlineChart {
                 self.close_contextual_settings();
             }
             Message::IndicatorBrowser(message) => match message {
+                indicator_browser::Message::OpenCatalog => {
+                    self.indicator_browser.open_catalog();
+                    return Some(Action::SharedChartResources(Box::new(
+                        ChartResourcesMessage::IndicatorCatalog(manifest::Message::Open),
+                    )));
+                }
+                indicator_browser::Message::Back => {
+                    self.indicator_browser.go_back();
+                    return Some(Action::FocusWidget(self.indicator_browser.search_box_id()));
+                }
+                indicator_browser::Message::CatalogSearchChanged(query) => {
+                    self.indicator_browser.set_catalog_query(query);
+                }
+                indicator_browser::Message::ToggleCatalogEntry(id) => {
+                    self.indicator_browser.toggle_catalog_entry(id);
+                }
+                indicator_browser::Message::Catalog(message) => {
+                    return Some(Action::SharedChartResources(Box::new(
+                        ChartResourcesMessage::IndicatorCatalog(message),
+                    )));
+                }
                 indicator_browser::Message::SearchChanged(query) => {
                     self.indicator_browser.set_search_query(query);
                 }
@@ -728,8 +753,21 @@ impl KlineChart {
         )
     }
 
-    pub fn indicator_browser_view(&self) -> iced::Element<'_, Message> {
-        indicator_browser::view(self, &self.indicator_browser)
+    pub fn indicator_browser_view<'a>(
+        &'a self,
+        catalog: &'a manifest::State,
+    ) -> iced::Element<'a, Message> {
+        self.indicator_browser
+            .view(self, catalog)
+            .map(Message::IndicatorBrowser)
+    }
+
+    pub fn indicator_browser_go_back(&mut self) -> bool {
+        self.indicator_browser.go_back()
+    }
+
+    pub fn indicator_browser_title(&self) -> &'static str {
+        self.indicator_browser.title()
     }
 
     pub fn indicator_browser_focus_id(&self) -> iced::widget::Id {

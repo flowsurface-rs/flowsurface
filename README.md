@@ -26,7 +26,7 @@ An open-source native desktop charting application for crypto markets. Supports 
     - **Candlestick:** Includes footprints, profiles, indicators with time-based or custom tick-based intervals.
         - **Order flow:** Footprints with bid/ask, volume, delta, and table views; configurable price grouping, imbalance highlighting, POC and naked-POC levels, and large-trade markers.
         - **Profiles:** Visible-range and recurring volume profiles, plus daily, weekly, or monthly TPO profiles with value areas, initial balance, single prints, and interactive splitting and merging.
-        - **Scriptable indicators:** Use bundled indicators, install more from the catalog, or write your own with the `.ind` DSL. Display overlays or separate panels, resize and reorder panels, and feed compatible indicator outputs into other indicators. See [Indicators](#indicators) to get started.
+        - **Scriptable indicators:** Use bundled indicators, install more from the catalog, or write your own with the `.ind` DSL. See [Indicators](#indicators) to get started.
 - Real-time sound effects driven by trade streams
 - [\*](#platform-notes)Multi window/monitor support on macOS and Linux.
 - Pane linking for quickly switching tickers across multiple panes.
@@ -79,11 +79,14 @@ in Settings → Network, apply the settings, then restart Flowsurface. Three mod
 
 Candlestick/footprint charts include [bundled indicators](data/indicators/README.md).
 Add more from the optional [catalog](https://github.com/flowsurface-rs/indicators/tree/main/sources) or write your own `.ind` files;
-installing indicators does not require rebuilding the app.
+installing indicators requires an app restart.
 
-To install, go to **Settings → Open data folder** and copy the desired catalog
-`.ind` files into `indicators/` subfolder there. Restart the app, then add them
-through the chart pane's **Indicators** sidebar. The data directory is `$FLOWSURFACE_DATA_PATH`
+Open the chart pane's **Indicators** sidebar and click **+** to browse the catalog.
+Click **Install**, then restart the app and add the indicator through the same sidebar.
+Downloads are verified and compiled before installation.
+
+For manual installation, go to **Settings → Open data folder** and copy `.ind`
+files into the `indicators/` subfolder, then restart. The data directory is `$FLOWSURFACE_DATA_PATH`
 when set, otherwise your platform's data directory under `flowsurface/`.
 See [installation details](https://github.com/flowsurface-rs/indicators#install-and-run) for path overrides
 and loading behavior.
@@ -177,11 +180,11 @@ Discord: https://discord.gg/RN2XAF7ZuR
 Flowsurface is released under [GPL-3.0-or-later](LICENSE).
 Some components use separate licenses:
 
-| Component                                                                    | License                                |
-| ---------------------------------------------------------------------------- | -------------------------------------- |
-| Application, data crate, and [bundled indicators](data/indicators/README.md) | [GPL-3.0-or-later](LICENSE)            |
-| Indicator engine and CLI                                                     | [Apache-2.0](indicator-engine/LICENSE) |
+| Component                                                                                        | License                                                                      |
+| ------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------- |
+| Application, data crate, and [bundled indicators](data/indicators/README.md)                     | [GPL-3.0-or-later](LICENSE)                                                  |
+| Indicator engine and CLI                                                                         | [Apache-2.0](indicator-engine/LICENSE)                                       |
 | [Optional indicator catalog](https://github.com/flowsurface-rs/indicators) and its documentation | [Apache-2.0](https://github.com/flowsurface-rs/indicators/blob/main/LICENSE) |
-| Exchange adapters (`flowsurface-exchange`)                                   | [MIT](exchange/LICENSE)                |
+| Exchange adapters (`flowsurface-exchange`)                                                       | [MIT](exchange/LICENSE)                                                      |
 
 Contributions follow the license of the component being changed; submit catalog indicators to the [indicators repository](https://github.com/flowsurface-rs/indicators/blob/main/CONTRIBUTING.md).

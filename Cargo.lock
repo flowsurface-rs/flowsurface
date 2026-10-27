@@ -1188,6 +1188,7 @@ dependencies = [
  "num-traits",
  "palette",
  "reqwest",
+ "ring",
  "rodio",
  "rustc-hash 2.1.2",
  "serde",

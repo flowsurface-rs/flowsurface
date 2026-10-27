@@ -14,6 +14,7 @@ mod widget;
 mod window;
 
 use connector::client::DataSources;
+use data::chart::kline::indicators::manifest;
 use data::config::theme::default_theme;
 use data::{layout::WindowSpec, sidebar};
 use layout::{LayoutId, configuration};
@@ -129,6 +130,7 @@ enum Message {
     ThemeEditor(modal::theme_editor::Message),
     NetworkEditor(modal::network_editor::Message),
     Layouts(modal::layout_manager::Message),
+    SharedChartResources(manifest::Message),
     AudioStream(modal::audio::Message),
 }
 
@@ -417,20 +419,22 @@ impl Flowsurface {
 
                         Task::none()
                     }
-                    Some(dashboard::Event::ChartPresets {
+                    Some(dashboard::Event::PresetCommand {
                         window,
                         pane,
                         command,
                     }) => {
-                        self.layout_manager.update_presets(
-                            command,
+                        self.layout_manager.apply_preset_command(
                             main_window.id,
                             layout_id,
                             window,
                             pane,
+                            command,
                         );
-
                         Task::none()
+                    }
+                    Some(dashboard::Event::IndicatorCatalog(message)) => {
+                        self.update_shared_chart_resources(message)
                     }
                     None => Task::none(),
                 };
@@ -452,6 +456,9 @@ impl Flowsurface {
                 if let Some(task) = self.sidebar.force_refresh_metadata() {
                     return task.map(Message::Sidebar);
                 }
+            }
+            Message::SharedChartResources(message) => {
+                return self.update_shared_chart_resources(message);
             }
             Message::ScaleFactorChanged(value) => {
                 self.ui_scale_factor = value;
@@ -721,7 +728,7 @@ impl Flowsurface {
                     self.timezone,
                     pixel_ratio,
                     &self.theme,
-                    self.layout_manager.presets(),
+                    self.layout_manager.chart_resources(),
                 )
                 .map(move |msg| Message::Dashboard {
                     layout_id: None,
@@ -772,7 +779,7 @@ impl Flowsurface {
                         self.timezone,
                         pixel_ratio,
                         &self.theme,
-                        self.layout_manager.presets(),
+                        self.layout_manager.chart_resources(),
                     )
                     .map(move |msg| Message::Dashboard {
                         layout_id: None,
@@ -861,6 +868,12 @@ impl Flowsurface {
             .get_mut(active_layout.unique)
             .map(|layout| &mut layout.dashboard)
             .expect("No active dashboard")
+    }
+
+    fn update_shared_chart_resources(&mut self, message: manifest::Message) -> Task<Message> {
+        self.layout_manager
+            .update_chart_resources(message, &self.data_sources.catalog_http)
+            .map(Message::SharedChartResources)
     }
 
     fn map_dashboard_task(

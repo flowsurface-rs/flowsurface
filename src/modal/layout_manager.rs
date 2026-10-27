@@ -1,12 +1,13 @@
 use crate::connector::client::DataSources;
-use crate::layout::{Layout, LayoutId};
+use crate::layout::{Layout, LayoutId, SharedChartResources};
 use crate::screen::dashboard::{self, Dashboard};
 use crate::style::icon_text;
 use crate::widget::column_drag::DragEvent;
 use crate::widget::{manager_icon_button, manager_list, manager_row};
 use crate::{style, tooltip};
+use data::chart::kline::indicators::manifest;
 use data::layout::MAX_NAME_LENGTH;
-use data::layout::presets::Library as PresetLibrary;
+use data::layout::presets::{self, Library as PresetLibrary};
 
 use iced::widget::{
     button, center, column, container, row, scrollable, space, text, text_input,
@@ -43,7 +44,7 @@ pub enum Action {
 
 pub struct LayoutManager {
     pub layouts: Vec<Layout>,
-    presets: PresetLibrary,
+    chart_resources: SharedChartResources,
     active_layout_id: Option<Uuid>,
     pub edit_mode: Editing,
 }
@@ -67,7 +68,7 @@ impl LayoutManager {
 
         Self {
             layouts: vec![layout],
-            presets: PresetLibrary::default(),
+            chart_resources: SharedChartResources::default(),
             active_layout_id: Some(default_layout.unique),
             edit_mode: Editing::None,
         }
@@ -80,7 +81,7 @@ impl LayoutManager {
     ) -> Self {
         let mut manager = Self {
             layouts,
-            presets: PresetLibrary::from_config(chart_presets),
+            chart_resources: SharedChartResources::from_config(chart_presets),
             active_layout_id: active_layout.map(|l| l.unique),
             edit_mode: Editing::None,
         };
@@ -88,8 +89,12 @@ impl LayoutManager {
         manager
     }
 
+    pub fn chart_resources(&self) -> &SharedChartResources {
+        &self.chart_resources
+    }
+
     pub fn presets(&self) -> &PresetLibrary {
-        &self.presets
+        self.chart_resources.presets()
     }
 
     pub fn ensure_layout(&mut self) {
@@ -166,23 +171,31 @@ impl LayoutManager {
             .position(|layout| layout.id.unique == *layout_id)?;
         let dashboard = &mut self.layouts[layout_index].dashboard;
 
-        Some(dashboard.update(message, main_window, data_sources, &self.presets))
+        Some(dashboard.update(message, main_window, data_sources, &self.chart_resources))
     }
 
-    pub fn update_presets(
+    pub fn update_chart_resources(
         &mut self,
-        command: data::layout::presets::Command,
+        message: manifest::Message,
+        catalog_http: &reqwest::Client,
+    ) -> iced::Task<manifest::Message> {
+        self.chart_resources.update(message, catalog_http)
+    }
+
+    pub fn apply_preset_command(
+        &mut self,
         main_window: window::Id,
         layout_id: Uuid,
-        origin_window: window::Id,
-        origin_pane: iced::widget::pane_grid::Pane,
+        source_window: window::Id,
+        source_pane: iced::widget::pane_grid::Pane,
+        command: presets::Command,
     ) {
-        let response = self.presets.update(command);
+        let response = self.chart_resources.update_presets(command);
 
         for layout in &mut self.layouts {
             layout
                 .dashboard
-                .reconcile_selected_presets(main_window, &self.presets);
+                .reconcile_selected_presets(main_window, self.chart_resources.presets());
         }
 
         if let Some(layout) = self
@@ -192,8 +205,8 @@ impl LayoutManager {
         {
             layout.dashboard.preset_command_completed(
                 main_window,
-                origin_window,
-                origin_pane,
+                source_window,
+                source_pane,
                 response,
             );
         }

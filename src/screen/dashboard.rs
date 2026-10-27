@@ -1,6 +1,7 @@
 pub mod pane;
 
 use super::DashboardError;
+use crate::layout::{ChartResourcesMessage, SharedChartResources};
 use crate::{
     connector::{
         client::DataSources,
@@ -15,7 +16,7 @@ use crate::{
 };
 use data::{
     UserTimezone,
-    chart::kline::ChartSettings,
+    chart::kline::{ChartSettings, indicators::manifest},
     layout::{WindowSpec, pane::ContentKind, presets},
     stream::PersistStreamKind,
 };
@@ -82,11 +83,12 @@ pub enum Event {
         streams: Vec<PersistStreamKind>,
     },
     RequestPalette,
-    ChartPresets {
+    PresetCommand {
         window: window::Id,
         pane: pane_grid::Pane,
         command: presets::Command,
     },
+    IndicatorCatalog(manifest::Message),
 }
 
 impl Dashboard {
@@ -157,7 +159,7 @@ impl Dashboard {
         message: Message,
         main_window: &Window,
         data_sources: &DataSources,
-        chart_presets: &presets::Library,
+        chart_resources: &SharedChartResources,
     ) -> (Task<Message>, Option<Event>) {
         match message {
             Message::SavePopoutSpecs(specs) => {
@@ -320,7 +322,7 @@ impl Dashboard {
                     let mut chart_settings = self.chart_settings;
                     let effect = self
                         .get_mut_pane(main_window.id, window, pane)
-                        .map(|state| state.update(event, &mut chart_settings, chart_presets));
+                        .map(|state| state.update(event, &mut chart_settings, chart_resources));
                     self.chart_settings = chart_settings;
                     return self.dispatch_pane_effect(
                         effect.flatten(),
@@ -565,7 +567,7 @@ impl Dashboard {
         timezone: UserTimezone,
         pixel_ratio: PixelRatio,
         theme: &'a ThemeState,
-        chart_presets: &'a presets::Library,
+        chart_resources: &'a SharedChartResources,
     ) -> Element<'a, Message> {
         let pane_grid: Element<_> = PaneGrid::new(&self.panes, |id, pane, maximized| {
             let is_focused = self.focus == Some((main_window.id, id));
@@ -580,7 +582,7 @@ impl Dashboard {
                 pixel_ratio,
                 tickers_table,
                 theme,
-                chart_presets,
+                chart_resources,
             )
         })
         .min_size(240)
@@ -602,7 +604,7 @@ impl Dashboard {
         timezone: UserTimezone,
         pixel_ratio: PixelRatio,
         theme: &'a ThemeState,
-        chart_presets: &'a presets::Library,
+        chart_resources: &'a SharedChartResources,
     ) -> Element<'a, Message> {
         if let Some((state, _)) = self.popout.get(&window) {
             let content = container(
@@ -619,7 +621,7 @@ impl Dashboard {
                         pixel_ratio,
                         tickers_table,
                         theme,
-                        chart_presets,
+                        chart_resources,
                     )
                 })
                 .on_click(pane::Message::PaneClicked),
@@ -1313,14 +1315,19 @@ impl Dashboard {
                 (Task::none(), Some(Event::OpenNetworkSettings))
             }
             Some(pane::Effect::OpenUrl(url)) => (Task::none(), Some(Event::OpenUrlRequested(url))),
-            Some(pane::Effect::ChartPresets(command)) => (
-                Task::none(),
-                Some(Event::ChartPresets {
-                    window,
-                    pane,
-                    command,
-                }),
-            ),
+            Some(pane::Effect::SharedChartResources(message)) => match *message {
+                ChartResourcesMessage::Presets(command) => (
+                    Task::none(),
+                    Some(Event::PresetCommand {
+                        window,
+                        pane,
+                        command,
+                    }),
+                ),
+                ChartResourcesMessage::IndicatorCatalog(message) => {
+                    (Task::none(), Some(Event::IndicatorCatalog(message)))
+                }
+            },
             None => (Task::none(), None),
         }
     }
