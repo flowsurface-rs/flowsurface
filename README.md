@@ -17,89 +17,67 @@ An open-source native desktop charting application for crypto markets. Supports 
   />
 </div>
 
-### Key Features
+## Key Features
 
 - Multiple chart/pane types:
-    - **Time & Sales:** Scrollable list of live trades.
-    - **DOM (Depth of Market) / Ladder:** Displays current L2 orderbook alongside recent trade volumes on grouped price levels.
-    - **Heatmap (Historical DOM):** Uses live trades and orderbook to display a time-series heatmap chart. Supports customizable price grouping, different time aggregations, fixed or visible range volume profile.
-    - **Candlestick:** Includes footprints, profiles, indicators with time-based or custom tick-based intervals.
-        - **Order flow:** Footprints with bid/ask, volume, delta, and table views; configurable price grouping, imbalance highlighting, POC and naked-POC levels, and large-trade markers.
-        - **Profiles:** Visible-range and recurring volume profiles, plus daily, weekly, or monthly TPO profiles with value areas, initial balance, single prints, and interactive splitting and merging.
-        - **Scriptable indicators:** Use bundled indicators, install more from the catalog, or write your own with the `.ind` DSL. See [Indicators](#indicators) to get started.
+    - **Time & Sales:** Scrollable list of live trades that can be merged across multiple tickers.
+    - **DOM (Depth of Market) / Ladder:** Displays current orderbook alongside recent trade volumes on grouped price levels.
+    - **Heatmap (Historical DOM):** Uses live trades and orderbook to display a time-series heatmap chart. Supports customizable price grouping and different timeframes.
+    - **Candlestick:** Footprints, profiles, scriptable indicators, custom tick-based intervals. See [Indicators](#indicators) and [Studies](#studies).
 - Real-time sound effects driven by trade streams
-- [\*](#platform-notes)Multi window/monitor support on macOS and Linux.
-- Pane linking for quickly switching tickers across multiple panes.
-- Persistent layouts and customizable themes with editable color palettes.
+- Multi window/monitor support on macOS and Linux.[\*](#platform-notes)
+- Persistent layouts, chart presets, themes with editable color palettes.
 
-#### Historical Trades on Footprint Charts:
+## Market Data
 
-By default, Flowsurface captures and plots live trades in real time via WebSocket.
+**Live:** Trades, orderbook, and kline updates stream from exchange WebSocket feeds.
 
-To backfill the visible time range on footprint charts, enable **trade fetching**
-in Settings → Network, apply the settings, then restart Flowsurface. Three modes are available:
+**Historical trades:** Optional backfill for the visible range on time-based candlestick charts.
+Can be enabled in **Settings → Network**. Three modes are available:
 
+- **Off**: No historical backfill.
 - **Exchange**: Fetches directly from Binance's public REST API and bulk data
-  mirrors ([data.binance.vision](https://data.binance.vision/)). Fast for
-  daily archives; paginated and rate-limited for intraday ranges. **Binance
-  only** (spot, linear, inverse).
+  mirrors ([data.binance.vision](https://data.binance.vision/)). Daily archives use
+  bulk files and are cached on disk for reuse; intraday ranges are paginated and
+  rate-limited. **Binance only** (spot, linear, inverse).
+- **Server**: Fetches from a server that exposes a
+  `GET /trades.arrow` endpoint. The reference implementation, [`flowsurface-server`](https://github.com/flowsurface-rs/server), is a
+  self-contained collector that writes trades to DuckDB and serves them over this protocol.
+  See its [README](https://github.com/flowsurface-rs/server#get-tradesarrow) for the schema,
+  query parameters, and auth. Works with every exchange the app supports, provided the server collects that venue.
 
-- **[Server](https://github.com/flowsurface-rs/server)**: Fetches from any HTTP server that exposes a
-  `GET /trades.arrow` endpoint returning an
-  [Arrow IPC](https://arrow.apache.org/) stream with:
-    - Response: `Content-Type: application/vnd.apache.arrow.stream`
-    - Schema (columns matched by name, order not significant):
-
-        `ts (int64)`, `price (float64)`, `qty (float64)`, `is_sell (bool)`
-
-        Use Unix milliseconds for `ts`, `from`, and `to`. Quantities are in base
-        units for spot/linear markets and quote notional for inverse markets.
-        Return the oldest matching trades first, in ascending timestamp order.
-
-    - Query parameters:
-      `venue`, `market`, `symbol`, `from` (inclusive), `to` (inclusive), `limit`
-    - Optional bearer-token auth: (`Authorization: Bearer <token>`)
-
-    Self-signed TLS certificates are
-    accepted. Works with **all exchanges** and has no exchange rate limits.
-    Bring your own data source.
-
-    A reference implementation is available at
-    [flowsurface-server](https://github.com/flowsurface-rs/server), a
-    self-contained collector that writes trades to DuckDB and serves
-    them over this protocol.
-
-- **Off**: Live trades only; no historical backfill.
-
-##### Historical klines, open interest, and ticker metadata/stats are always fetched from exchange REST APIs.
-
-##### Live trades, orderbook and kline updates are streamed from exchange WebSocket feeds.
+**Historical klines, open interest, ticker metadata/stats:** Always fetched from exchange
+REST APIs, regardless of the trade-fetch mode.
 
 ## Indicators
 
-Candlestick/footprint charts include [bundled indicators](data/indicators/README.md).
-Add more from the optional [catalog](https://github.com/flowsurface-rs/indicators/tree/main/sources) or write your own `.ind` files;
-installing indicators requires an app restart.
+Candlestick charts include [bundled indicators](data/indicators/README.md), more can be added manually or using the
+catalog browser.
 
-Open the chart pane's **Indicators** sidebar and click **+** to browse the catalog.
-Click **Install**, then restart the app and add the indicator through the same sidebar.
-Downloads are verified and compiled before installation.
+**Catalog browser**: Open the chart pane's **Indicators** sidebar and click **+**. The browser fetches
+a manifest of contributed indicators from `https://api.flowsurface.com`. The manifest is
+built from the [catalog repository](https://github.com/flowsurface-rs/indicators/tree/main/sources) at a
+pinned commit; installing downloads the selected `.ind` source from the catalog server, verifies it
+against the manifest checksum, and compiles it locally before installation.
 
-For manual installation, go to **Settings → Open data folder** and copy `.ind`
-files into the `indicators/` subfolder, then restart. The data directory is `$FLOWSURFACE_DATA_PATH`
-when set, otherwise your platform's data directory under `flowsurface/`.
-See [installation details](https://github.com/flowsurface-rs/indicators#install-and-run) for path overrides
-and loading behavior.
+**Manual install**: Open **Settings → Open data folder** and copy `.ind` files into `indicators/`, then
+restart the app. The data directory is `$FLOWSURFACE_DATA_PATH` when set, otherwise your platform's data
+directory under `flowsurface/`. The installed-indicator directory can also be overridden with
+`FLOWSURFACE_INDICATORS_PATH`.
 
-From an application source checkout, you can load a separate catalog checkout:
+To write your own indicators, see the [language reference and examples](indicator-engine/LANGUAGE.md) and the
+[CLI workflow](indicator-engine/README.md#cli).
 
-```sh
-FLOWSURFACE_INDICATORS_PATH="/path/to/indicators/sources" cargo run
-```
+## Studies
 
-To create an indicator, see the [language reference and examples](indicator-engine/LANGUAGE.md)
-and the [CLI workflow](indicator-engine/README.md#cli) for scaffolding, checking,
-and testing sources.
+Footprint requires **Trade data** to be enabled in the pane settings and enough zoom for their columns to be
+visible. Backfill is optional and is configured in **Settings → Network**. Some details that may not be clear in the UI:
+
+- A pane uses one profile source: **_candle-based_** or **_trade-based_**. Same-source studies can coexist (one visible-range profile, one recurring profile, one TPO); the `Big Trades` study is trade-only and independent.
+- **_Candle-based_** studies are sourced using lower timeframe `Kline` data: `1m` up to `2h`, `3m` up to `4h`, `5m` up to `12h`, and `15m` above that. They are approximations: a candle only gives a high/low range, so volume is spread across that range and TPO marks it. Without a buy/sell split, the candle's volume is treated as buy when `close >= open`, else sell.
+- **_Trade-based_** studies use actual prints, so they are more precise, but need trades data, optionally backfill and more processing. Trade versions exist for volume and TPO profiles.
+- `TPO` anchors are UTC; initial balance is the first hour from the profile start (for weekly/monthly, the first hour of that week/month).
+- The `Big Trades` study filters on quote-currency notional; rings group multiple trades.
 
 ## Installation
 
@@ -175,16 +153,21 @@ Discord: https://discord.gg/RN2XAF7ZuR
 - [Halloy](https://github.com/squidowl/halloy), an excellent open-source IRC client, the main reference for the foundational code design
 - And of course, [iced](https://github.com/iced-rs/iced), the GUI library that makes this possible
 
+## Privacy
+
+Flowsurface has no telemetry or analytics. See [PRIVACY.md](PRIVACY.md) for the services it
+contacts and what stays local.
+
 ## License
 
 Flowsurface is released under [GPL-3.0-or-later](LICENSE).
 Some components use separate licenses:
 
-| Component                                                                                        | License                                                                      |
-| ------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------- |
-| Application, data crate, and [bundled indicators](data/indicators/README.md)                     | [GPL-3.0-or-later](LICENSE)                                                  |
-| Indicator engine and CLI                                                                         | [Apache-2.0](indicator-engine/LICENSE)                                       |
-| [Optional indicator catalog](https://github.com/flowsurface-rs/indicators) and its documentation | [Apache-2.0](https://github.com/flowsurface-rs/indicators/blob/main/LICENSE) |
-| Exchange adapters (`flowsurface-exchange`)                                                       | [MIT](exchange/LICENSE)                                                      |
+| Component                                                                               | License                                                                      |
+| --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| Application, data crate, and [bundled indicators](data/indicators/README.md)            | [GPL-3.0-or-later](LICENSE)                                                  |
+| Indicator engine and CLI                                                                | [Apache-2.0](indicator-engine/LICENSE)                                       |
+| [Indicator catalog](https://github.com/flowsurface-rs/indicators) and its documentation | [Apache-2.0](https://github.com/flowsurface-rs/indicators/blob/main/LICENSE) |
+| Exchange adapters (`flowsurface-exchange`)                                              | [MIT](exchange/LICENSE)                                                      |
 
 Contributions follow the license of the component being changed; submit catalog indicators to the [indicators repository](https://github.com/flowsurface-rs/indicators/blob/main/CONTRIBUTING.md).
