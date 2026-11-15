@@ -1,5 +1,6 @@
 use crate::{
     connector::fetcher,
+    deferred::Deferred,
     style::{self, icon_text},
     widget::{BannerKind, banner, tooltip},
 };
@@ -40,31 +41,25 @@ pub struct NetworkEditor {
     fetch: FetchForm,
     confirm: ConfirmState,
     error: Option<String>,
-    /// Snapshot of the effective config when the editor was opened or last
-    /// reset. Used to revert drafts when the user cancels a restart confirmation.
-    effective: data::Network,
-    /// The full network config that was applied (proxy or server) but needs
-    /// a restart to take effect. `None` when no pending restart is needed.
-    pending_apply: Option<data::Network>,
 }
 
 impl NetworkEditor {
     /// Create a new `NetworkEditor` with form fields pre-populated from
-    /// the caller's effective network config.
-    pub fn new(network: &data::Network, pending_apply: Option<data::Network>) -> Self {
+    /// the currently wanted network config.
+    pub fn new(network: &Deferred<data::Network>) -> Self {
+        let wanted = network.wanted();
+
         let mut proxy = ProxyForm::new();
-        proxy.populate_from(network.proxy.as_ref());
+        proxy.populate_from(wanted.proxy.as_ref());
         Self {
             proxy,
             fetch: FetchForm::new(
-                &network.trade_fetch_mode,
-                network.server_url.as_deref(),
-                network.server_auth_token.as_deref(),
+                &wanted.trade_fetch_mode,
+                wanted.server_url.as_deref(),
+                wanted.server_auth_token.as_deref(),
             ),
             confirm: ConfirmState::Idle,
             error: None,
-            effective: network.clone(),
-            pending_apply,
         }
     }
 
@@ -74,54 +69,14 @@ impl NetworkEditor {
                 self.confirm = ConfirmState::Idle;
                 Some(Action::Exit)
             }
-            Message::Proxy(msg) => {
-                let action = self.proxy.update(
-                    msg,
-                    &mut self.confirm,
-                    &mut self.error,
-                    self.effective.proxy.as_ref(),
-                );
-                if let Some(Action::ApplyProxy(ref cfg)) = action {
-                    self.pending_apply = Some(data::Network {
-                        proxy: cfg.clone(),
-                        ..self.effective.clone()
-                    });
-                }
-                action
-            }
-            Message::Fetch(msg) => {
-                let action = self.fetch.update(
-                    msg,
-                    &mut self.confirm,
-                    &mut self.error,
-                    &self.effective.trade_fetch_mode,
-                    self.effective.server_url.as_deref(),
-                    self.effective.server_auth_token.as_deref(),
-                );
-                if let Some(Action::ApplyServerConfig {
-                    mode,
-                    url,
-                    auth_token,
-                }) = &action
-                {
-                    self.pending_apply = Some(data::Network {
-                        trade_fetch_mode: mode.clone(),
-                        server_url: url.clone(),
-                        server_auth_token: auth_token.clone(),
-                        ..self.effective.clone()
-                    });
-                }
-                action
-            }
+            Message::Proxy(msg) => self.proxy.update(msg, &mut self.confirm, &mut self.error),
+            Message::Fetch(msg) => self.fetch.update(msg, &mut self.confirm, &mut self.error),
         }
     }
 
-    /// Borrow the pending config that needs a restart to take effect, if any.
-    pub fn pending_apply(&self) -> Option<&data::Network> {
-        self.pending_apply.as_ref()
-    }
+    pub fn view<'a>(&'a self, network: &'a Deferred<data::Network>) -> Element<'a, Message> {
+        let wanted = network.wanted();
 
-    pub fn view<'a>(&'a self, network: &'a data::Network) -> Element<'a, Message> {
         let modal_header = row![
             button(style::icon_text(style::Icon::Return, 11)).on_press(Message::GoBack),
             iced::widget::space::horizontal(),
@@ -129,21 +84,25 @@ impl NetworkEditor {
 
         let proxy_settings = self
             .proxy
-            .view(network.proxy.as_ref(), self.confirm)
+            .view(
+                network.applied().proxy.as_ref(),
+                wanted.proxy.as_ref(),
+                self.confirm,
+            )
             .map(Message::Proxy);
         let fetch_settings = self
             .fetch
             .view(
                 self.confirm,
-                &network.trade_fetch_mode,
-                network.server_url.as_deref(),
-                network.server_auth_token.as_deref(),
+                &wanted.trade_fetch_mode,
+                wanted.server_url.as_deref(),
+                wanted.server_auth_token.as_deref(),
             )
             .map(Message::Fetch);
 
         let mut content = column![modal_header, fetch_settings, proxy_settings].spacing(12);
 
-        if self.pending_apply.is_some() {
+        if network.restart_required() {
             content = content.push(banner(
                 "Restart required.\nChanges will take effect after restart.",
                 BannerKind::Warning,
@@ -215,22 +174,22 @@ impl ProxyForm {
         }
     }
 
-    /// Whether the form state differs from the effective (in-use) config.
-    fn is_pending(&self, effective_cfg: Option<&Proxy>) -> bool {
+    /// Whether the form state differs from the wanted config.
+    fn is_pending(&self, wanted_cfg: Option<&Proxy>) -> bool {
         let draft_has_content = ![&self.host, &self.port, &self.username, &self.password]
             .iter()
             .all(|s| s.trim().is_empty());
 
-        match effective_cfg {
-            Some(effective) => {
+        match wanted_cfg {
+            Some(wanted) => {
                 draft_has_content
-                    && (self.scheme != effective.scheme()
-                        || self.host.trim() != effective.host()
-                        || self.port.trim() != effective.port().to_string()
+                    && (self.scheme != wanted.scheme()
+                        || self.host.trim() != wanted.host()
+                        || self.port.trim() != wanted.port().to_string()
                         || self.username.trim()
-                            != effective.auth().map(|a| a.username()).unwrap_or("")
+                            != wanted.auth().map(|a| a.username()).unwrap_or("")
                         || self.password.trim()
-                            != effective.auth().map(|a| a.password()).unwrap_or(""))
+                            != wanted.auth().map(|a| a.password()).unwrap_or(""))
             }
             None => draft_has_content,
         }
@@ -260,13 +219,14 @@ impl ProxyForm {
 
     fn view<'a>(
         &'a self,
-        effective_cfg: Option<&'a Proxy>,
+        applied_cfg: Option<&'a Proxy>,
+        wanted_cfg: Option<&'a Proxy>,
         confirm: ConfirmState,
     ) -> Element<'a, ProxyMsg> {
-        let is_pending = self.is_pending(effective_cfg);
+        let is_pending = self.is_pending(wanted_cfg);
 
         let applied_proxy = {
-            let effective = effective_cfg
+            let applied = applied_cfg
                 .map(|c| c.to_ui_string())
                 .unwrap_or_else(|| "None (direct connection)".to_string());
 
@@ -286,7 +246,7 @@ impl ProxyForm {
             let mut lines = column![
                 row![
                     text("Effective:").size(crate::style::text_size::SMALL),
-                    text(effective).size(crate::style::text_size::BODY),
+                    text(applied).size(crate::style::text_size::BODY),
                 ]
                 .spacing(4)
                 .align_y(iced::Alignment::Center)
@@ -370,7 +330,7 @@ impl ProxyForm {
                 _ => apply_action_row(
                     is_pending,
                     is_pending,
-                    effective_cfg.is_some(),
+                    wanted_cfg.is_some(),
                     ProxyMsg::RequestApply,
                     ProxyMsg::RequestClear,
                     msg,
@@ -405,7 +365,6 @@ impl ProxyForm {
         message: ProxyMsg,
         confirm: &mut ConfirmState,
         error: &mut Option<String>,
-        _effective_cfg: Option<&Proxy>,
     ) -> Option<Action> {
         match message {
             ProxyMsg::ToggleShowPassword(v) => {
@@ -717,9 +676,6 @@ impl FetchForm {
         message: FetchMsg,
         confirm: &mut ConfirmState,
         error: &mut Option<String>,
-        _effective_mode: &fetcher::TradeFetchMode,
-        _effective_url: Option<&str>,
-        _effective_auth: Option<&str>,
     ) -> Option<Action> {
         match message {
             FetchMsg::ToggleShowToken(v) => {

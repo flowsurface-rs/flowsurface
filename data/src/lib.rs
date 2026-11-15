@@ -21,7 +21,7 @@ pub use chart::kline::indicators::{
 pub use config::ScaleFactor;
 pub use config::network::{Network, TradeFetchMode};
 pub use config::sidebar::{self, Sidebar};
-pub use config::state::{Layouts, State};
+pub use config::state::{BootSettings, Layouts, State};
 pub use config::theme::Theme;
 pub use config::timezone::UserTimezone;
 
@@ -249,10 +249,10 @@ fn cleanup_directory(data_path: &PathBuf) -> usize {
     deleted_files.len()
 }
 
-pub fn load_antialiasing() -> bool {
+pub fn load_boot_settings() -> BootSettings {
     read_from_file(SAVED_STATE_PATH)
-        .map(|state| state.antialiasing)
-        .unwrap_or_else(|_| true)
+        .map(|state| state.boot)
+        .unwrap_or_default()
 }
 
 pub fn cleanup_old_market_data() -> usize {

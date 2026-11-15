@@ -2,6 +2,7 @@
 
 mod audio;
 mod connector;
+mod deferred;
 mod layout;
 mod logger;
 mod modal;
@@ -17,6 +18,7 @@ use connector::client::DataSources;
 use data::chart::kline::indicators::manifest;
 use data::config::theme::default_theme;
 use data::{layout::WindowSpec, sidebar};
+use deferred::Deferred;
 use layout::{LayoutId, configuration};
 use modal::dashboard_modal;
 use modal::{
@@ -57,20 +59,26 @@ fn main() {
 
     std::thread::spawn(data::cleanup_old_market_data);
 
-    let daemon = iced::daemon(Flowsurface::new, Flowsurface::update, Flowsurface::view)
-        .settings(iced::Settings {
-            antialiasing: data::load_antialiasing(),
-            fonts: vec![
-                Cow::Borrowed(style::AZERET_MONO_BYTES),
-                Cow::Borrowed(style::ICONS_BYTES),
-            ],
-            default_text_size: style::text_size::BODY.into(),
-            ..Default::default()
-        })
-        .title(Flowsurface::title)
-        .theme(Flowsurface::theme)
-        .scale_factor(Flowsurface::scale_factor)
-        .subscription(Flowsurface::subscription);
+    let boot = data::load_boot_settings();
+
+    let daemon = iced::daemon(
+        move || Flowsurface::new(boot),
+        Flowsurface::update,
+        Flowsurface::view,
+    )
+    .settings(iced::Settings {
+        antialiasing: boot.antialiasing,
+        fonts: vec![
+            Cow::Borrowed(style::AZERET_MONO_BYTES),
+            Cow::Borrowed(style::ICONS_BYTES),
+        ],
+        default_text_size: style::text_size::BODY.into(),
+        ..Default::default()
+    })
+    .title(Flowsurface::title)
+    .theme(Flowsurface::theme)
+    .scale_factor(Flowsurface::scale_factor)
+    .subscription(Flowsurface::subscription);
 
     if let Err(err) = daemon.run() {
         let message = format!("Runtime error: {err}");
@@ -85,18 +93,16 @@ struct Flowsurface {
     layout_manager: LayoutManager,
     theme_editor: ThemeEditor,
     network_editor: NetworkEditor,
-    network_config: data::Network,
     data_sources: Arc<DataSources>,
     audio_stream: AudioStream,
-    volume_size_unit: exchange::SizeUnit,
-    applied_volume_size_unit: exchange::SizeUnit,
     ui_scale_factor: data::ScaleFactor,
     timezone: data::UserTimezone,
     theme: ThemeState,
     notifications: Notifications,
     window_scale_factors: window::WindowScaleFactors,
-    antialiasing: bool,
-    applied_antialiasing: bool,
+    boot: Deferred<data::BootSettings>,
+    network: Deferred<data::Network>,
+    volume_size_unit: Deferred<exchange::SizeUnit>,
 }
 
 #[derive(Debug, Clone)]
@@ -120,8 +126,8 @@ enum Message {
     SetTimezone(data::UserTimezone),
     SetMetadataCaching(bool),
     RefreshMetadata,
-    ApplyVolumeSizeUnit(exchange::SizeUnit),
-    ApplyAntialiasing(bool),
+    SetVolumeSizeUnit(exchange::SizeUnit),
+    SetAntialiasing(bool),
     RemoveNotification(usize),
     WindowScaleFactorUpdated {
         window: window::Id,
@@ -135,7 +141,7 @@ enum Message {
 }
 
 impl Flowsurface {
-    fn new() -> (Self, Task<Message>) {
+    fn new(boot: data::BootSettings) -> (Self, Task<Message>) {
         let saved_state = layout::load_saved_state();
 
         let (main_window_id, open_main_window) = {
@@ -159,6 +165,10 @@ impl Flowsurface {
 
         let (audio_stream, audio_init_err) = AudioStream::new(saved_state.audio_cfg);
 
+        let volume_size_unit = Deferred::new(saved_state.volume_size_unit);
+        let boot = Deferred::new(boot);
+        let network = Deferred::new(saved_state.network);
+
         let mut state = Self {
             main_window: window::Window::new(main_window_id),
             layout_manager: saved_state.layout_manager,
@@ -169,14 +179,12 @@ impl Flowsurface {
             data_sources,
             timezone: saved_state.timezone,
             ui_scale_factor: saved_state.scale_factor,
-            volume_size_unit: saved_state.volume_size_unit,
-            applied_volume_size_unit: saved_state.volume_size_unit,
             theme: ThemeState::new(saved_state.theme),
             notifications: Notifications::new(),
-            network_config: saved_state.network.clone(),
-            network_editor: NetworkEditor::new(&saved_state.network, None),
-            antialiasing: saved_state.antialiasing,
-            applied_antialiasing: saved_state.antialiasing,
+            network_editor: NetworkEditor::new(&network),
+            boot,
+            network,
+            volume_size_unit,
         };
 
         for diagnostic in data::chart::kline::indicators::catalog().diagnostics() {
@@ -578,25 +586,16 @@ impl Flowsurface {
                     Some(network_editor::Action::ApplyProxy(ref proxy)) => {
                         if let Some(proxy) = proxy {
                             data::config::auth::save_proxy_auth(proxy);
-                        } else if let Some(ref old_proxy) = self.network_config.proxy {
+                        } else if let Some(ref old_proxy) = self.network.wanted().proxy {
                             data::config::auth::delete_proxy_auth(old_proxy);
                         }
-                        self.network_config.proxy = proxy.clone();
 
-                        let main_window = self.main_window.id;
-                        let dashboard = self.active_dashboard_mut();
+                        self.network.set_wanted(data::Network {
+                            proxy: proxy.clone(),
+                            ..self.network.wanted().clone()
+                        });
 
-                        let mut active_windows = dashboard
-                            .popout
-                            .keys()
-                            .copied()
-                            .collect::<Vec<window::Id>>();
-                        active_windows.push(main_window);
-
-                        return window::collect_window_specs(
-                            active_windows,
-                            Message::SaveStateRequested,
-                        );
+                        return self.save_now();
                     }
                     Some(network_editor::Action::ApplyServerConfig {
                         mode,
@@ -607,27 +606,18 @@ impl Flowsurface {
                             && let Some(ref token) = auth_token
                         {
                             data::config::auth::save_server_token(url, token);
-                        } else if let Some(ref old_url) = self.network_config.server_url {
+                        } else if let Some(ref old_url) = self.network.wanted().server_url {
                             data::config::auth::delete_server_token(old_url);
                         }
-                        self.network_config.server_url = url;
-                        self.network_config.server_auth_token = auth_token;
-                        self.network_config.trade_fetch_mode = mode;
 
-                        let main_window = self.main_window.id;
-                        let dashboard = self.active_dashboard_mut();
+                        self.network.set_wanted(data::Network {
+                            server_url: url,
+                            server_auth_token: auth_token,
+                            trade_fetch_mode: mode,
+                            ..self.network.wanted().clone()
+                        });
 
-                        let mut active_windows = dashboard
-                            .popout
-                            .keys()
-                            .copied()
-                            .collect::<Vec<window::Id>>();
-                        active_windows.push(main_window);
-
-                        return window::collect_window_specs(
-                            active_windows,
-                            Message::SaveStateRequested,
-                        );
+                        return self.save_now();
                     }
                     Some(network_editor::Action::Exit) => {
                         self.sidebar.set_menu(Some(sidebar::Menu::Settings));
@@ -640,10 +630,7 @@ impl Flowsurface {
 
                 match action {
                     Some(screen::sidebar::Action::MenuChanged(Some(sidebar::Menu::Network))) => {
-                        self.network_editor = NetworkEditor::new(
-                            &self.network_config,
-                            self.network_editor.pending_apply().cloned(),
-                        );
+                        self.network_editor = NetworkEditor::new(&self.network);
                     }
                     Some(screen::sidebar::Action::MenuChanged(_)) => {}
                     Some(screen::sidebar::Action::TickerSelected(ticker_info, content)) => {
@@ -680,30 +667,26 @@ impl Flowsurface {
 
                 return task.map(Message::Sidebar);
             }
-            Message::ApplyVolumeSizeUnit(pref) => {
-                self.volume_size_unit = pref;
-
-                let mut active_windows: Vec<window::Id> =
-                    self.active_dashboard().popout.keys().copied().collect();
-                active_windows.push(self.main_window.id);
-
-                return window::collect_window_specs(active_windows, |windows| {
-                    Message::SaveStateRequested(windows)
-                });
+            Message::SetVolumeSizeUnit(unit) => {
+                self.volume_size_unit.set_wanted(unit);
+                return self.save_now();
             }
-            Message::ApplyAntialiasing(enabled) => {
-                self.antialiasing = enabled;
-
-                let mut active_windows: Vec<window::Id> =
-                    self.active_dashboard().popout.keys().copied().collect();
-                active_windows.push(self.main_window.id);
-
-                return window::collect_window_specs(active_windows, |windows| {
-                    Message::SaveStateRequested(windows)
+            Message::SetAntialiasing(enabled) => {
+                self.boot.set_wanted(data::BootSettings {
+                    antialiasing: enabled,
                 });
+                return self.save_now();
             }
         }
         Task::none()
+    }
+
+    fn save_now(&self) -> Task<Message> {
+        let mut active_windows: Vec<window::Id> =
+            self.active_dashboard().popout.keys().copied().collect();
+        active_windows.push(self.main_window.id);
+
+        window::collect_window_specs(active_windows, Message::SaveStateRequested)
     }
 
     fn view(&self, id: window::Id) -> Element<'_, Message> {
@@ -1023,17 +1006,14 @@ impl Flowsurface {
                     };
 
                     let size_in_quote_ccy_checkbox = {
-                        let is_active = match self.volume_size_unit {
-                            exchange::SizeUnit::Quote => true,
-                            exchange::SizeUnit::Base => false,
-                        };
-                        let restart_required =
-                            self.volume_size_unit != self.applied_volume_size_unit;
+                        let is_active =
+                            *self.volume_size_unit.wanted() == exchange::SizeUnit::Quote;
+                        let restart_required = self.volume_size_unit.restart_required();
 
                         let checkbox = iced::widget::checkbox(is_active)
                             .label("Size in quote currency")
                             .on_toggle(|checked| {
-                                Message::ApplyVolumeSizeUnit(if checked {
+                                Message::SetVolumeSizeUnit(if checked {
                                     exchange::SizeUnit::Quote
                                 } else {
                                     exchange::SizeUnit::Base
@@ -1165,10 +1145,10 @@ impl Flowsurface {
                     };
 
                     let antialiasing_checkbox = {
-                        let restart_required = self.antialiasing != self.applied_antialiasing;
-                        let checkbox = iced::widget::checkbox(self.antialiasing)
+                        let restart_required = self.boot.differs(|boot| &boot.antialiasing);
+                        let checkbox = iced::widget::checkbox(self.boot.wanted().antialiasing)
                             .label("Antialiasing")
-                            .on_toggle(Message::ApplyAntialiasing);
+                            .on_toggle(Message::SetAntialiasing);
 
                         let checkbox = tooltip(
                             checkbox,
@@ -1466,7 +1446,7 @@ impl Flowsurface {
                 dashboard_modal(
                     base,
                     self.network_editor
-                        .view(&self.network_config)
+                        .view(&self.network)
                         .map(Message::NetworkEditor),
                     Message::Sidebar(screen::sidebar::Message::ToggleSidebarMenu(None)),
                     padding,
@@ -1526,10 +1506,10 @@ impl Flowsurface {
             self.sidebar.state.clone(),
             self.ui_scale_factor,
             audio_cfg,
-            self.network_config.for_persistence(),
-            self.volume_size_unit,
+            self.network.wanted().for_persistence(),
+            *self.volume_size_unit.wanted(),
             self.sidebar.cache_enabled(),
-            self.antialiasing,
+            *self.boot.wanted(),
         );
 
         match serde_json::to_string(&state) {

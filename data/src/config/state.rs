@@ -7,6 +7,23 @@ use crate::{AudioStream, Layout, Theme};
 
 use serde::{Deserialize, Serialize};
 
+/// Settings that must exist before the running application state does.
+///
+/// iced consumes these while the daemon is being constructed, so they are read
+/// once before `Flowsurface` exists and never mutated in place. Everything the
+/// running app reads and writes belongs in `State` instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct BootSettings {
+    pub antialiasing: bool,
+}
+
+impl Default for BootSettings {
+    fn default() -> Self {
+        Self { antialiasing: true }
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct Layouts {
     pub layouts: Vec<Layout>,
@@ -29,8 +46,8 @@ pub struct State {
     pub network: Network,
     pub size_in_quote_ccy: exchange::SizeUnit,
     pub cache_market_metadata: bool,
-    #[serde(default = "default_antialiasing")]
-    pub antialiasing: bool,
+    #[serde(flatten)]
+    pub boot: BootSettings,
 }
 
 impl State {
@@ -46,7 +63,7 @@ impl State {
         network: Network,
         volume_size_unit: exchange::SizeUnit,
         cache_market_metadata: bool,
-        antialiasing: bool,
+        boot: BootSettings,
     ) -> Self {
         State {
             layout_manager,
@@ -60,11 +77,7 @@ impl State {
             network,
             size_in_quote_ccy: volume_size_unit,
             cache_market_metadata,
-            antialiasing,
+            boot,
         }
     }
-}
-
-const fn default_antialiasing() -> bool {
-    true
 }
