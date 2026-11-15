@@ -2,6 +2,7 @@ pub mod audio;
 pub mod layout_manager;
 pub mod network_editor;
 pub mod pane;
+pub mod settings;
 pub mod theme_editor;
 
 use iced::widget::{container, mouse_area, opaque, stack};

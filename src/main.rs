@@ -16,7 +16,6 @@ mod window;
 
 use connector::client::DataSources;
 use data::chart::kline::indicators::manifest;
-use data::config::theme::default_theme;
 use data::{layout::WindowSpec, sidebar};
 use deferred::Deferred;
 use layout::{LayoutId, configuration};
@@ -37,8 +36,7 @@ use widget::{
 use iced::{
     Alignment, Element, Subscription, Task, keyboard, padding,
     widget::{
-        button, column, container, pane_grid, pick_list, row, rule, scrollable, text,
-        tooltip::Position as TooltipPosition,
+        button, column, container, pane_grid, row, rule, text, tooltip::Position as TooltipPosition,
     },
 };
 use std::borrow::Cow;
@@ -95,14 +93,11 @@ struct Flowsurface {
     network_editor: NetworkEditor,
     data_sources: Arc<DataSources>,
     audio_stream: AudioStream,
-    ui_scale_factor: data::ScaleFactor,
-    timezone: data::UserTimezone,
+    settings: modal::settings::Settings,
     theme: ThemeState,
     notifications: Notifications,
     window_scale_factors: window::WindowScaleFactors,
-    boot: Deferred<data::BootSettings>,
     network: Deferred<data::Network>,
-    volume_size_unit: Deferred<exchange::SizeUnit>,
 }
 
 #[derive(Debug, Clone)]
@@ -119,21 +114,13 @@ enum Message {
     ExitRequested(HashMap<window::Id, WindowSpec>),
     SaveStateRequested(HashMap<window::Id, WindowSpec>),
     GoBack,
-    DataFolderRequested,
-    OpenUrlRequested(Cow<'static, str>),
-    ThemeSelected(iced_core::Theme),
-    ScaleFactorChanged(data::ScaleFactor),
-    SetTimezone(data::UserTimezone),
-    SetMetadataCaching(bool),
-    RefreshMetadata,
-    SetVolumeSizeUnit(exchange::SizeUnit),
-    SetAntialiasing(bool),
     RemoveNotification(usize),
     WindowScaleFactorUpdated {
         window: window::Id,
         scale_factor: window::WindowScaleFactor,
     },
     ThemeEditor(modal::theme_editor::Message),
+    Settings(modal::settings::Message),
     NetworkEditor(modal::network_editor::Message),
     Layouts(modal::layout_manager::Message),
     SharedChartResources(manifest::Message),
@@ -165,8 +152,12 @@ impl Flowsurface {
 
         let (audio_stream, audio_init_err) = AudioStream::new(saved_state.audio_cfg);
 
-        let volume_size_unit = Deferred::new(saved_state.volume_size_unit);
-        let boot = Deferred::new(boot);
+        let settings = modal::settings::Settings::new(
+            saved_state.timezone,
+            saved_state.scale_factor,
+            saved_state.volume_size_unit,
+            boot,
+        );
         let network = Deferred::new(saved_state.network);
 
         let mut state = Self {
@@ -177,14 +168,11 @@ impl Flowsurface {
             audio_stream,
             sidebar,
             data_sources,
-            timezone: saved_state.timezone,
-            ui_scale_factor: saved_state.scale_factor,
+            settings,
             theme: ThemeState::new(saved_state.theme),
             notifications: Notifications::new(),
             network_editor: NetworkEditor::new(&network),
-            boot,
             network,
-            volume_size_unit,
         };
 
         for diagnostic in data::chart::kline::indicators::catalog().diagnostics() {
@@ -320,10 +308,6 @@ impl Flowsurface {
                     }
                 }
             }
-            Message::ThemeSelected(theme) => {
-                self.theme_editor.reset_input();
-                self.replace_theme(theme);
-            }
             Message::Dashboard {
                 layout_id: id,
                 event: msg,
@@ -454,22 +438,8 @@ impl Flowsurface {
             Message::RemoveNotification(index) => {
                 self.notifications.remove(index);
             }
-            Message::SetTimezone(tz) => {
-                self.timezone = tz;
-            }
-            Message::SetMetadataCaching(enabled) => {
-                self.sidebar.set_cache_enabled(enabled);
-            }
-            Message::RefreshMetadata => {
-                if let Some(task) = self.sidebar.force_refresh_metadata() {
-                    return task.map(Message::Sidebar);
-                }
-            }
             Message::SharedChartResources(message) => {
                 return self.update_shared_chart_resources(message);
-            }
-            Message::ScaleFactorChanged(value) => {
-                self.ui_scale_factor = value;
             }
             Message::Layouts(message) => {
                 let action = self.layout_manager.update(message);
@@ -559,13 +529,6 @@ impl Flowsurface {
                     }
                 }
             }
-            Message::DataFolderRequested => {
-                if let Err(err) = data::open_data_folder() {
-                    self.notifications
-                        .push(Toast::error(format!("Failed to open data folder: {err}")));
-                }
-            }
-            Message::OpenUrlRequested(url) => self.open_url(url.as_ref()),
             Message::ThemeEditor(msg) => {
                 let action = self.theme_editor.update(msg, self.theme.current());
 
@@ -575,6 +538,36 @@ impl Flowsurface {
                     }
                     Some(modal::theme_editor::Action::UpdateTheme(theme)) => {
                         self.replace_theme(theme);
+                    }
+                    None => {}
+                }
+            }
+            Message::Settings(message) => {
+                use modal::settings::Action;
+
+                match self.settings.update(message) {
+                    Some(Action::Persist) => return self.save_now(),
+                    Some(Action::ThemeSelected(theme)) => {
+                        self.theme_editor.reset_input();
+                        self.replace_theme(theme);
+                    }
+                    Some(Action::SetMetadataCaching(enabled)) => {
+                        self.sidebar.set_cache_enabled(enabled);
+                    }
+                    Some(Action::RefreshMetadata) => {
+                        if let Some(task) = self.sidebar.force_refresh_metadata() {
+                            return task.map(Message::Sidebar);
+                        }
+                    }
+                    Some(Action::OpenDataFolder) => {
+                        if let Err(err) = data::open_data_folder() {
+                            self.notifications
+                                .push(Toast::error(format!("Failed to open data folder: {err}")));
+                        }
+                    }
+                    Some(Action::OpenUrl(url)) => self.open_url(url.as_ref()),
+                    Some(Action::Sidebar(message)) => {
+                        return self.update(Message::Sidebar(message));
                     }
                     None => {}
                 }
@@ -667,16 +660,6 @@ impl Flowsurface {
 
                 return task.map(Message::Sidebar);
             }
-            Message::SetVolumeSizeUnit(unit) => {
-                self.volume_size_unit.set_wanted(unit);
-                return self.save_now();
-            }
-            Message::SetAntialiasing(enabled) => {
-                self.boot.set_wanted(data::BootSettings {
-                    antialiasing: enabled,
-                });
-                return self.save_now();
-            }
         }
         Task::none()
     }
@@ -695,7 +678,7 @@ impl Flowsurface {
 
         let pixel_ratio = self
             .window_scale_factors
-            .pixel_ratio_for_window(id, self.ui_scale_factor);
+            .pixel_ratio_for_window(id, self.settings.scale_factor);
 
         let tickers_table = &self.sidebar.tickers_table;
 
@@ -708,7 +691,7 @@ impl Flowsurface {
                 .view(
                     &self.main_window,
                     tickers_table,
-                    self.timezone,
+                    self.settings.timezone,
                     pixel_ratio,
                     &self.theme,
                     self.layout_manager.chart_resources(),
@@ -759,7 +742,7 @@ impl Flowsurface {
                         id,
                         &self.main_window,
                         tickers_table,
-                        self.timezone,
+                        self.settings.timezone,
                         pixel_ratio,
                         &self.theme,
                         self.layout_manager.chart_resources(),
@@ -798,7 +781,7 @@ impl Flowsurface {
     }
 
     fn scale_factor(&self, _window: window::Id) -> f32 {
-        self.ui_scale_factor.into()
+        self.settings.scale_factor.into()
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -963,304 +946,15 @@ impl Flowsurface {
 
         match menu {
             sidebar::Menu::Settings => {
-                let settings_modal = {
-                    let theme_picklist = {
-                        let mut themes: Vec<iced::Theme> = iced_core::Theme::ALL.to_vec();
-
-                        let default_theme = iced_core::Theme::Custom(default_theme().into());
-                        themes.push(default_theme);
-
-                        if let Some(custom_theme) = &self.theme_editor.custom_theme {
-                            themes.push(custom_theme.clone());
-                        }
-
-                        pick_list(themes, Some(self.theme.current().clone()), |theme| {
-                            Message::ThemeSelected(theme)
-                        })
-                    };
-
-                    let toggle_theme_editor = button(text("Theme editor")).on_press(
-                        Message::Sidebar(screen::sidebar::Message::ToggleSidebarMenu(Some(
-                            sidebar::Menu::ThemeEditor,
-                        ))),
-                    );
-
-                    let toggle_network_editor = button(text("Network")).on_press(Message::Sidebar(
-                        screen::sidebar::Message::ToggleSidebarMenu(Some(sidebar::Menu::Network)),
-                    ));
-
-                    let timezone_picklist = pick_list(
-                        [data::UserTimezone::Utc, data::UserTimezone::Local],
-                        Some(self.timezone),
-                        Message::SetTimezone,
-                    );
-
-                    let restart_required_marker = || {
-                        let btn = button(text("!").style(|theme: &iced::Theme| {
-                            iced::widget::text::Style {
-                                color: Some(theme.extended_palette().warning.base.color),
-                            }
-                        }))
-                        .style(move |theme, status| style::button::modifier(theme, status, true));
-                        tooltip(btn, Some("Restart required"), TooltipPosition::Top)
-                    };
-
-                    let size_in_quote_ccy_checkbox = {
-                        let is_active =
-                            *self.volume_size_unit.wanted() == exchange::SizeUnit::Quote;
-                        let restart_required = self.volume_size_unit.restart_required();
-
-                        let checkbox = iced::widget::checkbox(is_active)
-                            .label("Size in quote currency")
-                            .on_toggle(|checked| {
-                                Message::SetVolumeSizeUnit(if checked {
-                                    exchange::SizeUnit::Quote
-                                } else {
-                                    exchange::SizeUnit::Base
-                                })
-                            });
-
-                        let checkbox = tooltip(
-                            checkbox,
-                            Some(
-                                "Display sizes/volumes in quote currency (USD).\n- Has no effect on inverse perps or open interest\n- Restart required to apply.",
-                            ),
-                            TooltipPosition::Top,
-                        );
-
-                        let mut row = row![checkbox]
-                            .align_y(iced::Alignment::Center)
-                            .spacing(8)
-                            .height(24);
-                        if restart_required {
-                            row = row.push(restart_required_marker());
-                        }
-                        row
-                    };
-
-                    let cache_metadata_checkbox = {
-                        let cache_enabled = self.sidebar.cache_enabled();
-
-                        let checkbox = tooltip(
-                            iced::widget::checkbox(cache_enabled)
-                                .label("Cache ticker metadata")
-                                .on_toggle(Message::SetMetadataCaching),
-                            Some("Cache ticker metadata for faster startup."),
-                            TooltipPosition::Top,
-                        );
-
-                        if !cache_enabled {
-                            column![row![checkbox].height(24).align_y(iced::Alignment::Center)]
-                        } else {
-                            let loading = self.sidebar.is_metadata_loading();
-
-                            let refresh_btn = {
-                                let btn = button(crate::style::icon_text(
-                                    crate::style::Icon::Refresh,
-                                    12,
-                                ))
-                                .style(move |theme, status| {
-                                    style::button::modifier(theme, status, loading)
-                                });
-                                let btn = if loading {
-                                    btn
-                                } else {
-                                    btn.on_press(Message::RefreshMetadata)
-                                };
-
-                                tooltip(
-                                    btn,
-                                    if loading { None } else { Some("Refresh now") },
-                                    TooltipPosition::Top,
-                                )
-                            };
-
-                            let last_updated = {
-                                let last_update = self.sidebar.last_metadata_update();
-
-                                let label = if loading {
-                                    "Refreshing metadata…".to_string()
-                                } else {
-                                    match last_update {
-                                        Some(at) => {
-                                            format!(
-                                                "Metadata last update: {}",
-                                                data::util::relative_time_label(at)
-                                            )
-                                        }
-                                        None => "Metadata not fetched yet".to_string(),
-                                    }
-                                };
-
-                                text(label)
-                                    .size(crate::style::text_size::SMALL)
-                                    .style(style::secondary_text)
-                            };
-
-                            column![
-                                row![checkbox, refresh_btn]
-                                    .align_y(iced::Alignment::Center)
-                                    .spacing(8),
-                                last_updated,
-                            ]
-                            .spacing(4)
-                        }
-                    };
-
-                    let sidebar_pos_picklist = pick_list(
-                        [sidebar::Position::Left, sidebar::Position::Right],
-                        Some(sidebar_pos),
-                        |pos| Message::Sidebar(screen::sidebar::Message::SetSidebarPosition(pos)),
-                    );
-
-                    let scale_factor = {
-                        let current_value: f32 = self.ui_scale_factor.into();
-
-                        let decrease_btn = if current_value > data::config::MIN_SCALE {
-                            button(text("-"))
-                                .on_press(Message::ScaleFactorChanged((current_value - 0.1).into()))
-                        } else {
-                            button(text("-"))
-                        };
-
-                        let increase_btn = if current_value < data::config::MAX_SCALE {
-                            button(text("+"))
-                                .on_press(Message::ScaleFactorChanged((current_value + 0.1).into()))
-                        } else {
-                            button(text("+"))
-                        };
-
-                        container(
-                            row![
-                                decrease_btn,
-                                text(format!("{:.0}%", current_value * 100.0))
-                                    .size(crate::style::text_size::SECTION),
-                                increase_btn,
-                            ]
-                            .align_y(Alignment::Center)
-                            .spacing(8)
-                            .padding(4),
-                        )
-                        .style(style::modal_container)
-                    };
-
-                    let antialiasing_checkbox = {
-                        let restart_required = self.boot.differs(|boot| &boot.antialiasing);
-                        let checkbox = iced::widget::checkbox(self.boot.wanted().antialiasing)
-                            .label("Antialiasing")
-                            .on_toggle(Message::SetAntialiasing);
-
-                        let checkbox = tooltip(
-                            checkbox,
-                            Some(
-                                "Disabling may increase performance, but expect rough edges\n- Restart required to apply.",
-                            ),
-                            TooltipPosition::Top,
-                        );
-
-                        let mut row = row![checkbox]
-                            .align_y(iced::Alignment::Center)
-                            .spacing(8)
-                            .height(24);
-                        if restart_required {
-                            row = row.push(restart_required_marker());
-                        }
-                        row
-                    };
-
-                    let open_data_folder = {
-                        let button =
-                            button(text("Open data folder")).on_press(Message::DataFolderRequested);
-
-                        tooltip(
-                            button,
-                            Some("Open the folder where the data & config is stored"),
-                            TooltipPosition::Top,
-                        )
-                    };
-
-                    let version_info = {
-                        let (version_label, commit_label) = version::app_build_version_parts();
-
-                        let github_link_button =
-                            button(text(version_label).size(crate::style::text_size::EMPHASIS))
-                                .padding(0)
-                                .style(style::button::text_link)
-                                .on_press(Message::OpenUrlRequested(Cow::Borrowed(
-                                    version::GITHUB_REPOSITORY_URL,
-                                )));
-
-                        let github_button: Element<'_, Message> = iced::widget::tooltip(
-                            github_link_button,
-                            container(
-                                row![
-                                    text("GitHub"),
-                                    style::icon_text(style::Icon::ExternalLink, 12),
-                                ]
-                                .spacing(4)
-                                .align_y(Alignment::Center),
-                            )
-                            .style(style::tooltip)
-                            .padding(8),
-                            TooltipPosition::Top,
-                        )
-                        .into();
-
-                        if let (Some(commit_label), Some(commit_url)) =
-                            (commit_label, version::build_commit_url())
-                        {
-                            let commit_button =
-                                button(text(commit_label).size(crate::style::text_size::SMALL))
-                                    .padding(0)
-                                    .style(style::button::text_link_secondary)
-                                    .on_press(Message::OpenUrlRequested(Cow::Owned(commit_url)));
-
-                            column![github_button, commit_button]
-                                .spacing(2)
-                                .align_x(Alignment::End)
-                                .into()
-                        } else {
-                            github_button
-                        }
-                    };
-
-                    let footer = column![
-                        container(version_info)
-                            .width(iced::Length::Fill)
-                            .align_x(Alignment::End),
-                    ]
-                    .spacing(8);
-
-                    let column_content = split_column![
-                        column![open_data_folder,].spacing(8),
-                        column![text("Sidebar position").size(crate::style::text_size::SECTION), sidebar_pos_picklist,].spacing(12),
-                        column![text("Time zone").size(crate::style::text_size::SECTION), timezone_picklist,].spacing(12),
-                        column![text("Market data").size(crate::style::text_size::SECTION), column![size_in_quote_ccy_checkbox, cache_metadata_checkbox].spacing(4)].spacing(12),
-                        column![text("Theme").size(crate::style::text_size::SECTION), theme_picklist,].spacing(12),
-                        column![text("Interface scale").size(crate::style::text_size::SECTION), scale_factor,].spacing(12),
-                        column![text("Rendering").size(crate::style::text_size::SECTION), antialiasing_checkbox,].spacing(12),
-                        column![
-                            text("Experimental").size(crate::style::text_size::SECTION),
-                            column![toggle_theme_editor, toggle_network_editor].spacing(8),
-                        ]
-                        .spacing(12),
-                        footer,
-                        ; spacing = 16, align_x = Alignment::Start
-                    ];
-
-                    let content = scrollable::Scrollable::with_direction(
-                        column_content,
-                        scrollable::Direction::Vertical(
-                            scrollable::Scrollbar::new().width(8).scroller_width(6),
-                        ),
-                    );
-
-                    container(content)
-                        .align_x(Alignment::Start)
-                        .max_width(240)
-                        .padding(24)
-                        .style(style::dashboard_modal)
-                };
+                let settings_modal = self
+                    .settings
+                    .view(
+                        &self.theme,
+                        self.theme_editor.custom_theme.as_ref(),
+                        &self.sidebar,
+                        sidebar_pos,
+                    )
+                    .map(Message::Settings);
 
                 let (align_x, padding) = match sidebar_pos {
                     sidebar::Position::Left => (Alignment::Start, padding::left(44).bottom(4)),
@@ -1502,14 +1196,14 @@ impl Flowsurface {
             self.theme.data_theme(),
             self.theme_editor.custom_theme.clone().map(data::Theme),
             main_window_spec,
-            self.timezone,
+            self.settings.timezone,
             self.sidebar.state.clone(),
-            self.ui_scale_factor,
+            self.settings.scale_factor,
             audio_cfg,
             self.network.wanted().for_persistence(),
-            *self.volume_size_unit.wanted(),
+            *self.settings.volume_size_unit.wanted(),
             self.sidebar.cache_enabled(),
-            *self.boot.wanted(),
+            *self.settings.boot.wanted(),
         );
 
         match serde_json::to_string(&state) {
