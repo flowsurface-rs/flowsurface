@@ -1117,11 +1117,8 @@ impl DrawingView<'_> {
         filter: &mut AxisBadgeFilter,
     ) {
         let scene = self.context.scene;
-        let plot = scene.layout.regions.plot;
         let x_label_w = (text.chars().count() as f32 * TEXT_SIZE * 0.67 + 12.0).clamp(100.0, 240.0);
-        let Some(x_label_x) =
-            super::axis_badge::x_axis_badge_left(plot.x, plot.width, x, x_label_w)
-        else {
+        let Some(x_label_x) = scene.layout.x_axis_badge_left(x, x_label_w) else {
             return;
         };
 

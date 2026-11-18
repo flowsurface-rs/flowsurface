@@ -154,6 +154,16 @@ impl PanelLayoutTree {
         }
     }
 
+    pub(super) fn x_axis_badge_left(&self, anchor_x: f32, label_width: f32) -> Option<f32> {
+        let plot = self.regions.plot;
+        let max_x = plot.x + plot.width - label_width;
+
+        if plot.width < label_width || !max_x.is_finite() || !anchor_x.is_finite() {
+            return None;
+        }
+        Some((anchor_x - label_width / 2.0).clamp(plot.x, max_x))
+    }
+
     pub(super) fn primary_plot_width(&self) -> Option<f32> {
         let primary_panel = self
             .panels

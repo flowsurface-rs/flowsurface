@@ -4,7 +4,6 @@ use super::{
     LEGEND_TEXT_SIZE as TEXT_SIZE, LEGEND_TOP_PAD as PANEL_TITLE_TOP_PAD,
 };
 mod axes;
-mod axis_badge;
 mod chrome;
 pub mod drawing;
 mod footprint;
