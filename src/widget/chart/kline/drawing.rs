@@ -1118,11 +1118,11 @@ impl DrawingView<'_> {
     ) {
         let scene = self.context.scene;
         let x_label_w = (text.chars().count() as f32 * TEXT_SIZE * 0.67 + 12.0).clamp(100.0, 240.0);
+        let Some(x_label_x) = scene.layout.x_axis_badge_left(x, x_label_w) else {
+            return;
+        };
+
         let x_label_h = TEXT_SIZE + 6.0;
-        let x_label_x = (x - x_label_w / 2.0).clamp(
-            scene.layout.regions.plot.x,
-            scene.layout.regions.plot.x + scene.layout.regions.plot.width - x_label_w,
-        );
         let x_label_y = scene.layout.regions.x_axis.y + 2.0;
         let label_bounds = Rectangle {
             x: x_label_x,
