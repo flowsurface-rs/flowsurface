@@ -234,7 +234,10 @@ impl Scene {
             grid.force_full_upload();
             self.uploaded_generation
                 .store(self.heatmap_tex_gen, Ordering::Release);
-        } else if self.heatmap_upload.is_some() && uploaded < self.heatmap_tex_gen {
+        } else if !grid.is_full_dirty()
+            && self.heatmap_upload.is_some()
+            && uploaded < self.heatmap_tex_gen
+        {
             return false;
         }
 

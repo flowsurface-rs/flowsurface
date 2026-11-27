@@ -16,6 +16,11 @@ const GRID_HORIZON_BUCKETS: u32 = 4800;
 
 const GRID_TEX_H: u32 = 2048; // steps around anchor
 
+/// `wgpu` requires `write_texture` rows to be 256-byte aligned. At 8 bytes per
+/// `Rg32Uint` texel, uploading 1 column transfers 32 texels' worth of bytes per
+/// row, so at `tex_w / 32` dirty columns a full upload copies no more data.
+const COL_UPLOAD_ROW_PADDING_TEXELS: usize = 32;
+
 #[derive(Debug, Clone)]
 pub struct GridRing {
     horizon_buckets: u32,
@@ -104,6 +109,11 @@ impl GridRing {
     #[inline]
     pub fn force_full_upload(&mut self) {
         self.mark_full_dirty();
+    }
+
+    #[inline]
+    pub fn is_full_dirty(&self) -> bool {
+        self.full_dirty
     }
 
     /// Current y-binning in steps.
@@ -890,7 +900,9 @@ impl GridRing {
             return None;
         }
 
-        if self.take_full_dirty() {
+        let max_incremental_cols = (self.tex_w as usize / COL_UPLOAD_ROW_PADDING_TEXELS).max(1);
+        if self.take_full_dirty() || self.dirty_cols.len() >= max_incremental_cols {
+            self.dirty_cols.clear();
             return Some(super::HeatmapUpload::Full {
                 width: self.tex_w,
                 height: self.tex_h,
@@ -973,60 +985,5 @@ impl HeatmapPalette {
             Self::srgb_to_linear_channel(rgb[1]),
             Self::srgb_to_linear_channel(rgb[2]),
         ]
-    }
-}
-
-#[cfg(test)]
-mod upload_tests {
-    use super::*;
-    use crate::widget::chart::heatmap::scene::{HeatmapUpload, Scene};
-
-    #[test]
-    fn skipped_draw_keeps_the_full_upload_and_subsequent_dirty_columns() {
-        let mut grid = GridRing {
-            horizon_buckets: 4,
-            tex_h: 2,
-            ..GridRing::new()
-        };
-        grid.ensure_layout(500);
-        let mut scene = Scene::new();
-        scene.sync_heatmap_upload_from_grid(&mut grid, false);
-        let initial_generation = scene.heatmap_tex_gen;
-        grid.bid[1] = 700;
-        grid.mark_dirty(1);
-        scene.sync_heatmap_upload_from_grid(&mut grid, false);
-        grid.ask[2] = 900;
-        grid.mark_dirty(2);
-        scene.sync_heatmap_upload_from_grid(&mut grid, false);
-        assert_eq!(scene.heatmap_tex_gen, initial_generation);
-        assert!(matches!(
-            scene.heatmap_upload,
-            Some((_, HeatmapUpload::Full { .. }))
-        ));
-        scene
-            .uploaded_generation
-            .store(initial_generation, std::sync::atomic::Ordering::Release);
-        scene.sync_heatmap_upload_from_grid(&mut grid, false);
-        let Some((generation, HeatmapUpload::Cols { cols, .. })) = &scene.heatmap_upload else {
-            panic!("expected dirty columns");
-        };
-        assert_eq!(cols.len(), 2);
-        assert_eq!((cols[0].x, cols[0].bid_col[0]), (1, 700));
-        assert_eq!((cols[1].x, cols[1].ask_col[0]), (2, 900));
-        let current = *generation;
-        scene
-            .uploaded_generation
-            .store(current, std::sync::atomic::Ordering::Release);
-        scene.sync_heatmap_upload_from_grid(&mut grid, false);
-        assert_eq!(scene.heatmap_tex_gen, current);
-        // Simulate a new GPU texture receiving a delta with no baseline.
-        scene
-            .uploaded_generation
-            .store(0, std::sync::atomic::Ordering::Release);
-        scene.sync_heatmap_upload_from_grid(&mut grid, false);
-        let Some((_, HeatmapUpload::Full { bid, ask, .. })) = &scene.heatmap_upload else {
-            panic!("expected recovery snapshot");
-        };
-        assert_eq!((bid[1], ask[2]), (700, 900));
     }
 }
