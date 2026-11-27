@@ -28,16 +28,13 @@ use exchange::depth::Depth;
 use exchange::unit::{Price, PriceStep};
 use exchange::{TickerInfo, Trade, UnixMs};
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 // Volume strip
 const STRIP_HEIGHT_FRAC: f32 = 0.10;
 
 // Debounce heavy CPU rebuilds (notably `rebuild_from_historical`) during interaction
 const REBUILD_DEBOUNCE_MS: u64 = 250;
-
-// If rendering stalls longer than this, assume GPU heatmap texture may have been lost/desynced
-const HEATMAP_RESYNC_AFTER_STALL_MS: u64 = 750;
 
 // Volume profile width as % of viewport width
 const VOLUME_PROFILE_WIDTH_PCT: f32 = 0.10;
@@ -473,7 +470,6 @@ impl HeatmapShader {
             DepthSource::Live,
             self.step,
         );
-        self.mark_needs_full_upload_if_stalled();
         let prev_effective_base = self.anchor.effective_base_price(self.base_price);
 
         let paused = self.anchor.is_paused();
@@ -1070,14 +1066,6 @@ impl HeatmapShader {
         self.scene.params.set_depth_denom(denom);
     }
 
-    fn mark_needs_full_upload_if_stalled(&mut self) {
-        if let Some(last) = self.last_tick
-            && last.elapsed() >= Duration::from_millis(HEATMAP_RESYNC_AFTER_STALL_MS)
-        {
-            self.depth_grid.force_full_upload();
-        }
-    }
-
     /// Resume paused mode immediately if x=0 becomes visible due user input (pan/zoom/reset).
     /// Returns whether a Paused -> Live transition happened.
     fn try_resume_if_x0_visible(&mut self) -> bool {
@@ -1174,5 +1162,46 @@ impl HeatmapShader {
             self.ticker_info.min_ticksize,
         )
         .unwrap_or(DEFAULT_Y_AXIS_GUTTER);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::widget::chart::heatmap::scene::HeatmapUpload;
+    use exchange::{Ticker, Timeframe, adapter::Exchange, unit::Qty};
+
+    #[test]
+    fn ordinary_snapshot_after_a_delayed_tick_updates_only_its_column() {
+        let ticker = TickerInfo::new(Ticker::new("TEST", Exchange::BinanceSpot), 0.1, 1.0, None);
+        let step = ticker.min_ticksize.into();
+        let mut chart = HeatmapShader::new(
+            Basis::Time(Timeframe::MS500),
+            step,
+            ticker,
+            None,
+            HeatmapIndicatorConfig::default(),
+        );
+        let mut book = Depth::default();
+        let bid_price = Price::from_f64(350.0);
+        book.bids.insert(bid_price, Qty::from_f64(100.));
+        book.asks
+            .insert(Price::from_f64(350.1), Qty::from_f64(200.));
+        chart.insert_depth(&book, UnixMs::new(1000));
+        assert!(matches!(
+            chart.depth_grid.upload_to_scene(),
+            Some(HeatmapUpload::Full { .. })
+        ));
+
+        chart.last_tick = Some(Instant::now() - std::time::Duration::from_secs(3));
+        book.bids.insert(bid_price, Qty::from_f64(300.));
+        chart.insert_depth(&book, UnixMs::new(1500));
+        let Some(HeatmapUpload::Cols { cols, .. }) = chart.depth_grid.upload_to_scene() else {
+            panic!("slow frame forced a full upload");
+        };
+        assert!(
+            cols.iter()
+                .any(|col| col.x == 3 && col.bid_col.iter().any(|q| *q > 0))
+        );
     }
 }

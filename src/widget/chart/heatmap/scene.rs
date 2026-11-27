@@ -72,6 +72,7 @@ pub struct Scene {
 
     pub heatmap_tex_gen: u64,
     heatmap_upload: Option<(u64, HeatmapUpload)>,
+    uploaded_generation: Arc<AtomicU64>,
 
     pub cell: cell::Cell,
 }
@@ -118,6 +119,7 @@ impl Scene {
             params,
             heatmap_tex_gen: 1,
             heatmap_upload: None,
+            uploaded_generation: Arc::new(AtomicU64::new(1)),
             cell,
         }
     }
@@ -220,7 +222,23 @@ impl Scene {
         grid: &mut depth_grid::GridRing,
         force_full: bool,
     ) -> bool {
-        let Some(upload) = grid.upload_to_scene(force_full) else {
+        if force_full {
+            grid.force_full_upload();
+        }
+
+        // A slow or hidden window can receive several snapshots between draws.
+        // Keep changes in the ring until prepare() submits the outstanding upload.
+        let uploaded = self.uploaded_generation.load(Ordering::Acquire);
+        if uploaded == 0 {
+            // The renderer lost its texture. Start it from the complete CPU ring.
+            grid.force_full_upload();
+            self.uploaded_generation
+                .store(self.heatmap_tex_gen, Ordering::Release);
+        } else if self.heatmap_upload.is_some() && uploaded < self.heatmap_tex_gen {
+            return false;
+        }
+
+        let Some(upload) = grid.upload_to_scene() else {
             return false;
         };
 
@@ -346,6 +364,7 @@ impl shader::Program<Message> for Scene {
             self.camera,
             self.params,
             self.heatmap_upload.clone(),
+            self.uploaded_generation.clone(),
         )
     }
 
@@ -375,6 +394,7 @@ pub struct Primitive {
     draw_list: Arc<[DrawItem]>,
 
     heatmap_upload: Option<(u64, HeatmapUpload)>,
+    uploaded_generation: Arc<AtomicU64>,
 }
 
 impl Primitive {
@@ -388,6 +408,7 @@ impl Primitive {
         camera: camera::Camera,
         params: ParamsUniform,
         heatmap_upload: Option<(u64, HeatmapUpload)>,
+        uploaded_generation: Arc<AtomicU64>,
     ) -> Self {
         Self {
             id,
@@ -399,6 +420,7 @@ impl Primitive {
             camera,
             params,
             heatmap_upload,
+            uploaded_generation,
         }
     }
 }
@@ -462,7 +484,7 @@ impl shader::Primitive for Primitive {
                     height,
                     cols,
                 } => {
-                    pipeline.update_heatmap_columns_u32(
+                    if !pipeline.update_heatmap_columns_u32(
                         self.id,
                         device,
                         queue,
@@ -470,9 +492,14 @@ impl shader::Primitive for Primitive {
                         *height,
                         cols.as_ref(),
                         *generation,
-                    );
+                    ) {
+                        self.uploaded_generation.store(0, Ordering::Release);
+                        return;
+                    }
                 }
             }
+            self.uploaded_generation
+                .fetch_max(*generation, Ordering::Release);
         }
     }
 
